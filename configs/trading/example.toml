@@ -1,0 +1,33 @@
+# M4 trading configuration example (non-secret; no token/account).
+# Safety defaults: PAPER/SHADOW only; auto_trade must remain false for M4.
+
+[meta]
+schema_version = "trading-config-v1"
+
+[execution]
+mode = "PAPER"
+auto_trade = false
+manual_approval = true
+sell_only = false
+frozen_symbols = []
+
+[rules]
+a_share_rule_selector = "a_share_execution_rules_v1"
+hk_connect_rule_selector = "hk_connect_execution_rules_v1"
+fee_schedule_selector = "a_share_research_cost_schedule_v1"
+fx_schedule_selector = "cny_hkd_fx_schedule_v1"
+
+[data]
+snapshot_max_age_seconds = 86400
+
+[store]
+sqlite_uri = "sqlite:///artifacts/trading/execution.db"
+
+[[risk.limits]]
+effective_from = 2016-01-01
+max_order_notional = 1000000.0
+max_symbol_weight = 0.10
+max_gross_exposure = 1.0
+max_daily_notional = 5000000.0
+max_orders_per_day = 50
+max_cancels_per_day = 20

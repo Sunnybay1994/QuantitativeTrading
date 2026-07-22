@@ -1,0 +1,32 @@
+version = 1
+market = "HK"
+source = "hkex"
+selection_rule = "temporary_counter_lifecycle_as_of_v1"
+
+[[evidence]]
+role = "TRADING_SCHEDULE"
+announcement_id = "PT/NIS/CCASS/209/2026"
+published_date = 2026-07-03
+url = "https://www.hkex.com.hk/-/media/HKEX-Market/Services/Circulars-and-Notices/Participant-and-Members-Circulars/HKSCC/2026/ce_HKSCC_NOM_209_2026.pdf"
+content_sha256 = "1905a5ae2f494cbeefb1c83ba1f05a614d1a099b47e3f94060fa8201bdac5531"
+
+[[evidence]]
+role = "FINAL_EFFECTIVE"
+announcement_id = "2026071000019"
+published_date = 2026-07-10
+url = "https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0710/2026071000019.pdf"
+content_sha256 = "c4a72e006a5226d0047a7bb17ed926cc8ec9846ebf021efba4f0f46c543d853d"
+
+[[counters]]
+symbol = "02983.HK"
+related_symbol = "02525.HK"
+name = "HESAI-W"
+instrument_type = "STOCK"
+currency = "HKD"
+event = "SHARE_SUBDIVISION_TEMP_COUNTER"
+list_date = 2026-07-10
+parallel_trading_end = 2026-08-13
+delist_date = 2026-08-13
+certificate_delivery_end = 2026-08-17
+ccass_conversion_end = 2026-08-24
+board_lot = 160

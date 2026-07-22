@@ -1,0 +1,187 @@
+"""BaoStock 原始数据连接器，作为 A 股免费校验源。"""
+
+import datetime as dt
+import importlib
+from contextlib import contextmanager
+from typing import Any, Iterator
+
+import polars as pl
+
+from quant.data.base import BaseConnector
+
+_BAR_FIELDS = "date,code,open,high,low,close,volume,amount,adjustflag,tradestatus"
+
+
+class BaostockConnector(BaseConnector):
+    """封装 BaoStock 登录会话和结果集迭代。"""
+
+    source = "baostock"
+
+    def __init__(self, client: Any | None = None) -> None:
+        self._injected_client = client
+
+    @property
+    def client(self) -> Any:
+        """延迟加载可选依赖。"""
+        if self._injected_client is not None:
+            return self._injected_client
+        try:
+            self._injected_client = importlib.import_module("baostock")
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                'BaoStock 未安装；请在 WSL Miniforge base 中执行 pip install -e ".[data]"'
+            ) from exc
+        return self._injected_client
+
+    def fetch_instruments(self, market: str) -> pl.DataFrame:
+        """获取完整证券基础资料；market 由下游 mapper 过滤并写入 raw 参数。"""
+        _validate_market(market)
+        with self._session():
+            result = self.client.query_stock_basic()
+            return _result_to_polars(result, "query_stock_basic")
+
+    def fetch_trade_calendar(
+        self, market: str, start: dt.date, end: dt.date
+    ) -> pl.DataFrame:
+        """获取沪深共用的原始交易日历。"""
+        _validate_market(market)
+        _validate_range(start, end)
+        with self._session():
+            result = self.client.query_trade_dates(
+                start_date=start.isoformat(), end_date=end.isoformat()
+            )
+            return _result_to_polars(result, "query_trade_dates")
+
+    def fetch_bar_1d(
+        self, symbols: list[str], start: dt.date, end: dt.date
+    ) -> pl.DataFrame:
+        """获取沪深 A 股不复权日线原始响应。"""
+        _validate_range(start, end)
+        if not symbols:
+            raise ValueError("symbols 不能为空")
+        frames: list[pl.DataFrame] = []
+        with self._session():
+            for symbol in symbols:
+                code = _to_baostock_code(symbol)
+                result = self.client.query_history_k_data_plus(
+                    code,
+                    _BAR_FIELDS,
+                    start_date=start.isoformat(),
+                    end_date=end.isoformat(),
+                    frequency="d",
+                    adjustflag="3",
+                )
+                frame = _result_to_polars(result, "query_history_k_data_plus")
+                frames.append(
+                    frame.with_columns(
+                        pl.lit(symbol).alias("_request_symbol"),
+                        pl.lit("query_history_k_data_plus").alias("_endpoint"),
+                    )
+                )
+        return pl.concat(frames, how="diagonal_relaxed")
+
+    def fetch_reference_bar_raw(
+        self,
+        *,
+        symbol: str,
+        start: dt.date,
+        end: dt.date,
+        fields: str,
+        frequency: str,
+        adjustflag: str,
+    ) -> pl.DataFrame:
+        """Fetch one BaoStock reference bar request without mapping or dedup."""
+        if type(symbol) is not str or type(fields) is not str:
+            raise ValueError("reference bar 参数类型非法")
+        if type(frequency) is not str or type(adjustflag) is not str:
+            raise ValueError("reference bar 参数类型非法")
+        if type(start) is not dt.date or type(end) is not dt.date:
+            raise ValueError("reference bar 日期类型非法")
+        if start > end:
+            raise ValueError("start 不得晚于 end")
+        if fields != _BAR_FIELDS:
+            raise ValueError("reference bar fields 非法")
+        if frequency != "d" or adjustflag != "3":
+            raise ValueError("reference bar frequency/adjustflag 非法")
+        code = _to_baostock_code(symbol)
+        with self._session():
+            result = self.client.query_history_k_data_plus(
+                code,
+                fields,
+                start_date=start.isoformat(),
+                end_date=end.isoformat(),
+                frequency=frequency,
+                adjustflag=adjustflag,
+            )
+            return _result_to_polars(result, "query_history_k_data_plus")
+
+    def fetch_corporate_actions(
+        self, symbols: list[str], start: dt.date, end: dt.date
+    ) -> pl.DataFrame:
+        raise NotImplementedError("BaoStock 公司行动口径尚未接入")
+
+    def fetch_adjust_factors(
+        self, symbols: list[str], start: dt.date, end: dt.date
+    ) -> pl.DataFrame:
+        """获取累计后复权因子事件。"""
+        _validate_range(start, end)
+        frames: list[pl.DataFrame] = []
+        with self._session():
+            for symbol in symbols:
+                result = self.client.query_adjust_factor(
+                    _to_baostock_code(symbol),
+                    start_date=start.isoformat(),
+                    end_date=end.isoformat(),
+                )
+                frame = _result_to_polars(result, "query_adjust_factor")
+                frames.append(frame.with_columns(pl.lit(symbol).alias("_request_symbol")))
+        return pl.concat(frames, how="diagonal_relaxed")
+
+    @contextmanager
+    def _session(self) -> Iterator[None]:
+        login_result = self.client.login()
+        _ensure_success(login_result, "login")
+        try:
+            yield
+        finally:
+            self.client.logout()
+
+
+class BaostockResponseError(RuntimeError):
+    """BaoStock 返回非零错误码。"""
+
+
+def _result_to_polars(result: Any, action: str) -> pl.DataFrame:
+    _ensure_success(result, action)
+    rows: list[list[str]] = []
+    while result.next():
+        rows.append(result.get_row_data())
+    return pl.DataFrame(rows, schema=list(result.fields), orient="row")
+
+
+def _ensure_success(response: Any, action: str) -> None:
+    code = str(response.error_code)
+    if code != "0":
+        raise BaostockResponseError(
+            f"BaoStock {action} 失败: code={code}, message={response.error_msg}"
+        )
+
+
+def _to_baostock_code(symbol: str) -> str:
+    try:
+        code, market = symbol.rsplit(".", maxsplit=1)
+    except ValueError as exc:
+        raise ValueError(f"证券代码必须使用 000001.SZ 格式: {symbol}") from exc
+    if not code.isdigit() or market not in {"SH", "SZ"}:
+        raise ValueError(f"BaoStock 只支持沪深 A 股代码: {symbol}")
+    return f"{market.lower()}.{code}"
+
+
+def _validate_market(market: str) -> None:
+    if market not in {"SH", "SZ"}:
+        raise ValueError(f"BaoStock 只支持沪深市场: {market}")
+
+
+def _validate_range(start: dt.date, end: dt.date) -> None:
+    if start > end:
+        raise ValueError("start 不得晚于 end")

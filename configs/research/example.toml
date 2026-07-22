@@ -1,0 +1,29 @@
+# 研究配置示例(M1/M2 里程碑启用)
+# 所有配置带版本;实盘配置与研究配置物理分离。
+
+[meta]
+config_version = "0.1.0"
+
+[data]
+primary_source = "tushare"     # 当前研究主源
+check_source = "baostock"      # 交叉校验源
+start_date = "2015-01-01"
+
+[universe]
+a_share = ["CSI300"]           # 历史成分,不可用今日名单回测过去
+etf_pool = "ETF_POOL_CORE"     # 冻结的候选池,定义见 universe_membership
+
+[costs.a_share]
+# 费率带有效期,以券商与交易所最新文件为准
+commission_rate = 0.00025
+commission_min = 5.0
+stamp_tax_sell = 0.0005
+transfer_fee = 0.00001
+slippage = 0.001
+effective_from = "2026-01-01"
+
+[costs.hk_connect]
+commission_rate = 0.00025
+stamp_duty = 0.001
+slippage = 0.002
+effective_from = "2026-01-01"

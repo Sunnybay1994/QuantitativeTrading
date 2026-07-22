@@ -1,0 +1,13 @@
+market,date,is_open,is_connect_open,is_half_day
+SH,2026-01-05,true,false,false
+SH,2026-01-06,true,false,false
+SH,2026-01-07,true,false,false
+SH,2026-01-08,true,false,false
+SH,2026-01-09,true,false,false
+SH,2026-01-12,true,false,false
+SH,2026-01-13,true,false,false
+SH,2026-01-14,true,false,false
+SH,2026-01-15,true,false,false
+SH,2026-01-16,true,false,false
+SH,2026-01-19,true,false,false
+SH,2026-01-20,true,false,false

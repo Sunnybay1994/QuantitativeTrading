@@ -1,0 +1,75 @@
+version = 1
+route = "SH_CONNECT"
+year = 2026
+source = "sse"
+announcement_url = "https://www.sse.com.cn/services/hkexsc/disclo/announ/c/c_20251222_10802519.shtml"
+announcement_id = "中投信〔2025〕56号"
+published_date = 2025-12-22
+service_start = 2026-01-01
+service_end = 2026-12-31
+
+[[full_closures]]
+start = 2026-01-01
+end = 2026-01-03
+name = "元旦"
+
+[[full_closures]]
+start = 2026-02-15
+end = 2026-02-23
+name = "春节"
+
+[[full_closures]]
+start = 2026-04-03
+end = 2026-04-07
+name = "香港耶稣受难节、清明节、复活节"
+
+[[full_closures]]
+start = 2026-05-01
+end = 2026-05-05
+name = "劳动节"
+
+[[full_closures]]
+start = 2026-05-25
+end = 2026-05-25
+name = "香港佛诞日"
+
+[[full_closures]]
+start = 2026-06-19
+end = 2026-06-21
+name = "端午节"
+
+[[full_closures]]
+start = 2026-07-01
+end = 2026-07-01
+name = "香港特别行政区成立纪念日"
+
+[[full_closures]]
+start = 2026-09-25
+end = 2026-09-27
+name = "中秋节"
+
+[[full_closures]]
+start = 2026-10-01
+end = 2026-10-07
+name = "国庆节"
+
+[[full_closures]]
+start = 2026-10-19
+end = 2026-10-19
+name = "香港重阳节"
+
+[[full_closures]]
+start = 2026-12-25
+end = 2026-12-25
+name = "香港圣诞节"
+
+[[half_days]]
+date = 2026-12-24
+closed_session = "PM"
+name = "香港圣诞节（下午不提供港股通服务）"
+
+[[half_days]]
+date = 2026-12-31
+closed_session = "PM"
+name = "香港新年前夕（下午不提供港股通服务）"
+

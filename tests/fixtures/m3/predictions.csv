@@ -1,0 +1,5 @@
+as_of,symbol,score,rank,model,model_version,dataset_snapshot_id,fold,horizon_sessions
+2026-01-05,000003.SZ,0.90,1,lightgbm,alpha158_lgb_v1,sha256:fixture,fold_001,5
+2026-01-05,000001.SZ,0.80,2,lightgbm,alpha158_lgb_v1,sha256:fixture,fold_001,5
+2026-01-05,000004.SZ,0.50,3,lightgbm,alpha158_lgb_v1,sha256:fixture,fold_001,5
+2026-01-05,000002.SZ,0.20,4,lightgbm,alpha158_lgb_v1,sha256:fixture,fold_001,5

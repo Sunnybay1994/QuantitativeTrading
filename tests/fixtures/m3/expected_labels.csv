@@ -1,0 +1,7 @@
+as_of,symbol,benchmark,horizon_sessions,return_start_date,return_end_date,available_as_of,raw_return,benchmark_return,relative_return,label_version
+2026-01-05,000001.SZ,H00300.CSI,5,2026-01-06,2026-01-12,2026-01-12,0.10,0.05,0.05,next_open_to_h_close_relative_v1
+2026-01-05,000002.SZ,H00300.CSI,5,2026-01-06,2026-01-12,2026-01-12,-0.05,0.05,-0.10,next_open_to_h_close_relative_v1
+2026-01-05,000003.SZ,H00300.CSI,5,2026-01-06,2026-01-12,2026-01-12,0.05,0.05,0.00,next_open_to_h_close_relative_v1
+2026-01-05,000001.SZ,H00300.CSI,10,2026-01-06,2026-01-19,2026-01-19,0.20,0.10,0.10,next_open_to_h_close_relative_v1
+2026-01-05,000002.SZ,H00300.CSI,10,2026-01-06,2026-01-19,2026-01-19,-0.10,0.10,-0.20,next_open_to_h_close_relative_v1
+2026-01-05,000003.SZ,H00300.CSI,10,2026-01-06,2026-01-19,2026-01-19,-0.01,0.10,-0.11,next_open_to_h_close_relative_v1

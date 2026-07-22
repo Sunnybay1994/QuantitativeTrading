@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 数据与产物不进 Git(可由来源重建或体积过大)
+data/raw/*
+data/clean/*
+data/features/*
+data/qlib/*
+data/legacy/*
+data/run_state/*
+!data/legacy/README.md
+artifacts/*
+!artifacts/legacy/
+artifacts/legacy/*
+!artifacts/legacy/README.md
+!**/.gitkeep
+mlruns/
+
+# 密钥与本地配置
+.env
+*.local.toml
+configs/tushare.local.toml
+
+# 编辑器/合并备份
+*.orig
+AGENTS.md.orig
+
+# Notebook
+.ipynb_checkpoints/
+
+# 绿地重建前旧代码/上游仓库仅本地归档，不参与当前代码库
+archive/legacy_pre_greenfield/

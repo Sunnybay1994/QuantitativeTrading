@@ -1,0 +1,4 @@
+# 复制为 configs/tushare.local.toml 后填写；example 文件不得放真实 Token。
+[tushare]
+token = ""
+
