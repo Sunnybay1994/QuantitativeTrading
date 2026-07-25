@@ -766,6 +766,9 @@ def test_static_no_rename_fallback() -> None:
     assert "os.rename(" not in source
     assert "os.replace(" not in source
     assert "renameat2" in source
+    # Windows-native track uses MoveFileExW; must not silently fall back to os.rename.
+    if os.name == "nt":
+        assert "MoveFileExW" in source
 
 
 def test_package_export_and_no_research_import() -> None:
@@ -834,7 +837,7 @@ def test_real_renameat2_noclobber(tmp_path: Path) -> None:
     dst.mkdir()
     with pytest.raises(M3ReleaseError) as exc:
         release_mod._renameat2_noreplace(src, dst)
-    # Supporting kernels: concurrent; WSL1/unsupported: publish unsupported.
+    # Supporting kernels / Windows MoveFileEx: concurrent; WSL1/unsupported: publish unsupported.
     assert exc.value.code in {
         "G1_RELEASE_CONCURRENT_PUBLISH",
         "G1_RELEASE_PUBLISH_UNSUPPORTED",

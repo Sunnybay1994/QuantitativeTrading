@@ -96,6 +96,8 @@ _PARQUET_WRITE_KWARGS: dict[str, Any] = {
 _RENAME_NOREPLACE = 1
 _AT_FDCWD = -100
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+# Windows defaults to text mode without O_BINARY; binary parquet/json would be corrupted.
+_O_BINARY = getattr(os, "O_BINARY", 0)
 
 _PRIMARY_TABLE_ORDER = (
     "adjustment_factor",
@@ -1662,7 +1664,7 @@ def _mkdir_exclusive(path: Path, *, mode: int) -> None:
 
 
 def _exclusive_write_bytes(path: Path, payload: bytes) -> None:
-    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | _O_NOFOLLOW
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | _O_NOFOLLOW | _O_BINARY
     fd = -1
     try:
         fd = os.open(path, flags, 0o600)
@@ -1684,6 +1686,16 @@ def _exclusive_write_bytes(path: Path, payload: bytes) -> None:
 
 
 def _fsync_directory(directory: Path) -> None:
+    # NTFS does not expose a portable directory-fd fsync; file writes already
+    # FlushFileBuffers via _exclusive_write_bytes. Skipping dir fsync on Windows
+    # is required for the authorized Windows-native publish track.
+    if os.name == "nt":
+        try:
+            if not directory.is_dir():
+                raise M3ReleaseError("G1_RELEASE_IO_FAILED")
+        except OSError:
+            raise M3ReleaseError("G1_RELEASE_IO_FAILED") from None
+        return
     fd = -1
     try:
         fd = os.open(directory, os.O_RDONLY)
@@ -1698,7 +1710,35 @@ def _fsync_directory(directory: Path) -> None:
                 raise M3ReleaseError("G1_RELEASE_IO_FAILED") from None
 
 
+def _windows_movefileex_noreplace(src: Path, dst: Path) -> None:
+    """Exclusive directory publish commit on Windows (no REPLACE_EXISTING)."""
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        move_file_ex_w = kernel32.MoveFileExW
+        move_file_ex_w.argtypes = [
+            ctypes.c_wchar_p,
+            ctypes.c_wchar_p,
+            ctypes.c_uint32,
+        ]
+        move_file_ex_w.restype = ctypes.c_bool
+        # flags=0: fail if destination exists; do not copy; do not replace.
+        if move_file_ex_w(os.fspath(src), os.fspath(dst), 0):
+            return
+        err = ctypes.get_last_error()
+    except M3ReleaseError:
+        raise
+    except (AttributeError, OSError, TypeError, ValueError):
+        raise M3ReleaseError("G1_RELEASE_PUBLISH_UNSUPPORTED") from None
+    # ERROR_ALREADY_EXISTS=183, ERROR_FILE_EXISTS=80
+    if err in {80, 183}:
+        raise M3ReleaseError("G1_RELEASE_CONCURRENT_PUBLISH")
+    raise M3ReleaseError("G1_RELEASE_IO_FAILED")
+
+
 def _renameat2_noreplace(src: Path, dst: Path) -> None:
+    if os.name == "nt":
+        _windows_movefileex_noreplace(src, dst)
+        return
     try:
         libc_name = ctypes.util.find_library("c")
         if libc_name is None:
@@ -1737,7 +1777,7 @@ def _renameat2_noreplace(src: Path, dst: Path) -> None:
 
 
 def platform_supports_renameat2_noreplace() -> bool:
-    """Probe whether directory RENAME_NOREPLACE works on this host."""
+    """Probe whether exclusive directory publish commit works on this host."""
     import tempfile
 
     parent = Path(tempfile.mkdtemp(prefix="m3-g1-renameat2-probe-"))
