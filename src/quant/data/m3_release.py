@@ -66,7 +66,15 @@ _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _REL_PATH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _RELEASE_IDENTITY_SCHEMA = "m3-g1-release-identity-v1"
 _QUALITY_SCHEMA: Literal["m3-g1-quality-v1"] = "m3-g1-quality-v1"
-_MANIFEST_SCHEMA: Literal["m3-g1-manifest-v1"] = "m3-g1-manifest-v1"
+_MANIFEST_SCHEMA_V1: Literal["m3-g1-manifest-v1"] = "m3-g1-manifest-v1"
+_MANIFEST_SCHEMA_V2: Literal["m3-g1-manifest-v2"] = "m3-g1-manifest-v2"
+_MANIFEST_SCHEMA = _MANIFEST_SCHEMA_V2
+# Manifest historical interpretation contract: exact mapper literal per schema.
+_MANIFEST_MAPPER_VERSION_V1 = "m3-g1-tushare-mapper-v1"
+_MANIFEST_MAPPER_VERSION_V2 = "m3-g1-tushare-mapper-v2"
+_BENCHMARK_MODE = "TRADEABLE_ETF_TOTAL_RETURN_PROXY"
+_BENCHMARK_METHOD_VERSION = "tushare_510300_fund_daily_fund_adj_hfq_v1"
+_BENCHMARK_DIVIDEND_RECONCILIATION_VERSION = "tushare_fund_div_implemented_cash_v1"
 _SUMMARY_SCHEMA: Literal["m3-g1-cross-source-v1"] = "m3-g1-cross-source-v1"
 _SAMPLE_SCHEMA: Literal["m3-g1-cross-source-sample-v1"] = "m3-g1-cross-source-sample-v1"
 _TABLE_SCHEMA_VERSION = "v1"
@@ -516,101 +524,160 @@ class G1ManifestV1:
     files: tuple[G1ArtifactEntryV1, ...]
 
     def __post_init__(self) -> None:
-        if self.schema_version != _MANIFEST_SCHEMA:
+        if self.schema_version != _MANIFEST_SCHEMA_V1:
             raise ValueError("manifest schema_version 非法")
-        for name in (
-            "release_id",
-            "primary_candidate_key",
-            "g1_config_sha256",
-            "request_plan_sha256",
-            "dependency_fingerprint_sha256",
-            "price_limit_required_keys_sha256",
-            "sample_plan_sha256",
-            "cross_source_summary_sha256",
-            "quality_sha256",
+        if self.mapper_version != _MANIFEST_MAPPER_VERSION_V1:
+            raise ValueError("manifest mapper_version 非法")
+        _validate_manifest_common(self)
+
+
+@dataclass(frozen=True)
+class G1ManifestV2:
+    schema_version: Literal["m3-g1-manifest-v2"]
+    release_id: str
+    primary_candidate_key: str
+    config_version: str
+    g1_config_sha256: str
+    signal_start: dt.date
+    signal_end: dt.date
+    history_start: dt.date
+    history_end: dt.date
+    request_plan_sha256: str
+    build_code_version: str
+    dependency_fingerprint_sha256: str
+    mapper_version: str
+    clean_schema_version: str
+    membership_method_version: str
+    price_limit_method_version: str
+    corporate_action_selection_version: str
+    corporate_action_reconciliation_version: str
+    benchmark_mode: str
+    benchmark_method_version: str
+    benchmark_dividend_reconciliation_version: str
+    input_receipts: tuple[G1ReceiptProjectionV1, ...]
+    price_limit_required_keys_sha256: str
+    sample_plan_sha256: str
+    cross_source_summary_sha256: str
+    quality_sha256: str
+    files: tuple[G1ArtifactEntryV1, ...]
+
+    def __post_init__(self) -> None:
+        if self.schema_version != _MANIFEST_SCHEMA_V2:
+            raise ValueError("manifest schema_version 非法")
+        if self.mapper_version != _MANIFEST_MAPPER_VERSION_V2:
+            raise ValueError("manifest mapper_version 非法")
+        if self.benchmark_mode != _BENCHMARK_MODE:
+            raise ValueError("manifest benchmark_mode 非法")
+        if self.benchmark_method_version != _BENCHMARK_METHOD_VERSION:
+            raise ValueError("manifest benchmark_method_version 非法")
+        if (
+            self.benchmark_dividend_reconciliation_version
+            != _BENCHMARK_DIVIDEND_RECONCILIATION_VERSION
         ):
-            _require_hex64(getattr(self, name), f"manifest {name}")
+            raise ValueError("manifest benchmark_dividend_reconciliation_version 非法")
         for name in (
-            "config_version",
-            "build_code_version",
-            "mapper_version",
-            "clean_schema_version",
-            "membership_method_version",
-            "price_limit_method_version",
-            "corporate_action_selection_version",
-            "corporate_action_reconciliation_version",
+            "benchmark_mode",
+            "benchmark_method_version",
+            "benchmark_dividend_reconciliation_version",
         ):
             value = getattr(self, name)
             if type(value) is not str or not value:
                 raise ValueError(f"manifest {name} 非法")
-        for name in ("signal_start", "signal_end", "history_start", "history_end"):
-            if type(getattr(self, name)) is not dt.date:
-                raise ValueError(f"manifest {name} 非法")
-        if not (
-            self.history_start
-            <= self.signal_start
-            <= self.signal_end
-            <= self.history_end
-        ):
-            raise ValueError("manifest 日期关系非法")
-        if type(self.input_receipts) is not tuple or not self.input_receipts:
-            raise ValueError("manifest input_receipts 非法")
-        rebuilt_receipts: list[G1ReceiptProjectionV1] = []
-        for item in self.input_receipts:
-            if type(item) is not G1ReceiptProjectionV1:
-                raise ValueError("manifest input_receipts 元素非法")
-            rebuilt_receipts.append(
-                G1ReceiptProjectionV1(
-                    source=item.source,
-                    request_id=item.request_id,
-                    endpoint=item.endpoint,
-                    parameters_sha256=item.parameters_sha256,
-                    stable_response_sha256=item.stable_response_sha256,
-                    row_count=item.row_count,
-                    columns=item.columns,
-                )
-            )
-        ordered_receipts = tuple(
-            sorted(
-                rebuilt_receipts,
-                key=lambda value: (value.source, value.endpoint, value.request_id),
+        _validate_manifest_common(self)
+
+
+def _validate_manifest_common(manifest: G1ManifestV1 | G1ManifestV2) -> None:
+    for name in (
+        "release_id",
+        "primary_candidate_key",
+        "g1_config_sha256",
+        "request_plan_sha256",
+        "dependency_fingerprint_sha256",
+        "price_limit_required_keys_sha256",
+        "sample_plan_sha256",
+        "cross_source_summary_sha256",
+        "quality_sha256",
+    ):
+        _require_hex64(getattr(manifest, name), f"manifest {name}")
+    for name in (
+        "config_version",
+        "build_code_version",
+        "mapper_version",
+        "clean_schema_version",
+        "membership_method_version",
+        "price_limit_method_version",
+        "corporate_action_selection_version",
+        "corporate_action_reconciliation_version",
+    ):
+        value = getattr(manifest, name)
+        if type(value) is not str or not value:
+            raise ValueError(f"manifest {name} 非法")
+    for name in ("signal_start", "signal_end", "history_start", "history_end"):
+        if type(getattr(manifest, name)) is not dt.date:
+            raise ValueError(f"manifest {name} 非法")
+    if not (
+        manifest.history_start
+        <= manifest.signal_start
+        <= manifest.signal_end
+        <= manifest.history_end
+    ):
+        raise ValueError("manifest 日期关系非法")
+    if type(manifest.input_receipts) is not tuple or not manifest.input_receipts:
+        raise ValueError("manifest input_receipts 非法")
+    rebuilt_receipts: list[G1ReceiptProjectionV1] = []
+    for item in manifest.input_receipts:
+        if type(item) is not G1ReceiptProjectionV1:
+            raise ValueError("manifest input_receipts 元素非法")
+        rebuilt_receipts.append(
+            G1ReceiptProjectionV1(
+                source=item.source,
+                request_id=item.request_id,
+                endpoint=item.endpoint,
+                parameters_sha256=item.parameters_sha256,
+                stable_response_sha256=item.stable_response_sha256,
+                row_count=item.row_count,
+                columns=item.columns,
             )
         )
-        if tuple(rebuilt_receipts) != ordered_receipts:
-            raise ValueError("manifest input_receipts 必须排序")
-        if len({(r.source, r.endpoint, r.request_id) for r in ordered_receipts}) != len(
-            ordered_receipts
-        ):
-            raise ValueError("manifest input_receipts 必须唯一")
-        object.__setattr__(self, "input_receipts", ordered_receipts)
-        if type(self.files) is not tuple or len(self.files) != len(_ARTIFACT_REGISTRY):
-            raise ValueError("manifest files 数量非法")
-        rebuilt_files: list[G1ArtifactEntryV1] = []
-        for file_item in self.files:
-            if type(file_item) is not G1ArtifactEntryV1:
-                raise ValueError("manifest files 元素非法")
-            rebuilt_files.append(
-                G1ArtifactEntryV1(
-                    file_item.path,
-                    file_item.sha256,
-                    file_item.content_sha256,
-                    file_item.size_bytes,
-                    file_item.row_count,
-                    file_item.schema_name,
-                    file_item.table_schema_version,
-                    file_item.key_columns,
-                    file_item.min_key,
-                    file_item.max_key,
-                )
+    ordered_receipts = tuple(
+        sorted(
+            rebuilt_receipts,
+            key=lambda value: (value.source, value.endpoint, value.request_id),
+        )
+    )
+    if tuple(rebuilt_receipts) != ordered_receipts:
+        raise ValueError("manifest input_receipts 必须排序")
+    if len({(r.source, r.endpoint, r.request_id) for r in ordered_receipts}) != len(
+        ordered_receipts
+    ):
+        raise ValueError("manifest input_receipts 必须唯一")
+    object.__setattr__(manifest, "input_receipts", ordered_receipts)
+    if type(manifest.files) is not tuple or len(manifest.files) != len(_ARTIFACT_REGISTRY):
+        raise ValueError("manifest files 数量非法")
+    rebuilt_files: list[G1ArtifactEntryV1] = []
+    for file_item in manifest.files:
+        if type(file_item) is not G1ArtifactEntryV1:
+            raise ValueError("manifest files 元素非法")
+        rebuilt_files.append(
+            G1ArtifactEntryV1(
+                file_item.path,
+                file_item.sha256,
+                file_item.content_sha256,
+                file_item.size_bytes,
+                file_item.row_count,
+                file_item.schema_name,
+                file_item.table_schema_version,
+                file_item.key_columns,
+                file_item.min_key,
+                file_item.max_key,
             )
-        ordered_files = tuple(sorted(rebuilt_files, key=lambda value: value.path))
-        if tuple(rebuilt_files) != ordered_files:
-            raise ValueError("manifest files 必须按 path 排序")
-        if tuple(item.path for item in ordered_files) != tuple(
-            sorted(_ARTIFACT_PATHS)
-        ):
-            raise ValueError("manifest files path 集合非法")
-        object.__setattr__(self, "files", ordered_files)
+        )
+    ordered_files = tuple(sorted(rebuilt_files, key=lambda value: value.path))
+    if tuple(rebuilt_files) != ordered_files:
+        raise ValueError("manifest files 必须按 path 排序")
+    if tuple(item.path for item in ordered_files) != tuple(sorted(_ARTIFACT_PATHS)):
+        raise ValueError("manifest files path 集合非法")
+    object.__setattr__(manifest, "files", ordered_files)
 
 
 @dataclass(frozen=True)
@@ -777,7 +844,7 @@ class G1PreparedRelease:
 @dataclass(frozen=True)
 class VerifiedG1Release:
     release: G1Release
-    manifest: G1ManifestV1
+    manifest: G1ManifestV1 | G1ManifestV2
     manifest_sha256: str
     quality: G1QualityReportV1
     quality_sha256: str
@@ -786,7 +853,7 @@ class VerifiedG1Release:
     def __post_init__(self) -> None:
         if type(self.release) is not G1Release:
             raise ValueError("verified release 类型非法")
-        if type(self.manifest) is not G1ManifestV1:
+        if type(self.manifest) not in {G1ManifestV1, G1ManifestV2}:
             raise ValueError("verified manifest 类型非法")
         if type(self.quality) is not G1QualityReportV1:
             raise ValueError("verified quality 类型非法")
@@ -1114,6 +1181,7 @@ def verify_g1_release(*, release: G1Release) -> VerifiedG1Release:
             suspensions=frames["suspension_1d"],
             calendars=frames["trade_calendar"],
             instruments=frames["instrument"],
+            bars=frames["bar_1d"],
             history=HistoryWindow(manifest.history_start, manifest.history_end),
         )
         required_digest = clean_table_content_sha256(
@@ -1124,28 +1192,9 @@ def verify_g1_release(*, release: G1Release) -> VerifiedG1Release:
         tushare_receipts = tuple(
             item for item in manifest.input_receipts if item.source == "tushare"
         )
-        build_spec = G1BuildSpec(
-            config_version=manifest.config_version,
-            g1_config_sha256=manifest.g1_config_sha256,
-            mapper_version=manifest.mapper_version,
-            schema_version=manifest.clean_schema_version,
-            membership_method_version=manifest.membership_method_version,
-            price_limit_method_version=manifest.price_limit_method_version,
-            corporate_action_selection_version=manifest.corporate_action_selection_version,
-            corporate_action_reconciliation_version=(
-                manifest.corporate_action_reconciliation_version
-            ),
-            build_code_version=manifest.build_code_version,
-            dependency_fingerprint_sha256=manifest.dependency_fingerprint_sha256,
-        )
-        primary = _primary_candidate_key(
-            build_spec=build_spec,
-            request_plan_sha256=manifest.request_plan_sha256,
-            signal_start=manifest.signal_start,
-            signal_end=manifest.signal_end,
-            history_start=manifest.history_start,
-            history_end=manifest.history_end,
-            input_receipts=tushare_receipts,
+        primary = _primary_from_manifest(
+            manifest=manifest,
+            tushare_receipts=tushare_receipts,
             table_content_digests=digests,
             price_limit_required_keys_sha256=required_digest,
         )
@@ -1188,7 +1237,7 @@ def verify_g1_release(*, release: G1Release) -> VerifiedG1Release:
         raise M3ReleaseError("G1_RELEASE_VERIFY_FAILED") from None
 
 
-def read_g1_manifest(path: Path) -> G1ManifestV1:
+def read_g1_manifest(path: Path) -> G1ManifestV1 | G1ManifestV2:
     try:
         payload = _read_regular_file_bytes(_absolute_path(path))
         manifest = _parse_manifest_bytes(payload)
@@ -1274,7 +1323,7 @@ def _build_manifest(
     files: tuple[G1ArtifactEntryV1, ...],
     quality_sha256: str,
     summary_sha256: str,
-) -> G1ManifestV1:
+) -> G1ManifestV2:
     candidate = prepared.candidate
     receipts = tuple(
         sorted(
@@ -1282,8 +1331,8 @@ def _build_manifest(
             key=lambda value: (value.source, value.endpoint, value.request_id),
         )
     )
-    return G1ManifestV1(
-        schema_version=_MANIFEST_SCHEMA,
+    return G1ManifestV2(
+        schema_version=_MANIFEST_SCHEMA_V2,
         release_id=prepared.release_id,
         primary_candidate_key=candidate.primary_candidate_key,
         config_version=candidate.build_spec.config_version,
@@ -1304,6 +1353,11 @@ def _build_manifest(
         ),
         corporate_action_reconciliation_version=(
             candidate.build_spec.corporate_action_reconciliation_version
+        ),
+        benchmark_mode=candidate.build_spec.benchmark_mode,
+        benchmark_method_version=candidate.build_spec.benchmark_method_version,
+        benchmark_dividend_reconciliation_version=(
+            candidate.build_spec.benchmark_dividend_reconciliation_version
         ),
         input_receipts=receipts,
         price_limit_required_keys_sha256=candidate.price_limit_required_keys_sha256,
@@ -1984,9 +2038,17 @@ def _parse_quality_bytes(payload: bytes) -> G1QualityReportV1:
     )
 
 
-def _parse_manifest_bytes(payload: bytes) -> G1ManifestV1:
+def _parse_manifest_bytes(payload: bytes) -> G1ManifestV1 | G1ManifestV2:
     raw = _strict_json_object(payload)
-    _exact_field_names(raw, G1ManifestV1)
+    schema = raw.get("schema_version")
+    if schema == _MANIFEST_SCHEMA_V1:
+        _exact_field_names(raw, G1ManifestV1)
+        cls: type[G1ManifestV1] | type[G1ManifestV2] = G1ManifestV1
+    elif schema == _MANIFEST_SCHEMA_V2:
+        _exact_field_names(raw, G1ManifestV2)
+        cls = G1ManifestV2
+    else:
+        raise M3ReleaseError("G1_RELEASE_JSON_INVALID")
     receipts_raw = raw["input_receipts"]
     files_raw = raw["files"]
     if type(receipts_raw) is not list or type(files_raw) is not list:
@@ -2032,7 +2094,7 @@ def _parse_manifest_bytes(payload: bytes) -> G1ManifestV1:
                 max_key=_parse_optional_key(item["max_key"]),
             )
         )
-    return G1ManifestV1(
+    common = dict(
         schema_version=raw["schema_version"],
         release_id=raw["release_id"],
         primary_candidate_key=raw["primary_candidate_key"],
@@ -2059,6 +2121,89 @@ def _parse_manifest_bytes(payload: bytes) -> G1ManifestV1:
         cross_source_summary_sha256=raw["cross_source_summary_sha256"],
         quality_sha256=raw["quality_sha256"],
         files=tuple(files),
+    )
+    if cls is G1ManifestV2:
+        return G1ManifestV2(
+            **common,
+            benchmark_mode=raw["benchmark_mode"],
+            benchmark_method_version=raw["benchmark_method_version"],
+            benchmark_dividend_reconciliation_version=raw[
+                "benchmark_dividend_reconciliation_version"
+            ],
+        )
+    return G1ManifestV1(**common)
+
+
+def _primary_from_manifest(
+    *,
+    manifest: G1ManifestV1 | G1ManifestV2,
+    tushare_receipts: tuple[G1ReceiptProjectionV1, ...],
+    table_content_digests: tuple[tuple[str, str], ...],
+    price_limit_required_keys_sha256: str,
+) -> str:
+    if type(manifest) is G1ManifestV1:
+        # Historical v1 identity: fixed H00300/index_daily/close-only field set.
+        payload = {
+            "schema_version": "m3-g1-primary-candidate-identity-v1",
+            "build_spec": {
+                "config_version": manifest.config_version,
+                "g1_config_sha256": manifest.g1_config_sha256,
+                "mapper_version": manifest.mapper_version,
+                "schema_version": manifest.clean_schema_version,
+                "membership_method_version": manifest.membership_method_version,
+                "price_limit_method_version": manifest.price_limit_method_version,
+                "corporate_action_selection_version": (
+                    manifest.corporate_action_selection_version
+                ),
+                "corporate_action_reconciliation_version": (
+                    manifest.corporate_action_reconciliation_version
+                ),
+                "build_code_version": manifest.build_code_version,
+                "dependency_fingerprint_sha256": (
+                    manifest.dependency_fingerprint_sha256
+                ),
+            },
+            "request_plan_sha256": manifest.request_plan_sha256,
+            "signal_start": manifest.signal_start.isoformat(),
+            "signal_end": manifest.signal_end.isoformat(),
+            "history_start": manifest.history_start.isoformat(),
+            "history_end": manifest.history_end.isoformat(),
+            "input_receipts": [asdict(item) for item in tushare_receipts],
+            "table_content_digests": [list(item) for item in table_content_digests],
+            "price_limit_required_keys_sha256": price_limit_required_keys_sha256,
+        }
+        return _sha256_json(payload)
+    if type(manifest) is not G1ManifestV2:
+        raise M3ReleaseError("G1_RELEASE_IDENTITY_MISMATCH")
+    build_spec = G1BuildSpec(
+        config_version=manifest.config_version,
+        g1_config_sha256=manifest.g1_config_sha256,
+        mapper_version=manifest.mapper_version,
+        schema_version=manifest.clean_schema_version,
+        membership_method_version=manifest.membership_method_version,
+        price_limit_method_version=manifest.price_limit_method_version,
+        corporate_action_selection_version=manifest.corporate_action_selection_version,
+        corporate_action_reconciliation_version=(
+            manifest.corporate_action_reconciliation_version
+        ),
+        benchmark_mode=manifest.benchmark_mode,
+        benchmark_method_version=manifest.benchmark_method_version,
+        benchmark_dividend_reconciliation_version=(
+            manifest.benchmark_dividend_reconciliation_version
+        ),
+        build_code_version=manifest.build_code_version,
+        dependency_fingerprint_sha256=manifest.dependency_fingerprint_sha256,
+    )
+    return _primary_candidate_key(
+        build_spec=build_spec,
+        request_plan_sha256=manifest.request_plan_sha256,
+        signal_start=manifest.signal_start,
+        signal_end=manifest.signal_end,
+        history_start=manifest.history_start,
+        history_end=manifest.history_end,
+        input_receipts=tushare_receipts,
+        table_content_digests=table_content_digests,
+        price_limit_required_keys_sha256=price_limit_required_keys_sha256,
     )
 
 
@@ -2150,8 +2295,8 @@ def _exact_float(value: object) -> float:
     return value
 
 
-def _manifest_to_jsonable(manifest: G1ManifestV1) -> dict[str, Any]:
-    return {
+def _manifest_to_jsonable(manifest: G1ManifestV1 | G1ManifestV2) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "schema_version": manifest.schema_version,
         "release_id": manifest.release_id,
         "primary_candidate_key": manifest.primary_candidate_key,
@@ -2168,7 +2313,9 @@ def _manifest_to_jsonable(manifest: G1ManifestV1) -> dict[str, Any]:
         "clean_schema_version": manifest.clean_schema_version,
         "membership_method_version": manifest.membership_method_version,
         "price_limit_method_version": manifest.price_limit_method_version,
-        "corporate_action_selection_version": manifest.corporate_action_selection_version,
+        "corporate_action_selection_version": (
+            manifest.corporate_action_selection_version
+        ),
         "corporate_action_reconciliation_version": (
             manifest.corporate_action_reconciliation_version
         ),
@@ -2177,22 +2324,44 @@ def _manifest_to_jsonable(manifest: G1ManifestV1) -> dict[str, Any]:
         "sample_plan_sha256": manifest.sample_plan_sha256,
         "cross_source_summary_sha256": manifest.cross_source_summary_sha256,
         "quality_sha256": manifest.quality_sha256,
-        "files": [
-            {
-                "path": item.path,
-                "sha256": item.sha256,
-                "content_sha256": item.content_sha256,
-                "size_bytes": item.size_bytes,
-                "row_count": item.row_count,
-                "schema_name": item.schema_name,
-                "table_schema_version": item.table_schema_version,
-                "key_columns": list(item.key_columns),
-                "min_key": None if item.min_key is None else list(item.min_key),
-                "max_key": None if item.max_key is None else list(item.max_key),
-            }
-            for item in manifest.files
-        ],
+        "files": [_artifact_entry_to_jsonable(item) for item in manifest.files],
     }
+    if type(manifest) is G1ManifestV2:
+        payload["benchmark_mode"] = manifest.benchmark_mode
+        payload["benchmark_method_version"] = manifest.benchmark_method_version
+        payload["benchmark_dividend_reconciliation_version"] = (
+            manifest.benchmark_dividend_reconciliation_version
+        )
+    elif type(manifest) is not G1ManifestV1:
+        raise M3ReleaseError("G1_RELEASE_JSON_INVALID")
+    return payload
+
+
+def _artifact_entry_to_jsonable(item: G1ArtifactEntryV1) -> dict[str, Any]:
+    return {
+        "path": item.path,
+        "sha256": item.sha256,
+        "content_sha256": item.content_sha256,
+        "size_bytes": item.size_bytes,
+        "row_count": item.row_count,
+        "schema_name": item.schema_name,
+        "table_schema_version": item.table_schema_version,
+        "key_columns": list(item.key_columns),
+        "min_key": _key_to_jsonable(item.min_key),
+        "max_key": _key_to_jsonable(item.max_key),
+    }
+
+
+def _key_to_jsonable(value: tuple[object, ...] | None) -> list[object] | None:
+    if value is None:
+        return None
+    out: list[object] = []
+    for item in value:
+        if type(item) is dt.date and type(item) is not dt.datetime:
+            out.append(item.isoformat())
+        else:
+            out.append(item)
+    return out
 
 
 def _canonical_json_bytes(value: Any) -> bytes:

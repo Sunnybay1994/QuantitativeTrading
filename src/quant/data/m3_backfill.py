@@ -25,7 +25,16 @@ from quant.data.storage import RawStore, RequestRawSnapshot
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _A_SHARE = re.compile(r"^[0-9]{6}\.(?:SH|SZ)$")
 TushareEndpoint = Literal[
-    "index_weight", "daily", "adj_factor", "index_daily", "suspend_d", "stk_limit", "dividend"
+    "index_weight",
+    "daily",
+    "adj_factor",
+    "index_daily",
+    "suspend_d",
+    "stk_limit",
+    "dividend",
+    "fund_daily",
+    "fund_adj",
+    "fund_div",
 ]
 
 TUSHARE_FIELDS = MappingProxyType(
@@ -41,6 +50,15 @@ TUSHARE_FIELDS = MappingProxyType(
             "cash_div,cash_div_tax,record_date,ex_date,pay_date,div_listdate,"
             "imp_ann_date,base_date,base_share"
         ),
+        "fund_daily": (
+            "ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount"
+        ),
+        "fund_adj": "ts_code,trade_date,adj_factor",
+        "fund_div": (
+            "ts_code,ann_date,imp_anndate,base_date,div_proc,record_date,ex_date,pay_date,"
+            "earpay_date,net_ex_date,div_cash,base_unit,ear_distr,ear_amount,account_date,"
+            "base_year"
+        ),
     }
 )
 _ENDPOINTS = tuple(TUSHARE_FIELDS)
@@ -53,6 +71,11 @@ _RESPONSE_SORT_KEYS = {
     "stk_limit": ("ts_code", "trade_date"),
     "dividend": (
         "ts_code", "end_date", "record_date", "ex_date", "imp_ann_date", "ann_date"
+    ),
+    "fund_daily": ("ts_code", "trade_date"),
+    "fund_adj": ("ts_code", "trade_date"),
+    "fund_div": (
+        "ts_code", "ann_date", "imp_anndate", "record_date", "ex_date", "pay_date"
     ),
 }
 
@@ -82,6 +105,9 @@ ENDPOINT_POLICIES_V1: Mapping[str, EndpointPolicy] = MappingProxyType(
         "suspend_d": EndpointPolicy(5000, "ALLOW"),
         "stk_limit": EndpointPolicy(5800, "REJECT"),
         "dividend": EndpointPolicy(5000, "ALLOW"),
+        "fund_daily": EndpointPolicy(5000, "REJECT"),
+        "fund_adj": EndpointPolicy(2000, "REJECT"),
+        "fund_div": EndpointPolicy(5000, "REJECT"),
     }
 )
 
@@ -480,6 +506,34 @@ def plan_history_requests(
     )
 
 
+def plan_fund_adj_requests(
+    *, symbol: str, start: dt.date, end: dt.date
+) -> tuple[TushareRequestSpec, ...]:
+    """按至多四个完整自然年切分 fund_adj 请求；区间连续、不重叠、严格递增。"""
+    if type(symbol) is not str or not _A_SHARE.fullmatch(symbol):
+        raise ValueError("fund 证券代码非法")
+    if type(start) is not dt.date or type(end) is not dt.date:
+        raise ValueError("fund_adj 日期必须是 date")
+    if start > end:
+        raise ValueError("fund_adj 日期范围非法")
+    requests: list[TushareRequestSpec] = []
+    cursor = start
+    while cursor <= end:
+        segment_end = min(end, dt.date(cursor.year + 3, 12, 31))
+        if (segment_end - cursor).days + 1 > 1461:
+            raise AssertionError("fund_adj 分段超过 1461 自然日")
+        requests.append(
+            _make_spec(
+                "fund_adj",
+                ts_code=symbol,
+                start_date=_date_text(cursor),
+                end_date=_date_text(segment_end),
+            )
+        )
+        cursor = dt.date(segment_end.year + 1, 1, 1)
+    return tuple(requests)
+
+
 @dataclass(frozen=True)
 class TushareBatchExecutionResult:
     """One batch run: verified receipts plus newly committed request identities."""
@@ -861,6 +915,22 @@ def _fetch(connector: TushareConnector, spec: TushareRequestSpec) -> pl.DataFram
         )
     if spec.endpoint == "dividend":
         return connector.fetch_dividend_raw(symbol=values["ts_code"], fields=fields)
+    if spec.endpoint == "fund_daily":
+        return connector.fetch_fund_daily_raw(
+            symbol=values["ts_code"],
+            start=_parse_date(values["start_date"]),
+            end=_parse_date(values["end_date"]),
+            fields=fields,
+        )
+    if spec.endpoint == "fund_adj":
+        return connector.fetch_fund_adj_raw(
+            symbol=values["ts_code"],
+            start=_parse_date(values["start_date"]),
+            end=_parse_date(values["end_date"]),
+            fields=fields,
+        )
+    if spec.endpoint == "fund_div":
+        return connector.fetch_fund_div_raw(symbol=values["ts_code"], fields=fields)
     raise AssertionError("unreachable")
 
 
@@ -1224,7 +1294,7 @@ def _validate_policies(values: Mapping[str, EndpointPolicy]) -> None:
     if set(values) != set(_ENDPOINTS) or any(
         not isinstance(values[key], EndpointPolicy) for key in _ENDPOINTS
     ):
-        raise ValueError("endpoint_policies 必须精确包含七 endpoint")
+        raise ValueError("endpoint_policies 必须精确包含全部冻结 endpoint")
     if dict(values) != dict(ENDPOINT_POLICIES_V1):
         raise ValueError("endpoint_policies 与 M3 G1 v1 冻结值不一致")
 
@@ -1245,7 +1315,9 @@ def _validate_request_contract(spec: TushareRequestSpec) -> None:
         common_range | {"index_code"}
         if spec.endpoint == "index_weight"
         else common_range | {"ts_code"}
-        if spec.endpoint in {"daily", "adj_factor", "index_daily", "stk_limit"}
+        if spec.endpoint in {
+            "daily", "adj_factor", "index_daily", "stk_limit", "fund_daily", "fund_adj"
+        }
         else common_range | {"ts_code", "suspend_type"}
         if spec.endpoint == "suspend_d"
         else {"fields", "ts_code"}
@@ -1261,6 +1333,9 @@ def _validate_request_contract(spec: TushareRequestSpec) -> None:
             raise ValueError("request A 股证券代码非法")
         if spec.endpoint == "suspend_d" and values["suspend_type"] != "S":
             raise ValueError("suspend_d 只允许 suspend_type=S")
+    elif spec.endpoint in {"fund_daily", "fund_adj", "fund_div"}:
+        if not _A_SHARE.fullmatch(values["ts_code"]):
+            raise ValueError("request 基金证券代码非法")
     elif values.get("suspend_type") == "S":
         raise ValueError("suspend_d 参数字段集合或 fields 契约非法")
     if "start_date" in values:

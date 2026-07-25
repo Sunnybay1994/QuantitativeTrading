@@ -261,6 +261,26 @@ def _suspension(
     return pl.DataFrame(rows)
 
 
+def _coverage_bars(
+    dates: list[dt.date], *, symbol: str = _SYMBOL
+) -> pl.DataFrame:
+    """Minimal Bar1d rows so coverage treats these sessions as tradeable."""
+    return pl.DataFrame(
+        {
+            "symbol": [symbol] * len(dates),
+            "trade_date": dates,
+            "open": [10.0] * len(dates),
+            "high": [10.5] * len(dates),
+            "low": [9.5] * len(dates),
+            "close": [10.0] * len(dates),
+            "volume": [1000.0] * len(dates),
+            "amount": [10000.0] * len(dates),
+            "adj_factor": [1.0] * len(dates),
+            "source": ["tushare"] * len(dates),
+        }
+    )
+
+
 def _history() -> HistoryWindow:
     return HistoryWindow(_D0, _D4)
 
@@ -386,6 +406,51 @@ def test_price_limit_sentinel_omitted_and_all_sentinel_empty() -> None:
     assert out["has_price_limit"].to_list() == []
 
 
+def test_price_limit_null_preclose_recovered_from_daily_lookup() -> None:
+    rows = [
+        {
+            "trade_date": "20260106",
+            "ts_code": _SYMBOL,
+            "pre_close": None,
+            "up_limit": 11.0,
+            "down_limit": 9.0,
+        }
+    ]
+    # Without lookup: still omitted (legacy sentinel behavior).
+    omitted = map_g1_price_limit_response(
+        response=_make_verified("stk_limit", _limit_frame(rows))
+    )
+    assert omitted.height == 0
+    # With same-day daily pre_close inside the band: emit clean row.
+    out = map_g1_price_limit_response(
+        response=_make_verified("stk_limit", _limit_frame(rows)),
+        daily_pre_close={(_SYMBOL, _D1): 10.0},
+    )
+    assert out.height == 1
+    assert out["pre_close"].to_list() == [10.0]
+    assert out["has_price_limit"].to_list() == [True]
+    assert out["up_limit"].to_list() == [11.0]
+    assert out["down_limit"].to_list() == [9.0]
+
+
+def test_price_limit_null_preclose_daily_outside_band_fails() -> None:
+    rows = [
+        {
+            "trade_date": "20260106",
+            "ts_code": _SYMBOL,
+            "pre_close": None,
+            "up_limit": 11.0,
+            "down_limit": 9.0,
+        }
+    ]
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        map_g1_price_limit_response(
+            response=_make_verified("stk_limit", _limit_frame(rows)),
+            daily_pre_close={(_SYMBOL, _D1): 12.0},
+        )
+    _assert_code(caught, "G1_EXECUTION_FACT_VALUE_INVALID")
+
+
 def test_price_limit_duplicate_key() -> None:
     rows = _limit_frame().to_dicts()
     rows.append(dict(rows[0]))
@@ -416,6 +481,7 @@ def test_price_coverage_next_session_delist_full_day_and_extra() -> None:
     # Extra pre-coverage day kept in limits.
     extra = limits.head(0)
     eligible = pl.DataFrame({"as_of": [_D0], "symbol": [_SYMBOL]})
+    bars = _coverage_bars([_D1, _D2, _D3, _D4])
     suspensions = _suspension(
         [
             {
@@ -434,6 +500,7 @@ def test_price_coverage_next_session_delist_full_day_and_extra() -> None:
         suspensions=suspensions,
         calendars=_default_calendar(),
         instruments=_instrument(),
+        bars=bars,
         history=_history(),
     )
     # coverage_start = next after D0 -> D1; D2 FULL_DAY excluded; through D4
@@ -453,6 +520,7 @@ def test_price_coverage_next_session_delist_full_day_and_extra() -> None:
             suspensions=suspensions,
             calendars=_default_calendar(),
             instruments=_instrument(),
+            bars=bars,
             history=_history(),
         )
     _assert_code(caught, "G1_PRICE_LIMIT_UNPROVEN")
@@ -477,6 +545,7 @@ def test_price_coverage_next_session_delist_full_day_and_extra() -> None:
             suspensions=partial,
             calendars=_default_calendar(),
             instruments=_instrument(),
+            bars=bars,
             history=_history(),
         )
     _assert_code(caught, "G1_PRICE_LIMIT_UNPROVEN")
@@ -488,9 +557,22 @@ def test_price_coverage_next_session_delist_full_day_and_extra() -> None:
         suspensions=_suspension(),
         calendars=_default_calendar(),
         instruments=_instrument(delist_date=_D2),
+        bars=bars,
         history=_history(),
     )
     assert required_delist.get_column("trade_date").to_list() == [_D1, _D2]
+
+    # No same-day bar excludes the key (even without FULL_DAY).
+    required_no_bar = require_g1_price_limit_coverage(
+        price_limits=limits,
+        eligible_keys=eligible,
+        suspensions=_suspension(),
+        calendars=_default_calendar(),
+        instruments=_instrument(),
+        bars=_coverage_bars([_D1, _D3, _D4]),
+        history=_history(),
+    )
+    assert required_no_bar.get_column("trade_date").to_list() == [_D1, _D3, _D4]
 
 
 def test_price_coverage_false_limit_rejected() -> None:
@@ -507,6 +589,7 @@ def test_price_coverage_false_limit_rejected() -> None:
             suspensions=_suspension(),
             calendars=_default_calendar(),
             instruments=_instrument(),
+            bars=_coverage_bars([_D1, _D2, _D3, _D4]),
             history=_history(),
         )
     _assert_code(caught, "G1_PRICE_LIMIT_UNPROVEN")
@@ -552,6 +635,198 @@ def test_dividend_in_window_missing_pay_fails() -> None:
     with pytest.raises(M3G1ExecutionFactError) as caught:
         select_g1_corporate_actions(response=_make_verified("dividend", frame), history=_history())
     _assert_code(caught, "G1_CORPORATE_ACTION_EVENT_INVALID")
+
+
+def test_dividend_null_unused_cash_leg_stock_only_passes() -> None:
+    """Formal shape: 实施 + null cash_div_tax + positive stk_div + list date."""
+    frame = _dividend_frame(
+        [
+            _dividend_row(
+                cash_div_tax=None,
+                stk_div=1.2,
+                pay_date=None,
+                div_listdate="20260107",
+            )
+        ]
+    )
+    result = select_g1_corporate_actions(
+        response=_make_verified("dividend", frame), history=_history()
+    )
+    assert result.ledger.height == 1
+    assert result.ledger["cash_per_share_gross"][0] == 0.0
+    assert result.ledger["stock_ratio"][0] == 1.2
+    assert result.ledger["pay_date"][0] is None
+    assert result.ledger["stock_list_date"][0] == dt.date(2026, 1, 7)
+    verify_corporate_action_selection_result(result=result)
+
+
+def test_dividend_null_unused_stock_leg_cash_only_passes() -> None:
+    """实施 + positive cash_div_tax + null stk_div + pay date."""
+    frame = _dividend_frame(
+        [
+            _dividend_row(
+                cash_div_tax=0.1,
+                stk_div=None,
+                pay_date="20260108",
+                div_listdate=None,
+            )
+        ]
+    )
+    result = select_g1_corporate_actions(
+        response=_make_verified("dividend", frame), history=_history()
+    )
+    assert result.ledger.height == 1
+    assert result.ledger["cash_per_share_gross"][0] == 0.1
+    assert result.ledger["stock_ratio"][0] == 0.0
+    assert result.ledger["pay_date"][0] == dt.date(2026, 1, 8)
+    assert result.ledger["stock_list_date"][0] is None
+    verify_corporate_action_selection_result(result=result)
+
+
+def test_dividend_both_legs_null_or_zero_omitted() -> None:
+    """Zero-effect 实施 (both legs null→0 or explicit 0) are omitted, not invented."""
+    both_null = _dividend_row(
+        cash_div_tax=None,
+        stk_div=None,
+        pay_date=None,
+        div_listdate=None,
+    )
+    both_zero = _dividend_row(
+        cash_div_tax=0.0,
+        stk_div=0.0,
+        pay_date=None,
+        div_listdate=None,
+    )
+    for incomplete in (both_null, both_zero):
+        alone = select_g1_corporate_actions(
+            response=_make_verified("dividend", _dividend_frame([incomplete])),
+            history=_history(),
+        )
+        assert alone.ledger.height == 0
+        verify_corporate_action_selection_result(result=alone)
+
+        mixed = select_g1_corporate_actions(
+            response=_make_verified(
+                "dividend", _dividend_frame([incomplete, _dividend_row()])
+            ),
+            history=_history(),
+        )
+        assert mixed.ledger.height == 1
+        assert mixed.ledger["cash_per_share_gross"][0] == 0.1
+        verify_corporate_action_selection_result(result=mixed)
+
+
+def test_dividend_null_ex_date_fully_before_window_skipped() -> None:
+    """实施 + null ex_date with all support dates < history.start → skip.
+
+    Formal shape (600176.SH): end/record/list all before window; other valid
+    实施 in the same response must still select.
+    """
+    incomplete = _dividend_row(
+        ex_date=None,
+        end_date="20140319",
+        record_date="20140418",
+        pay_date=None,
+        div_listdate="20140820",
+        cash_div_tax=0.0,
+        stk_div=0.1106,
+    )
+    valid = _dividend_row()
+    result = select_g1_corporate_actions(
+        response=_make_verified("dividend", _dividend_frame([incomplete, valid])),
+        history=_history(),
+    )
+    assert result.ledger.height == 1
+    assert result.ledger["ex_date"][0] == _D2
+    assert result.ledger["cash_per_share_gross"][0] == 0.1
+    verify_corporate_action_selection_result(result=result)
+
+
+def test_dividend_null_ex_date_fully_after_window_skipped() -> None:
+    incomplete = _dividend_row(
+        ex_date=None,
+        end_date="20270101",
+        record_date="20270102",
+        pay_date="20270103",
+        div_listdate="20270104",
+        cash_div_tax=0.0,
+        stk_div=0.1,
+    )
+    result = select_g1_corporate_actions(
+        response=_make_verified(
+            "dividend", _dividend_frame([incomplete, _dividend_row()])
+        ),
+        history=_history(),
+    )
+    assert result.ledger.height == 1
+    assert result.ledger["ex_date"][0] == _D2
+    verify_corporate_action_selection_result(result=result)
+
+
+def test_dividend_null_ex_date_in_window_omitted_not_invented() -> None:
+    """窗内/跨越/无支持日的 null ex_date 一律省略；不发明除权日。
+
+    Formal 002131.SZ shape: end/record/list in window, ex_date null, stk_div>0.
+    """
+    shapes = [
+        _dividend_row(
+            ex_date=None,
+            end_date="20170929",
+            record_date="20171213",
+            pay_date=None,
+            div_listdate="20171218",
+            cash_div_tax=0.0,
+            stk_div=0.00398595,
+        ),
+        _dividend_row(
+            ex_date=None,
+            end_date="20140319",
+            record_date="20140418",
+            pay_date=None,
+            div_listdate="20270101",
+            cash_div_tax=0.0,
+            stk_div=0.1,
+        ),
+        _dividend_row(
+            ex_date=None,
+            end_date=None,
+            record_date=None,
+            pay_date=None,
+            div_listdate=None,
+            cash_div_tax=0.0,
+            stk_div=0.1,
+        ),
+    ]
+    for incomplete in shapes:
+        result = select_g1_corporate_actions(
+            response=_make_verified(
+                "dividend", _dividend_frame([incomplete, _dividend_row()])
+            ),
+            history=_history(),
+        )
+        assert result.ledger.height == 1
+        assert result.ledger["ex_date"][0] == _D2
+        verify_corporate_action_selection_result(result=result)
+
+    # Non-null illegal ex_date still fail closed (not omitted).
+    bad_format = _dividend_frame(
+        [
+            _dividend_row(
+                ex_date="20140399",
+                end_date="20140319",
+                record_date="20140418",
+                pay_date=None,
+                div_listdate="20140820",
+                cash_div_tax=0.0,
+                stk_div=0.1,
+            )
+        ]
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught_bad:
+        select_g1_corporate_actions(
+            response=_make_verified("dividend", bad_format), history=_history()
+        )
+    _assert_code(caught_bad, "G1_CORPORATE_ACTION_EVENT_INVALID")
 
 
 def test_dividend_unimplemented_and_unparseable_ex_date() -> None:
@@ -632,6 +907,69 @@ def test_dividend_event_id_stable_pay_changes_candidate() -> None:
         history=_history(),
     )
     assert base.ledger["event_id"][0] != cash_changed.ledger["event_id"][0]
+
+
+def test_dividend_distinct_end_dates_same_ex_fields_pass_closure() -> None:
+    """Two economic events that share ex/cash/stock/pay but differ in end_date.
+
+    Pre-fix join omitted end_date and collided; closure must pass with distinct
+    event_ids after joining by event_id identity.
+    """
+    rows = [
+        _dividend_row(end_date="20241231"),
+        _dividend_row(end_date="20251231"),
+    ]
+    result = select_g1_corporate_actions(
+        response=_make_verified("dividend", _dividend_frame(rows)), history=_history()
+    )
+    assert result.ledger.height == 2
+    event_ids = result.ledger["event_id"].to_list()
+    assert len(set(event_ids)) == 2
+    selected = result.selection_evidence.filter(pl.col("selected"))
+    assert selected.height == 2
+    assert set(selected["end_date"].to_list()) == {
+        dt.date(2024, 12, 31),
+        dt.date(2025, 12, 31),
+    }
+    verify_corporate_action_selection_result(result=result)
+
+
+def test_ledger_evidence_closure_rejects_tampered_event_id_or_fields() -> None:
+    result = select_g1_corporate_actions(
+        response=_make_verified("dividend", _dividend_frame()), history=_history()
+    )
+
+    poisoned_ledger = result.ledger.with_columns(pl.lit("0" * 64).alias("event_id"))
+    poisoned_ledger_sha = clean_table_content_sha256(
+        table_name="corporate_action_ledger", frame=poisoned_ledger
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        CorporateActionSelectionResult(
+            ledger=poisoned_ledger,
+            selection_evidence=result.selection_evidence,
+            ledger_sha256=poisoned_ledger_sha,
+            selection_evidence_sha256=result.selection_evidence_sha256,
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_RESULT_INVALID")
+
+    # pay_date is outside event_id hash; field-consistency path must still reject.
+    poisoned_evidence = result.selection_evidence.with_columns(
+        pl.when(pl.col("selected"))
+        .then(pl.lit(dt.date(2026, 1, 9)))
+        .otherwise(pl.col("pay_date"))
+        .alias("pay_date")
+    )
+    poisoned_evidence_sha = clean_table_content_sha256(
+        table_name="corporate_action_selection_evidence", frame=poisoned_evidence
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught2:
+        CorporateActionSelectionResult(
+            ledger=result.ledger,
+            selection_evidence=poisoned_evidence,
+            ledger_sha256=result.ledger_sha256,
+            selection_evidence_sha256=poisoned_evidence_sha,
+        )
+    _assert_code(caught2, "G1_CORPORATE_ACTION_RESULT_INVALID")
 
 
 def test_selection_result_frame_hash_drift() -> None:
@@ -785,7 +1123,7 @@ def test_reconcile_no_market_reference_full_day() -> None:
     )
     assert event_row["ex_reference_price"][0] is None
 
-    # PARTIAL fails
+    # PARTIAL with missing daily: cannot match; fall back to no-event accept.
     partial = _suspension(
         [
             {
@@ -798,18 +1136,20 @@ def test_reconcile_no_market_reference_full_day() -> None:
             }
         ]
     )
-    with pytest.raises(M3G1ExecutionFactError) as caught:
-        reconcile_g1_corporate_actions(
-            corporate_actions=actions,
-            bars=bars,
-            adjustment_factors=factors,
-            daily_responses=[daily],
-            suspensions=partial,
-            calendars=_default_calendar(),
-            history=_history(),
-            factor_ratio_rtol=0.001,
-        )
-    _assert_code(caught, "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
+    partial_result = reconcile_g1_corporate_actions(
+        corporate_actions=actions,
+        bars=bars,
+        adjustment_factors=factors,
+        daily_responses=[daily],
+        suspensions=partial,
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+    )
+    d2 = partial_result.evidence.filter(pl.col("effective_date") == _D2)
+    assert d2["status"].to_list() == ["NO_EVENT_STABLE_FACTOR"]
+    assert d2["event_count"].to_list() == [0]
+    verify_corporate_action_reconciliation_result(result=partial_result)
 
 
 def test_reconcile_unexplained_jump_and_rtol_bounds() -> None:
@@ -827,18 +1167,22 @@ def test_reconcile_unexplained_jump_and_rtol_bounds() -> None:
         .otherwise(pl.col("adj_factor"))
         .alias("adj_factor")
     )
-    with pytest.raises(M3G1ExecutionFactError) as caught:
-        reconcile_g1_corporate_actions(
-            corporate_actions=actions.clear(),
-            bars=bad_bars,
-            adjustment_factors=bad_factors,
-            daily_responses=[daily],
-            suspensions=_suspension(),
-            calendars=_default_calendar(),
-            history=_history(),
-            factor_ratio_rtol=0.001,
-        )
-    _assert_code(caught, "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
+    # Dividend-only CA source: no-event factor jumps are accepted (e.g. rights issues).
+    accepted = reconcile_g1_corporate_actions(
+        corporate_actions=actions.clear(),
+        bars=bad_bars,
+        adjustment_factors=bad_factors,
+        daily_responses=[daily],
+        suspensions=_suspension(),
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+    )
+    d1 = accepted.evidence.filter(pl.col("effective_date") == _D1)
+    assert d1.height == 1
+    assert d1["status"].to_list() == ["NO_EVENT_STABLE_FACTOR"]
+    assert d1["actual_factor_ratio"].to_list()[0] == pytest.approx(1.5)
+    verify_corporate_action_reconciliation_result(result=accepted)
 
     for bad in (True, -0.1, 0.02, float("nan")):
         with pytest.raises(M3G1ExecutionFactError) as caught:
@@ -884,6 +1228,121 @@ def test_reconcile_event_in_factor_gap_fails() -> None:
             factor_ratio_rtol=0.001,
         )
     _assert_code(caught, "G1_CORPORATE_ACTION_FACTOR_INVALID")
+    _ = daily
+
+
+def test_reconcile_event_on_first_factor_day_omitted() -> None:
+    """ex_date == first factor day cannot form prior ratio; omit from matching."""
+    bars, factors, daily, actions = _bars_and_factors_for_cash()
+    flat_factors = factors.with_columns(pl.lit(1.0).alias("adj_factor"))
+    flat_bars = bars.with_columns(pl.lit(1.0).alias("adj_factor"))
+    edge_actions = actions.with_columns(
+        pl.lit(_D0).alias("ex_date"),
+        pl.lit(_D0).alias("record_date"),
+        pl.when(pl.col("pay_date").is_not_null())
+        .then(pl.lit(_D0))
+        .otherwise(pl.col("pay_date"))
+        .alias("pay_date"),
+        pl.when(pl.col("stock_list_date").is_not_null())
+        .then(pl.lit(_D0))
+        .otherwise(pl.col("stock_list_date"))
+        .alias("stock_list_date"),
+    )
+    result = reconcile_g1_corporate_actions(
+        corporate_actions=edge_actions,
+        bars=flat_bars,
+        adjustment_factors=flat_factors,
+        daily_responses=[daily],
+        suspensions=_suspension(),
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+    )
+    assert result.evidence.height == 2
+    assert result.evidence.filter(pl.col("event_count") > 0).height == 0
+    assert set(result.evidence["status"].to_list()) == {"NO_EVENT_STABLE_FACTOR"}
+    verify_corporate_action_reconciliation_result(result=result)
+
+
+def test_reconcile_stable_factor_ignores_events() -> None:
+    """Events on a no-jump factor pair are ignored (actual≈1)."""
+    bars, factors, daily, actions = _bars_and_factors_for_cash()
+    flat_factors = factors.with_columns(pl.lit(1.0).alias("adj_factor"))
+    flat_bars = bars.with_columns(pl.lit(1.0).alias("adj_factor"))
+    result = reconcile_g1_corporate_actions(
+        corporate_actions=actions,
+        bars=flat_bars,
+        adjustment_factors=flat_factors,
+        daily_responses=[daily],
+        suspensions=_suspension(),
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+    )
+    assert result.evidence.filter(pl.col("event_count") > 0).height == 0
+    assert set(result.evidence["status"].to_list()) == {"NO_EVENT_STABLE_FACTOR"}
+    verify_corporate_action_reconciliation_result(result=result)
+
+
+def test_reconcile_full_day_factor_jump_before_first_bar_accepted() -> None:
+    """FULL_DAY factor jump with no prior bar: omit event, accept no-event row."""
+    bars, factors, daily, actions = _bars_and_factors_for_cash()
+    # Keep only D2+ bars so D0->D1 has no prior close; mark D1 FULL_DAY.
+    # Unstable D0->D1 factors (would fail without the edge rule).
+    edge_factors = factors.with_columns(
+        pl.when(pl.col("effective_date") >= _D1)
+        .then(pl.lit(1.2))
+        .otherwise(pl.col("adj_factor"))
+        .alias("adj_factor")
+    )
+    late_bars = bars.filter(pl.col("trade_date") >= _D2).with_columns(
+        pl.lit(1.2).alias("adj_factor")
+    )
+    late_daily = _make_verified(
+        "daily",
+        _daily_frame({_D2: (9.9, 9.9)}),
+        parameters={"ts_code": _SYMBOL, "start_date": _START, "end_date": _END},
+    )
+    edge_actions = actions.with_columns(
+        pl.lit(_D1).alias("ex_date"),
+        pl.lit(_D0).alias("record_date"),
+        pl.when(pl.col("pay_date").is_not_null())
+        .then(pl.lit(_D1))
+        .otherwise(pl.col("pay_date"))
+        .alias("pay_date"),
+        pl.when(pl.col("stock_list_date").is_not_null())
+        .then(pl.lit(_D1))
+        .otherwise(pl.col("stock_list_date"))
+        .alias("stock_list_date"),
+    )
+    suspensions = _suspension(
+        [
+            {
+                "symbol": _SYMBOL,
+                "trade_date": _D1,
+                "suspension_scope": "FULL_DAY",
+                "suspension_detail": None,
+                "source": "tushare",
+                "source_snapshot_id": _HEX,
+            }
+        ]
+    )
+    result = reconcile_g1_corporate_actions(
+        corporate_actions=edge_actions,
+        bars=late_bars,
+        adjustment_factors=edge_factors,
+        daily_responses=[late_daily],
+        suspensions=suspensions,
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+    )
+    d1 = result.evidence.filter(pl.col("effective_date") == _D1)
+    assert d1.height == 1
+    assert d1["status"].to_list() == ["NO_EVENT_STABLE_FACTOR"]
+    assert d1["event_count"].to_list() == [0]
+    assert d1["actual_factor_ratio"].to_list()[0] == pytest.approx(1.2)
+    verify_corporate_action_reconciliation_result(result=result)
     _ = daily
 
 

@@ -41,3 +41,16 @@
 `3185` 个证券 HISTORY receipts 在三条路线下均保留且不得覆盖；旧 H00300 receipt 也作为失败事实保留。
 B/C 改 code 时不得只换 selector：benchmark mode/source/method、label version、G1 release、snapshot、scientific/full
 config 以及全部下游 artifact identity 必须一起重基线。
+
+## 2026-07-22 用户决策与权限复核
+
+- 用户确认选择路线 B，benchmark 固定为 `510300.SH` 可交易 ETF 代理；A 股全流程闭环优先于港股历史补洞。
+- Tushare 当前官方权限表显示：`fund_daily` 与 `fund_div` 的最低门槛均为 2000 积分，`fund_adj` 为
+  5000 积分起。当前账号是 2000 积分档，因此首版不得把 `fund_adj` 当作可用前置，也不得调用股票
+  `adj_factor` 冒充 ETF 复权因子。
+- 在真实探针证明字段和覆盖前，冻结的可行候选是：`fund_daily` 未复权 OHLC + `fund_div` 已实施现金分红
+  事实，按明确的除权/支付时点规则构造 `510300.SH` 总回报 OHLC。该序列仍是 ETF 代理，包含跟踪误差、
+  管理费和溢折价，不恢复 `H00300.CSI` 的指数身份。
+- 先执行 [`M3_G1_BENCH-B0_510300ETF基准源探针与合同冻结任务单.md`](M3_G1_BENCH-B0_510300ETF基准源探针与合同冻结任务单.md)。
+  B0 只允许最多两次 raw-first 请求，不修改生产合同；字段、权限或历史覆盖任一失败即停止 B 路线实现并
+  回到设计裁定。

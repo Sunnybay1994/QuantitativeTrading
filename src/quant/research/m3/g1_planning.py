@@ -31,10 +31,17 @@ from quant.data.m3_backfill import (
     G1RequestPlan,
     HistoryWindow,
     TushareRequestBatch,
+    TushareRequestSpec,
+    TUSHARE_FIELDS,
     VerifiedRawResponse,
+    plan_fund_adj_requests,
     plan_history_requests,
     plan_index_weight_requests,
     resolve_history_window,
+)
+from quant.data.m3_backfill import (
+    _batch_hash as _tushare_batch_hash,
+    _plan_hash as _tushare_plan_hash,
 )
 from quant.data.m3_execution_facts import (
     G1_CORPORATE_ACTION_RECONCILIATION_VERSION,
@@ -59,12 +66,21 @@ _SOURCE_TREE_SCHEMA = "m3-g1-source-tree-v1"
 _DEP_FP_SCHEMA = "m3-g1-dependency-fingerprint-v1"
 _STATIC_ID_SCHEMA = "m3-g1-static-plan-identity-v1"
 _DERIVED_ID_SCHEMA = "m3-g1-derived-history-plan-identity-v1"
-_MAPPER_VERSION = "m3-g1-mapper-v1"
+_MAPPER_VERSION = "m3-g1-tushare-mapper-v2"
 _SCHEMA_VERSION = "m3-g1-schema-v1"
 _UNIVERSE: Literal["CSI300_TUSHARE_MONTHLY_OBSERVED_PIT_V1"] = (
     "CSI300_TUSHARE_MONTHLY_OBSERVED_PIT_V1"
 )
-_BENCHMARK: Literal["H00300.CSI"] = "H00300.CSI"
+_BENCHMARK: Literal["510300.SH"] = "510300.SH"
+_BENCHMARK_MODE: Literal["TRADEABLE_ETF_TOTAL_RETURN_PROXY"] = (
+    "TRADEABLE_ETF_TOTAL_RETURN_PROXY"
+)
+_BENCHMARK_METHOD_VERSION: Literal["tushare_510300_fund_daily_fund_adj_hfq_v1"] = (
+    "tushare_510300_fund_daily_fund_adj_hfq_v1"
+)
+_BENCHMARK_DIVIDEND_RECONCILIATION_VERSION: Literal[
+    "tushare_fund_div_implemented_cash_v1"
+] = "tushare_fund_div_implemented_cash_v1"
 _INDEX_CODE: Literal["000300.SH"] = "000300.SH"
 _EXPECTED_COUNT: Literal[300] = 300
 
@@ -79,7 +95,16 @@ _DEPENDENCY_DISTRIBUTIONS = (
 )
 
 _EMPTY_REJECT = frozenset(
-    {"index_weight", "daily", "adj_factor", "index_daily", "stk_limit"}
+    {
+        "index_weight",
+        "daily",
+        "adj_factor",
+        "index_daily",
+        "stk_limit",
+        "fund_daily",
+        "fund_adj",
+        "fund_div",
+    }
 )
 _EMPTY_ALLOW = frozenset({"suspend_d", "dividend"})
 _ALL_ENDPOINTS = tuple(sorted(_EMPTY_REJECT | _EMPTY_ALLOW))
@@ -264,7 +289,7 @@ class G1StaticPlanV1:
     signal_start: dt.date
     signal_end: dt.date
     universe: Literal["CSI300_TUSHARE_MONTHLY_OBSERVED_PIT_V1"]
-    benchmark: Literal["H00300.CSI"]
+    benchmark: Literal["510300.SH"]
     index_code: Literal["000300.SH"]
     index_weight_batch: TushareRequestBatch
     endpoint_policies: tuple[tuple[str, EndpointPolicy], ...]
@@ -339,6 +364,15 @@ class G1StaticPlanV1:
         if build_spec.mapper_version != _MAPPER_VERSION:
             raise M3G1PlanningError("G1_PLANNING_IDENTITY_MISMATCH")
         if build_spec.schema_version != _SCHEMA_VERSION:
+            raise M3G1PlanningError("G1_PLANNING_IDENTITY_MISMATCH")
+        if build_spec.benchmark_mode != _BENCHMARK_MODE:
+            raise M3G1PlanningError("G1_PLANNING_IDENTITY_MISMATCH")
+        if build_spec.benchmark_method_version != _BENCHMARK_METHOD_VERSION:
+            raise M3G1PlanningError("G1_PLANNING_IDENTITY_MISMATCH")
+        if (
+            build_spec.benchmark_dividend_reconciliation_version
+            != _BENCHMARK_DIVIDEND_RECONCILIATION_VERSION
+        ):
             raise M3G1PlanningError("G1_PLANNING_IDENTITY_MISMATCH")
         if build_spec.membership_method_version != G1_MEMBERSHIP_METHOD_VERSION:
             raise M3G1PlanningError("G1_PLANNING_IDENTITY_MISMATCH")
@@ -503,6 +537,15 @@ def build_g1_static_plan(
         benchmark_code = g1.get("benchmark_code")
         if index_code != _INDEX_CODE or benchmark_code != _BENCHMARK:
             raise M3G1PlanningError("G1_PLANNING_CONFIG_INVALID")
+        if g1.get("benchmark_mode") != _BENCHMARK_MODE:
+            raise M3G1PlanningError("G1_PLANNING_CONFIG_INVALID")
+        if g1.get("benchmark_method_version") != _BENCHMARK_METHOD_VERSION:
+            raise M3G1PlanningError("G1_PLANNING_CONFIG_INVALID")
+        if (
+            g1.get("benchmark_dividend_reconciliation_version")
+            != _BENCHMARK_DIVIDEND_RECONCILIATION_VERSION
+        ):
+            raise M3G1PlanningError("G1_PLANNING_CONFIG_INVALID")
         membership_method = g1.get("membership_method_version")
         if membership_method != G1_MEMBERSHIP_METHOD_VERSION:
             raise M3G1PlanningError("G1_PLANNING_CONFIG_INVALID")
@@ -559,6 +602,11 @@ def build_g1_static_plan(
             price_limit_method_version=G1_PRICE_LIMIT_METHOD_VERSION,
             corporate_action_selection_version=G1_CORPORATE_ACTION_SELECTION_VERSION,
             corporate_action_reconciliation_version=G1_CORPORATE_ACTION_RECONCILIATION_VERSION,
+            benchmark_mode=_BENCHMARK_MODE,
+            benchmark_method_version=_BENCHMARK_METHOD_VERSION,
+            benchmark_dividend_reconciliation_version=(
+                _BENCHMARK_DIVIDEND_RECONCILIATION_VERSION
+            ),
             build_code_version=runtime.code_version,
             dependency_fingerprint_sha256=runtime.dependency_fingerprint_sha256,
         )
@@ -590,6 +638,75 @@ def build_g1_static_plan(
         raise M3G1PlanningError("G1_PLANNING_CONFIG_INVALID") from None
     except Exception:
         raise M3G1PlanningError("G1_PLANNING_INPUT_INVALID") from None
+
+
+def plan_g1_etf_history_requests(
+    *,
+    index_weight_batch: TushareRequestBatch,
+    symbols: Sequence[str],
+    history: HistoryWindow,
+) -> G1RequestPlan:
+    """Compose HISTORY plan: unchanged equity requests + 510300 ETF fund closure."""
+    # Reuse equity request construction via plan_history_requests, then replace the
+    # legacy index_daily slot with fund_daily/fund_adj/fund_div. Stock request_ids
+    # are independent of the temporary CSI benchmark argument.
+    base = plan_history_requests(
+        index_weight_batch=index_weight_batch,
+        symbols=symbols,
+        benchmark="H00300.CSI",
+        history=history,
+    )
+    equity_requests = tuple(
+        item
+        for item in base.history_batch.requests
+        if item.endpoint != "index_daily"
+    )
+    if any(item.endpoint == "index_daily" for item in equity_requests):
+        raise M3G1PlanningError("G1_PLANNING_IDENTITY_MISMATCH")
+    if any(
+        item.endpoint in {"fund_daily", "fund_adj", "fund_div"}
+        for item in equity_requests
+    ):
+        raise M3G1PlanningError("G1_PLANNING_IDENTITY_MISMATCH")
+    start_text = history.start.strftime("%Y%m%d")
+    end_text = history.end.strftime("%Y%m%d")
+    fund_daily = TushareRequestSpec.create(
+        endpoint="fund_daily",
+        parameters={
+            "fields": TUSHARE_FIELDS["fund_daily"],
+            "ts_code": _BENCHMARK,
+            "start_date": start_text,
+            "end_date": end_text,
+        },
+    )
+    fund_adj = plan_fund_adj_requests(
+        symbol=_BENCHMARK, start=history.start, end=history.end
+    )
+    fund_div = TushareRequestSpec.create(
+        endpoint="fund_div",
+        parameters={
+            "fields": TUSHARE_FIELDS["fund_div"],
+            "ts_code": _BENCHMARK,
+        },
+    )
+    merged = tuple(
+        sorted(
+            (*equity_requests, fund_daily, *fund_adj, fund_div),
+            key=lambda item: item.request_id,
+        )
+    )
+    history_batch = TushareRequestBatch(
+        "m3-g1-tushare-request-batch-v1",
+        "HISTORY",
+        merged,
+        _tushare_batch_hash("HISTORY", merged),
+    )
+    return G1RequestPlan(
+        "m3-g1-request-plan-v1",
+        index_weight_batch,
+        history_batch,
+        _tushare_plan_hash(index_weight_batch, history_batch),
+    )
 
 
 def derive_g1_history_plan(
@@ -677,10 +794,9 @@ def derive_g1_history_plan(
                 feature_warmup_sessions=static_plan.feature_warmup_sessions,
                 label_tail_sessions=static_plan.label_tail_sessions,
             )
-            request_plan = plan_history_requests(
+            request_plan = plan_g1_etf_history_requests(
                 index_weight_batch=static_plan.index_weight_batch,
                 symbols=history_symbols,
-                benchmark=static_plan.benchmark,
                 history=history,
             )
         except ValueError:
@@ -1211,7 +1327,14 @@ def _rebuild_build_spec(spec: object) -> G1BuildSpec:
             membership_method_version=spec.membership_method_version,
             price_limit_method_version=spec.price_limit_method_version,
             corporate_action_selection_version=spec.corporate_action_selection_version,
-            corporate_action_reconciliation_version=spec.corporate_action_reconciliation_version,
+            corporate_action_reconciliation_version=(
+                spec.corporate_action_reconciliation_version
+            ),
+            benchmark_mode=spec.benchmark_mode,
+            benchmark_method_version=spec.benchmark_method_version,
+            benchmark_dividend_reconciliation_version=(
+                spec.benchmark_dividend_reconciliation_version
+            ),
             build_code_version=spec.build_code_version,
             dependency_fingerprint_sha256=spec.dependency_fingerprint_sha256,
         )
@@ -1295,8 +1418,15 @@ def _static_plan_sha256(plan: G1StaticPlanV1) -> str:
             "corporate_action_reconciliation_version": (
                 plan.build_spec.corporate_action_reconciliation_version
             ),
+            "benchmark_mode": plan.build_spec.benchmark_mode,
+            "benchmark_method_version": plan.build_spec.benchmark_method_version,
+            "benchmark_dividend_reconciliation_version": (
+                plan.build_spec.benchmark_dividend_reconciliation_version
+            ),
             "build_code_version": plan.build_spec.build_code_version,
-            "dependency_fingerprint_sha256": plan.build_spec.dependency_fingerprint_sha256,
+            "dependency_fingerprint_sha256": (
+                plan.build_spec.dependency_fingerprint_sha256
+            ),
         },
         "cross_source_policy": {
             "reference_source": plan.cross_source_policy.reference_source,

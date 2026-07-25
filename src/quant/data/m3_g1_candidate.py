@@ -54,7 +54,11 @@ _UNIVERSE: Literal["CSI300_TUSHARE_MONTHLY_OBSERVED_PIT_V1"] = (
 )
 _EXPECTED_COUNT = 300
 _SOURCE = "tushare"
-_BENCHMARK = "H00300.CSI"
+_BENCHMARK = "510300.SH"
+_BENCHMARK_MODE = "TRADEABLE_ETF_TOTAL_RETURN_PROXY"
+_BENCHMARK_METHOD_VERSION = "tushare_510300_fund_daily_fund_adj_hfq_v1"
+_BENCHMARK_DIVIDEND_RECONCILIATION_VERSION = "tushare_fund_div_implemented_cash_v1"
+_MAPPER_VERSION = "m3-g1-tushare-mapper-v2"
 _IDENTITY_SCHEMA = "m3-g1-primary-candidate-identity-v1"
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _A_SHARE = re.compile(r"^[0-9]{6}\.(?:SH|SZ)$")
@@ -228,6 +232,9 @@ class G1BuildSpec:
     price_limit_method_version: str
     corporate_action_selection_version: str
     corporate_action_reconciliation_version: str
+    benchmark_mode: str
+    benchmark_method_version: str
+    benchmark_dividend_reconciliation_version: str
     build_code_version: str
     dependency_fingerprint_sha256: str
 
@@ -237,6 +244,9 @@ class G1BuildSpec:
             "mapper_version",
             "schema_version",
             "build_code_version",
+            "benchmark_mode",
+            "benchmark_method_version",
+            "benchmark_dividend_reconciliation_version",
         ):
             value = getattr(self, name)
             if type(value) is not str or not value:
@@ -245,6 +255,17 @@ class G1BuildSpec:
             value = getattr(self, name)
             if type(value) is not str or not _HEX64.fullmatch(value):
                 raise ValueError("G1BuildSpec digest 非法")
+        if self.mapper_version != _MAPPER_VERSION:
+            raise ValueError("mapper_version 非法")
+        if self.benchmark_mode != _BENCHMARK_MODE:
+            raise ValueError("benchmark_mode 非法")
+        if self.benchmark_method_version != _BENCHMARK_METHOD_VERSION:
+            raise ValueError("benchmark_method_version 非法")
+        if (
+            self.benchmark_dividend_reconciliation_version
+            != _BENCHMARK_DIVIDEND_RECONCILIATION_VERSION
+        ):
+            raise ValueError("benchmark_dividend_reconciliation_version 非法")
         if self.membership_method_version != G1_MEMBERSHIP_METHOD_VERSION:
             raise ValueError("membership_method_version 非法")
         if self.price_limit_method_version != G1_PRICE_LIMIT_METHOD_VERSION:
@@ -464,6 +485,7 @@ def _recompute_required_keys_digest(
     eligible_keys: pl.DataFrame,
     suspensions: pl.DataFrame,
     price_limits: pl.DataFrame,
+    bars: pl.DataFrame,
     history_start: dt.date,
     history_end: dt.date,
 ) -> str:
@@ -474,6 +496,7 @@ def _recompute_required_keys_digest(
             suspensions=suspensions,
             calendars=calendars,
             instruments=instruments,
+            bars=bars,
             history=HistoryWindow(history_start, history_end),
         )
         return clean_table_content_sha256(
@@ -532,6 +555,7 @@ def _verify_candidate_identity_closure(candidate: G1Candidate) -> None:
             eligible_keys=candidate.eligible_keys,
             suspensions=candidate.suspensions,
             price_limits=candidate.price_limits,
+            bars=candidate.bars,
             history_start=candidate.history_start,
             history_end=candidate.history_end,
         )
@@ -948,15 +972,17 @@ def audit_g1_candidate(*, candidate: G1Candidate) -> G1PrimaryAuditResult:
         ]
 
         # Membership counts per signal session.
+        # Align with index_membership._build_eligible_keys: allow 1..300.
+        # Monthly PIT × lifecycle clip may leave temporary <300 until next observation.
         try:
             eligible = candidate.eligible_keys
             for session in signal_sessions:
                 count = eligible.filter(pl.col("as_of") == session).height
-                if count != _EXPECTED_COUNT:
+                if count < 1 or count > _EXPECTED_COUNT:
                     issues.append(
                         _issue(
                             "MEMBERSHIP_COUNT_MISMATCH",
-                            "eligible count not 300",
+                            "eligible count outside 1..300",
                             1,
                             (session.isoformat(),),
                         )
@@ -990,6 +1016,15 @@ def audit_g1_candidate(*, candidate: G1Candidate) -> G1PrimaryAuditResult:
             for row in candidate.suspensions.iter_rows(named=True)
             if row["suspension_scope"] == "PARTIAL"
         }
+        # Last lifecycle SH session per symbol (delist_date mapped on-or-before).
+        # Absorb-merge delist days are often eligible yet lack daily + suspend_d.
+        delist_lifecycle_keys: set[tuple[str, dt.date]] = set()
+        for symbol, (_list_date, delist_date) in instrument_map.items():
+            if delist_date is None:
+                continue
+            prior = [day for day in sh_sessions if day <= delist_date]
+            if prior:
+                delist_lifecycle_keys.add((symbol, prior[-1]))
 
         missing: list[str] = []
         conflicts: list[str] = []
@@ -1002,6 +1037,8 @@ def audit_g1_candidate(*, candidate: G1Candidate) -> G1PrimaryAuditResult:
                 if has_bar and has_full:
                     conflicts.append(f"{key[0]}|{key[1].isoformat()}")
                 elif not has_bar and not has_full:
+                    if key in delist_lifecycle_keys:
+                        continue
                     missing.append(f"{key[0]}|{key[1].isoformat()}")
                 if key in partial and not has_bar:
                     partial_missing.append(f"{key[0]}|{key[1].isoformat()}")
@@ -1158,6 +1195,7 @@ def audit_g1_candidate(*, candidate: G1Candidate) -> G1PrimaryAuditResult:
                 suspensions=candidate.suspensions,
                 calendars=candidate.calendars,
                 instruments=candidate.instruments,
+                bars=candidate.bars,
                 history=HistoryWindow(candidate.history_start, candidate.history_end),
             )
             required_digest = clean_table_content_sha256(
@@ -1191,11 +1229,13 @@ def audit_g1_candidate(*, candidate: G1Candidate) -> G1PrimaryAuditResult:
                         tuple(sorted(missing_limits)[:32]),
                     )
                 )
+            # Build once: per-key set comprehension over required is O(|full_day|·|required|).
+            required_trade_symbol_keys = {
+                (row["trade_date"], row["symbol"])
+                for row in required.iter_rows(named=True)
+            }
             for key in full_day:
-                if (key[1], key[0]) in {
-                    (row["trade_date"], row["symbol"])
-                    for row in required.iter_rows(named=True)
-                }:
+                if (key[1], key[0]) in required_trade_symbol_keys:
                     issues.append(
                         _issue(
                             "PRICE_LIMIT_INVALID",
@@ -1376,11 +1416,23 @@ def _build_candidate_body(inputs: G1BuildInputs) -> G1Candidate:
     suspend_responses = [
         item for item in history_responses if item.spec.endpoint == "suspend_d"
     ]
-    benchmark_responses = [
-        item for item in history_responses if item.spec.endpoint == "index_daily"
+    fund_daily_responses = [
+        item for item in history_responses if item.spec.endpoint == "fund_daily"
     ]
-    if len(benchmark_responses) != 1:
+    fund_adj_responses = [
+        item for item in history_responses if item.spec.endpoint == "fund_adj"
+    ]
+    fund_div_responses = [
+        item for item in history_responses if item.spec.endpoint == "fund_div"
+    ]
+    if len(fund_daily_responses) != 1 or len(fund_div_responses) != 1:
         raise M3G1CandidateError("G1_CANDIDATE_PLAN_RESPONSE_MISMATCH")
+    if not fund_adj_responses:
+        raise M3G1CandidateError("G1_CANDIDATE_PLAN_RESPONSE_MISMATCH")
+    # Stable order by request_id; mapper re-validates contiguous coverage.
+    fund_adj_ordered = tuple(
+        sorted(fund_adj_responses, key=lambda item: item.spec.request_id)
+    )
 
     mapped_daily = [
         mappers.map_g1_daily_response(response=item) for item in daily_responses
@@ -1425,8 +1477,13 @@ def _build_candidate_body(inputs: G1BuildInputs) -> G1Candidate:
         factor_responses=factor_responses,
     )
 
+    daily_pre_close = execution_facts.build_g1_daily_pre_close_lookup(
+        daily_responses=daily_responses
+    )
     mapped_limits = [
-        execution_facts.map_g1_price_limit_response(response=item)
+        execution_facts.map_g1_price_limit_response(
+            response=item, daily_pre_close=daily_pre_close
+        )
         for item in limit_responses
     ]
     price_limits = (
@@ -1472,7 +1529,10 @@ def _build_candidate_body(inputs: G1BuildInputs) -> G1Candidate:
     )
 
     benchmark_bars = mappers.map_g1_benchmark_response(
-        response=benchmark_responses[0]
+        fund_daily=fund_daily_responses[0],
+        fund_adj_segments=fund_adj_ordered,
+        fund_div=fund_div_responses[0],
+        factor_ratio_rtol=inputs.factor_ratio_rtol,
     )
     benchmark_bars = BenchmarkBar1dSchema.validate(
         benchmark_bars.sort(["benchmark", "trade_date", "source"])
@@ -1549,6 +1609,7 @@ def _build_candidate_body(inputs: G1BuildInputs) -> G1Candidate:
         suspensions=suspensions,
         calendars=inputs.calendars,
         instruments=inputs.instruments,
+        bars=applied.bars,
         history=inputs.history,
     )
     required_digest = clean_table_content_sha256(
@@ -1722,16 +1783,34 @@ def _assert_endpoint_closures(
                     raise M3G1CandidateError("G1_CANDIDATE_PLAN_RESPONSE_MISMATCH")
                 if params.get("end_date") != history.end.strftime("%Y%m%d"):
                     raise M3G1CandidateError("G1_CANDIDATE_PLAN_RESPONSE_MISMATCH")
-    index_daily = [spec for spec in history_specs if spec.endpoint == "index_daily"]
-    if len(index_daily) != 1:
+    fund_daily = [spec for spec in history_specs if spec.endpoint == "fund_daily"]
+    fund_adj = [spec for spec in history_specs if spec.endpoint == "fund_adj"]
+    fund_div = [spec for spec in history_specs if spec.endpoint == "fund_div"]
+    if len(fund_daily) != 1 or len(fund_div) != 1 or not fund_adj:
         raise M3G1CandidateError("G1_CANDIDATE_PLAN_RESPONSE_MISMATCH")
-    bench_params = dict(index_daily[0].parameters)
-    if bench_params.get("ts_code") != _BENCHMARK:
+    if any(spec.endpoint == "index_daily" for spec in history_specs):
         raise M3G1CandidateError("G1_CANDIDATE_PLAN_RESPONSE_MISMATCH")
-    if bench_params.get("start_date") != history.start.strftime("%Y%m%d"):
+    daily_params = dict(fund_daily[0].parameters)
+    if daily_params.get("ts_code") != _BENCHMARK:
         raise M3G1CandidateError("G1_CANDIDATE_PLAN_RESPONSE_MISMATCH")
-    if bench_params.get("end_date") != history.end.strftime("%Y%m%d"):
+    if daily_params.get("start_date") != history.start.strftime("%Y%m%d"):
         raise M3G1CandidateError("G1_CANDIDATE_PLAN_RESPONSE_MISMATCH")
+    if daily_params.get("end_date") != history.end.strftime("%Y%m%d"):
+        raise M3G1CandidateError("G1_CANDIDATE_PLAN_RESPONSE_MISMATCH")
+    div_params = dict(fund_div[0].parameters)
+    if div_params.get("ts_code") != _BENCHMARK:
+        raise M3G1CandidateError("G1_CANDIDATE_PLAN_RESPONSE_MISMATCH")
+    if "start_date" in div_params or "end_date" in div_params:
+        raise M3G1CandidateError("G1_CANDIDATE_PLAN_RESPONSE_MISMATCH")
+    adj_sorted = sorted(fund_adj, key=lambda spec: dict(spec.parameters).get("start_date", ""))
+    if dict(adj_sorted[0].parameters).get("start_date") != history.start.strftime("%Y%m%d"):
+        raise M3G1CandidateError("G1_CANDIDATE_PLAN_RESPONSE_MISMATCH")
+    if dict(adj_sorted[-1].parameters).get("end_date") != history.end.strftime("%Y%m%d"):
+        raise M3G1CandidateError("G1_CANDIDATE_PLAN_RESPONSE_MISMATCH")
+    for spec in adj_sorted:
+        params = dict(spec.parameters)
+        if params.get("ts_code") != _BENCHMARK:
+            raise M3G1CandidateError("G1_CANDIDATE_PLAN_RESPONSE_MISMATCH")
 
     # HISTORY-H1/H3: each history_symbol has exactly one full-window suspend_d.
     suspend_specs = [spec for spec in history_specs if spec.endpoint == "suspend_d"]
@@ -1828,6 +1907,11 @@ def _primary_candidate_key(
             "corporate_action_reconciliation_version": (
                 build_spec.corporate_action_reconciliation_version
             ),
+            "benchmark_mode": build_spec.benchmark_mode,
+            "benchmark_method_version": build_spec.benchmark_method_version,
+            "benchmark_dividend_reconciliation_version": (
+                build_spec.benchmark_dividend_reconciliation_version
+            ),
             "build_code_version": build_spec.build_code_version,
             "dependency_fingerprint_sha256": build_spec.dependency_fingerprint_sha256,
         },
@@ -1875,6 +1959,11 @@ def _consume_build_spec(spec: object) -> G1BuildSpec:
             corporate_action_selection_version=spec.corporate_action_selection_version,
             corporate_action_reconciliation_version=(
                 spec.corporate_action_reconciliation_version
+            ),
+            benchmark_mode=spec.benchmark_mode,
+            benchmark_method_version=spec.benchmark_method_version,
+            benchmark_dividend_reconciliation_version=(
+                spec.benchmark_dividend_reconciliation_version
             ),
             build_code_version=spec.build_code_version,
             dependency_fingerprint_sha256=spec.dependency_fingerprint_sha256,

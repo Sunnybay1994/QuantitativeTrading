@@ -537,7 +537,7 @@ def test_static_plan_from_c0_and_forged_identity(
     assert plan.signal_start == dt.date(2016, 1, 4)
     assert plan.signal_end == dt.date(2026, 6, 26)
     assert plan.universe == _UNIVERSE
-    assert plan.benchmark == "H00300.CSI"
+    assert plan.benchmark == "510300.SH"
     assert plan.index_code == _INDEX
     assert plan.expected_constituent_count == 300
     assert plan.feature_warmup_sessions == 60
@@ -548,12 +548,60 @@ def test_static_plan_from_c0_and_forged_identity(
         == plan.runtime.dependency_fingerprint_sha256
     )
     assert [name for name, _ in plan.endpoint_policies] == sorted(
-        ["index_weight", "daily", "adj_factor", "index_daily", "suspend_d", "stk_limit", "dividend"]
+        [
+            "index_weight",
+            "daily",
+            "adj_factor",
+            "index_daily",
+            "suspend_d",
+            "stk_limit",
+            "dividend",
+            "fund_daily",
+            "fund_adj",
+            "fund_div",
+        ]
     )
     assert dict(plan.endpoint_policies)["dividend"].empty_response == "ALLOW"
     assert dict(plan.endpoint_policies)["daily"].empty_response == "REJECT"
+    assert dict(plan.endpoint_policies)["fund_daily"].empty_response == "REJECT"
+    assert dict(plan.endpoint_policies)["fund_adj"].row_limit == 2000
+    assert dict(plan.endpoint_policies)["fund_div"].row_limit == 5000
     again = build_g1_static_plan(config=c0_config, project_root=root)
     assert again == plan
+    assert plan.benchmark == "510300.SH"
+    assert plan.build_spec.benchmark_mode == "TRADEABLE_ETF_TOTAL_RETURN_PROXY"
+    assert (
+        plan.build_spec.benchmark_method_version
+        == "tushare_510300_fund_daily_fund_adj_hfq_v1"
+    )
+    assert (
+        plan.build_spec.benchmark_dividend_reconciliation_version
+        == "tushare_fund_div_implemented_cash_v1"
+    )
+    assert plan.build_spec.mapper_version == "m3-g1-tushare-mapper-v2"
+    captured: dict[str, Any] = {}
+    real_sha = g1_planning._sha256_json
+
+    def _spy(value: object) -> str:
+        captured["payload"] = value
+        return real_sha(value)
+
+    with patch.object(g1_planning, "_sha256_json", side_effect=_spy):
+        static_sha = g1_planning._static_plan_sha256(plan)
+    assert len(static_sha) == 64
+    build_payload = captured["payload"]["build_spec"]
+    assert build_payload["benchmark_mode"] == plan.build_spec.benchmark_mode
+    assert (
+        build_payload["benchmark_method_version"]
+        == plan.build_spec.benchmark_method_version
+    )
+    assert (
+        build_payload["benchmark_dividend_reconciliation_version"]
+        == plan.build_spec.benchmark_dividend_reconciliation_version
+    )
+    assert all(
+        item.endpoint == "index_weight" for item in plan.index_weight_batch.requests
+    )
 
     forged = replace(c0_config, g1_config_sha256="c" * 64)
     with pytest.raises(M3G1PlanningError, match="G1_PLANNING_CONFIG_INVALID"):
@@ -585,11 +633,8 @@ def test_endpoint_policy_and_version_drift(c0_config: LoadedM3Config, tmp_path: 
     missing = plan.endpoint_policies[1:]
     with pytest.raises(M3G1PlanningError):
         replace(plan, endpoint_policies=missing)
-    with pytest.raises(M3G1PlanningError):
-        replace(
-            plan,
-            build_spec=replace(plan.build_spec, mapper_version="m3-g1-mapper-v0"),
-        )
+    with pytest.raises(ValueError, match="mapper_version"):
+        replace(plan.build_spec, mapper_version="m3-g1-tushare-mapper-v0")
 
 
 def test_history_plan_order_invariant_and_response_set(
@@ -621,7 +666,17 @@ def test_history_plan_order_invariant_and_response_set(
     assert first == second
     assert first.history_symbols == tuple(_symbols())
     symbol_count = len(first.history_symbols)
-    assert len(first.request_plan.history_batch.requests) == 5 * symbol_count + 1
+    assert len(first.request_plan.history_batch.requests) == 5 * symbol_count + 3
+    endpoints = {spec.endpoint for spec in first.request_plan.history_batch.requests}
+    assert "index_daily" not in endpoints
+    assert {"fund_daily", "fund_adj", "fund_div"} <= endpoints
+    fund_daily = [
+        spec
+        for spec in first.request_plan.history_batch.requests
+        if spec.endpoint == "fund_daily"
+    ]
+    assert len(fund_daily) == 1
+    assert dict(fund_daily[0].parameters)["ts_code"] == "510300.SH"
     suspend_specs = [
         spec
         for spec in first.request_plan.history_batch.requests

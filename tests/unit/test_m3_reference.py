@@ -23,7 +23,6 @@ from quant.data.m3_backfill import (
     TUSHARE_FIELDS,
     HistoryWindow,
     VerifiedRawResponse,
-    plan_history_requests,
     plan_index_weight_requests,
 )
 from quant.data.m3_execution_facts import (
@@ -66,11 +65,12 @@ from quant.data.m3_reference import (
     verify_reference_receipt,
 )
 from quant.data.storage import RawStore
+from quant.research.m3.g1_planning import plan_g1_etf_history_requests
 
 _HEX = "a" * 64
 _UNIVERSE = "CSI300_TUSHARE_MONTHLY_OBSERVED_PIT_V1"
 _INDEX = "000300.SH"
-_BENCHMARK = "H00300.CSI"
+_BENCHMARK = "510300.SH"
 _D0 = dt.date(2016, 2, 1)  # Monday signal day
 _OBS_JAN = "20160129"
 _OBS_FEB = "20160229"
@@ -288,37 +288,78 @@ def _empty_suspend() -> pl.DataFrame:
     return pl.DataFrame(schema={c: pl.Utf8 for c in TUSHARE_FIELDS["suspend_d"].split(",")})
 
 
-def _benchmark_frame(days: list[dt.date]) -> pl.DataFrame:
+
+def _fund_daily_frame(days: list[dt.date]) -> pl.DataFrame:
     rows = []
+    prev_close = 1.0
     for day in days:
         rows.append(
             {
                 "ts_code": _BENCHMARK,
                 "trade_date": day.strftime("%Y%m%d"),
-                "open": 3000.0,
-                "high": 3000.0,
-                "low": 3000.0,
-                "close": 3000.0,
-                "pre_close": 3000.0,
+                "open": 1.0,
+                "high": 1.0,
+                "low": 1.0,
+                "close": 1.0,
+                "pre_close": prev_close,
                 "change": 0.0,
                 "pct_chg": 0.0,
                 "vol": 1.0,
                 "amount": 1.0,
             }
         )
-    return pl.DataFrame(rows).select(TUSHARE_FIELDS["index_daily"].split(","))
+        prev_close = 1.0
+    return pl.DataFrame(rows).select(TUSHARE_FIELDS["fund_daily"].split(","))
+
+
+def _fund_adj_frame(days: list[dt.date]) -> pl.DataFrame:
+    rows = [
+        {
+            "ts_code": _BENCHMARK,
+            "trade_date": day.strftime("%Y%m%d"),
+            "adj_factor": 1.0,
+        }
+        for day in days
+    ]
+    return pl.DataFrame(rows).select(TUSHARE_FIELDS["fund_adj"].split(","))
+
+
+def _fund_div_frame() -> pl.DataFrame:
+    # Outside test window so no in-window reconciliation is required.
+    row = {
+        "ts_code": _BENCHMARK,
+        "ann_date": "20100105",
+        "imp_anndate": "20100105",
+        "base_date": "20100105",
+        "div_proc": "实施",
+        "record_date": "20100105",
+        "ex_date": "20100106",
+        "pay_date": "20100107",
+        "earpay_date": None,
+        "net_ex_date": "20100106",
+        "div_cash": 0.01,
+        "base_unit": 1.0,
+        "ear_distr": None,
+        "ear_amount": None,
+        "account_date": None,
+        "base_year": "2009",
+    }
+    return pl.DataFrame([row]).select(TUSHARE_FIELDS["fund_div"].split(","))
 
 
 def _build_spec() -> G1BuildSpec:
     return G1BuildSpec(
         config_version="m3-g1-test-v1",
         g1_config_sha256=_HEX,
-        mapper_version="m3-g1-mapper-v1",
+        mapper_version="m3-g1-tushare-mapper-v2",
         schema_version="m3-g1-schema-v1",
         membership_method_version=G1_MEMBERSHIP_METHOD_VERSION,
         price_limit_method_version=G1_PRICE_LIMIT_METHOD_VERSION,
         corporate_action_selection_version=G1_CORPORATE_ACTION_SELECTION_VERSION,
         corporate_action_reconciliation_version=G1_CORPORATE_ACTION_RECONCILIATION_VERSION,
+        benchmark_mode="TRADEABLE_ETF_TOTAL_RETURN_PROXY",
+        benchmark_method_version="tushare_510300_fund_daily_fund_adj_hfq_v1",
+        benchmark_dividend_reconciliation_version="tushare_fund_div_implemented_cash_v1",
         build_code_version="m3-g1-candidate-v1",
         dependency_fingerprint_sha256=_HEX,
     )
@@ -331,8 +372,8 @@ def _build_inputs() -> G1BuildInputs:
     weight_batch = plan_index_weight_requests(
         index_code=_INDEX, start=_D0, end=_D0, warmup_months=1,
     )
-    plan = plan_history_requests(
-        index_weight_batch=weight_batch, symbols=syms, benchmark=_BENCHMARK, history=history,
+    plan = plan_g1_etf_history_requests(
+        index_weight_batch=weight_batch, symbols=syms, history=history,
     )
     responses: list[VerifiedRawResponse] = []
     for spec in weight_batch.requests:
@@ -388,17 +429,31 @@ def _build_inputs() -> G1BuildInputs:
         responses.append(
             _make_verified("dividend", _empty_dividend(symbol), parameters={"ts_code": symbol})
         )
-    responses.append(
-        _make_verified(
-            "index_daily",
-            _benchmark_frame(days),
-            parameters={
-                "ts_code": _BENCHMARK,
-                "start_date": _D0.strftime("%Y%m%d"),
-                "end_date": _D1.strftime("%Y%m%d"),
-            },
-        )
-    )
+    for spec in plan.history_batch.requests:
+        if spec.endpoint == "fund_daily":
+            responses.append(
+                _make_verified(
+                    "fund_daily",
+                    _fund_daily_frame(days),
+                    parameters=dict(spec.parameters),
+                )
+            )
+        elif spec.endpoint == "fund_adj":
+            responses.append(
+                _make_verified(
+                    "fund_adj",
+                    _fund_adj_frame(days),
+                    parameters=dict(spec.parameters),
+                )
+            )
+        elif spec.endpoint == "fund_div":
+            responses.append(
+                _make_verified(
+                    "fund_div",
+                    _fund_div_frame(),
+                    parameters=dict(spec.parameters),
+                )
+            )
     for spec in plan.history_batch.requests:
         if spec.endpoint != "suspend_d":
             continue
@@ -489,6 +544,7 @@ def _rebind_identity(candidate: G1Candidate, **changes: Any) -> G1Candidate:
         suspensions=values["suspensions"],
         calendars=values["calendars"],
         instruments=values["instruments"],
+        bars=values["bars"],
         history=HistoryWindow(values["history_start"], values["history_end"]),
     )
     required_digest = clean_table_content_sha256(

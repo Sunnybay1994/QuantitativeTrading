@@ -10,20 +10,28 @@ import socket
 import traceback
 import warnings
 from pathlib import Path
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Mapping
 from unittest.mock import patch
 
 import polars as pl
 import pytest
 
+import quant.data.index_membership as index_membership_mod
+import quant.data.m3_g1_candidate as candidate_mod
+import quant.data.m3_reference as reference_mod
 import quant.data.m3_release as release_mod
+import quant.research.m3.config as config_mod
+import quant.research.m3.g1_planning as planning_mod
 from quant.data.connectors.baostock import BaostockConnector
 from quant.data.connectors.tushare import TushareConnector
 from quant.data.m3_backfill import TUSHARE_FIELDS
 from quant.data.m3_g1_candidate import G1Candidate
+from quant.data.m3_reference import G1CrossSourcePolicy
 from quant.data.m3_release import G1PreparedRelease, M3ReleaseError, VerifiedG1Release
 from quant.research.m3 import g1_workflow as workflow_mod
 from quant.research.m3.config import LoadedM3Config, load_m3_config
+from quant.research.m3.g1_planning import M3G1PlanningError
 from quant.research.m3.g1_workflow import (
     G1WorkflowCountsV1,
     M3G1WorkflowError,
@@ -45,7 +53,7 @@ warnings.filterwarnings(
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _CONFIG_PATH = _PROJECT_ROOT / "configs" / "research" / "m3_qlib_example.toml"
 _INDEX = "000300.SH"
-_BENCHMARK = "H00300.CSI"
+_BENCHMARK = "510300.SH"
 _SIGNAL = dt.date(2016, 2, 1)
 _OBS_JAN = "20160129"
 
@@ -215,23 +223,101 @@ def _benchmark_frame(start: dt.date, end: dt.date) -> pl.DataFrame:
     return pl.DataFrame(rows).select(TUSHARE_FIELDS["index_daily"].split(","))
 
 
+def _fund_daily_frame(start: dt.date, end: dt.date) -> pl.DataFrame:
+    """Same OHLC semantics as legacy benchmark bars; exact fund_daily columns."""
+    rows = []
+    cursor = start
+    while cursor <= end:
+        if cursor.weekday() < 5:
+            rows.append(
+                {
+                    "ts_code": _BENCHMARK,
+                    "trade_date": cursor.strftime("%Y%m%d"),
+                    "open": 1.0,
+                    "high": 1.0,
+                    "low": 1.0,
+                    "close": 1.0,
+                    "pre_close": 1.0,
+                    "change": 0.0,
+                    "pct_chg": 0.0,
+                    "vol": 1.0,
+                    "amount": 1.0,
+                }
+            )
+        cursor += dt.timedelta(days=1)
+    return pl.DataFrame(rows).select(TUSHARE_FIELDS["fund_daily"].split(","))
+
+
+def _fund_adj_frame(start: dt.date, end: dt.date) -> pl.DataFrame:
+    rows = []
+    cursor = start
+    while cursor <= end:
+        if cursor.weekday() < 5:
+            rows.append(
+                {
+                    "ts_code": _BENCHMARK,
+                    "trade_date": cursor.strftime("%Y%m%d"),
+                    "adj_factor": 1.0,
+                }
+            )
+        cursor += dt.timedelta(days=1)
+    return pl.DataFrame(rows).select(TUSHARE_FIELDS["fund_adj"].split(","))
+
+
+def _fund_div_frame() -> pl.DataFrame:
+    # Outside workflow history window so no in-window factor jump is fabricated.
+    row = {
+        "ts_code": _BENCHMARK,
+        "ann_date": "20100105",
+        "imp_anndate": "20100105",
+        "base_date": "20100105",
+        "div_proc": "实施",
+        "record_date": "20100105",
+        "ex_date": "20100106",
+        "pay_date": "20100107",
+        "earpay_date": None,
+        "net_ex_date": "20100106",
+        "div_cash": 0.01,
+        "base_unit": 1.0,
+        "ear_distr": None,
+        "ear_amount": None,
+        "account_date": None,
+        "base_year": "2009",
+    }
+    return pl.DataFrame([row]).select(TUSHARE_FIELDS["fund_div"].split(","))
+
+
+def _assert_exact_fields(frame: pl.DataFrame, endpoint: str) -> None:
+    assert tuple(frame.columns) == tuple(TUSHARE_FIELDS[endpoint].split(","))
+
+
 class _CountingProClient:
     def __init__(self, symbols: list[str]) -> None:
         self.symbols = symbols
         self.calls = 0
+        self.endpoint_calls: dict[str, int] = {}
+        self.fund_request_identities: list[tuple[str, tuple[tuple[str, str], ...]]] = []
 
-    def _count(self) -> None:
+    def _count(self, endpoint: str) -> None:
         self.calls += 1
+        self.endpoint_calls[endpoint] = self.endpoint_calls.get(endpoint, 0) + 1
+
+    def _record_fund_identity(self, endpoint: str, kwargs: dict[str, Any]) -> None:
+        identity = (
+            endpoint,
+            tuple(sorted((str(key), str(value)) for key, value in kwargs.items())),
+        )
+        self.fund_request_identities.append(identity)
 
     def index_weight(self, **kwargs: Any) -> pl.DataFrame:
-        self._count()
+        self._count("index_weight")
         start = dt.datetime.strptime(kwargs["start_date"], "%Y%m%d").date()
         # Keep observation dates inside the derived history calendar slice.
         trade = _OBS_JAN if start.month == 1 else "20160201"
         return _weight_frame(trade, self.symbols)
 
     def daily(self, **kwargs: Any) -> pl.DataFrame:
-        self._count()
+        self._count("daily")
         return _daily_frame(
             kwargs["ts_code"],
             dt.datetime.strptime(kwargs["start_date"], "%Y%m%d").date(),
@@ -239,7 +325,7 @@ class _CountingProClient:
         )
 
     def adj_factor(self, **kwargs: Any) -> pl.DataFrame:
-        self._count()
+        self._count("adj_factor")
         return _factor_frame(
             kwargs["ts_code"],
             dt.datetime.strptime(kwargs["start_date"], "%Y%m%d").date(),
@@ -247,7 +333,7 @@ class _CountingProClient:
         )
 
     def stk_limit(self, **kwargs: Any) -> pl.DataFrame:
-        self._count()
+        self._count("stk_limit")
         return _limit_frame(
             kwargs["ts_code"],
             dt.datetime.strptime(kwargs["start_date"], "%Y%m%d").date(),
@@ -255,19 +341,121 @@ class _CountingProClient:
         )
 
     def index_daily(self, **kwargs: Any) -> pl.DataFrame:
-        self._count()
+        self._count("index_daily")
         return _benchmark_frame(
             dt.datetime.strptime(kwargs["start_date"], "%Y%m%d").date(),
             dt.datetime.strptime(kwargs["end_date"], "%Y%m%d").date(),
         )
 
+    def fund_daily(self, **kwargs: Any) -> pl.DataFrame:
+        assert kwargs["fields"] == TUSHARE_FIELDS["fund_daily"]
+        assert kwargs["ts_code"] == _BENCHMARK
+        self._record_fund_identity("fund_daily", kwargs)
+        self._count("fund_daily")
+        frame = _fund_daily_frame(
+            dt.datetime.strptime(kwargs["start_date"], "%Y%m%d").date(),
+            dt.datetime.strptime(kwargs["end_date"], "%Y%m%d").date(),
+        )
+        _assert_exact_fields(frame, "fund_daily")
+        return frame
+
+    def fund_adj(self, **kwargs: Any) -> pl.DataFrame:
+        assert kwargs["fields"] == TUSHARE_FIELDS["fund_adj"]
+        assert kwargs["ts_code"] == _BENCHMARK
+        self._record_fund_identity("fund_adj", kwargs)
+        self._count("fund_adj")
+        frame = _fund_adj_frame(
+            dt.datetime.strptime(kwargs["start_date"], "%Y%m%d").date(),
+            dt.datetime.strptime(kwargs["end_date"], "%Y%m%d").date(),
+        )
+        _assert_exact_fields(frame, "fund_adj")
+        return frame
+
+    def fund_div(self, **kwargs: Any) -> pl.DataFrame:
+        assert kwargs["fields"] == TUSHARE_FIELDS["fund_div"]
+        assert kwargs["ts_code"] == _BENCHMARK
+        assert set(kwargs) == {"fields", "ts_code"}
+        self._record_fund_identity("fund_div", kwargs)
+        self._count("fund_div")
+        frame = _fund_div_frame()
+        assert frame.height >= 1
+        assert frame["div_proc"].to_list() == ["实施"]
+        _assert_exact_fields(frame, "fund_div")
+        return frame
+
     def suspend_d(self, **kwargs: Any) -> pl.DataFrame:
-        self._count()
+        self._count("suspend_d")
         return _empty_suspend()
 
     def dividend(self, **kwargs: Any) -> pl.DataFrame:
-        self._count()
+        self._count("dividend")
         return _empty_dividend()
+
+
+def _planned_fund_adj_count(derived_plan: Any) -> int:
+    return sum(
+        1
+        for spec in derived_plan.request_plan.history_batch.requests
+        if spec.endpoint == "fund_adj"
+    )
+
+
+def _assert_history_fund_fake_closure(pro: _CountingProClient, *, expected_adj: int) -> None:
+    assert pro.endpoint_calls.get("fund_daily", 0) == 1
+    assert pro.endpoint_calls.get("fund_adj", 0) == expected_adj
+    assert pro.endpoint_calls.get("fund_div", 0) == 1
+    assert pro.endpoint_calls.get("index_daily", 0) == 0
+    fund_ids = pro.fund_request_identities
+    assert len(fund_ids) == 1 + expected_adj + 1
+    assert len(set(fund_ids)) == len(fund_ids)
+
+
+def test_counting_pro_client_fund_endpoint_contract() -> None:
+    """Fast contract: fund fake fields/identity/counts without full HISTORY I/O."""
+    pro = _CountingProClient(_symbols(n=2))
+    daily = pro.fund_daily(
+        ts_code=_BENCHMARK,
+        start_date="20160201",
+        end_date="20160205",
+        fields=TUSHARE_FIELDS["fund_daily"],
+    )
+    assert tuple(daily.columns) == tuple(TUSHARE_FIELDS["fund_daily"].split(","))
+    assert daily.height >= 1
+    assert set(daily["ts_code"].to_list()) == {_BENCHMARK}
+
+    adj_a = pro.fund_adj(
+        ts_code=_BENCHMARK,
+        start_date="20160201",
+        end_date="20160202",
+        fields=TUSHARE_FIELDS["fund_adj"],
+    )
+    adj_b = pro.fund_adj(
+        ts_code=_BENCHMARK,
+        start_date="20160203",
+        end_date="20160205",
+        fields=TUSHARE_FIELDS["fund_adj"],
+    )
+    assert tuple(adj_a.columns) == tuple(TUSHARE_FIELDS["fund_adj"].split(","))
+    assert tuple(adj_b.columns) == tuple(TUSHARE_FIELDS["fund_adj"].split(","))
+    assert adj_a.height >= 1 and adj_b.height >= 1
+    assert set(adj_a["ts_code"].to_list()) == {_BENCHMARK}
+    assert set(adj_b["ts_code"].to_list()) == {_BENCHMARK}
+
+    div = pro.fund_div(ts_code=_BENCHMARK, fields=TUSHARE_FIELDS["fund_div"])
+    assert tuple(div.columns) == tuple(TUSHARE_FIELDS["fund_div"].split(","))
+    assert div.height >= 1
+    assert div["div_proc"].to_list() == ["实施"]
+    assert set(div["ts_code"].to_list()) == {_BENCHMARK}
+
+    assert pro.endpoint_calls.get("fund_daily", 0) == 1
+    assert pro.endpoint_calls.get("fund_adj", 0) == 2
+    assert pro.endpoint_calls.get("fund_div", 0) == 1
+    assert pro.endpoint_calls.get("index_daily", 0) == 0
+    assert len(pro.fund_request_identities) == 4
+    assert len(set(pro.fund_request_identities)) == 4
+    adj_ids = [item for item in pro.fund_request_identities if item[0] == "fund_adj"]
+    assert len(adj_ids) == 2
+    assert adj_ids[0] != adj_ids[1]
 
 
 class _BaoResponse:
@@ -344,6 +532,123 @@ def _fast_config(tmp_path: Path) -> LoadedM3Config:
     path = tmp_path / "m3_r1b.toml"
     path.write_text(variant, encoding="utf-8")
     return load_m3_config(path)
+
+
+# Resume-semantics fixtures must stay large enough for hardcoded reconciliation
+# sample_symbols=30, but far smaller than the 300-symbol workflow default so
+# inspect/journal recovery does not re-walk a 1500-request HISTORY plan.
+_RESUME_FIXTURE_SYMBOLS = 30
+_RESUME_FIXTURE_WARMUP = 1
+_RESUME_FIXTURE_DATES_PER_SYMBOL = 2
+
+
+def _patch_resume_fixture_scale(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    n_symbols: int = _RESUME_FIXTURE_SYMBOLS,
+    feature_warmup: int = _RESUME_FIXTURE_WARMUP,
+    dates_per_symbol: int = _RESUME_FIXTURE_DATES_PER_SYMBOL,
+) -> None:
+    """Shrink frozen CSI300/literal scale for resume tests only.
+
+    Keeps real planner/raw/journal/candidate/workflow paths; only relaxes
+    expected-constituent and reconciliation date-count literals that otherwise
+    force a 300-symbol × long-window HISTORY plan.
+    """
+    monkeypatch.setattr(index_membership_mod, "_EXPECTED_COUNT", n_symbols)
+    monkeypatch.setattr(candidate_mod, "_EXPECTED_COUNT", n_symbols)
+    monkeypatch.setattr(planning_mod, "_EXPECTED_COUNT", n_symbols)
+    monkeypatch.setattr(reference_mod, "_DATES_PER_SYMBOL", dates_per_symbol)
+    monkeypatch.setattr(reference_mod, "_KEY_COUNT", n_symbols * dates_per_symbol)
+
+    specs = dict(config_mod._FIELD_SPECS)
+    for path, literal in (
+        ("g1_backfill.expected_constituent_count", n_symbols),
+        ("g1_backfill.feature_warmup_sessions", feature_warmup),
+        ("g1_backfill.reconciliation.dates_per_symbol", dates_per_symbol),
+        ("labels.horizons_sessions", (1,)),
+    ):
+        specs[path] = dataclasses.replace(specs[path], literal=literal)
+    monkeypatch.setattr(config_mod, "_FIELD_SPECS", MappingProxyType(specs))
+
+    def _build_cross_source_policy(
+        reconciliation: Mapping[str, object],
+    ) -> G1CrossSourcePolicy:
+        reference = reconciliation.get("reference_source")
+        sample_symbols = reconciliation.get("sample_symbols")
+        dates = reconciliation.get("dates_per_symbol")
+        price_atol = reconciliation.get("price_atol")
+        price_rtol = reconciliation.get("price_rtol")
+        volume_rtol = reconciliation.get("volume_rtol")
+        max_mismatch_rate = reconciliation.get("max_mismatch_rate")
+        if reference != "baostock":
+            raise M3G1PlanningError("G1_PLANNING_CONFIG_INVALID")
+        if sample_symbols != 30 or dates != dates_per_symbol:
+            raise M3G1PlanningError("G1_PLANNING_CONFIG_INVALID")
+        if type(price_atol) is not float or type(price_rtol) is not float:
+            raise M3G1PlanningError("G1_PLANNING_CONFIG_INVALID")
+        if type(volume_rtol) is not float or type(max_mismatch_rate) is not float:
+            raise M3G1PlanningError("G1_PLANNING_CONFIG_INVALID")
+        try:
+            return G1CrossSourcePolicy(
+                reference_source="baostock",
+                sample_symbols=30,
+                dates_per_symbol=dates_per_symbol,
+                price_atol=price_atol,
+                price_rtol=price_rtol,
+                volume_rtol=volume_rtol,
+                max_mismatch_rate=max_mismatch_rate,
+            )
+        except Exception:
+            raise M3G1PlanningError("G1_PLANNING_CONFIG_INVALID") from None
+
+    monkeypatch.setattr(
+        planning_mod, "_build_cross_source_policy", _build_cross_source_policy
+    )
+
+
+def _resume_fixture_config(
+    tmp_path: Path,
+    *,
+    n_symbols: int = _RESUME_FIXTURE_SYMBOLS,
+    feature_warmup: int = _RESUME_FIXTURE_WARMUP,
+    dates_per_symbol: int = _RESUME_FIXTURE_DATES_PER_SYMBOL,
+) -> LoadedM3Config:
+    """Minimal config for HISTORY resume tests: short window, 30 constituents."""
+    text = _CONFIG_PATH.read_text(encoding="utf-8")
+    variant = (
+        text.replace("start_date = 2016-01-04", "start_date = 2016-02-01")
+        .replace("end_date = 2026-06-26", "end_date = 2016-02-01")
+        .replace("request_rate_per_minute = 60", "request_rate_per_minute = 600000")
+        .replace("max_attempts = 5", "max_attempts = 1")
+        .replace("retry_base_seconds = 2.0", "retry_base_seconds = 0.0")
+        .replace(
+            "expected_constituent_count = 300",
+            f"expected_constituent_count = {n_symbols}",
+        )
+        .replace(
+            "feature_warmup_sessions = 60",
+            f"feature_warmup_sessions = {feature_warmup}",
+        )
+        .replace(
+            "sample_symbols = 30\ndates_per_symbol = 20",
+            f"sample_symbols = 30\ndates_per_symbol = {dates_per_symbol}",
+        )
+        .replace(
+            "minimum_cross_section_symbols = 100",
+            f"minimum_cross_section_symbols = {n_symbols}",
+        )
+        .replace("horizons_sessions = [5, 10]", "horizons_sessions = [1]")
+        .replace("label_tail_sessions = 10", "label_tail_sessions = 1")
+        .replace("embargo_sessions = 10", "embargo_sessions = 1")
+    )
+    path = tmp_path / "m3_resume_min.toml"
+    path.write_text(variant, encoding="utf-8")
+    return load_m3_config(path)
+
+
+def _resume_fixture_symbols(n: int = _RESUME_FIXTURE_SYMBOLS) -> list[str]:
+    return _symbols(n=n)
 
 
 def _project_root(tmp_path: Path, *, symbols: list[str] | None = None) -> Path:
@@ -472,19 +777,26 @@ def test_five_stage_fake_publish_and_inspect_closure(
     )
     assert index_state.completed_stages == ("INDEX",)
 
+    assert index_state.derived_plan is not None
+    expected_adj = _planned_fund_adj_count(index_state.derived_plan)
+
     history_state = run_g1_history_stage(
         project_root=root, config=config, connector=tushare, classify_error=_classify
     ).state
     assert history_state.completed_stages == ("INDEX", "HISTORY")
     assert history_state.candidate is not None
     assert history_state.counts.reference_requests == 30
+    _assert_history_fund_fake_closure(pro, expected_adj=expected_adj)
     history_calls = pro.calls
+    fund_ids_after_history = list(pro.fund_request_identities)
 
     history_again = run_g1_history_stage(
         project_root=root, config=config, connector=tushare, classify_error=_classify
     ).state
     assert history_again.completed_stages == ("INDEX", "HISTORY")
     assert pro.calls == history_calls
+    assert pro.fund_request_identities == fund_ids_after_history
+    _assert_history_fund_fake_closure(pro, expected_adj=expected_adj)
 
     ref_state = run_g1_reference_stage(project_root=root, config=config, connector=bao)
     assert ref_state.completed_stages == ("INDEX", "HISTORY", "REFERENCE")
@@ -1010,14 +1322,28 @@ def test_history_max_new_rejects_illegal_before_side_effects(tmp_path: Path) -> 
     assert not raw.exists()
 
 
-def test_history_bounded_incomplete_then_resume_success(tmp_path: Path) -> None:
-    root = _project_root(tmp_path)
-    config = _fast_config(tmp_path)
-    pro = _CountingProClient(_symbols())
+def test_history_bounded_incomplete_then_resume_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_resume_fixture_scale(monkeypatch)
+    symbols = _resume_fixture_symbols()
+    root = _project_root(tmp_path, symbols=symbols)
+    config = _resume_fixture_config(tmp_path)
+    pro = _CountingProClient(symbols)
     connector = TushareConnector(pro_client=pro)
-    run_g1_index_stage(
+    index_state = run_g1_index_stage(
         project_root=root, config=config, connector=connector, classify_error=_classify
     )
+    assert index_state.derived_plan is not None
+    assert len(index_state.derived_plan.history_symbols) == _RESUME_FIXTURE_SYMBOLS
+    history_reqs = list(index_state.derived_plan.request_plan.history_batch.requests)
+    fund_positions = [
+        i
+        for i, spec in enumerate(history_reqs)
+        if spec.endpoint in {"fund_daily", "fund_adj", "fund_div"}
+    ]
+    assert fund_positions, "derived HISTORY plan must include fund endpoints"
+    expected_adj = _planned_fund_adj_count(index_state.derived_plan)
     first = run_g1_history_stage(
         project_root=root,
         config=config,
@@ -1029,6 +1355,7 @@ def test_history_bounded_incomplete_then_resume_success(tmp_path: Path) -> None:
     assert first.new_requests_committed == 2
     assert first.max_new_requests == 2
     calls_after_first = pro.calls
+    fund_ids_after_first = list(pro.fund_request_identities)
 
     second = run_g1_history_stage(
         project_root=root,
@@ -1040,6 +1367,44 @@ def test_history_bounded_incomplete_then_resume_success(tmp_path: Path) -> None:
     assert second.state.completed_stages == ("INDEX",)
     assert second.new_requests_committed == 2
     assert pro.calls == calls_after_first + 2
+    # Prefix-stable: resume must not rewrite earlier fund identities (may still be empty).
+    assert pro.fund_request_identities[: len(fund_ids_after_first)] == fund_ids_after_first
+    assert len(set(pro.fund_request_identities)) == len(pro.fund_request_identities)
+
+    # Cut across the first fund request in plan order so resume proof is fund-specific,
+    # not vacuous when early max_new=2 batches only hit equity endpoints.
+    committed = first.new_requests_committed + second.new_requests_committed
+    first_fund_pos = fund_positions[0]
+    if committed <= first_fund_pos:
+        need = first_fund_pos - committed + 1
+        to_fund = run_g1_history_stage(
+            project_root=root,
+            config=config,
+            connector=connector,
+            classify_error=_classify,
+            max_new_requests=need,
+        )
+        assert to_fund.state.completed_stages == ("INDEX",)
+        assert to_fund.new_requests_committed == need
+        committed += need
+    fund_ids_after_first_fund = list(pro.fund_request_identities)
+    assert len(fund_ids_after_first_fund) >= 1
+
+    across_fund = run_g1_history_stage(
+        project_root=root,
+        config=config,
+        connector=connector,
+        classify_error=_classify,
+        max_new_requests=1,
+    )
+    assert across_fund.state.completed_stages == ("INDEX",)
+    assert across_fund.new_requests_committed == 1
+    assert (
+        pro.fund_request_identities[: len(fund_ids_after_first_fund)]
+        == fund_ids_after_first_fund
+    )
+    assert len(set(pro.fund_request_identities)) == len(pro.fund_request_identities)
+    committed += 1
 
     # Sufficient budget completes HISTORY and reports SUCCESS semantics via completed stage.
     done = run_g1_history_stage(
@@ -1051,20 +1416,30 @@ def test_history_bounded_incomplete_then_resume_success(tmp_path: Path) -> None:
     )
     assert done.state.completed_stages == ("INDEX", "HISTORY")
     assert done.new_requests_committed > 0
+    _assert_history_fund_fake_closure(pro, expected_adj=expected_adj)
+    assert (
+        pro.fund_request_identities[: len(fund_ids_after_first_fund)]
+        == fund_ids_after_first_fund
+    )
+    fund_ids_after_done = list(pro.fund_request_identities)
     reuse = run_g1_history_stage(
         project_root=root, config=config, connector=connector, classify_error=_classify
     )
     assert reuse.state.completed_stages == ("INDEX", "HISTORY")
     assert reuse.new_requests_committed == 0
-    assert pro.calls == calls_after_first + 2 + done.new_requests_committed
+    assert pro.calls == calls_after_first + (committed - 2) + done.new_requests_committed
+    assert pro.fund_request_identities == fund_ids_after_done
+    _assert_history_fund_fake_closure(pro, expected_adj=expected_adj)
 
 
 def test_history_unbounded_incomplete_still_fail_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    root = _project_root(tmp_path)
-    config = _fast_config(tmp_path)
-    pro = _CountingProClient(_symbols())
+    _patch_resume_fixture_scale(monkeypatch)
+    symbols = _resume_fixture_symbols()
+    root = _project_root(tmp_path, symbols=symbols)
+    config = _resume_fixture_config(tmp_path)
+    pro = _CountingProClient(symbols)
     connector = TushareConnector(pro_client=pro)
     run_g1_index_stage(
         project_root=root, config=config, connector=connector, classify_error=_classify

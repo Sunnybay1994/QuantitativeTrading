@@ -12,7 +12,9 @@ from quant.domain import BenchmarkBar1dSchema
 from quant.research.m3.readiness import ReadinessIssue, audit_m3_readiness
 
 FIXTURE_ROOT = Path("tests/fixtures/m3")
-BENCHMARK = "H00300.CSI"
+BENCHMARK = "510300.SH"
+_HEX_SNAP = "ab" * 32
+_HEX_SNAP_ALT = "cd" * 32
 
 
 def _read(name: str) -> pl.DataFrame:
@@ -61,7 +63,10 @@ def _instruments() -> pl.DataFrame:
 
 
 def _benchmark_bars(**overrides: object) -> pl.DataFrame:
-    frame = _read("benchmark_bars_total_return.csv")
+    frame = _read("benchmark_bars_total_return.csv").with_columns(
+        pl.lit(BENCHMARK).alias("benchmark"),
+        pl.lit(_HEX_SNAP).alias("source_snapshot_id"),
+    )
     for key, value in overrides.items():
         frame = frame.with_columns(pl.lit(value).alias(str(key)))
     return BenchmarkBar1dSchema.validate(frame)
@@ -75,6 +80,7 @@ def _audit(**kwargs: object) -> list[ReadinessIssue]:
         "calendars": _read("calendar.csv"),
         "benchmark_bars": _benchmark_bars(),
         "config": _base_config(),
+        "expected_benchmark_source_snapshot_id": _HEX_SNAP,
     }
     params.update(kwargs)
     return audit_m3_readiness(**params)  # type: ignore[arg-type]
@@ -270,7 +276,7 @@ def test_r1_daily_cross_section_uses_minimum_not_maximum() -> None:
             "low": [99.0, 99.0],
             "close": [100.5, 100.5],
             "source": ["fixture"] * 2,
-            "source_snapshot_id": ["snap", "snap"],
+            "source_snapshot_id": [_HEX_SNAP, _HEX_SNAP],
         }
     )
     issues = _audit(
@@ -346,7 +352,7 @@ def test_r1_trainable_sessions_not_raw_calendar_height() -> None:
             "low": [99.0] * 10,
             "close": [100.5] * 10,
             "source": ["fixture"] * 10,
-            "source_snapshot_id": ["snap"] * 10,
+            "source_snapshot_id": [_HEX_SNAP] * 10,
         }
     )
     issues = _audit(
@@ -434,7 +440,7 @@ def test_r1_history_outside_config_range_does_not_count() -> None:
             "low": [99.0] * 3,
             "close": [100.5] * 3,
             "source": ["fixture"] * 3,
-            "source_snapshot_id": ["snap"] * 3,
+            "source_snapshot_id": [_HEX_SNAP] * 3,
         }
     )
     issues = _audit(
@@ -587,6 +593,9 @@ def test_l0a_price_index_config_rejected() -> None:
     assert "BENCHMARK_SYMBOL_MISMATCH" in _codes(
         _audit(config=_base_config(data={"benchmark": "000300.SH"}))
     )
+    assert "BENCHMARK_SYMBOL_MISMATCH" in _codes(
+        _audit(config=_base_config(data={"benchmark": "H00300.CSI"}))
+    )
 
 
 def test_l0a_dense_coverage_uses_benchmark_column_only() -> None:
@@ -632,7 +641,7 @@ def test_l0a_dense_coverage_uses_benchmark_column_only() -> None:
             "low": [99.0],
             "close": [100.5],
             "source": ["fixture"],
-            "source_snapshot_id": ["snap"],
+            "source_snapshot_id": [_HEX_SNAP],
         }
     )
     codes = _codes(
@@ -699,7 +708,7 @@ def test_extra_column_and_date_coverage_both_reported() -> None:
             "low": [99.0],
             "close": [100.5],
             "source": ["fixture"],
-            "source_snapshot_id": ["snap"],
+            "source_snapshot_id": [_HEX_SNAP],
             "extra_flag": [1],
         }
     )
@@ -875,7 +884,10 @@ def test_p1a_schema_exception_surfaces_sanitized(monkeypatch: pytest.MonkeyPatch
 
 def _raw_benchmark_bars() -> pl.DataFrame:
     """合法精确八列，但不预先 Schema.validate（便于注入坏 dtype）。"""
-    return _read("benchmark_bars_total_return.csv").select(
+    return _read("benchmark_bars_total_return.csv").with_columns(
+        pl.lit(BENCHMARK).alias("benchmark"),
+        pl.lit(_HEX_SNAP).alias("source_snapshot_id"),
+    ).select(
         [
             "benchmark",
             "trade_date",
@@ -999,7 +1011,7 @@ def test_p1c_extra_plus_valid_projection_and_missing_day() -> None:
             "low": [99.0],
             "close": [100.5],
             "source": ["fixture"],
-            "source_snapshot_id": ["snap"],
+            "source_snapshot_id": [_HEX_SNAP],
             "extra_flag": [1],
         }
     )
@@ -1141,3 +1153,210 @@ def test_p1c_schema_exception_four_surfaces_sanitized(
         assert "tok_LIVE_9f3a" not in item.message
         assert secret not in item.message
     assert "BENCHMARK_INVALID" in _codes(issues)
+
+
+# --- B1B-R3: expected snapshot binding ---
+
+
+def test_b1b_r3_snapshot_dual_values_fail_closed() -> None:
+    bench = _benchmark_bars()
+    dual = pl.concat(
+        [
+            bench.head(1).with_columns(pl.lit(_HEX_SNAP).alias("source_snapshot_id")),
+            bench.tail(1).with_columns(pl.lit(_HEX_SNAP_ALT).alias("source_snapshot_id")),
+        ]
+    )
+    codes = _codes(_audit(benchmark_bars=dual))
+    assert "BENCHMARK_SNAPSHOT_INVALID" in codes
+    for item in _audit(benchmark_bars=dual):
+        if item.code.startswith("BENCHMARK_SNAPSHOT_"):
+            assert _HEX_SNAP not in item.message
+            assert _HEX_SNAP_ALT not in item.message
+
+
+def test_b1b_r3_snapshot_empty_or_illegal_actual_fail_closed() -> None:
+    empty = _benchmark_bars().with_columns(pl.lit("").alias("source_snapshot_id"))
+    assert "BENCHMARK_SNAPSHOT_INVALID" in _codes(_audit(benchmark_bars=empty))
+    illegal = _benchmark_bars().with_columns(
+        pl.lit("forged-not-five-response-closure").alias("source_snapshot_id")
+    )
+    assert "BENCHMARK_SNAPSHOT_INVALID" in _codes(_audit(benchmark_bars=illegal))
+
+
+def test_b1b_r3_forged_valid_hex_mismatch_fail_closed() -> None:
+    forged = _benchmark_bars().with_columns(
+        pl.lit(_HEX_SNAP_ALT).alias("source_snapshot_id")
+    )
+    issues = _audit(benchmark_bars=forged)
+    codes = _codes(issues)
+    assert "BENCHMARK_SNAPSHOT_MISMATCH" in codes
+    assert "BENCHMARK_SNAPSHOT_INVALID" not in codes
+    for item in issues:
+        if item.code == "BENCHMARK_SNAPSHOT_MISMATCH":
+            assert _HEX_SNAP not in item.message
+            assert _HEX_SNAP_ALT not in item.message
+
+
+@pytest.mark.parametrize(
+    "expected",
+    [
+        "",
+        "AB" * 32,
+        "ab" * 31,
+        "ab" * 33,
+        "gg" * 32,
+        None,
+        123,
+        True,
+    ],
+)
+def test_b1b_r3_illegal_expected_snapshot_fail_closed(expected: object) -> None:
+    codes = _codes(
+        _audit(expected_benchmark_source_snapshot_id=expected)  # type: ignore[arg-type]
+    )
+    assert "BENCHMARK_SNAPSHOT_INVALID" in codes
+
+
+def test_b1b_r3_matching_expected_snapshot_no_snapshot_error() -> None:
+    dates = _benchmark_bars().get_column("trade_date").to_list()
+    calendars = pl.DataFrame(
+        {
+            "market": ["SH"] * len(dates),
+            "date": dates,
+            "is_open": [True] * len(dates),
+            "is_connect_open": [False] * len(dates),
+            "is_half_day": [False] * len(dates),
+        }
+    )
+    codes = _benchmark_codes(
+        _audit(
+            calendars=calendars,
+            config=_base_config(
+                data={
+                    "universe": "CSI300_PIT",
+                    "benchmark": BENCHMARK,
+                    "source": "fixture",
+                    "start_date": min(dates),
+                    "end_date": max(dates),
+                    "minimum_train_sessions": 1,
+                    "minimum_cross_section_symbols": 1,
+                }
+            ),
+            expected_benchmark_source_snapshot_id=_HEX_SNAP,
+        )
+    )
+    assert not any(code.startswith("BENCHMARK_SNAPSHOT_") for code in codes)
+
+
+# --- B1B-R4: illegal expected must not be short-circuited by precondition errors ---
+
+
+def _snapshot_error_items(issues: list[ReadinessIssue]) -> list[ReadinessIssue]:
+    return [
+        item
+        for item in issues
+        if item.severity == "ERROR" and item.code.startswith("BENCHMARK_SNAPSHOT_")
+    ]
+
+
+def _h00300_config() -> dict:
+    return _base_config(data={"benchmark": "H00300.CSI"})
+
+
+@pytest.mark.parametrize(
+    ("precondition", "kwargs", "other_code"),
+    [
+        (
+            "empty_bars",
+            {"benchmark_bars": _benchmark_bars().clear()},
+            "BENCHMARK_EMPTY",
+        ),
+        (
+            "missing_source",
+            {"config": _base_config(data={"source": "tushare"})},
+            "DATA_SOURCE_MISSING",
+        ),
+        (
+            "h00300",
+            {"config": _h00300_config()},
+            "BENCHMARK_SYMBOL_MISMATCH",
+        ),
+        (
+            "schema_missing_close",
+            {"benchmark_bars": _benchmark_bars().drop("close")},
+            "BENCHMARK_MISSING_FIELDS",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "expected",
+    ["", "AB" * 32, True],
+)
+def test_b1b_r4_illegal_expected_not_short_circuited(
+    precondition: str,
+    kwargs: dict,
+    other_code: str,
+    expected: object,
+) -> None:
+    del precondition  # parametrize id only
+    issues = _audit(
+        expected_benchmark_source_snapshot_id=expected,  # type: ignore[arg-type]
+        **kwargs,
+    )
+    codes = _codes(issues)
+    assert other_code in codes
+    snap_items = _snapshot_error_items(issues)
+    assert len(snap_items) == 1
+    assert snap_items[0].code == "BENCHMARK_SNAPSHOT_INVALID"
+    assert "期望" in snap_items[0].message
+    assert _HEX_SNAP not in snap_items[0].message
+    if isinstance(expected, str) and expected:
+        assert expected not in snap_items[0].message
+
+
+@pytest.mark.parametrize(
+    ("precondition", "kwargs", "other_code"),
+    [
+        (
+            "empty_bars",
+            {"benchmark_bars": _benchmark_bars().clear()},
+            "BENCHMARK_EMPTY",
+        ),
+        (
+            "missing_source",
+            {"config": _base_config(data={"source": "tushare"})},
+            "DATA_SOURCE_MISSING",
+        ),
+        (
+            "h00300",
+            {"config": _h00300_config()},
+            "BENCHMARK_SYMBOL_MISMATCH",
+        ),
+        (
+            "schema_missing_close",
+            {"benchmark_bars": _benchmark_bars().drop("close")},
+            "BENCHMARK_MISSING_FIELDS",
+        ),
+    ],
+)
+def test_b1b_r4_legal_expected_precondition_no_fabricated_snapshot(
+    precondition: str,
+    kwargs: dict,
+    other_code: str,
+) -> None:
+    del precondition
+    issues = _audit(
+        expected_benchmark_source_snapshot_id=_HEX_SNAP,
+        **kwargs,
+    )
+    codes = _codes(issues)
+    assert other_code in codes
+    assert _snapshot_error_items(issues) == []
+
+
+def test_b1b_r4_illegal_expected_single_fail_closed_on_valid_path() -> None:
+    issues = _audit(expected_benchmark_source_snapshot_id="")
+    snap_items = _snapshot_error_items(issues)
+    assert len(snap_items) == 1
+    assert snap_items[0].code == "BENCHMARK_SNAPSHOT_INVALID"
+    assert "期望" in snap_items[0].message

@@ -13,12 +13,18 @@ from quant.domain import BenchmarkBar1dSchema, ForwardReturnLabelSchema
 from quant.research.m3.labels import LabelBuildResult, compute_forward_relative_labels
 
 FIXTURE_ROOT = Path("tests/fixtures/m3")
-BENCHMARK = "H00300.CSI"
-LABEL_VERSION = "next_open_to_h_close_relative_v1"
+BENCHMARK = "510300.SH"
+LABEL_VERSION = "theoretical_next_open_to_h_close_510300_etf_hfq_proxy_excess_v3"
 
 
 def _read(name: str) -> pl.DataFrame:
     return pl.read_csv(FIXTURE_ROOT / name, try_parse_dates=True)
+
+
+def _fixture_benchmark_bars() -> pl.DataFrame:
+    return _read("benchmark_bars_total_return.csv").with_columns(
+        pl.lit(BENCHMARK).alias("benchmark")
+    )
 
 
 def _benchmark_bars(**overrides: object) -> pl.DataFrame:
@@ -98,7 +104,7 @@ def _build(
     return compute_forward_relative_labels(
         bars=_read("bars.csv") if bars is None else bars,
         benchmark_bars=(
-            _read("benchmark_bars_total_return.csv")
+            _fixture_benchmark_bars()
             if benchmark_bars is None
             else benchmark_bars
         ),
@@ -118,7 +124,10 @@ def _assert_conservation(result: LabelBuildResult, eligible_keys: pl.DataFrame, 
 
 def test_labels_match_golden_fixture() -> None:
     result = _build()
-    expected = _read("expected_labels.csv")
+    expected = _read("expected_labels.csv").with_columns(
+        pl.lit(BENCHMARK).alias("benchmark"),
+        pl.lit(LABEL_VERSION).alias("label_version"),
+    )
     ForwardReturnLabelSchema.validate(result.labels)
     got = result.labels.sort(["as_of", "horizon_sessions", "symbol"])
     exp = expected.sort(["as_of", "horizon_sessions", "symbol"])
@@ -162,7 +171,7 @@ def test_duplicate_bars_rejected() -> None:
 
 
 def test_duplicate_benchmark_bars_rejected() -> None:
-    base = _read("benchmark_bars_total_return.csv")
+    base = _fixture_benchmark_bars()
     dup = base.head(1).with_columns(pl.lit("other_source").alias("source"))
     bench = pl.concat([base, dup])
     with pytest.raises(ValueError, match="重复"):
@@ -373,3 +382,143 @@ def test_non_finite_returns_rejected_by_schema() -> None:
                 ]
             )
         )
+
+
+def test_b1b_dividend_boundaries_no_double_count_on_hfq_prices() -> None:
+    """HFQ proxy already embeds cash; label must not add cash again across boundaries."""
+    # Ex-date between entry(01-06) and exit(01-12): adjusted close/open already include jump.
+    bars = _benchmark_bars()
+    eligible = _eligible((dt.date(2026, 1, 5), "000001.SZ"))
+    result = _build(
+        bars=_read("bars.csv"),
+        benchmark_bars=bars,
+        eligible_keys=eligible,
+        horizons=[5],
+    )
+    row = result.labels.row(0, named=True)
+    # Pure price ratio on HFQ bars; no +div_cash term.
+    expected = 105.0 / 100.0 - 1.0
+    assert row["benchmark_return"] == pytest.approx(expected)
+    assert row["label_version"] == LABEL_VERSION
+
+    # Dividend before entry should not change the holding-window price ratio identity.
+    before = bars.with_columns(
+        pl.when(pl.col("trade_date") == dt.date(2026, 1, 5))
+        .then(pl.lit(90.0))
+        .otherwise(pl.col("open"))
+        .alias("open"),
+        pl.when(pl.col("trade_date") == dt.date(2026, 1, 5))
+        .then(pl.lit(91.0))
+        .otherwise(pl.col("high"))
+        .alias("high"),
+        pl.when(pl.col("trade_date") == dt.date(2026, 1, 5))
+        .then(pl.lit(89.0))
+        .otherwise(pl.col("low"))
+        .alias("low"),
+        pl.when(pl.col("trade_date") == dt.date(2026, 1, 5))
+        .then(pl.lit(90.5))
+        .otherwise(pl.col("close"))
+        .alias("close"),
+    )
+    # entry/exit OHLC unchanged => return identical.
+    again = _build(
+        bars=_read("bars.csv"),
+        benchmark_bars=before,
+        eligible_keys=eligible,
+        horizons=[5],
+    )
+    assert again.labels.row(0, named=True)["benchmark_return"] == pytest.approx(expected)
+
+    # Dividend after exit: mutate post-exit bar only; holding return unchanged.
+    after = bars.with_columns(
+        pl.when(pl.col("trade_date") == dt.date(2026, 1, 19))
+        .then(pl.lit(200.0))
+        .otherwise(pl.col("open"))
+        .alias("open"),
+        pl.when(pl.col("trade_date") == dt.date(2026, 1, 19))
+        .then(pl.lit(201.0))
+        .otherwise(pl.col("high"))
+        .alias("high"),
+        pl.when(pl.col("trade_date") == dt.date(2026, 1, 19))
+        .then(pl.lit(199.0))
+        .otherwise(pl.col("low"))
+        .alias("low"),
+        pl.when(pl.col("trade_date") == dt.date(2026, 1, 19))
+        .then(pl.lit(200.5))
+        .otherwise(pl.col("close"))
+        .alias("close"),
+    )
+    later = _build(
+        bars=_read("bars.csv"),
+        benchmark_bars=after,
+        eligible_keys=eligible,
+        horizons=[5],
+    )
+    assert later.labels.row(0, named=True)["benchmark_return"] == pytest.approx(expected)
+
+    # Entry-day OHLC mutation changes the HFQ price ratio; still no cash term.
+    on_entry = bars.with_columns(
+        pl.when(pl.col("trade_date") == dt.date(2026, 1, 6))
+        .then(pl.lit(110.0))
+        .otherwise(pl.col("open"))
+        .alias("open"),
+        pl.when(pl.col("trade_date") == dt.date(2026, 1, 6))
+        .then(pl.lit(111.0))
+        .otherwise(pl.col("high"))
+        .alias("high"),
+        pl.when(pl.col("trade_date") == dt.date(2026, 1, 6))
+        .then(pl.lit(109.0))
+        .otherwise(pl.col("low"))
+        .alias("low"),
+        pl.when(pl.col("trade_date") == dt.date(2026, 1, 6))
+        .then(pl.lit(110.5))
+        .otherwise(pl.col("close"))
+        .alias("close"),
+    )
+    entry_day = _build(
+        bars=_read("bars.csv"),
+        benchmark_bars=on_entry,
+        eligible_keys=eligible,
+        horizons=[5],
+    )
+    assert entry_day.labels.row(0, named=True)["benchmark_return"] == pytest.approx(
+        105.0 / 110.0 - 1.0
+    )
+    assert entry_day.labels.row(0, named=True)["benchmark_return"] != pytest.approx(
+        expected
+    )
+
+    # Holding-window mid session (entry/exit unchanged): must not alter open-to-h-close.
+    mid = pl.concat(
+        [
+            bars,
+            pl.DataFrame(
+                [
+                    {
+                        "benchmark": BENCHMARK,
+                        "trade_date": dt.date(2026, 1, 8),
+                        "open": 999.0,
+                        "high": 1000.0,
+                        "low": 998.0,
+                        "close": 999.5,
+                        "source": "fixture",
+                        "source_snapshot_id": "snap_fixture",
+                    }
+                ]
+            ),
+        ]
+    )
+    mid = BenchmarkBar1dSchema.validate(mid)
+    mid_result = _build(
+        bars=_read("bars.csv"),
+        benchmark_bars=mid,
+        eligible_keys=eligible,
+        horizons=[5],
+    )
+    assert mid_result.labels.row(0, named=True)["benchmark_return"] == pytest.approx(
+        expected
+    )
+    # Still pure HFQ price ratio; no synthetic +cash term.
+    assert mid_result.labels.row(0, named=True)["benchmark_return"] != pytest.approx(
+        expected + 0.123
+    )

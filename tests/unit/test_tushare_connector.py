@@ -227,6 +227,15 @@ class FakeRawPro:
     def dividend(self, **kwargs):
         return self._record("dividend", kwargs)
 
+    def fund_daily(self, **kwargs):
+        return self._record("fund_daily", kwargs)
+
+    def fund_adj(self, **kwargs):
+        return self._record("fund_adj", kwargs)
+
+    def fund_div(self, **kwargs):
+        return self._record("fund_div", kwargs)
+
 
 def test_raw_methods_pass_exact_parameters_and_fields() -> None:
     client = FakeRawPro()
@@ -257,6 +266,13 @@ def test_raw_methods_pass_exact_parameters_and_fields() -> None:
         symbol="600000.SH", start=start, end=end, fields=fields
     )
     connector.fetch_dividend_raw(symbol="000001.SZ", fields=fields)
+    connector.fetch_fund_daily_raw(
+        symbol="510300.SH", start=start, end=end, fields=fields
+    )
+    connector.fetch_fund_adj_raw(
+        symbol="510300.SH", start=start, end=end, fields=fields
+    )
+    connector.fetch_fund_div_raw(symbol="510300.SH", fields=fields)
 
     assert client.calls == [
         (
@@ -330,6 +346,31 @@ def test_raw_methods_pass_exact_parameters_and_fields() -> None:
                 "fields": fields,
             },
         ),
+        (
+            "fund_daily",
+            {
+                "ts_code": "510300.SH",
+                "start_date": "20260101",
+                "end_date": "20260131",
+                "fields": fields,
+            },
+        ),
+        (
+            "fund_adj",
+            {
+                "ts_code": "510300.SH",
+                "start_date": "20260101",
+                "end_date": "20260131",
+                "fields": fields,
+            },
+        ),
+        (
+            "fund_div",
+            {
+                "ts_code": "510300.SH",
+                "fields": fields,
+            },
+        ),
     ]
 
 
@@ -383,6 +424,15 @@ def test_raw_methods_accept_empty_response() -> None:
     assert connector.fetch_dividend_raw(
         symbol="000001.SZ", fields=fields
     ).is_empty()
+    assert connector.fetch_fund_daily_raw(
+        symbol="510300.SH", start=start, end=end, fields=fields
+    ).is_empty()
+    assert connector.fetch_fund_adj_raw(
+        symbol="510300.SH", start=start, end=end, fields=fields
+    ).is_empty()
+    assert connector.fetch_fund_div_raw(
+        symbol="510300.SH", fields=fields
+    ).is_empty()
 
 
 def test_raw_methods_passthrough_fields() -> None:
@@ -396,6 +446,18 @@ def test_raw_methods_passthrough_fields() -> None:
         fields=custom,
     )
     assert client.calls[0][1]["fields"] == custom
+    fund_custom = "trade_date,adj_factor,ts_code"
+    connector.fetch_fund_adj_raw(
+        symbol="510300.SH",
+        start=dt.date(2026, 1, 1),
+        end=dt.date(2026, 1, 31),
+        fields=fund_custom,
+    )
+    assert client.calls[1][1]["fields"] == fund_custom
+    # connector 不得重排或改写 caller 传入的 fields 字符串
+    assert client.calls[1][1]["fields"] != ",".join(
+        sorted(fund_custom.split(","))
+    )
 
 
 def test_raw_methods_reject_illegal_dates_and_codes() -> None:
@@ -471,8 +533,128 @@ def test_raw_methods_reject_illegal_dates_and_codes() -> None:
         )
 
 
+def test_fund_raw_methods_reject_before_any_sdk_call() -> None:
+    client = FakeRawPro()
+    connector = TushareConnector(pro_client=client)
+    start = dt.date(2026, 1, 1)
+    end = dt.date(2026, 1, 2)
+    fields = "ts_code,trade_date,adj_factor"
+
+    for bad_symbol in (True, "", "00700.HK", "H00300.CSI", "51030.SH", "0510300.SH"):
+        with pytest.raises(ValueError, match="基金代码"):
+            connector.fetch_fund_daily_raw(
+                symbol=bad_symbol,  # type: ignore[arg-type]
+                start=start,
+                end=end,
+                fields=fields,
+            )
+        with pytest.raises(ValueError, match="基金代码"):
+            connector.fetch_fund_adj_raw(
+                symbol=bad_symbol,  # type: ignore[arg-type]
+                start=start,
+                end=end,
+                fields=fields,
+            )
+        with pytest.raises(ValueError, match="基金代码"):
+            connector.fetch_fund_div_raw(
+                symbol=bad_symbol,  # type: ignore[arg-type]
+                fields=fields,
+            )
+
+    with pytest.raises(ValueError, match="start"):
+        connector.fetch_fund_daily_raw(
+            symbol="510300.SH", start=end, end=start, fields=fields
+        )
+    with pytest.raises(ValueError, match="date"):
+        connector.fetch_fund_adj_raw(
+            symbol="510300.SH",
+            start="20260101",  # type: ignore[arg-type]
+            end=end,
+            fields=fields,
+        )
+    with pytest.raises(ValueError, match="date"):
+        connector.fetch_fund_adj_raw(
+            symbol="510300.SH",
+            start=True,  # type: ignore[arg-type]
+            end=end,
+            fields=fields,
+        )
+    assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    "bad_symbol",
+    (
+        "５１０３００.SH",  # 全角 Unicode 数字
+        "٥١٠٣٠٠.SH",  # Arabic-Indic 数字
+    ),
+)
+def test_fund_raw_methods_reject_unicode_digit_symbols_before_sdk(
+    bad_symbol: str,
+) -> None:
+    """connector 基金代码须与 backfill ASCII [0-9]{6} 同口径；Unicode 数字不得触达 SDK。"""
+    client = FakeRawPro()
+    connector = TushareConnector(pro_client=client)
+    start = dt.date(2026, 1, 1)
+    end = dt.date(2026, 1, 2)
+    fields = "x"
+
+    with pytest.raises(ValueError, match="基金代码"):
+        connector.fetch_fund_daily_raw(
+            symbol=bad_symbol, start=start, end=end, fields=fields
+        )
+    with pytest.raises(ValueError, match="基金代码"):
+        connector.fetch_fund_adj_raw(
+            symbol=bad_symbol, start=start, end=end, fields=fields
+        )
+    with pytest.raises(ValueError, match="基金代码"):
+        connector.fetch_fund_div_raw(symbol=bad_symbol, fields=fields)
+    assert client.calls == []
+
+
+def test_fund_raw_methods_accept_ascii_sh_sz_symbols() -> None:
+    """合法 ASCII 510300.SH / 159919.SZ 仍可到达 SDK，参数不被改写。"""
+    client = FakeRawPro()
+    connector = TushareConnector(pro_client=client)
+    start = dt.date(2026, 1, 1)
+    end = dt.date(2026, 1, 2)
+    fields = "ts_code,trade_date"
+
+    connector.fetch_fund_daily_raw(
+        symbol="510300.SH", start=start, end=end, fields=fields
+    )
+    connector.fetch_fund_adj_raw(
+        symbol="159919.SZ", start=start, end=end, fields=fields
+    )
+    connector.fetch_fund_div_raw(symbol="510300.SH", fields=fields)
+    assert client.calls == [
+        (
+            "fund_daily",
+            {
+                "ts_code": "510300.SH",
+                "start_date": "20260101",
+                "end_date": "20260102",
+                "fields": fields,
+            },
+        ),
+        (
+            "fund_adj",
+            {
+                "ts_code": "159919.SZ",
+                "start_date": "20260101",
+                "end_date": "20260102",
+                "fields": fields,
+            },
+        ),
+        (
+            "fund_div",
+            {"ts_code": "510300.SH", "fields": fields},
+        ),
+    ]
+
+
 def test_raw_methods_preserve_duplicate_key_rows_order_b_then_a() -> None:
-    """跨七 endpoint：同键两行供应商顺序 [B,A] 必须原样保留。"""
+    """跨既有七 endpoint + 三基金 endpoint：同键两行供应商顺序 [B,A] 必须原样保留。"""
     client = FakeRawPro(duplicate_key_rows=True)
     connector = TushareConnector(pro_client=client)
     start = dt.date(2026, 7, 10)
@@ -499,8 +681,15 @@ def test_raw_methods_preserve_duplicate_key_rows_order_b_then_a() -> None:
             symbol="000001.SZ", start=start, end=end, fields=fields
         ),
         connector.fetch_dividend_raw(symbol="000001.SZ", fields=fields),
+        connector.fetch_fund_daily_raw(
+            symbol="510300.SH", start=start, end=end, fields=fields
+        ),
+        connector.fetch_fund_adj_raw(
+            symbol="510300.SH", start=start, end=end, fields=fields
+        ),
+        connector.fetch_fund_div_raw(symbol="510300.SH", fields=fields),
     ]
-    assert len(frames) == 7
+    assert len(frames) == 10
     expected = {
         "ts_code": ["000001.SZ", "000001.SZ"],
         "trade_date": ["20260710", "20260710"],

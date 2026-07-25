@@ -24,6 +24,7 @@ from quant.data.m3_backfill import (
     TushareRequestBatch,
     TushareRequestSpec,
     execute_tushare_batch,
+    plan_fund_adj_requests,
     plan_history_requests,
     plan_index_weight_requests,
     resolve_history_window,
@@ -94,6 +95,15 @@ class FakeConnector:
     def fetch_dividend_raw(self, **values: Any) -> pl.DataFrame:
         return self._return("dividend", values)
 
+    def fetch_fund_daily_raw(self, **values: Any) -> pl.DataFrame:
+        return self._return("fund_daily", values)
+
+    def fetch_fund_adj_raw(self, **values: Any) -> pl.DataFrame:
+        return self._return("fund_adj", values)
+
+    def fetch_fund_div_raw(self, **values: Any) -> pl.DataFrame:
+        return self._return("fund_div", values)
+
 
 def _weight_batch() -> TushareRequestBatch:
     return plan_index_weight_requests(
@@ -146,8 +156,29 @@ def test_fields_are_the_single_exact_request_contract() -> None:
             "cash_div,cash_div_tax,record_date,ex_date,pay_date,div_listdate,"
             "imp_ann_date,base_date,base_share"
         ),
+        "fund_daily": (
+            "ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount"
+        ),
+        "fund_adj": "ts_code,trade_date,adj_factor",
+        "fund_div": (
+            "ts_code,ann_date,imp_anndate,base_date,div_proc,record_date,ex_date,pay_date,"
+            "earpay_date,net_ex_date,div_cash,base_unit,ear_distr,ear_amount,account_date,"
+            "base_year"
+        ),
     }
     assert dict(TUSHARE_FIELDS) == expected
+    assert dict(ENDPOINT_POLICIES_V1) == {
+        "index_weight": EndpointPolicy(5000, "REJECT"),
+        "daily": EndpointPolicy(6000, "REJECT"),
+        "adj_factor": EndpointPolicy(6000, "REJECT"),
+        "index_daily": EndpointPolicy(5000, "REJECT"),
+        "suspend_d": EndpointPolicy(5000, "ALLOW"),
+        "stk_limit": EndpointPolicy(5800, "REJECT"),
+        "dividend": EndpointPolicy(5000, "ALLOW"),
+        "fund_daily": EndpointPolicy(5000, "REJECT"),
+        "fund_adj": EndpointPolicy(2000, "REJECT"),
+        "fund_div": EndpointPolicy(5000, "REJECT"),
+    }
 
 
 @pytest.mark.parametrize(
@@ -1425,25 +1456,28 @@ def test_content_and_stable_hash_semantics(tmp_path: Path) -> None:
     )
 
 
+def _endpoint_request_parameters(endpoint: str) -> dict[str, str]:
+    parameters: dict[str, str] = {"fields": TUSHARE_FIELDS[endpoint]}
+    if endpoint == "index_weight":
+        parameters["index_code"] = "000300.SH"
+    elif endpoint == "index_daily":
+        parameters["ts_code"] = "H00300.CSI"
+    elif endpoint == "suspend_d":
+        parameters["ts_code"] = "000001.SZ"
+        parameters["suspend_type"] = "S"
+    elif endpoint in {"fund_daily", "fund_adj", "fund_div"}:
+        parameters["ts_code"] = "510300.SH"
+    else:
+        parameters["ts_code"] = "000001.SZ"
+    if endpoint not in {"dividend", "fund_div"}:
+        parameters["start_date"] = "20200101"
+        parameters["end_date"] = "20200131"
+    return parameters
+
+
 @pytest.mark.parametrize("endpoint", list(TUSHARE_FIELDS))
 def test_empty_policy_for_all_endpoints(endpoint: str, tmp_path: Path) -> None:
-    parameters = {
-        "fields": TUSHARE_FIELDS[endpoint],
-        **(
-            {"index_code": "000300.SH"}
-            if endpoint == "index_weight"
-            else {"ts_code": "H00300.CSI"}
-            if endpoint == "index_daily"
-            else {"ts_code": "000001.SZ", "suspend_type": "S"}
-            if endpoint == "suspend_d"
-            else {"ts_code": "000001.SZ"}
-        ),
-        **(
-            {"start_date": "20200101", "end_date": "20200131"}
-            if endpoint != "dividend"
-            else {}
-        ),
-    }
+    parameters = _endpoint_request_parameters(endpoint)
     spec = TushareRequestSpec.create(endpoint=endpoint, parameters=parameters)
     batch = TushareRequestBatch(
         "m3-g1-tushare-request-batch-v1",
@@ -1469,23 +1503,7 @@ def test_row_limit_guard_is_fail_closed(endpoint: str, delta: int, tmp_path: Pat
     count = ENDPOINT_POLICIES_V1[endpoint].row_limit + delta
     connector = FakeConnector({name: _frame(name) for name in TUSHARE_FIELDS})
     connector.frames[endpoint] = _frame(endpoint, rows=count)
-    parameters = {
-        "fields": TUSHARE_FIELDS[endpoint],
-        **(
-            {"index_code": "000300.SH"}
-            if endpoint == "index_weight"
-            else {"ts_code": "H00300.CSI"}
-            if endpoint == "index_daily"
-            else {"ts_code": "000001.SZ", "suspend_type": "S"}
-            if endpoint == "suspend_d"
-            else {"ts_code": "000001.SZ"}
-        ),
-        **(
-            {"start_date": "20200101", "end_date": "20200131"}
-            if endpoint != "dividend"
-            else {}
-        ),
-    }
+    parameters = _endpoint_request_parameters(endpoint)
     spec = TushareRequestSpec.create(endpoint=endpoint, parameters=parameters)
     phase = "INDEX_WEIGHT" if endpoint == "index_weight" else "HISTORY"
     batch = TushareRequestBatch(
@@ -1666,6 +1684,267 @@ def test_endpoint_policy_mapping_must_be_exact(tmp_path: Path) -> None:
     assert not (tmp_path / "raw").exists()
 
 
+def test_endpoint_policy_missing_extra_and_legacy_seven_fail_closed(tmp_path: Path) -> None:
+    connector = FakeConnector()
+    batch = _weight_batch()
+    missing = dict(ENDPOINT_POLICIES_V1)
+    del missing["fund_adj"]
+    extra = dict(ENDPOINT_POLICIES_V1)
+    extra["not_an_endpoint"] = EndpointPolicy(1, "REJECT")
+    legacy_seven = {
+        name: ENDPOINT_POLICIES_V1[name]
+        for name in (
+            "index_weight",
+            "daily",
+            "adj_factor",
+            "index_daily",
+            "suspend_d",
+            "stk_limit",
+            "dividend",
+        )
+    }
+    for policies in (missing, extra, legacy_seven):
+        with pytest.raises(ValueError, match="精确包含全部冻结 endpoint"):
+            execute_tushare_batch(
+                batch=batch,
+                connector=connector,  # type: ignore[arg-type]
+                raw_store=RawStore(tmp_path / "raw"),
+                journal_root=tmp_path / "journal",
+                endpoint_policies=policies,
+                request_rate_per_minute=60,
+                max_attempts=1,
+                retry_base_seconds=1.0,
+                classify_error=lambda _: "UNKNOWN",
+            )
+    assert connector.calls == []
+    assert not (tmp_path / "journal").exists()
+    assert not (tmp_path / "raw").exists()
+
+
+def test_malicious_caller_owned_fund_specs_fail_before_io(tmp_path: Path) -> None:
+    connector = FakeConnector()
+    with pytest.raises(ValueError, match="参数字段集合或 fields"):
+        bad_fields = TushareRequestSpec.create(
+            endpoint="fund_daily",
+            parameters={
+                "fields": "ts_code,trade_date,close",
+                "ts_code": "510300.SH",
+                "start_date": "20200101",
+                "end_date": "20200131",
+            },
+        )
+        TushareRequestBatch(
+            "m3-g1-tushare-request-batch-v1",
+            "HISTORY",
+            (bad_fields,),
+            backfill._batch_hash("HISTORY", (bad_fields,)),
+        )
+    with pytest.raises(ValueError, match="基金证券代码"):
+        bad_code = TushareRequestSpec.create(
+            endpoint="fund_adj",
+            parameters={
+                "fields": TUSHARE_FIELDS["fund_adj"],
+                "ts_code": "H00300.CSI",
+                "start_date": "20200101",
+                "end_date": "20200131",
+            },
+        )
+        TushareRequestBatch(
+            "m3-g1-tushare-request-batch-v1",
+            "HISTORY",
+            (bad_code,),
+            backfill._batch_hash("HISTORY", (bad_code,)),
+        )
+    with pytest.raises(ValueError, match="参数字段集合或 fields"):
+        bad_keys = TushareRequestSpec.create(
+            endpoint="fund_div",
+            parameters={
+                "fields": TUSHARE_FIELDS["fund_div"],
+                "ts_code": "510300.SH",
+                "start_date": "20200101",
+            },
+        )
+        TushareRequestBatch(
+            "m3-g1-tushare-request-batch-v1",
+            "HISTORY",
+            (bad_keys,),
+            backfill._batch_hash("HISTORY", (bad_keys,)),
+        )
+    assert connector.calls == []
+    assert not (tmp_path / "journal").exists()
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "expected"),
+    [
+        (
+            dt.date(2020, 12, 30),
+            dt.date(2021, 1, 2),
+            [("20201230", "20210102")],
+        ),
+        (
+            dt.date(2020, 1, 1),
+            dt.date(2020, 12, 31),
+            [("20200101", "20201231")],
+        ),
+        (
+            dt.date(2020, 6, 15),
+            dt.date(2020, 6, 15),
+            [("20200615", "20200615")],
+        ),
+        (
+            dt.date(2016, 1, 1),
+            dt.date(2019, 12, 31),
+            [("20160101", "20191231")],
+        ),
+        (
+            dt.date(2016, 1, 1),
+            dt.date(2020, 1, 1),
+            [("20160101", "20191231"), ("20200101", "20200101")],
+        ),
+        (
+            dt.date(2016, 6, 15),
+            dt.date(2021, 3, 1),
+            [("20160615", "20191231"), ("20200101", "20210301")],
+        ),
+    ],
+)
+def test_plan_fund_adj_requests_segments_are_contiguous_non_overlapping(
+    start: dt.date,
+    end: dt.date,
+    expected: list[tuple[str, str]],
+) -> None:
+    specs = plan_fund_adj_requests(symbol="510300.SH", start=start, end=end)
+    ranges = [
+        (dict(spec.parameters)["start_date"], dict(spec.parameters)["end_date"])
+        for spec in specs
+    ]
+    assert ranges == expected
+    parsed = [
+        (
+            dt.datetime.strptime(left, "%Y%m%d").date(),
+            dt.datetime.strptime(right, "%Y%m%d").date(),
+        )
+        for left, right in ranges
+    ]
+    assert parsed[0][0] == start
+    assert parsed[-1][1] == end
+    for index, (seg_start, seg_end) in enumerate(parsed):
+        assert seg_start <= seg_end
+        assert (seg_end - seg_start).days + 1 <= 1461
+        if index > 0:
+            prev_end = parsed[index - 1][1]
+            assert seg_start == prev_end + dt.timedelta(days=1)
+            assert seg_start > parsed[index - 1][0]
+    for spec in specs:
+        assert spec.endpoint == "fund_adj"
+        assert dict(spec.parameters)["fields"] == TUSHARE_FIELDS["fund_adj"]
+        assert dict(spec.parameters)["ts_code"] == "510300.SH"
+    again = plan_fund_adj_requests(symbol="510300.SH", start=start, end=end)
+    assert [spec.request_id for spec in again] == [spec.request_id for spec in specs]
+
+
+def test_plan_fund_adj_requests_rejects_illegal_inputs_before_building_specs() -> None:
+    start = dt.date(2020, 1, 1)
+    end = dt.date(2020, 1, 2)
+    for bad in (True, "", "00700.HK", "H00300.CSI", "51030.SH"):
+        with pytest.raises(ValueError, match="基金|证券代码"):
+            plan_fund_adj_requests(symbol=bad, start=start, end=end)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="date"):
+        plan_fund_adj_requests(
+            symbol="510300.SH",
+            start="20200101",  # type: ignore[arg-type]
+            end=end,
+        )
+    with pytest.raises(ValueError, match="date"):
+        plan_fund_adj_requests(
+            symbol="510300.SH",
+            start=True,  # type: ignore[arg-type]
+            end=end,
+        )
+    with pytest.raises(ValueError, match="日期范围"):
+        plan_fund_adj_requests(symbol="510300.SH", start=end, end=start)
+
+
+def test_fund_fetch_dispatch_passes_exact_parameters(tmp_path: Path) -> None:
+    daily = TushareRequestSpec.create(
+        endpoint="fund_daily",
+        parameters=_endpoint_request_parameters("fund_daily"),
+    )
+    adj = TushareRequestSpec.create(
+        endpoint="fund_adj",
+        parameters=_endpoint_request_parameters("fund_adj"),
+    )
+    div = TushareRequestSpec.create(
+        endpoint="fund_div",
+        parameters=_endpoint_request_parameters("fund_div"),
+    )
+    batch = backfill._make_batch("HISTORY", (daily, adj, div))
+    connector = FakeConnector()
+    _execute(tmp_path, connector, batch=batch)
+    by_endpoint = {name: values for name, values in connector.calls}
+    assert by_endpoint["fund_daily"] == {
+        "symbol": "510300.SH",
+        "start": dt.date(2020, 1, 1),
+        "end": dt.date(2020, 1, 31),
+        "fields": TUSHARE_FIELDS["fund_daily"],
+    }
+    assert by_endpoint["fund_adj"] == {
+        "symbol": "510300.SH",
+        "start": dt.date(2020, 1, 1),
+        "end": dt.date(2020, 1, 31),
+        "fields": TUSHARE_FIELDS["fund_adj"],
+    }
+    assert by_endpoint["fund_div"] == {
+        "symbol": "510300.SH",
+        "fields": TUSHARE_FIELDS["fund_div"],
+    }
+
+
+def test_original_seven_endpoint_request_ids_and_history_plan_unchanged() -> None:
+    daily = backfill._make_spec(
+        "daily",
+        ts_code="000001.SZ",
+        start_date="20200115",
+        end_date="20200302",
+    )
+    # 冻结身份：原有七 endpoint 的 request_id 仍只依赖既有 fields/parameters。
+    expected_daily_id = backfill._request_id(
+        "daily",
+        tuple(
+            sorted(
+                {
+                    "fields": TUSHARE_FIELDS["daily"],
+                    "ts_code": "000001.SZ",
+                    "start_date": "20200115",
+                    "end_date": "20200302",
+                }.items()
+            )
+        ),
+    )
+    assert daily.request_id == expected_daily_id
+    weight = _weight_batch()
+    history = backfill.HistoryWindow(dt.date(2020, 1, 15), dt.date(2020, 3, 2))
+    plan = plan_history_requests(
+        index_weight_batch=weight,
+        symbols=["000001.SZ", "600000.SH"],
+        benchmark="H00300.CSI",
+        history=history,
+    )
+    assert len(plan.history_batch.requests) == 11
+    assert {spec.endpoint for spec in plan.history_batch.requests} == {
+        "daily",
+        "adj_factor",
+        "stk_limit",
+        "dividend",
+        "suspend_d",
+        "index_daily",
+    }
+    assert all(
+        not spec.endpoint.startswith("fund_") for spec in plan.history_batch.requests
+    )
+
+
 def test_data_layer_does_not_import_research() -> None:
     source = Path(backfill.__file__).read_text(encoding="utf-8")
     assert "quant.research" not in source
@@ -1834,3 +2113,145 @@ def test_bounded_permanent_failure_not_committed(tmp_path: Path) -> None:
             classifier=lambda _e: "PERMANENT",
         )
     assert not (tmp_path / "journal" / batch.requests[0].request_id / "receipt.json").exists()
+
+
+def test_b1b_etf_history_plan_preserves_equity_request_ids() -> None:
+    from quant.data.m3_backfill import HistoryWindow, plan_history_requests, plan_index_weight_requests
+    from quant.research.m3.g1_planning import plan_g1_etf_history_requests
+
+    symbols = ["000001.SZ", "600000.SH"]
+    history = HistoryWindow(dt.date(2016, 2, 1), dt.date(2016, 2, 2))
+    weights = plan_index_weight_requests(
+        index_code="000300.SH",
+        start=dt.date(2016, 2, 1),
+        end=dt.date(2016, 2, 1),
+        warmup_months=1,
+    )
+    legacy = plan_history_requests(
+        index_weight_batch=weights,
+        symbols=symbols,
+        benchmark="H00300.CSI",
+        history=history,
+    )
+    etf = plan_g1_etf_history_requests(
+        index_weight_batch=weights,
+        symbols=symbols,
+        history=history,
+    )
+    legacy_equity = {
+        item.request_id
+        for item in legacy.history_batch.requests
+        if item.endpoint != "index_daily"
+    }
+    etf_equity = {
+        item.request_id
+        for item in etf.history_batch.requests
+        if item.endpoint not in {"fund_daily", "fund_adj", "fund_div"}
+    }
+    assert legacy_equity == etf_equity
+    assert not any(item.endpoint == "index_daily" for item in etf.history_batch.requests)
+    assert sum(1 for item in etf.history_batch.requests if item.endpoint == "fund_daily") == 1
+    assert sum(1 for item in etf.history_batch.requests if item.endpoint == "fund_div") == 1
+    assert sum(1 for item in etf.history_batch.requests if item.endpoint == "fund_adj") >= 1
+    assert len(etf.history_batch.requests) == len(legacy_equity) + 1 + sum(
+        1 for item in etf.history_batch.requests if item.endpoint == "fund_adj"
+    ) + 1
+
+
+def test_b1b_full_window_fund_closure_three_adj_and_equity_ids() -> None:
+    """Config-like span: 3 fund_adj segments; equity request_ids unchanged; no H00300."""
+    from quant.data.m3_backfill import HistoryWindow, plan_history_requests, plan_index_weight_requests
+    from quant.research.m3.g1_planning import plan_g1_etf_history_requests
+
+    symbols = ["000001.SZ", "600000.SH"]
+    history = HistoryWindow(dt.date(2015, 10, 8), dt.date(2026, 7, 10))
+    weights = plan_index_weight_requests(
+        index_code="000300.SH",
+        start=dt.date(2016, 1, 4),
+        end=dt.date(2016, 1, 4),
+        warmup_months=1,
+    )
+    legacy = plan_history_requests(
+        index_weight_batch=weights,
+        symbols=symbols,
+        benchmark="H00300.CSI",
+        history=history,
+    )
+    etf = plan_g1_etf_history_requests(
+        index_weight_batch=weights,
+        symbols=symbols,
+        history=history,
+    )
+    legacy_equity = [
+        item.request_id
+        for item in legacy.history_batch.requests
+        if item.endpoint != "index_daily"
+    ]
+    etf_equity = [
+        item.request_id
+        for item in etf.history_batch.requests
+        if item.endpoint not in {"fund_daily", "fund_adj", "fund_div"}
+    ]
+    assert etf_equity == legacy_equity
+    n_adj = sum(1 for item in etf.history_batch.requests if item.endpoint == "fund_adj")
+    assert n_adj == 3
+    assert len(etf.history_batch.requests) == len(etf_equity) + 1 + n_adj + 1
+    assert not any(item.endpoint == "index_daily" for item in etf.history_batch.requests)
+    assert not any(
+        dict(item.parameters).get("ts_code") == "H00300.CSI"
+        for item in etf.history_batch.requests
+    )
+    # Production CSI300 arithmetic under this closure: 5*637 + 5 == 3190.
+    assert 5 * 637 + 1 + 3 + 1 == 3190
+
+
+def test_b1b_r3_synthetic_637_equity_3185_total_3190() -> None:
+    """Algorithmic 3185/3190 closure on 637 synthetic A-share codes (not real S=637)."""
+    from quant.data.m3_backfill import HistoryWindow, plan_history_requests, plan_index_weight_requests
+    from quant.research.m3.g1_planning import plan_g1_etf_history_requests
+
+    symbols: list[str] = []
+    for i in range(637):
+        code = f"{i + 1:06d}"
+        symbols.append(f"{code}.SZ" if i % 2 == 0 else f"{code}.SH")
+    assert len(symbols) == len(set(symbols)) == 637
+    history = HistoryWindow(dt.date(2015, 10, 8), dt.date(2026, 7, 10))
+    weights = plan_index_weight_requests(
+        index_code="000300.SH",
+        start=dt.date(2016, 1, 4),
+        end=dt.date(2016, 1, 4),
+        warmup_months=1,
+    )
+    legacy = plan_history_requests(
+        index_weight_batch=weights,
+        symbols=symbols,
+        benchmark="H00300.CSI",
+        history=history,
+    )
+    etf = plan_g1_etf_history_requests(
+        index_weight_batch=weights,
+        symbols=symbols,
+        history=history,
+    )
+    legacy_equity_ids = {
+        item.request_id
+        for item in legacy.history_batch.requests
+        if item.endpoint != "index_daily"
+    }
+    etf_equity_ids = {
+        item.request_id
+        for item in etf.history_batch.requests
+        if item.endpoint not in {"fund_daily", "fund_adj", "fund_div"}
+    }
+    assert len(legacy_equity_ids) == 3185
+    assert etf_equity_ids == legacy_equity_ids
+    n_daily = sum(1 for item in etf.history_batch.requests if item.endpoint == "fund_daily")
+    n_adj = sum(1 for item in etf.history_batch.requests if item.endpoint == "fund_adj")
+    n_div = sum(1 for item in etf.history_batch.requests if item.endpoint == "fund_div")
+    assert (n_daily, n_adj, n_div) == (1, 3, 1)
+    assert len(etf.history_batch.requests) == 3190
+    assert not any(item.endpoint == "index_daily" for item in etf.history_batch.requests)
+    assert not any(
+        dict(item.parameters).get("ts_code") == "H00300.CSI"
+        for item in etf.history_batch.requests
+    )

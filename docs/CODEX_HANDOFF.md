@@ -1,11 +1,54 @@
 # Codex 项目迁移交接
 
-> 生成时间：2026-07-17；最近续写：2026-07-18（Asia/Shanghai）  
+> 生成时间：2026-07-17；最近续写：2026-07-22（Asia/Shanghai）
 > 当前工作路径：Windows `F:\AI_Coding\QuantitativeTrading`；WSL
-> `/home/mabw/AI_Coding_win/QuantitativeTrading` 解析到同一目录。`.git` 仍为空目录，不能提供可靠状态。  
+> `/home/mabw/AI_Coding_win/QuantitativeTrading` 解析到同一目录。Git 已有 `master` 与初始提交
+> `ed77978`；当前工作树含本轮未提交文档/实现变更，必须用 `git status` 逐项保护。
 > 本文是迁移快照，不取代 SSOT。里程碑以 [`../项目实施路线图.md`](../项目实施路线图.md) 为准，当前验收以
 > [`M3当前验收与返工总览.md`](M3当前验收与返工总览.md) 为准，架构理由以
 > [`../A股港股通个人量化投研交易系统调研.md`](../A股港股通个人量化投研交易系统调研.md) 为准。
+
+### 2026-07-22 最新续写摘要（覆盖下文旧流程与停止点）
+
+- 用户最终明确交接方式：Codex 只提供交接文档和 prompt，由用户在外部自行执行全部后续任务；结果返回后
+  再由 Codex 最终验收。此前误启动的 Cursor 协调会话及其 WSL 定向 pytest 已停止；其部分诊断产物仅作
+  只读证据，不构成正式交付或独立初验，R5 仍待全新外部会话初验。
+- 22:xx 最新停止点：BENCH-B1B 已完成外部实现、R1/R3/R4 返工闭环和不同全新 Cursor 会话的独立
+  复验；主 Agent 的 WSL base 静态 Gate 通过，四组单测为 `214 + 250 + 31 + 24 = 519 passed`。
+  R5 又把两个 HISTORY resume 测试从正式规模缩到最小真实 fixture，外部实现自测为 `2 passed in
+  42.02s`，但**尚未进行全新会话独立初验和主 Agent 验收**，不得把 R5 写成关闭。
+- 正式 G1 HISTORY 已按预算新增且仅新增 510300.SH 五个身份，当前闭包为 `637 symbols / 3190
+  requests`。三段 `fund_adj` 分别 791/972/851 行，`fund_div` 22 行，`fund_daily` 2614 行；五个
+  `intent/candidate/receipt` 均已原子提交，禁止重复请求。基金五响应严格重读并独立映射成功，产生 2614
+  个 2015-10-09..2026-07-10 benchmark bars，source snapshot
+  `a4cd3f23aab767e4f1af090cc3a283df8570ebd59af8a402e4173653fa28582c`。
+- 正式全候选仍 fail closed：WSL `status` 在 1993.4 秒后返回
+  `INSPECT:G1_WORKFLOW_QUALITY_FAILED`；后续零网络组件诊断已把首个失败定位为
+  `corporate_action_selection` 的 `G1_CORPORATE_ACTION_RESULT_INVALID`，触发于
+  `m3_execution_facts.py::_assert_ledger_evidence_closure`，表现为 ledger `event_id` 与根据所选 evidence
+  重算的 `_event_id_sha256(...)` 不一致。在此之前 daily/adj_factor、stk_limit、suspend、benchmark 均已
+  通过。下一步复核最小复现并冻结最小返工，不能重做五个 API 请求，也不能进入
+  REFERENCE/PREPARE/PUBLISH。
+- 环境事实已纠正：当前 Ubuntu 是 **WSL1**（内核 `4.4.0-22621-Microsoft`，根为 `wslfs`），`/tmp`
+  的 `RENAME_NOREPLACE` 探针为 False；机器固件虚拟化当前为 False。现机没有可用 WSL ext4 release
+  root，正式 PUBLISH 仍被环境 Gate 阻塞。启用 VT-x/虚拟化并迁移或新建 WSL2 属于需用户配合的主机变更，
+  不得用 Windows/DrvFS 或降级原子合同绕过。
+- 用户恢复“外部 Cursor 实现 → 另一全新外部 Cursor 独立初验 → 主 Agent 终验”，暂停内部 subagent；
+  Windows 反馈环可使用最新 PowerShell 7（当前探测为 7.6.4）与 Miniforge，WSL Miniforge `base` 仍是
+  Gate 权威。调整 Codex 本机权限/人工审批后，外部 Cursor CLI 已恢复；B1A 实现、完整独立初验及 R1/R2
+  两轮“返工实现→独立复验”均使用互相独立的全新会话完成。后续继续保持角色与白名单隔离。
+- A 股闭环优先。用户确认 G1 benchmark 路线 B：`510300.SH` ETF 总回报代理。B0/R1 以三次总计、各
+  endpoint 恰好一次的 raw-first 小窗探针证明 `fund_daily/fund_div/fund_adj` 当前账号均可用：分别返回
+  8/22/8 行；所有 raw pair 均可重读且不含 token。`fund_div` 有供应商重复/投影冲突，必须按经济事件键
+  去重并对核心字段冲突 fail closed；`fund_adj` 正常返回唯一正因子。R2 又以 2026-01-19 除息窗口证明
+  `pre_close=previous_close-div_cash` 与复权因子比关系在既有 `rtol=0.001` 内成立。B1A 基础设施已完成外部
+  实现、独立初验、两轮返工复验与主验；最终 WSL 为 282 passed，Ruff/mypy/whitespace Gate 通过。B1B
+  510300 总回报映射/全链身份重基线任务书已解冻，尚未进入外部实现。
+- M4-P2A Gateway dispatch 边界已完成外部独立初验与主验。双平台定向 pytest 均为 `17 passed`，Ruff
+  与无增量 mypy 通过；P2A 合同子包关闭，但 PaperGateway、service、OMS/store、对账和四周 PAPER Gate
+  仍未完成，不标记 P2/M4 Gate 通过。
+- M1-U0C 截至 2026-07-22 12:34 仍为真实 `2/5`；当日任务将在 21:30 执行。HK60 旧 plan 仍停在第 3 批
+  稳定缺行事故，禁止重试旧 attempt 或 finalize，A 股优先期间只保留诊断证据。
 
 ### 2026-07-18 续写摘要（覆盖下文旧停止点）
 
@@ -38,6 +81,14 @@
   可被异常 runner 注入绝对路径，已收紧为 64 位小写 hash 和唯一相对 receipt selector并新增反例；修复后
   WSL/Windows 合并定向集均为 27 passed 且 Ruff/mypy 通过，真实 Gate 仍为 0/5。Task Scheduler Operational 历史通道
   仍关闭，需管理员在 7 月 20 日首跑前启用；项目单行日志和 task info 不受影响。
+- 2026-07-19 HK60 第 3 批以 `HK_HISTORY_RAW_INVALID` fail-closed 停止，runner 已退出；当前 2 receipt /
+  3 intent / 3 attempt / 0 finalize。唯一缺键为 `01065.HK@2026-05-05`。2026-07-22 一次 targeted
+  `hk_daily` 仍返回 0 行并 raw-first 留存，证明不是批量偶发漏行；现行 session 全覆盖合同需要显式无行情
+  事实语义。禁止重试旧 attempt 或 finalize，见
+  [`agent/M1_HK-HISTORY-R1_第三批稳定缺行事故与重试裁定.md`](agent/M1_HK-HISTORY-R1_第三批稳定缺行事故与重试裁定.md)。
+- M1-U0C 的 2026-07-20、21 两次真实 Task Scheduler 运行均 result=0，项目日志均证明首次 SUCCESS、同
+  identity 重放 ALREADY_COMPLETE；当前 streak 2/5。Operational 历史通道仍关闭，最终以项目日志、
+  verified receipt 和 Task info 共同验真，不把 2/5 写成 Gate 通过。
 
 ## 1. 项目目标和当前状态
 
@@ -58,12 +109,12 @@
 | M0 骨架与契约 | 已完成 | 项目结构、Schema、枚举、连接器边界和最小测试已建立 |
 | M1 基础数据 | 主链大部完成，Instrument/历史仍有阻塞 | 股票、日历、港股通事实链和查询已贯通；HK ETF 合规来源、港股 60 日行情、复权和连续运行未关闭 |
 | M2 基线策略 | 基线闭环完成，统一回测器未完 | S0/S1、总回报研究价、walk-forward、成本压力和报告已完成；股票/ETF 统一规则接线仍待做 |
-| M3 Qlib 研究链 | HISTORY request/raw 闭包完成，G0–G9 Gate 未关闭 | 3186/3186 identity 已闭合；基准 full-OHLC 与分红语义待决；无正式 `VerifiedG1Release` |
+| M3 Qlib 研究链 | 3190 HISTORY receipt 闭包，正式候选质量失败 | 510300 五响应/mapper 已闭合；full candidate 为 `G1_CANDIDATE_COMPONENT_INVALID`；无正式 `VerifiedG1Release` |
 | M4 纸面交易 | 基础领域/存储/OMS/风控子包完成，业务闭环未完成 | 配置、领域合同、端口、SQLite、OMS、事前风控、港股通纯规则与 RouteContext 已有；planner/账本/Paper Gateway/服务/对账/操作尚未闭环 |
 | M5 实盘 | 未开始 | 当前没有券商量化权限；不实现或启用 LIVE/无人值守交易 |
 
-2026-07-18 当前没有外部 Cursor Agent 在后台运行；HISTORY 已在后续任务中完成 3186/3186 raw/receipt
-闭包。不要再按旧 PILOT10 停止点重做或重复消耗 API。
+2026-07-22 本次交接前的 R5 Cursor 会话已自然结束；HISTORY 已在后续任务中完成 3190/3190 raw/receipt
+闭包。不要再按旧 PILOT10 或旧 3186 停止点重做，也不要重复消耗五个 510300 API identity。
 
 ### 1.3 最近真实数据终态
 
@@ -217,11 +268,13 @@ evidence，禁止删除或覆盖；后续只处理 G1 契约/发布阻塞，不�
 
 ### 5.2 M3
 
-- HISTORY 3186/3186 request/raw/receipt 已闭合；不得重做旧 PILOT10。
-- REFERENCE、PREPARE、PUBLISH 尚未完成；G1 当前阻塞为总收益基准 full-OHLC 选择与分红语义，所有
-  G0–G9 Gate 仍未关闭。
-- 当前 `/mnt/g` DrvFS/WSL 环境不支持正式 release 要求的原子 `RENAME_NOREPLACE`。可在 Windows 盘完成
-  PREPARE，但正式 PUBLISH 必须选择经探针验证的 WSL ext4 release root，不能降低合同。
+- HISTORY 3190/3190 request/raw/receipt 已闭合；不得重做旧 PILOT10、旧 H00300 或五个 510300 请求。
+- 510300 ETF full-OHLC、三段复权、分红语义和 source snapshot mapper 已由正式数据证明通过；full candidate
+  仍以 `G1_CANDIDATE_COMPONENT_INVALID` fail closed。先做组件级零网络诊断并走“外部实现→独立初验→
+  主验”返工，REFERENCE、PREPARE、PUBLISH 均不得提前执行。
+- 当前 Ubuntu 是 WSL1/wslfs，host 和文件系统均不支持正式 release 要求的原子
+  `RENAME_NOREPLACE`；固件虚拟化关闭。正式 PUBLISH 必须等用户完成主机虚拟化/WSL2 条件并在真实 ext4
+  root 复验，不能降低合同。
 - 无正式 `VerifiedG1Release` 时禁止启动真实 G2A；G2–G9 必须按总规划依赖顺序推进。
 - base 不安装 Qlib；所有真 Qlib provider/readback 只在 `py312` 执行，核心回归仍回到 base。
 
@@ -235,8 +288,8 @@ evidence，禁止删除或覆盖；后续只处理 G1 契约/发布阻塞，不�
 
 ### 5.4 仓库与迁移问题
 
-- 当前 `.git` 是空目录，**没有 `.git/HEAD`**；不要把它当成可恢复 Git 历史，也不要在未获用户决定时自行
-  `git init`。迁移完成后建议由用户明确选择新建仓库和首次基线提交。
+- Git 已存在有效 HEAD：`master@ed77978`。后续不得再执行 `git init`；当前未提交改动属于正在进行的
+  里程碑工作，提交前须按白名单核对，不得覆盖用户或其他 Agent 改动。
 - README 链接了根目录 `karpathy-guidelines.md`，但当前文件实际缺失；现行代码规则在
   [`.ai/coding_rules.md`](../.ai/coding_rules.md)。迁移后应决定恢复该文件或修正引用，避免断链。
 - 当前约有 94 个生产 Python 文件、63 个测试文件。`data/` 约 15MB，`artifacts/` 约 2MB。
@@ -393,7 +446,7 @@ run state；这会丢失 INDEX/HISTORY receipt 和真实数据血缘。`configs/
 12. **默认运行时仍是 WSL Miniforge base。** 本轮用户明确允许 Windows Miniforge 做兼容性定向验证；
     不得因此把生产运行时、路径或依赖合同改成 Windows-only。
 13. **不要让因子/策略/执行层直接扫描 `data/` 或 `archive/`。** 只通过 `quant.data` repository/显式工具消费验证对象。
-14. **不要初始化 Git、删除 11GB legacy 数据或改 receipt 来适应新路径，除非用户明确授权。** 先保留旧目录和哈希证据。
+14. **不要重新初始化 Git、删除 11GB legacy 数据或改 receipt 来适应新路径，除非用户明确授权。** 先保留旧目录和哈希证据。
 15. **不要在普通开发返工中机械跑全量 pytest、使用大数据样本或高频轮询长任务。** 当前约束是 usage/效率，不是时间。
 
 ## 9. 下一步建议
@@ -403,18 +456,22 @@ run state；这会丢失 INDEX/HISTORY receipt 和真实数据血缘。`configs/
 1. Windows `F:\AI_Coding\QuantitativeTrading` 与 WSL
    `/home/mabw/AI_Coding_win/QuantitativeTrading` 已确认解析到同一目录；后续不再按旧 `/mnt/g` 路径执行。
 2. `configs/tushare.local.toml` 继续保持本地 ignored 且不得输出 token。
-3. `.git` 仍无有效 HEAD；在用户明确决定前不执行 `git init`，只能用文件清单、hash 和测试报告审计变更。
+3. Git 已有 `master@ed77978`；继续用 `git status`、diff、hash 和测试报告审计变更，不执行第二次初始化。
 4. `archive/legacy_pre_greenfield/` 不参与生产或普通测试，未经单独授权不删除。
 
 ### 9.2 恢复 M3 主线
 
-HISTORY 已完成；下一步不再执行旧 PILOT10：
+HISTORY receipts 已完成，但 HISTORY stage 尚未通过：
 
-1. 先由用户决定 G1 总收益基准的可交易 full-OHLC 来源/代理，不得把 H00300.CSI 缺失 OHLC 静默填充。
-2. 冻结并关闭分红语义反例后，再推进 REFERENCE、PREPARE；期间冻结相关 identity 输入，避免漂移。
-3. 在经验证支持 `RENAME_NOREPLACE` 的 WSL ext4 release root 执行正式 PUBLISH，取得真正
-   `VerifiedG1Release`。
-4. 再按 `G2A→G2B→G2C→G3A→G3B→G4…→G9` 的任务书顺序推进 Qlib provider、标签、模型、回测、追踪和 Gate。
+1. 先由全新外部只读会话独立初验 R5 最小 fixture；通过后主验两个 resume 测试和定向静态检查。
+2. 对正式 `G1_CANDIDATE_COMPONENT_INVALID` 做零网络组件级定位。基金 mapper 已排除，优先逐层验证股票
+   daily/adj_factor、严格复权覆盖、stk_limit/suspend、公司行动选择/对账和最终 Schema；避免每次只重复
+   20–35 分钟 full build 而无细分证据。
+3. 若发现实现缺陷，先冻结返工任务书，再走全新 Cursor 实现、另一全新 Cursor 独立初验、主 Agent 终验；
+   若是正式数据缺陷，保留 raw 并按既有 fail-closed 合同裁定，禁止改 receipt 或静默填充。
+4. full candidate/HISTORY 真正通过后才运行 REFERENCE 和 PREPARE。正式 PUBLISH 还需用户启用主机虚拟化
+   并提供经探针验证的 WSL2 ext4 root，取得 `VerifiedG1Release` 后方可启动真实 G2A。
+5. 再按 `G2A→G2B→G2C→G3A→G3B→G4…→G9` 的任务书顺序推进 Qlib provider、标签、模型、回测、追踪和 Gate。
 
 ### 9.3 M4 与其他补项
 

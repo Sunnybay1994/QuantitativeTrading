@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import importlib
+import re
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,9 @@ import polars as pl
 
 from quant.data.base import BaseConnector
 from quant.settings import load_tushare_settings
+
+# 与 backfill `_A_SHARE` 同口径：仅 ASCII [0-9]，拒绝 Unicode 数字。
+_FUND_SYMBOL = re.compile(r"^[0-9]{6}\.(?:SH|SZ)$")
 
 
 class TushareConnector(BaseConnector):
@@ -288,6 +292,46 @@ class TushareConnector(BaseConnector):
             )
         )
 
+    def fetch_fund_daily_raw(
+        self, *, symbol: str, start: dt.date, end: dt.date, fields: str
+    ) -> pl.DataFrame:
+        """单次 fund_daily 请求；原样返回，不去重/分块。"""
+        _validate_fund_range(start, end)
+        _validate_fund_symbol(symbol)
+        return _to_polars(
+            self.client.fund_daily(
+                ts_code=symbol,
+                start_date=_date(start),
+                end_date=_date(end),
+                fields=fields,
+            )
+        )
+
+    def fetch_fund_adj_raw(
+        self, *, symbol: str, start: dt.date, end: dt.date, fields: str
+    ) -> pl.DataFrame:
+        """单次 fund_adj 请求；原样返回，不去重/分块。"""
+        _validate_fund_range(start, end)
+        _validate_fund_symbol(symbol)
+        return _to_polars(
+            self.client.fund_adj(
+                ts_code=symbol,
+                start_date=_date(start),
+                end_date=_date(end),
+                fields=fields,
+            )
+        )
+
+    def fetch_fund_div_raw(self, *, symbol: str, fields: str) -> pl.DataFrame:
+        """单次 fund_div 请求；原样返回，不去重/分块。"""
+        _validate_fund_symbol(symbol)
+        return _to_polars(
+            self.client.fund_div(
+                ts_code=symbol,
+                fields=fields,
+            )
+        )
+
 
 def _to_polars(frame: Any) -> pl.DataFrame:
     if isinstance(frame, pl.DataFrame):
@@ -316,6 +360,19 @@ def _validate_a_share_symbol(symbol: str) -> None:
         raise ValueError(f"非法标准证券代码: {symbol}") from exc
     if not code.isdigit() or market not in {"SH", "SZ"}:
         raise ValueError(f"非法标准证券代码: {symbol}")
+
+
+def _validate_fund_symbol(symbol: object) -> None:
+    """六位 ASCII .SH/.SZ 可交易基金代码；在任何 SDK 调用前拒绝非法输入。"""
+    if type(symbol) is not str or not _FUND_SYMBOL.fullmatch(symbol):
+        raise ValueError("非法基金代码")
+
+
+def _validate_fund_range(start: object, end: object) -> None:
+    if type(start) is not dt.date or type(end) is not dt.date:
+        raise ValueError("start/end 必须是 date")
+    if start > end:
+        raise ValueError("start 不得晚于 end")
 
 
 def _validate_hk_symbol_batch(symbols: tuple[str, ...]) -> None:

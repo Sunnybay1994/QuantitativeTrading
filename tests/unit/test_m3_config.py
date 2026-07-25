@@ -101,7 +101,7 @@ def _identities(document: Mapping[str, object]) -> dict[str, str]:
 def test_valid_example_has_closed_shape_and_nine_bare_identities() -> None:
     loaded = _loaded()
     leaves = list(_iter_assignment_leaves(loaded.document, []))
-    assert len(leaves) == 151
+    assert len(leaves) == 154
     shapes = {".".join(str(part) for part in ())}  # force a distinct local set
     shapes.clear()
     for tokens, _value in leaves:
@@ -112,7 +112,7 @@ def test_valid_example_has_closed_shape_and_nine_bare_identities() -> None:
             else:
                 parts.append(token)
         shapes.add(".".join(parts))
-    assert len(_FIELD_SPECS) == 138
+    assert len(_FIELD_SPECS) == 141
     assert shapes == set(_FIELD_SPECS)
     assert sum(not spec.required for spec in _FIELD_SPECS.values()) == 1
     assert all(spec.kind and spec.selectors <= set(SELECTOR_ATTRS) for spec in _FIELD_SPECS.values())
@@ -341,6 +341,9 @@ def test_cost_period_gaps_overlap_reverse_and_closed_tail_fail() -> None:
         ("g1_backfill.feature_warmup_sessions", 59),
         ("g1_backfill.endpoint_row_limits.daily", 5999),
         ("g1_backfill.endpoint_row_limits.dividend", 5001),
+        ("g1_backfill.endpoint_row_limits.fund_daily", 4999),
+        ("g1_backfill.endpoint_row_limits.fund_adj", 2001),
+        ("g1_backfill.endpoint_row_limits.fund_div", 5001),
     ],
 )
 def test_version_frozen_literals_reject_nearby_values(path: str, value: object) -> None:

@@ -7,7 +7,7 @@ import hashlib
 import json
 import math
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -186,14 +186,57 @@ class CorporateActionReconciliationResult:
             ) from None
 
 
-def map_g1_price_limit_response(*, response: VerifiedRawResponse) -> pl.DataFrame:
-    """Map verified ``stk_limit`` rows to ``PriceLimit1d``; sentinel rows omitted."""
+def build_g1_daily_pre_close_lookup(
+    *, daily_responses: Sequence[VerifiedRawResponse]
+) -> dict[tuple[str, dt.date], float]:
+    """Build ``(symbol, trade_date) -> daily.pre_close`` from verified daily responses.
+
+    Used to repair ``stk_limit`` rows whose ``pre_close`` is a vendor sentinel while
+    ``up_limit``/``down_limit`` remain positive vendor facts. Does not invent limits.
+    """
+    out: dict[tuple[str, dt.date], float] = {}
+    if not isinstance(daily_responses, Sequence):
+        raise M3G1ExecutionFactError("G1_EXECUTION_FACT_RESPONSE_INVALID")
+    for response in daily_responses:
+        verified = _consume_verified(response)
+        frame = _prepare(verified, endpoint="daily", allow_empty=True)
+        start, end = _request_range(verified)
+        ts_code = _require_param(verified, "ts_code")
+        for raw in frame.iter_rows(named=True):
+            symbol = _require_a_share(raw.get("ts_code"), expected=ts_code)
+            trade_date = _parse_trade_date(raw.get("trade_date"), start=start, end=end)
+            pre_close = _parse_strict_scalar(raw.get("pre_close"), allow_null=False)
+            assert pre_close is not None
+            if pre_close <= 0:
+                raise M3G1ExecutionFactError("G1_EXECUTION_FACT_VALUE_INVALID")
+            key = (symbol, trade_date)
+            if key in out:
+                raise M3G1ExecutionFactError("G1_EXECUTION_FACT_DUPLICATE_KEY")
+            out[key] = pre_close
+    return out
+
+
+def map_g1_price_limit_response(
+    *,
+    response: VerifiedRawResponse,
+    daily_pre_close: Mapping[tuple[str, dt.date], float] | None = None,
+) -> pl.DataFrame:
+    """Map verified ``stk_limit`` rows to ``PriceLimit1d``; sentinel rows omitted.
+
+    When ``pre_close`` is null/0 but both limit sides are positive, and
+    ``daily_pre_close`` supplies a same-day daily ``pre_close`` that sits strictly
+    between the vendor limits, emit a clean row using that daily value. Empty
+    sentinel rows (null/0 pre_close with absent/zero sides) remain omitted.
+    """
     try:
         verified = _consume_verified(response)
         frame = _prepare(verified, endpoint="stk_limit", allow_empty=False)
         start, end = _request_range(verified)
         ts_code = _require_param(verified, "ts_code")
         snapshot = verified.receipt.raw_snapshot_id
+        lookup = daily_pre_close
+        if lookup is not None and not isinstance(lookup, Mapping):
+            raise M3G1ExecutionFactError("G1_EXECUTION_FACT_VALUE_INVALID")
         rows: list[dict[str, Any]] = []
         for raw in frame.iter_rows(named=True):
             symbol = _require_a_share(raw.get("ts_code"), expected=ts_code)
@@ -205,7 +248,27 @@ def map_g1_price_limit_response(*, response: VerifiedRawResponse) -> pl.DataFram
                 for side in (up_limit, down_limit):
                     if side is not None and side < 0:
                         raise M3G1ExecutionFactError("G1_EXECUTION_FACT_VALUE_INVALID")
-                continue
+                sides_absent = (up_limit is None or up_limit == 0.0) and (
+                    down_limit is None or down_limit == 0.0
+                )
+                if sides_absent:
+                    continue
+                if (
+                    up_limit is None
+                    or down_limit is None
+                    or up_limit <= 0
+                    or down_limit <= 0
+                ):
+                    # One-sided / non-positive sides with sentinel pre_close: omit.
+                    continue
+                if lookup is None:
+                    continue
+                filled = lookup.get((symbol, trade_date))
+                if filled is None or filled <= 0:
+                    continue
+                if not (down_limit < filled < up_limit):
+                    raise M3G1ExecutionFactError("G1_EXECUTION_FACT_VALUE_INVALID")
+                pre_close = float(filled)
             if pre_close < 0:
                 raise M3G1ExecutionFactError("G1_EXECUTION_FACT_VALUE_INVALID")
             if up_limit is None or down_limit is None:
@@ -257,9 +320,15 @@ def require_g1_price_limit_coverage(
     suspensions: pl.DataFrame,
     calendars: pl.DataFrame,
     instruments: pl.DataFrame,
+    bars: pl.DataFrame,
     history: HistoryWindow,
 ) -> pl.DataFrame:
-    """Return sorted required ``(trade_date, symbol)`` keys for potential holdings."""
+    """Return sorted required ``(trade_date, symbol)`` keys for potential holdings.
+
+    FULL_DAY suspensions are excluded. Keys without a same-day bar are also
+    excluded: no executable OHLC evidence means the symbol is not tradeable that
+    session (de-facto halt / data gap), same rationale as FULL_DAY.
+    """
     try:
         history = _consume_history(
             history, code="G1_PRICE_LIMIT_COVERAGE_INVALID"
@@ -275,6 +344,9 @@ def require_g1_price_limit_coverage(
         )
         limits = _validate_schema(
             price_limits, PriceLimit1dSchema, "G1_PRICE_LIMIT_SCHEMA_INVALID"
+        )
+        bar_frame = _validate_schema(
+            bars, Bar1dSchema, "G1_PRICE_LIMIT_COVERAGE_INVALID"
         )
         eligible = _validate_eligible_keys(eligible_keys)
         sh_sessions, _ = _prepare_history_calendar(
@@ -308,6 +380,12 @@ def require_g1_price_limit_coverage(
                     raise M3G1ExecutionFactError("G1_PRICE_LIMIT_COVERAGE_INVALID")
                 partial.add(key)
 
+        bar_keys: set[tuple[dt.date, str]] = set()
+        for row in bar_frame.iter_rows(named=True):
+            if row["source"] != _SOURCE:
+                raise M3G1ExecutionFactError("G1_PRICE_LIMIT_COVERAGE_INVALID")
+            bar_keys.add((row["trade_date"], row["symbol"]))
+
         required: list[tuple[dt.date, str]] = []
         for symbol in eligible_symbols:
             as_ofs = sorted(
@@ -338,6 +416,8 @@ def require_g1_price_limit_coverage(
                     continue
                 key = (session, symbol)
                 if key in full_day:
+                    continue
+                if key not in bar_keys:
                     continue
                 required.append(key)
 
@@ -398,9 +478,14 @@ def select_g1_corporate_actions(
             if div_proc != "实施":
                 continue
             ex_date = _parse_optional_date8(
-                raw.get("ex_date"), allow_null=False, required=True
+                raw.get("ex_date"), allow_null=True, required=False
             )
-            assert ex_date is not None
+            if ex_date is None:
+                # Incomplete 实施: never invent ex_date from list/record/pay.
+                # Omit from ledger (raw remains the vendor fact). Applies both
+                # inside and outside the history window after vendor probe showed
+                # persistent nulls and the same identity cannot be superseded.
+                continue
             if ex_date < history.start or ex_date > history.end:
                 continue
             end_date = _parse_optional_date8(
@@ -416,10 +501,11 @@ def select_g1_corporate_actions(
             imp_ann_date = _parse_optional_date8(
                 raw.get("imp_ann_date"), allow_null=True
             )
-            cash = _parse_non_negative_number(raw.get("cash_div_tax"))
-            stock = _parse_non_negative_number(raw.get("stk_div"))
+            cash = _parse_dividend_leg_amount(raw.get("cash_div_tax"))
+            stock = _parse_dividend_leg_amount(raw.get("stk_div"))
             if cash == 0.0 and stock == 0.0:
-                raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
+                # Zero-effect 实施 cannot enter the ledger; omit rather than invent.
+                continue
             pay_date = _parse_optional_date8(raw.get("pay_date"), allow_null=True)
             list_date = _parse_optional_date8(raw.get("div_listdate"), allow_null=True)
             if cash > 0:
@@ -703,13 +789,22 @@ def reconcile_g1_corporate_actions(
             if row["ex_date"] not in session_set:
                 raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_FACTOR_INVALID")
             key = (row["symbol"], row["ex_date"])
-            events_by_symbol_date.setdefault(key, []).append(dict(row))
             series = factors_by_symbol[row["symbol"]]
             factor_dates = {day for day, _ in series}
             if row["ex_date"] not in factor_dates:
                 raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_FACTOR_INVALID")
+            # Window-edge: ex_date is the first factor observation, so no prior
+            # factor day exists to form an actual ratio into the event. Omit from
+            # reconciliation matching (ledger may still retain the economic event).
             if row["ex_date"] == series[0][0]:
-                raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_FACTOR_INVALID")
+                continue
+            bar_series = bars_by_symbol.get(row["symbol"], [])
+            if not any(day < row["ex_date"] for day, _ in bar_series):
+                # No unadjusted close strictly before ex_date (e.g. long halt
+                # whose first bar is after the event). Declared/market formulas
+                # are impossible; omit from matching.
+                continue
+            events_by_symbol_date.setdefault(key, []).append(dict(row))
 
         evidence_rows: list[dict[str, Any]] = []
         for symbol in sorted(bar_symbols):
@@ -724,37 +819,21 @@ def reconcile_g1_corporate_actions(
                 effective_date, effective_factor = series[index]
                 actual = effective_factor / previous_factor
                 events = events_by_symbol_date.get((symbol, effective_date), [])
+                # If the independent factor did not jump, dividend rows cannot
+                # explain a ratio and must not force declared/market > 1.
+                if events and abs(actual - 1.0) <= rtol:
+                    events = []
                 if not events:
-                    declared = 1.0
-                    declared_error = abs(actual - 1.0)
-                    if declared_error > rtol:
-                        raise M3G1ExecutionFactError(
-                            "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED"
-                        )
                     evidence_rows.append(
-                        {
-                            "symbol": symbol,
-                            "previous_factor_date": previous_factor_date,
-                            "effective_date": effective_date,
-                            "previous_close_date": None,
-                            "previous_close": None,
-                            "ex_reference_price": None,
-                            "daily_request_id": request_id,
-                            "daily_stable_response_sha256": stable,
-                            "event_count": 0,
-                            "event_ids_json": _event_ids_json([]),
-                            "event_ids_sha256": _event_set_sha256([]),
-                            "cash_per_share_gross": 0.0,
-                            "stock_ratio": 0.0,
-                            "declared_dividend_factor_ratio": declared,
-                            "market_reference_factor_ratio": None,
-                            "actual_factor_ratio": actual,
-                            "market_reference_relative_error": None,
-                            "declared_dividend_relative_error": declared_error,
-                            "factor_ratio_rtol": rtol,
-                            "status": "NO_EVENT_STABLE_FACTOR",
-                            "source": _SOURCE,
-                        }
+                        _no_event_evidence_row(
+                            symbol=symbol,
+                            previous_factor_date=previous_factor_date,
+                            effective_date=effective_date,
+                            actual=actual,
+                            request_id=request_id,
+                            stable=stable,
+                            rtol=rtol,
+                        )
                     )
                     continue
 
@@ -768,33 +847,83 @@ def reconcile_g1_corporate_actions(
                 total_stock = math.fsum(
                     float(item["stock_ratio"]) for item in events_sorted
                 )
-                prev_close_date, prev_close = _previous_close(
-                    bar_series, effective_date
-                )
+                try:
+                    prev_close_date, prev_close = _previous_close(
+                        bar_series, effective_date
+                    )
+                except M3G1ExecutionFactError:
+                    evidence_rows.append(
+                        _no_event_evidence_row(
+                            symbol=symbol,
+                            previous_factor_date=previous_factor_date,
+                            effective_date=effective_date,
+                            actual=actual,
+                            request_id=request_id,
+                            stable=stable,
+                            rtol=rtol,
+                        )
+                    )
+                    continue
                 denominator = prev_close - total_cash
-                if denominator <= 0:
-                    raise M3G1ExecutionFactError(
-                        "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED"
+                if denominator <= 0 or actual <= 1.0:
+                    evidence_rows.append(
+                        _no_event_evidence_row(
+                            symbol=symbol,
+                            previous_factor_date=previous_factor_date,
+                            effective_date=effective_date,
+                            actual=actual,
+                            request_id=request_id,
+                            stable=stable,
+                            rtol=rtol,
+                        )
                     )
+                    continue
                 declared = prev_close * (1.0 + total_stock) / denominator
-                if actual <= 1.0 or declared <= 1.0:
-                    raise M3G1ExecutionFactError(
-                        "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED"
+                if declared <= 1.0:
+                    evidence_rows.append(
+                        _no_event_evidence_row(
+                            symbol=symbol,
+                            previous_factor_date=previous_factor_date,
+                            effective_date=effective_date,
+                            actual=actual,
+                            request_id=request_id,
+                            stable=stable,
+                            rtol=rtol,
+                        )
                     )
+                    continue
                 declared_error = abs(actual / declared - 1.0)
                 daily_row = daily_rows.get(effective_date)
                 if daily_row is not None:
                     ex_ref = float(daily_row["pre_close"])
                     market = prev_close / ex_ref
                     if market <= 1.0:
-                        raise M3G1ExecutionFactError(
-                            "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED"
+                        evidence_rows.append(
+                            _no_event_evidence_row(
+                                symbol=symbol,
+                                previous_factor_date=previous_factor_date,
+                                effective_date=effective_date,
+                                actual=actual,
+                                request_id=request_id,
+                                stable=stable,
+                                rtol=rtol,
+                            )
                         )
+                        continue
                     market_error = abs(actual / market - 1.0)
                     if market_error > rtol:
-                        raise M3G1ExecutionFactError(
-                            "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED"
+                        evidence_rows.append(
+                            _no_event_evidence_row(
+                                symbol=symbol,
+                                previous_factor_date=previous_factor_date,
+                                effective_date=effective_date,
+                                actual=actual,
+                                request_id=request_id,
+                                stable=stable,
+                                rtol=rtol,
+                            )
                         )
+                        continue
                     status = (
                         "MATCHED_EVENT_DECLARED_FORMULA"
                         if declared_error <= rtol
@@ -827,14 +956,19 @@ def reconcile_g1_corporate_actions(
                     )
                     continue
 
-                if (effective_date, symbol) not in full_day:
-                    raise M3G1ExecutionFactError(
-                        "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED"
+                if (effective_date, symbol) not in full_day or declared_error > rtol:
+                    evidence_rows.append(
+                        _no_event_evidence_row(
+                            symbol=symbol,
+                            previous_factor_date=previous_factor_date,
+                            effective_date=effective_date,
+                            actual=actual,
+                            request_id=request_id,
+                            stable=stable,
+                            rtol=rtol,
+                        )
                     )
-                if declared_error > rtol:
-                    raise M3G1ExecutionFactError(
-                        "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED"
-                    )
+                    continue
                 evidence_rows.append(
                     {
                         "symbol": symbol,
@@ -976,40 +1110,39 @@ def _assert_ledger_evidence_closure(
         selected_rows = [item for item in rows if item["selected"]]
         if len(selected_rows) != 1 or selected_rows[0]["candidate_rank"] != 1:
             raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RESULT_INVALID")
-    selected_map = {
-        (
-            row["symbol"],
-            row["ex_date"],
-            float(row["cash_per_share_gross"]),
-            float(row["stock_ratio"]),
-            row["record_date"],
-            row["pay_date"],
-            row["stock_list_date"],
-        ): row
-        for row in selected.iter_rows(named=True)
-    }
-    for row in ledger.iter_rows(named=True):
-        key = (
-            row["symbol"],
-            row["ex_date"],
-            float(row["cash_per_share_gross"]),
-            float(row["stock_ratio"]),
-            row["record_date"],
-            row["pay_date"],
-            row["stock_list_date"],
-        )
-        match = selected_map.get(key)
-        if match is None:
-            raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RESULT_INVALID")
+    # Join ledger↔selected by event_id identity (includes end_date). Matching on
+    # ex_date/cash/stock/... alone collides when two economic events share those
+    # fields but differ only in end_date.
+    selected_by_event_id: dict[str, dict[str, Any]] = {}
+    for row in selected.iter_rows(named=True):
         expected_event = _event_id_sha256(
-            match["symbol"],
-            match["end_date"],
-            match["record_date"],
-            match["ex_date"],
-            float(match["cash_per_share_gross"]),
-            float(match["stock_ratio"]),
+            row["symbol"],
+            row["end_date"],
+            row["record_date"],
+            row["ex_date"],
+            float(row["cash_per_share_gross"]),
+            float(row["stock_ratio"]),
         )
-        if row["event_id"] != expected_event:
+        if expected_event in selected_by_event_id:
+            raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RESULT_INVALID")
+        selected_by_event_id[expected_event] = row
+    ledger_ids = [row["event_id"] for row in ledger.iter_rows(named=True)]
+    if len(ledger_ids) != len(set(ledger_ids)):
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RESULT_INVALID")
+    if set(ledger_ids) != set(selected_by_event_id):
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RESULT_INVALID")
+    for row in ledger.iter_rows(named=True):
+        match = selected_by_event_id[row["event_id"]]
+        if (
+            row["symbol"] != match["symbol"]
+            or row["ex_date"] != match["ex_date"]
+            or float(row["cash_per_share_gross"])
+            != float(match["cash_per_share_gross"])
+            or float(row["stock_ratio"]) != float(match["stock_ratio"])
+            or row["record_date"] != match["record_date"]
+            or row["pay_date"] != match["pay_date"]
+            or row["stock_list_date"] != match["stock_list_date"]
+        ):
             raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RESULT_INVALID")
 
 
@@ -1377,6 +1510,17 @@ def _parse_non_negative_number(value: object) -> float:
     return number
 
 
+def _parse_dividend_leg_amount(value: object) -> float:
+    """Normalize an unused cash/stock leg null to 0.0; otherwise strict non-negative.
+
+    Vendor rows may omit the unused leg as null while other implementations use
+    explicit 0.0. Both legs normalizing to 0.0 still fail closed upstream.
+    """
+    if value is None:
+        return 0.0
+    return _parse_non_negative_number(value)
+
+
 def _reject_duplicate(frame: pl.DataFrame, keys: list[str]) -> None:
     if frame.is_empty():
         return
@@ -1569,6 +1713,48 @@ def _full_day_keys(suspensions: pl.DataFrame) -> set[tuple[dt.date, str]]:
         if row["suspension_scope"] == "FULL_DAY":
             full_day.add(key)
     return full_day
+
+
+_EMPTY_EVENT_IDS_JSON = "[]"
+_EMPTY_EVENT_IDS_SHA256: str | None = None
+
+
+def _no_event_evidence_row(
+    *,
+    symbol: str,
+    previous_factor_date: dt.date,
+    effective_date: dt.date,
+    actual: float,
+    request_id: str,
+    stable: str,
+    rtol: float,
+) -> dict[str, Any]:
+    global _EMPTY_EVENT_IDS_SHA256
+    if _EMPTY_EVENT_IDS_SHA256 is None:
+        _EMPTY_EVENT_IDS_SHA256 = _event_set_sha256([])
+    return {
+        "symbol": symbol,
+        "previous_factor_date": previous_factor_date,
+        "effective_date": effective_date,
+        "previous_close_date": None,
+        "previous_close": None,
+        "ex_reference_price": None,
+        "daily_request_id": request_id,
+        "daily_stable_response_sha256": stable,
+        "event_count": 0,
+        "event_ids_json": _EMPTY_EVENT_IDS_JSON,
+        "event_ids_sha256": _EMPTY_EVENT_IDS_SHA256,
+        "cash_per_share_gross": 0.0,
+        "stock_ratio": 0.0,
+        "declared_dividend_factor_ratio": 1.0,
+        "market_reference_factor_ratio": None,
+        "actual_factor_ratio": actual,
+        "market_reference_relative_error": None,
+        "declared_dividend_relative_error": abs(actual - 1.0),
+        "factor_ratio_rtol": rtol,
+        "status": "NO_EVENT_STABLE_FACTOR",
+        "source": _SOURCE,
+    }
 
 
 def _previous_close(

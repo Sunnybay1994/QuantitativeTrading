@@ -129,7 +129,7 @@ def _field_specs() -> dict[str, FieldSpec]:
 
     # data
     add("data.universe", "string", "snapshot scientific", literal="CSI300_TUSHARE_MONTHLY_OBSERVED_PIT_V1")
-    add("data.benchmark", "string", "snapshot scientific", literal="H00300.CSI")
+    add("data.benchmark", "string", "snapshot scientific", literal="510300.SH")
     add("data.source", "string", "snapshot scientific", literal="tushare")
     add("data.start_date", "date", "snapshot scientific")
     add("data.end_date", "date", "snapshot scientific")
@@ -189,13 +189,28 @@ def _field_specs() -> dict[str, FieldSpec]:
         "labels.label_version",
         "string",
         "scientific",
-        literal="theoretical_next_open_to_h_close_total_return_excess_v2",
+        literal="theoretical_next_open_to_h_close_510300_etf_hfq_proxy_excess_v3",
     )
 
     # G1 identity; retry/rate fields deliberately have no derived selector.
     g1_literals: tuple[tuple[str, str, object], ...] = (
         ("index_weight_code", "string", "000300.SH"),
-        ("benchmark_code", "string", "H00300.CSI"),
+        ("benchmark_code", "string", "510300.SH"),
+        (
+            "benchmark_mode",
+            "string",
+            "TRADEABLE_ETF_TOTAL_RETURN_PROXY",
+        ),
+        (
+            "benchmark_method_version",
+            "string",
+            "tushare_510300_fund_daily_fund_adj_hfq_v1",
+        ),
+        (
+            "benchmark_dividend_reconciliation_version",
+            "string",
+            "tushare_fund_div_implemented_cash_v1",
+        ),
         ("membership_method_version", "string", "tushare_monthly_observed_next_session_close_v1"),
         ("session_market", "string", "SH"),
         ("expected_constituent_count", "int", 300),
@@ -216,6 +231,9 @@ def _field_specs() -> dict[str, FieldSpec]:
         "suspend_d": 5000,
         "stk_limit": 5800,
         "dividend": 5000,
+        "fund_daily": 5000,
+        "fund_adj": 2000,
+        "fund_div": 5000,
     }
     for name, value in endpoint_limits.items():
         add(f"g1_backfill.endpoint_row_limits.{name}", "int", "g1", literal=value)
@@ -370,8 +388,8 @@ def _field_specs() -> dict[str, FieldSpec]:
     ):
         add(f"acceptance.{name}", "float", "acceptance", minimum=0.0, maximum=1.0)
 
-    if len(specs) != 138:
-        raise AssertionError(f"M3 field spec closure must contain 138 shapes, got {len(specs)}")
+    if len(specs) != 144:
+        raise AssertionError(f"M3 field spec closure must contain 144 shapes, got {len(specs)}")
     return specs
 
 

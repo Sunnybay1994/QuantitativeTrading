@@ -6,7 +6,7 @@ enabled = false
 
 [data]
 universe = "CSI300_TUSHARE_MONTHLY_OBSERVED_PIT_V1"
-benchmark = "H00300.CSI"
+benchmark = "510300.SH"
 # M3 快照只允许一个显式数据源；readiness/staging/manifest/provider 必须使用同一值。
 source = "tushare"
 # 两端是首版 signal session 边界，须由 G1 verified SH calendar 证明为开市日；
@@ -46,11 +46,14 @@ entry_offset_sessions = 1
 entry_field = "open"
 exit_field = "close"
 relative_to_benchmark = true
-label_version = "theoretical_next_open_to_h_close_total_return_excess_v2"
+label_version = "theoretical_next_open_to_h_close_510300_etf_hfq_proxy_excess_v3"
 
 [g1_backfill]
 index_weight_code = "000300.SH"
-benchmark_code = "H00300.CSI"
+benchmark_code = "510300.SH"
+benchmark_mode = "TRADEABLE_ETF_TOTAL_RETURN_PROXY"
+benchmark_method_version = "tushare_510300_fund_daily_fund_adj_hfq_v1"
+benchmark_dividend_reconciliation_version = "tushare_fund_div_implemented_cash_v1"
 membership_method_version = "tushare_monthly_observed_next_session_close_v1"
 session_market = "SH"
 expected_constituent_count = 300
@@ -70,6 +73,10 @@ suspend_d = 5000
 stk_limit = 5800
 # Tushare 文档未承诺 dividend 单次上限；这是项目 fail-closed 安全阈值。
 dividend = 5000
+fund_daily = 5000
+fund_adj = 2000
+# fund_div 正式 benchmark 已知约 22 行；5000 为项目保守上限。
+fund_div = 5000
 
 [g1_backfill.reconciliation]
 reference_source = "baostock"

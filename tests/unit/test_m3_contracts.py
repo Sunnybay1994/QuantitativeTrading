@@ -25,7 +25,7 @@ def _label(**overrides: object) -> pl.DataFrame:
     row = {
         "as_of": dt.date(2026, 1, 5),
         "symbol": "000001.SZ",
-        "benchmark": "H00300.CSI",
+        "benchmark": "510300.SH",
         "horizon_sessions": 5,
         "return_start_date": dt.date(2026, 1, 6),
         "return_end_date": dt.date(2026, 1, 12),

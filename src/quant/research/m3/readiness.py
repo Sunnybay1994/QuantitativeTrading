@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -11,6 +12,8 @@ from typing import Any, Literal
 import polars as pl
 
 from quant.domain import BenchmarkBar1dSchema
+
+_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True)
@@ -43,7 +46,8 @@ _REQUIRED_BENCHMARK_FIELDS = (
     "source_snapshot_id",
 )
 
-_M3_BENCHMARK = "H00300.CSI"
+_M3_BENCHMARK = "510300.SH"
+_LEGACY_BENCHMARK = "H00300.CSI"
 
 
 def audit_m3_readiness(
@@ -54,12 +58,25 @@ def audit_m3_readiness(
     calendars: pl.DataFrame,
     benchmark_bars: pl.DataFrame,
     config: Mapping[str, Any],
+    expected_benchmark_source_snapshot_id: str,
 ) -> list[ReadinessIssue]:
     """检查字段契约、PIT 覆盖、基准、交易日、因子、训练长度、截面、embargo 与运行时。
 
     缺前置字段时记录结构化 ERROR 并跳过依赖检查，函数本身不因契约错误抛异常。
+    ``expected_benchmark_source_snapshot_id`` 必须由调用方从上游已验证身份传入，
+    不得从本次 ``benchmark_bars`` 自行提取后回传形成恒真校验。
+    期望身份格式校验在入口无条件执行，不依赖 bars/source/schema/benchmark 是否有效。
     """
     issues: list[ReadinessIssue] = []
+    expected_ok = _is_sha256_hex(expected_benchmark_source_snapshot_id)
+    if not expected_ok:
+        issues.append(
+            _error(
+                "BENCHMARK_SNAPSHOT_INVALID",
+                "期望 benchmark source_snapshot_id 非法",
+            )
+        )
+
     data_cfg = dict(config.get("data", {}) or {})
     labels_cfg = dict(config.get("labels", {}) or {})
     walk_cfg = dict(config.get("walk_forward", {}) or {})
@@ -171,16 +188,29 @@ def audit_m3_readiness(
             _check_duplicate_benchmark_keys(selected_bench, "BENCHMARK_DUPLICATE_KEYS")
         )
 
-    if benchmark != _M3_BENCHMARK:
+    if benchmark == _LEGACY_BENCHMARK:
         issues.append(
             _error(
                 "BENCHMARK_SYMBOL_MISMATCH",
-                f"M3 v1 仅接受基准 {_M3_BENCHMARK}，配置为 {benchmark}",
+                f"已退役基准 {_LEGACY_BENCHMARK} 不得用于当前 readiness",
+            )
+        )
+    elif benchmark != _M3_BENCHMARK:
+        issues.append(
+            _error(
+                "BENCHMARK_SYMBOL_MISMATCH",
+                f"M3 仅接受基准 {_M3_BENCHMARK}，配置为 {benchmark}",
             )
         )
     elif selected_bench is not None:
         issues.extend(_check_benchmark_identity(selected_bench, benchmark))
-
+        issues.extend(
+            _check_benchmark_snapshot_binding(
+                selected_bench,
+                expected_benchmark_source_snapshot_id,
+                expected_ok=expected_ok,
+            )
+        )
     if membership_ok:
         matched = membership.filter(pl.col("universe") == universe)
         if matched.is_empty():
@@ -606,6 +636,52 @@ def _check_benchmark_identity(
     if matched.is_empty():
         return [_error("BENCHMARK_EMPTY", f"基准 {benchmark} 行情为空")]
     return []
+
+
+def _is_sha256_hex(value: object) -> bool:
+    return type(value) is str and _SHA256_HEX.fullmatch(value) is not None
+
+
+def _check_benchmark_snapshot_binding(
+    benchmark_bars: pl.DataFrame,
+    expected_benchmark_source_snapshot_id: object,
+    *,
+    expected_ok: bool,
+) -> list[ReadinessIssue]:
+    """Bind unique clean snapshot to upstream-verified expectation; fail closed.
+
+    期望格式错误已在入口记录一次；此处只检查可消费 selected bars 的实际唯一性/格式，
+    以及双方均合法时的精确匹配。不得从非法 bars 提取 identity，也不重复期望非法错误。
+    """
+    issues: list[ReadinessIssue] = []
+    snaps = set(benchmark_bars.get_column("source_snapshot_id").to_list())
+    if len(snaps) != 1:
+        issues.append(
+            _error(
+                "BENCHMARK_SNAPSHOT_INVALID",
+                "benchmark_bars source_snapshot_id 必须唯一且完整",
+            )
+        )
+        return issues
+
+    actual = next(iter(snaps))
+    if not _is_sha256_hex(actual):
+        issues.append(
+            _error(
+                "BENCHMARK_SNAPSHOT_INVALID",
+                "benchmark_bars source_snapshot_id 非法",
+            )
+        )
+        return issues
+
+    if expected_ok and actual != expected_benchmark_source_snapshot_id:
+        issues.append(
+            _error(
+                "BENCHMARK_SNAPSHOT_MISMATCH",
+                "benchmark source_snapshot_id 与期望不匹配",
+            )
+        )
+    return issues
 
 
 def _check_embargo(horizons: list[int], embargo_sessions: int) -> list[ReadinessIssue]:
