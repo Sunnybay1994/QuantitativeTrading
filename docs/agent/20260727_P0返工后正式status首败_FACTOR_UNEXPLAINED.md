@@ -24,6 +24,20 @@ M3G1ExecutionFactError: G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED
 
 即：无 dividend 事件日存在 `abs(actual_factor_ratio-1)>rtol` 的因子跳变；P0 返工 A 恢复的 B2C §9.2 fail-closed **按合同拒绝**，不再伪装 `NO_EVENT_STABLE_FACTOR`。
 
+### 首败样本（探针）
+
+`artifacts/.../p0_status_first_unexplained_sample.json`：
+
+| 字段 | 值 |
+|---|---|
+| symbol | `000553.SZ` |
+| previous_factor_date → effective_date | `2016-06-14` → `2016-06-15` |
+| actual_factor_ratio | `1.001944…` |
+| abs(actual-1) | `0.001944…` |
+| rtol | `0.001` |
+
+无事件日因子微跳（约 19.4bp）超过合同 rtol，故 fail-closed；**不**据此扩大配股/增发事件源或放宽 rtol。
+
 方法版本（已 bump）：price-limit / CA selection / CA reconciliation 均为 `*_v2`。
 
 ## 处置（按冻结任务书）
