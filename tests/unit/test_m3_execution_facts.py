@@ -298,12 +298,12 @@ def _assert_code(exc_info: pytest.ExceptionInfo[BaseException], code: str) -> No
 
 
 def test_version_constants() -> None:
-    assert G1_PRICE_LIMIT_METHOD_VERSION == "tushare_stk_limit_suspension_aware_v1"
+    assert G1_PRICE_LIMIT_METHOD_VERSION == "tushare_stk_limit_suspension_aware_v2"
     assert G1_CORPORATE_ACTION_SELECTION_VERSION == (
-        "tushare_dividend_implemented_latest_v1"
+        "tushare_dividend_implemented_latest_v2"
     )
     assert G1_CORPORATE_ACTION_RECONCILIATION_VERSION == (
-        "tushare_factor_daily_preclose_v1"
+        "tushare_factor_daily_preclose_v2"
     )
 
 
@@ -1123,7 +1123,7 @@ def test_reconcile_no_market_reference_full_day() -> None:
     )
     assert event_row["ex_reference_price"][0] is None
 
-    # PARTIAL with missing daily: cannot match; fall back to no-event accept.
+    # PARTIAL with missing daily: fail-closed (must not fall back to no-event).
     partial = _suspension(
         [
             {
@@ -1136,20 +1136,18 @@ def test_reconcile_no_market_reference_full_day() -> None:
             }
         ]
     )
-    partial_result = reconcile_g1_corporate_actions(
-        corporate_actions=actions,
-        bars=bars,
-        adjustment_factors=factors,
-        daily_responses=[daily],
-        suspensions=partial,
-        calendars=_default_calendar(),
-        history=_history(),
-        factor_ratio_rtol=0.001,
-    )
-    d2 = partial_result.evidence.filter(pl.col("effective_date") == _D2)
-    assert d2["status"].to_list() == ["NO_EVENT_STABLE_FACTOR"]
-    assert d2["event_count"].to_list() == [0]
-    verify_corporate_action_reconciliation_result(result=partial_result)
+    with pytest.raises(M3G1ExecutionFactError) as caught_partial:
+        reconcile_g1_corporate_actions(
+            corporate_actions=actions,
+            bars=bars,
+            adjustment_factors=factors,
+            daily_responses=[daily],
+            suspensions=partial,
+            calendars=_default_calendar(),
+            history=_history(),
+            factor_ratio_rtol=0.001,
+        )
+    _assert_code(caught_partial, "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
 
 
 def test_reconcile_unexplained_jump_and_rtol_bounds() -> None:
@@ -1167,22 +1165,43 @@ def test_reconcile_unexplained_jump_and_rtol_bounds() -> None:
         .otherwise(pl.col("adj_factor"))
         .alias("adj_factor")
     )
-    # Dividend-only CA source: no-event factor jumps are accepted (e.g. rights issues).
-    accepted = reconcile_g1_corporate_actions(
-        corporate_actions=actions.clear(),
-        bars=bad_bars,
-        adjustment_factors=bad_factors,
-        daily_responses=[daily],
-        suspensions=_suspension(),
-        calendars=_default_calendar(),
-        history=_history(),
-        factor_ratio_rtol=0.001,
+    # B2C §9.2: no-event factor jump must raise FACTOR_UNEXPLAINED.
+    with pytest.raises(M3G1ExecutionFactError) as caught_jump:
+        reconcile_g1_corporate_actions(
+            corporate_actions=actions.clear(),
+            bars=bad_bars,
+            adjustment_factors=bad_factors,
+            daily_responses=[daily],
+            suspensions=_suspension(),
+            calendars=_default_calendar(),
+            history=_history(),
+            factor_ratio_rtol=0.001,
+        )
+    _assert_code(caught_jump, "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
+
+    # Event path with market/declared both exceeding rtol must also raise
+    # (must not fall back to NO_EVENT_STABLE_FACTOR).
+    prev_close = 10.0
+    cash = 0.1
+    bad_actual = 1.5
+    bars_e, factors_e, daily_e, actions_e = _bars_and_factors_for_cash(
+        prev_close=prev_close,
+        cash=cash,
+        factor_eff=bad_actual,
+        ex_pre_close=prev_close - cash,  # market ≈ declared ≈ 1.0101
     )
-    d1 = accepted.evidence.filter(pl.col("effective_date") == _D1)
-    assert d1.height == 1
-    assert d1["status"].to_list() == ["NO_EVENT_STABLE_FACTOR"]
-    assert d1["actual_factor_ratio"].to_list()[0] == pytest.approx(1.5)
-    verify_corporate_action_reconciliation_result(result=accepted)
+    with pytest.raises(M3G1ExecutionFactError) as caught_event:
+        reconcile_g1_corporate_actions(
+            corporate_actions=actions_e,
+            bars=bars_e,
+            adjustment_factors=factors_e,
+            daily_responses=[daily_e],
+            suspensions=_suspension(),
+            calendars=_default_calendar(),
+            history=_history(),
+            factor_ratio_rtol=0.001,
+        )
+    _assert_code(caught_event, "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
 
     for bad in (True, -0.1, 0.02, float("nan")):
         with pytest.raises(M3G1ExecutionFactError) as caught:
@@ -1264,31 +1283,30 @@ def test_reconcile_event_on_first_factor_day_omitted() -> None:
     verify_corporate_action_reconciliation_result(result=result)
 
 
-def test_reconcile_stable_factor_ignores_events() -> None:
-    """Events on a no-jump factor pair are ignored (actual≈1)."""
+def test_reconcile_stable_factor_with_events_fails() -> None:
+    """Events on a no-jump factor pair cannot fall back to NO_EVENT_STABLE."""
     bars, factors, daily, actions = _bars_and_factors_for_cash()
     flat_factors = factors.with_columns(pl.lit(1.0).alias("adj_factor"))
     flat_bars = bars.with_columns(pl.lit(1.0).alias("adj_factor"))
-    result = reconcile_g1_corporate_actions(
-        corporate_actions=actions,
-        bars=flat_bars,
-        adjustment_factors=flat_factors,
-        daily_responses=[daily],
-        suspensions=_suspension(),
-        calendars=_default_calendar(),
-        history=_history(),
-        factor_ratio_rtol=0.001,
-    )
-    assert result.evidence.filter(pl.col("event_count") > 0).height == 0
-    assert set(result.evidence["status"].to_list()) == {"NO_EVENT_STABLE_FACTOR"}
-    verify_corporate_action_reconciliation_result(result=result)
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        reconcile_g1_corporate_actions(
+            corporate_actions=actions,
+            bars=flat_bars,
+            adjustment_factors=flat_factors,
+            daily_responses=[daily],
+            suspensions=_suspension(),
+            calendars=_default_calendar(),
+            history=_history(),
+            factor_ratio_rtol=0.001,
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
 
 
-def test_reconcile_full_day_factor_jump_before_first_bar_accepted() -> None:
-    """FULL_DAY factor jump with no prior bar: omit event, accept no-event row."""
+def test_reconcile_full_day_factor_jump_before_first_bar_fails() -> None:
+    """Omitted event + unexplained factor jump must fail closed."""
     bars, factors, daily, actions = _bars_and_factors_for_cash()
     # Keep only D2+ bars so D0->D1 has no prior close; mark D1 FULL_DAY.
-    # Unstable D0->D1 factors (would fail without the edge rule).
+    # Unstable D0->D1 factors with events omitted must raise.
     edge_factors = factors.with_columns(
         pl.when(pl.col("effective_date") >= _D1)
         .then(pl.lit(1.2))
@@ -1327,23 +1345,22 @@ def test_reconcile_full_day_factor_jump_before_first_bar_accepted() -> None:
             }
         ]
     )
-    result = reconcile_g1_corporate_actions(
-        corporate_actions=edge_actions,
-        bars=late_bars,
-        adjustment_factors=edge_factors,
-        daily_responses=[late_daily],
-        suspensions=suspensions,
-        calendars=_default_calendar(),
-        history=_history(),
-        factor_ratio_rtol=0.001,
-    )
-    d1 = result.evidence.filter(pl.col("effective_date") == _D1)
-    assert d1.height == 1
-    assert d1["status"].to_list() == ["NO_EVENT_STABLE_FACTOR"]
-    assert d1["event_count"].to_list() == [0]
-    assert d1["actual_factor_ratio"].to_list()[0] == pytest.approx(1.2)
-    verify_corporate_action_reconciliation_result(result=result)
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        reconcile_g1_corporate_actions(
+            corporate_actions=edge_actions,
+            bars=late_bars,
+            adjustment_factors=edge_factors,
+            daily_responses=[late_daily],
+            suspensions=suspensions,
+            calendars=_default_calendar(),
+            history=_history(),
+            factor_ratio_rtol=0.001,
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
     _ = daily
+    _ = bars
+    _ = factors
+    _ = actions
 
 
 def test_reconcile_daily_identity_and_digest_stability() -> None:

@@ -32,9 +32,9 @@ from quant.domain import (
     TradeCalendarSchema,
 )
 
-G1_PRICE_LIMIT_METHOD_VERSION = "tushare_stk_limit_suspension_aware_v1"
-G1_CORPORATE_ACTION_SELECTION_VERSION = "tushare_dividend_implemented_latest_v1"
-G1_CORPORATE_ACTION_RECONCILIATION_VERSION = "tushare_factor_daily_preclose_v1"
+G1_PRICE_LIMIT_METHOD_VERSION = "tushare_stk_limit_suspension_aware_v2"
+G1_CORPORATE_ACTION_SELECTION_VERSION = "tushare_dividend_implemented_latest_v2"
+G1_CORPORATE_ACTION_RECONCILIATION_VERSION = "tushare_factor_daily_preclose_v2"
 
 _SOURCE = "tushare"
 _A_SHARE = re.compile(r"^[0-9]{6}\.(?:SH|SZ)$")
@@ -819,11 +819,8 @@ def reconcile_g1_corporate_actions(
                 effective_date, effective_factor = series[index]
                 actual = effective_factor / previous_factor
                 events = events_by_symbol_date.get((symbol, effective_date), [])
-                # If the independent factor did not jump, dividend rows cannot
-                # explain a ratio and must not force declared/market > 1.
-                if events and abs(actual - 1.0) <= rtol:
-                    events = []
                 if not events:
+                    # B2C §9.2: no-event transition is fail-closed on factor jump.
                     evidence_rows.append(
                         _no_event_evidence_row(
                             symbol=symbol,
@@ -847,83 +844,35 @@ def reconcile_g1_corporate_actions(
                 total_stock = math.fsum(
                     float(item["stock_ratio"]) for item in events_sorted
                 )
-                try:
-                    prev_close_date, prev_close = _previous_close(
-                        bar_series, effective_date
-                    )
-                except M3G1ExecutionFactError:
-                    evidence_rows.append(
-                        _no_event_evidence_row(
-                            symbol=symbol,
-                            previous_factor_date=previous_factor_date,
-                            effective_date=effective_date,
-                            actual=actual,
-                            request_id=request_id,
-                            stable=stable,
-                            rtol=rtol,
-                        )
-                    )
-                    continue
+                # Event branch failures must raise; never fall back to
+                # event_count=0 / NO_EVENT_STABLE_FACTOR.
+                prev_close_date, prev_close = _previous_close(
+                    bar_series, effective_date
+                )
                 denominator = prev_close - total_cash
                 if denominator <= 0 or actual <= 1.0:
-                    evidence_rows.append(
-                        _no_event_evidence_row(
-                            symbol=symbol,
-                            previous_factor_date=previous_factor_date,
-                            effective_date=effective_date,
-                            actual=actual,
-                            request_id=request_id,
-                            stable=stable,
-                            rtol=rtol,
-                        )
+                    raise M3G1ExecutionFactError(
+                        "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED"
                     )
-                    continue
                 declared = prev_close * (1.0 + total_stock) / denominator
                 if declared <= 1.0:
-                    evidence_rows.append(
-                        _no_event_evidence_row(
-                            symbol=symbol,
-                            previous_factor_date=previous_factor_date,
-                            effective_date=effective_date,
-                            actual=actual,
-                            request_id=request_id,
-                            stable=stable,
-                            rtol=rtol,
-                        )
+                    raise M3G1ExecutionFactError(
+                        "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED"
                     )
-                    continue
                 declared_error = abs(actual / declared - 1.0)
                 daily_row = daily_rows.get(effective_date)
                 if daily_row is not None:
                     ex_ref = float(daily_row["pre_close"])
                     market = prev_close / ex_ref
                     if market <= 1.0:
-                        evidence_rows.append(
-                            _no_event_evidence_row(
-                                symbol=symbol,
-                                previous_factor_date=previous_factor_date,
-                                effective_date=effective_date,
-                                actual=actual,
-                                request_id=request_id,
-                                stable=stable,
-                                rtol=rtol,
-                            )
+                        raise M3G1ExecutionFactError(
+                            "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED"
                         )
-                        continue
                     market_error = abs(actual / market - 1.0)
                     if market_error > rtol:
-                        evidence_rows.append(
-                            _no_event_evidence_row(
-                                symbol=symbol,
-                                previous_factor_date=previous_factor_date,
-                                effective_date=effective_date,
-                                actual=actual,
-                                request_id=request_id,
-                                stable=stable,
-                                rtol=rtol,
-                            )
+                        raise M3G1ExecutionFactError(
+                            "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED"
                         )
-                        continue
                     status = (
                         "MATCHED_EVENT_DECLARED_FORMULA"
                         if declared_error <= rtol
@@ -956,19 +905,15 @@ def reconcile_g1_corporate_actions(
                     )
                     continue
 
-                if (effective_date, symbol) not in full_day or declared_error > rtol:
-                    evidence_rows.append(
-                        _no_event_evidence_row(
-                            symbol=symbol,
-                            previous_factor_date=previous_factor_date,
-                            effective_date=effective_date,
-                            actual=actual,
-                            request_id=request_id,
-                            stable=stable,
-                            rtol=rtol,
-                        )
+                # Missing daily: only FULL_DAY + declared within rtol is allowed.
+                if (effective_date, symbol) not in full_day:
+                    raise M3G1ExecutionFactError(
+                        "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED"
                     )
-                    continue
+                if declared_error > rtol:
+                    raise M3G1ExecutionFactError(
+                        "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED"
+                    )
                 evidence_rows.append(
                     {
                         "symbol": symbol,
@@ -1156,6 +1101,10 @@ def _assert_reconciliation_row_formulas(row: dict[str, Any]) -> None:
         if declared != 1.0:
             raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
         if abs(actual - 1.0) != float(row["declared_dividend_relative_error"]):
+            raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
+        if abs(actual - 1.0) > rtol:
+            raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
+        if int(row["event_count"]) != 0:
             raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
         return
     prev_close = row["previous_close"]
@@ -1729,6 +1678,9 @@ def _no_event_evidence_row(
     stable: str,
     rtol: float,
 ) -> dict[str, Any]:
+    # B2C §9.2: only abs(actual-1)<=rtol may emit NO_EVENT_STABLE_FACTOR.
+    if abs(actual - 1.0) > rtol:
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
     global _EMPTY_EVENT_IDS_SHA256
     if _EMPTY_EVENT_IDS_SHA256 is None:
         _EMPTY_EVENT_IDS_SHA256 = _event_set_sha256([])

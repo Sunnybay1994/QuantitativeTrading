@@ -892,12 +892,41 @@ def test_eligible_bar_suspension_rules(
 def test_membership_count_calendar_unknown_and_benchmark(
     happy_inputs: G1BuildInputs, happy_candidate: G1Candidate
 ) -> None:
-    # Temporary 299 after lifecycle clip is allowed (align membership builder).
+    # Artificial 299 (not produced by authoritative builder) must fail audit.
     eligible_299 = happy_candidate.eligible_keys.head(299)
-    ok_299 = _rebind_identity(happy_candidate, eligible_keys=eligible_299)
-    audit_ok = audit_g1_candidate(candidate=ok_299)
-    assert not any(issue.code == "MEMBERSHIP_COUNT_MISMATCH" for issue in audit_ok.issues)
-    # >300 remains rejected by index_membership._build_eligible_keys; audit mirrors 1..300.
+    bad_299 = _rebind_identity(happy_candidate, eligible_keys=eligible_299)
+    audit_299 = audit_g1_candidate(candidate=bad_299)
+    assert audit_299.passed is False
+    assert any(issue.code == "MEMBERSHIP_COUNT_MISMATCH" for issue in audit_299.issues)
+
+    # eligible_keys rebound to head(1) with synced digests/primary must fail.
+    eligible_1 = happy_candidate.eligible_keys.head(1)
+    bad_1 = _rebind_identity(happy_candidate, eligible_keys=eligible_1)
+    audit_1 = audit_g1_candidate(candidate=bad_1)
+    assert audit_1.passed is False
+    assert any(issue.code == "MEMBERSHIP_COUNT_MISMATCH" for issue in audit_1.issues)
+    assert bad_1.eligible_keys.height == 1
+
+    # Drop one non-lifecycle membership symbol (and its eligible rows) must fail.
+    drop_symbol = happy_candidate.membership.sort(
+        ["symbol", "effective_from"]
+    )["symbol"][0]
+    trimmed_membership = happy_candidate.membership.filter(
+        pl.col("symbol") != drop_symbol
+    )
+    trimmed_eligible = happy_candidate.eligible_keys.filter(
+        pl.col("symbol") != drop_symbol
+    )
+    bad_drop = _rebind_identity(
+        happy_candidate,
+        membership=trimmed_membership,
+        eligible_keys=trimmed_eligible,
+    )
+    audit_drop = audit_g1_candidate(candidate=bad_drop)
+    assert audit_drop.passed is False
+    assert any(
+        issue.code == "MEMBERSHIP_COUNT_MISMATCH" for issue in audit_drop.issues
+    )
 
     # SH/SZ is_open divergence: stale digests must fail at constructor.
     calendars = happy_inputs.calendars.with_columns(

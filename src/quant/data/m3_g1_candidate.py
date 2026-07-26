@@ -965,31 +965,71 @@ def audit_g1_candidate(*, candidate: G1Candidate) -> G1PrimaryAuditResult:
             for day in sh_sessions
             if candidate.history_start <= day <= candidate.history_end
         ]
-        signal_sessions = [
-            day
-            for day in sh_sessions
-            if candidate.signal_start <= day <= candidate.signal_end
-        ]
 
-        # Membership counts per signal session.
-        # Align with index_membership._build_eligible_keys: allow 1..300.
-        # Monthly PIT × lifecycle clip may leave temporary <300 until next observation.
+        # Membership / eligible: rebuild from candidate observations via the
+        # authoritative builder; count∈[1,300] is not a sufficient condition.
         try:
-            eligible = candidate.eligible_keys
-            for session in signal_sessions:
-                count = eligible.filter(pl.col("as_of") == session).height
-                if count < 1 or count > _EXPECTED_COUNT:
-                    issues.append(
-                        _issue(
-                            "MEMBERSHIP_COUNT_MISMATCH",
-                            "eligible count outside 1..300",
-                            1,
-                            (session.isoformat(),),
-                        )
+            rebuilt_membership = index_membership.build_observed_membership(
+                observations=candidate.observations,
+                calendars=candidate.calendars,
+                instruments=candidate.instruments,
+                universe=_UNIVERSE,
+                signal_start=candidate.signal_start,
+                signal_end=candidate.signal_end,
+                expected_constituent_count=_EXPECTED_COUNT,
+            )
+            if not _frames_equal(
+                rebuilt_membership.membership, candidate.membership
+            ):
+                issues.append(
+                    _issue(
+                        "MEMBERSHIP_COUNT_MISMATCH",
+                        "membership does not match authoritative rebuild",
+                        1,
+                        (),
                     )
+                )
+            elif digests.get("universe_membership") != (
+                rebuilt_membership.membership_sha256
+            ):
+                issues.append(
+                    _issue(
+                        "MEMBERSHIP_COUNT_MISMATCH",
+                        "membership digest does not match authoritative rebuild",
+                        1,
+                        (),
+                    )
+                )
+            if not _frames_equal(
+                rebuilt_membership.eligible_keys, candidate.eligible_keys
+            ):
+                issues.append(
+                    _issue(
+                        "MEMBERSHIP_COUNT_MISMATCH",
+                        "eligible_keys does not match authoritative rebuild",
+                        1,
+                        (),
+                    )
+                )
+            elif digests.get("eligible_keys") != (
+                rebuilt_membership.eligible_keys_sha256
+            ):
+                issues.append(
+                    _issue(
+                        "MEMBERSHIP_COUNT_MISMATCH",
+                        "eligible_keys digest does not match authoritative rebuild",
+                        1,
+                        (),
+                    )
+                )
         except Exception:
             issues.append(
-                _issue("MEMBERSHIP_COUNT_MISMATCH", "eligible unreadable", 1, ())
+                _issue(
+                    "MEMBERSHIP_COUNT_MISMATCH",
+                    "membership authoritative rebuild failed",
+                    1,
+                    (),
+                )
             )
 
         # Instrument index.

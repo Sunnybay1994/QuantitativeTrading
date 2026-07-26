@@ -769,6 +769,12 @@ def test_static_no_rename_fallback() -> None:
     # Windows-native track uses MoveFileExW; must not silently fall back to os.rename.
     if os.name == "nt":
         assert "MoveFileExW" in source
+        assert "_windows_movefileex_noreplace" in source
+    # Binary write path must include O_BINARY on Windows (text mode corrupts parquet).
+    assert "O_BINARY" in source
+    assert "_O_BINARY" in source
+    assert "_exclusive_write_bytes" in source
+    assert "_fsync_directory" in source
 
 
 def test_package_export_and_no_research_import() -> None:
