@@ -303,7 +303,7 @@ def test_version_constants() -> None:
         "tushare_dividend_implemented_latest_v2"
     )
     assert G1_CORPORATE_ACTION_RECONCILIATION_VERSION == (
-        "tushare_factor_daily_preclose_v3"
+        "tushare_factor_daily_preclose_v4"
     )
 
 
@@ -1045,7 +1045,11 @@ def _bars_and_factors_for_cash(
         },
     )
     actions = select_g1_corporate_actions(
-        response=_make_verified("dividend", _dividend_frame()), history=_history()
+        response=_make_verified(
+            "dividend",
+            _dividend_frame([_dividend_row(cash_div_tax=cash)]),
+        ),
+        history=_history(),
     ).ledger
     return bars, factors, daily, actions
 
@@ -1840,6 +1844,307 @@ def test_p0d_scoped_row_count_formula_and_digest_stable_under_shuffle() -> None:
     ).equals(
         result.evidence.sort(["symbol", "previous_factor_date", "effective_date"])
     )
+
+
+def _p0e_small_dividend_fixture(
+    *,
+    prev_close: float = 2.91,
+    cash: float = 0.005,
+    factor_eff: float = 1.0,
+    ex_pre_close: float | None = None,
+    include_ex_daily: bool = True,
+) -> tuple[pl.DataFrame, pl.DataFrame, VerifiedRawResponse, pl.DataFrame]:
+    """Shape matching the formal small-dividend precision failure (no hardcodes in prod)."""
+    return _bars_and_factors_for_cash(
+        prev_close=prev_close,
+        cash=cash,
+        factor_eff=factor_eff,
+        ex_pre_close=prev_close if ex_pre_close is None else ex_pre_close,
+        include_ex_daily=include_ex_daily,
+    )
+
+
+def test_p0e_small_dividend_market_reference_happy_path() -> None:
+    """Matrix 1: cash precision keeps actual=market=1.0 → MATCHED_EVENT_MARKET_REFERENCE."""
+    rtol = 0.001
+    bars, factors, daily, actions = _p0e_small_dividend_fixture()
+    result = reconcile_g1_corporate_actions(
+        corporate_actions=actions,
+        bars=bars,
+        adjustment_factors=factors,
+        daily_responses=[daily],
+        suspensions=_suspension(),
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=rtol,
+    )
+    event = result.evidence.filter(pl.col("event_count") > 0)
+    assert event.height == 1
+    assert event["status"][0] == "MATCHED_EVENT_MARKET_REFERENCE"
+    assert event["actual_factor_ratio"][0] == 1.0
+    assert event["market_reference_factor_ratio"][0] == 1.0
+    assert float(event["declared_dividend_relative_error"][0]) > rtol
+    assert float(event["cash_per_share_gross"][0]) == 0.005
+    assert event["event_count"][0] == 1
+    assert event["event_ids_json"][0] != "[]"
+    assert len(event["event_ids_sha256"][0]) == 64
+    verify_corporate_action_reconciliation_result(result=result)
+
+
+def test_p0e_symmetric_rtol_allows_actual_below_one() -> None:
+    """Matrix 2: actual=0.9995 within 1±rtol is allowed when market matches."""
+    rtol = 0.001
+    bars, factors, daily, actions = _p0e_small_dividend_fixture(factor_eff=0.9995)
+    result = reconcile_g1_corporate_actions(
+        corporate_actions=actions,
+        bars=bars,
+        adjustment_factors=factors,
+        daily_responses=[daily],
+        suspensions=_suspension(),
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=rtol,
+    )
+    event = result.evidence.filter(pl.col("event_count") > 0)
+    assert event.height == 1
+    assert event["actual_factor_ratio"][0] == 0.9995
+    assert event["market_reference_factor_ratio"][0] == 1.0
+    assert event["status"][0] == "MATCHED_EVENT_MARKET_REFERENCE"
+    verify_corporate_action_reconciliation_result(result=result)
+
+
+def test_p0e_rejects_matched_reverse_ratio_far_from_one() -> None:
+    """Matrix 3: actual=market=0.998 still fails — support domain is about 1, not mutual match."""
+    bars, factors, daily, actions = _p0e_small_dividend_fixture(
+        factor_eff=0.998,
+        ex_pre_close=2.91 / 0.998,
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        reconcile_g1_corporate_actions(
+            corporate_actions=actions,
+            bars=bars,
+            adjustment_factors=factors,
+            daily_responses=[daily],
+            suspensions=_suspension(),
+            calendars=_default_calendar(),
+            history=_history(),
+            factor_ratio_rtol=0.001,
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
+
+
+def test_p0e_rejects_actual_one_market_mismatch() -> None:
+    """Matrix 4: actual=1.0 but market clearly >1 and mutually out of rtol."""
+    bars, factors, daily, actions = _p0e_small_dividend_fixture(
+        factor_eff=1.0,
+        ex_pre_close=2.91 - 0.005,  # market ≈ declared > 1
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        reconcile_g1_corporate_actions(
+            corporate_actions=actions,
+            bars=bars,
+            adjustment_factors=factors,
+            daily_responses=[daily],
+            suspensions=_suspension(),
+            calendars=_default_calendar(),
+            history=_history(),
+            factor_ratio_rtol=0.001,
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
+
+
+def test_p0e_rejects_actual_one_missing_daily_without_full_day() -> None:
+    """Matrix 5: actual=1.0, no ex-date daily, not FULL_DAY → fail closed."""
+    bars, factors, daily, actions = _p0e_small_dividend_fixture(
+        include_ex_daily=False
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        reconcile_g1_corporate_actions(
+            corporate_actions=actions,
+            bars=bars,
+            adjustment_factors=factors,
+            daily_responses=[daily],
+            suspensions=_suspension(),
+            calendars=_default_calendar(),
+            history=_history(),
+            factor_ratio_rtol=0.001,
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
+
+
+def test_p0e_rejects_full_day_declared_error_exceeds_rtol() -> None:
+    """Matrix 6: FULL_DAY + no daily + actual=1.0 but declared error > rtol."""
+    bars, factors, daily, actions = _p0e_small_dividend_fixture(
+        include_ex_daily=False
+    )
+    suspensions = _suspension(
+        [
+            {
+                "symbol": _SYMBOL,
+                "trade_date": _D2,
+                "suspension_scope": "FULL_DAY",
+                "suspension_detail": None,
+                "source": "tushare",
+                "source_snapshot_id": _HEX,
+            }
+        ]
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        reconcile_g1_corporate_actions(
+            corporate_actions=actions,
+            bars=bars,
+            adjustment_factors=factors,
+            daily_responses=[daily],
+            suspensions=suspensions,
+            calendars=_default_calendar(),
+            history=_history(),
+            factor_ratio_rtol=0.001,
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
+
+
+def test_p0e_no_event_stable_and_jump_still_fail_closed() -> None:
+    """Matrix 7: no-event actual=1.0 accepted; no-event large jump rejected."""
+    bars, factors, daily, actions = _p0e_small_dividend_fixture()
+    flat = factors.with_columns(pl.lit(1.0).alias("adj_factor"))
+    flat_bars = bars.with_columns(pl.lit(1.0).alias("adj_factor"))
+    stable = reconcile_g1_corporate_actions(
+        corporate_actions=actions.clear(),
+        bars=flat_bars,
+        adjustment_factors=flat,
+        daily_responses=[daily],
+        suspensions=_suspension(),
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+    )
+    assert set(stable.evidence["status"].to_list()) == {"NO_EVENT_STABLE_FACTOR"}
+    verify_corporate_action_reconciliation_result(result=stable)
+
+    jumped = flat.with_columns(
+        pl.when(pl.col("effective_date") == _D2)
+        .then(pl.lit(1.5))
+        .otherwise(pl.col("adj_factor"))
+        .alias("adj_factor")
+    )
+    jumped_bars = flat_bars.with_columns(
+        pl.when(pl.col("trade_date") == _D2)
+        .then(pl.lit(1.5))
+        .otherwise(pl.col("adj_factor"))
+        .alias("adj_factor")
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        reconcile_g1_corporate_actions(
+            corporate_actions=actions.clear(),
+            bars=jumped_bars,
+            adjustment_factors=jumped,
+            daily_responses=[daily],
+            suspensions=_suspension(),
+            calendars=_default_calendar(),
+            history=_history(),
+            factor_ratio_rtol=0.001,
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
+
+
+def test_p0e_rejects_disguised_no_event_cleared_ids_or_cash() -> None:
+    """Matrix 8: tampering matched evidence into NO_EVENT / cleared ids / cash fails."""
+    from quant.domain import CorporateActionReconciliationSchema
+
+    bars, factors, daily, actions = _p0e_small_dividend_fixture()
+    result = reconcile_g1_corporate_actions(
+        corporate_actions=actions,
+        bars=bars,
+        adjustment_factors=factors,
+        daily_responses=[daily],
+        suspensions=_suspension(),
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+    )
+    event_mask = pl.col("event_count") > 0
+
+    disguised = result.evidence.with_columns(
+        pl.when(event_mask)
+        .then(pl.lit("NO_EVENT_STABLE_FACTOR"))
+        .otherwise(pl.col("status"))
+        .alias("status")
+    )
+    with pytest.raises(Exception):
+        CorporateActionReconciliationSchema.validate(disguised)
+
+    cleared_ids = result.evidence.with_columns(
+        pl.when(event_mask)
+        .then(pl.lit("[]"))
+        .otherwise(pl.col("event_ids_json"))
+        .alias("event_ids_json"),
+        pl.when(event_mask)
+        .then(pl.lit(0))
+        .otherwise(pl.col("event_count"))
+        .alias("event_count"),
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught_ids:
+        _rebuild_recon(cleared_ids)
+    _assert_code(caught_ids, "G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
+
+    cash_tamper = result.evidence.with_columns(
+        pl.when(event_mask)
+        .then(pl.lit(0.0))
+        .otherwise(pl.col("cash_per_share_gross"))
+        .alias("cash_per_share_gross")
+    )
+    rejected = False
+    try:
+        CorporateActionReconciliationSchema.validate(cash_tamper)
+    except Exception:
+        rejected = True
+    if not rejected:
+        with pytest.raises(M3G1ExecutionFactError) as caught_cash:
+            _rebuild_recon(cash_tamper)
+        _assert_code(caught_cash, "G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
+        rejected = True
+    assert rejected is True
+
+
+def test_p0e_extra_full_day_tiny_declared_within_rtol() -> None:
+    """Extra boundary: FULL_DAY + actual=1.0 + declared within rtol → NO_MARKET_REFERENCE."""
+    # cash small enough that abs(1/declared-1) <= 0.001 with prev_close=10.
+    bars, factors, daily, actions = _bars_and_factors_for_cash(
+        prev_close=10.0,
+        cash=0.009,
+        factor_eff=1.0,
+        include_ex_daily=False,
+    )
+    suspensions = _suspension(
+        [
+            {
+                "symbol": _SYMBOL,
+                "trade_date": _D2,
+                "suspension_scope": "FULL_DAY",
+                "suspension_detail": None,
+                "source": "tushare",
+                "source_snapshot_id": _HEX,
+            }
+        ]
+    )
+    result = reconcile_g1_corporate_actions(
+        corporate_actions=actions,
+        bars=bars,
+        adjustment_factors=factors,
+        daily_responses=[daily],
+        suspensions=suspensions,
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+    )
+    event = result.evidence.filter(pl.col("event_count") > 0)
+    assert event.height == 1
+    assert event["status"][0] == (
+        "MATCHED_EVENT_DECLARED_FORMULA_NO_MARKET_REFERENCE"
+    )
+    assert event["actual_factor_ratio"][0] == 1.0
+    assert float(event["declared_dividend_relative_error"][0]) <= 0.001
+    verify_corporate_action_reconciliation_result(result=result)
 
 
 def test_no_network_or_research_imports() -> None:

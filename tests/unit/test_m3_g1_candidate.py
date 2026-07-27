@@ -1402,8 +1402,26 @@ def test_package_exports() -> None:
 
 def test_p0d_versions_and_scoped_projection_bounds() -> None:
     assert G1_CORPORATE_ACTION_RECONCILIATION_VERSION == (
-        "tushare_factor_daily_preclose_v3"
+        "tushare_factor_daily_preclose_v4"
     )
+    with pytest.raises(ValueError, match="corporate_action_reconciliation_version"):
+        G1BuildSpec(
+            config_version="m3-g1-test-v1",
+            g1_config_sha256=_HEX,
+            mapper_version="m3-g1-tushare-mapper-v3",
+            schema_version="m3-g1-schema-v1",
+            membership_method_version=G1_MEMBERSHIP_METHOD_VERSION,
+            price_limit_method_version=G1_PRICE_LIMIT_METHOD_VERSION,
+            corporate_action_selection_version=G1_CORPORATE_ACTION_SELECTION_VERSION,
+            corporate_action_reconciliation_version="tushare_factor_daily_preclose_v3",
+            benchmark_mode="TRADEABLE_ETF_TOTAL_RETURN_PROXY",
+            benchmark_method_version="tushare_510300_fund_daily_fund_adj_hfq_v1",
+            benchmark_dividend_reconciliation_version=(
+                "tushare_fund_div_implemented_cash_v1"
+            ),
+            build_code_version="m3-g1-candidate-v1",
+            dependency_fingerprint_sha256=_HEX,
+        )
     d0 = dt.date(2016, 2, 1)
     d1 = dt.date(2016, 2, 2)
     d_halt = dt.date(2016, 2, 3)
@@ -1530,7 +1548,7 @@ def test_p0d_build_excludes_pre_first_bar_factor_jump(
     assert candidate.build_spec.mapper_version == "m3-g1-tushare-mapper-v3"
     assert (
         candidate.build_spec.corporate_action_reconciliation_version
-        == "tushare_factor_daily_preclose_v3"
+        == "tushare_factor_daily_preclose_v4"
     )
     scoped = candidate.adjustment_factors.filter(pl.col("symbol") == symbol)
     assert scoped.get_column("effective_date").to_list() == [_D1]

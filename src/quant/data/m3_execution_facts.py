@@ -34,7 +34,7 @@ from quant.domain import (
 
 G1_PRICE_LIMIT_METHOD_VERSION = "tushare_stk_limit_suspension_aware_v2"
 G1_CORPORATE_ACTION_SELECTION_VERSION = "tushare_dividend_implemented_latest_v2"
-G1_CORPORATE_ACTION_RECONCILIATION_VERSION = "tushare_factor_daily_preclose_v3"
+G1_CORPORATE_ACTION_RECONCILIATION_VERSION = "tushare_factor_daily_preclose_v4"
 
 _SOURCE = "tushare"
 _A_SHARE = re.compile(r"^[0-9]{6}\.(?:SH|SZ)$")
@@ -857,7 +857,7 @@ def reconcile_g1_corporate_actions(
                     bar_series, effective_date
                 )
                 denominator = prev_close - total_cash
-                if denominator <= 0 or actual <= 1.0:
+                if denominator <= 0 or not _supported_ratio(actual, rtol):
                     raise M3G1ExecutionFactError(
                         "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED"
                     )
@@ -871,7 +871,7 @@ def reconcile_g1_corporate_actions(
                 if daily_row is not None:
                     ex_ref = float(daily_row["pre_close"])
                     market = prev_close / ex_ref
-                    if market <= 1.0:
+                    if not _supported_ratio(market, rtol):
                         raise M3G1ExecutionFactError(
                             "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED"
                         )
@@ -1125,6 +1125,10 @@ def _assert_reconciliation_row_formulas(row: dict[str, Any]) -> None:
     expected_declared_error = abs(actual / declared - 1.0)
     if expected_declared_error != float(row["declared_dividend_relative_error"]):
         raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
+    if not _supported_ratio(actual, rtol):
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
+    if declared <= 1.0:
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
     if status in {
         "MATCHED_EVENT_DECLARED_FORMULA",
         "MATCHED_EVENT_MARKET_REFERENCE",
@@ -1135,6 +1139,8 @@ def _assert_reconciliation_row_formulas(row: dict[str, Any]) -> None:
             raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
         expected_market = float(prev_close) / float(ex_ref)
         if expected_market != float(market):
+            raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
+        if not _supported_ratio(float(market), rtol):
             raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
         expected_market_error = abs(actual / float(market) - 1.0)
         if expected_market_error != float(row["market_reference_relative_error"]):
@@ -1587,6 +1593,11 @@ def _validate_rtol(value: object) -> float:
     if not math.isfinite(value) or value < 0.0 or value > 0.01:
         raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_FACTOR_INVALID")
     return value
+
+
+def _supported_ratio(value: float, rtol: float) -> bool:
+    """Event-branch ratio support: strictly above 1, or within 1±rtol."""
+    return value > 1.0 or abs(value - 1.0) <= rtol
 
 
 def _consume_daily_responses(

@@ -580,6 +580,8 @@ def _restrict_bar_symbols(
 
     Used to build deterministic <30-symbol and <20-date reconciliation
     fixtures without violating the frozen 300-member P4A build contract.
+    Factors, factor-match evidence and reconciliation are trimmed to the
+    remaining publish bar scopes so P0D audit bar-span/topology stay closed.
     """
     keep_set = set(keep_symbols)
     bars = candidate.bars.filter(pl.col("symbol").is_in(sorted(keep_set)))
@@ -590,6 +592,65 @@ def _restrict_bar_symbols(
         bars = bars.filter(
             (pl.col("symbol") != short_symbol) | pl.col("trade_date").is_in(remaining_days)
         )
+    bar_bounds: dict[str, tuple[dt.date, dt.date]] = {}
+    for row in bars.iter_rows(named=True):
+        symbol = row["symbol"]
+        day = row["trade_date"]
+        current = bar_bounds.get(symbol)
+        if current is None:
+            bar_bounds[symbol] = (day, day)
+        else:
+            first, last = current
+            bar_bounds[symbol] = (min(first, day), max(last, day))
+    factor_rows = []
+    for row in candidate.adjustment_factors.iter_rows(named=True):
+        span = bar_bounds.get(row["symbol"])
+        if span is None:
+            continue
+        day = row["effective_date"]
+        if span[0] <= day <= span[1]:
+            factor_rows.append(row)
+    factors = (
+        pl.DataFrame(factor_rows)
+        if factor_rows
+        else candidate.adjustment_factors.clear()
+    )
+    match_rows = []
+    bar_keys = {
+        (row["symbol"], row["trade_date"], row["source"])
+        for row in bars.iter_rows(named=True)
+    }
+    for row in candidate.factor_match_evidence.iter_rows(named=True):
+        if (row["symbol"], row["trade_date"], row["source"]) in bar_keys:
+            match_rows.append(row)
+    matches = (
+        pl.DataFrame(match_rows)
+        if match_rows
+        else candidate.factor_match_evidence.clear()
+    )
+    factor_dates_by_symbol: dict[str, list[dt.date]] = {}
+    for row in factors.iter_rows(named=True):
+        factor_dates_by_symbol.setdefault(row["symbol"], []).append(row["effective_date"])
+    expected_recon: set[tuple[str, dt.date, dt.date]] = set()
+    for symbol, dates in factor_dates_by_symbol.items():
+        ordered = sorted(dates)
+        for index in range(1, len(ordered)):
+            expected_recon.add((symbol, ordered[index - 1], ordered[index]))
+    recon_rows = [
+        row
+        for row in candidate.corporate_action_reconciliation.iter_rows(named=True)
+        if (
+            row["symbol"],
+            row["previous_factor_date"],
+            row["effective_date"],
+        )
+        in expected_recon
+    ]
+    recon = (
+        pl.DataFrame(recon_rows)
+        if recon_rows
+        else candidate.corporate_action_reconciliation.clear()
+    )
     all_symbols = sorted(set(candidate.instruments.get_column("symbol").to_list()))
     drop_symbols = [symbol for symbol in all_symbols if symbol not in keep_set]
     suspensions = pl.DataFrame(
@@ -605,7 +666,14 @@ def _restrict_bar_symbols(
             for symbol in drop_symbols
         ]
     )
-    return _rebind_identity(candidate, bars=bars, suspensions=suspensions)
+    return _rebind_identity(
+        candidate,
+        bars=bars,
+        adjustment_factors=factors,
+        factor_match_evidence=matches,
+        corporate_action_reconciliation=recon,
+        suspensions=suspensions,
+    )
 
 
 @pytest.fixture(scope="module")
@@ -2902,3 +2970,18 @@ def test_package_exports_frozen_public_names() -> None:
     assert qd.verify_reference_receipt is verify_reference_receipt
     assert qd.reconcile_cross_source is reconcile_cross_source
     assert qd.M3ReferenceError is M3ReferenceError
+
+
+def test_p0e_reconciliation_version_propagates_in_build_spec() -> None:
+    assert G1_CORPORATE_ACTION_RECONCILIATION_VERSION == (
+        "tushare_factor_daily_preclose_v4"
+    )
+    spec = _build_spec()
+    assert spec.corporate_action_reconciliation_version == (
+        "tushare_factor_daily_preclose_v4"
+    )
+    with pytest.raises(ValueError, match="corporate_action_reconciliation_version"):
+        replace(
+            spec,
+            corporate_action_reconciliation_version="tushare_factor_daily_preclose_v3",
+        )

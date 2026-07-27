@@ -370,6 +370,14 @@ class CorporateActionReconciliationSchema(pa.DataFrameModel):
             & pl.col("market_reference_relative_error").is_null()
             & (pl.col("declared_dividend_factor_ratio") == 1.0)
         )
+        # P0E: matched actual/market may be >1 or within the row's 1±rtol band.
+        supported_actual = (pl.col("actual_factor_ratio") > 1.0) | (
+            (pl.col("actual_factor_ratio") - 1.0).abs() <= pl.col("factor_ratio_rtol")
+        )
+        supported_market = (pl.col("market_reference_factor_ratio") > 1.0) | (
+            (pl.col("market_reference_factor_ratio") - 1.0).abs()
+            <= pl.col("factor_ratio_rtol")
+        )
         matched_market = (
             (pl.col("status").is_in([
                 "MATCHED_EVENT_DECLARED_FORMULA",
@@ -387,9 +395,9 @@ class CorporateActionReconciliationSchema(pa.DataFrameModel):
             & pl.col("ex_reference_price").is_not_null()
             & (pl.col("ex_reference_price") > 0)
             & pl.col("market_reference_factor_ratio").is_not_null()
-            & (pl.col("market_reference_factor_ratio") > 1)
+            & supported_market
             & (pl.col("declared_dividend_factor_ratio") > 1)
-            & (pl.col("actual_factor_ratio") > 1)
+            & supported_actual
             & pl.col("market_reference_relative_error").is_not_null()
         )
         matched_declared = (
@@ -429,7 +437,7 @@ class CorporateActionReconciliationSchema(pa.DataFrameModel):
             & pl.col("market_reference_factor_ratio").is_null()
             & pl.col("market_reference_relative_error").is_null()
             & (pl.col("declared_dividend_factor_ratio") > 1)
-            & (pl.col("actual_factor_ratio") > 1)
+            & supported_actual
             & (
                 pl.col("declared_dividend_relative_error")
                 <= pl.col("factor_ratio_rtol")

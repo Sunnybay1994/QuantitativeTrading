@@ -579,6 +579,10 @@ def test_static_plan_from_c0_and_forged_identity(
         == "tushare_fund_div_implemented_cash_v1"
     )
     assert plan.build_spec.mapper_version == "m3-g1-tushare-mapper-v3"
+    assert (
+        plan.build_spec.corporate_action_reconciliation_version
+        == "tushare_factor_daily_preclose_v4"
+    )
     captured: dict[str, Any] = {}
     real_sha = g1_planning._sha256_json
 
@@ -635,7 +639,11 @@ def test_endpoint_policy_and_version_drift(c0_config: LoadedM3Config, tmp_path: 
         replace(plan, endpoint_policies=missing)
     with pytest.raises(ValueError, match="mapper_version"):
         replace(plan.build_spec, mapper_version="m3-g1-tushare-mapper-v0")
-
+    with pytest.raises(ValueError, match="corporate_action_reconciliation_version"):
+        replace(
+            plan.build_spec,
+            corporate_action_reconciliation_version="tushare_factor_daily_preclose_v3",
+        )
 
 def test_history_plan_order_invariant_and_response_set(
     tmp_path: Path,
