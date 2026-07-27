@@ -66,7 +66,7 @@ _SOURCE_TREE_SCHEMA = "m3-g1-source-tree-v1"
 _DEP_FP_SCHEMA = "m3-g1-dependency-fingerprint-v1"
 _STATIC_ID_SCHEMA = "m3-g1-static-plan-identity-v1"
 _DERIVED_ID_SCHEMA = "m3-g1-derived-history-plan-identity-v1"
-_MAPPER_VERSION = "m3-g1-tushare-mapper-v2"
+_MAPPER_VERSION = "m3-g1-tushare-mapper-v3"
 _SCHEMA_VERSION = "m3-g1-schema-v1"
 _UNIVERSE: Literal["CSI300_TUSHARE_MONTHLY_OBSERVED_PIT_V1"] = (
     "CSI300_TUSHARE_MONTHLY_OBSERVED_PIT_V1"

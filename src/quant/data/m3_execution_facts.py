@@ -34,7 +34,7 @@ from quant.domain import (
 
 G1_PRICE_LIMIT_METHOD_VERSION = "tushare_stk_limit_suspension_aware_v2"
 G1_CORPORATE_ACTION_SELECTION_VERSION = "tushare_dividend_implemented_latest_v2"
-G1_CORPORATE_ACTION_RECONCILIATION_VERSION = "tushare_factor_daily_preclose_v2"
+G1_CORPORATE_ACTION_RECONCILIATION_VERSION = "tushare_factor_daily_preclose_v3"
 
 _SOURCE = "tushare"
 _A_SHARE = re.compile(r"^[0-9]{6}\.(?:SH|SZ)$")
@@ -756,7 +756,8 @@ def reconcile_g1_corporate_actions(
                 raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_FACTOR_INVALID")
             factors_by_symbol[row["symbol"]].append((day, float(row["adj_factor"])))
         for symbol, series in factors_by_symbol.items():
-            if len(series) < 2:
+            # Publish-scoped factors may have a single observation (zero transitions).
+            if len(series) < 1:
                 raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_FACTOR_INVALID")
             dates = [day for day, _ in series]
             if dates != sorted(set(dates)):
@@ -791,12 +792,18 @@ def reconcile_g1_corporate_actions(
             key = (row["symbol"], row["ex_date"])
             series = factors_by_symbol[row["symbol"]]
             factor_dates = {day for day, _ in series}
+            scoped_first = series[0][0]
+            scoped_last = series[-1][0]
+            # Ledger may retain history-window events whose ex_date lies outside
+            # the publish-scoped factor range; omit from matching without failing.
+            if row["ex_date"] < scoped_first or row["ex_date"] > scoped_last:
+                continue
             if row["ex_date"] not in factor_dates:
                 raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_FACTOR_INVALID")
             # Window-edge: ex_date is the first factor observation, so no prior
             # factor day exists to form an actual ratio into the event. Omit from
             # reconciliation matching (ledger may still retain the economic event).
-            if row["ex_date"] == series[0][0]:
+            if row["ex_date"] == scoped_first:
                 continue
             bar_series = bars_by_symbol.get(row["symbol"], [])
             if not any(day < row["ex_date"] for day, _ in bar_series):

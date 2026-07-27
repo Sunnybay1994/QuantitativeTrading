@@ -303,7 +303,7 @@ def test_version_constants() -> None:
         "tushare_dividend_implemented_latest_v2"
     )
     assert G1_CORPORATE_ACTION_RECONCILIATION_VERSION == (
-        "tushare_factor_daily_preclose_v2"
+        "tushare_factor_daily_preclose_v3"
     )
 
 
@@ -1661,6 +1661,185 @@ def test_p1_1_dtype_coercion_writeback() -> None:
         table_name="corporate_action_reconciliation", frame=rebuilt.evidence
     )
     verify_corporate_action_reconciliation_result(result=rebuilt)
+
+
+def test_p0d_scoped_factors_exclude_pre_first_bar_jump() -> None:
+    """000553 structure: pre-first-bar jump + ledger event omitted after scope."""
+    bars, factors, daily, actions = _bars_and_factors_for_cash()
+    edge_actions = actions.with_columns(
+        pl.lit(_D1).alias("ex_date"),
+        pl.lit(_D0).alias("record_date"),
+    )
+    # Unscoped: D0->D1 unexplained jump with bars only from D2.
+    unscoped = factors.with_columns(
+        pl.when(pl.col("effective_date") >= _D1)
+        .then(pl.lit(1.2))
+        .otherwise(pl.col("adj_factor"))
+        .alias("adj_factor")
+    )
+    late_bars = bars.filter(pl.col("trade_date") >= _D2).with_columns(
+        pl.lit(1.2).alias("adj_factor")
+    )
+    late_daily = _make_verified(
+        "daily",
+        _daily_frame({_D2: (9.9, 9.9)}),
+        parameters={"ts_code": _SYMBOL, "start_date": _START, "end_date": _END},
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        reconcile_g1_corporate_actions(
+            corporate_actions=edge_actions,
+            bars=late_bars,
+            adjustment_factors=unscoped,
+            daily_responses=[late_daily],
+            suspensions=_suspension(),
+            calendars=_default_calendar(),
+            history=_history(),
+            factor_ratio_rtol=0.001,
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
+
+    scoped_factors = unscoped.filter(pl.col("effective_date") >= _D2)
+    result = reconcile_g1_corporate_actions(
+        corporate_actions=edge_actions,
+        bars=late_bars,
+        adjustment_factors=scoped_factors,
+        daily_responses=[late_daily],
+        suspensions=_suspension(),
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+    )
+    # Single scoped factor -> zero transitions; pre-bar event omitted.
+    assert result.evidence.height == 0
+    assert edge_actions.height == 1
+    verify_corporate_action_reconciliation_result(result=result)
+    _ = daily
+    _ = bars
+
+
+def test_p0d_post_first_bar_no_event_jump_still_unexplained() -> None:
+    bars, factors, daily, actions = _bars_and_factors_for_cash()
+    bad_factors = factors.with_columns(
+        pl.when(pl.col("effective_date") == _D1)
+        .then(pl.lit(1.5))
+        .otherwise(pl.col("adj_factor"))
+        .alias("adj_factor")
+    )
+    bad_bars = bars.with_columns(
+        pl.when(pl.col("trade_date") == _D1)
+        .then(pl.lit(1.5))
+        .otherwise(pl.col("adj_factor"))
+        .alias("adj_factor")
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        reconcile_g1_corporate_actions(
+            corporate_actions=actions.clear(),
+            bars=bad_bars,
+            adjustment_factors=bad_factors,
+            daily_responses=[daily],
+            suspensions=_suspension(),
+            calendars=_default_calendar(),
+            history=_history(),
+            factor_ratio_rtol=0.001,
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
+
+
+def test_p0d_ledger_outside_scope_omitted_inside_strict() -> None:
+    bars, factors, daily, actions = _bars_and_factors_for_cash()
+    flat_factors = factors.with_columns(pl.lit(1.0).alias("adj_factor"))
+    flat_bars = bars.with_columns(pl.lit(1.0).alias("adj_factor"))
+    # Move the real selected ledger event before scoped first factor day.
+    outside = actions.with_columns(
+        pl.lit(_D0).alias("ex_date"),
+        pl.lit(_D0).alias("record_date"),
+        pl.when(pl.col("pay_date").is_not_null())
+        .then(pl.lit(_D0))
+        .otherwise(pl.col("pay_date"))
+        .alias("pay_date"),
+    )
+    # Scope factors to D1..D2 so D0 is outside.
+    scoped = flat_factors.filter(pl.col("effective_date") >= _D1)
+    scoped_bars = flat_bars.filter(pl.col("trade_date") >= _D1)
+    scoped_daily = _make_verified(
+        "daily",
+        _daily_frame({_D1: (10.0, 10.0), _D2: (9.9, 9.9)}),
+        parameters={"ts_code": _SYMBOL, "start_date": _START, "end_date": _END},
+    )
+    ok = reconcile_g1_corporate_actions(
+        corporate_actions=outside,
+        bars=scoped_bars,
+        adjustment_factors=scoped,
+        daily_responses=[scoped_daily],
+        suspensions=_suspension(),
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+    )
+    assert ok.evidence.height == 1
+    assert ok.evidence["status"].to_list() == ["NO_EVENT_STABLE_FACTOR"]
+    assert ok.evidence.filter(pl.col("event_count") > 0).height == 0
+
+    # Tamper: keep a scoped-range event but pair it with an unexplained jump.
+    jumped = scoped.with_columns(
+        pl.when(pl.col("effective_date") == _D2)
+        .then(pl.lit(1.5))
+        .otherwise(pl.col("adj_factor"))
+        .alias("adj_factor")
+    )
+    jumped_bars = scoped_bars.with_columns(
+        pl.when(pl.col("trade_date") == _D2)
+        .then(pl.lit(1.5))
+        .otherwise(pl.col("adj_factor"))
+        .alias("adj_factor")
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        reconcile_g1_corporate_actions(
+            corporate_actions=actions,
+            bars=jumped_bars,
+            adjustment_factors=jumped,
+            daily_responses=[scoped_daily],
+            suspensions=_suspension(),
+            calendars=_default_calendar(),
+            history=_history(),
+            factor_ratio_rtol=0.001,
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
+    _ = daily
+    _ = bars
+    _ = factors
+
+def test_p0d_scoped_row_count_formula_and_digest_stable_under_shuffle() -> None:
+    bars, factors, daily, actions = _bars_and_factors_for_cash()
+    result = reconcile_g1_corporate_actions(
+        corporate_actions=actions,
+        bars=bars,
+        adjustment_factors=factors,
+        daily_responses=[daily],
+        suspensions=_suspension(),
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+    )
+    per_symbol = factors.group_by("symbol").len().to_dicts()
+    expected = sum(max(int(row["len"]) - 1, 0) for row in per_symbol)
+    assert result.evidence.height == expected
+    shuffled = reconcile_g1_corporate_actions(
+        corporate_actions=actions.reverse(),
+        bars=bars.reverse(),
+        adjustment_factors=factors.reverse(),
+        daily_responses=[daily],
+        suspensions=_suspension(),
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+    )
+    assert shuffled.evidence_sha256 == result.evidence_sha256
+    assert shuffled.evidence.sort(
+        ["symbol", "previous_factor_date", "effective_date"]
+    ).equals(
+        result.evidence.sort(["symbol", "previous_factor_date", "effective_date"])
+    )
 
 
 def test_no_network_or_research_imports() -> None:

@@ -578,7 +578,7 @@ def test_static_plan_from_c0_and_forged_identity(
         plan.build_spec.benchmark_dividend_reconciliation_version
         == "tushare_fund_div_implemented_cash_v1"
     )
-    assert plan.build_spec.mapper_version == "m3-g1-tushare-mapper-v2"
+    assert plan.build_spec.mapper_version == "m3-g1-tushare-mapper-v3"
     captured: dict[str, Any] = {}
     real_sha = g1_planning._sha256_json
 

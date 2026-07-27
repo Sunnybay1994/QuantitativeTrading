@@ -58,7 +58,7 @@ _BENCHMARK = "510300.SH"
 _BENCHMARK_MODE = "TRADEABLE_ETF_TOTAL_RETURN_PROXY"
 _BENCHMARK_METHOD_VERSION = "tushare_510300_fund_daily_fund_adj_hfq_v1"
 _BENCHMARK_DIVIDEND_RECONCILIATION_VERSION = "tushare_fund_div_implemented_cash_v1"
-_MAPPER_VERSION = "m3-g1-tushare-mapper-v2"
+_MAPPER_VERSION = "m3-g1-tushare-mapper-v3"
 _IDENTITY_SCHEMA = "m3-g1-primary-candidate-identity-v1"
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _A_SHARE = re.compile(r"^[0-9]{6}\.(?:SH|SZ)$")
@@ -775,6 +775,75 @@ def apply_adjustment_factors_strict(
         raise M3G1CandidateError("G1_CANDIDATE_COMPONENT_INVALID") from None
 
 
+def project_scoped_adjustment_factors(
+    *,
+    bars: pl.DataFrame,
+    adjustment_factors: pl.DataFrame,
+) -> pl.DataFrame:
+    """Project raw-mapped factors to publish scope ``first_bar..last_bar`` per symbol.
+
+    Keeps suspension-day factor observations strictly inside the bar span; drops
+    observations before the first or after the last candidate bar. Raw receipts are
+    untouched by this projection.
+    """
+    try:
+        if not isinstance(bars, pl.DataFrame) or not isinstance(
+            adjustment_factors, pl.DataFrame
+        ):
+            raise M3G1CandidateError("G1_CANDIDATE_COMPONENT_INVALID")
+        empty_schema = {
+            "symbol": pl.Utf8,
+            "effective_date": pl.Date,
+            "adj_factor": pl.Float64,
+            "source": pl.Utf8,
+        }
+        if bars.height == 0:
+            if adjustment_factors.height:
+                raise M3G1CandidateError("G1_CANDIDATE_COMPONENT_INVALID")
+            return pl.DataFrame(schema=empty_schema)
+        required_bar_cols = {"symbol", "trade_date"}
+        if not required_bar_cols.issubset(set(bars.columns)):
+            raise M3G1CandidateError("G1_CANDIDATE_COMPONENT_INVALID")
+        factor_frame = _validate_schema(
+            adjustment_factors,
+            AdjustmentFactorSchema,
+            "G1_CANDIDATE_COMPONENT_INVALID",
+        )
+        bounds: dict[str, tuple[dt.date, dt.date]] = {}
+        for row in bars.select(["symbol", "trade_date"]).iter_rows(named=True):
+            symbol = row["symbol"]
+            day = row["trade_date"]
+            if type(symbol) is not str or type(day) is not dt.date:
+                raise M3G1CandidateError("G1_CANDIDATE_COMPONENT_INVALID")
+            current = bounds.get(symbol)
+            if current is None:
+                bounds[symbol] = (day, day)
+            else:
+                first, last = current
+                bounds[symbol] = (min(first, day), max(last, day))
+        scoped_rows: list[dict[str, Any]] = []
+        for row in factor_frame.iter_rows(named=True):
+            symbol = row["symbol"]
+            day = row["effective_date"]
+            span = bounds.get(symbol)
+            if span is None:
+                continue
+            first_bar, last_bar = span
+            if first_bar <= day <= last_bar:
+                scoped_rows.append(dict(row))
+        if not scoped_rows:
+            return pl.DataFrame(schema=empty_schema)
+        return (
+            pl.DataFrame(scoped_rows)
+            .select(["symbol", "effective_date", "adj_factor", "source"])
+            .sort(["symbol", "effective_date", "source"])
+        )
+    except M3G1CandidateError:
+        raise
+    except Exception:
+        raise M3G1CandidateError("G1_CANDIDATE_COMPONENT_INVALID") from None
+
+
 def build_g1_candidate(*, inputs: G1BuildInputs) -> G1Candidate:
     """Rebuild primary candidate from frozen plan/responses/tables."""
     try:
@@ -1189,6 +1258,35 @@ def audit_g1_candidate(*, candidate: G1Candidate) -> G1PrimaryAuditResult:
                     tuple(sorted(bad_factor)[:32]),
                 )
             )
+        # Self-contained publish-scope check from candidate tables only
+        # (audit has no frozen inputs). Exact scoped rebuild from inputs is
+        # verify_g1_candidate / build_g1_candidate responsibility.
+        bar_bounds: dict[str, tuple[dt.date, dt.date]] = {}
+        for row in candidate.bars.iter_rows(named=True):
+            symbol = row["symbol"]
+            day = row["trade_date"]
+            current = bar_bounds.get(symbol)
+            if current is None:
+                bar_bounds[symbol] = (day, day)
+            else:
+                first, last = current
+                bar_bounds[symbol] = (min(first, day), max(last, day))
+        out_of_scope: list[str] = []
+        for row in candidate.adjustment_factors.iter_rows(named=True):
+            symbol = row["symbol"]
+            day = row["effective_date"]
+            span = bar_bounds.get(symbol)
+            if span is None or day < span[0] or day > span[1]:
+                out_of_scope.append(f"{symbol}|{day.isoformat()}")
+        if out_of_scope:
+            issues.append(
+                _issue(
+                    "FACTOR_INVALID",
+                    "adjustment factor outside publish bar scope",
+                    len(out_of_scope),
+                    tuple(sorted(out_of_scope)[:32]),
+                )
+            )
         for row in candidate.factor_match_evidence.iter_rows(named=True):
             for field in ("bar_request_id", "factor_request_id"):
                 if row[field] not in receipt_ids:
@@ -1509,6 +1607,12 @@ def _build_candidate_body(inputs: G1BuildInputs) -> G1Candidate:
                 "source": pl.Utf8,
             }
         )
+    )
+    # Publish-scope: drop factor observations strictly before first / after last bar.
+    # Raw-mapped history remains in receipts; only candidate tables are scoped.
+    adjustment_factors = project_scoped_adjustment_factors(
+        bars=bars_no_factor,
+        adjustment_factors=adjustment_factors,
     )
     applied = apply_adjustment_factors_strict(
         bars=bars_no_factor,

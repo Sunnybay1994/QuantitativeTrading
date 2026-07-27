@@ -351,7 +351,7 @@ def _build_spec() -> G1BuildSpec:
     return G1BuildSpec(
         config_version="m3-g1-test-v1",
         g1_config_sha256=_HEX,
-        mapper_version="m3-g1-tushare-mapper-v2",
+        mapper_version="m3-g1-tushare-mapper-v3",
         schema_version="m3-g1-schema-v1",
         membership_method_version=G1_MEMBERSHIP_METHOD_VERSION,
         price_limit_method_version=G1_PRICE_LIMIT_METHOD_VERSION,

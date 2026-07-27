@@ -41,6 +41,7 @@ from quant.data.m3_g1_candidate import (
     apply_adjustment_factors_strict,
     audit_g1_candidate,
     build_g1_candidate,
+    project_scoped_adjustment_factors,
     verify_g1_candidate,
 )
 from quant.data.m3_identity import clean_table_content_sha256
@@ -311,7 +312,7 @@ def _build_spec() -> G1BuildSpec:
     return G1BuildSpec(
         config_version="m3-g1-test-v1",
         g1_config_sha256=_HEX,
-        mapper_version="m3-g1-tushare-mapper-v2",
+        mapper_version="m3-g1-tushare-mapper-v3",
         schema_version="m3-g1-schema-v1",
         membership_method_version=G1_MEMBERSHIP_METHOD_VERSION,
         price_limit_method_version=G1_PRICE_LIMIT_METHOD_VERSION,
@@ -828,9 +829,10 @@ def test_full_day_suspension_allows_factor_without_daily_bar(
     assert candidate.bars.filter(pl.col("symbol") == symbol).get_column(
         "trade_date"
     ).to_list() == [_D1]
+    # D0 is strictly before first_bar; publish-scoped factors keep only D1.
     assert candidate.adjustment_factors.filter(pl.col("symbol") == symbol).get_column(
         "effective_date"
-    ).to_list() == [_D0, _D1]
+    ).to_list() == [_D1]
     assert candidate.factor_match_evidence.filter(
         pl.col("symbol") == symbol
     ).get_column("trade_date").to_list() == [_D1]
@@ -1396,3 +1398,245 @@ def test_package_exports() -> None:
     assert qd.build_g1_candidate is build_g1_candidate
     assert qd.audit_g1_candidate is audit_g1_candidate
     assert qd.G1_MEMBERSHIP_METHOD_VERSION == G1_MEMBERSHIP_METHOD_VERSION
+
+
+def test_p0d_versions_and_scoped_projection_bounds() -> None:
+    assert G1_CORPORATE_ACTION_RECONCILIATION_VERSION == (
+        "tushare_factor_daily_preclose_v3"
+    )
+    d0 = dt.date(2016, 2, 1)
+    d1 = dt.date(2016, 2, 2)
+    d_halt = dt.date(2016, 2, 3)
+    d2 = dt.date(2016, 2, 4)
+    d3 = dt.date(2016, 2, 5)
+    symbol = "000001.SZ"
+    bars = pl.DataFrame(
+        [
+            {
+                "symbol": symbol,
+                "trade_date": day,
+                "open": 10.0,
+                "high": 10.0,
+                "low": 10.0,
+                "close": 10.0,
+                "volume": 1.0,
+                "amount": 1.0,
+                "source": "tushare",
+            }
+            for day in (d1, d2)
+        ]
+    )
+    factors = pl.DataFrame(
+        [
+            {
+                "symbol": symbol,
+                "effective_date": day,
+                "adj_factor": 1.0 if day != d0 else 0.5,
+                "source": "tushare",
+            }
+            for day in (d0, d1, d_halt, d2, d3)
+        ]
+    )
+    # Input shuffle must not change scoped projection.
+    scoped = project_scoped_adjustment_factors(
+        bars=bars, adjustment_factors=factors.reverse()
+    )
+    # Inclusive bounds + keep mid-span suspension factor without a bar.
+    assert scoped.get_column("effective_date").to_list() == [d1, d_halt, d2]
+    assert scoped.get_column("adj_factor").to_list() == [1.0, 1.0, 1.0]
+    assert d0 not in scoped.get_column("effective_date").to_list()
+    assert d3 not in scoped.get_column("effective_date").to_list()
+
+
+def test_p0d_build_excludes_pre_first_bar_factor_jump(
+    happy_inputs: G1BuildInputs,
+) -> None:
+    """Structural 000553: pre-first-bar jump + ledger event must not fail build."""
+    symbol = _symbols()[0]
+    replacements: list[VerifiedRawResponse] = []
+    for item in happy_inputs.responses:
+        params = dict(item.spec.parameters)
+        endpoint = item.spec.endpoint
+        if params.get("ts_code") != symbol:
+            replacements.append(item)
+            continue
+        request_params = {key: value for key, value in params.items() if key != "fields"}
+        if endpoint == "daily":
+            replacement = _make_verified(
+                "daily", _daily_frame(symbol, [_D1]), parameters=request_params
+            )
+        elif endpoint == "adj_factor":
+            # D0 factor 1.0 -> D1 factor 1.2 (~20% jump) plus ledger event on D0.
+            frame = pl.DataFrame(
+                [
+                    {
+                        "ts_code": symbol,
+                        "trade_date": _D0.strftime("%Y%m%d"),
+                        "adj_factor": 1.0,
+                    },
+                    {
+                        "ts_code": symbol,
+                        "trade_date": _D1.strftime("%Y%m%d"),
+                        "adj_factor": 1.2,
+                    },
+                ]
+            ).select(TUSHARE_FIELDS["adj_factor"].split(","))
+            replacement = _make_verified(
+                "adj_factor", frame, parameters=request_params
+            )
+        elif endpoint == "dividend":
+            frame = pl.DataFrame(
+                [
+                    {
+                        "ts_code": symbol,
+                        "end_date": _D0.strftime("%Y%m%d"),
+                        "ann_date": _D0.strftime("%Y%m%d"),
+                        "div_proc": "实施",
+                        "stk_div": 0.0,
+                        "stk_bo_rate": None,
+                        "stk_co_rate": None,
+                        "cash_div": 0.1,
+                        "cash_div_tax": 0.1,
+                        "record_date": _D0.strftime("%Y%m%d"),
+                        "ex_date": _D0.strftime("%Y%m%d"),
+                        "pay_date": _D0.strftime("%Y%m%d"),
+                        "div_listdate": None,
+                        "imp_ann_date": _D0.strftime("%Y%m%d"),
+                        "base_date": None,
+                        "base_share": None,
+                    }
+                ]
+            ).select(TUSHARE_FIELDS["dividend"].split(","))
+            replacement = _make_verified(
+                "dividend", frame, parameters=request_params
+            )
+        elif endpoint == "suspend_d":
+            replacement = _make_verified(
+                "suspend_d",
+                _full_day_suspend(symbol, _D0),
+                parameters=request_params,
+            )
+        else:
+            replacements.append(item)
+            continue
+        assert replacement.spec == item.spec
+        replacements.append(replacement)
+
+    inputs = replace(happy_inputs, responses=tuple(replacements))
+    candidate = build_g1_candidate(inputs=inputs)
+    verify_g1_candidate(inputs=inputs, candidate=candidate)
+    audit = audit_g1_candidate(candidate=candidate)
+    assert audit.passed is True
+    assert candidate.build_spec.mapper_version == "m3-g1-tushare-mapper-v3"
+    assert (
+        candidate.build_spec.corporate_action_reconciliation_version
+        == "tushare_factor_daily_preclose_v3"
+    )
+    scoped = candidate.adjustment_factors.filter(pl.col("symbol") == symbol)
+    assert scoped.get_column("effective_date").to_list() == [_D1]
+    assert scoped.get_column("adj_factor").to_list() == [1.2]
+    # Ledger may retain the pre-bar event; reconciliation must not include it.
+    ledger = candidate.corporate_actions.filter(pl.col("symbol") == symbol)
+    assert ledger.height >= 1
+    assert ledger.filter(pl.col("ex_date") == _D0).height == 1
+    recon = candidate.corporate_action_reconciliation.filter(
+        pl.col("symbol") == symbol
+    )
+    assert recon.height == 0
+
+
+def test_p0d_audit_rejects_restored_out_of_scope_factors(
+    happy_inputs: G1BuildInputs,
+) -> None:
+    """Audit: self-contained bar-span check. Verify: rebuild from frozen inputs."""
+    symbol = _symbols()[0]
+    replacements: list[VerifiedRawResponse] = []
+    for item in happy_inputs.responses:
+        params = dict(item.spec.parameters)
+        endpoint = item.spec.endpoint
+        if params.get("ts_code") != symbol:
+            replacements.append(item)
+            continue
+        request_params = {key: value for key, value in params.items() if key != "fields"}
+        if endpoint == "daily":
+            replacement = _make_verified(
+                "daily", _daily_frame(symbol, [_D1]), parameters=request_params
+            )
+        elif endpoint == "suspend_d":
+            replacement = _make_verified(
+                "suspend_d",
+                _full_day_suspend(symbol, _D0),
+                parameters=request_params,
+            )
+        else:
+            replacements.append(item)
+            continue
+        assert replacement.spec == item.spec
+        replacements.append(replacement)
+    inputs = replace(happy_inputs, responses=tuple(replacements))
+    candidate = build_g1_candidate(inputs=inputs)
+    assert candidate.adjustment_factors.filter(pl.col("symbol") == symbol).height == 1
+
+    restored = pl.concat(
+        [
+            candidate.adjustment_factors,
+            pl.DataFrame(
+                [
+                    {
+                        "symbol": symbol,
+                        "effective_date": _D0,
+                        "adj_factor": 0.5,
+                        "source": "tushare",
+                    }
+                ]
+            ),
+        ]
+    ).sort(["symbol", "effective_date", "source"])
+    attacked = _rebind_identity(candidate, adjustment_factors=restored)
+    # audit_g1_candidate only sees candidate tables: reject out-of-span factors.
+    audit = audit_g1_candidate(candidate=attacked)
+    assert audit.passed is False
+    assert any(
+        issue.code == "FACTOR_INVALID"
+        and "outside publish bar scope" in issue.message
+        for issue in audit.issues
+    )
+    # verify_g1_candidate rebuilds scoped factors from frozen inputs and mismatches.
+    with pytest.raises(M3G1CandidateError) as caught:
+        verify_g1_candidate(inputs=inputs, candidate=attacked)
+    assert caught.value.code == "G1_CANDIDATE_IDENTITY_MISMATCH"
+
+
+def test_p0d_bar_missing_factor_and_lineage_still_fail(
+    happy_inputs: G1BuildInputs, happy_candidate: G1Candidate
+) -> None:
+    symbol = _symbols()[0]
+    factors = happy_candidate.adjustment_factors.filter(pl.col("symbol") == symbol)
+    bars = happy_candidate.bars.filter(pl.col("symbol") == symbol).drop("adj_factor")
+    daily = [
+        item
+        for item in happy_inputs.responses
+        if item.spec.endpoint == "daily"
+        and dict(item.spec.parameters).get("ts_code") == symbol
+    ]
+    factor_resps = [
+        item
+        for item in happy_inputs.responses
+        if item.spec.endpoint == "adj_factor"
+        and dict(item.spec.parameters).get("ts_code") == symbol
+    ]
+    with pytest.raises(M3G1CandidateError):
+        apply_adjustment_factors_strict(
+            bars=bars,
+            adjustment_factors=factors.head(factors.height - 1),
+            daily_responses=daily,
+            factor_responses=factor_resps,
+        )
+    bad_factor = factors.with_columns(pl.lit(-1.0).alias("adj_factor"))
+    with pytest.raises(M3G1CandidateError):
+        apply_adjustment_factors_strict(
+            bars=bars,
+            adjustment_factors=bad_factor,
+            daily_responses=daily,
+            factor_responses=factor_resps,
+        )
