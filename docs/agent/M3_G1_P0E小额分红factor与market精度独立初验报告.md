@@ -1,123 +1,143 @@
 # M3 G1 P0E：小额分红 factor / market 精度独立初验报告
 
-状态：**PASS（独立初验）**
+状态：**独立初验通过**（仅本轮 P0E 合同范围；**不等于** Codex 终验 / G1 / Windows publish / Linux Gate 通过）
 
-角色：外部独立初验 Agent（全新会话，未参与实现；本轮只读，仅写入本报告）  
-模型：Cursor Grok 4.5（`cursor-grok-4.5-high` 语义；本会话为 Cursor IDE Agent）  
-基线：`5c790b7`  
-待审：`6d887de33da8790f944f63583571de0976cad4b8`（`Fix G1 small-dividend ratio precision`）  
+角色：外部独立初验 Agent（全新会话，未参与 P0E 实现）  
+模型：cursor-grok-4.5-high  
+工作区：`F:\AI_Coding\QuantitativeTrading`  
+分支：`cursor/g1-p0-rework-20260726`  
+实现 commit：`6d887de`（`Fix G1 small-dividend ratio precision`）  
 任务书：[`M3_G1_P0E小额分红factor与market精度返工任务单.md`](M3_G1_P0E小额分红factor与market精度返工任务单.md)  
 交付报告：[`M3_G1_P0E小额分红factor与market精度返工交付报告.md`](M3_G1_P0E小额分红factor与market精度返工交付报告.md)  
 首败证据：[`20260727_M3_G1_P0D后正式首败_000627小额分红精度.md`](20260727_M3_G1_P0D后正式首败_000627小额分红精度.md)
 
-环境：Windows 原生 `D:\Miniforge3\python.exe`  
-未运行：WSL/Linux Gate、正式 `status` / reference / prepare / publish、000661 配股、600733 重复实施行
+---
+
+## 1. 结论
+
+| 项 | 结果 |
+|---|---|
+| 独立初验 | **通过** |
+| 返工项 | 无 |
+| Codex / G1 / Gate | **未宣布通过**（本轮无权） |
 
 ---
 
-## 0. 审查方法
+## 2. Diff 审查（对照冻结算法）
 
-1. 完整阅读任务书、首败证据、交付报告、废止合同文档与 `5c790b7..6d887de` diff。  
-2. 独立核对 `m3_execution_facts` / Schema / verifier / `G1BuildSpec` 版本钉，不以交付报告为唯一证据。  
-3. 定向 pytest / ruff / mypy / `git diff --check`。  
-4. 在 `%TEMP%` 内联脚本构造实现者未使用的对抗反例（未写入仓库）。
+审查范围：`6d887de` 本体（相对父提交）；并核对 `d952cc9..6d887de` 中与 recon 相关生产落点。  
+冻结算法：
 
-白名单外生产代码无改动；无关结构版本（selection / price_limit / mapper / schema）未提升。
+```text
+supported_ratio(x) := x > 1.0 OR abs(x - 1.0) <= rtol
+```
 
----
+### 2.1 `6d887de` 白名单符合性
 
-## 1. 冻结合同逐项
+| 路径 | 结论 |
+|---|---|
+| `src/quant/data/m3_execution_facts.py` | 白名单内；算法与版本变更 |
+| `src/quant/domain/schemas.py` | 白名单内；matched 行条件同步 |
+| `tests/unit/test_m3_execution_facts.py` 等四测文件 | 白名单内 |
+| 交付报告 | 白名单内 |
+| 白名单外生产代码 | **本 commit 未改** |
 
-### 1.1 `supported_ratio(x) := x > 1.0 OR abs(x - 1.0) <= rtol`
+说明：`d952cc9..6d887de` 区间含 P0D 等前序 commit（candidate/release 等），不属本轮 P0E 实现面；P0E 实现提交 `6d887de` 自身仅触及任务书白名单。
 
-- **合同**：事件分支 actual/market 支持域。  
-- **代码证据**：`_supported_ratio`；reconcile 用 `not _supported_ratio(actual/market, rtol)` 替代原 `<= 1.0`；Schema `supported_actual` / `supported_market` 等价。  
-- **测试/反例**：实现者矩阵 1–2；独立反例 A1（见 §2）。  
-- **结论**：PASS
+### 2.2 Event 路径
 
-### 1.2 有 daily 时 market 须 supported，且 `actual/market` 相对误差 ≤ rtol
+- `_supported_ratio` 定义为 `value > 1.0 or abs(value - 1.0) <= rtol`，与冻结式等价。
+- event 分支：`denominator <= 0` 或 `not _supported_ratio(actual, rtol)` → `G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED`。
+- 有 daily：`market = previous_close / pre_close`，须 `_supported_ratio(market, rtol)`，且 `abs(actual/market-1)<=rtol`；declared 误差决定 `MATCHED_EVENT_DECLARED_FORMULA` vs `MATCHED_EVENT_MARKET_REFERENCE`。
+- 无 daily：仍仅 `FULL_DAY + declared_error<=rtol`；actual 已在分支入口受 `supported_ratio` 约束。
+- **declared 仍要求 `<=1` fail-closed**（未放松）。
+- 注释与结构保持：event 失败 **raise**，不回退 `NO_EVENT_STABLE_FACTOR`；保留 event_ids / cash / stock。
+- 未新增 status 或列。
 
-- **代码证据**：`market = prev_close/ex_ref` 后 `_supported_ratio(market)` + `market_error > rtol` → `FACTOR_UNEXPLAINED`；verifier 同步校验。  
-- **测试**：矩阵 1、2、4。  
-- **结论**：PASS
+### 2.3 Schema
 
-### 1.3 保留 MATCHED_* / 无 market 声明状态；event ids/cash/stock 闭合，不得伪装 NO_EVENT
+`CorporateActionReconciliationSchema` 将 matched 状态原 `actual>1` / `market>1` 改为逐行 `supported_actual` / `supported_market`（相对 `factor_ratio_rtol`），与冻结算法等价；`declared > 1`、identity、顶层正数/有限值校验保留；`NO_EVENT_STABLE_FACTOR` 语义未改。
 
-- **代码证据**：事件分支仍写 MATCHED_* 并保留 ids/cash/stock；注释禁止回退 NO_EVENT；Schema `no_event` 要求 `event_count==0` 等。  
-- **测试**：矩阵 1、8（status 伪装 Schema 拒；清 ids / 改 cash 拒）。  
-- **独立反例 A3/A4**：见 §2（验证层级说明）。  
-- **结论**：PASS（生成路径与不完整伪装）；完整字段抹成合法 NO_EVENT 形状属 recon 单表层残留风险，见 §4
+### 2.4 版本
 
-### 1.4 无 daily 仅 FULL_DAY 且 declared error ≤ rtol；actual 仍须 supported
+`G1_CORPORATE_ACTION_RECONCILIATION_VERSION`：`tushare_factor_daily_preclose_v3` → `tushare_factor_daily_preclose_v4`。  
+candidate / planning / reference 经 SSOT 常量传播（测试钉住）；未见无关 mapper/manifest 结构版本抬升（本 commit 未改那些生产文件）。
 
-- **代码证据**：缺 daily 分支仍要求 FULL_DAY + `declared_error<=rtol`；入口已要求 `_supported_ratio(actual)`。  
-- **测试**：矩阵 5、6；额外 FULL_DAY tiny declared → `NO_MARKET_REFERENCE`。  
-- **结论**：PASS
+### 2.5 无事件 fail-closed（未放松）
 
-### 1.5 no-event 仅稳定因子；大跳 fail-closed
+`_no_event_evidence_row` 仍：`abs(actual-1)>rtol` → `G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED`；仅 `event_count=0` 路径可发 `NO_EVENT_STABLE_FACTOR`。verifier 对 `NO_EVENT_STABLE_FACTOR` 的 `abs(actual-1)>rtol` 校验保留。
 
-- **代码证据**：`_no_event_evidence_row` 仍 `abs(actual-1)>rtol` → `FACTOR_UNEXPLAINED`。  
-- **测试**：矩阵 7。  
-- **结论**：PASS
+### 2.6 Verifier
 
-### 1.6 远低于 1 且超 rtol 的反向 ratio，即使 actual==market 也拒
-
-- **代码证据**：`supported_ratio` 先于 mutual match。  
-- **测试**：矩阵 3；独立 A2。  
-- **结论**：PASS
-
-### 1.7 reconciliation version v3→v4，经 candidate/planning/reference 传播；旧 v3 拒；无关版本不升
-
-- **代码证据**：常量 `tushare_factor_daily_preclose_v4`；`G1BuildSpec` / planning 钉 SSOT；selection=`…_v2`、price_limit=`…_v2`、mapper=`…-v3` 未改。  
-- **测试**：四文件版本钉 + 旧 v3 `ValueError`；独立 A6。  
-- **结论**：PASS
-
-### 1.8 非目标遵守
-
-- **证据**：diff 无 000661/600733/正式 Gate；本轮未跑正式 status。  
-- **结论**：PASS
+`_assert_reconciliation_row_formulas` 对 matched 路径补强 `_supported_ratio(actual/market)` 与 `declared<=1` 拒绝，与生产路径一致。
 
 ---
 
-## 2. 独立对抗反例（实现者未明确使用）
+## 3. Pytest 重跑
 
-| ID | 反例 | 结果 | 层级说明 |
+解释器：`D:\Miniforge3\python.exe`  
+`PYTHONPATH=F:\AI_Coding\QuantitativeTrading\src`
+
+```text
+python -m pytest tests/unit/test_m3_execution_facts.py \
+  tests/unit/test_m3_g1_candidate.py \
+  tests/unit/test_m3_g1_planning.py \
+  tests/unit/test_m3_reference.py -q --tb=line
+```
+
+| 项 | 值 |
+|---|---|
+| 退出码 | **0** |
+| 摘要 | **255 passed, 5 skipped** |
+| 耗时 | 1282.35s（约 21m22s） |
+| 收集数 | 260（含 skip） |
+
+与交付报告自测摘要一致。本初验未跑 ruff/mypy/正式 status（任务书将隐藏反例与零网络 status 留给主 Agent）。
+
+---
+
+## 4. 对抗反例（实现者未使用的构造）
+
+脚本：`artifacts/g1_component_diag_20260722/p0e_indep_probe.py`  
+符号使用 `600519.SH`（实现者矩阵用 `600000.SH` / cash=`0.005` / `0.998` / `0.9995`）。
+
+命令：
+
+```text
+set PYTHONPATH=F:\AI_Coding\QuantitativeTrading\src
+D:\Miniforge3\python.exe artifacts\g1_component_diag_20260722\p0e_indep_probe.py
+```
+
+| 探针 | 构造（相对实现者矩阵的差异） | 期望 | 结果 |
 |---|---|---|---|
-| A1 | `rtol=0.001`，用 `1.0-rtol` 再 `nextafter` 向 1 修正到 `abs(x-1)<=rtol` 的精确浮点边界（避免字面量 `0.999` 二进制超界） | reconcile → `MATCHED_EVENT_MARKET_REFERENCE` | 字面量 `0.999` 的 `abs(·-1)=0.001000…>0.001`，**不能**当验收输入 |
-| A2 | `actual=market=0.998` | `G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED` | 支持域优先于相互匹配 |
-| A3 | 篡改 event ids 并重算 `event_ids_sha256`；或改 cash 并重算 declared/error | **行公式/Schema 接受** | `CorporateActionReconciliationResult` 只做行内 identity+公式；ledger/selection 闭包在 `CorporateActionSelectionResult`，不在 recon 单表 |
-| A4 | 仅改 status→NO_EVENT | Schema 拒绝 | 事件字段仍在时不得伪装 |
-| A4b | 抹成完整合法 NO_EVENT 行并重算 digest | recon verifier **接受** | 见 §4 残留风险 |
-| A5 | `cash==prev_close` / `cash>prev_close` 走 reconcile；零分母走 public rebuild | `FACTOR_UNEXPLAINED` / `RECONCILIATION_INVALID` | 公共 API 不泄露 `ZeroDivisionError`；内部 `_assert_reconciliation_row_formulas` 直调会 ZDE，但 `__post_init__`/verify 外层吞并映射 |
-| A6 | v4 钉、旧 v3 拒、selection/price_limit/mapper 不变 | 通过 | — |
+| A | event + cash=`0.007` + prev=`5.12` + actual=market=`1.0` | `MATCHED_EVENT_MARKET_REFERENCE`；event_count/ids/cash 保留；不回退 NO_EVENT | **PASS**（declared_error≈0.001367>rtol） |
+| B | event + actual=market=`0.997`（比实现者 `0.998` 更远） | 即使相互匹配也拒绝 `UNEXPLAINED` | **PASS** |
+| C | no-event actual=`1.002`（>rtol=0.001；实现者仅测 1.0 稳定与大跳） | 仍拒绝 `UNEXPLAINED` | **PASS** |
+| D | 版本常量 | `…_v4` | **PASS** |
+
+汇总：`probes=4 passed=4 failed=0`。
 
 ---
 
-## 3. 验收命令结果
+## 5. 与首败形状的对应
 
-解释器：`D:\Miniforge3\python.exe`
-
-| 命令 | 退出码 | 摘要 |
-|---|---|---|
-| `pytest` 四定向文件 `-q --tb=line -p no:cacheprovider` | **0** | 255 passed, 5 skipped（约 1263s） |
-| `ruff check` 六白名单文件 | **0** | All checks passed |
-| `mypy` 两生产文件 | **0** | no issues found |
-| `git diff --check 5c790b7..6d887de`（全范围） | **2** | 仅交付报告 markdown 行尾空白 |
-| `git diff --check` 六代码/测试文件 | **0** | 通过 |
+正式首败形状（`actual=market=1.0`、小 cash、有事件）落在 `supported_ratio` 支持域且 market 匹配 → `MATCHED_EVENT_*`，与探针 A / 任务书矩阵 1 同族。无事件路径与远离 1 的反向 ratio 仍 fail-closed（探针 B/C）。
 
 ---
 
-## 4. 残留风险（不构成本轮 FAIL）
+## 6. 非目标与边界声明
 
-1. **完整 NO_EVENT 结构抹除**：P0E 使 `actual≈1` 的 MATCHED 行更易被改写成合法 NO_EVENT 形状；recon 单表与 candidate topology（只绑 factor 键/比率）不检查 ledger 事件↔recon status。生成路径仍 fail-closed；不完整伪装由 Schema 拒绝。主验可考虑 ledger↔recon 事件存在性闭包。  
-2. **交付报告 trailing whitespace**：全范围 `git diff --check` 非零；代码白名单干净。  
-3. **未跑** Linux/ext4 Gate、正式零网络 `status`、隐藏反例主验。  
-4. 内部公式助手对零分母可抛原生 ZDE；公共构造/verify 已映射为项目错误码。
+- 未改生产/测试代码、未 reset/checkout、未删 release、未改 raw/receipt、未输出 token、未调 510300 五身份 API。
+- 未处理 `000661` 配股、`600733` 重复实施行。
+- **本报告通过 ≠ Codex 终验 ≠ G1 / Windows publish / Linux Gate 通过。**
+- 建议主 Agent 继续：隐藏反例、定向静态检查、正式零网络 `status`。
 
 ---
 
-## 5. 总结论
+## 7. 返回协调者摘要
 
-**PASS**
-
-冻结合同 1–8 在生产代码、Schema、verifier 与版本传播上成立；定向测试与关键独立反例（含浮点安全边界、反向 ratio、公共零分母路径、v4 传播）通过。不得据此宣布 G1 / Windows publish / Linux Gate 通过。
+- **结论：通过**
+- **pytest：255 passed, 5 skipped，exit 0**
+- **对抗探针：4/4 PASS**（A 小额 cash=0.007→MATCHED_EVENT_MARKET_REFERENCE；B 0.997 互配拒绝；C no-event 1.002 拒绝；D v4）
+- **报告路径：** `docs/agent/M3_G1_P0E小额分红factor与market精度独立初验报告.md`
+- **返工项：无**
