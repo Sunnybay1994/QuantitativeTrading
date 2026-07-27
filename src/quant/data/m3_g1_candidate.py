@@ -1438,6 +1438,15 @@ def audit_g1_candidate(*, candidate: G1Candidate) -> G1PrimaryAuditResult:
                     (),
                 )
             )
+        # Self-contained bind: scoped adjacent factor transitions ↔ evidence keys,
+        # row count sum(max(n-1,0)), and exact actual_factor_ratio. Audit has no
+        # frozen inputs; verify_g1_candidate remains the inputs-rebuild path.
+        topology_issue = _audit_scoped_factor_reconciliation_topology(
+            adjustment_factors=candidate.adjustment_factors,
+            reconciliation=candidate.corporate_action_reconciliation,
+        )
+        if topology_issue is not None:
+            issues.append(topology_issue)
         for row in candidate.corporate_action_reconciliation.iter_rows(named=True):
             if row["daily_request_id"] not in receipt_ids:
                 issues.append(
@@ -2222,6 +2231,93 @@ def _parse_date8(value: object) -> dt.date:
     if type(value) is not str or len(value) != 8 or not value.isdigit():
         raise M3G1CandidateError("G1_CANDIDATE_COMPONENT_INVALID")
     return dt.date(int(value[:4]), int(value[4:6]), int(value[6:8]))
+
+
+def _audit_scoped_factor_reconciliation_topology(
+    *,
+    adjustment_factors: pl.DataFrame,
+    reconciliation: pl.DataFrame,
+) -> G1QualityIssue | None:
+    """Bind evidence keys/ratios to immediate adjacent scoped factor transitions.
+
+    Returns a mismatch issue, or None when topology, row count and exact ratios
+    match. Never raises: read/compute failures become the same stable issue.
+    """
+    mismatch_message = "scoped factor transition topology mismatch"
+    try:
+        factors = adjustment_factors.sort(["symbol", "effective_date"])
+        series_by_symbol: dict[str, list[tuple[dt.date, float]]] = {}
+        for row in factors.iter_rows(named=True):
+            symbol = row["symbol"]
+            day = row["effective_date"]
+            factor = float(row["adj_factor"])
+            if type(symbol) is not str or type(day) is not dt.date:
+                return _issue(
+                    "CORPORATE_ACTION_FACTOR_MISMATCH",
+                    mismatch_message,
+                    1,
+                    (),
+                )
+            if not math.isfinite(factor) or factor <= 0:
+                return _issue(
+                    "CORPORATE_ACTION_FACTOR_MISMATCH",
+                    mismatch_message,
+                    1,
+                    (),
+                )
+            series_by_symbol.setdefault(symbol, []).append((day, factor))
+
+        expected_keys: set[tuple[str, dt.date, dt.date]] = set()
+        expected_ratios: dict[tuple[str, dt.date, dt.date], float] = {}
+        expected_rows = 0
+        for symbol, series in series_by_symbol.items():
+            expected_rows += max(len(series) - 1, 0)
+            for index in range(1, len(series)):
+                previous_factor_date, previous_factor = series[index - 1]
+                effective_date, effective_factor = series[index]
+                key = (symbol, previous_factor_date, effective_date)
+                expected_keys.add(key)
+                expected_ratios[key] = effective_factor / previous_factor
+
+        actual_keys: set[tuple[str, dt.date, dt.date]] = set()
+        mismatch_count = 0
+        evidence_rows = list(reconciliation.iter_rows(named=True))
+        if len(evidence_rows) != expected_rows:
+            mismatch_count += 1
+        for row in evidence_rows:
+            key = (
+                row["symbol"],
+                row["previous_factor_date"],
+                row["effective_date"],
+            )
+            if key in actual_keys:
+                mismatch_count += 1
+            actual_keys.add(key)
+            expected_ratio = expected_ratios.get(key)
+            if expected_ratio is None:
+                mismatch_count += 1
+                continue
+            actual_ratio = float(row["actual_factor_ratio"])
+            # Exact Float64 identity bind; no business rtol slack.
+            if actual_ratio != expected_ratio:
+                mismatch_count += 1
+        if actual_keys != expected_keys:
+            mismatch_count += 1
+        if mismatch_count == 0:
+            return None
+        return _issue(
+            "CORPORATE_ACTION_FACTOR_MISMATCH",
+            mismatch_message,
+            mismatch_count,
+            (),
+        )
+    except Exception:
+        return _issue(
+            "CORPORATE_ACTION_FACTOR_MISMATCH",
+            mismatch_message,
+            1,
+            (),
+        )
 
 
 def _issue(

@@ -1640,3 +1640,412 @@ def test_p0d_bar_missing_factor_and_lineage_still_fail(
             daily_responses=daily,
             factor_responses=factor_resps,
         )
+
+
+_D2 = dt.date(2016, 2, 3)  # Wed; mid-span halt day between D0 and D2 bars
+
+
+def _assert_topology_mismatch(audit: Any) -> None:
+    assert audit.passed is False
+    assert any(
+        issue.code == "CORPORATE_ACTION_FACTOR_MISMATCH"
+        and "scoped factor transition topology mismatch" in issue.message
+        for issue in audit.issues
+    )
+
+
+def _clone_no_event_recon_row(
+    template: dict[str, Any],
+    *,
+    previous_factor_date: dt.date,
+    effective_date: dt.date,
+    actual_factor_ratio: float,
+) -> dict[str, Any]:
+    row = dict(template)
+    row["previous_factor_date"] = previous_factor_date
+    row["effective_date"] = effective_date
+    row["actual_factor_ratio"] = actual_factor_ratio
+    row["declared_dividend_relative_error"] = abs(actual_factor_ratio - 1.0)
+    row["declared_dividend_factor_ratio"] = 1.0
+    row["event_count"] = 0
+    row["cash_per_share_gross"] = 0.0
+    row["stock_ratio"] = 0.0
+    row["previous_close_date"] = None
+    row["previous_close"] = None
+    row["ex_reference_price"] = None
+    row["market_reference_factor_ratio"] = None
+    row["market_reference_relative_error"] = None
+    row["status"] = "NO_EVENT_STABLE_FACTOR"
+    return row
+
+
+def test_p0d_r1_audit_rejects_deleted_transition_evidence(
+    happy_candidate: G1Candidate, happy_inputs: G1BuildInputs
+) -> None:
+    """Matrix 1: delete one scoped transition evidence → topology fail."""
+    target = (
+        happy_candidate.corporate_action_reconciliation.filter(
+            (pl.col("symbol") == "000001.SZ")
+            & (pl.col("previous_factor_date") == _D0)
+            & (pl.col("effective_date") == _D1)
+        )
+    )
+    assert target.height == 1
+    trimmed = happy_candidate.corporate_action_reconciliation.filter(
+        ~(
+            (pl.col("symbol") == "000001.SZ")
+            & (pl.col("previous_factor_date") == _D0)
+            & (pl.col("effective_date") == _D1)
+        )
+    )
+    attacked = _rebind_identity(
+        happy_candidate, corporate_action_reconciliation=trimmed
+    )
+    _assert_topology_mismatch(audit_g1_candidate(candidate=attacked))
+    with pytest.raises(M3G1CandidateError) as caught:
+        verify_g1_candidate(inputs=happy_inputs, candidate=attacked)
+    assert caught.value.code == "G1_CANDIDATE_IDENTITY_MISMATCH"
+
+
+def test_p0d_r1_audit_rejects_non_adjacent_previous_date(
+    happy_candidate: G1Candidate,
+) -> None:
+    """Matrix 2: previous_factor_date not the immediate prior factor day."""
+    earlier = dt.date(2016, 1, 29)
+    mutated = happy_candidate.corporate_action_reconciliation.with_columns(
+        pl.when(
+            (pl.col("symbol") == "000001.SZ")
+            & (pl.col("previous_factor_date") == _D0)
+            & (pl.col("effective_date") == _D1)
+        )
+        .then(pl.lit(earlier))
+        .otherwise(pl.col("previous_factor_date"))
+        .alias("previous_factor_date")
+    )
+    attacked = _rebind_identity(
+        happy_candidate, corporate_action_reconciliation=mutated
+    )
+    _assert_topology_mismatch(audit_g1_candidate(candidate=attacked))
+
+
+def test_p0d_r1_audit_rejects_extra_topology_evidence(
+    happy_candidate: G1Candidate,
+) -> None:
+    """Matrix 3: schema-legal extra evidence outside expected topology."""
+    template = happy_candidate.corporate_action_reconciliation.filter(
+        pl.col("symbol") == "000001.SZ"
+    ).to_dicts()[0]
+    extra = _clone_no_event_recon_row(
+        template,
+        previous_factor_date=_D0,
+        effective_date=dt.date(2016, 2, 5),
+        actual_factor_ratio=1.0,
+    )
+    expanded = pl.concat(
+        [
+            happy_candidate.corporate_action_reconciliation,
+            pl.DataFrame([extra]),
+        ]
+    ).sort(["symbol", "effective_date", "source"])
+    attacked = _rebind_identity(
+        happy_candidate, corporate_action_reconciliation=expanded
+    )
+    _assert_topology_mismatch(audit_g1_candidate(candidate=attacked))
+
+
+def test_p0d_r1_audit_rejects_rewritten_actual_factor_ratio(
+    happy_candidate: G1Candidate,
+) -> None:
+    """Matrix 4: sync formula fields; exact factor ratio bind still fails."""
+    # Stay within NO_EVENT rtol so row-formula verify passes; topology exactness fails.
+    rewritten = 1.0005
+    mutated = happy_candidate.corporate_action_reconciliation.with_columns(
+        pl.when(
+            (pl.col("symbol") == "000001.SZ")
+            & (pl.col("previous_factor_date") == _D0)
+            & (pl.col("effective_date") == _D1)
+        )
+        .then(pl.lit(rewritten))
+        .otherwise(pl.col("actual_factor_ratio"))
+        .alias("actual_factor_ratio"),
+        pl.when(
+            (pl.col("symbol") == "000001.SZ")
+            & (pl.col("previous_factor_date") == _D0)
+            & (pl.col("effective_date") == _D1)
+        )
+        .then(pl.lit(abs(rewritten - 1.0)))
+        .otherwise(pl.col("declared_dividend_relative_error"))
+        .alias("declared_dividend_relative_error"),
+    )
+    attacked = _rebind_identity(
+        happy_candidate, corporate_action_reconciliation=mutated
+    )
+    audit = audit_g1_candidate(candidate=attacked)
+    _assert_topology_mismatch(audit)
+    # Row-formula verify must not be the only failure mode for this attack.
+    assert not any(
+        issue.message == "reconciliation result failed verification"
+        for issue in audit.issues
+    )
+
+
+def test_p0d_r1_single_scoped_factor_allows_empty_evidence(
+    happy_inputs: G1BuildInputs,
+) -> None:
+    """Matrix 5: one scoped factor → zero transitions; empty evidence legal."""
+    symbol = _symbols()[0]
+    replacements: list[VerifiedRawResponse] = []
+    for item in happy_inputs.responses:
+        params = dict(item.spec.parameters)
+        endpoint = item.spec.endpoint
+        if params.get("ts_code") != symbol:
+            replacements.append(item)
+            continue
+        request_params = {key: value for key, value in params.items() if key != "fields"}
+        if endpoint == "daily":
+            replacement = _make_verified(
+                "daily", _daily_frame(symbol, [_D1]), parameters=request_params
+            )
+        elif endpoint == "suspend_d":
+            replacement = _make_verified(
+                "suspend_d",
+                _full_day_suspend(symbol, _D0),
+                parameters=request_params,
+            )
+        else:
+            replacements.append(item)
+            continue
+        assert replacement.spec == item.spec
+        replacements.append(replacement)
+    inputs = replace(happy_inputs, responses=tuple(replacements))
+    candidate = build_g1_candidate(inputs=inputs)
+    scoped = candidate.adjustment_factors.filter(pl.col("symbol") == symbol)
+    assert scoped.height == 1
+    recon = candidate.corporate_action_reconciliation.filter(pl.col("symbol") == symbol)
+    assert recon.height == 0
+    audit = audit_g1_candidate(candidate=candidate)
+    assert audit.passed is True
+    assert audit.issues == ()
+
+
+def _mid_halt_scoped_candidate(happy_candidate: G1Candidate) -> G1Candidate:
+    """Bars on D0/D2 with mid-span D1 factor → two adjacent transitions."""
+    symbol = "000001.SZ"
+    d1_bar = happy_candidate.bars.filter(
+        (pl.col("symbol") == symbol) & (pl.col("trade_date") == _D1)
+    ).to_dicts()[0]
+    d2_bar = dict(d1_bar)
+    d2_bar["trade_date"] = _D2
+    bars = pl.concat(
+        [
+            happy_candidate.bars.filter(
+                ~((pl.col("symbol") == symbol) & (pl.col("trade_date") == _D1))
+            ),
+            pl.DataFrame([d2_bar]),
+        ]
+    ).sort(["symbol", "trade_date", "source"])
+
+    factors = pl.concat(
+        [
+            happy_candidate.adjustment_factors,
+            pl.DataFrame(
+                [
+                    {
+                        "symbol": symbol,
+                        "effective_date": _D2,
+                        "adj_factor": 1.0,
+                        "source": "tushare",
+                    }
+                ]
+            ),
+        ]
+    ).sort(["symbol", "effective_date", "source"])
+
+    d1_match = happy_candidate.factor_match_evidence.filter(
+        (pl.col("symbol") == symbol) & (pl.col("trade_date") == _D1)
+    ).to_dicts()[0]
+    d2_match = dict(d1_match)
+    d2_match["trade_date"] = _D2
+    matches = pl.concat(
+        [
+            happy_candidate.factor_match_evidence.filter(
+                ~((pl.col("symbol") == symbol) & (pl.col("trade_date") == _D1))
+            ),
+            pl.DataFrame([d2_match]),
+        ]
+    ).sort(["symbol", "trade_date", "source"])
+
+    d1_limit = happy_candidate.price_limits.filter(
+        (pl.col("symbol") == symbol) & (pl.col("trade_date") == _D1)
+    ).to_dicts()[0]
+    d2_limit = dict(d1_limit)
+    d2_limit["trade_date"] = _D2
+    limits = pl.concat(
+        [
+            happy_candidate.price_limits.filter(
+                ~((pl.col("symbol") == symbol) & (pl.col("trade_date") == _D1))
+            ),
+            pl.DataFrame([d2_limit]),
+        ]
+    ).sort(["symbol", "trade_date", "source"])
+
+    suspensions = pl.concat(
+        [
+            happy_candidate.suspensions,
+            pl.DataFrame(
+                [
+                    {
+                        "symbol": symbol,
+                        "trade_date": _D1,
+                        "suspension_scope": "FULL_DAY",
+                        "suspension_detail": None,
+                        "source": "tushare",
+                        "source_snapshot_id": _HEX,
+                    }
+                ]
+            ),
+        ]
+    ).sort(["symbol", "trade_date", "source"])
+
+    bench_d1 = happy_candidate.benchmark_bars.filter(
+        pl.col("trade_date") == _D1
+    ).to_dicts()[0]
+    bench_d2 = dict(bench_d1)
+    bench_d2["trade_date"] = _D2
+    benchmarks = pl.concat(
+        [happy_candidate.benchmark_bars, pl.DataFrame([bench_d2])]
+    ).sort(["benchmark", "trade_date", "source"])
+
+    template = happy_candidate.corporate_action_reconciliation.filter(
+        pl.col("symbol") == symbol
+    ).to_dicts()[0]
+    other_recon = happy_candidate.corporate_action_reconciliation.filter(
+        pl.col("symbol") != symbol
+    )
+    recon = pl.concat(
+        [
+            other_recon,
+            pl.DataFrame(
+                [
+                    _clone_no_event_recon_row(
+                        template,
+                        previous_factor_date=_D0,
+                        effective_date=_D1,
+                        actual_factor_ratio=1.0,
+                    ),
+                    _clone_no_event_recon_row(
+                        template,
+                        previous_factor_date=_D1,
+                        effective_date=_D2,
+                        actual_factor_ratio=1.0,
+                    ),
+                ]
+            ),
+        ]
+    ).sort(["symbol", "effective_date", "source"])
+
+    return _rebind_identity(
+        happy_candidate,
+        history_end=_D2,
+        bars=bars,
+        adjustment_factors=factors,
+        factor_match_evidence=matches,
+        price_limits=limits,
+        suspensions=suspensions,
+        benchmark_bars=benchmarks,
+        corporate_action_reconciliation=recon,
+    )
+
+
+def test_p0d_r1_mid_halt_transitions_delete_either_fails(
+    happy_candidate: G1Candidate,
+) -> None:
+    """Matrix 6: mid-span halt factor → two transitions; delete either fails."""
+    base = _mid_halt_scoped_candidate(happy_candidate)
+    audit_ok = audit_g1_candidate(candidate=base)
+    assert audit_ok.passed is True
+    assert audit_ok.issues == ()
+    scoped = base.adjustment_factors.filter(pl.col("symbol") == "000001.SZ")
+    assert scoped.get_column("effective_date").to_list() == [_D0, _D1, _D2]
+    recon = base.corporate_action_reconciliation.filter(pl.col("symbol") == "000001.SZ")
+    assert recon.height == 2
+
+    for previous, effective in ((_D0, _D1), (_D1, _D2)):
+        trimmed = base.corporate_action_reconciliation.filter(
+            ~(
+                (pl.col("symbol") == "000001.SZ")
+                & (pl.col("previous_factor_date") == previous)
+                & (pl.col("effective_date") == effective)
+            )
+        )
+        attacked = _rebind_identity(base, corporate_action_reconciliation=trimmed)
+        _assert_topology_mismatch(audit_g1_candidate(candidate=attacked))
+
+
+def test_p0d_r1_adv3a_out_of_scope_factor_still_rejected(
+    happy_inputs: G1BuildInputs,
+) -> None:
+    """Matrix 7: ADV3a bar-span reject kept; verify still inputs-rebuild only."""
+    symbol = _symbols()[0]
+    replacements: list[VerifiedRawResponse] = []
+    for item in happy_inputs.responses:
+        params = dict(item.spec.parameters)
+        endpoint = item.spec.endpoint
+        if params.get("ts_code") != symbol:
+            replacements.append(item)
+            continue
+        request_params = {key: value for key, value in params.items() if key != "fields"}
+        if endpoint == "daily":
+            replacement = _make_verified(
+                "daily", _daily_frame(symbol, [_D1]), parameters=request_params
+            )
+        elif endpoint == "suspend_d":
+            replacement = _make_verified(
+                "suspend_d",
+                _full_day_suspend(symbol, _D0),
+                parameters=request_params,
+            )
+        else:
+            replacements.append(item)
+            continue
+        assert replacement.spec == item.spec
+        replacements.append(replacement)
+    inputs = replace(happy_inputs, responses=tuple(replacements))
+    candidate = build_g1_candidate(inputs=inputs)
+    restored = pl.concat(
+        [
+            candidate.adjustment_factors,
+            pl.DataFrame(
+                [
+                    {
+                        "symbol": symbol,
+                        "effective_date": _D0,
+                        "adj_factor": 0.5,
+                        "source": "tushare",
+                    }
+                ]
+            ),
+        ]
+    ).sort(["symbol", "effective_date", "source"])
+    attacked = _rebind_identity(candidate, adjustment_factors=restored)
+    audit = audit_g1_candidate(candidate=attacked)
+    assert audit.passed is False
+    assert any(
+        issue.code == "FACTOR_INVALID"
+        and "outside publish bar scope" in issue.message
+        for issue in audit.issues
+    )
+    with pytest.raises(M3G1CandidateError) as caught:
+        verify_g1_candidate(inputs=inputs, candidate=attacked)
+    assert caught.value.code == "G1_CANDIDATE_IDENTITY_MISMATCH"
+
+
+def test_p0d_r1_happy_and_no_event_jump_still_pass(
+    happy_candidate: G1Candidate, happy_inputs: G1BuildInputs
+) -> None:
+    """Matrix 8: legal happy audit continues to pass after topology bind."""
+    audit = audit_g1_candidate(candidate=happy_candidate)
+    assert audit.passed is True
+    assert audit.issues == ()
+    verify_g1_candidate(inputs=happy_inputs, candidate=happy_candidate)
+    assert happy_candidate.corporate_action_reconciliation.height == 300
