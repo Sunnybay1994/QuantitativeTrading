@@ -81,6 +81,8 @@ reader 方式兼容；不得让旧 manifest 被当前严格 reader 误认成 v3�
 - `tests/unit/test_m3_g1_candidate.py`
 - `tests/unit/test_m3_execution_facts.py`
 - 若 manifest 贯穿确有必要：`tests/unit/test_m3_g1_release.py`
+- 仅为 mapper v3 既有断言/fixture 的必要字面量同步：
+  `tests/unit/test_m3_g1_planning.py`、`tests/unit/test_m3_reference.py`
 - 唯一实现报告：
   `docs/agent/M3_G1_P0D首bar前factor发布作用域返工交付报告.md`
 
