@@ -1,5 +1,10 @@
 # M3 G1 合同修订：无 dividend 事件的因子跳变接受为 NO_EVENT
 
+> 状态：**已废止，仅保留历史**。任意无事件 jump 的宽松语义已被 P0 fail-closed
+> 合同替代；当前小额分红精度边界以
+> [`M3_G1_P0E小额分红factor与market精度返工任务单.md`](M3_G1_P0E小额分红factor与market精度返工任务单.md)
+> 为准。不得据本文正文恢复任意 jump → `NO_EVENT_STABLE_FACTOR`。
+
 > 状态：已生效（Windows 原生推进；用户授权自行解阻）  
 > 命中样本：
 > - `000661.SZ` / `2016-04-27`（配股除权「10 配 3」）
