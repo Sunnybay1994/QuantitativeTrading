@@ -1,6 +1,6 @@
 # M3 G1 P0E：小额分红 factor / market 精度返工任务单
 
-状态：**合同冻结，等待外部实现 Agent**
+状态：**已完成外部实现、独立初验与主 Agent 最终验收；仅关闭 P0E，不代表 G1 / Windows publish / Linux Gate 通过**
 
 ## 1. 目标
 
