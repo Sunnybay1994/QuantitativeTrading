@@ -32,6 +32,7 @@ from quant.data.m3_execution_facts import (
     CorporateActionReconciliationResult,
     CorporateActionSelectionResult,
     M3G1ExecutionFactError,
+    _parse_cninfo_iso_date,
     map_g1_price_limit_response,
     reconcile_g1_corporate_actions,
     require_g1_price_limit_coverage,
@@ -170,20 +171,20 @@ def _rights_row(**overrides: Any) -> dict[str, Any]:
     row: dict[str, Any] = {name: None for name in CNINFO_STOCK_ALLOTMENT_FIELDS}
     row.update(
         {
-            "DECLAREDATE": "20260105",
+            "DECLAREDATE": "2026-01-05",
             "F001V": "001001",
             "F002V": "A股",
             "F004N": "3.0",
             "F005N": "45.68",
-            "F011D": "20260106",
-            "F012D": "20260107",
-            "F013D": "20260105",
-            "F014D": "20260106",
+            "F011D": "2026-01-06",
+            "F012D": "2026-01-07",
+            "F013D": "2026-01-05",
+            "F014D": "2026-01-06",
             "F017N": "300.0",
             "F024N": "1000.0",
             "F025N": "1300.0",
-            "F038D": "20260109",
-            "F052D": "20260107",
+            "F038D": "2026-01-09",
+            "F052D": "2026-01-07",
             "ORGNAME": "测试公司",
             "SECCODE": "600000",
             "SECNAME": "测试",
@@ -472,7 +473,7 @@ def _assert_code(exc_info: pytest.ExceptionInfo[BaseException], code: str) -> No
 def test_version_constants() -> None:
     assert G1_PRICE_LIMIT_METHOD_VERSION == "tushare_stk_limit_suspension_aware_v2"
     assert G1_CORPORATE_ACTION_SELECTION_VERSION == (
-        "tushare_dividend_cninfo_rights_capital_v4"
+        "tushare_dividend_cninfo_rights_capital_iso_date_v5"
     )
     assert G1_CORPORATE_ACTION_RECONCILIATION_VERSION == (
         "tushare_factor_daily_preclose_v5"
@@ -2651,8 +2652,8 @@ def test_p0f_r1_rights_capital_identity_collision_and_tamper() -> None:
         "SUBID": "42",
         "F005N": "45.68",
         "F004N": "3.0",
-        "F011D": "20260106",
-        "F012D": "20260107",
+        "F011D": "2026-01-06",
+        "F012D": "2026-01-07",
     }
     left = select_g1_cninfo_rights_actions(
         response=_make_cninfo_verified(
@@ -2715,6 +2716,151 @@ def test_p0f_r1_dividend_capital_fields_null() -> None:
     assert evidence["rights_pre_shares"] is None
     assert evidence["rights_post_shares"] is None
     verify_corporate_action_selection_result(result=result)
+
+
+_CNINFO_REQUIRED_DATE_FIELDS = (
+    "DECLAREDATE",
+    "F011D",
+    "F012D",
+    "F013D",
+    "F014D",
+    "F052D",
+    "F038D",
+)
+
+
+@pytest.mark.parametrize("field", _CNINFO_REQUIRED_DATE_FIELDS)
+def test_p0h_cninfo_required_iso_date_fields_accepted(field: str) -> None:
+    """Each required CNINFO date field accepts a legal exact YYYY-MM-DD value."""
+    # Keep calendar order invariants while swapping one field to an alternate
+    # but still-valid ISO date within the same day for most fields.
+    legal_overrides = {
+        "DECLAREDATE": "2026-01-05",
+        "F011D": "2026-01-06",
+        "F012D": "2026-01-07",
+        "F013D": "2026-01-05",
+        "F014D": "2026-01-06",
+        "F052D": "2026-01-07",
+        "F038D": "2026-01-09",
+    }
+    response = _make_cninfo_verified(
+        _cninfo_frame([_rights_row(**{field: legal_overrides[field]})])
+    )
+    result = select_g1_cninfo_rights_actions(
+        response=response, history=_history(), symbols=[_SYMBOL]
+    )
+    assert result.ledger.height == 1
+    verify_corporate_action_selection_result(result=result)
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [
+        "20160427",
+        "2016/04/27",
+        "2016-04-27T00:00:00",
+        " 2016-04-27",
+        "2016-04-27 ",
+        "2016-02-30",
+        "",
+        None,
+    ],
+)
+def test_p0h_cninfo_iso_date_rejects_non_exact_iso(bad_value: object) -> None:
+    """Illegal CNINFO date formats fail closed (F012D sample field)."""
+    response = _make_cninfo_verified(_cninfo_frame([_rights_row(F012D=bad_value)]))
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        select_g1_cninfo_rights_actions(
+            response=response, history=_history(), symbols=[_SYMBOL]
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_EVENT_INVALID")
+
+
+@pytest.mark.parametrize("bad_value", [True, False, 20160427, 2016.0427, b"2016-04-27"])
+def test_p0h_cninfo_iso_parser_rejects_non_string(bad_value: object) -> None:
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        _parse_cninfo_iso_date(bad_value)
+    _assert_code(caught, "G1_CORPORATE_ACTION_EVENT_INVALID")
+
+
+def test_p0h_cninfo_iso_fixture_selection_verify_and_identity() -> None:
+    """Real connector-shaped ISO dates pass selection, verify, and identity."""
+    response = _make_cninfo_verified(
+        _cninfo_frame(
+            [
+                _rights_row(
+                    SECCODE="000661",
+                    SUBID="cninfo-000661-1",
+                    DECLAREDATE="2026-01-05",
+                    F011D="2026-01-06",
+                    F012D="2026-01-07",
+                    F013D="2026-01-05",
+                    F014D="2026-01-06",
+                    F052D="2026-01-07",
+                    F038D="2026-01-09",
+                )
+            ]
+        ),
+        symbols_param="000661",
+    )
+    result = select_g1_cninfo_rights_actions(
+        response=response, history=_history(), symbols=["000661.SZ"]
+    )
+    assert result.ledger.height == 1
+    assert result.ledger["symbol"][0] == "000661.SZ"
+    assert result.ledger["ex_date"][0] == _D2
+    assert result.ledger["stock_list_date"][0] == _D4
+    verify_corporate_action_selection_result(result=result)
+    # Identity self-check: recomputed digests match stored hashes.
+    assert result.ledger_sha256 == clean_table_content_sha256(
+        table_name="corporate_action_ledger", frame=result.ledger
+    )
+    assert result.selection_evidence_sha256 == clean_table_content_sha256(
+        table_name="corporate_action_selection_evidence",
+        frame=result.selection_evidence,
+    )
+
+
+def test_p0h_tushare_date8_unchanged_rejects_iso() -> None:
+    """Tushare dividend keeps YYYYMMDD; ISO dates are not silently accepted."""
+    happy = select_g1_corporate_actions(
+        response=_make_verified("dividend", _dividend_frame()),
+        history=_history(),
+    )
+    assert happy.ledger.height == 1
+    assert happy.ledger["ex_date"][0] == _D2
+    verify_corporate_action_selection_result(result=happy)
+
+    iso_frame = _dividend_frame([_dividend_row(ex_date="2026-01-07")])
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        select_g1_corporate_actions(
+            response=_make_verified("dividend", iso_frame), history=_history()
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_EVENT_INVALID")
+
+
+def test_p0h_rights_date8_no_longer_accepted() -> None:
+    """CNINFO selector must not accept legacy YYYYMMDD after ISO closure."""
+    response = _make_cninfo_verified(
+        _cninfo_frame([_rights_row(F012D="20260107")])
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        select_g1_cninfo_rights_actions(
+            response=response, history=_history(), symbols=[_SYMBOL]
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_EVENT_INVALID")
+
+
+def test_p0h_rights_date_order_still_fail_closed() -> None:
+    """Existing ordering invariants remain after ISO parser swap."""
+    response = _make_cninfo_verified(
+        _cninfo_frame([_rights_row(F011D="2026-01-07", F012D="2026-01-07")])
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        select_g1_cninfo_rights_actions(
+            response=response, history=_history(), symbols=[_SYMBOL]
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_EVENT_INVALID")
 
 
 def test_no_network_or_research_imports() -> None:

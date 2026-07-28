@@ -36,7 +36,7 @@ from quant.domain import (
 
 G1_PRICE_LIMIT_METHOD_VERSION = "tushare_stk_limit_suspension_aware_v2"
 G1_CORPORATE_ACTION_SELECTION_VERSION = (
-    "tushare_dividend_cninfo_rights_capital_v4"
+    "tushare_dividend_cninfo_rights_capital_iso_date_v5"
 )
 G1_CORPORATE_ACTION_RECONCILIATION_VERSION = "tushare_factor_daily_preclose_v5"
 
@@ -45,6 +45,7 @@ _CNINFO_SOURCE = CNINFO_SOURCE
 _LEDGER_SOURCES = frozenset({_SOURCE, _CNINFO_SOURCE})
 _A_SHARE = re.compile(r"^[0-9]{6}\.(?:SH|SZ)$")
 _DATE8 = re.compile(r"^[0-9]{8}$")
+_DATE_ISO = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _DECIMAL = re.compile(r"^-?(?:0|[1-9]\d*)(?:\.\d+)?$")
 _DATE_MIN = dt.date.min
@@ -741,24 +742,13 @@ def select_g1_cninfo_rights_actions(
             if not is_a_share:
                 raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
 
-            declare_date = _parse_optional_date8(
-                raw.get("DECLAREDATE"), allow_null=False
-            )
-            record_date = _parse_optional_date8(raw.get("F011D"), allow_null=False)
-            ex_date = _parse_optional_date8(raw.get("F012D"), allow_null=False)
-            payment_start = _parse_optional_date8(raw.get("F013D"), allow_null=False)
-            payment_end = _parse_optional_date8(raw.get("F014D"), allow_null=False)
-            result_ann_date = _parse_optional_date8(raw.get("F052D"), allow_null=False)
-            list_date = _parse_optional_date8(raw.get("F038D"), allow_null=False)
-            assert (
-                declare_date is not None
-                and record_date is not None
-                and ex_date is not None
-                and payment_start is not None
-                and payment_end is not None
-                and result_ann_date is not None
-                and list_date is not None
-            )
+            declare_date = _parse_cninfo_iso_date(raw.get("DECLAREDATE"))
+            record_date = _parse_cninfo_iso_date(raw.get("F011D"))
+            ex_date = _parse_cninfo_iso_date(raw.get("F012D"))
+            payment_start = _parse_cninfo_iso_date(raw.get("F013D"))
+            payment_end = _parse_cninfo_iso_date(raw.get("F014D"))
+            result_ann_date = _parse_cninfo_iso_date(raw.get("F052D"))
+            list_date = _parse_cninfo_iso_date(raw.get("F038D"))
 
             rights_price = _parse_strict_scalar(raw.get("F005N"), allow_null=False)
             f004n = _parse_strict_scalar(raw.get("F004N"), allow_null=False)
@@ -1893,6 +1883,21 @@ def _parse_optional_date8(
         raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
     try:
         return dt.datetime.strptime(value, "%Y%m%d").date()
+    except ValueError:
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID") from None
+
+
+def _parse_cninfo_iso_date(value: object) -> dt.date:
+    """Parse a CNINFO required date: exact ``YYYY-MM-DD`` calendar date only.
+
+    Source-specific contract for CNINFO allotment rows. Rejects ``YYYYMMDD``,
+    timestamps, whitespace padding, alternate separators, empty strings, nulls,
+    and non-strings. Fail-closed as ``G1_CORPORATE_ACTION_EVENT_INVALID``.
+    """
+    if type(value) is not str or not _DATE_ISO.fullmatch(value):
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
+    try:
+        return dt.datetime.strptime(value, "%Y-%m-%d").date()
     except ValueError:
         raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID") from None
 
