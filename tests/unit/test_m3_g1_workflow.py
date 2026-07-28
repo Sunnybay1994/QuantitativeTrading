@@ -26,7 +26,7 @@ import quant.research.m3.g1_planning as planning_mod
 from quant.data.connectors.baostock import BaostockConnector
 from quant.data.connectors.cninfo import CninfoConnector
 from quant.data.connectors.tushare import TushareConnector
-from quant.data.m3_backfill import TUSHARE_FIELDS
+from quant.data.m3_backfill import TUSHARE_FIELDS, VerifiedCninfoRawResponse
 from quant.data.m3_g1_candidate import G1Candidate
 from quant.data.m3_reference import G1CrossSourcePolicy
 from quant.data.m3_release import G1PreparedRelease, M3ReleaseError, VerifiedG1Release
@@ -1495,3 +1495,198 @@ def test_history_unbounded_incomplete_still_fail_closed(
             max_new_requests=None,
         )
     assert excinfo.value.code == "G1_WORKFLOW_HISTORY_INCOMPLETE"
+
+
+def _assert_index_only_no_history_leak(state: VerifiedG1WorkflowStateV1) -> None:
+    """P0G: incomplete HISTORY must not leak verified history/cninfo responses."""
+    assert state.completed_stages == ("INDEX",)
+    assert state.derived_plan is not None
+    assert state.history_responses == ()
+    assert state.cninfo_responses == ()
+    assert state.reference_responses == ()
+    assert state.candidate is None
+    assert state.prepared is None
+    assert state.published is None
+    assert state.counts.history_requests == len(
+        state.derived_plan.request_plan.history_batch.requests
+    )
+    assert state.counts.history_symbols == len(state.derived_plan.history_symbols)
+    assert state.counts.reference_requests == 0
+
+
+def test_p0g_tushare_complete_cninfo_missing_inspect_index_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tushare HISTORY complete + CNINFO missing → INDEX-only, no response leak."""
+    _patch_resume_fixture_scale(monkeypatch)
+    symbols = _resume_fixture_symbols()
+    root = _project_root(tmp_path, symbols=symbols)
+    config = _resume_fixture_config(tmp_path)
+    pro = _CountingProClient(symbols)
+    connector = TushareConnector(pro_client=pro)
+    index_state = run_g1_index_stage(
+        project_root=root, config=config, connector=connector, classify_error=_classify
+    )
+    assert index_state.derived_plan is not None
+    tushare_n = len(index_state.derived_plan.request_plan.history_batch.requests)
+    cninfo_n = len(index_state.derived_plan.request_plan.cninfo_rights_batch.requests)
+    assert tushare_n > 0 and cninfo_n > 0
+
+    bounded = _run_history(
+        project_root=root,
+        config=config,
+        connector=connector,
+        classify_error=_classify,
+        max_new_requests=tushare_n,
+    )
+    assert bounded.new_requests_committed == tushare_n
+    _assert_index_only_no_history_leak(bounded.state)
+
+    before = {
+        path: path.stat().st_mtime_ns for path in root.rglob("*") if path.is_file()
+    }
+
+    def boom(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("network forbidden")
+
+    with patch.object(socket, "socket", boom):
+        inspected = inspect_g1_workflow(project_root=root, config=config)
+    _assert_index_only_no_history_leak(inspected)
+    after = {path: path.stat().st_mtime_ns for path in root.rglob("*") if path.is_file()}
+    assert after == before
+
+
+def test_p0g_tushare_complete_cninfo_partial_inspect_index_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tushare HISTORY complete + CNINFO partial → INDEX-only, no response leak."""
+    _patch_resume_fixture_scale(monkeypatch)
+    symbols = _resume_fixture_symbols()
+    root = _project_root(tmp_path, symbols=symbols)
+    config = _resume_fixture_config(tmp_path)
+    pro = _CountingProClient(symbols)
+    connector = TushareConnector(pro_client=pro)
+    index_state = run_g1_index_stage(
+        project_root=root, config=config, connector=connector, classify_error=_classify
+    )
+    assert index_state.derived_plan is not None
+    tushare_n = len(index_state.derived_plan.request_plan.history_batch.requests)
+    cninfo_specs = index_state.derived_plan.request_plan.cninfo_rights_batch.requests
+    assert tushare_n > 0 and len(cninfo_specs) > 0
+
+    _run_history(
+        project_root=root,
+        config=config,
+        connector=connector,
+        classify_error=_classify,
+        max_new_requests=tushare_n,
+    )
+    # Partial recovery: request journal dir exists without receipt.
+    partial_dir = root / "data/run_state/m3_g1/cninfo" / cninfo_specs[0].request_id
+    partial_dir.mkdir(parents=True, exist_ok=True)
+
+    before = {
+        path: path.stat().st_mtime_ns for path in root.rglob("*") if path.is_file()
+    }
+
+    def boom(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("network forbidden")
+
+    with patch.object(socket, "socket", boom):
+        inspected = inspect_g1_workflow(project_root=root, config=config)
+    _assert_index_only_no_history_leak(inspected)
+    after = {path: path.stat().st_mtime_ns for path in root.rglob("*") if path.is_file()}
+    assert after == before
+
+
+def test_p0g_both_batches_complete_history_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tushare + CNINFO both complete → HISTORY completes with joint responses."""
+    _patch_resume_fixture_scale(monkeypatch)
+    symbols = _resume_fixture_symbols()
+    root = _project_root(tmp_path, symbols=symbols)
+    config = _resume_fixture_config(tmp_path)
+    pro = _CountingProClient(symbols)
+    connector = TushareConnector(pro_client=pro)
+    index_state = run_g1_index_stage(
+        project_root=root, config=config, connector=connector, classify_error=_classify
+    )
+    assert index_state.derived_plan is not None
+    expected_history_ids = tuple(
+        spec.request_id
+        for spec in index_state.derived_plan.request_plan.history_batch.requests
+    )
+    expected_cninfo_ids = tuple(
+        spec.request_id
+        for spec in index_state.derived_plan.request_plan.cninfo_rights_batch.requests
+    )
+    assert expected_history_ids and expected_cninfo_ids
+
+    done = _run_history(
+        project_root=root, config=config, connector=connector, classify_error=_classify
+    )
+    state = done.state
+    assert state.completed_stages == ("INDEX", "HISTORY")
+    assert state.candidate is not None
+    assert (
+        tuple(item.spec.request_id for item in state.history_responses)
+        == expected_history_ids
+    )
+    assert (
+        tuple(item.spec.request_id for item in state.cninfo_responses)
+        == expected_cninfo_ids
+    )
+
+    again = inspect_g1_workflow(project_root=root, config=config)
+    assert again.completed_stages == ("INDEX", "HISTORY")
+    assert (
+        tuple(item.spec.request_id for item in again.cninfo_responses)
+        == expected_cninfo_ids
+    )
+
+
+def test_p0g_cninfo_response_closure_rejects_tampering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """fresh/index/history CNINFO inject/missing/reorder/replace must fail closed."""
+    _patch_resume_fixture_scale(monkeypatch)
+    symbols = _resume_fixture_symbols()
+    root = _project_root(tmp_path, symbols=symbols)
+    config = _resume_fixture_config(tmp_path)
+    pro = _CountingProClient(symbols)
+    connector = TushareConnector(pro_client=pro)
+    fresh = inspect_g1_workflow(project_root=root, config=config)
+    index_state = run_g1_index_stage(
+        project_root=root, config=config, connector=connector, classify_error=_classify
+    )
+    stub = object.__new__(VerifiedCninfoRawResponse)
+
+    # INDEX incomplete / INDEX-only: any CNINFO response is illegal.
+    with pytest.raises(ValueError):
+        dataclasses.replace(fresh, cninfo_responses=(stub,))
+    with pytest.raises(ValueError):
+        dataclasses.replace(index_state, cninfo_responses=(stub,))
+
+    history_state = _run_history(
+        project_root=root, config=config, connector=connector, classify_error=_classify
+    ).state
+    assert history_state.completed_stages == ("INDEX", "HISTORY")
+    assert history_state.cninfo_responses
+    cninfo = history_state.cninfo_responses
+
+    # HISTORY complete: missing / replace / reorder CNINFO IDs.
+    with pytest.raises(ValueError):
+        dataclasses.replace(history_state, cninfo_responses=())
+    with pytest.raises(ValueError):
+        dataclasses.replace(history_state, cninfo_responses=(stub,))
+    with pytest.raises(ValueError):
+        dataclasses.replace(
+            history_state,
+            cninfo_responses=(*cninfo[1:], cninfo[0]) if len(cninfo) > 1 else (stub, *cninfo),
+        )
+    if len(cninfo) > 1:
+        with pytest.raises(ValueError):
+            dataclasses.replace(
+                history_state, cninfo_responses=tuple(reversed(cninfo))
+            )

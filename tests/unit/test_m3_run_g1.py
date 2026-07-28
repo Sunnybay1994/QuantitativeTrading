@@ -1200,3 +1200,58 @@ def test_history_max_new_incomplete_and_success_outcomes(
     assert result2.completed_stages == ("INDEX", "HISTORY")
     assert result2.max_new_requests == 3
     assert result2.new_requests_committed == 1
+
+
+def test_p0g_status_partial_history_shape_socket_and_connector_poison(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P0G: INDEX-only incomplete (partial HISTORY shape) status is exit 0, zero net/write."""
+    root, config = _root_and_config(tmp_path)
+    # Matches inspect after Tushare complete + CNINFO missing/partial.
+    monkeypatch.setattr(
+        cli_mod,
+        "inspect_g1_workflow",
+        lambda **_k: _empty_state(
+            stages=("INDEX",),
+            counts=G1WorkflowCountsV1(
+                index_requests=2,
+                history_requests=120,
+                reference_requests=0,
+                history_symbols=30,
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "_new_tushare_connector",
+        lambda: (_ for _ in ()).throw(AssertionError("tushare constructed")),
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "_new_baostock_connector",
+        lambda: (_ for _ in ()).throw(AssertionError("baostock constructed")),
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "_new_cninfo_connector",
+        lambda: (_ for _ in ()).throw(AssertionError("cninfo constructed")),
+    )
+    before = {
+        path: path.stat().st_mtime_ns for path in root.rglob("*") if path.is_file()
+    }
+
+    def boom(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("network forbidden")
+
+    out, err = io.StringIO(), io.StringIO()
+    with patch.object(socket, "socket", boom):
+        code = main(_argv(config, root, "status"), stdout=out, stderr=err)
+    assert code == 0
+    payload = _parse_stdout(out)
+    assert payload["outcome"] == "INCOMPLETE"
+    assert payload["completed_stages"] == ["INDEX"]
+    assert payload["history_requests"] == 120
+    assert payload["history_symbols"] == 30
+    assert payload["error_code"] is None
+    after = {path: path.stat().st_mtime_ns for path in root.rglob("*") if path.is_file()}
+    assert after == before

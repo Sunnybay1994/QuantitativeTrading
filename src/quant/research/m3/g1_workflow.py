@@ -706,7 +706,9 @@ def _inspect(
             operation=operation,
         )
         if history_status == "complete":
-            history_responses = _verify_tushare_complete(
+            # Keep verified Tushare history local until CNINFO is also complete.
+            # Incomplete HISTORY must not leak partial history/cninfo responses.
+            verified_history = _verify_tushare_complete(
                 batch=derived.request_plan.history_batch,
                 raw_root=layout.raw_root,
                 journal_root=layout.tushare_journal,
@@ -721,7 +723,7 @@ def _inspect(
                 operation=operation,
             )
             if cninfo_status == "complete":
-                cninfo_responses = _verify_cninfo_complete(
+                verified_cninfo = _verify_cninfo_complete(
                     batch=derived.request_plan.cninfo_rights_batch,
                     raw_root=layout.raw_root,
                     journal_root=layout.cninfo_journal,
@@ -732,8 +734,8 @@ def _inspect(
                     static_plan=static_plan,
                     derived=derived,
                     index_responses=index_responses,
-                    history_responses=history_responses,
-                    cninfo_responses=cninfo_responses,
+                    history_responses=verified_history,
+                    cninfo_responses=verified_cninfo,
                     calendars=source.calendars,
                     instruments=source.instruments,
                     operation=operation,
@@ -760,6 +762,8 @@ def _inspect(
                         operation=operation,
                         cause_category="CANDIDATE",
                     ) from None
+                history_responses = verified_history
+                cninfo_responses = verified_cninfo
                 completed.append("HISTORY")
                 try:
                     sample_plan = plan_cross_source_reconciliation(
@@ -879,6 +883,7 @@ def _validate_workflow_state_closure(state: VerifiedG1WorkflowStateV1) -> None:
             state.index_responses != ()
             or state.derived_plan is not None
             or state.history_responses != ()
+            or state.cninfo_responses != ()
             or state.reference_responses != ()
             or state.candidate is not None
             or state.prepared is not None
@@ -910,6 +915,7 @@ def _validate_workflow_state_closure(state: VerifiedG1WorkflowStateV1) -> None:
     if not has_history:
         if (
             state.history_responses != ()
+            or state.cninfo_responses != ()
             or state.reference_responses != ()
             or state.candidate is not None
             or state.prepared is not None
@@ -933,6 +939,13 @@ def _validate_workflow_state_closure(state: VerifiedG1WorkflowStateV1) -> None:
     actual_history_ids = tuple(item.spec.request_id for item in state.history_responses)
     if actual_history_ids != expected_history_ids:
         raise ValueError("workflow state history responses 闭包非法")
+    expected_cninfo_ids = tuple(
+        spec.request_id
+        for spec in state.derived_plan.request_plan.cninfo_rights_batch.requests
+    )
+    actual_cninfo_ids = tuple(item.spec.request_id for item in state.cninfo_responses)
+    if actual_cninfo_ids != expected_cninfo_ids:
+        raise ValueError("workflow state cninfo responses 闭包非法")
     if state.candidate is None:
         raise ValueError("workflow state HISTORY 完成必须有 candidate")
 
