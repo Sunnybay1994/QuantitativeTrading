@@ -13,11 +13,15 @@ import polars as pl
 import pytest
 
 from quant.data import m3_backfill as backfill
+from quant.data.connectors.cninfo import CNINFO_STOCK_ALLOTMENT_FIELDS
 from quant.data.m3_backfill import (
     TUSHARE_FIELDS,
+    CninfoRequestReceipt,
+    CninfoRequestSpec,
     HistoryWindow,
     TushareRequestReceipt,
     TushareRequestSpec,
+    VerifiedCninfoRawResponse,
     VerifiedRawResponse,
     response_content_sha256,
 )
@@ -31,6 +35,7 @@ from quant.data.m3_execution_facts import (
     map_g1_price_limit_response,
     reconcile_g1_corporate_actions,
     require_g1_price_limit_coverage,
+    select_g1_cninfo_rights_actions,
     select_g1_corporate_actions,
     verify_corporate_action_reconciliation_result,
     verify_corporate_action_selection_result,
@@ -159,6 +164,173 @@ def _dividend_row(**overrides: Any) -> dict[str, Any]:
 def _dividend_frame(rows: list[dict[str, Any]] | None = None) -> pl.DataFrame:
     data = rows if rows is not None else [_dividend_row()]
     return pl.DataFrame(data).select(TUSHARE_FIELDS["dividend"].split(","))
+
+
+def _rights_row(**overrides: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {name: None for name in CNINFO_STOCK_ALLOTMENT_FIELDS}
+    row.update(
+        {
+            "DECLAREDATE": "20260105",
+            "F001V": "001001",
+            "F002V": "A股",
+            "F004N": "3.0",
+            "F005N": "45.68",
+            "F011D": "20260106",
+            "F012D": "20260107",
+            "F013D": "20260105",
+            "F014D": "20260106",
+            "F017N": "300.0",
+            "F024N": "1000.0",
+            "F025N": "1300.0",
+            "F038D": "20260109",
+            "F052D": "20260107",
+            "ORGNAME": "测试公司",
+            "SECCODE": "600000",
+            "SECNAME": "测试",
+            "SUBID": "1",
+        }
+    )
+    row.update(overrides)
+    return row
+
+
+def _cninfo_frame(rows: list[dict[str, Any]] | None = None) -> pl.DataFrame:
+    data = rows if rows is not None else [_rights_row()]
+    return pl.DataFrame(
+        data, schema={name: pl.Utf8 for name in CNINFO_STOCK_ALLOTMENT_FIELDS}
+    )
+
+
+def _make_cninfo_verified(
+    frame: pl.DataFrame,
+    *,
+    symbols_param: str = "600000",
+    start_date: str = _START,
+    end_date: str = _END,
+) -> VerifiedCninfoRawResponse:
+    params = {"symbols": symbols_param, "start_date": start_date, "end_date": end_date}
+    spec = CninfoRequestSpec.create(parameters=params)
+    content = backfill.cninfo_response_content_sha256(frame)
+    columns = tuple(frame.columns)
+    parameters_sha256 = backfill._parameters_hash(spec.parameters)
+    row_count = frame.height
+    stable = backfill._cninfo_stable_response_hash_values(
+        {
+            "request_id": spec.request_id,
+            "endpoint": spec.endpoint,
+            "adapter": spec.adapter,
+            "parameters_sha256": parameters_sha256,
+            "response_content_sha256": content,
+            "resultcode": 200,
+            "count": row_count,
+            "total": row_count,
+            "row_count": row_count,
+            "columns": columns,
+        }
+    )
+    receipt = CninfoRequestReceipt(
+        schema_version="m3-g1-cninfo-receipt-v1",
+        request_id=spec.request_id,
+        source="cninfo",
+        endpoint="stock_allotment",
+        adapter=spec.adapter,
+        parameters=spec.parameters,
+        parameters_sha256=parameters_sha256,
+        raw_snapshot_id=spec.request_id,
+        raw_data_path="cninfo/stock_allotment/request=x/data.parquet",
+        raw_metadata_path="cninfo/stock_allotment/request=x/metadata.json",
+        raw_file_sha256=_HEX,
+        raw_metadata_sha256=_HEX,
+        response_content_sha256=content,
+        stable_response_sha256=stable,
+        resultcode=200,
+        count=row_count,
+        total=row_count,
+        raw_size_bytes=max(row_count, 1),
+        row_count=row_count,
+        columns=columns,
+    )
+    return VerifiedCninfoRawResponse(
+        spec,
+        receipt,
+        backfill._sha256(asdict(receipt)),
+        frame,
+        200,
+        row_count,
+        row_count,
+    )
+
+
+def _bars_and_factors_for_rights(
+    *,
+    prev_close: float = 10.0,
+    rights_price: float = 5.0,
+    rights_ratio: float = 0.3,
+    factor_prev: float = 1.0,
+    factor_eff: float | None = None,
+    include_ex_daily: bool = True,
+    ex_pre_close: float | None = None,
+    rights_row_overrides: dict[str, Any] | None = None,
+) -> tuple[pl.DataFrame, pl.DataFrame, VerifiedRawResponse, pl.DataFrame]:
+    rights_cash = rights_price * rights_ratio
+    declared = prev_close * (1.0 + rights_ratio) / (prev_close + rights_cash)
+    actual_factor = factor_eff if factor_eff is not None else factor_prev * declared
+    market_pre = ex_pre_close if ex_pre_close is not None else prev_close / declared
+    closes: dict[dt.date, tuple[float, float]] = {
+        _D0: (prev_close, prev_close),
+        _D1: (prev_close, prev_close),
+    }
+    if include_ex_daily:
+        closes[_D2] = (market_pre, market_pre)
+    bars_rows = []
+    factor_rows = []
+    for day, (close, _) in sorted(closes.items()):
+        adj = factor_prev if day < _D2 else actual_factor
+        bars_rows.append(
+            {
+                "symbol": _SYMBOL,
+                "trade_date": day,
+                "open": close,
+                "high": close,
+                "low": close,
+                "close": close,
+                "volume": 1.0,
+                "amount": 1.0,
+                "adj_factor": adj,
+                "source": "tushare",
+            }
+        )
+    factor_dates = [_D0, _D1, _D2]
+    for day in factor_dates:
+        factor_rows.append(
+            {
+                "symbol": _SYMBOL,
+                "effective_date": day,
+                "adj_factor": factor_prev if day < _D2 else actual_factor,
+                "source": "tushare",
+            }
+        )
+    bars = pl.DataFrame(bars_rows)
+    factors = pl.DataFrame(factor_rows)
+    daily = _make_verified(
+        "daily",
+        _daily_frame(closes),
+        parameters={
+            "ts_code": _SYMBOL,
+            "start_date": _START,
+            "end_date": _END,
+        },
+    )
+    overrides = {"F005N": str(rights_price), "F004N": str(rights_ratio * 10.0)}
+    if rights_row_overrides:
+        overrides.update(rights_row_overrides)
+    cninfo_response = _make_cninfo_verified(
+        _cninfo_frame([_rights_row(**overrides)])
+    )
+    actions = select_g1_cninfo_rights_actions(
+        response=cninfo_response, history=_history(), symbols=[_SYMBOL]
+    ).ledger
+    return bars, factors, daily, actions
 
 
 def _daily_rows(
@@ -300,10 +472,10 @@ def _assert_code(exc_info: pytest.ExceptionInfo[BaseException], code: str) -> No
 def test_version_constants() -> None:
     assert G1_PRICE_LIMIT_METHOD_VERSION == "tushare_stk_limit_suspension_aware_v2"
     assert G1_CORPORATE_ACTION_SELECTION_VERSION == (
-        "tushare_dividend_implemented_latest_v2"
+        "tushare_dividend_cninfo_rights_implemented_v3"
     )
     assert G1_CORPORATE_ACTION_RECONCILIATION_VERSION == (
-        "tushare_factor_daily_preclose_v4"
+        "tushare_factor_daily_preclose_v5"
     )
 
 
@@ -2145,6 +2317,332 @@ def test_p0e_extra_full_day_tiny_declared_within_rtol() -> None:
     assert event["actual_factor_ratio"][0] == 1.0
     assert float(event["declared_dividend_relative_error"][0]) <= 0.001
     verify_corporate_action_reconciliation_result(result=result)
+
+
+def test_rights_selection_maps_f004n_and_populates_fields() -> None:
+    response = _make_cninfo_verified(_cninfo_frame())
+    result = select_g1_cninfo_rights_actions(
+        response=response, history=_history(), symbols=[_SYMBOL]
+    )
+    assert result.ledger.height == 1
+    row = result.ledger.row(0, named=True)
+    assert row["action_type"] == "RIGHTS"
+    assert row["symbol"] == _SYMBOL
+    assert row["ex_date"] == _D2
+    assert row["cash_per_share_gross"] == 0.0
+    assert row["stock_ratio"] == 0.0
+    assert row["rights_price"] == 45.68
+    assert row["rights_ratio"] == pytest.approx(0.3)
+    assert row["pay_date"] is None
+    assert row["stock_list_date"] == _D4
+    assert row["vendor_record_id"] == "1"
+    assert row["source"] == "cninfo"
+    assert result.selection_evidence.height == 1
+    evidence_row = result.selection_evidence.row(0, named=True)
+    assert evidence_row["selection_reason"] == "SELECTED_LATEST"
+    assert evidence_row["selected"] is True
+    verify_corporate_action_selection_result(result=result)
+
+
+def test_rights_market_reference_happy_path() -> None:
+    """000661-shaped fixture: declared diverges from actual, market matches."""
+    prev_close = 103.20
+    rights_price = 45.68
+    rights_ratio = 0.3
+    bars, factors, daily, actions = _bars_and_factors_for_rights(
+        prev_close=prev_close,
+        rights_price=rights_price,
+        rights_ratio=rights_ratio,
+        factor_prev=3.195,
+        factor_eff=3.66,
+        ex_pre_close=90.09,
+    )
+    assert actions.height == 1
+    result = reconcile_g1_corporate_actions(
+        corporate_actions=actions,
+        bars=bars,
+        adjustment_factors=factors,
+        daily_responses=[daily],
+        suspensions=_suspension(),
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+    )
+    event = result.evidence.filter(pl.col("event_count") > 0)
+    assert event.height == 1
+    assert event["status"][0] == "MATCHED_EVENT_MARKET_REFERENCE"
+    assert event["rights_ratio"][0] == pytest.approx(0.3)
+    assert float(event["rights_subscription_cash_per_share"][0]) == pytest.approx(
+        rights_price * rights_ratio
+    )
+    verify_corporate_action_reconciliation_result(result=result)
+
+
+def test_rights_declared_formula_match() -> None:
+    bars, factors, daily, actions = _bars_and_factors_for_rights()
+    result = reconcile_g1_corporate_actions(
+        corporate_actions=actions,
+        bars=bars,
+        adjustment_factors=factors,
+        daily_responses=[daily],
+        suspensions=_suspension(),
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+    )
+    event = result.evidence.filter(pl.col("event_count") > 0)
+    assert event.height == 1
+    assert event["status"][0] == "MATCHED_EVENT_DECLARED_FORMULA"
+    verify_corporate_action_reconciliation_result(result=result)
+
+
+def test_rights_missing_daily_requires_full_day_and_rtol() -> None:
+    bars, factors, daily, actions = _bars_and_factors_for_rights(include_ex_daily=False)
+    # Missing daily without FULL_DAY suspension must fail closed.
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        reconcile_g1_corporate_actions(
+            corporate_actions=actions,
+            bars=bars,
+            adjustment_factors=factors,
+            daily_responses=[daily],
+            suspensions=_suspension(),
+            calendars=_default_calendar(),
+            history=_history(),
+            factor_ratio_rtol=0.001,
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
+
+    # FULL_DAY but declared error exceeds rtol must also fail closed.
+    bars_bad, factors_bad, daily_bad, actions_bad = _bars_and_factors_for_rights(
+        include_ex_daily=False, factor_eff=5.0
+    )
+    suspensions = _suspension(
+        [
+            {
+                "symbol": _SYMBOL,
+                "trade_date": _D2,
+                "suspension_scope": "FULL_DAY",
+                "suspension_detail": None,
+                "source": "tushare",
+                "source_snapshot_id": _HEX,
+            }
+        ]
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught_bad:
+        reconcile_g1_corporate_actions(
+            corporate_actions=actions_bad,
+            bars=bars_bad,
+            adjustment_factors=factors_bad,
+            daily_responses=[daily_bad],
+            suspensions=suspensions,
+            calendars=_default_calendar(),
+            history=_history(),
+            factor_ratio_rtol=0.001,
+        )
+    _assert_code(caught_bad, "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
+
+
+def test_rights_unsupported_ratio_far_below_one_rejected() -> None:
+    prev_close = 10.0
+    rights_price = 5.0
+    rights_ratio = 0.3
+    # Force both actual and market far below 1 despite otherwise matching.
+    bars, factors, daily, actions = _bars_and_factors_for_rights(
+        prev_close=prev_close,
+        rights_price=rights_price,
+        rights_ratio=rights_ratio,
+        factor_eff=0.5,
+        ex_pre_close=prev_close / 0.5,
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        reconcile_g1_corporate_actions(
+            corporate_actions=actions,
+            bars=bars,
+            adjustment_factors=factors,
+            daily_responses=[daily],
+            suspensions=_suspension(),
+            calendars=_default_calendar(),
+            history=_history(),
+            factor_ratio_rtol=0.001,
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
+
+
+def test_rights_same_shape_without_event_fails_closed() -> None:
+    """Same bar/factor jump shape, but with actions cleared: no-event fail-closed."""
+    bars, factors, daily, actions = _bars_and_factors_for_rights()
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        reconcile_g1_corporate_actions(
+            corporate_actions=actions.clear(),
+            bars=bars,
+            adjustment_factors=factors,
+            daily_responses=[daily],
+            suspensions=_suspension(),
+            calendars=_default_calendar(),
+            history=_history(),
+            factor_ratio_rtol=0.001,
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
+
+
+def test_rights_f004n_non_positive_rejected() -> None:
+    for bad_f004n in ("0", "-1"):
+        response = _make_cninfo_verified(
+            _cninfo_frame([_rights_row(F004N=bad_f004n)])
+        )
+        with pytest.raises(M3G1ExecutionFactError) as caught:
+            select_g1_cninfo_rights_actions(
+                response=response, history=_history(), symbols=[_SYMBOL]
+            )
+        _assert_code(caught, "G1_CORPORATE_ACTION_EVENT_INVALID")
+
+
+def test_rights_price_non_positive_rejected() -> None:
+    response = _make_cninfo_verified(_cninfo_frame([_rights_row(F005N="0")]))
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        select_g1_cninfo_rights_actions(
+            response=response, history=_history(), symbols=[_SYMBOL]
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_EVENT_INVALID")
+
+
+def test_rights_failed_issuance_omitted() -> None:
+    # post_shares <= pre_shares: failed issuance must be omitted, not rejected.
+    response = _make_cninfo_verified(
+        _cninfo_frame([_rights_row(F024N="1000.0", F025N="900.0")])
+    )
+    result = select_g1_cninfo_rights_actions(
+        response=response, history=_history(), symbols=[_SYMBOL]
+    )
+    assert result.ledger.height == 0
+    assert result.selection_evidence.height == 0
+
+
+def test_rights_duplicate_subid_rejected() -> None:
+    rows = [_rights_row(SUBID="1"), _rights_row(SUBID="1", SECCODE="600000")]
+    response = _make_cninfo_verified(_cninfo_frame(rows))
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        select_g1_cninfo_rights_actions(
+            response=response, history=_history(), symbols=[_SYMBOL]
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_EVENT_INVALID")
+
+
+def test_rights_conflicting_same_symbol_ex_date_rejected() -> None:
+    rows = [
+        _rights_row(SUBID="1", F005N="45.68"),
+        _rights_row(SUBID="2", F005N="50.0"),
+    ]
+    response = _make_cninfo_verified(_cninfo_frame(rows))
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        select_g1_cninfo_rights_actions(
+            response=response, history=_history(), symbols=[_SYMBOL]
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_EVENT_INVALID")
+
+
+def test_dividend_and_rights_same_day_formula_and_order_invariant_digest() -> None:
+    prev_close = 10.0
+    cash = 0.1
+    rights_price = 5.0
+    rights_ratio = 0.3
+    declared = (
+        prev_close
+        * (1.0 + rights_ratio)
+        / (prev_close - cash + rights_price * rights_ratio)
+    )
+    closes: dict[dt.date, tuple[float, float]] = {
+        _D0: (prev_close, prev_close),
+        _D1: (prev_close, prev_close),
+        _D2: (prev_close - cash, prev_close / declared),
+    }
+    bars_rows = []
+    factor_rows = []
+    for day in (_D0, _D1, _D2):
+        close, _ = closes[day]
+        adj = 1.0 if day < _D2 else declared
+        bars_rows.append(
+            {
+                "symbol": _SYMBOL,
+                "trade_date": day,
+                "open": close,
+                "high": close,
+                "low": close,
+                "close": close,
+                "volume": 1.0,
+                "amount": 1.0,
+                "adj_factor": adj,
+                "source": "tushare",
+            }
+        )
+        factor_rows.append(
+            {
+                "symbol": _SYMBOL,
+                "effective_date": day,
+                "adj_factor": adj,
+                "source": "tushare",
+            }
+        )
+    bars = pl.DataFrame(bars_rows)
+    factors = pl.DataFrame(factor_rows)
+    daily = _make_verified(
+        "daily",
+        _daily_frame(closes),
+        parameters={"ts_code": _SYMBOL, "start_date": _START, "end_date": _END},
+    )
+    dividend_actions = select_g1_corporate_actions(
+        response=_make_verified(
+            "dividend", _dividend_frame([_dividend_row(cash_div_tax=cash)])
+        ),
+        history=_history(),
+    ).ledger
+    rights_actions = select_g1_cninfo_rights_actions(
+        response=_make_cninfo_verified(
+            _cninfo_frame(
+                [_rights_row(F005N=str(rights_price), F004N=str(rights_ratio * 10.0))]
+            )
+        ),
+        history=_history(),
+        symbols=[_SYMBOL],
+    ).ledger
+
+    combined_forward = pl.concat([dividend_actions, rights_actions])
+    combined_reversed = pl.concat([rights_actions, dividend_actions])
+
+    result_forward = reconcile_g1_corporate_actions(
+        corporate_actions=combined_forward,
+        bars=bars,
+        adjustment_factors=factors,
+        daily_responses=[daily],
+        suspensions=_suspension(),
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+    )
+    result_reversed = reconcile_g1_corporate_actions(
+        corporate_actions=combined_reversed,
+        bars=bars,
+        adjustment_factors=factors,
+        daily_responses=[daily],
+        suspensions=_suspension(),
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+    )
+    event = result_forward.evidence.filter(pl.col("event_count") > 0)
+    assert event.height == 1
+    assert event["event_count"][0] == 2
+    assert event["status"][0] == "MATCHED_EVENT_DECLARED_FORMULA"
+    assert float(event["cash_per_share_gross"][0]) == pytest.approx(cash)
+    assert float(event["rights_ratio"][0]) == pytest.approx(rights_ratio)
+    assert float(event["rights_subscription_cash_per_share"][0]) == pytest.approx(
+        rights_price * rights_ratio
+    )
+    assert (
+        result_forward.evidence_sha256 == result_reversed.evidence_sha256
+    )
+    verify_corporate_action_reconciliation_result(result=result_forward)
+    verify_corporate_action_reconciliation_result(result=result_reversed)
 
 
 def test_no_network_or_research_imports() -> None:

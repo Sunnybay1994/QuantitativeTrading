@@ -20,6 +20,7 @@ from quant.data import m3_mappers as mappers
 from quant.data.m3_backfill import (
     G1RequestPlan,
     HistoryWindow,
+    VerifiedCninfoRawResponse,
     VerifiedRawResponse,
 )
 from quant.data.m3_identity import clean_table_content_sha256
@@ -58,7 +59,7 @@ _BENCHMARK = "510300.SH"
 _BENCHMARK_MODE = "TRADEABLE_ETF_TOTAL_RETURN_PROXY"
 _BENCHMARK_METHOD_VERSION = "tushare_510300_fund_daily_fund_adj_hfq_v1"
 _BENCHMARK_DIVIDEND_RECONCILIATION_VERSION = "tushare_fund_div_implemented_cash_v1"
-_MAPPER_VERSION = "m3-g1-tushare-mapper-v3"
+_MAPPER_VERSION = "m3-g1-tushare-mapper-v4"
 _IDENTITY_SCHEMA = "m3-g1-primary-candidate-identity-v1"
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _A_SHARE = re.compile(r"^[0-9]{6}\.(?:SH|SZ)$")
@@ -281,7 +282,7 @@ class G1BuildSpec:
 
 @dataclass(frozen=True)
 class G1ReceiptProjectionV1:
-    source: Literal["tushare", "baostock"]
+    source: Literal["tushare", "baostock", "cninfo"]
     request_id: str
     endpoint: str
     parameters_sha256: str
@@ -290,7 +291,7 @@ class G1ReceiptProjectionV1:
     columns: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        if self.source not in {"tushare", "baostock"}:
+        if self.source not in {"tushare", "baostock", "cninfo"}:
             raise ValueError("receipt projection source 非法")
         if type(self.request_id) is not str or not _HEX64.fullmatch(self.request_id):
             raise ValueError("receipt projection request_id 非法")
@@ -317,6 +318,7 @@ class G1BuildInputs:
     build_spec: G1BuildSpec
     request_plan: G1RequestPlan
     responses: tuple[VerifiedRawResponse, ...]
+    cninfo_responses: tuple[VerifiedCninfoRawResponse, ...]
     calendars: pl.DataFrame
     instruments: pl.DataFrame
     universe: Literal["CSI300_TUSHARE_MONTHLY_OBSERVED_PIT_V1"]
@@ -332,6 +334,7 @@ class G1BuildInputs:
             request_plan = _consume_request_plan(self.request_plan)
             history = _consume_history(self.history)
             responses = _consume_responses(self.responses)
+            cninfo_responses = _consume_cninfo_responses(self.cninfo_responses)
             calendars = _validate_schema(
                 self.calendars, TradeCalendarSchema, "G1_CANDIDATE_INPUT_INVALID"
             )
@@ -360,6 +363,7 @@ class G1BuildInputs:
             object.__setattr__(self, "build_spec", build_spec)
             object.__setattr__(self, "request_plan", request_plan)
             object.__setattr__(self, "responses", responses)
+            object.__setattr__(self, "cninfo_responses", cninfo_responses)
             object.__setattr__(self, "calendars", calendars)
             object.__setattr__(self, "instruments", instruments)
             object.__setattr__(self, "history", history)
@@ -424,7 +428,10 @@ class G1Candidate:
                 raise M3G1CandidateError("G1_CANDIDATE_INPUT_INVALID")
             rebuilt_receipts: list[G1ReceiptProjectionV1] = []
             for item in self.input_receipts:
-                if type(item) is not G1ReceiptProjectionV1 or item.source != "tushare":
+                if type(item) is not G1ReceiptProjectionV1 or item.source not in {
+                    "tushare",
+                    "cninfo",
+                }:
                     raise M3G1CandidateError("G1_CANDIDATE_INPUT_INVALID")
                 rebuilt_receipts.append(
                     G1ReceiptProjectionV1(
@@ -1505,7 +1512,9 @@ def audit_g1_candidate(*, candidate: G1Candidate) -> G1PrimaryAuditResult:
 def _build_candidate_body(inputs: G1BuildInputs) -> G1Candidate:
     plan = inputs.request_plan
     responses = list(inputs.responses)
+    cninfo_responses = list(inputs.cninfo_responses)
     _assert_plan_response_multiset(plan, responses)
+    _assert_cninfo_response_multiset(plan, cninfo_responses)
     _assert_endpoint_closures(plan, responses, history=inputs.history)
 
     by_id = {item.spec.request_id: item for item in responses}
@@ -1700,6 +1709,15 @@ def _build_candidate_body(inputs: G1BuildInputs) -> G1Candidate:
         execution_facts.verify_corporate_action_selection_result(result=selected)
         ledger_parts.append(selected.ledger)
         evidence_parts.append(selected.selection_evidence)
+    for cninfo_response in cninfo_responses:
+        selected = execution_facts.select_g1_cninfo_rights_actions(
+            response=cninfo_response,
+            history=inputs.history,
+            symbols=history_symbols,
+        )
+        execution_facts.verify_corporate_action_selection_result(result=selected)
+        ledger_parts.append(selected.ledger)
+        evidence_parts.append(selected.selection_evidence)
     corporate_actions = _concat_or_empty(
         ledger_parts,
         schema={
@@ -1713,6 +1731,10 @@ def _build_candidate_body(inputs: G1BuildInputs) -> G1Candidate:
             "stock_list_date": pl.Date,
             "source": pl.Utf8,
             "source_snapshot_id": pl.Utf8,
+            "action_type": pl.Utf8,
+            "rights_price": pl.Float64,
+            "rights_ratio": pl.Float64,
+            "vendor_record_id": pl.Utf8,
         },
         sort_keys=["symbol", "ex_date", "event_id"],
         schema_model=CorporateActionLedgerSchema,
@@ -1740,6 +1762,10 @@ def _build_candidate_body(inputs: G1BuildInputs) -> G1Candidate:
             "source": pl.Utf8,
             "source_request_id": pl.Utf8,
             "source_snapshot_id": pl.Utf8,
+            "action_type": pl.Utf8,
+            "rights_price": pl.Float64,
+            "rights_ratio": pl.Float64,
+            "vendor_record_id": pl.Utf8,
         },
         sort_keys=["symbol", "ex_date", "candidate_rank", "candidate_id"],
         schema_model=CorporateActionSelectionEvidenceSchema,
@@ -1835,7 +1861,8 @@ def _build_candidate_body(inputs: G1BuildInputs) -> G1Candidate:
     )
     receipts = tuple(
         sorted(
-            (_project_receipt(item) for item in responses),
+            [_project_receipt(item) for item in responses]
+            + [_project_cninfo_receipt(item) for item in cninfo_responses],
             key=lambda value: (value.source, value.endpoint, value.request_id),
         )
     )
@@ -2033,6 +2060,62 @@ def _project_receipt(response: VerifiedRawResponse) -> G1ReceiptProjectionV1:
     )
 
 
+def _project_cninfo_receipt(response: VerifiedCninfoRawResponse) -> G1ReceiptProjectionV1:
+    return G1ReceiptProjectionV1(
+        source="cninfo",
+        request_id=response.spec.request_id,
+        endpoint=response.spec.endpoint,
+        parameters_sha256=response.receipt.parameters_sha256,
+        stable_response_sha256=response.receipt.stable_response_sha256,
+        row_count=response.receipt.row_count,
+        columns=response.receipt.columns,
+    )
+
+
+def _assert_cninfo_response_multiset(
+    plan: G1RequestPlan, responses: Sequence[VerifiedCninfoRawResponse]
+) -> None:
+    plan_ids = [spec.request_id for spec in plan.cninfo_rights_batch.requests]
+    response_ids = [item.spec.request_id for item in responses]
+    if Counter(plan_ids) != Counter(response_ids):
+        raise M3G1CandidateError("G1_CANDIDATE_PLAN_RESPONSE_MISMATCH")
+    if len(set(response_ids)) != len(response_ids):
+        raise M3G1CandidateError("G1_CANDIDATE_PLAN_RESPONSE_MISMATCH")
+    by_id = {item.spec.request_id: item for item in responses}
+    for spec in plan.cninfo_rights_batch.requests:
+        verified = by_id[spec.request_id]
+        if (
+            verified.spec.request_id != spec.request_id
+            or verified.spec.endpoint != spec.endpoint
+            or verified.spec.parameters != spec.parameters
+            or verified.spec.adapter != spec.adapter
+        ):
+            raise M3G1CandidateError("G1_CANDIDATE_PLAN_RESPONSE_MISMATCH")
+
+
+def _consume_cninfo_responses(
+    responses: object,
+) -> tuple[VerifiedCninfoRawResponse, ...]:
+    if not isinstance(responses, tuple):
+        raise M3G1CandidateError("G1_CANDIDATE_INPUT_INVALID")
+    rebuilt: list[VerifiedCninfoRawResponse] = []
+    for item in responses:
+        if type(item) is not VerifiedCninfoRawResponse:
+            raise M3G1CandidateError("G1_CANDIDATE_INPUT_INVALID")
+        rebuilt.append(
+            VerifiedCninfoRawResponse(
+                spec=item.spec,
+                receipt=item.receipt,
+                receipt_sha256=item.receipt_sha256,
+                frame=item.frame,
+                resultcode=item.resultcode,
+                count=item.count,
+                total=item.total,
+            )
+        )
+    return tuple(rebuilt)
+
+
 def _primary_candidate_key(
     *,
     build_spec: G1BuildSpec,
@@ -2087,6 +2170,7 @@ def _consume_build_inputs(inputs: object) -> G1BuildInputs:
         build_spec=inputs.build_spec,
         request_plan=inputs.request_plan,
         responses=inputs.responses,
+        cninfo_responses=inputs.cninfo_responses,
         calendars=inputs.calendars,
         instruments=inputs.instruments,
         universe=inputs.universe,
@@ -2133,6 +2217,7 @@ def _consume_request_plan(plan: object) -> G1RequestPlan:
             plan.schema_version,
             plan.index_weight_batch,
             plan.history_batch,
+            plan.cninfo_rights_batch,
             plan.plan_sha256,
         )
     except Exception:

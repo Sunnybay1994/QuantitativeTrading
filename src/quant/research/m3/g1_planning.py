@@ -65,9 +65,9 @@ _CTRL = re.compile(r"[\x00-\x1f\x7f]")
 _SOURCE_TREE_SCHEMA = "m3-g1-source-tree-v1"
 _DEP_FP_SCHEMA = "m3-g1-dependency-fingerprint-v1"
 _STATIC_ID_SCHEMA = "m3-g1-static-plan-identity-v1"
-_DERIVED_ID_SCHEMA = "m3-g1-derived-history-plan-identity-v1"
-_MAPPER_VERSION = "m3-g1-tushare-mapper-v3"
-_SCHEMA_VERSION = "m3-g1-schema-v1"
+_DERIVED_ID_SCHEMA = "m3-g1-derived-history-plan-identity-v2"
+_MAPPER_VERSION = "m3-g1-tushare-mapper-v4"
+_SCHEMA_VERSION = "m3-g1-schema-v2"
 _UNIVERSE: Literal["CSI300_TUSHARE_MONTHLY_OBSERVED_PIT_V1"] = (
     "CSI300_TUSHARE_MONTHLY_OBSERVED_PIT_V1"
 )
@@ -399,7 +399,7 @@ class G1StaticPlanV1:
 
 @dataclass(frozen=True)
 class G1DerivedHistoryPlanV1:
-    schema_version: Literal["m3-g1-derived-history-plan-v1"]
+    schema_version: Literal["m3-g1-derived-history-plan-v2"]
     static_plan_sha256: str
     observations_sha256: str
     membership_sha256: str
@@ -410,7 +410,7 @@ class G1DerivedHistoryPlanV1:
     derived_plan_sha256: str
 
     def __post_init__(self) -> None:
-        if self.schema_version != "m3-g1-derived-history-plan-v1":
+        if self.schema_version != "m3-g1-derived-history-plan-v2":
             raise M3G1PlanningError("G1_PLANNING_IDENTITY_MISMATCH")
         for name in (
             "static_plan_sha256",
@@ -701,11 +701,13 @@ def plan_g1_etf_history_requests(
         merged,
         _tushare_batch_hash("HISTORY", merged),
     )
+    cninfo_rights_batch = base.cninfo_rights_batch
     return G1RequestPlan(
-        "m3-g1-request-plan-v1",
+        "m3-g1-request-plan-v2",
         index_weight_batch,
         history_batch,
-        _tushare_plan_hash(index_weight_batch, history_batch),
+        cninfo_rights_batch,
+        _tushare_plan_hash(index_weight_batch, history_batch, cninfo_rights_batch),
     )
 
 
@@ -803,7 +805,7 @@ def derive_g1_history_plan(
             raise M3G1PlanningError("G1_PLANNING_CALENDAR_INVALID") from None
         static_plan_sha256 = _static_plan_sha256(static_plan)
         derived = G1DerivedHistoryPlanV1(
-            schema_version="m3-g1-derived-history-plan-v1",
+            schema_version="m3-g1-derived-history-plan-v2",
             static_plan_sha256=static_plan_sha256,
             observations_sha256=membership.observations_sha256,
             membership_sha256=membership.membership_sha256,
@@ -1376,6 +1378,7 @@ def _rebuild_request_plan(plan: object) -> G1RequestPlan:
             plan.schema_version,
             plan.index_weight_batch,
             plan.history_batch,
+            plan.cninfo_rights_batch,
             plan.plan_sha256,
         )
     except Exception:
@@ -1466,10 +1469,36 @@ def _derived_plan_sha256(
             "schema_version": request_plan.schema_version,
             "index_weight_batch": _batch_to_jsonable(request_plan.index_weight_batch),
             "history_batch": _batch_to_jsonable(request_plan.history_batch),
+            "cninfo_rights_batch": _cninfo_batch_to_jsonable(
+                request_plan.cninfo_rights_batch
+            ),
             "plan_sha256": request_plan.plan_sha256,
         },
     }
     return _sha256_json(payload)
+
+
+def _cninfo_batch_to_jsonable(batch: object) -> dict[str, Any]:
+    from quant.data.m3_backfill import CninfoRequestBatch
+
+    if type(batch) is not CninfoRequestBatch:
+        raise M3G1PlanningError("G1_PLANNING_IDENTITY_MISMATCH")
+    return {
+        "schema_version": batch.schema_version,
+        "phase": batch.phase,
+        "requests": [
+            {
+                "schema_version": item.schema_version,
+                "request_id": item.request_id,
+                "source": item.source,
+                "endpoint": item.endpoint,
+                "adapter": item.adapter,
+                "parameters": list(item.parameters),
+            }
+            for item in batch.requests
+        ],
+        "batch_sha256": batch.batch_sha256,
+    }
 
 
 def _runtime_to_jsonable(runtime: G1RuntimeIdentityV1) -> dict[str, Any]:

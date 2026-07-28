@@ -19,6 +19,17 @@ from typing import Any, Callable, Literal, Mapping, Sequence, cast
 import polars as pl
 
 from quant.data._journal_lock import M3JournalLockError, hold_journal_writer_lock
+from quant.data.connectors.cninfo import (
+    CNINFO_ADAPTER,
+    CNINFO_ENDPOINT,
+    CNINFO_SOURCE,
+    CNINFO_STOCK_ALLOTMENT_FIELDS,
+    CninfoAllotmentRawResult,
+    CninfoConnector,
+    CninfoConnectorError,
+    batch_cninfo_symbol_groups,
+    empty_cninfo_allotment_frame,
+)
 from quant.data.connectors.tushare import TushareConnector
 from quant.data.storage import RawStore, RequestRawSnapshot
 
@@ -188,19 +199,98 @@ class TushareRequestBatch:
 
 
 @dataclass(frozen=True)
+class CninfoRequestSpec:
+    schema_version: Literal["m3-g1-cninfo-request-v1"]
+    request_id: str
+    source: Literal["cninfo"]
+    endpoint: Literal["stock_allotment"]
+    adapter: Literal["akshare_cninfo_p_stock2232_v1"]
+    parameters: tuple[tuple[str, str], ...]
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "m3-g1-cninfo-request-v1":
+            raise ValueError("cninfo request schema_version 非法")
+        if self.source != CNINFO_SOURCE:
+            raise ValueError("cninfo request source 非法")
+        if self.endpoint != CNINFO_ENDPOINT:
+            raise ValueError("cninfo request endpoint 非法")
+        if self.adapter != CNINFO_ADAPTER:
+            raise ValueError("cninfo request adapter 非法")
+        _validate_cninfo_parameters(self.parameters)
+        expected = _cninfo_request_id(self.parameters)
+        if self.request_id != expected:
+            raise ValueError("cninfo request_id 与参数不一致")
+
+    @classmethod
+    def create(cls, *, parameters: Mapping[str, str]) -> CninfoRequestSpec:
+        if not isinstance(parameters, Mapping) or not all(
+            type(key) is str and type(value) is str for key, value in parameters.items()
+        ):
+            raise ValueError("cninfo request parameters 必须是字符串映射")
+        normalized = tuple(sorted(parameters.items()))
+        _validate_cninfo_parameters(normalized)
+        return cls(
+            schema_version="m3-g1-cninfo-request-v1",
+            request_id=_cninfo_request_id(normalized),
+            source="cninfo",
+            endpoint="stock_allotment",
+            adapter="akshare_cninfo_p_stock2232_v1",
+            parameters=normalized,
+        )
+
+
+@dataclass(frozen=True)
+class CninfoRequestBatch:
+    schema_version: Literal["m3-g1-cninfo-request-batch-v1"]
+    phase: Literal["HISTORY"]
+    requests: tuple[CninfoRequestSpec, ...]
+    batch_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "m3-g1-cninfo-request-batch-v1":
+            raise ValueError("cninfo batch schema_version 非法")
+        if self.phase != "HISTORY":
+            raise ValueError("cninfo batch phase 非法")
+        if type(self.requests) is not tuple or not self.requests:
+            raise ValueError("cninfo batch requests 不能为空")
+        if not all(isinstance(item, CninfoRequestSpec) for item in self.requests):
+            raise ValueError("cninfo batch requests 类型非法")
+        rebuilt = tuple(
+            CninfoRequestSpec(
+                item.schema_version,
+                item.request_id,
+                item.source,
+                item.endpoint,
+                item.adapter,
+                item.parameters,
+            )
+            for item in self.requests
+        )
+        ordered = tuple(sorted(rebuilt, key=lambda value: value.request_id))
+        if rebuilt != ordered or len({item.request_id for item in rebuilt}) != len(rebuilt):
+            raise ValueError("cninfo batch requests 必须按 request_id 排序且唯一")
+        object.__setattr__(self, "requests", rebuilt)
+        if self.batch_sha256 != _cninfo_batch_hash(rebuilt):
+            raise ValueError("cninfo batch_sha256 不一致")
+
+
+@dataclass(frozen=True)
 class G1RequestPlan:
-    schema_version: Literal["m3-g1-request-plan-v1"]
+    schema_version: Literal["m3-g1-request-plan-v2"]
     index_weight_batch: TushareRequestBatch
     history_batch: TushareRequestBatch
+    cninfo_rights_batch: CninfoRequestBatch
     plan_sha256: str
 
     def __post_init__(self) -> None:
-        if self.schema_version != "m3-g1-request-plan-v1":
+        if self.schema_version != "m3-g1-request-plan-v2":
             raise ValueError("plan schema_version 非法")
         if not isinstance(self.index_weight_batch, TushareRequestBatch) or not isinstance(
             self.history_batch, TushareRequestBatch
         ):
             raise ValueError("plan batch 类型非法")
+        if not isinstance(self.cninfo_rights_batch, CninfoRequestBatch):
+            raise ValueError("plan cninfo_rights_batch 类型非法")
         TushareRequestBatch(
             self.index_weight_batch.schema_version,
             self.index_weight_batch.phase,
@@ -213,6 +303,12 @@ class G1RequestPlan:
             self.history_batch.requests,
             self.history_batch.batch_sha256,
         )
+        CninfoRequestBatch(
+            self.cninfo_rights_batch.schema_version,
+            self.cninfo_rights_batch.phase,
+            self.cninfo_rights_batch.requests,
+            self.cninfo_rights_batch.batch_sha256,
+        )
         if self.index_weight_batch.phase != "INDEX_WEIGHT" or self.history_batch.phase != "HISTORY":
             raise ValueError("plan batch phase 非法")
         ids = [
@@ -220,9 +316,12 @@ class G1RequestPlan:
             for batch in (self.index_weight_batch, self.history_batch)
             for item in batch.requests
         ]
+        ids.extend(item.request_id for item in self.cninfo_rights_batch.requests)
         if len(ids) != len(set(ids)):
             raise ValueError("plan 含跨 batch request_id 冲突")
-        if self.plan_sha256 != _plan_hash(self.index_weight_batch, self.history_batch):
+        if self.plan_sha256 != _plan_hash(
+            self.index_weight_batch, self.history_batch, self.cninfo_rights_batch
+        ):
             raise ValueError("plan_sha256 不一致")
 
 
@@ -327,6 +426,204 @@ class TushareRequestReceipt:
         _validate_counts(self.raw_size_bytes, self.row_count, self.columns)
         if self.stable_response_sha256 != _stable_response_hash(self):
             raise ValueError("stable_response_sha256 不一致")
+
+
+@dataclass(frozen=True)
+class CninfoRequestIntentV1:
+    schema_version: Literal["m3-g1-cninfo-intent-v1"]
+    request_id: str
+    source: Literal["cninfo"]
+    endpoint: Literal["stock_allotment"]
+    adapter: Literal["akshare_cninfo_p_stock2232_v1"]
+    parameters: tuple[tuple[str, str], ...]
+    parameters_sha256: str
+
+    def __post_init__(self) -> None:
+        spec = CninfoRequestSpec(
+            "m3-g1-cninfo-request-v1",
+            self.request_id,
+            self.source,
+            self.endpoint,
+            self.adapter,
+            self.parameters,
+        )
+        if self.schema_version != "m3-g1-cninfo-intent-v1":
+            raise ValueError("cninfo intent schema_version 非法")
+        if self.parameters_sha256 != _parameters_hash(spec.parameters):
+            raise ValueError("cninfo intent parameters_sha256 不一致")
+
+
+@dataclass(frozen=True)
+class CninfoRawCandidateV1:
+    schema_version: Literal["m3-g1-cninfo-candidate-v1"]
+    request_id: str
+    source: Literal["cninfo"]
+    endpoint: Literal["stock_allotment"]
+    adapter: Literal["akshare_cninfo_p_stock2232_v1"]
+    parameters_sha256: str
+    raw_snapshot_id: str
+    raw_data_path: str
+    raw_metadata_path: str
+    raw_file_sha256: str
+    raw_metadata_sha256: str
+    response_content_sha256: str
+    resultcode: int
+    count: int
+    total: int
+    raw_size_bytes: int
+    row_count: int
+    columns: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "m3-g1-cninfo-candidate-v1":
+            raise ValueError("cninfo candidate schema_version 非法")
+        if (
+            self.source != CNINFO_SOURCE
+            or self.endpoint != CNINFO_ENDPOINT
+            or self.adapter != CNINFO_ADAPTER
+        ):
+            raise ValueError("cninfo candidate identity 非法")
+        for value in (
+            self.request_id,
+            self.parameters_sha256,
+            self.raw_snapshot_id,
+            self.raw_file_sha256,
+            self.raw_metadata_sha256,
+            self.response_content_sha256,
+        ):
+            _validate_hex(value)
+        if self.raw_snapshot_id != self.request_id:
+            raise ValueError("cninfo candidate raw_snapshot_id 与 request_id 不一致")
+        _validate_relative(self.raw_data_path)
+        _validate_relative(self.raw_metadata_path)
+        _validate_counts(self.raw_size_bytes, self.row_count, self.columns)
+        if self.columns != CNINFO_STOCK_ALLOTMENT_FIELDS:
+            raise ValueError("cninfo candidate columns 非法")
+        if self.resultcode != 200 or self.count != self.total or self.count != self.row_count:
+            raise ValueError("cninfo candidate 计数元数据非法")
+        if self.count < 0:
+            raise ValueError("cninfo candidate count 非法")
+
+
+@dataclass(frozen=True)
+class CninfoRequestReceipt:
+    schema_version: Literal["m3-g1-cninfo-receipt-v1"]
+    request_id: str
+    source: Literal["cninfo"]
+    endpoint: Literal["stock_allotment"]
+    adapter: Literal["akshare_cninfo_p_stock2232_v1"]
+    parameters: tuple[tuple[str, str], ...]
+    parameters_sha256: str
+    raw_snapshot_id: str
+    raw_data_path: str
+    raw_metadata_path: str
+    raw_file_sha256: str
+    raw_metadata_sha256: str
+    response_content_sha256: str
+    stable_response_sha256: str
+    resultcode: int
+    count: int
+    total: int
+    raw_size_bytes: int
+    row_count: int
+    columns: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        spec = CninfoRequestSpec(
+            "m3-g1-cninfo-request-v1",
+            self.request_id,
+            self.source,
+            self.endpoint,
+            self.adapter,
+            self.parameters,
+        )
+        if self.schema_version != "m3-g1-cninfo-receipt-v1":
+            raise ValueError("cninfo receipt schema_version 非法")
+        if self.parameters_sha256 != _parameters_hash(spec.parameters):
+            raise ValueError("cninfo receipt parameters_sha256 不一致")
+        for value in (
+            self.raw_snapshot_id,
+            self.raw_file_sha256,
+            self.raw_metadata_sha256,
+            self.response_content_sha256,
+            self.stable_response_sha256,
+        ):
+            _validate_hex(value)
+        if self.raw_snapshot_id != self.request_id:
+            raise ValueError("cninfo receipt raw_snapshot_id 与 request_id 不一致")
+        _validate_relative(self.raw_data_path)
+        _validate_relative(self.raw_metadata_path)
+        _validate_counts(self.raw_size_bytes, self.row_count, self.columns)
+        if self.columns != CNINFO_STOCK_ALLOTMENT_FIELDS:
+            raise ValueError("cninfo receipt columns 非法")
+        if self.resultcode != 200 or self.count != self.total or self.count != self.row_count:
+            raise ValueError("cninfo receipt 计数元数据非法")
+        if self.stable_response_sha256 != _cninfo_stable_response_hash(self):
+            raise ValueError("cninfo stable_response_sha256 不一致")
+
+
+@dataclass(frozen=True)
+class VerifiedCninfoRawResponse:
+    spec: CninfoRequestSpec
+    receipt: CninfoRequestReceipt
+    receipt_sha256: str
+    frame: pl.DataFrame
+    resultcode: int
+    count: int
+    total: int
+
+    def __post_init__(self) -> None:
+        if type(self.spec) is not CninfoRequestSpec or type(self.receipt) is not CninfoRequestReceipt:
+            raise ValueError("verified cninfo spec/receipt 类型非法")
+        rebuilt_spec = CninfoRequestSpec(
+            self.spec.schema_version,
+            self.spec.request_id,
+            self.spec.source,
+            self.spec.endpoint,
+            self.spec.adapter,
+            self.spec.parameters,
+        )
+        rebuilt_receipt = CninfoRequestReceipt(**asdict(self.receipt))
+        if (
+            rebuilt_receipt.request_id != rebuilt_spec.request_id
+            or rebuilt_receipt.endpoint != rebuilt_spec.endpoint
+            or rebuilt_receipt.parameters != rebuilt_spec.parameters
+        ):
+            raise ValueError("verified cninfo spec/receipt 不一致")
+        expected_receipt_hash = _sha256(asdict(rebuilt_receipt))
+        if self.receipt_sha256 != expected_receipt_hash:
+            raise ValueError("verified cninfo receipt_sha256 不一致")
+        if not isinstance(self.frame, pl.DataFrame):
+            raise ValueError("verified cninfo frame 类型非法")
+        if (
+            self.frame.height != rebuilt_receipt.row_count
+            or tuple(self.frame.columns) != rebuilt_receipt.columns
+        ):
+            raise ValueError("verified cninfo frame/receipt 不一致")
+        if cninfo_response_content_sha256(self.frame) != rebuilt_receipt.response_content_sha256:
+            raise ValueError("verified cninfo frame content digest 不一致")
+        if (
+            self.resultcode != rebuilt_receipt.resultcode
+            or self.count != rebuilt_receipt.count
+            or self.total != rebuilt_receipt.total
+        ):
+            raise ValueError("verified cninfo 计数元数据不一致")
+        object.__setattr__(self, "spec", rebuilt_spec)
+        object.__setattr__(self, "receipt", rebuilt_receipt)
+
+
+@dataclass(frozen=True)
+class CninfoBatchExecutionResult:
+    receipts: tuple[CninfoRequestReceipt, ...]
+    new_requests_committed: int
+
+    def __post_init__(self) -> None:
+        if type(self.receipts) is not tuple or any(
+            type(item) is not CninfoRequestReceipt for item in self.receipts
+        ):
+            raise ValueError("cninfo execution receipts 非法")
+        if type(self.new_requests_committed) is not int or self.new_requests_committed < 0:
+            raise ValueError("cninfo new_requests_committed 非法")
 
 
 @dataclass(frozen=True)
@@ -463,6 +760,42 @@ def resolve_history_window(
     )
 
 
+def plan_cninfo_rights_requests(
+    *,
+    symbols: Sequence[str],
+    history: HistoryWindow,
+    batch_size: int = 50,
+) -> CninfoRequestBatch:
+    """Build deterministic CNINFO rights batches (sorted unique codes, size<=50)."""
+    if type(history) is not HistoryWindow:
+        raise ValueError("history 非法")
+    history = HistoryWindow(history.start, history.end)
+    groups = batch_cninfo_symbol_groups(symbols, batch_size=batch_size)
+    start_text = _date_text(history.start)
+    end_text = _date_text(history.end)
+    requests = tuple(
+        sorted(
+            (
+                CninfoRequestSpec.create(
+                    parameters={
+                        "symbols": ",".join(group),
+                        "start_date": start_text,
+                        "end_date": end_text,
+                    }
+                )
+                for group in groups
+            ),
+            key=lambda item: item.request_id,
+        )
+    )
+    return CninfoRequestBatch(
+        schema_version="m3-g1-cninfo-request-batch-v1",
+        phase="HISTORY",
+        requests=requests,
+        batch_sha256=_cninfo_batch_hash(requests),
+    )
+
+
 def plan_history_requests(
     *,
     index_weight_batch: TushareRequestBatch,
@@ -498,11 +831,15 @@ def plan_history_requests(
         )
     )
     history_batch = _make_batch("HISTORY", requests)
+    cninfo_rights_batch = plan_cninfo_rights_requests(
+        symbols=normalized_symbols, history=history
+    )
     return G1RequestPlan(
-        schema_version="m3-g1-request-plan-v1",
+        schema_version="m3-g1-request-plan-v2",
         index_weight_batch=index_weight_batch,
         history_batch=history_batch,
-        plan_sha256=_plan_hash(index_weight_batch, history_batch),
+        cninfo_rights_batch=cninfo_rights_batch,
+        plan_sha256=_plan_hash(index_weight_batch, history_batch, cninfo_rights_batch),
     )
 
 
@@ -553,11 +890,11 @@ class TushareBatchExecutionResult:
 
 
 def _validate_max_new_requests(value: int | None) -> int | None:
-    """Reject non-strict-positive-int before any filesystem or API side effects."""
+    """Reject negative/non-int; allow 0 for exhausted shared HISTORY budget."""
     if value is None:
         return None
-    if type(value) is not int or value <= 0:
-        raise ValueError("max_new_requests \u5fc5\u987b\u662f\u4e25\u683c\u6b63\u6574\u6570")
+    if type(value) is not int or value < 0:
+        raise ValueError("max_new_requests \u5fc5\u987b\u662f\u975e\u8d1f\u6574\u6570")
     return value
 
 
@@ -1453,12 +1790,98 @@ def _batch_hash(phase: str, requests: Sequence[TushareRequestSpec]) -> str:
     )
 
 
-def _plan_hash(weight: TushareRequestBatch, history: TushareRequestBatch) -> str:
+def _plan_hash(
+    weight: TushareRequestBatch,
+    history: TushareRequestBatch,
+    cninfo_rights: CninfoRequestBatch,
+) -> str:
     return _sha256(
         {
-            "schema_version": "m3-g1-request-plan-v1",
+            "schema_version": "m3-g1-request-plan-v2",
             "index_weight_batch_sha256": weight.batch_sha256,
             "history_batch_sha256": history.batch_sha256,
+            "cninfo_rights_batch_sha256": cninfo_rights.batch_sha256,
+        }
+    )
+
+
+def _cninfo_request_id(parameters: tuple[tuple[str, str], ...]) -> str:
+    return _sha256(
+        {
+            "source": CNINFO_SOURCE,
+            "endpoint": CNINFO_ENDPOINT,
+            "adapter": CNINFO_ADAPTER,
+            "parameters": parameters,
+        }
+    )
+
+
+def _cninfo_batch_hash(requests: Sequence[CninfoRequestSpec]) -> str:
+    return _sha256(
+        {
+            "schema_version": "m3-g1-cninfo-request-batch-v1",
+            "phase": "HISTORY",
+            "request_ids": [value.request_id for value in requests],
+        }
+    )
+
+
+def _validate_cninfo_parameters(parameters: tuple[tuple[str, str], ...]) -> None:
+    if type(parameters) is not tuple or parameters != tuple(sorted(parameters)):
+        raise ValueError("cninfo parameters 必须排序")
+    values = dict(parameters)
+    if set(values) != {"symbols", "start_date", "end_date"}:
+        raise ValueError("cninfo parameters 字段集合非法")
+    symbols = values["symbols"]
+    start = values["start_date"]
+    end = values["end_date"]
+    if type(symbols) is not str or not symbols:
+        raise ValueError("cninfo symbols 非法")
+    parts = symbols.split(",")
+    if not parts or any(not part for part in parts):
+        raise ValueError("cninfo symbols 非法")
+    if len(parts) != len(set(parts)):
+        raise ValueError("cninfo symbols 必须唯一")
+    if parts != sorted(parts):
+        raise ValueError("cninfo symbols 必须排序")
+    if not (1 <= len(parts) <= 50):
+        raise ValueError("cninfo symbols 批次大小非法")
+    for part in parts:
+        if len(part) != 6 or not part.isdigit():
+            raise ValueError("cninfo symbol 非法")
+    for label, value in (("start_date", start), ("end_date", end)):
+        if type(value) is not str or len(value) != 8 or not value.isdigit():
+            raise ValueError(f"cninfo {label} 非法")
+    if start > end:
+        raise ValueError("cninfo 日期范围非法")
+
+
+def cninfo_response_content_sha256(frame: pl.DataFrame) -> str:
+    if tuple(frame.columns) != CNINFO_STOCK_ALLOTMENT_FIELDS:
+        raise M3BackfillError("CNINFO_RESPONSE_COLUMNS_INVALID")
+    rows: list[list[Any]] = []
+    for row in frame.iter_rows(named=True):
+        rows.append([_canonical_scalar(row[name]) for name in CNINFO_STOCK_ALLOTMENT_FIELDS])
+    return _sha256({"columns": list(CNINFO_STOCK_ALLOTMENT_FIELDS), "rows": rows})
+
+
+def _cninfo_stable_response_hash(receipt: CninfoRequestReceipt) -> str:
+    return _cninfo_stable_response_hash_values(asdict(receipt))
+
+
+def _cninfo_stable_response_hash_values(values: Mapping[str, Any]) -> str:
+    return _sha256(
+        {
+            "request_id": values["request_id"],
+            "endpoint": values["endpoint"],
+            "adapter": values["adapter"],
+            "parameters_sha256": values["parameters_sha256"],
+            "response_content_sha256": values["response_content_sha256"],
+            "resultcode": values["resultcode"],
+            "count": values["count"],
+            "total": values["total"],
+            "row_count": values["row_count"],
+            "columns": values["columns"],
         }
     )
 
@@ -1539,3 +1962,628 @@ def _validate_index_code(value: str) -> None:
 def _fault_point(name: str) -> None:
     """Private monkeypatch seam used only by deterministic crash tests."""
     del name
+
+def execute_cninfo_batch(
+    *,
+    batch: CninfoRequestBatch,
+    connector: CninfoConnector,
+    raw_store: RawStore,
+    journal_root: Path,
+    row_limit: int,
+    request_rate_per_minute: int,
+    max_attempts: int,
+    retry_base_seconds: float,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    classify_error: Callable[[BaseException], str],
+    max_new_requests: int | None = None,
+) -> CninfoBatchExecutionResult:
+    bound = _validate_max_new_requests(max_new_requests)
+    if not isinstance(batch, CninfoRequestBatch):
+        raise ValueError("batch 类型非法")
+    CninfoRequestBatch(
+        batch.schema_version, batch.phase, batch.requests, batch.batch_sha256
+    )
+    if type(connector) is not CninfoConnector:
+        raise ValueError("connector 必须是 CninfoConnector")
+    if type(row_limit) is not int or row_limit <= 0:
+        raise ValueError("row_limit 必须是正整数")
+    if type(request_rate_per_minute) is not int or request_rate_per_minute <= 0:
+        raise ValueError("request_rate_per_minute 必须是正整数")
+    if type(max_attempts) is not int or max_attempts <= 0:
+        raise ValueError("max_attempts 必须是正整数")
+    if type(retry_base_seconds) not in {int, float} or not math.isfinite(
+        float(retry_base_seconds)
+    ) or retry_base_seconds < 0:
+        raise ValueError("retry_base_seconds 必须是非负 finite 数")
+    _preflight_controlled_root(raw_store.root)
+    _preflight_controlled_root(journal_root)
+    try:
+        journal_root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        raise M3BackfillError("JOURNAL_ROOT_CREATE_FAILED") from None
+    _preflight_controlled_root(journal_root)
+    try:
+        with hold_journal_writer_lock(journal_root=journal_root):
+            return _execute_cninfo_batch_locked(
+                batch=batch,
+                connector=connector,
+                raw_store=raw_store,
+                journal_root=journal_root,
+                row_limit=row_limit,
+                request_rate_per_minute=request_rate_per_minute,
+                max_attempts=max_attempts,
+                retry_base_seconds=retry_base_seconds,
+                monotonic=monotonic,
+                sleep=sleep,
+                classify_error=classify_error,
+                max_new_requests=bound,
+            )
+    except M3JournalLockError as exc:
+        raise _map_journal_lock_error(exc) from None
+
+
+def _execute_cninfo_batch_locked(
+    *,
+    batch: CninfoRequestBatch,
+    connector: CninfoConnector,
+    raw_store: RawStore,
+    journal_root: Path,
+    row_limit: int,
+    request_rate_per_minute: int,
+    max_attempts: int,
+    retry_base_seconds: float,
+    monotonic: Callable[[], float],
+    sleep: Callable[[float], None],
+    classify_error: Callable[[BaseException], str],
+    max_new_requests: int | None,
+) -> CninfoBatchExecutionResult:
+    receipts: list[CninfoRequestReceipt] = []
+    new_requests_committed = 0
+    last_attempt_started: float | None = None
+    interval = 60.0 / request_rate_per_minute
+    policy = EndpointPolicy(row_limit, "ALLOW")
+    for spec in batch.requests:
+        request_dir = journal_root / spec.request_id
+        _reject_path_symlinks(journal_root, request_dir)
+        budget_exhausted = (
+            max_new_requests is not None and new_requests_committed >= max_new_requests
+        )
+        dir_exists = _request_dir_exists(request_dir)
+        if not dir_exists:
+            if budget_exhausted:
+                continue
+            try:
+                request_dir.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                raise M3BackfillError("JOURNAL_REQUEST_DIR_CREATE_FAILED") from None
+            _reject_path_symlinks(journal_root, request_dir)
+        _validate_journal_files(request_dir)
+        intent_path = request_dir / "intent.json"
+        candidate_path = request_dir / "candidate.json"
+        receipt_path = request_dir / "receipt.json"
+        if receipt_path.exists():
+            if not intent_path.exists() or not candidate_path.exists():
+                raise M3BackfillError("COMMITTED_JOURNAL_INCOMPLETE")
+            _verify_existing_cninfo_intent(intent_path, spec)
+            committed_candidate = _recover_cninfo_candidate(
+                spec=spec,
+                candidate_path=candidate_path,
+                raw_store=raw_store,
+                policy=policy,
+                expected_mode="RECOVER",
+                expected_candidate_exists=True,
+            )
+            assert committed_candidate is not None
+            verified = verify_cninfo_receipt(
+                spec=spec,
+                receipt_path=receipt_path,
+                raw_root=raw_store.root,
+                journal_root=journal_root,
+                policy=policy,
+            )
+            if verified.receipt != _cninfo_receipt_from_candidate(spec, committed_candidate):
+                raise M3BackfillError("COMMITTED_JOURNAL_CONFLICT")
+            receipts.append(verified.receipt)
+            continue
+        preflight = _preflight_cninfo_no_receipt(
+            spec=spec,
+            intent_path=intent_path,
+            candidate_path=candidate_path,
+            raw_store=raw_store,
+        )
+        if budget_exhausted:
+            continue
+        if not preflight.intent_exists:
+            _ensure_cninfo_intent(intent_path, spec)
+        candidate = _recover_cninfo_candidate(
+            spec=spec,
+            candidate_path=candidate_path,
+            raw_store=raw_store,
+            policy=policy,
+            expected_mode=preflight.mode,
+            expected_candidate_exists=preflight.candidate_exists,
+        )
+        if (preflight.mode == "NETWORK") != (candidate is None):
+            raise M3BackfillError("REQUEST_EVIDENCE_CLOSURE_CHANGED")
+        if candidate is None:
+            result: CninfoAllotmentRawResult | None = None
+            for attempt in range(1, max_attempts + 1):
+                if last_attempt_started is not None:
+                    now = monotonic()
+                    rate_deadline = last_attempt_started + interval
+                    if now < rate_deadline:
+                        sleep(rate_deadline - now)
+                attempt_started = monotonic()
+                last_attempt_started = attempt_started
+                try:
+                    params = dict(spec.parameters)
+                    result = connector.fetch_stock_allotment_raw(
+                        symbols=params["symbols"],
+                        start_date=params["start_date"],
+                        end_date=params["end_date"],
+                    )
+                    break
+                except CninfoConnectorError as exc:
+                    category = _cninfo_error_category(exc)
+                    if category not in {"NETWORK", "RATE_LIMIT", "TRANSIENT_SERVER"}:
+                        raise M3BackfillError("CNINFO_REQUEST_PERMANENT_FAILURE") from None
+                    if attempt == max_attempts:
+                        raise M3BackfillError("CNINFO_REQUEST_ATTEMPTS_EXHAUSTED") from None
+                    failure_time = monotonic()
+                    rate_deadline = attempt_started + interval
+                    backoff_deadline = failure_time + float(retry_base_seconds) * 2 ** (
+                        attempt - 1
+                    )
+                    now = monotonic()
+                    deadline = max(rate_deadline, backoff_deadline)
+                    if now < deadline:
+                        sleep(deadline - now)
+                    last_attempt_started = deadline - interval
+                except BaseException as exc:
+                    category = _safe_classify(classify_error, exc)
+                    if category not in {"NETWORK", "RATE_LIMIT", "TRANSIENT_SERVER"}:
+                        raise M3BackfillError("CNINFO_REQUEST_PERMANENT_FAILURE") from None
+                    if attempt == max_attempts:
+                        raise M3BackfillError("CNINFO_REQUEST_ATTEMPTS_EXHAUSTED") from None
+                    failure_time = monotonic()
+                    rate_deadline = attempt_started + interval
+                    backoff_deadline = failure_time + float(retry_base_seconds) * 2 ** (
+                        attempt - 1
+                    )
+                    now = monotonic()
+                    deadline = max(rate_deadline, backoff_deadline)
+                    if now < deadline:
+                        sleep(deadline - now)
+                    last_attempt_started = deadline - interval
+            assert result is not None
+            _validate_cninfo_frame(result, policy)
+            try:
+                snapshot = raw_store.write_request(
+                    source=CNINFO_SOURCE,
+                    table=CNINFO_ENDPOINT,
+                    request_id=spec.request_id,
+                    frame=result.frame,
+                    parameters=dict(spec.parameters),
+                    after_data_write=lambda: _fault_point("after_data"),
+                    after_metadata_write=lambda: _fault_point("after_metadata"),
+                )
+            except (OSError, ValueError):
+                raise M3BackfillError("RAW_WRITE_CONFLICT") from None
+            candidate = _cninfo_candidate_from_snapshot(
+                spec, snapshot, result, raw_store.root
+            )
+            _write_dataclass_once(candidate_path, candidate)
+            _fault_point("after_candidate")
+        receipt = _cninfo_receipt_from_candidate(spec, candidate)
+        _fault_point("before_receipt")
+        _write_dataclass_once(receipt_path, receipt)
+        receipts.append(
+            verify_cninfo_receipt(
+                spec=spec,
+                receipt_path=receipt_path,
+                raw_root=raw_store.root,
+                journal_root=journal_root,
+                policy=policy,
+            ).receipt
+        )
+        new_requests_committed += 1
+    return CninfoBatchExecutionResult(
+        receipts=tuple(receipts), new_requests_committed=new_requests_committed
+    )
+
+
+def verify_cninfo_receipt(
+    *,
+    spec: CninfoRequestSpec,
+    receipt_path: Path,
+    raw_root: Path,
+    journal_root: Path,
+    policy: EndpointPolicy,
+) -> VerifiedCninfoRawResponse:
+    expected_path = journal_root / spec.request_id / "receipt.json"
+    if receipt_path != expected_path:
+        raise M3BackfillError("RECEIPT_PATH_INVALID")
+    _reject_path_symlinks(journal_root, receipt_path)
+    payload = _read_bytes(receipt_path, "RECEIPT_INVALID")
+    try:
+        parsed = _strict_json(payload)
+        _exact_keys(parsed, CninfoRequestReceipt)
+        receipt = CninfoRequestReceipt(
+            parsed["schema_version"],
+            parsed["request_id"],
+            parsed["source"],
+            parsed["endpoint"],
+            parsed["adapter"],
+            _parse_parameters(parsed["parameters"]),
+            parsed["parameters_sha256"],
+            parsed["raw_snapshot_id"],
+            parsed["raw_data_path"],
+            parsed["raw_metadata_path"],
+            parsed["raw_file_sha256"],
+            parsed["raw_metadata_sha256"],
+            parsed["response_content_sha256"],
+            parsed["stable_response_sha256"],
+            parsed["resultcode"],
+            parsed["count"],
+            parsed["total"],
+            parsed["raw_size_bytes"],
+            parsed["row_count"],
+            _parse_columns(parsed["columns"]),
+        )
+    except (TypeError, ValueError, KeyError):
+        raise M3BackfillError("RECEIPT_INVALID") from None
+    if (
+        receipt.request_id != spec.request_id
+        or receipt.endpoint != spec.endpoint
+        or receipt.adapter != spec.adapter
+        or receipt.parameters != spec.parameters
+    ):
+        raise M3BackfillError("RECEIPT_SPEC_MISMATCH")
+    data_path = _resolve_relative(raw_root, receipt.raw_data_path)
+    metadata_path = _resolve_relative(raw_root, receipt.raw_metadata_path)
+    try:
+        snapshot, frame = RawStore(raw_root).verify_request_bundle(
+            source=CNINFO_SOURCE,
+            table=CNINFO_ENDPOINT,
+            request_id=spec.request_id,
+            parameters=dict(spec.parameters),
+        )
+    except (OSError, ValueError):
+        raise M3BackfillError("RECEIPT_RAW_INVALID") from None
+    if data_path != snapshot.data_path or metadata_path != snapshot.metadata_path:
+        raise M3BackfillError("RECEIPT_RAW_PATH_MISMATCH")
+    normalized = frame
+    if frame.height == 0 and tuple(frame.columns) != CNINFO_STOCK_ALLOTMENT_FIELDS:
+        normalized = empty_cninfo_allotment_frame()
+    result = CninfoAllotmentRawResult(
+        frame=normalized,
+        resultcode=receipt.resultcode,
+        resultmsg="success",
+        count=receipt.count,
+        total=receipt.total,
+    )
+    _validate_cninfo_frame(result, policy)
+    expected_candidate = _cninfo_candidate_from_snapshot(
+        spec, snapshot, result, raw_root
+    )
+    expected_receipt = _cninfo_receipt_from_candidate(spec, expected_candidate)
+    content_hash = cninfo_response_content_sha256(normalized)
+    if (
+        receipt.raw_snapshot_id != snapshot.snapshot_id
+        or receipt.raw_file_sha256 != snapshot.checksum_sha256
+        or receipt.raw_metadata_sha256 != snapshot.metadata_sha256
+        or receipt.raw_size_bytes != snapshot.size_bytes
+        or receipt.row_count != snapshot.row_count
+        or receipt.columns != snapshot.columns
+        or receipt.response_content_sha256 != content_hash
+        or receipt.resultcode != expected_receipt.resultcode
+        or receipt.count != expected_receipt.count
+        or receipt.total != expected_receipt.total
+        or receipt.stable_response_sha256 != expected_receipt.stable_response_sha256
+    ):
+        raise M3BackfillError("RECEIPT_RAW_EVIDENCE_MISMATCH")
+    if receipt != expected_receipt:
+        raise M3BackfillError("RECEIPT_RAW_EVIDENCE_MISMATCH")
+    try:
+        return VerifiedCninfoRawResponse(
+            spec=spec,
+            receipt=receipt,
+            receipt_sha256=hashlib.sha256(payload).hexdigest(),
+            frame=normalized,
+            resultcode=receipt.resultcode,
+            count=receipt.count,
+            total=receipt.total,
+        )
+    except ValueError:
+        raise M3BackfillError("RECEIPT_CANONICAL_BYTES_MISMATCH") from None
+
+
+def _validate_cninfo_frame(
+    result: CninfoAllotmentRawResult, policy: EndpointPolicy
+) -> None:
+    if tuple(result.frame.columns) != CNINFO_STOCK_ALLOTMENT_FIELDS:
+        raise M3BackfillError("CNINFO_RESPONSE_COLUMNS_INVALID")
+    if result.frame.height == 0 and policy.empty_response == "REJECT":
+        raise M3BackfillError("CNINFO_EMPTY_RESPONSE_REJECTED")
+    if result.frame.height >= policy.row_limit:
+        raise M3BackfillError("CNINFO_RESPONSE_ROW_LIMIT")
+    if (
+        result.resultcode != 200
+        or result.resultmsg != "success"
+        or result.count != result.total
+        or result.count != result.frame.height
+    ):
+        raise M3BackfillError("CNINFO_RESPONSE_COUNT_MISMATCH")
+
+
+def _cninfo_error_category(exc: CninfoConnectorError) -> str:
+    if exc.code in {"CNINFO_NETWORK_FAILED", "CNINFO_DEPENDENCY_MISSING"}:
+        return "NETWORK"
+    if exc.code in {
+        "CNINFO_RESPONSE_SCHEMA_INVALID",
+        "CNINFO_RESPONSE_SCOPE_INVALID",
+        "CNINFO_RESPONSE_DUPLICATE_SUBID",
+        "CNINFO_RESPONSE_ROW_LIMIT",
+        "CNINFO_REQUEST_PARAMS_INVALID",
+        "CNINFO_ENCKEY_INVALID",
+    }:
+        return "PERMANENT"
+    return "UNKNOWN"
+
+
+def _ensure_cninfo_intent(path: Path, spec: CninfoRequestSpec) -> None:
+    intent = CninfoRequestIntentV1(
+        "m3-g1-cninfo-intent-v1",
+        spec.request_id,
+        spec.source,
+        spec.endpoint,
+        spec.adapter,
+        spec.parameters,
+        _parameters_hash(spec.parameters),
+    )
+    if path.exists():
+        _verify_existing_cninfo_intent(path, spec)
+    else:
+        _write_dataclass_once(path, intent)
+
+
+def _verify_existing_cninfo_intent(path: Path, spec: CninfoRequestSpec) -> None:
+    try:
+        parsed = _strict_json(_read_bytes(path, "INTENT_INVALID"))
+        _exact_keys(parsed, CninfoRequestIntentV1)
+        existing = CninfoRequestIntentV1(
+            parsed["schema_version"],
+            parsed["request_id"],
+            parsed["source"],
+            parsed["endpoint"],
+            parsed["adapter"],
+            _parse_parameters(parsed["parameters"]),
+            parsed["parameters_sha256"],
+        )
+    except (TypeError, ValueError, KeyError):
+        raise M3BackfillError("INTENT_INVALID") from None
+    expected = CninfoRequestIntentV1(
+        "m3-g1-cninfo-intent-v1",
+        spec.request_id,
+        spec.source,
+        spec.endpoint,
+        spec.adapter,
+        spec.parameters,
+        _parameters_hash(spec.parameters),
+    )
+    if existing != expected:
+        raise M3BackfillError("INTENT_SPEC_MISMATCH")
+
+
+def _preflight_cninfo_no_receipt(
+    *,
+    spec: CninfoRequestSpec,
+    intent_path: Path,
+    candidate_path: Path,
+    raw_store: RawStore,
+) -> _NoReceiptPreflight:
+    try:
+        raw_state = raw_store.inspect_request_state(
+            source=CNINFO_SOURCE, table=CNINFO_ENDPOINT, request_id=spec.request_id
+        )
+        intent_exists = _regular_file_exists(intent_path)
+        candidate_exists = _regular_file_exists(candidate_path)
+    except (OSError, ValueError):
+        raise M3BackfillError("RAW_ORPHAN_OR_INVALID_LAYOUT") from None
+    if candidate_exists and (not intent_exists or raw_state != "COMPLETE"):
+        raise M3BackfillError("REQUEST_EVIDENCE_CLOSURE_INVALID")
+    if raw_state == "COMPLETE" and not intent_exists:
+        raise M3BackfillError("REQUEST_EVIDENCE_CLOSURE_INVALID")
+    if intent_exists:
+        _verify_existing_cninfo_intent(intent_path, spec)
+    mode: Literal["NETWORK", "RECOVER"] = (
+        "RECOVER" if raw_state == "COMPLETE" else "NETWORK"
+    )
+    return _NoReceiptPreflight(raw_state, intent_exists, candidate_exists, mode)
+
+
+def _recover_cninfo_candidate(
+    *,
+    spec: CninfoRequestSpec,
+    candidate_path: Path,
+    raw_store: RawStore,
+    policy: EndpointPolicy,
+    expected_mode: Literal["NETWORK", "RECOVER"],
+    expected_candidate_exists: bool,
+) -> CninfoRawCandidateV1 | None:
+    candidate_exists = _regular_file_exists(candidate_path)
+    if candidate_exists != expected_candidate_exists:
+        raise M3BackfillError("REQUEST_EVIDENCE_CLOSURE_CHANGED")
+    try:
+        state = raw_store.inspect_request_state(
+            source=CNINFO_SOURCE, table=CNINFO_ENDPOINT, request_id=spec.request_id
+        )
+    except (OSError, ValueError):
+        raise M3BackfillError("RAW_ORPHAN_OR_INVALID_LAYOUT") from None
+    if expected_mode == "NETWORK":
+        if candidate_exists or state == "COMPLETE":
+            raise M3BackfillError("REQUEST_EVIDENCE_CLOSURE_CHANGED")
+        return None
+    if state != "COMPLETE":
+        raise M3BackfillError("REQUEST_EVIDENCE_CLOSURE_CHANGED")
+    if candidate_exists:
+        try:
+            parsed = _strict_json(_read_bytes(candidate_path, "CANDIDATE_INVALID"))
+            _exact_keys(parsed, CninfoRawCandidateV1)
+            candidate = CninfoRawCandidateV1(
+                parsed["schema_version"],
+                parsed["request_id"],
+                parsed["source"],
+                parsed["endpoint"],
+                parsed["adapter"],
+                parsed["parameters_sha256"],
+                parsed["raw_snapshot_id"],
+                parsed["raw_data_path"],
+                parsed["raw_metadata_path"],
+                parsed["raw_file_sha256"],
+                parsed["raw_metadata_sha256"],
+                parsed["response_content_sha256"],
+                parsed["resultcode"],
+                parsed["count"],
+                parsed["total"],
+                parsed["raw_size_bytes"],
+                parsed["row_count"],
+                _parse_columns(parsed["columns"]),
+            )
+        except (TypeError, ValueError, KeyError):
+            raise M3BackfillError("CANDIDATE_INVALID") from None
+        return _verify_cninfo_candidate(spec, candidate, raw_store, policy)
+    try:
+        snapshot, frame = raw_store.verify_request_bundle(
+            source=CNINFO_SOURCE,
+            table=CNINFO_ENDPOINT,
+            request_id=spec.request_id,
+            parameters=dict(spec.parameters),
+        )
+        normalized = frame
+        if frame.height == 0 and tuple(frame.columns) != CNINFO_STOCK_ALLOTMENT_FIELDS:
+            normalized = empty_cninfo_allotment_frame()
+        result = CninfoAllotmentRawResult(
+            frame=normalized,
+            resultcode=200,
+            resultmsg="success",
+            count=normalized.height,
+            total=normalized.height,
+        )
+        _validate_cninfo_frame(result, policy)
+        candidate = _cninfo_candidate_from_snapshot(
+            spec, snapshot, result, raw_store.root
+        )
+        current_state = raw_store.inspect_request_state(
+            source=CNINFO_SOURCE, table=CNINFO_ENDPOINT, request_id=spec.request_id
+        )
+        if current_state != "COMPLETE":
+            raise M3BackfillError("REQUEST_EVIDENCE_CLOSURE_CHANGED")
+        _verify_cninfo_candidate(spec, candidate, raw_store, policy)
+        if _regular_file_exists(candidate_path):
+            raise M3BackfillError("REQUEST_EVIDENCE_CLOSURE_CHANGED")
+        _write_dataclass_once(candidate_path, candidate)
+        return candidate
+    except M3BackfillError:
+        raise
+    except (OSError, ValueError):
+        raise M3BackfillError("RAW_RECOVERY_INVALID") from None
+
+
+def _verify_cninfo_candidate(
+    spec: CninfoRequestSpec,
+    candidate: CninfoRawCandidateV1,
+    raw_store: RawStore,
+    policy: EndpointPolicy,
+) -> CninfoRawCandidateV1:
+    if (
+        candidate.request_id != spec.request_id
+        or candidate.endpoint != spec.endpoint
+        or candidate.adapter != spec.adapter
+        or candidate.parameters_sha256 != _parameters_hash(spec.parameters)
+    ):
+        raise M3BackfillError("CANDIDATE_SPEC_MISMATCH")
+    try:
+        snapshot, frame = raw_store.verify_request_bundle(
+            source=CNINFO_SOURCE,
+            table=CNINFO_ENDPOINT,
+            request_id=spec.request_id,
+            parameters=dict(spec.parameters),
+        )
+    except (OSError, ValueError):
+        raise M3BackfillError("CANDIDATE_RAW_INVALID") from None
+    normalized = frame
+    if frame.height == 0 and tuple(frame.columns) != CNINFO_STOCK_ALLOTMENT_FIELDS:
+        normalized = empty_cninfo_allotment_frame()
+    result = CninfoAllotmentRawResult(
+        frame=normalized,
+        resultcode=candidate.resultcode,
+        resultmsg="success",
+        count=candidate.count,
+        total=candidate.total,
+    )
+    _validate_cninfo_frame(result, policy)
+    expected = _cninfo_candidate_from_snapshot(
+        spec, snapshot, result, raw_store.root
+    )
+    if candidate != expected:
+        raise M3BackfillError("CANDIDATE_RAW_EVIDENCE_MISMATCH")
+    return candidate
+
+
+def _cninfo_candidate_from_snapshot(
+    spec: CninfoRequestSpec,
+    snapshot: RequestRawSnapshot,
+    result: CninfoAllotmentRawResult,
+    raw_root: Path,
+) -> CninfoRawCandidateV1:
+    return CninfoRawCandidateV1(
+        "m3-g1-cninfo-candidate-v1",
+        spec.request_id,
+        "cninfo",
+        "stock_allotment",
+        "akshare_cninfo_p_stock2232_v1",
+        _parameters_hash(spec.parameters),
+        snapshot.snapshot_id,
+        snapshot.data_path.relative_to(raw_root).as_posix(),
+        snapshot.metadata_path.relative_to(raw_root).as_posix(),
+        snapshot.checksum_sha256,
+        snapshot.metadata_sha256,
+        cninfo_response_content_sha256(result.frame),
+        result.resultcode,
+        result.count,
+        result.total,
+        snapshot.size_bytes,
+        snapshot.row_count,
+        snapshot.columns,
+    )
+
+
+def _cninfo_receipt_from_candidate(
+    spec: CninfoRequestSpec, candidate: CninfoRawCandidateV1
+) -> CninfoRequestReceipt:
+    values: dict[str, Any] = {
+        "schema_version": "m3-g1-cninfo-receipt-v1",
+        "request_id": spec.request_id,
+        "source": CNINFO_SOURCE,
+        "endpoint": CNINFO_ENDPOINT,
+        "adapter": CNINFO_ADAPTER,
+        "parameters": spec.parameters,
+        "parameters_sha256": candidate.parameters_sha256,
+        "raw_snapshot_id": candidate.raw_snapshot_id,
+        "raw_data_path": candidate.raw_data_path,
+        "raw_metadata_path": candidate.raw_metadata_path,
+        "raw_file_sha256": candidate.raw_file_sha256,
+        "raw_metadata_sha256": candidate.raw_metadata_sha256,
+        "response_content_sha256": candidate.response_content_sha256,
+        "stable_response_sha256": "0" * 64,
+        "resultcode": candidate.resultcode,
+        "count": candidate.count,
+        "total": candidate.total,
+        "raw_size_bytes": candidate.raw_size_bytes,
+        "row_count": candidate.row_count,
+        "columns": candidate.columns,
+    }
+    values["stable_response_sha256"] = _cninfo_stable_response_hash_values(values)
+    return CninfoRequestReceipt(**values)

@@ -14,9 +14,11 @@ from typing import Any
 
 import polars as pl
 
+from quant.data.connectors.cninfo import CNINFO_SOURCE
 from quant.data.m3_backfill import (
     TUSHARE_FIELDS,
     HistoryWindow,
+    VerifiedCninfoRawResponse,
     VerifiedRawResponse,
 )
 from quant.data.m3_identity import clean_table_content_sha256
@@ -33,15 +35,21 @@ from quant.domain import (
 )
 
 G1_PRICE_LIMIT_METHOD_VERSION = "tushare_stk_limit_suspension_aware_v2"
-G1_CORPORATE_ACTION_SELECTION_VERSION = "tushare_dividend_implemented_latest_v2"
-G1_CORPORATE_ACTION_RECONCILIATION_VERSION = "tushare_factor_daily_preclose_v4"
+G1_CORPORATE_ACTION_SELECTION_VERSION = (
+    "tushare_dividend_cninfo_rights_implemented_v3"
+)
+G1_CORPORATE_ACTION_RECONCILIATION_VERSION = "tushare_factor_daily_preclose_v5"
 
 _SOURCE = "tushare"
+_CNINFO_SOURCE = CNINFO_SOURCE
+_LEDGER_SOURCES = frozenset({_SOURCE, _CNINFO_SOURCE})
 _A_SHARE = re.compile(r"^[0-9]{6}\.(?:SH|SZ)$")
 _DATE8 = re.compile(r"^[0-9]{8}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _DECIMAL = re.compile(r"^-?(?:0|[1-9]\d*)(?:\.\d+)?$")
 _DATE_MIN = dt.date.min
+_RIGHTS_SHARE_REL_TOL = 1e-6
+_RIGHTS_SHARE_ABS_TOL = 1e-6
 
 _ERROR_CODES = frozenset(
     {
@@ -81,11 +89,15 @@ _LEDGER_OUT = (
     "event_id",
     "symbol",
     "ex_date",
+    "action_type",
     "cash_per_share_gross",
     "stock_ratio",
+    "rights_price",
+    "rights_ratio",
     "record_date",
     "pay_date",
     "stock_list_date",
+    "vendor_record_id",
     "source",
     "source_snapshot_id",
 )
@@ -94,6 +106,7 @@ _EVIDENCE_OUT = (
     "economic_event_key_sha256",
     "candidate_id",
     "symbol",
+    "action_type",
     "end_date",
     "record_date",
     "ex_date",
@@ -101,8 +114,11 @@ _EVIDENCE_OUT = (
     "ann_date",
     "cash_per_share_gross",
     "stock_ratio",
+    "rights_price",
+    "rights_ratio",
     "pay_date",
     "stock_list_date",
+    "vendor_record_id",
     "candidate_rank",
     "candidate_count",
     "raw_row_count",
@@ -127,6 +143,8 @@ _RECON_OUT = (
     "event_ids_sha256",
     "cash_per_share_gross",
     "stock_ratio",
+    "rights_ratio",
+    "rights_subscription_cash_per_share",
     "declared_dividend_factor_ratio",
     "market_reference_factor_ratio",
     "actual_factor_ratio",
@@ -580,6 +598,7 @@ def select_g1_corporate_actions(
                         "economic_event_key_sha256": event_key,
                         "candidate_id": candidate_id,
                         "symbol": symbol,
+                        "action_type": "DIVIDEND_DISTRIBUTION",
                         "end_date": end_date,
                         "record_date": record_date,
                         "ex_date": ex_date,
@@ -587,8 +606,11 @@ def select_g1_corporate_actions(
                         "ann_date": row["ann_date"],
                         "cash_per_share_gross": row["cash"],
                         "stock_ratio": row["stock"],
+                        "rights_price": None,
+                        "rights_ratio": 0.0,
                         "pay_date": row["pay_date"],
                         "stock_list_date": row["stock_list_date"],
+                        "vendor_record_id": None,
                         "candidate_rank": index,
                         "candidate_count": candidate_count,
                         "raw_row_count": item["raw_row_count"],
@@ -615,12 +637,246 @@ def select_g1_corporate_actions(
                     "event_id": event_id,
                     "symbol": symbol,
                     "ex_date": ex_date,
+                    "action_type": "DIVIDEND_DISTRIBUTION",
                     "cash_per_share_gross": selected_row["cash"],
                     "stock_ratio": selected_row["stock"],
+                    "rights_price": None,
+                    "rights_ratio": 0.0,
                     "record_date": record_date,
                     "pay_date": selected_row["pay_date"],
                     "stock_list_date": selected_row["stock_list_date"],
+                    "vendor_record_id": None,
                     "source": _SOURCE,
+                    "source_snapshot_id": snapshot,
+                }
+            )
+
+        ledger = _empty_or_frame(ledger_rows, _LEDGER_OUT, _ledger_schema())
+        evidence = _empty_or_frame(evidence_rows, _EVIDENCE_OUT, _evidence_schema())
+        ledger = ledger.sort(["symbol", "ex_date", "event_id"])
+        evidence = evidence.sort(
+            ["economic_event_key_sha256", "candidate_rank", "candidate_id"]
+        )
+        ledger = _validate_schema(
+            ledger, CorporateActionLedgerSchema, "G1_CORPORATE_ACTION_SCHEMA_INVALID"
+        )
+        evidence = _validate_schema(
+            evidence,
+            CorporateActionSelectionEvidenceSchema,
+            "G1_CORPORATE_ACTION_SCHEMA_INVALID",
+        )
+        ledger_sha = clean_table_content_sha256(
+            table_name="corporate_action_ledger", frame=ledger
+        )
+        evidence_sha = clean_table_content_sha256(
+            table_name="corporate_action_selection_evidence", frame=evidence
+        )
+        return CorporateActionSelectionResult(
+            ledger=ledger,
+            selection_evidence=evidence,
+            ledger_sha256=ledger_sha,
+            selection_evidence_sha256=evidence_sha,
+        )
+    except M3G1ExecutionFactError:
+        raise
+    except (pl.exceptions.PolarsError, TypeError, ValueError, OSError) as exc:
+        raise _sanitize(exc, "G1_CORPORATE_ACTION_EVENT_INVALID") from None
+
+
+def select_g1_cninfo_rights_actions(
+    *,
+    response: VerifiedCninfoRawResponse,
+    history: HistoryWindow,
+    symbols: Sequence[str],
+) -> CorporateActionSelectionResult:
+    """Select implemented A-share rights (配股) events from a CNINFO response.
+
+    Each verified CNINFO record already carries a stable ``SUBID``; unlike
+    Tushare dividend rows there is no multi-version candidate folding: one raw
+    row is one candidate. Duplicate ``SUBID`` or multiple distinct rights rows
+    resolving to the same ``(symbol, ex_date)`` fail closed rather than being
+    silently merged, since there is no vendor-provided ranking signal to break
+    the tie. Only successfully issued rights (actual/pre/post share counts
+    mutually consistent) enter the ledger; failed issuances are omitted.
+    """
+    try:
+        history = _consume_history(
+            history, code="G1_CORPORATE_ACTION_CALENDAR_INVALID"
+        )
+        verified = _consume_cninfo_verified(response)
+        code_to_symbol = _build_cninfo_symbol_map(symbols)
+        request_id = verified.spec.request_id
+        snapshot = verified.receipt.raw_snapshot_id
+
+        seen_subids: set[str] = set()
+        by_key: dict[tuple[str, dt.date], dict[str, Any]] = {}
+        for raw in verified.frame.iter_rows(named=True):
+            seccode = raw.get("SECCODE")
+            if type(seccode) is not str or seccode not in code_to_symbol:
+                raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
+            symbol = code_to_symbol[seccode]
+
+            subid = _require_cninfo_subid(raw.get("SUBID"))
+            if subid in seen_subids:
+                raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
+            seen_subids.add(subid)
+
+            f001v = raw.get("F001V")
+            f002v = raw.get("F002V")
+            is_a_share = (type(f001v) is str and f001v == "001001") or (
+                type(f002v) is str and "A股" in f002v
+            )
+            if not is_a_share:
+                raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
+
+            declare_date = _parse_optional_date8(
+                raw.get("DECLAREDATE"), allow_null=False
+            )
+            record_date = _parse_optional_date8(raw.get("F011D"), allow_null=False)
+            ex_date = _parse_optional_date8(raw.get("F012D"), allow_null=False)
+            payment_start = _parse_optional_date8(raw.get("F013D"), allow_null=False)
+            payment_end = _parse_optional_date8(raw.get("F014D"), allow_null=False)
+            result_ann_date = _parse_optional_date8(raw.get("F052D"), allow_null=False)
+            list_date = _parse_optional_date8(raw.get("F038D"), allow_null=False)
+            assert (
+                declare_date is not None
+                and record_date is not None
+                and ex_date is not None
+                and payment_start is not None
+                and payment_end is not None
+                and result_ann_date is not None
+                and list_date is not None
+            )
+
+            rights_price = _parse_strict_scalar(raw.get("F005N"), allow_null=False)
+            f004n = _parse_strict_scalar(raw.get("F004N"), allow_null=False)
+            actual_shares = _parse_strict_scalar(raw.get("F017N"), allow_null=False)
+            pre_shares = _parse_strict_scalar(raw.get("F024N"), allow_null=False)
+            post_shares = _parse_strict_scalar(raw.get("F025N"), allow_null=False)
+            assert (
+                rights_price is not None
+                and f004n is not None
+                and actual_shares is not None
+                and pre_shares is not None
+                and post_shares is not None
+            )
+            if rights_price <= 0:
+                raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
+            if not math.isfinite(f004n) or f004n <= 0:
+                raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
+            rights_ratio = f004n / 10.0
+
+            if ex_date < history.start or ex_date > history.end:
+                # Out-of-window: omit, mirroring dividend selection semantics.
+                continue
+
+            if record_date >= ex_date:
+                raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
+            if declare_date > record_date:
+                raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
+            if payment_start > payment_end or payment_end >= ex_date:
+                raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
+            if result_ann_date > ex_date:
+                raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
+            if list_date < ex_date:
+                raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
+
+            if actual_shares <= 0 or pre_shares <= 0 or post_shares <= 0:
+                # Failed/incomplete issuance: only successful rights are accepted.
+                continue
+            if post_shares <= pre_shares:
+                continue
+            if not math.isclose(
+                post_shares - pre_shares,
+                actual_shares,
+                rel_tol=_RIGHTS_SHARE_REL_TOL,
+                abs_tol=_RIGHTS_SHARE_ABS_TOL,
+            ):
+                continue
+
+            key = (symbol, ex_date)
+            if key in by_key:
+                # Multiple (possibly conflicting) rights rows for the same
+                # symbol/ex_date have no vendor ranking signal; fail closed.
+                raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
+            by_key[key] = {
+                "symbol": symbol,
+                "subid": subid,
+                "declare_date": declare_date,
+                "record_date": record_date,
+                "ex_date": ex_date,
+                "payment_start": payment_start,
+                "payment_end": payment_end,
+                "result_ann_date": result_ann_date,
+                "list_date": list_date,
+                "rights_price": rights_price,
+                "rights_ratio": rights_ratio,
+            }
+
+        ledger_rows: list[dict[str, Any]] = []
+        evidence_rows: list[dict[str, Any]] = []
+        for key in sorted(by_key):
+            item = by_key[key]
+            symbol = item["symbol"]
+            ex_date = item["ex_date"]
+            record_date = item["record_date"]
+            event_id = _rights_event_id_sha256(
+                symbol,
+                item["subid"],
+                record_date,
+                ex_date,
+                item["rights_price"],
+                item["rights_ratio"],
+            )
+            event_key = _rights_economic_event_key_sha256(
+                symbol, record_date, ex_date
+            )
+            candidate_id = _rights_candidate_id_sha256(
+                event_key, item["subid"], item["rights_price"], item["rights_ratio"]
+            )
+            ledger_rows.append(
+                {
+                    "event_id": event_id,
+                    "symbol": symbol,
+                    "ex_date": ex_date,
+                    "action_type": "RIGHTS",
+                    "cash_per_share_gross": 0.0,
+                    "stock_ratio": 0.0,
+                    "rights_price": item["rights_price"],
+                    "rights_ratio": item["rights_ratio"],
+                    "record_date": record_date,
+                    "pay_date": None,
+                    "stock_list_date": item["list_date"],
+                    "vendor_record_id": item["subid"],
+                    "source": _CNINFO_SOURCE,
+                    "source_snapshot_id": snapshot,
+                }
+            )
+            evidence_rows.append(
+                {
+                    "economic_event_key_sha256": event_key,
+                    "candidate_id": candidate_id,
+                    "symbol": symbol,
+                    "action_type": "RIGHTS",
+                    "end_date": item["declare_date"],
+                    "record_date": record_date,
+                    "ex_date": ex_date,
+                    "imp_ann_date": item["result_ann_date"],
+                    "ann_date": item["declare_date"],
+                    "cash_per_share_gross": 0.0,
+                    "stock_ratio": 0.0,
+                    "rights_price": item["rights_price"],
+                    "rights_ratio": item["rights_ratio"],
+                    "pay_date": None,
+                    "stock_list_date": item["list_date"],
+                    "vendor_record_id": item["subid"],
+                    "candidate_rank": 1,
+                    "candidate_count": 1,
+                    "raw_row_count": 1,
+                    "selected": True,
+                    "selection_reason": "SELECTED_LATEST",
+                    "source": _CNINFO_SOURCE,
+                    "source_request_id": request_id,
                     "source_snapshot_id": snapshot,
                 }
             )
@@ -715,7 +971,6 @@ def reconcile_g1_corporate_actions(
         for frame, date_col in (
             (bar_frame, "trade_date"),
             (factor_frame, "effective_date"),
-            (actions, "ex_date"),
         ):
             if frame.height and (
                 frame.filter(pl.col("source") != _SOURCE).height
@@ -724,6 +979,14 @@ def reconcile_g1_corporate_actions(
                 ).height
             ):
                 raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_FACTOR_INVALID")
+
+        if actions.height and (
+            actions.filter(~pl.col("source").is_in(list(_LEDGER_SOURCES))).height
+            or actions.filter(
+                (pl.col("ex_date") < history.start) | (pl.col("ex_date") > history.end)
+            ).height
+        ):
+            raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_FACTOR_INVALID")
 
         bar_symbols = set(bar_frame.get_column("symbol").to_list()) if bar_frame.height else set()
         factor_symbols = (
@@ -851,17 +1114,29 @@ def reconcile_g1_corporate_actions(
                 total_stock = math.fsum(
                     float(item["stock_ratio"]) for item in events_sorted
                 )
+                total_rights_ratio = math.fsum(
+                    float(item["rights_ratio"]) for item in events_sorted
+                )
+                total_rights_cash = math.fsum(
+                    float(item["rights_price"]) * float(item["rights_ratio"])
+                    for item in events_sorted
+                    if item["action_type"] == "RIGHTS"
+                )
                 # Event branch failures must raise; never fall back to
                 # event_count=0 / NO_EVENT_STABLE_FACTOR.
                 prev_close_date, prev_close = _previous_close(
                     bar_series, effective_date
                 )
-                denominator = prev_close - total_cash
+                denominator = prev_close - total_cash + total_rights_cash
                 if denominator <= 0 or not _supported_ratio(actual, rtol):
                     raise M3G1ExecutionFactError(
                         "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED"
                     )
-                declared = prev_close * (1.0 + total_stock) / denominator
+                declared = (
+                    prev_close
+                    * (1.0 + total_stock + total_rights_ratio)
+                    / denominator
+                )
                 if declared <= 1.0:
                     raise M3G1ExecutionFactError(
                         "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED"
@@ -900,6 +1175,8 @@ def reconcile_g1_corporate_actions(
                             "event_ids_sha256": event_ids_digest,
                             "cash_per_share_gross": total_cash,
                             "stock_ratio": total_stock,
+                            "rights_ratio": total_rights_ratio,
+                            "rights_subscription_cash_per_share": total_rights_cash,
                             "declared_dividend_factor_ratio": declared,
                             "market_reference_factor_ratio": market,
                             "actual_factor_ratio": actual,
@@ -936,6 +1213,8 @@ def reconcile_g1_corporate_actions(
                         "event_ids_sha256": event_ids_digest,
                         "cash_per_share_gross": total_cash,
                         "stock_ratio": total_stock,
+                        "rights_ratio": total_rights_ratio,
+                        "rights_subscription_cash_per_share": total_rights_cash,
                         "declared_dividend_factor_ratio": declared,
                         "market_reference_factor_ratio": None,
                         "actual_factor_ratio": actual,
@@ -1067,14 +1346,30 @@ def _assert_ledger_evidence_closure(
     # fields but differ only in end_date.
     selected_by_event_id: dict[str, dict[str, Any]] = {}
     for row in selected.iter_rows(named=True):
-        expected_event = _event_id_sha256(
-            row["symbol"],
-            row["end_date"],
-            row["record_date"],
-            row["ex_date"],
-            float(row["cash_per_share_gross"]),
-            float(row["stock_ratio"]),
-        )
+        action_type = row["action_type"]
+        if action_type == "DIVIDEND_DISTRIBUTION":
+            expected_event = _event_id_sha256(
+                row["symbol"],
+                row["end_date"],
+                row["record_date"],
+                row["ex_date"],
+                float(row["cash_per_share_gross"]),
+                float(row["stock_ratio"]),
+            )
+        elif action_type == "RIGHTS":
+            rights_price = row["rights_price"]
+            if rights_price is None:
+                raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RESULT_INVALID")
+            expected_event = _rights_event_id_sha256(
+                row["symbol"],
+                row["vendor_record_id"],
+                row["record_date"],
+                row["ex_date"],
+                float(rights_price),
+                float(row["rights_ratio"]),
+            )
+        else:
+            raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RESULT_INVALID")
         if expected_event in selected_by_event_id:
             raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RESULT_INVALID")
         selected_by_event_id[expected_event] = row
@@ -1088,14 +1383,24 @@ def _assert_ledger_evidence_closure(
         if (
             row["symbol"] != match["symbol"]
             or row["ex_date"] != match["ex_date"]
+            or row["action_type"] != match["action_type"]
             or float(row["cash_per_share_gross"])
             != float(match["cash_per_share_gross"])
             or float(row["stock_ratio"]) != float(match["stock_ratio"])
+            or _nullable_float_differs(row["rights_price"], match["rights_price"])
+            or float(row["rights_ratio"]) != float(match["rights_ratio"])
             or row["record_date"] != match["record_date"]
             or row["pay_date"] != match["pay_date"]
             or row["stock_list_date"] != match["stock_list_date"]
+            or row["vendor_record_id"] != match["vendor_record_id"]
         ):
             raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RESULT_INVALID")
+
+
+def _nullable_float_differs(left: float | None, right: float | None) -> bool:
+    if left is None or right is None:
+        return left is not right
+    return float(left) != float(right)
 
 
 def _assert_reconciliation_row_formulas(row: dict[str, Any]) -> None:
@@ -1117,9 +1422,14 @@ def _assert_reconciliation_row_formulas(row: dict[str, Any]) -> None:
     prev_close = row["previous_close"]
     cash = float(row["cash_per_share_gross"])
     stock = float(row["stock_ratio"])
+    rights_ratio = float(row["rights_ratio"])
+    rights_cash = float(row["rights_subscription_cash_per_share"])
     if prev_close is None:
         raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
-    expected_declared = float(prev_close) * (1.0 + stock) / (float(prev_close) - cash)
+    denominator = float(prev_close) - cash + rights_cash
+    expected_declared = (
+        float(prev_close) * (1.0 + stock + rights_ratio) / denominator
+    )
     if expected_declared != declared:
         raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
     expected_declared_error = abs(actual / declared - 1.0)
@@ -1314,6 +1624,55 @@ def _event_id_sha256(
     )
 
 
+def _rights_economic_event_key_sha256(
+    symbol: str, record_date: dt.date, ex_date: dt.date
+) -> str:
+    return _sha256_json(
+        [
+            "m3-g1-corporate-action-rights-key-v1",
+            symbol,
+            record_date.isoformat(),
+            ex_date.isoformat(),
+        ]
+    )
+
+
+def _rights_candidate_id_sha256(
+    event_key: str, subid: str, rights_price: float, rights_ratio: float
+) -> str:
+    return _sha256_json(
+        [
+            "m3-g1-corporate-action-rights-candidate-v1",
+            event_key,
+            subid,
+            _float_token(rights_price),
+            _float_token(rights_ratio),
+        ]
+    )
+
+
+def _rights_event_id_sha256(
+    symbol: str,
+    subid: str,
+    record_date: dt.date,
+    ex_date: dt.date,
+    rights_price: float,
+    rights_ratio: float,
+) -> str:
+    return _sha256_json(
+        [
+            "m3-g1-corporate-action-rights-event-v1",
+            "RIGHTS",
+            symbol,
+            subid,
+            record_date.isoformat(),
+            ex_date.isoformat(),
+            _float_token(rights_price),
+            _float_token(rights_ratio),
+        ]
+    )
+
+
 def _sha256_json(value: Any) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
@@ -1350,6 +1709,50 @@ def _consume_verified(response: object) -> VerifiedRawResponse:
         )
     except Exception:
         raise M3G1ExecutionFactError("G1_EXECUTION_FACT_RESPONSE_INVALID") from None
+
+
+def _consume_cninfo_verified(response: object) -> VerifiedCninfoRawResponse:
+    if type(response) is not VerifiedCninfoRawResponse:
+        raise M3G1ExecutionFactError("G1_EXECUTION_FACT_RESPONSE_INVALID")
+    try:
+        return VerifiedCninfoRawResponse(
+            response.spec,
+            response.receipt,
+            response.receipt_sha256,
+            response.frame,
+            response.resultcode,
+            response.count,
+            response.total,
+        )
+    except Exception:
+        raise M3G1ExecutionFactError("G1_EXECUTION_FACT_RESPONSE_INVALID") from None
+
+
+def _build_cninfo_symbol_map(symbols: object) -> dict[str, str]:
+    if (
+        not isinstance(symbols, Sequence)
+        or type(symbols) is str
+        or not symbols
+    ):
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
+    mapping: dict[str, str] = {}
+    for symbol in symbols:
+        if type(symbol) is not str or not _A_SHARE.fullmatch(symbol):
+            raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
+        code = symbol[:6]
+        existing = mapping.get(code)
+        if existing is not None and existing != symbol:
+            raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
+        mapping[code] = symbol
+    return mapping
+
+
+def _require_cninfo_subid(value: object) -> str:
+    if type(value) is str and value:
+        return value
+    if type(value) is int:
+        return str(value)
+    raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
 
 
 def _consume_history(history: object, *, code: str) -> HistoryWindow:
@@ -1716,6 +2119,8 @@ def _no_event_evidence_row(
         "event_ids_sha256": _EMPTY_EVENT_IDS_SHA256,
         "cash_per_share_gross": 0.0,
         "stock_ratio": 0.0,
+        "rights_ratio": 0.0,
+        "rights_subscription_cash_per_share": 0.0,
         "declared_dividend_factor_ratio": 1.0,
         "market_reference_factor_ratio": None,
         "actual_factor_ratio": actual,
@@ -1745,11 +2150,15 @@ def _ledger_schema() -> dict[str, Any]:
         "event_id": pl.Utf8,
         "symbol": pl.Utf8,
         "ex_date": pl.Date,
+        "action_type": pl.Utf8,
         "cash_per_share_gross": pl.Float64,
         "stock_ratio": pl.Float64,
+        "rights_price": pl.Float64,
+        "rights_ratio": pl.Float64,
         "record_date": pl.Date,
         "pay_date": pl.Date,
         "stock_list_date": pl.Date,
+        "vendor_record_id": pl.Utf8,
         "source": pl.Utf8,
         "source_snapshot_id": pl.Utf8,
     }
@@ -1760,6 +2169,7 @@ def _evidence_schema() -> dict[str, Any]:
         "economic_event_key_sha256": pl.Utf8,
         "candidate_id": pl.Utf8,
         "symbol": pl.Utf8,
+        "action_type": pl.Utf8,
         "end_date": pl.Date,
         "record_date": pl.Date,
         "ex_date": pl.Date,
@@ -1767,8 +2177,11 @@ def _evidence_schema() -> dict[str, Any]:
         "ann_date": pl.Date,
         "cash_per_share_gross": pl.Float64,
         "stock_ratio": pl.Float64,
+        "rights_price": pl.Float64,
+        "rights_ratio": pl.Float64,
         "pay_date": pl.Date,
         "stock_list_date": pl.Date,
+        "vendor_record_id": pl.Utf8,
         "candidate_rank": pl.Int64,
         "candidate_count": pl.Int64,
         "raw_row_count": pl.Int64,
@@ -1795,6 +2208,8 @@ def _recon_schema() -> dict[str, Any]:
         "event_ids_sha256": pl.Utf8,
         "cash_per_share_gross": pl.Float64,
         "stock_ratio": pl.Float64,
+        "rights_ratio": pl.Float64,
+        "rights_subscription_cash_per_share": pl.Float64,
         "declared_dividend_factor_ratio": pl.Float64,
         "market_reference_factor_ratio": pl.Float64,
         "actual_factor_ratio": pl.Float64,

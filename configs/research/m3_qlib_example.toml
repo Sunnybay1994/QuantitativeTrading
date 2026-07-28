@@ -77,6 +77,9 @@ fund_daily = 5000
 fund_adj = 2000
 # fund_div 正式 benchmark 已知约 22 行；5000 为项目保守上限。
 fund_div = 5000
+# CNINFO p_stock2232 配股：默认 row_limit=5000、batch_size=50（connector/planning 冻结常量）。
+# 正式路径由 workflow 传入 CninfoConnector(row_limit=...)/execute_cninfo_batch。
+# stock_allotment 不进入 Tushare endpoint_policies；TOML 键需 config.py 白名单扩展后才能声明。
 
 [g1_backfill.reconciliation]
 reference_source = "baostock"

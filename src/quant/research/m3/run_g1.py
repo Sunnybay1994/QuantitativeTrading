@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Literal, TextIO, cast
 
 from quant.data.connectors.baostock import BaostockConnector
+from quant.data.connectors.cninfo import CninfoConnector
 from quant.data.connectors.tushare import TushareConnector
 from quant.research.m3.config import LoadedM3Config, M3ConfigError, load_m3_config
 from quant.research.m3.g1_workflow import (
@@ -293,6 +294,10 @@ def _safe_exc_text(exc: BaseException) -> str:
         return str(exc)
     except BaseException:
         return ""
+
+
+def _new_cninfo_connector() -> CninfoConnector:
+    return CninfoConnector()
 
 
 def _new_tushare_connector() -> TushareConnector:
@@ -719,6 +724,7 @@ def _run_command(
                 connector=connector,
                 classify_error=_classify_tushare_error,
                 max_new_requests=max_new_requests,
+                cninfo_connector=_new_cninfo_connector(),
             )
             state = history_result.state
             outcome: Outcome = (
@@ -788,6 +794,7 @@ def _run_command(
                 config=config,
                 connector=connector,
                 classify_error=_classify_tushare_error,
+                cninfo_connector=_new_cninfo_connector(),
             )
             state = history_result.state
             last_state = state

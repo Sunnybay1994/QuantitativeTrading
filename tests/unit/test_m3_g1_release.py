@@ -31,6 +31,7 @@ from quant.data.m3_release import (
     G1ManifestV1,
     G1ManifestV2,
     G1ManifestV3,
+    G1ManifestV4,
     G1PreparedRelease,
     G1QualityReportV1,
     G1Release,
@@ -168,6 +169,7 @@ def test_release_identity_stable_under_row_shuffle(
         build_spec=release_inputs.build_inputs.build_spec,
         request_plan=release_inputs.build_inputs.request_plan,
         responses=rebuilt,
+        cninfo_responses=release_inputs.build_inputs.cninfo_responses,
         calendars=release_inputs.build_inputs.calendars.reverse(),
         instruments=release_inputs.build_inputs.instruments.reverse(),
         universe=release_inputs.build_inputs.universe,
@@ -200,6 +202,7 @@ def test_release_identity_changes_on_calendar_cell(
         build_spec=release_inputs.build_inputs.build_spec,
         request_plan=release_inputs.build_inputs.request_plan,
         responses=release_inputs.build_inputs.responses,
+        cninfo_responses=release_inputs.build_inputs.cninfo_responses,
         calendars=calendars,
         instruments=release_inputs.build_inputs.instruments,
         universe=release_inputs.build_inputs.universe,
@@ -928,6 +931,26 @@ def _b1b_minimal_manifest_payload(*, schema: str, extra: dict[str, Any] | None =
         payload["benchmark_dividend_reconciliation_version"] = (
             "tushare_fund_div_implemented_cash_v1"
         )
+    if schema == "m3-g1-manifest-v4":
+        payload["mapper_version"] = "m3-g1-tushare-mapper-v4"
+        payload["benchmark_mode"] = "TRADEABLE_ETF_TOTAL_RETURN_PROXY"
+        payload["benchmark_method_version"] = (
+            "tushare_510300_fund_daily_fund_adj_hfq_v1"
+        )
+        payload["benchmark_dividend_reconciliation_version"] = (
+            "tushare_fund_div_implemented_cash_v1"
+        )
+        cninfo_receipt = {
+            "source": "cninfo",
+            "request_id": "b" * 64,
+            "endpoint": "stock_allotment",
+            "parameters_sha256": hex64,
+            "stable_response_sha256": hex64,
+            "row_count": 0,
+            "columns": ["SECCODE"],
+        }
+        # Manifest requires receipts sorted by (source, endpoint, request_id).
+        payload["input_receipts"] = [cninfo_receipt, receipt]
     if extra:
         payload.update(extra)
     return payload
@@ -952,9 +975,16 @@ def test_b1b_manifest_v1_strict_read_v2_current_and_forged_rejected() -> None:
     assert type(v3) is G1ManifestV3
     assert v3.mapper_version == "m3-g1-tushare-mapper-v3"
 
-    # Current publish path only emits v3.
-    assert release_mod._MANIFEST_SCHEMA == "m3-g1-manifest-v3"
-    assert release_mod._build_manifest.__annotations__["return"] == "G1ManifestV3"
+    v4 = release_mod._parse_manifest_bytes(
+        release_mod._canonical_json_bytes(_b1b_minimal_manifest_payload(schema="m3-g1-manifest-v4"))
+    )
+    assert type(v4) is G1ManifestV4
+    assert v4.mapper_version == "m3-g1-tushare-mapper-v4"
+    assert any(item.source == "cninfo" for item in v4.input_receipts)
+
+    # Current publish path only emits v4.
+    assert release_mod._MANIFEST_SCHEMA == "m3-g1-manifest-v4"
+    assert release_mod._build_manifest.__annotations__["return"] == "G1ManifestV4"
 
     with pytest.raises(M3ReleaseError):
         release_mod._parse_manifest_bytes(
@@ -1016,6 +1046,14 @@ def test_b1b_r4_manifest_mapper_version_exact_lock() -> None:
     )
     assert type(v3) is G1ManifestV3
     assert v3.mapper_version == "m3-g1-tushare-mapper-v3"
+
+    v4 = release_mod._parse_manifest_bytes(
+        release_mod._canonical_json_bytes(
+            _b1b_minimal_manifest_payload(schema="m3-g1-manifest-v4")
+        )
+    )
+    assert type(v4) is G1ManifestV4
+    assert v4.mapper_version == "m3-g1-tushare-mapper-v4"
 
     # v2 schema + v1 mapper must not parse as current v2 identity.
     with pytest.raises((M3ReleaseError, ValueError)):
@@ -1089,6 +1127,15 @@ def test_b1b_r4_manifest_mapper_version_exact_lock() -> None:
                     )
                 )
             )
+        with pytest.raises((M3ReleaseError, ValueError)):
+            release_mod._parse_manifest_bytes(
+                release_mod._canonical_json_bytes(
+                    _b1b_minimal_manifest_payload(
+                        schema="m3-g1-manifest-v4",
+                        extra={"mapper_version": bad_mapper},
+                    )
+                )
+            )
 
     # Non-string mapper_version fail-closed at construction.
     v2_payload = _b1b_minimal_manifest_payload(schema="m3-g1-manifest-v2")
@@ -1109,7 +1156,14 @@ def test_b1b_r4_manifest_mapper_version_exact_lock() -> None:
         release_mod._parse_manifest_bytes(
             release_mod._canonical_json_bytes(v3_payload)
         )
+    v4_payload = _b1b_minimal_manifest_payload(schema="m3-g1-manifest-v4")
+    v4_payload["mapper_version"] = True
+    with pytest.raises((M3ReleaseError, ValueError, TypeError)):
+        release_mod._parse_manifest_bytes(
+            release_mod._canonical_json_bytes(v4_payload)
+        )
 
     assert release_mod._MANIFEST_MAPPER_VERSION_V1 == "m3-g1-tushare-mapper-v1"
     assert release_mod._MANIFEST_MAPPER_VERSION_V2 == "m3-g1-tushare-mapper-v2"
     assert release_mod._MANIFEST_MAPPER_VERSION_V3 == "m3-g1-tushare-mapper-v3"
+    assert release_mod._MANIFEST_MAPPER_VERSION_V4 == "m3-g1-tushare-mapper-v4"

@@ -15,13 +15,18 @@ from typing import Any, Literal, cast
 import polars as pl
 
 from quant.data.connectors.baostock import BaostockConnector
+from quant.data.connectors.cninfo import CninfoConnector
 from quant.data.connectors.tushare import TushareConnector
 from quant.data.m3_backfill import (
+    CninfoRequestBatch,
     EndpointPolicy,
     M3BackfillError,
     TushareRequestBatch,
+    VerifiedCninfoRawResponse,
     VerifiedRawResponse,
+    execute_cninfo_batch,
     execute_tushare_batch,
+    verify_cninfo_receipt,
     verify_tushare_receipt,
 )
 from quant.data.m3_g1_candidate import (
@@ -96,6 +101,7 @@ _REL_INST_SZ = "data/clean/instrument/market=SZ/data.parquet"
 _REL_RAW = "data/raw/m3_g1"
 _REL_JOURNAL_TS = "data/run_state/m3_g1/tushare"
 _REL_JOURNAL_BS = "data/run_state/m3_g1/baostock"
+_REL_JOURNAL_CN = "data/run_state/m3_g1/cninfo"
 _REL_RELEASE = "data/clean/m3_g1/releases"
 
 _ERROR_CODES = frozenset(
@@ -211,6 +217,7 @@ class VerifiedG1WorkflowStateV1:
     derived_plan: G1DerivedHistoryPlanV1 | None
     index_responses: tuple[VerifiedRawResponse, ...]
     history_responses: tuple[VerifiedRawResponse, ...]
+    cninfo_responses: tuple[VerifiedCninfoRawResponse, ...]
     reference_responses: tuple[VerifiedReferenceResponse, ...]
     candidate: G1Candidate | None
     prepared: G1PreparedRelease | None
@@ -233,6 +240,10 @@ class VerifiedG1WorkflowStateV1:
             type(item) is not VerifiedRawResponse for item in self.history_responses
         ):
             raise ValueError("workflow state history_responses 非法")
+        if type(self.cninfo_responses) is not tuple or any(
+            type(item) is not VerifiedCninfoRawResponse for item in self.cninfo_responses
+        ):
+            raise ValueError("workflow state cninfo_responses 非法")
         if type(self.reference_responses) is not tuple or any(
             type(item) is not VerifiedReferenceResponse for item in self.reference_responses
         ):
@@ -276,6 +287,7 @@ class _Layout:
     raw_root: Path
     tushare_journal: Path
     baostock_journal: Path
+    cninfo_journal: Path
     release_root: Path
     cal_sh: Path
     cal_sz: Path
@@ -372,6 +384,7 @@ def run_g1_history_stage(
     connector: TushareConnector,
     classify_error: Callable[[BaseException], str],
     max_new_requests: int | None = None,
+    cninfo_connector: CninfoConnector | None = None,
 ) -> G1HistoryStageResultV1:
     operation: Operation = "HISTORY"
     if max_new_requests is not None and (
@@ -381,6 +394,10 @@ def run_g1_history_stage(
             "G1_WORKFLOW_INPUT_INVALID", operation=operation, cause_category="INPUT"
         ) from None
     if type(connector) is not TushareConnector:
+        raise M3G1WorkflowError(
+            "G1_WORKFLOW_INPUT_INVALID", operation=operation, cause_category="INPUT"
+        ) from None
+    if cninfo_connector is not None and type(cninfo_connector) is not CninfoConnector:
         raise M3G1WorkflowError(
             "G1_WORKFLOW_INPUT_INVALID", operation=operation, cause_category="INPUT"
         ) from None
@@ -405,6 +422,8 @@ def run_g1_history_stage(
         ) from None
     layout = _open_layout(project_root, operation=operation)
     policies = dict(state.static_plan.endpoint_policies)
+    remaining = max_new_requests
+    committed = 0
     try:
         executed = execute_tushare_batch(
             batch=state.derived_plan.request_plan.history_batch,
@@ -416,8 +435,27 @@ def run_g1_history_stage(
             max_attempts=state.static_plan.max_attempts,
             retry_base_seconds=state.static_plan.retry_base_seconds,
             classify_error=_checked_classify(classify_error),
-            max_new_requests=max_new_requests,
+            max_new_requests=remaining,
         )
+        committed += executed.new_requests_committed
+        if remaining is not None:
+            remaining = max(0, remaining - executed.new_requests_committed)
+        cninfo = cninfo_connector if cninfo_connector is not None else CninfoConnector(
+            row_limit=_cninfo_row_limit(config)
+        )
+        cninfo_executed = execute_cninfo_batch(
+            batch=state.derived_plan.request_plan.cninfo_rights_batch,
+            connector=cninfo,
+            raw_store=RawStore(layout.raw_root),
+            journal_root=layout.cninfo_journal,
+            row_limit=_cninfo_row_limit(config),
+            request_rate_per_minute=state.static_plan.request_rate_per_minute,
+            max_attempts=state.static_plan.max_attempts,
+            retry_base_seconds=state.static_plan.retry_base_seconds,
+            classify_error=_checked_classify(classify_error),
+            max_new_requests=remaining,
+        )
+        committed += cninfo_executed.new_requests_committed
     except M3BackfillError:
         raise M3G1WorkflowError(
             "G1_WORKFLOW_EXECUTION_FAILED",
@@ -443,13 +481,22 @@ def run_g1_history_stage(
         return G1HistoryStageResultV1(
             state=again,
             max_new_requests=max_new_requests,
-            new_requests_committed=executed.new_requests_committed,
+            new_requests_committed=committed,
         )
     return G1HistoryStageResultV1(
         state=again,
         max_new_requests=max_new_requests,
-        new_requests_committed=executed.new_requests_committed,
+        new_requests_committed=committed,
     )
+
+
+# Frozen default; TOML knobs require config.py whitelist expansion (outside P0F).
+_CNINFO_STOCK_ALLOTMENT_ROW_LIMIT = 5000
+
+
+def _cninfo_row_limit(config: LoadedM3Config) -> int:
+    del config
+    return _CNINFO_STOCK_ALLOTMENT_ROW_LIMIT
 
 
 def run_g1_reference_stage(
@@ -531,6 +578,7 @@ def prepare_g1_workflow(
         derived_plan=state.derived_plan,
         index_responses=state.index_responses,
         history_responses=state.history_responses,
+        cninfo_responses=state.cninfo_responses,
         reference_responses=state.reference_responses,
         candidate=state.candidate,
         prepared=prepared,
@@ -623,6 +671,7 @@ def _inspect(
     )
     derived: G1DerivedHistoryPlanV1 | None = None
     history_responses: tuple[VerifiedRawResponse, ...] = ()
+    cninfo_responses: tuple[VerifiedCninfoRawResponse, ...] = ()
     candidate: G1Candidate | None = None
     reference_responses: tuple[VerifiedReferenceResponse, ...] = ()
     prepared: G1PreparedRelease | None = None
@@ -664,116 +713,132 @@ def _inspect(
                 policies=policies,
                 operation=operation,
             )
-            build_inputs = _make_build_inputs(
-                static_plan=static_plan,
-                derived=derived,
-                index_responses=index_responses,
-                history_responses=history_responses,
-                calendars=source.calendars,
-                instruments=source.instruments,
-                operation=operation,
-            )
-            try:
-                candidate = build_g1_candidate(inputs=build_inputs)
-                verify_g1_candidate(inputs=build_inputs, candidate=candidate)
-                audit = audit_g1_candidate(candidate=candidate)
-            except M3G1CandidateError:
-                raise M3G1WorkflowError(
-                    "G1_WORKFLOW_QUALITY_FAILED",
-                    operation=operation,
-                    cause_category="CANDIDATE",
-                ) from None
-            except Exception:
-                raise M3G1WorkflowError(
-                    "G1_WORKFLOW_IDENTITY_MISMATCH",
-                    operation=operation,
-                    cause_category="MEMBERSHIP",
-                ) from None
-            if not audit.passed:
-                raise M3G1WorkflowError(
-                    "G1_WORKFLOW_QUALITY_FAILED",
-                    operation=operation,
-                    cause_category="CANDIDATE",
-                ) from None
-            completed.append("HISTORY")
-            try:
-                sample_plan = plan_cross_source_reconciliation(
-                    candidate=candidate, policy=static_plan.cross_source_policy
-                )
-                request_plan = plan_baostock_reference_requests(sample_plan=sample_plan)
-            except M3ReferenceError as exc:
-                code, category = _map_reference_error(exc)
-                raise M3G1WorkflowError(
-                    code, operation=operation, cause_category=category
-                ) from None
-            ref_status = _recover_reference_batch(
-                specs=request_plan.requests,
+            cninfo_status = _recover_cninfo_batch(
+                batch=derived.request_plan.cninfo_rights_batch,
                 raw_root=layout.raw_root,
-                journal_root=layout.baostock_journal,
+                journal_root=layout.cninfo_journal,
+                row_limit=_cninfo_row_limit(config),
                 operation=operation,
             )
-            if ref_status == "complete":
-                reference_responses = _verify_reference_complete(
-                    specs=request_plan.requests,
+            if cninfo_status == "complete":
+                cninfo_responses = _verify_cninfo_complete(
+                    batch=derived.request_plan.cninfo_rights_batch,
                     raw_root=layout.raw_root,
-                    journal_root=layout.baostock_journal,
+                    journal_root=layout.cninfo_journal,
+                    row_limit=_cninfo_row_limit(config),
+                    operation=operation,
+                )
+                build_inputs = _make_build_inputs(
+                    static_plan=static_plan,
+                    derived=derived,
+                    index_responses=index_responses,
+                    history_responses=history_responses,
+                    cninfo_responses=cninfo_responses,
+                    calendars=source.calendars,
+                    instruments=source.instruments,
                     operation=operation,
                 )
                 try:
-                    reconciliation = reconcile_cross_source(
-                        candidate=candidate,
-                        sample_plan=sample_plan,
-                        reference_responses=reference_responses,
-                        policy=static_plan.cross_source_policy,
+                    candidate = build_g1_candidate(inputs=build_inputs)
+                    verify_g1_candidate(inputs=build_inputs, candidate=candidate)
+                    audit = audit_g1_candidate(candidate=candidate)
+                except M3G1CandidateError:
+                    raise M3G1WorkflowError(
+                        "G1_WORKFLOW_QUALITY_FAILED",
+                        operation=operation,
+                        cause_category="CANDIDATE",
+                    ) from None
+                except Exception:
+                    raise M3G1WorkflowError(
+                        "G1_WORKFLOW_IDENTITY_MISMATCH",
+                        operation=operation,
+                        cause_category="MEMBERSHIP",
+                    ) from None
+                if not audit.passed:
+                    raise M3G1WorkflowError(
+                        "G1_WORKFLOW_QUALITY_FAILED",
+                        operation=operation,
+                        cause_category="CANDIDATE",
+                    ) from None
+                completed.append("HISTORY")
+                try:
+                    sample_plan = plan_cross_source_reconciliation(
+                        candidate=candidate, policy=static_plan.cross_source_policy
                     )
+                    request_plan = plan_baostock_reference_requests(sample_plan=sample_plan)
                 except M3ReferenceError as exc:
                     code, category = _map_reference_error(exc)
                     raise M3G1WorkflowError(
                         code, operation=operation, cause_category=category
                     ) from None
-                if not reconciliation.passed:
-                    raise M3G1WorkflowError(
-                        "G1_WORKFLOW_QUALITY_FAILED",
+                ref_status = _recover_reference_batch(
+                    specs=request_plan.requests,
+                    raw_root=layout.raw_root,
+                    journal_root=layout.baostock_journal,
+                    operation=operation,
+                )
+                if ref_status == "complete":
+                    reference_responses = _verify_reference_complete(
+                        specs=request_plan.requests,
+                        raw_root=layout.raw_root,
+                        journal_root=layout.baostock_journal,
                         operation=operation,
-                        cause_category="REFERENCE",
-                    ) from None
-                completed.append("REFERENCE")
-                try:
-                    transient = prepare_g1_release(
-                        inputs=G1ReleaseInputs(
-                            build_inputs=build_inputs,
-                            cross_source_policy=static_plan.cross_source_policy,
-                            reference_responses=reference_responses,
-                        )
                     )
-                except M3ReleaseError as exc:
-                    raise _map_release_error(exc, operation=operation) from None
-                release_dir = layout.release_root / transient.release_id
-                if _path_exists_nofollow(release_dir):
                     try:
-                        release = G1Release(
-                            release_id=transient.release_id,
-                            root=release_dir,
-                            manifest_path=release_dir / "manifest.json",
-                            quality_path=release_dir / "quality.json",
+                        reconciliation = reconcile_cross_source(
+                            candidate=candidate,
+                            sample_plan=sample_plan,
+                            reference_responses=reference_responses,
+                            policy=static_plan.cross_source_policy,
                         )
-                        verified = verify_g1_release(release=release)
-                        _assert_prepared_matches_verified(transient, verified)
-                    except M3ReleaseError:
+                    except M3ReferenceError as exc:
+                        code, category = _map_reference_error(exc)
                         raise M3G1WorkflowError(
-                            "G1_WORKFLOW_PUBLISH_FAILED",
-                            operation=operation,
-                            cause_category="RELEASE",
+                            code, operation=operation, cause_category=category
                         ) from None
-                    except Exception:
+                    if not reconciliation.passed:
                         raise M3G1WorkflowError(
-                            "G1_WORKFLOW_IDENTITY_MISMATCH",
+                            "G1_WORKFLOW_QUALITY_FAILED",
                             operation=operation,
-                            cause_category="RELEASE",
+                            cause_category="REFERENCE",
                         ) from None
-                    prepared = transient
-                    published = verified
-                    completed.extend(["PREPARE", "PUBLISH"])
+                    completed.append("REFERENCE")
+                    try:
+                        transient = prepare_g1_release(
+                            inputs=G1ReleaseInputs(
+                                build_inputs=build_inputs,
+                                cross_source_policy=static_plan.cross_source_policy,
+                                reference_responses=reference_responses,
+                            )
+                        )
+                    except M3ReleaseError as exc:
+                        raise _map_release_error(exc, operation=operation) from None
+                    release_dir = layout.release_root / transient.release_id
+                    if _path_exists_nofollow(release_dir):
+                        try:
+                            release = G1Release(
+                                release_id=transient.release_id,
+                                root=release_dir,
+                                manifest_path=release_dir / "manifest.json",
+                                quality_path=release_dir / "quality.json",
+                            )
+                            verified = verify_g1_release(release=release)
+                            _assert_prepared_matches_verified(transient, verified)
+                        except M3ReleaseError:
+                            raise M3G1WorkflowError(
+                                "G1_WORKFLOW_PUBLISH_FAILED",
+                                operation=operation,
+                                cause_category="RELEASE",
+                            ) from None
+                        except Exception:
+                            raise M3G1WorkflowError(
+                                "G1_WORKFLOW_IDENTITY_MISMATCH",
+                                operation=operation,
+                                cause_category="RELEASE",
+                            ) from None
+                        prepared = transient
+                        published = verified
+                        completed.extend(["PREPARE", "PUBLISH"])
     else:
         index_responses = ()
 
@@ -789,6 +854,7 @@ def _inspect(
         derived_plan=derived,
         index_responses=index_responses,
         history_responses=history_responses,
+        cninfo_responses=cninfo_responses,
         reference_responses=reference_responses,
         candidate=candidate,
         prepared=prepared,
@@ -989,6 +1055,7 @@ def _build_inputs_from_state(
         build_spec=state.candidate.build_spec,
         request_plan=state.candidate.request_plan,
         responses=state.index_responses + state.history_responses,
+        cninfo_responses=state.cninfo_responses,
         calendars=state.candidate.calendars,
         instruments=state.candidate.instruments,
         universe=state.static_plan.universe,
@@ -1006,6 +1073,7 @@ def _make_build_inputs(
     derived: G1DerivedHistoryPlanV1,
     index_responses: Sequence[VerifiedRawResponse],
     history_responses: Sequence[VerifiedRawResponse],
+    cninfo_responses: Sequence[VerifiedCninfoRawResponse],
     calendars: pl.DataFrame,
     instruments: pl.DataFrame,
     operation: Operation,
@@ -1039,6 +1107,7 @@ def _make_build_inputs(
             build_spec=static_plan.build_spec,
             request_plan=derived.request_plan,
             responses=responses,
+            cninfo_responses=tuple(cninfo_responses),
             calendars=cal_slice,
             instruments=inst_slice,
             universe=static_plan.universe,
@@ -1168,6 +1237,81 @@ def _verify_tushare_complete(
                 raw_root=raw_root,
                 journal_root=journal_root,
                 policy=policies[spec.endpoint],
+            )
+        except M3BackfillError:
+            raise M3G1WorkflowError(
+                "G1_WORKFLOW_JOURNAL_INVALID",
+                operation=operation,
+                cause_category="JOURNAL",
+            ) from None
+        out.append(verified)
+    return tuple(out)
+
+
+def _recover_cninfo_batch(
+    *,
+    batch: CninfoRequestBatch,
+    raw_root: Path,
+    journal_root: Path,
+    row_limit: int,
+    operation: Operation,
+) -> Literal["missing", "partial", "complete"]:
+    del row_limit
+    _preflight_optional_root(journal_root, operation=operation)
+    _preflight_optional_root(raw_root, operation=operation)
+    if not _path_exists_nofollow(journal_root):
+        return "missing"
+    _validate_tushare_journal_root(journal_root, operation=operation)
+    present = 0
+    for spec in batch.requests:
+        request_dir = journal_root / spec.request_id
+        receipt_path = request_dir / "receipt.json"
+        if _regular_file_exists(receipt_path):
+            present += 1
+            continue
+        if _path_exists_nofollow(request_dir):
+            _validate_request_journal_dir(request_dir, operation=operation)
+            return "partial"
+        try:
+            state = RawStore(raw_root).inspect_request_state(
+                source="cninfo", table="stock_allotment", request_id=spec.request_id
+            )
+        except (OSError, ValueError):
+            raise M3G1WorkflowError(
+                "G1_WORKFLOW_JOURNAL_INVALID",
+                operation=operation,
+                cause_category="JOURNAL",
+            ) from None
+        if state != "ABSENT":
+            return "partial"
+    if present == 0:
+        return "missing"
+    if present == len(batch.requests):
+        return "complete"
+    return "partial"
+
+
+def _verify_cninfo_complete(
+    *,
+    batch: CninfoRequestBatch,
+    raw_root: Path,
+    journal_root: Path,
+    row_limit: int,
+    operation: Operation,
+) -> tuple[VerifiedCninfoRawResponse, ...]:
+    policy = EndpointPolicy(row_limit, "ALLOW")
+    out: list[VerifiedCninfoRawResponse] = []
+    for spec in batch.requests:
+        request_dir = journal_root / spec.request_id
+        _validate_request_journal_dir(request_dir, operation=operation)
+        receipt_path = request_dir / "receipt.json"
+        try:
+            verified = verify_cninfo_receipt(
+                spec=spec,
+                receipt_path=receipt_path,
+                raw_root=raw_root,
+                journal_root=journal_root,
+                policy=policy,
             )
         except M3BackfillError:
             raise M3G1WorkflowError(
@@ -1532,6 +1676,7 @@ def _open_layout(project_root: Path, *, operation: Operation) -> _Layout:
         raw_root=root / _REL_RAW,
         tushare_journal=root / _REL_JOURNAL_TS,
         baostock_journal=root / _REL_JOURNAL_BS,
+        cninfo_journal=root / _REL_JOURNAL_CN,
         release_root=root / _REL_RELEASE,
         cal_sh=root / _REL_CAL_SH,
         cal_sz=root / _REL_CAL_SZ,

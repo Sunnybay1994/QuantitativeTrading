@@ -267,11 +267,15 @@ class TestM3ExecutionInputSchemas:
             "event_id": ["event-1"],
             "symbol": ["600000.SH"],
             "ex_date": [dt.date(2026, 6, 12)],
+            "action_type": ["DIVIDEND_DISTRIBUTION"],
             "cash_per_share_gross": [0.1],
             "stock_ratio": [0.0],
+            "rights_price": [None],
+            "rights_ratio": [0.0],
             "record_date": [dt.date(2026, 6, 11)],
             "pay_date": [dt.date(2026, 6, 12)],
             "stock_list_date": [None],
+            "vendor_record_id": [None],
             "source": ["tushare"],
             "source_snapshot_id": ["raw-2"],
         })
@@ -296,11 +300,56 @@ class TestM3ExecutionInputSchemas:
                 row.with_columns(pl.lit(None, dtype=pl.Date).alias("record_date"))
             )
 
+    def test_corporate_action_rights_branch_validates(self) -> None:
+        row = pl.DataFrame({
+            "event_id": ["event-rights-1"],
+            "symbol": ["000661.SZ"],
+            "ex_date": [dt.date(2026, 6, 12)],
+            "action_type": ["RIGHTS"],
+            "cash_per_share_gross": [0.0],
+            "stock_ratio": [0.0],
+            "rights_price": [45.68],
+            "rights_ratio": [0.3],
+            "record_date": [dt.date(2026, 6, 10)],
+            "pay_date": [None],
+            "stock_list_date": [dt.date(2026, 6, 20)],
+            "vendor_record_id": ["987755581"],
+            "source": ["cninfo"],
+            "source_snapshot_id": ["raw-rights-1"],
+        })
+        CorporateActionLedgerSchema.validate(row)
+        # rights_price must be null-free and positive.
+        with pytest.raises(pandera.errors.SchemaError):
+            CorporateActionLedgerSchema.validate(
+                row.with_columns(pl.lit(None, dtype=pl.Float64).alias("rights_price"))
+            )
+        # rights_ratio must be positive for RIGHTS.
+        with pytest.raises(pandera.errors.SchemaError):
+            CorporateActionLedgerSchema.validate(
+                row.with_columns(pl.lit(0.0).alias("rights_ratio"))
+            )
+        # cash/stock must remain zero for RIGHTS.
+        with pytest.raises(pandera.errors.SchemaError):
+            CorporateActionLedgerSchema.validate(
+                row.with_columns(pl.lit(0.1).alias("cash_per_share_gross"))
+            )
+        # RIGHTS never has a cash pay_date.
+        with pytest.raises(pandera.errors.SchemaError):
+            CorporateActionLedgerSchema.validate(
+                row.with_columns(pl.lit(dt.date(2026, 6, 12)).alias("pay_date"))
+            )
+        # RIGHTS always requires a stock_list_date even though stock_ratio==0.
+        with pytest.raises(pandera.errors.SchemaError):
+            CorporateActionLedgerSchema.validate(
+                row.with_columns(pl.lit(None, dtype=pl.Date).alias("stock_list_date"))
+            )
+
     def test_corporate_action_selection_evidence_rank_and_selected(self) -> None:
         row = pl.DataFrame({
             "economic_event_key_sha256": ["a" * 64],
             "candidate_id": ["b" * 64],
             "symbol": ["600000.SH"],
+            "action_type": ["DIVIDEND_DISTRIBUTION"],
             "end_date": [dt.date(2025, 12, 31)],
             "record_date": [dt.date(2026, 6, 11)],
             "ex_date": [dt.date(2026, 6, 12)],
@@ -308,8 +357,11 @@ class TestM3ExecutionInputSchemas:
             "ann_date": [None],
             "cash_per_share_gross": [0.1],
             "stock_ratio": [0.0],
+            "rights_price": [None],
+            "rights_ratio": [0.0],
             "pay_date": [dt.date(2026, 6, 12)],
             "stock_list_date": [None],
+            "vendor_record_id": [None],
             "candidate_rank": [1],
             "candidate_count": [1],
             "raw_row_count": [1],
@@ -343,6 +395,8 @@ class TestM3ExecutionInputSchemas:
             "event_ids_sha256": ["c" * 64],
             "cash_per_share_gross": [0.0],
             "stock_ratio": [0.0],
+            "rights_ratio": [0.0],
+            "rights_subscription_cash_per_share": [0.0],
             "declared_dividend_factor_ratio": [1.0],
             "market_reference_factor_ratio": [None],
             "actual_factor_ratio": [1.0],

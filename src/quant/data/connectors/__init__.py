@@ -2,6 +2,7 @@
 
 from quant.data.connectors.akshare import AkshareConnector
 from quant.data.connectors.baostock import BaostockConnector
+from quant.data.connectors.cninfo import CninfoConnector
 from quant.data.connectors.connect_official import SseConnectConnector, SzseConnectConnector
 from quant.data.connectors.hkex_etp import HkexEtpConnector
 from quant.data.connectors.tushare import TushareConnector
@@ -9,6 +10,7 @@ from quant.data.connectors.tushare import TushareConnector
 __all__ = [
     "AkshareConnector",
     "BaostockConnector",
+    "CninfoConnector",
     "HkexEtpConnector",
     "SseConnectConnector",
     "SzseConnectConnector",

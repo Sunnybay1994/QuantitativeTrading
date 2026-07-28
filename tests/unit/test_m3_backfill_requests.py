@@ -456,10 +456,13 @@ def test_direct_batch_and_plan_revalidate_nested_contracts() -> None:
     object.__setattr__(plan.history_batch, "batch_sha256", "0" * 64)
     with pytest.raises(ValueError, match="batch_sha256"):
         backfill.G1RequestPlan(
-            "m3-g1-request-plan-v1",
+            "m3-g1-request-plan-v2",
             plan.index_weight_batch,
             plan.history_batch,
-            backfill._plan_hash(plan.index_weight_batch, plan.history_batch),
+            plan.cninfo_rights_batch,
+            backfill._plan_hash(
+                plan.index_weight_batch, plan.history_batch, plan.cninfo_rights_batch
+            ),
         )
 
 

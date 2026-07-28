@@ -22,8 +22,17 @@ from quant.data.connectors.baostock import BaostockConnector
 from quant.data.m3_backfill import (
     TUSHARE_FIELDS,
     HistoryWindow,
+    VerifiedCninfoRawResponse,
     VerifiedRawResponse,
+    cninfo_response_content_sha256,
     plan_index_weight_requests,
+)
+from quant.data.connectors.cninfo import (
+    CNINFO_ADAPTER,
+    CNINFO_ENDPOINT,
+    CNINFO_SOURCE,
+    CNINFO_STOCK_ALLOTMENT_FIELDS,
+    empty_cninfo_allotment_frame,
 )
 from quant.data.m3_execution_facts import (
     G1_CORPORATE_ACTION_RECONCILIATION_VERSION,
@@ -175,6 +184,56 @@ def _make_verified(
         columns=columns,
     )
     return VerifiedRawResponse(spec, receipt, backfill._sha256(asdict(receipt)), frame)
+
+
+def _make_cninfo_verified(spec: backfill.CninfoRequestSpec) -> VerifiedCninfoRawResponse:
+    frame = empty_cninfo_allotment_frame()
+    content = cninfo_response_content_sha256(frame)
+    parameters_sha256 = backfill._parameters_hash(spec.parameters)
+    values = {
+        "request_id": spec.request_id,
+        "endpoint": CNINFO_ENDPOINT,
+        "adapter": CNINFO_ADAPTER,
+        "parameters_sha256": parameters_sha256,
+        "response_content_sha256": content,
+        "resultcode": 200,
+        "count": 0,
+        "total": 0,
+        "row_count": 0,
+        "columns": CNINFO_STOCK_ALLOTMENT_FIELDS,
+    }
+    stable = backfill._cninfo_stable_response_hash_values(values)
+    receipt = backfill.CninfoRequestReceipt(
+        schema_version="m3-g1-cninfo-receipt-v1",
+        request_id=spec.request_id,
+        source=CNINFO_SOURCE,
+        endpoint=CNINFO_ENDPOINT,
+        adapter=CNINFO_ADAPTER,
+        parameters=spec.parameters,
+        parameters_sha256=parameters_sha256,
+        raw_snapshot_id=spec.request_id,
+        raw_data_path="cninfo/stock_allotment/request=x/data.parquet",
+        raw_metadata_path="cninfo/stock_allotment/request=x/metadata.json",
+        raw_file_sha256=_HEX,
+        raw_metadata_sha256=_HEX,
+        response_content_sha256=content,
+        stable_response_sha256=stable,
+        resultcode=200,
+        count=0,
+        total=0,
+        raw_size_bytes=1,
+        row_count=0,
+        columns=CNINFO_STOCK_ALLOTMENT_FIELDS,
+    )
+    return VerifiedCninfoRawResponse(
+        spec=spec,
+        receipt=receipt,
+        receipt_sha256=backfill._sha256(asdict(receipt)),
+        frame=frame,
+        resultcode=200,
+        count=0,
+        total=0,
+    )
 
 
 def _weight_frame(trade_date: str, symbols: list[str]) -> pl.DataFrame:
@@ -351,8 +410,8 @@ def _build_spec() -> G1BuildSpec:
     return G1BuildSpec(
         config_version="m3-g1-test-v1",
         g1_config_sha256=_HEX,
-        mapper_version="m3-g1-tushare-mapper-v3",
-        schema_version="m3-g1-schema-v1",
+        mapper_version="m3-g1-tushare-mapper-v4",
+        schema_version="m3-g1-schema-v2",
         membership_method_version=G1_MEMBERSHIP_METHOD_VERSION,
         price_limit_method_version=G1_PRICE_LIMIT_METHOD_VERSION,
         corporate_action_selection_version=G1_CORPORATE_ACTION_SELECTION_VERSION,
@@ -491,6 +550,9 @@ def _build_inputs() -> G1BuildInputs:
         build_spec=_build_spec(),
         request_plan=plan,
         responses=tuple(ordered),
+        cninfo_responses=tuple(
+            _make_cninfo_verified(spec) for spec in plan.cninfo_rights_batch.requests
+        ),
         calendars=_calendar(dt.date(2016, 1, 1), _D1 + dt.timedelta(days=10)),
         instruments=_instruments(syms),
         universe=_UNIVERSE,
@@ -2974,11 +3036,11 @@ def test_package_exports_frozen_public_names() -> None:
 
 def test_p0e_reconciliation_version_propagates_in_build_spec() -> None:
     assert G1_CORPORATE_ACTION_RECONCILIATION_VERSION == (
-        "tushare_factor_daily_preclose_v4"
+        "tushare_factor_daily_preclose_v5"
     )
     spec = _build_spec()
     assert spec.corporate_action_reconciliation_version == (
-        "tushare_factor_daily_preclose_v4"
+        "tushare_factor_daily_preclose_v5"
     )
     with pytest.raises(ValueError, match="corporate_action_reconciliation_version"):
         replace(

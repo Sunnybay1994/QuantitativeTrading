@@ -17,9 +17,18 @@ from quant.data.m3_backfill import (
     HistoryWindow,
     TushareRequestReceipt,
     TushareRequestSpec,
+    VerifiedCninfoRawResponse,
     VerifiedRawResponse,
+    cninfo_response_content_sha256,
     plan_index_weight_requests,
     response_content_sha256,
+)
+from quant.data.connectors.cninfo import (
+    CNINFO_ADAPTER,
+    CNINFO_ENDPOINT,
+    CNINFO_SOURCE,
+    CNINFO_STOCK_ALLOTMENT_FIELDS,
+    empty_cninfo_allotment_frame,
 )
 from quant.data.m3_execution_facts import (
     G1_CORPORATE_ACTION_RECONCILIATION_VERSION,
@@ -68,6 +77,56 @@ def _symbols(n: int = 300) -> list[str]:
 
 def _weights(n: int = 300) -> list[float]:
     return [100.0 / n] * n
+
+
+def _make_cninfo_verified(spec: backfill.CninfoRequestSpec) -> VerifiedCninfoRawResponse:
+    frame = empty_cninfo_allotment_frame()
+    content = cninfo_response_content_sha256(frame)
+    parameters_sha256 = backfill._parameters_hash(spec.parameters)
+    values = {
+        "request_id": spec.request_id,
+        "endpoint": CNINFO_ENDPOINT,
+        "adapter": CNINFO_ADAPTER,
+        "parameters_sha256": parameters_sha256,
+        "response_content_sha256": content,
+        "resultcode": 200,
+        "count": 0,
+        "total": 0,
+        "row_count": 0,
+        "columns": CNINFO_STOCK_ALLOTMENT_FIELDS,
+    }
+    stable = backfill._cninfo_stable_response_hash_values(values)
+    receipt = backfill.CninfoRequestReceipt(
+        schema_version="m3-g1-cninfo-receipt-v1",
+        request_id=spec.request_id,
+        source=CNINFO_SOURCE,
+        endpoint=CNINFO_ENDPOINT,
+        adapter=CNINFO_ADAPTER,
+        parameters=spec.parameters,
+        parameters_sha256=parameters_sha256,
+        raw_snapshot_id=spec.request_id,
+        raw_data_path="cninfo/stock_allotment/request=x/data.parquet",
+        raw_metadata_path="cninfo/stock_allotment/request=x/metadata.json",
+        raw_file_sha256=_HEX,
+        raw_metadata_sha256=_HEX,
+        response_content_sha256=content,
+        stable_response_sha256=stable,
+        resultcode=200,
+        count=0,
+        total=0,
+        raw_size_bytes=1,
+        row_count=0,
+        columns=CNINFO_STOCK_ALLOTMENT_FIELDS,
+    )
+    return VerifiedCninfoRawResponse(
+        spec=spec,
+        receipt=receipt,
+        receipt_sha256=backfill._sha256(asdict(receipt)),
+        frame=frame,
+        resultcode=200,
+        count=0,
+        total=0,
+    )
 
 
 def _make_verified(
@@ -312,8 +371,8 @@ def _build_spec() -> G1BuildSpec:
     return G1BuildSpec(
         config_version="m3-g1-test-v1",
         g1_config_sha256=_HEX,
-        mapper_version="m3-g1-tushare-mapper-v3",
-        schema_version="m3-g1-schema-v1",
+        mapper_version="m3-g1-tushare-mapper-v4",
+        schema_version="m3-g1-schema-v2",
         membership_method_version=G1_MEMBERSHIP_METHOD_VERSION,
         price_limit_method_version=G1_PRICE_LIMIT_METHOD_VERSION,
         corporate_action_selection_version=G1_CORPORATE_ACTION_SELECTION_VERSION,
@@ -484,6 +543,9 @@ def _build_inputs(
         build_spec=_build_spec(),
         request_plan=plan,
         responses=tuple(ordered),
+        cninfo_responses=tuple(
+            _make_cninfo_verified(spec) for spec in plan.cninfo_rights_batch.requests
+        ),
         calendars=_calendar(dt.date(2016, 1, 1), dt.date(2016, 3, 10)),
         instruments=_instruments(syms),
         universe=_UNIVERSE,
@@ -636,6 +698,7 @@ def test_calendar_list_date_change_changes_primary_key(
         build_spec=happy_inputs.build_spec,
         request_plan=happy_inputs.request_plan,
         responses=happy_inputs.responses,
+        cninfo_responses=happy_inputs.cninfo_responses,
         calendars=happy_inputs.calendars,
         instruments=instruments,
         universe=happy_inputs.universe,
@@ -689,6 +752,7 @@ def test_frame_receipt_spec_drift(happy_inputs: G1BuildInputs) -> None:
                 build_spec=happy_inputs.build_spec,
                 request_plan=happy_inputs.request_plan,
                 responses=tuple(responses),
+        cninfo_responses=happy_inputs.cninfo_responses,
                 calendars=happy_inputs.calendars,
                 instruments=happy_inputs.instruments,
                 universe=happy_inputs.universe,
@@ -1304,10 +1368,15 @@ def _rebuild_inputs_with_suspend_specs(
     ] + list(suspend_specs)
     history_batch = backfill._make_batch("HISTORY", history_requests)
     plan = backfill.G1RequestPlan(
-        "m3-g1-request-plan-v1",
+        "m3-g1-request-plan-v2",
         inputs.request_plan.index_weight_batch,
         history_batch,
-        backfill._plan_hash(inputs.request_plan.index_weight_batch, history_batch),
+        inputs.request_plan.cninfo_rights_batch,
+        backfill._plan_hash(
+            inputs.request_plan.index_weight_batch,
+            history_batch,
+            inputs.request_plan.cninfo_rights_batch,
+        ),
     )
     non_suspend = [
         item for item in inputs.responses if item.spec.endpoint != "suspend_d"
@@ -1333,7 +1402,7 @@ def _rebuild_inputs_with_suspend_specs(
         build_spec=inputs.build_spec,
         request_plan=plan,
         responses=tuple(ordered),
-        calendars=inputs.calendars,
+        cninfo_responses=inputs.cninfo_responses,
         instruments=inputs.instruments,
         universe=inputs.universe,
         signal_start=inputs.signal_start,
@@ -1402,14 +1471,14 @@ def test_package_exports() -> None:
 
 def test_p0d_versions_and_scoped_projection_bounds() -> None:
     assert G1_CORPORATE_ACTION_RECONCILIATION_VERSION == (
-        "tushare_factor_daily_preclose_v4"
+        "tushare_factor_daily_preclose_v5"
     )
     with pytest.raises(ValueError, match="corporate_action_reconciliation_version"):
         G1BuildSpec(
             config_version="m3-g1-test-v1",
             g1_config_sha256=_HEX,
-            mapper_version="m3-g1-tushare-mapper-v3",
-            schema_version="m3-g1-schema-v1",
+            mapper_version="m3-g1-tushare-mapper-v4",
+            schema_version="m3-g1-schema-v2",
             membership_method_version=G1_MEMBERSHIP_METHOD_VERSION,
             price_limit_method_version=G1_PRICE_LIMIT_METHOD_VERSION,
             corporate_action_selection_version=G1_CORPORATE_ACTION_SELECTION_VERSION,
@@ -1545,10 +1614,10 @@ def test_p0d_build_excludes_pre_first_bar_factor_jump(
     verify_g1_candidate(inputs=inputs, candidate=candidate)
     audit = audit_g1_candidate(candidate=candidate)
     assert audit.passed is True
-    assert candidate.build_spec.mapper_version == "m3-g1-tushare-mapper-v3"
+    assert candidate.build_spec.mapper_version == "m3-g1-tushare-mapper-v4"
     assert (
         candidate.build_spec.corporate_action_reconciliation_version
-        == "tushare_factor_daily_preclose_v4"
+        == "tushare_factor_daily_preclose_v5"
     )
     scoped = candidate.adjustment_factors.filter(pl.col("symbol") == symbol)
     assert scoped.get_column("effective_date").to_list() == [_D1]

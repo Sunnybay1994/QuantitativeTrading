@@ -24,6 +24,7 @@ import quant.data.m3_release as release_mod
 import quant.research.m3.config as config_mod
 import quant.research.m3.g1_planning as planning_mod
 from quant.data.connectors.baostock import BaostockConnector
+from quant.data.connectors.cninfo import CninfoConnector
 from quant.data.connectors.tushare import TushareConnector
 from quant.data.m3_backfill import TUSHARE_FIELDS
 from quant.data.m3_g1_candidate import G1Candidate
@@ -33,6 +34,7 @@ from quant.research.m3 import g1_workflow as workflow_mod
 from quant.research.m3.config import LoadedM3Config, load_m3_config
 from quant.research.m3.g1_planning import M3G1PlanningError
 from quant.research.m3.g1_workflow import (
+    G1HistoryStageResultV1,
     G1WorkflowCountsV1,
     M3G1WorkflowError,
     VerifiedG1WorkflowStateV1,
@@ -56,6 +58,33 @@ _INDEX = "000300.SH"
 _BENCHMARK = "510300.SH"
 _SIGNAL = dt.date(2016, 2, 1)
 _OBS_JAN = "20160129"
+
+
+class _EmptyCninfoClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def post_json(
+        self, *, url: str, params: Mapping[str, str], headers: Mapping[str, str]
+    ) -> Mapping[str, Any]:
+        del url, params, headers
+        self.calls += 1
+        return {
+            "resultcode": 200,
+            "resultmsg": "success",
+            "count": 0,
+            "total": 0,
+            "records": [],
+        }
+
+
+def _empty_cninfo() -> CninfoConnector:
+    return CninfoConnector(client=_EmptyCninfoClient(), enckey_provider=lambda: "fake-key")
+
+
+def _run_history(**kwargs: Any) -> G1HistoryStageResultV1:
+    kwargs.setdefault("cninfo_connector", _empty_cninfo())
+    return run_g1_history_stage(**kwargs)
 
 
 def _symbols(n: int = 300) -> list[str]:
@@ -750,7 +779,7 @@ def test_history_requires_index(tmp_path: Path) -> None:
     root = _project_root(tmp_path)
     config = _fast_config(tmp_path)
     with pytest.raises(M3G1WorkflowError) as excinfo:
-        run_g1_history_stage(
+        _run_history(
             project_root=root,
             config=config,
             connector=TushareConnector(pro_client=_CountingProClient(_symbols())),
@@ -780,7 +809,7 @@ def test_five_stage_fake_publish_and_inspect_closure(
     assert index_state.derived_plan is not None
     expected_adj = _planned_fund_adj_count(index_state.derived_plan)
 
-    history_state = run_g1_history_stage(
+    history_state = _run_history(
         project_root=root, config=config, connector=tushare, classify_error=_classify
     ).state
     assert history_state.completed_stages == ("INDEX", "HISTORY")
@@ -790,7 +819,7 @@ def test_five_stage_fake_publish_and_inspect_closure(
     history_calls = pro.calls
     fund_ids_after_history = list(pro.fund_request_identities)
 
-    history_again = run_g1_history_stage(
+    history_again = _run_history(
         project_root=root, config=config, connector=tushare, classify_error=_classify
     ).state
     assert history_again.completed_stages == ("INDEX", "HISTORY")
@@ -1125,7 +1154,7 @@ def test_history_entry_root_identity_failure_reports_history_operation(
     config = _fast_config(tmp_path)
     with patch.object(workflow_mod, "_dir_identity", _flaky_root_identity_after_open()):
         with pytest.raises(M3G1WorkflowError) as excinfo:
-            run_g1_history_stage(
+            _run_history(
                 project_root=root,
                 config=config,
                 connector=TushareConnector(pro_client=_CountingProClient(_symbols())),
@@ -1309,7 +1338,7 @@ def test_history_max_new_rejects_illegal_before_side_effects(tmp_path: Path) -> 
     assert not raw.exists()
     for bad in (True, 0, -1, 1.0, "1"):
         with pytest.raises(M3G1WorkflowError) as excinfo:
-            run_g1_history_stage(
+            _run_history(
                 project_root=root,
                 config=config,
                 connector=connector,
@@ -1344,7 +1373,7 @@ def test_history_bounded_incomplete_then_resume_success(
     ]
     assert fund_positions, "derived HISTORY plan must include fund endpoints"
     expected_adj = _planned_fund_adj_count(index_state.derived_plan)
-    first = run_g1_history_stage(
+    first = _run_history(
         project_root=root,
         config=config,
         connector=connector,
@@ -1357,7 +1386,7 @@ def test_history_bounded_incomplete_then_resume_success(
     calls_after_first = pro.calls
     fund_ids_after_first = list(pro.fund_request_identities)
 
-    second = run_g1_history_stage(
+    second = _run_history(
         project_root=root,
         config=config,
         connector=connector,
@@ -1377,7 +1406,7 @@ def test_history_bounded_incomplete_then_resume_success(
     first_fund_pos = fund_positions[0]
     if committed <= first_fund_pos:
         need = first_fund_pos - committed + 1
-        to_fund = run_g1_history_stage(
+        to_fund = _run_history(
             project_root=root,
             config=config,
             connector=connector,
@@ -1390,7 +1419,7 @@ def test_history_bounded_incomplete_then_resume_success(
     fund_ids_after_first_fund = list(pro.fund_request_identities)
     assert len(fund_ids_after_first_fund) >= 1
 
-    across_fund = run_g1_history_stage(
+    across_fund = _run_history(
         project_root=root,
         config=config,
         connector=connector,
@@ -1407,7 +1436,8 @@ def test_history_bounded_incomplete_then_resume_success(
     committed += 1
 
     # Sufficient budget completes HISTORY and reports SUCCESS semantics via completed stage.
-    done = run_g1_history_stage(
+    calls_before_done = pro.calls
+    done = _run_history(
         project_root=root,
         config=config,
         connector=connector,
@@ -1416,18 +1446,21 @@ def test_history_bounded_incomplete_then_resume_success(
     )
     assert done.state.completed_stages == ("INDEX", "HISTORY")
     assert done.new_requests_committed > 0
+    tushare_delta = pro.calls - calls_before_done
+    cninfo_n = len(index_state.derived_plan.request_plan.cninfo_rights_batch.requests)
+    assert done.new_requests_committed == tushare_delta + cninfo_n
     _assert_history_fund_fake_closure(pro, expected_adj=expected_adj)
     assert (
         pro.fund_request_identities[: len(fund_ids_after_first_fund)]
         == fund_ids_after_first_fund
     )
     fund_ids_after_done = list(pro.fund_request_identities)
-    reuse = run_g1_history_stage(
+    reuse = _run_history(
         project_root=root, config=config, connector=connector, classify_error=_classify
     )
     assert reuse.state.completed_stages == ("INDEX", "HISTORY")
     assert reuse.new_requests_committed == 0
-    assert pro.calls == calls_after_first + (committed - 2) + done.new_requests_committed
+    assert pro.calls == calls_after_first + (committed - 2) + tushare_delta
     assert pro.fund_request_identities == fund_ids_after_done
     _assert_history_fund_fake_closure(pro, expected_adj=expected_adj)
 
@@ -1454,7 +1487,7 @@ def test_history_unbounded_incomplete_still_fail_closed(
 
     monkeypatch.setattr(workflow_mod, "execute_tushare_batch", partial)
     with pytest.raises(M3G1WorkflowError) as excinfo:
-        run_g1_history_stage(
+        _run_history(
             project_root=root,
             config=config,
             connector=connector,
