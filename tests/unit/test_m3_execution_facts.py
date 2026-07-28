@@ -476,7 +476,7 @@ def test_version_constants() -> None:
         "tushare_dividend_cninfo_rights_capital_iso_date_v5"
     )
     assert G1_CORPORATE_ACTION_RECONCILIATION_VERSION == (
-        "tushare_factor_daily_preclose_v5"
+        "tushare_factor_daily_preclose_suspension_resume_v6"
     )
 
 
@@ -2861,6 +2861,620 @@ def test_p0h_rights_date_order_still_fail_closed() -> None:
             response=response, history=_history(), symbols=[_SYMBOL]
         )
     _assert_code(caught, "G1_CORPORATE_ACTION_EVENT_INVALID")
+
+
+def _p0i_full_day_rows(*days: dt.date, symbol: str = _SYMBOL) -> list[dict[str, Any]]:
+    return [
+        {
+            "symbol": symbol,
+            "trade_date": day,
+            "suspension_scope": "FULL_DAY",
+            "suspension_detail": None,
+            "source": "tushare",
+            "source_snapshot_id": _HEX,
+        }
+        for day in days
+    ]
+
+
+def _p0i_halt_resume_frames(
+    *,
+    symbol: str = _SYMBOL,
+    prev_close: float = 4.31,
+    cash_by_ex: dict[dt.date, float] | None = None,
+    resume_cash: float | None = None,
+    factor_prev: float = 34.8547,
+    factor_resume: float = 35.6826,
+    resume_pre_close: float = 4.21,
+    halt_days: tuple[dt.date, ...] = (_D2, _D3),
+    resume_day: dt.date = _D4,
+    resume_factor: float | None = None,
+    include_resume_bar: bool = True,
+    include_resume_daily: bool = True,
+    include_resume_factor: bool = True,
+    include_mid_factors: bool = True,
+    mid_non_full_day: dt.date | None = None,
+) -> tuple[
+    pl.DataFrame,
+    pl.DataFrame,
+    VerifiedRawResponse,
+    pl.DataFrame,
+    pl.DataFrame,
+]:
+    """600717-shaped halt: stable factors through halt, jump on first resume."""
+    cash_by_ex = dict(cash_by_ex or {_D2: 0.102})
+    resume_factor_value = factor_resume if resume_factor is None else resume_factor
+    bar_days = [_D0, _D1]
+    if include_resume_bar:
+        bar_days.append(resume_day)
+    closes: dict[dt.date, tuple[float, float]] = {
+        _D0: (prev_close, prev_close),
+        _D1: (prev_close, prev_close),
+    }
+    if include_resume_bar and include_resume_daily:
+        closes[resume_day] = (prev_close - sum(cash_by_ex.values()), resume_pre_close)
+
+    factor_days = [_D0, _D1]
+    if include_mid_factors:
+        factor_days.extend(day for day in halt_days if day not in factor_days)
+    if include_resume_factor and resume_day not in factor_days:
+        factor_days.append(resume_day)
+    factor_days = sorted(set(factor_days))
+
+    bars_rows = []
+    for day in bar_days:
+        close = closes.get(day, (prev_close, prev_close))[0]
+        adj = factor_prev if day < resume_day else resume_factor_value
+        bars_rows.append(
+            {
+                "symbol": symbol,
+                "trade_date": day,
+                "open": close,
+                "high": close,
+                "low": close,
+                "close": close,
+                "volume": 1.0,
+                "amount": 1.0,
+                "adj_factor": adj,
+                "source": "tushare",
+            }
+        )
+    factor_rows = []
+    for day in factor_days:
+        adj = factor_prev if day < resume_day else resume_factor_value
+        factor_rows.append(
+            {
+                "symbol": symbol,
+                "effective_date": day,
+                "adj_factor": adj,
+                "source": "tushare",
+            }
+        )
+    bars = pl.DataFrame(bars_rows)
+    factors = pl.DataFrame(factor_rows)
+    daily_closes = closes if closes else {_D0: (prev_close, prev_close)}
+    daily = _make_verified(
+        "daily",
+        pl.DataFrame(_daily_rows(closes=daily_closes, symbol=symbol)).select(
+            TUSHARE_FIELDS["daily"].split(",")
+        ),
+        parameters={
+            "ts_code": symbol,
+            "start_date": _START,
+            "end_date": _END,
+        },
+    )
+
+    dividend_rows = []
+    for index, (ex_date, cash) in enumerate(sorted(cash_by_ex.items())):
+        dividend_rows.append(
+            _dividend_row(
+                ts_code=symbol,
+                end_date=f"{2024 + index}1231",
+                cash_div=cash,
+                cash_div_tax=cash,
+                record_date=(ex_date - dt.timedelta(days=1)).strftime("%Y%m%d"),
+                ex_date=ex_date.strftime("%Y%m%d"),
+                pay_date=(ex_date + dt.timedelta(days=1)).strftime("%Y%m%d"),
+            )
+        )
+    if resume_cash is not None:
+        dividend_rows.append(
+            _dividend_row(
+                ts_code=symbol,
+                end_date="20261231",
+                cash_div=resume_cash,
+                cash_div_tax=resume_cash,
+                record_date=(resume_day - dt.timedelta(days=1)).strftime("%Y%m%d"),
+                ex_date=resume_day.strftime("%Y%m%d"),
+                pay_date=(resume_day + dt.timedelta(days=1)).strftime("%Y%m%d"),
+            )
+        )
+    actions = select_g1_corporate_actions(
+        response=_make_verified(
+            "dividend",
+            _dividend_frame(dividend_rows),
+            parameters={"ts_code": symbol},
+        ),
+        history=_history(),
+    ).ledger
+
+    halt_for_suspend = [
+        day for day in halt_days if mid_non_full_day is None or day != mid_non_full_day
+    ]
+    suspensions = _suspension(_p0i_full_day_rows(*halt_for_suspend, symbol=symbol))
+    return bars, factors, daily, actions, suspensions
+
+
+def test_p0i_version_constant_exact() -> None:
+    assert G1_CORPORATE_ACTION_RECONCILIATION_VERSION == (
+        "tushare_factor_daily_preclose_suspension_resume_v6"
+    )
+
+
+def test_p0i_600717_shaped_delay_to_first_resume() -> None:
+    """Continuous FULL_DAY, stable ex-date factor, jump only on first resume."""
+    rtol = 0.001
+    symbol = "600717.SH"
+    bars, factors, daily, actions, suspensions = _p0i_halt_resume_frames(symbol=symbol)
+    result = reconcile_g1_corporate_actions(
+        corporate_actions=actions,
+        bars=bars,
+        adjustment_factors=factors,
+        daily_responses=[daily],
+        suspensions=suspensions,
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=rtol,
+    )
+    event = result.evidence.filter(pl.col("event_count") > 0)
+    assert event.height == 1
+    assert event["effective_date"][0] == _D4
+    assert event["event_count"][0] == 1
+    assert float(event["cash_per_share_gross"][0]) == pytest.approx(0.102)
+    assert float(event["declared_dividend_relative_error"][0]) <= rtol
+    assert float(event["market_reference_relative_error"][0]) <= rtol
+    assert event["status"][0] in {
+        "MATCHED_EVENT_DECLARED_FORMULA",
+        "MATCHED_EVENT_MARKET_REFERENCE",
+    }
+    stable = result.evidence.filter(pl.col("status") == "NO_EVENT_STABLE_FACTOR")
+    assert set(stable["effective_date"].to_list()) == {_D1, _D2, _D3}
+    verify_corporate_action_reconciliation_result(result=result)
+
+
+def test_p0i_two_halt_events_aggregate_on_same_resume() -> None:
+    declared = 4.31 / (4.31 - 0.102)
+    bars, factors, daily, actions, suspensions = _p0i_halt_resume_frames(
+        cash_by_ex={_D2: 0.05, _D3: 0.052},
+        factor_resume=34.8547 * declared,
+        resume_pre_close=4.31 / declared,
+    )
+    result = reconcile_g1_corporate_actions(
+        corporate_actions=actions,
+        bars=bars,
+        adjustment_factors=factors,
+        daily_responses=[daily],
+        suspensions=suspensions,
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+    )
+    event = result.evidence.filter(pl.col("event_count") > 0)
+    assert event.height == 1
+    assert event["effective_date"][0] == _D4
+    assert event["event_count"][0] == 2
+    ids = set(actions["event_id"].to_list())
+    assert len(ids) == 2
+    import json
+
+    matched_ids = set(json.loads(event["event_ids_json"][0]))
+    assert matched_ids == ids
+    assert float(event["cash_per_share_gross"][0]) == pytest.approx(0.102)
+    verify_corporate_action_reconciliation_result(result=result)
+
+
+def test_p0i_resume_day_exact_event_merges_with_delayed() -> None:
+    declared = 4.31 / (4.31 - 0.15)
+    bars, factors, daily, actions, suspensions = _p0i_halt_resume_frames(
+        cash_by_ex={_D2: 0.102},
+        resume_cash=0.048,
+        factor_resume=34.8547 * declared,
+        resume_pre_close=4.31 / declared,
+    )
+    result = reconcile_g1_corporate_actions(
+        corporate_actions=actions,
+        bars=bars,
+        adjustment_factors=factors,
+        daily_responses=[daily],
+        suspensions=suspensions,
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+    )
+    event = result.evidence.filter(pl.col("event_count") > 0)
+    assert event.height == 1
+    assert event["effective_date"][0] == _D4
+    assert event["event_count"][0] == 2
+    assert float(event["cash_per_share_gross"][0]) == pytest.approx(0.15)
+    verify_corporate_action_reconciliation_result(result=result)
+
+
+def test_p0i_full_day_explainable_jump_stays_on_exact_date() -> None:
+    bars, factors, daily, actions = _bars_and_factors_for_cash(include_ex_daily=False)
+    suspensions = _suspension(_p0i_full_day_rows(_D2))
+    result = reconcile_g1_corporate_actions(
+        corporate_actions=actions,
+        bars=bars,
+        adjustment_factors=factors,
+        daily_responses=[daily],
+        suspensions=suspensions,
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+    )
+    event = result.evidence.filter(pl.col("event_count") > 0)
+    assert event.height == 1
+    assert event["effective_date"][0] == _D2
+    assert event["status"][0] == "MATCHED_EVENT_DECLARED_FORMULA_NO_MARKET_REFERENCE"
+    verify_corporate_action_reconciliation_result(result=result)
+
+
+def test_p0i_full_day_stable_declared_within_rtol_no_delay() -> None:
+    bars, factors, daily, actions = _bars_and_factors_for_cash(
+        prev_close=10.0,
+        cash=0.009,
+        factor_eff=1.0,
+        include_ex_daily=False,
+    )
+    suspensions = _suspension(_p0i_full_day_rows(_D2))
+    result = reconcile_g1_corporate_actions(
+        corporate_actions=actions,
+        bars=bars,
+        adjustment_factors=factors,
+        daily_responses=[daily],
+        suspensions=suspensions,
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+    )
+    event = result.evidence.filter(pl.col("event_count") > 0)
+    assert event.height == 1
+    assert event["effective_date"][0] == _D2
+    assert event["status"][0] == (
+        "MATCHED_EVENT_DECLARED_FORMULA_NO_MARKET_REFERENCE"
+    )
+    verify_corporate_action_reconciliation_result(result=result)
+
+
+def test_p0i_non_full_day_event_never_delayed() -> None:
+    bars, factors, daily, actions, _ = _p0i_halt_resume_frames()
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        reconcile_g1_corporate_actions(
+            corporate_actions=actions,
+            bars=bars,
+            adjustment_factors=factors,
+            daily_responses=[daily],
+            suspensions=_suspension(),
+            calendars=_default_calendar(),
+            history=_history(),
+            factor_ratio_rtol=0.001,
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
+
+
+def test_p0i_fail_closed_no_resume_in_scope() -> None:
+    bars, factors, daily, actions, suspensions = _p0i_halt_resume_frames(
+        halt_days=(_D2, _D3, _D4),
+        include_resume_bar=False,
+        include_resume_daily=False,
+        include_resume_factor=True,
+        resume_factor=34.8547,
+    )
+    # Resume day still FULL_DAY and factor-stable; no non-FULL_DAY target.
+    suspensions = _suspension(_p0i_full_day_rows(_D2, _D3, _D4))
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        reconcile_g1_corporate_actions(
+            corporate_actions=actions,
+            bars=bars,
+            adjustment_factors=factors,
+            daily_responses=[daily],
+            suspensions=suspensions,
+            calendars=_default_calendar(),
+            history=_history(),
+            factor_ratio_rtol=0.001,
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
+
+
+def test_p0i_fail_closed_first_resume_missing_factor() -> None:
+    bars, factors, daily, actions, suspensions = _p0i_halt_resume_frames(
+        halt_days=(_D2,),
+        resume_day=_D3,
+        include_resume_factor=False,
+        include_resume_bar=False,
+        include_resume_daily=False,
+    )
+    # First non-FULL_DAY is D3 (no factor). Later D4 jump must not be searched.
+    factors = pl.concat(
+        [
+            factors,
+            pl.DataFrame(
+                [
+                    {
+                        "symbol": _SYMBOL,
+                        "effective_date": _D4,
+                        "adj_factor": 35.6826,
+                        "source": "tushare",
+                    }
+                ]
+            ),
+        ]
+    )
+    bars = pl.concat(
+        [
+            bars,
+            pl.DataFrame(
+                [
+                    {
+                        "symbol": _SYMBOL,
+                        "trade_date": _D4,
+                        "open": 4.21,
+                        "high": 4.21,
+                        "low": 4.21,
+                        "close": 4.21,
+                        "volume": 1.0,
+                        "amount": 1.0,
+                        "adj_factor": 35.6826,
+                        "source": "tushare",
+                    }
+                ]
+            ),
+        ]
+    )
+    closes = {
+        _D0: (4.31, 4.31),
+        _D1: (4.31, 4.31),
+        _D4: (4.21, 4.21),
+    }
+    daily = _make_verified(
+        "daily",
+        _daily_frame(closes),
+        parameters={"ts_code": _SYMBOL, "start_date": _START, "end_date": _END},
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        reconcile_g1_corporate_actions(
+            corporate_actions=actions,
+            bars=bars,
+            adjustment_factors=factors,
+            daily_responses=[daily],
+            suspensions=suspensions,
+            calendars=_default_calendar(),
+            history=_history(),
+            factor_ratio_rtol=0.001,
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
+
+
+def test_p0i_fail_closed_resume_missing_daily_or_bar() -> None:
+    bars, factors, daily, actions, suspensions = _p0i_halt_resume_frames(
+        include_resume_bar=False,
+        include_resume_daily=False,
+        include_resume_factor=True,
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        reconcile_g1_corporate_actions(
+            corporate_actions=actions,
+            bars=bars,
+            adjustment_factors=factors,
+            daily_responses=[daily],
+            suspensions=suspensions,
+            calendars=_default_calendar(),
+            history=_history(),
+            factor_ratio_rtol=0.001,
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
+
+
+def test_p0i_fail_closed_resume_still_stable_declared_exceeds() -> None:
+    # Resume factor stays flat while market implies a jump → cannot explain events.
+    bars, factors, daily, actions, suspensions = _p0i_halt_resume_frames(
+        resume_factor=34.8547,
+        resume_pre_close=4.21,
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        reconcile_g1_corporate_actions(
+            corporate_actions=actions,
+            bars=bars,
+            adjustment_factors=factors,
+            daily_responses=[daily],
+            suspensions=suspensions,
+            calendars=_default_calendar(),
+            history=_history(),
+            factor_ratio_rtol=0.001,
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
+
+
+def test_p0i_fail_closed_resume_unsupported_or_over_rtol() -> None:
+    bars, factors, daily, actions, suspensions = _p0i_halt_resume_frames(
+        factor_resume=20.0,
+        resume_pre_close=2.0,
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        reconcile_g1_corporate_actions(
+            corporate_actions=actions,
+            bars=bars,
+            adjustment_factors=factors,
+            daily_responses=[daily],
+            suspensions=suspensions,
+            calendars=_default_calendar(),
+            history=_history(),
+            factor_ratio_rtol=0.001,
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
+
+
+def test_p0i_must_not_skip_intermediate_non_full_day() -> None:
+    """First non-FULL_DAY that cannot explain must fail; do not search later jump."""
+    bars, factors, daily, actions, suspensions = _p0i_halt_resume_frames(
+        halt_days=(_D2,),
+        resume_day=_D3,
+        resume_factor=34.8547,
+        resume_pre_close=4.21,
+    )
+    # Align resume-day bar close with daily; keep factor flat so matching fails.
+    bars = bars.with_columns(
+        pl.when(pl.col("trade_date") == _D3)
+        .then(pl.lit(4.31))
+        .otherwise(pl.col("close"))
+        .alias("close"),
+        pl.when(pl.col("trade_date") == _D3)
+        .then(pl.lit(4.31))
+        .otherwise(pl.col("open"))
+        .alias("open"),
+        pl.when(pl.col("trade_date") == _D3)
+        .then(pl.lit(4.31))
+        .otherwise(pl.col("high"))
+        .alias("high"),
+        pl.when(pl.col("trade_date") == _D3)
+        .then(pl.lit(4.31))
+        .otherwise(pl.col("low"))
+        .alias("low"),
+    )
+    factors = pl.concat(
+        [
+            factors,
+            pl.DataFrame(
+                [
+                    {
+                        "symbol": _SYMBOL,
+                        "effective_date": _D4,
+                        "adj_factor": 35.6826,
+                        "source": "tushare",
+                    }
+                ]
+            ),
+        ]
+    ).sort(["symbol", "effective_date"])
+    bars = pl.concat(
+        [
+            bars,
+            pl.DataFrame(
+                [
+                    {
+                        "symbol": _SYMBOL,
+                        "trade_date": _D4,
+                        "open": 4.21,
+                        "high": 4.21,
+                        "low": 4.21,
+                        "close": 4.21,
+                        "volume": 1.0,
+                        "amount": 1.0,
+                        "adj_factor": 35.6826,
+                        "source": "tushare",
+                    }
+                ]
+            ),
+        ]
+    ).sort(["symbol", "trade_date"])
+    closes = {
+        _D0: (4.31, 4.31),
+        _D1: (4.31, 4.31),
+        _D3: (4.31, 4.21),
+        _D4: (4.21, 4.21),
+    }
+    daily = _make_verified(
+        "daily",
+        _daily_frame(closes),
+        parameters={"ts_code": _SYMBOL, "start_date": _START, "end_date": _END},
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        reconcile_g1_corporate_actions(
+            corporate_actions=actions,
+            bars=bars,
+            adjustment_factors=factors,
+            daily_responses=[daily],
+            suspensions=suspensions,
+            calendars=_default_calendar(),
+            history=_history(),
+            factor_ratio_rtol=0.001,
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
+
+def test_p0i_delayed_evidence_tamper_rejected() -> None:
+    bars, factors, daily, actions, suspensions = _p0i_halt_resume_frames()
+    result = reconcile_g1_corporate_actions(
+        corporate_actions=actions,
+        bars=bars,
+        adjustment_factors=factors,
+        daily_responses=[daily],
+        suspensions=suspensions,
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+    )
+    event_mask = pl.col("event_count") > 0
+    for poisoned in (
+        result.evidence.with_columns(
+            pl.when(event_mask)
+            .then(pl.lit("[]"))
+            .otherwise(pl.col("event_ids_json"))
+            .alias("event_ids_json")
+        ),
+        result.evidence.with_columns(
+            pl.when(event_mask)
+            .then(pl.lit(0))
+            .otherwise(pl.col("event_count"))
+            .alias("event_count")
+        ),
+        result.evidence.with_columns(
+            pl.when(event_mask)
+            .then(pl.lit("c" * 64))
+            .otherwise(pl.col("event_ids_sha256"))
+            .alias("event_ids_sha256")
+        ),
+    ):
+        with pytest.raises(M3G1ExecutionFactError) as caught:
+            _rebuild_recon(poisoned)
+        _assert_code(caught, "G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
+
+
+def test_p0i_input_order_does_not_affect_digest() -> None:
+    bars, factors, daily, actions, suspensions = _p0i_halt_resume_frames(
+        cash_by_ex={_D2: 0.05, _D3: 0.052},
+        factor_resume=34.8547 * (4.31 / (4.31 - 0.102)),
+        resume_pre_close=4.31 / (4.31 / (4.31 - 0.102)),
+    )
+    forward = reconcile_g1_corporate_actions(
+        corporate_actions=actions,
+        bars=bars,
+        adjustment_factors=factors,
+        daily_responses=[daily],
+        suspensions=suspensions,
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+    )
+    reversed_result = reconcile_g1_corporate_actions(
+        corporate_actions=actions.reverse(),
+        bars=bars.reverse(),
+        adjustment_factors=factors.reverse(),
+        daily_responses=[daily],
+        suspensions=suspensions.reverse(),
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+    )
+    assert forward.evidence_sha256 == reversed_result.evidence_sha256
+    assert forward.evidence.sort(
+        ["symbol", "previous_factor_date", "effective_date"]
+    ).equals(
+        reversed_result.evidence.sort(
+            ["symbol", "previous_factor_date", "effective_date"]
+        )
+    )
+    verify_corporate_action_reconciliation_result(result=forward)
 
 
 def test_no_network_or_research_imports() -> None:

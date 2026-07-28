@@ -38,7 +38,9 @@ G1_PRICE_LIMIT_METHOD_VERSION = "tushare_stk_limit_suspension_aware_v2"
 G1_CORPORATE_ACTION_SELECTION_VERSION = (
     "tushare_dividend_cninfo_rights_capital_iso_date_v5"
 )
-G1_CORPORATE_ACTION_RECONCILIATION_VERSION = "tushare_factor_daily_preclose_v5"
+G1_CORPORATE_ACTION_RECONCILIATION_VERSION = (
+    "tushare_factor_daily_preclose_suspension_resume_v6"
+)
 
 _SOURCE = "tushare"
 _CNINFO_SOURCE = CNINFO_SOURCE
@@ -1096,6 +1098,17 @@ def reconcile_g1_corporate_actions(
                 continue
             events_by_symbol_date.setdefault(key, []).append(dict(row))
 
+        events_by_symbol_date = _assign_events_with_suspension_resume_delay(
+            events_by_symbol_date=events_by_symbol_date,
+            full_day=full_day,
+            daily_proj=daily_proj,
+            factors_by_symbol=factors_by_symbol,
+            bars_by_symbol=bars_by_symbol,
+            history=history,
+            sh_sessions=sh_sessions,
+            rtol=rtol,
+        )
+
         evidence_rows: list[dict[str, Any]] = []
         for symbol in sorted(bar_symbols):
             series = factors_by_symbol[symbol]
@@ -2151,6 +2164,163 @@ def _full_day_keys(suspensions: pl.DataFrame) -> set[tuple[dt.date, str]]:
         if row["suspension_scope"] == "FULL_DAY":
             full_day.add(key)
     return full_day
+
+
+def _adjacent_factor_ratio(
+    series: list[tuple[dt.date, float]], effective_date: dt.date
+) -> float:
+    previous: float | None = None
+    for day, factor in series:
+        if day == effective_date:
+            if previous is None:
+                raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_FACTOR_INVALID")
+            return factor / previous
+        previous = factor
+    raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_FACTOR_INVALID")
+
+
+def _event_cash_stock_rights_totals(
+    events_sorted: Sequence[Mapping[str, Any]],
+) -> tuple[float, float, float, float]:
+    total_cash = math.fsum(float(item["cash_per_share_gross"]) for item in events_sorted)
+    total_stock = math.fsum(float(item["stock_ratio"]) for item in events_sorted)
+    total_rights_ratio = math.fsum(float(item["rights_ratio"]) for item in events_sorted)
+    total_rights_cash = math.fsum(
+        float(item["rights_price"]) * float(item["rights_ratio"])
+        for item in events_sorted
+        if item["action_type"] == "RIGHTS"
+    )
+    return total_cash, total_stock, total_rights_ratio, total_rights_cash
+
+
+def _declared_factor_ratio(
+    *,
+    prev_close: float,
+    total_cash: float,
+    total_stock: float,
+    total_rights_ratio: float,
+    total_rights_cash: float,
+) -> float | None:
+    denominator = prev_close - total_cash + total_rights_cash
+    if denominator <= 0:
+        return None
+    declared = prev_close * (1.0 + total_stock + total_rights_ratio) / denominator
+    if declared <= 1.0:
+        return None
+    return declared
+
+
+def _eligible_for_suspension_resume_delay(
+    *,
+    symbol: str,
+    ex_date: dt.date,
+    events: Sequence[Mapping[str, Any]],
+    full_day: set[tuple[dt.date, str]],
+    daily_rows: Mapping[dt.date, Mapping[str, float]],
+    factor_series: list[tuple[dt.date, float]],
+    bar_series: list[tuple[dt.date, float]],
+    rtol: float,
+) -> bool:
+    """Strict delay gate: FULL_DAY + no daily + stable factor + declared unexplained."""
+    if (ex_date, symbol) not in full_day:
+        return False
+    if ex_date in daily_rows:
+        return False
+    actual = _adjacent_factor_ratio(factor_series, ex_date)
+    if abs(actual - 1.0) > rtol:
+        return False
+    events_sorted = sorted(events, key=lambda item: item["event_id"])
+    total_cash, total_stock, total_rights_ratio, total_rights_cash = (
+        _event_cash_stock_rights_totals(events_sorted)
+    )
+    _, prev_close = _previous_close(bar_series, ex_date)
+    declared = _declared_factor_ratio(
+        prev_close=prev_close,
+        total_cash=total_cash,
+        total_stock=total_stock,
+        total_rights_ratio=total_rights_ratio,
+        total_rights_cash=total_rights_cash,
+    )
+    if declared is None:
+        return True
+    return abs(actual / declared - 1.0) > rtol
+
+
+def _resolve_suspension_resume_date(
+    *,
+    symbol: str,
+    ex_date: dt.date,
+    full_day: set[tuple[dt.date, str]],
+    factor_dates: set[dt.date],
+    daily_rows: Mapping[dt.date, Mapping[str, float]],
+    bar_dates: set[dt.date],
+    history: HistoryWindow,
+    sh_sessions: Sequence[dt.date],
+) -> dt.date:
+    """First non-FULL_DAY SH session after a continuous FULL_DAY halt, or fail closed."""
+    if ex_date not in factor_dates:
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
+    history_sessions = [
+        day
+        for day in sh_sessions
+        if history.start <= day <= history.end and day >= ex_date
+    ]
+    if not history_sessions or history_sessions[0] != ex_date:
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
+    for day in history_sessions:
+        if day == ex_date:
+            continue
+        if (day, symbol) in full_day:
+            if day not in factor_dates:
+                raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
+            continue
+        if day not in factor_dates or day not in bar_dates or day not in daily_rows:
+            raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
+        return day
+    raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED")
+
+
+def _assign_events_with_suspension_resume_delay(
+    *,
+    events_by_symbol_date: Mapping[tuple[str, dt.date], list[dict[str, Any]]],
+    full_day: set[tuple[dt.date, str]],
+    daily_proj: Mapping[str, Mapping[dt.date, Mapping[str, float]]],
+    factors_by_symbol: Mapping[str, list[tuple[dt.date, float]]],
+    bars_by_symbol: Mapping[str, list[tuple[dt.date, float]]],
+    history: HistoryWindow,
+    sh_sessions: Sequence[dt.date],
+    rtol: float,
+) -> dict[tuple[str, dt.date], list[dict[str, Any]]]:
+    assigned: dict[tuple[str, dt.date], list[dict[str, Any]]] = {}
+    for symbol, ex_date in sorted(events_by_symbol_date):
+        events = events_by_symbol_date[(symbol, ex_date)]
+        daily_rows = daily_proj[symbol]
+        factor_series = factors_by_symbol[symbol]
+        bar_series = bars_by_symbol[symbol]
+        if _eligible_for_suspension_resume_delay(
+            symbol=symbol,
+            ex_date=ex_date,
+            events=events,
+            full_day=full_day,
+            daily_rows=daily_rows,
+            factor_series=factor_series,
+            bar_series=bar_series,
+            rtol=rtol,
+        ):
+            target = _resolve_suspension_resume_date(
+                symbol=symbol,
+                ex_date=ex_date,
+                full_day=full_day,
+                factor_dates={day for day, _ in factor_series},
+                daily_rows=daily_rows,
+                bar_dates={day for day, _ in bar_series},
+                history=history,
+                sh_sessions=sh_sessions,
+            )
+            assigned.setdefault((symbol, target), []).extend(events)
+        else:
+            assigned.setdefault((symbol, ex_date), []).extend(events)
+    return assigned
 
 
 _EMPTY_EVENT_IDS_JSON = "[]"

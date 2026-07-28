@@ -1403,6 +1403,7 @@ def _rebuild_inputs_with_suspend_specs(
         request_plan=plan,
         responses=tuple(ordered),
         cninfo_responses=inputs.cninfo_responses,
+        calendars=inputs.calendars,
         instruments=inputs.instruments,
         universe=inputs.universe,
         signal_start=inputs.signal_start,
@@ -1471,7 +1472,7 @@ def test_package_exports() -> None:
 
 def test_p0d_versions_and_scoped_projection_bounds() -> None:
     assert G1_CORPORATE_ACTION_RECONCILIATION_VERSION == (
-        "tushare_factor_daily_preclose_v5"
+        "tushare_factor_daily_preclose_suspension_resume_v6"
     )
     with pytest.raises(ValueError, match="corporate_action_reconciliation_version"):
         G1BuildSpec(
@@ -1617,7 +1618,7 @@ def test_p0d_build_excludes_pre_first_bar_factor_jump(
     assert candidate.build_spec.mapper_version == "m3-g1-tushare-mapper-v5"
     assert (
         candidate.build_spec.corporate_action_reconciliation_version
-        == "tushare_factor_daily_preclose_v5"
+        == "tushare_factor_daily_preclose_suspension_resume_v6"
     )
     scoped = candidate.adjustment_factors.filter(pl.col("symbol") == symbol)
     assert scoped.get_column("effective_date").to_list() == [_D1]
