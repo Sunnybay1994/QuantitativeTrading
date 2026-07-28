@@ -272,6 +272,9 @@ class TestM3ExecutionInputSchemas:
             "stock_ratio": [0.0],
             "rights_price": [None],
             "rights_ratio": [0.0],
+            "rights_actual_shares": [None],
+            "rights_pre_shares": [None],
+            "rights_post_shares": [None],
             "record_date": [dt.date(2026, 6, 11)],
             "pay_date": [dt.date(2026, 6, 12)],
             "stock_list_date": [None],
@@ -299,6 +302,11 @@ class TestM3ExecutionInputSchemas:
             CorporateActionLedgerSchema.validate(
                 row.with_columns(pl.lit(None, dtype=pl.Date).alias("record_date"))
             )
+        # dividend must keep capital fields null.
+        with pytest.raises(pandera.errors.SchemaError):
+            CorporateActionLedgerSchema.validate(
+                row.with_columns(pl.lit(100.0).alias("rights_actual_shares"))
+            )
 
     def test_corporate_action_rights_branch_validates(self) -> None:
         row = pl.DataFrame({
@@ -310,6 +318,9 @@ class TestM3ExecutionInputSchemas:
             "stock_ratio": [0.0],
             "rights_price": [45.68],
             "rights_ratio": [0.3],
+            "rights_actual_shares": [300.0],
+            "rights_pre_shares": [1000.0],
+            "rights_post_shares": [1300.0],
             "record_date": [dt.date(2026, 6, 10)],
             "pay_date": [None],
             "stock_list_date": [dt.date(2026, 6, 20)],
@@ -343,6 +354,17 @@ class TestM3ExecutionInputSchemas:
             CorporateActionLedgerSchema.validate(
                 row.with_columns(pl.lit(None, dtype=pl.Date).alias("stock_list_date"))
             )
+        # capital fields required and post-pre==actual.
+        with pytest.raises(pandera.errors.SchemaError):
+            CorporateActionLedgerSchema.validate(
+                row.with_columns(
+                    pl.lit(None, dtype=pl.Float64).alias("rights_actual_shares")
+                )
+            )
+        with pytest.raises(pandera.errors.SchemaError):
+            CorporateActionLedgerSchema.validate(
+                row.with_columns(pl.lit(200.0).alias("rights_actual_shares"))
+            )
 
     def test_corporate_action_selection_evidence_rank_and_selected(self) -> None:
         row = pl.DataFrame({
@@ -359,6 +381,9 @@ class TestM3ExecutionInputSchemas:
             "stock_ratio": [0.0],
             "rights_price": [None],
             "rights_ratio": [0.0],
+            "rights_actual_shares": [None],
+            "rights_pre_shares": [None],
+            "rights_post_shares": [None],
             "pay_date": [dt.date(2026, 6, 12)],
             "stock_list_date": [None],
             "vendor_record_id": [None],

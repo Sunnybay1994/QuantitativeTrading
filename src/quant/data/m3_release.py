@@ -19,6 +19,11 @@ import ctypes
 import ctypes.util
 import polars as pl
 
+from quant.data.connectors.cninfo import (
+    CNINFO_ENDPOINT,
+    CNINFO_SOURCE,
+    CNINFO_STOCK_ALLOTMENT_FIELDS,
+)
 from quant.data.m3_backfill import HistoryWindow
 from quant.data.m3_execution_facts import require_g1_price_limit_coverage
 from quant.data.m3_g1_candidate import (
@@ -70,13 +75,16 @@ _MANIFEST_SCHEMA_V1: Literal["m3-g1-manifest-v1"] = "m3-g1-manifest-v1"
 _MANIFEST_SCHEMA_V2: Literal["m3-g1-manifest-v2"] = "m3-g1-manifest-v2"
 _MANIFEST_SCHEMA_V3: Literal["m3-g1-manifest-v3"] = "m3-g1-manifest-v3"
 _MANIFEST_SCHEMA_V4: Literal["m3-g1-manifest-v4"] = "m3-g1-manifest-v4"
-_MANIFEST_SCHEMA = _MANIFEST_SCHEMA_V4
+_MANIFEST_SCHEMA_V5: Literal["m3-g1-manifest-v5"] = "m3-g1-manifest-v5"
+_MANIFEST_SCHEMA = _MANIFEST_SCHEMA_V5
 # Manifest historical interpretation contract: exact mapper literal per schema.
 _MANIFEST_MAPPER_VERSION_V1 = "m3-g1-tushare-mapper-v1"
 _MANIFEST_MAPPER_VERSION_V2 = "m3-g1-tushare-mapper-v2"
 _MANIFEST_MAPPER_VERSION_V3 = "m3-g1-tushare-mapper-v3"
 _MANIFEST_MAPPER_VERSION_V4 = "m3-g1-tushare-mapper-v4"
-_TABLE_SCHEMA_VERSION = "v2"
+_MANIFEST_MAPPER_VERSION_V5 = "m3-g1-tushare-mapper-v5"
+_TABLE_SCHEMA_VERSION = "v3"
+_TABLE_SCHEMA_VERSIONS_KNOWN = frozenset({"v2", "v3"})
 _BENCHMARK_MODE = "TRADEABLE_ETF_TOTAL_RETURN_PROXY"
 _BENCHMARK_METHOD_VERSION = "tushare_510300_fund_daily_fund_adj_hfq_v1"
 _BENCHMARK_DIVIDEND_RECONCILIATION_VERSION = "tushare_fund_div_implemented_cash_v1"
@@ -403,7 +411,7 @@ class G1ArtifactEntryV1:
             raise ValueError("artifact row_count 非法")
         if type(self.schema_name) is not str or not self.schema_name:
             raise ValueError("artifact schema_name 非法")
-        if self.table_schema_version != _TABLE_SCHEMA_VERSION:
+        if self.table_schema_version not in _TABLE_SCHEMA_VERSIONS_KNOWN:
             raise ValueError("artifact table_schema_version 非法")
         if type(self.key_columns) is not tuple or any(
             type(item) is not str for item in self.key_columns
@@ -704,8 +712,72 @@ class G1ManifestV4:
             raise ValueError("manifest v4 必须包含 cninfo receipt 闭包")
 
 
+@dataclass(frozen=True)
+class G1ManifestV5:
+    schema_version: Literal["m3-g1-manifest-v5"]
+    release_id: str
+    primary_candidate_key: str
+    config_version: str
+    g1_config_sha256: str
+    signal_start: dt.date
+    signal_end: dt.date
+    history_start: dt.date
+    history_end: dt.date
+    request_plan_sha256: str
+    build_code_version: str
+    dependency_fingerprint_sha256: str
+    mapper_version: str
+    clean_schema_version: str
+    membership_method_version: str
+    price_limit_method_version: str
+    corporate_action_selection_version: str
+    corporate_action_reconciliation_version: str
+    benchmark_mode: str
+    benchmark_method_version: str
+    benchmark_dividend_reconciliation_version: str
+    input_receipts: tuple[G1ReceiptProjectionV1, ...]
+    price_limit_required_keys_sha256: str
+    sample_plan_sha256: str
+    cross_source_summary_sha256: str
+    quality_sha256: str
+    files: tuple[G1ArtifactEntryV1, ...]
+
+    def __post_init__(self) -> None:
+        if self.schema_version != _MANIFEST_SCHEMA_V5:
+            raise ValueError("manifest schema_version 非法")
+        if self.mapper_version != _MANIFEST_MAPPER_VERSION_V5:
+            raise ValueError("manifest mapper_version 非法")
+        if self.benchmark_mode != _BENCHMARK_MODE:
+            raise ValueError("manifest benchmark_mode 非法")
+        if self.benchmark_method_version != _BENCHMARK_METHOD_VERSION:
+            raise ValueError("manifest benchmark_method_version 非法")
+        if (
+            self.benchmark_dividend_reconciliation_version
+            != _BENCHMARK_DIVIDEND_RECONCILIATION_VERSION
+        ):
+            raise ValueError("manifest benchmark_dividend_reconciliation_version 非法")
+        for name in (
+            "benchmark_mode",
+            "benchmark_method_version",
+            "benchmark_dividend_reconciliation_version",
+        ):
+            value = getattr(self, name)
+            if type(value) is not str or not value:
+                raise ValueError(f"manifest {name} 非法")
+        _validate_manifest_common(self)
+        if not any(
+            item.source == CNINFO_SOURCE
+            and item.endpoint == CNINFO_ENDPOINT
+            and item.columns == CNINFO_STOCK_ALLOTMENT_FIELDS
+            for item in self.input_receipts
+        ):
+            raise ValueError("manifest v5 必须包含完整官方列 cninfo stock_allotment receipt")
+        if any(item.table_schema_version != _TABLE_SCHEMA_VERSION for item in self.files):
+            raise ValueError("manifest v5 table_schema_version 必须为 v3")
+
+
 def _validate_manifest_common(
-    manifest: G1ManifestV1 | G1ManifestV2 | G1ManifestV3 | G1ManifestV4 | G1ManifestV4,
+    manifest: G1ManifestV1 | G1ManifestV2 | G1ManifestV3 | G1ManifestV4 | G1ManifestV5,
 ) -> None:
     for name in (
         "release_id",
@@ -964,7 +1036,7 @@ class G1PreparedRelease:
 @dataclass(frozen=True)
 class VerifiedG1Release:
     release: G1Release
-    manifest: G1ManifestV1 | G1ManifestV2 | G1ManifestV3 | G1ManifestV4
+    manifest: G1ManifestV1 | G1ManifestV2 | G1ManifestV3 | G1ManifestV4 | G1ManifestV5
     manifest_sha256: str
     quality: G1QualityReportV1
     quality_sha256: str
@@ -978,6 +1050,7 @@ class VerifiedG1Release:
             G1ManifestV2,
             G1ManifestV3,
             G1ManifestV4,
+            G1ManifestV5,
         }:
             raise ValueError("verified manifest 类型非法")
         if type(self.quality) is not G1QualityReportV1:
@@ -1368,7 +1441,9 @@ def verify_g1_release(*, release: G1Release) -> VerifiedG1Release:
         raise M3ReleaseError("G1_RELEASE_VERIFY_FAILED") from None
 
 
-def read_g1_manifest(path: Path) -> G1ManifestV1 | G1ManifestV2 | G1ManifestV3 | G1ManifestV4:
+def read_g1_manifest(
+    path: Path,
+) -> G1ManifestV1 | G1ManifestV2 | G1ManifestV3 | G1ManifestV4 | G1ManifestV5:
     try:
         payload = _read_regular_file_bytes(_absolute_path(path))
         manifest = _parse_manifest_bytes(payload)
@@ -1454,7 +1529,7 @@ def _build_manifest(
     files: tuple[G1ArtifactEntryV1, ...],
     quality_sha256: str,
     summary_sha256: str,
-) -> G1ManifestV4:
+) -> G1ManifestV5:
     candidate = prepared.candidate
     receipts = tuple(
         sorted(
@@ -1462,8 +1537,8 @@ def _build_manifest(
             key=lambda value: (value.source, value.endpoint, value.request_id),
         )
     )
-    return G1ManifestV4(
-        schema_version=_MANIFEST_SCHEMA_V4,
+    return G1ManifestV5(
+        schema_version=_MANIFEST_SCHEMA_V5,
         release_id=prepared.release_id,
         primary_candidate_key=candidate.primary_candidate_key,
         config_version=candidate.build_spec.config_version,
@@ -2210,14 +2285,18 @@ def _parse_quality_bytes(payload: bytes) -> G1QualityReportV1:
 
 def _parse_manifest_bytes(
     payload: bytes,
-) -> G1ManifestV1 | G1ManifestV2 | G1ManifestV3 | G1ManifestV4:
+) -> G1ManifestV1 | G1ManifestV2 | G1ManifestV3 | G1ManifestV4 | G1ManifestV5:
     raw = _strict_json_object(payload)
     schema = raw.get("schema_version")
     if schema == _MANIFEST_SCHEMA_V1:
         _exact_field_names(raw, G1ManifestV1)
-        cls: type[G1ManifestV1] | type[G1ManifestV2] | type[G1ManifestV3] | type[G1ManifestV4] = (
-            G1ManifestV1
-        )
+        cls: (
+            type[G1ManifestV1]
+            | type[G1ManifestV2]
+            | type[G1ManifestV3]
+            | type[G1ManifestV4]
+            | type[G1ManifestV5]
+        ) = G1ManifestV1
     elif schema == _MANIFEST_SCHEMA_V2:
         _exact_field_names(raw, G1ManifestV2)
         cls = G1ManifestV2
@@ -2227,6 +2306,9 @@ def _parse_manifest_bytes(
     elif schema == _MANIFEST_SCHEMA_V4:
         _exact_field_names(raw, G1ManifestV4)
         cls = G1ManifestV4
+    elif schema == _MANIFEST_SCHEMA_V5:
+        _exact_field_names(raw, G1ManifestV5)
+        cls = G1ManifestV5
     else:
         raise M3ReleaseError("G1_RELEASE_JSON_INVALID")
     receipts_raw = raw["input_receipts"]
@@ -2329,12 +2411,21 @@ def _parse_manifest_bytes(
                 "benchmark_dividend_reconciliation_version"
             ],
         )
+    if cls is G1ManifestV5:
+        return G1ManifestV5(
+            **common,
+            benchmark_mode=raw["benchmark_mode"],
+            benchmark_method_version=raw["benchmark_method_version"],
+            benchmark_dividend_reconciliation_version=raw[
+                "benchmark_dividend_reconciliation_version"
+            ],
+        )
     return G1ManifestV1(**common)
 
 
 def _primary_from_manifest(
     *,
-    manifest: G1ManifestV1 | G1ManifestV2 | G1ManifestV3 | G1ManifestV4,
+    manifest: G1ManifestV1 | G1ManifestV2 | G1ManifestV3 | G1ManifestV4 | G1ManifestV5,
     tushare_receipts: tuple[G1ReceiptProjectionV1, ...],
     primary_receipts: tuple[G1ReceiptProjectionV1, ...] | None = None,
     table_content_digests: tuple[tuple[str, str], ...],
@@ -2372,11 +2463,11 @@ def _primary_from_manifest(
             "price_limit_required_keys_sha256": price_limit_required_keys_sha256,
         }
         return _sha256_json(payload)
-    if type(manifest) is not G1ManifestV2 and type(manifest) is not G1ManifestV3 and type(manifest) is not G1ManifestV4:
+    if type(manifest) is not G1ManifestV2 and type(manifest) is not G1ManifestV3 and type(manifest) is not G1ManifestV4 and type(manifest) is not G1ManifestV5:
         raise M3ReleaseError("G1_RELEASE_IDENTITY_MISMATCH")
     receipts_for_key = (
         primary_receipts
-        if type(manifest) is G1ManifestV4 and primary_receipts is not None
+        if type(manifest) in {G1ManifestV4, G1ManifestV5} and primary_receipts is not None
         else tushare_receipts
     )
     build_spec = G1BuildSpec(
@@ -2500,7 +2591,7 @@ def _exact_float(value: object) -> float:
 
 
 def _manifest_to_jsonable(
-    manifest: G1ManifestV1 | G1ManifestV2 | G1ManifestV3 | G1ManifestV4,
+    manifest: G1ManifestV1 | G1ManifestV2 | G1ManifestV3 | G1ManifestV4 | G1ManifestV5,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "schema_version": manifest.schema_version,
@@ -2532,7 +2623,12 @@ def _manifest_to_jsonable(
         "quality_sha256": manifest.quality_sha256,
         "files": [_artifact_entry_to_jsonable(item) for item in manifest.files],
     }
-    if type(manifest) is G1ManifestV2 or type(manifest) is G1ManifestV3 or type(manifest) is G1ManifestV4:
+    if (
+        type(manifest) is G1ManifestV2
+        or type(manifest) is G1ManifestV3
+        or type(manifest) is G1ManifestV4
+        or type(manifest) is G1ManifestV5
+    ):
         payload["benchmark_mode"] = manifest.benchmark_mode
         payload["benchmark_method_version"] = manifest.benchmark_method_version
         payload["benchmark_dividend_reconciliation_version"] = (

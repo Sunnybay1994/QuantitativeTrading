@@ -36,7 +36,7 @@ from quant.domain import (
 
 G1_PRICE_LIMIT_METHOD_VERSION = "tushare_stk_limit_suspension_aware_v2"
 G1_CORPORATE_ACTION_SELECTION_VERSION = (
-    "tushare_dividend_cninfo_rights_implemented_v3"
+    "tushare_dividend_cninfo_rights_capital_v4"
 )
 G1_CORPORATE_ACTION_RECONCILIATION_VERSION = "tushare_factor_daily_preclose_v5"
 
@@ -94,6 +94,9 @@ _LEDGER_OUT = (
     "stock_ratio",
     "rights_price",
     "rights_ratio",
+    "rights_actual_shares",
+    "rights_pre_shares",
+    "rights_post_shares",
     "record_date",
     "pay_date",
     "stock_list_date",
@@ -116,6 +119,9 @@ _EVIDENCE_OUT = (
     "stock_ratio",
     "rights_price",
     "rights_ratio",
+    "rights_actual_shares",
+    "rights_pre_shares",
+    "rights_post_shares",
     "pay_date",
     "stock_list_date",
     "vendor_record_id",
@@ -608,6 +614,9 @@ def select_g1_corporate_actions(
                         "stock_ratio": row["stock"],
                         "rights_price": None,
                         "rights_ratio": 0.0,
+                        "rights_actual_shares": None,
+                        "rights_pre_shares": None,
+                        "rights_post_shares": None,
                         "pay_date": row["pay_date"],
                         "stock_list_date": row["stock_list_date"],
                         "vendor_record_id": None,
@@ -642,6 +651,9 @@ def select_g1_corporate_actions(
                     "stock_ratio": selected_row["stock"],
                     "rights_price": None,
                     "rights_ratio": 0.0,
+                    "rights_actual_shares": None,
+                    "rights_pre_shares": None,
+                    "rights_post_shares": None,
                     "record_date": record_date,
                     "pay_date": selected_row["pay_date"],
                     "stock_list_date": selected_row["stock_list_date"],
@@ -811,6 +823,9 @@ def select_g1_cninfo_rights_actions(
                 "list_date": list_date,
                 "rights_price": rights_price,
                 "rights_ratio": rights_ratio,
+                "rights_actual_shares": actual_shares,
+                "rights_pre_shares": pre_shares,
+                "rights_post_shares": post_shares,
             }
 
         ledger_rows: list[dict[str, Any]] = []
@@ -827,12 +842,21 @@ def select_g1_cninfo_rights_actions(
                 ex_date,
                 item["rights_price"],
                 item["rights_ratio"],
+                item["rights_actual_shares"],
+                item["rights_pre_shares"],
+                item["rights_post_shares"],
             )
             event_key = _rights_economic_event_key_sha256(
                 symbol, record_date, ex_date
             )
             candidate_id = _rights_candidate_id_sha256(
-                event_key, item["subid"], item["rights_price"], item["rights_ratio"]
+                event_key,
+                item["subid"],
+                item["rights_price"],
+                item["rights_ratio"],
+                item["rights_actual_shares"],
+                item["rights_pre_shares"],
+                item["rights_post_shares"],
             )
             ledger_rows.append(
                 {
@@ -844,6 +868,9 @@ def select_g1_cninfo_rights_actions(
                     "stock_ratio": 0.0,
                     "rights_price": item["rights_price"],
                     "rights_ratio": item["rights_ratio"],
+                    "rights_actual_shares": item["rights_actual_shares"],
+                    "rights_pre_shares": item["rights_pre_shares"],
+                    "rights_post_shares": item["rights_post_shares"],
                     "record_date": record_date,
                     "pay_date": None,
                     "stock_list_date": item["list_date"],
@@ -867,6 +894,9 @@ def select_g1_cninfo_rights_actions(
                     "stock_ratio": 0.0,
                     "rights_price": item["rights_price"],
                     "rights_ratio": item["rights_ratio"],
+                    "rights_actual_shares": item["rights_actual_shares"],
+                    "rights_pre_shares": item["rights_pre_shares"],
+                    "rights_post_shares": item["rights_post_shares"],
                     "pay_date": None,
                     "stock_list_date": item["list_date"],
                     "vendor_record_id": item["subid"],
@@ -1360,6 +1390,12 @@ def _assert_ledger_evidence_closure(
             rights_price = row["rights_price"]
             if rights_price is None:
                 raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RESULT_INVALID")
+            if (
+                row["rights_actual_shares"] is None
+                or row["rights_pre_shares"] is None
+                or row["rights_post_shares"] is None
+            ):
+                raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RESULT_INVALID")
             expected_event = _rights_event_id_sha256(
                 row["symbol"],
                 row["vendor_record_id"],
@@ -1367,6 +1403,9 @@ def _assert_ledger_evidence_closure(
                 row["ex_date"],
                 float(rights_price),
                 float(row["rights_ratio"]),
+                float(row["rights_actual_shares"]),
+                float(row["rights_pre_shares"]),
+                float(row["rights_post_shares"]),
             )
         else:
             raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RESULT_INVALID")
@@ -1389,6 +1428,15 @@ def _assert_ledger_evidence_closure(
             or float(row["stock_ratio"]) != float(match["stock_ratio"])
             or _nullable_float_differs(row["rights_price"], match["rights_price"])
             or float(row["rights_ratio"]) != float(match["rights_ratio"])
+            or _nullable_float_differs(
+                row["rights_actual_shares"], match["rights_actual_shares"]
+            )
+            or _nullable_float_differs(
+                row["rights_pre_shares"], match["rights_pre_shares"]
+            )
+            or _nullable_float_differs(
+                row["rights_post_shares"], match["rights_post_shares"]
+            )
             or row["record_date"] != match["record_date"]
             or row["pay_date"] != match["pay_date"]
             or row["stock_list_date"] != match["stock_list_date"]
@@ -1638,15 +1686,24 @@ def _rights_economic_event_key_sha256(
 
 
 def _rights_candidate_id_sha256(
-    event_key: str, subid: str, rights_price: float, rights_ratio: float
+    event_key: str,
+    subid: str,
+    rights_price: float,
+    rights_ratio: float,
+    rights_actual_shares: float,
+    rights_pre_shares: float,
+    rights_post_shares: float,
 ) -> str:
     return _sha256_json(
         [
-            "m3-g1-corporate-action-rights-candidate-v1",
+            "m3-g1-corporate-action-rights-candidate-v2",
             event_key,
             subid,
             _float_token(rights_price),
             _float_token(rights_ratio),
+            _float_token(rights_actual_shares),
+            _float_token(rights_pre_shares),
+            _float_token(rights_post_shares),
         ]
     )
 
@@ -1658,10 +1715,13 @@ def _rights_event_id_sha256(
     ex_date: dt.date,
     rights_price: float,
     rights_ratio: float,
+    rights_actual_shares: float,
+    rights_pre_shares: float,
+    rights_post_shares: float,
 ) -> str:
     return _sha256_json(
         [
-            "m3-g1-corporate-action-rights-event-v1",
+            "m3-g1-corporate-action-rights-event-v2",
             "RIGHTS",
             symbol,
             subid,
@@ -1669,6 +1729,9 @@ def _rights_event_id_sha256(
             ex_date.isoformat(),
             _float_token(rights_price),
             _float_token(rights_ratio),
+            _float_token(rights_actual_shares),
+            _float_token(rights_pre_shares),
+            _float_token(rights_post_shares),
         ]
     )
 
@@ -2155,6 +2218,9 @@ def _ledger_schema() -> dict[str, Any]:
         "stock_ratio": pl.Float64,
         "rights_price": pl.Float64,
         "rights_ratio": pl.Float64,
+        "rights_actual_shares": pl.Float64,
+        "rights_pre_shares": pl.Float64,
+        "rights_post_shares": pl.Float64,
         "record_date": pl.Date,
         "pay_date": pl.Date,
         "stock_list_date": pl.Date,
@@ -2179,6 +2245,9 @@ def _evidence_schema() -> dict[str, Any]:
         "stock_ratio": pl.Float64,
         "rights_price": pl.Float64,
         "rights_ratio": pl.Float64,
+        "rights_actual_shares": pl.Float64,
+        "rights_pre_shares": pl.Float64,
+        "rights_post_shares": pl.Float64,
         "pay_date": pl.Date,
         "stock_list_date": pl.Date,
         "vendor_record_id": pl.Utf8,

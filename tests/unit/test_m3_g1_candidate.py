@@ -371,8 +371,8 @@ def _build_spec() -> G1BuildSpec:
     return G1BuildSpec(
         config_version="m3-g1-test-v1",
         g1_config_sha256=_HEX,
-        mapper_version="m3-g1-tushare-mapper-v4",
-        schema_version="m3-g1-schema-v2",
+        mapper_version="m3-g1-tushare-mapper-v5",
+        schema_version="m3-g1-schema-v3",
         membership_method_version=G1_MEMBERSHIP_METHOD_VERSION,
         price_limit_method_version=G1_PRICE_LIMIT_METHOD_VERSION,
         corporate_action_selection_version=G1_CORPORATE_ACTION_SELECTION_VERSION,
@@ -1477,8 +1477,8 @@ def test_p0d_versions_and_scoped_projection_bounds() -> None:
         G1BuildSpec(
             config_version="m3-g1-test-v1",
             g1_config_sha256=_HEX,
-            mapper_version="m3-g1-tushare-mapper-v4",
-            schema_version="m3-g1-schema-v2",
+            mapper_version="m3-g1-tushare-mapper-v5",
+            schema_version="m3-g1-schema-v3",
             membership_method_version=G1_MEMBERSHIP_METHOD_VERSION,
             price_limit_method_version=G1_PRICE_LIMIT_METHOD_VERSION,
             corporate_action_selection_version=G1_CORPORATE_ACTION_SELECTION_VERSION,
@@ -1614,7 +1614,7 @@ def test_p0d_build_excludes_pre_first_bar_factor_jump(
     verify_g1_candidate(inputs=inputs, candidate=candidate)
     audit = audit_g1_candidate(candidate=candidate)
     assert audit.passed is True
-    assert candidate.build_spec.mapper_version == "m3-g1-tushare-mapper-v4"
+    assert candidate.build_spec.mapper_version == "m3-g1-tushare-mapper-v5"
     assert (
         candidate.build_spec.corporate_action_reconciliation_version
         == "tushare_factor_daily_preclose_v5"

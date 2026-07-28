@@ -17,6 +17,11 @@ import polars as pl
 from quant.data import index_membership as index_membership
 from quant.data import m3_execution_facts as execution_facts
 from quant.data import m3_mappers as mappers
+from quant.data.connectors.cninfo import (
+    CNINFO_ENDPOINT,
+    CNINFO_SOURCE,
+    CNINFO_STOCK_ALLOTMENT_FIELDS,
+)
 from quant.data.m3_backfill import (
     G1RequestPlan,
     HistoryWindow,
@@ -59,7 +64,7 @@ _BENCHMARK = "510300.SH"
 _BENCHMARK_MODE = "TRADEABLE_ETF_TOTAL_RETURN_PROXY"
 _BENCHMARK_METHOD_VERSION = "tushare_510300_fund_daily_fund_adj_hfq_v1"
 _BENCHMARK_DIVIDEND_RECONCILIATION_VERSION = "tushare_fund_div_implemented_cash_v1"
-_MAPPER_VERSION = "m3-g1-tushare-mapper-v4"
+_MAPPER_VERSION = "m3-g1-tushare-mapper-v5"
 _IDENTITY_SCHEMA = "m3-g1-primary-candidate-identity-v1"
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _A_SHARE = re.compile(r"^[0-9]{6}\.(?:SH|SZ)$")
@@ -311,6 +316,9 @@ class G1ReceiptProjectionV1:
             type(item) is not str for item in self.columns
         ):
             raise ValueError("receipt projection columns 非法")
+        if self.source == CNINFO_SOURCE and self.endpoint == CNINFO_ENDPOINT:
+            if self.columns != CNINFO_STOCK_ALLOTMENT_FIELDS:
+                raise ValueError("cninfo stock_allotment columns 必须精确绑定官方字段")
 
 
 @dataclass(frozen=True)
@@ -1734,6 +1742,9 @@ def _build_candidate_body(inputs: G1BuildInputs) -> G1Candidate:
             "action_type": pl.Utf8,
             "rights_price": pl.Float64,
             "rights_ratio": pl.Float64,
+            "rights_actual_shares": pl.Float64,
+            "rights_pre_shares": pl.Float64,
+            "rights_post_shares": pl.Float64,
             "vendor_record_id": pl.Utf8,
         },
         sort_keys=["symbol", "ex_date", "event_id"],
@@ -1765,6 +1776,9 @@ def _build_candidate_body(inputs: G1BuildInputs) -> G1Candidate:
             "action_type": pl.Utf8,
             "rights_price": pl.Float64,
             "rights_ratio": pl.Float64,
+            "rights_actual_shares": pl.Float64,
+            "rights_pre_shares": pl.Float64,
+            "rights_post_shares": pl.Float64,
             "vendor_record_id": pl.Utf8,
         },
         sort_keys=["symbol", "ex_date", "candidate_rank", "candidate_id"],

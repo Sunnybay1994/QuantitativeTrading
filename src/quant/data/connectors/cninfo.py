@@ -427,4 +427,3 @@ def _enckey_default() -> str:
 def _sanitize_network(exc: BaseException) -> CninfoConnectorError:
     _ = exc
     return CninfoConnectorError("CNINFO_NETWORK_FAILED")
-

@@ -472,7 +472,7 @@ def _assert_code(exc_info: pytest.ExceptionInfo[BaseException], code: str) -> No
 def test_version_constants() -> None:
     assert G1_PRICE_LIMIT_METHOD_VERSION == "tushare_stk_limit_suspension_aware_v2"
     assert G1_CORPORATE_ACTION_SELECTION_VERSION == (
-        "tushare_dividend_cninfo_rights_implemented_v3"
+        "tushare_dividend_cninfo_rights_capital_v4"
     )
     assert G1_CORPORATE_ACTION_RECONCILIATION_VERSION == (
         "tushare_factor_daily_preclose_v5"
@@ -2643,6 +2643,78 @@ def test_dividend_and_rights_same_day_formula_and_order_invariant_digest() -> No
     )
     verify_corporate_action_reconciliation_result(result=result_forward)
     verify_corporate_action_reconciliation_result(result=result_reversed)
+
+
+def test_p0f_r1_rights_capital_identity_collision_and_tamper() -> None:
+    """Different legal capital triples must not collide; tamper fail-closed."""
+    base = {
+        "SUBID": "42",
+        "F005N": "45.68",
+        "F004N": "3.0",
+        "F011D": "20260106",
+        "F012D": "20260107",
+    }
+    left = select_g1_cninfo_rights_actions(
+        response=_make_cninfo_verified(
+            _cninfo_frame(
+                [_rights_row(**base, F017N="100.0", F024N="1000.0", F025N="1100.0")]
+            )
+        ),
+        history=_history(),
+        symbols=[_SYMBOL],
+    )
+    right = select_g1_cninfo_rights_actions(
+        response=_make_cninfo_verified(
+            _cninfo_frame(
+                [_rights_row(**base, F017N="200.0", F024N="1000.0", F025N="1200.0")]
+            )
+        ),
+        history=_history(),
+        symbols=[_SYMBOL],
+    )
+    assert left.ledger.height == 1 and right.ledger.height == 1
+    assert left.ledger["event_id"][0] != right.ledger["event_id"][0]
+    assert (
+        left.selection_evidence["candidate_id"][0]
+        != right.selection_evidence["candidate_id"][0]
+    )
+    assert left.ledger["rights_actual_shares"][0] == 100.0
+    assert left.ledger["rights_pre_shares"][0] == 1000.0
+    assert left.ledger["rights_post_shares"][0] == 1100.0
+    verify_corporate_action_selection_result(result=left)
+    verify_corporate_action_selection_result(result=right)
+
+    # Tamper capital and recompute digests: selection verify must reject.
+    poisoned = left.ledger.with_columns(pl.lit(999.0).alias("rights_actual_shares"))
+    poisoned_sha = clean_table_content_sha256(
+        table_name="corporate_action_ledger", frame=poisoned
+    )
+    with pytest.raises(M3G1ExecutionFactError):
+        verify_corporate_action_selection_result(
+            result=CorporateActionSelectionResult(
+                ledger=poisoned,
+                selection_evidence=left.selection_evidence,
+                ledger_sha256=poisoned_sha,
+                selection_evidence_sha256=left.selection_evidence_sha256,
+            )
+        )
+
+
+def test_p0f_r1_dividend_capital_fields_null() -> None:
+    result = select_g1_corporate_actions(
+        response=_make_verified("dividend", _dividend_frame()),
+        history=_history(),
+    )
+    assert result.ledger.height == 1
+    row = result.ledger.row(0, named=True)
+    assert row["rights_actual_shares"] is None
+    assert row["rights_pre_shares"] is None
+    assert row["rights_post_shares"] is None
+    evidence = result.selection_evidence.row(0, named=True)
+    assert evidence["rights_actual_shares"] is None
+    assert evidence["rights_pre_shares"] is None
+    assert evidence["rights_post_shares"] is None
+    verify_corporate_action_selection_result(result=result)
 
 
 def test_no_network_or_research_imports() -> None:
