@@ -36,7 +36,7 @@ from quant.domain import (
 
 G1_PRICE_LIMIT_METHOD_VERSION = "tushare_stk_limit_suspension_aware_v2"
 G1_CORPORATE_ACTION_SELECTION_VERSION = (
-    "tushare_dividend_cninfo_rights_capital_iso_date_v5"
+    "tushare_dividend_cninfo_rights_capital_iso_date_cross_end_exact_fold_v6"
 )
 G1_CORPORATE_ACTION_RECONCILIATION_VERSION = (
     "tushare_factor_daily_preclose_suspension_resume_v6"
@@ -493,10 +493,7 @@ def select_g1_corporate_actions(
         request_id = verified.spec.request_id
         snapshot = verified.receipt.raw_snapshot_id
 
-        groups: dict[
-            tuple[str, dt.date, dt.date, dt.date],
-            list[dict[str, Any]],
-        ] = {}
+        parsed_rows: list[dict[str, Any]] = []
         for raw in frame.iter_rows(named=True):
             symbol = _require_a_share(raw.get("ts_code"), expected=ts_code)
             div_proc = raw.get("div_proc")
@@ -545,8 +542,8 @@ def select_g1_corporate_actions(
                     raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
             elif list_date is not None:
                 raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
-            group_key = (symbol, end_date, record_date, ex_date)
-            groups.setdefault(group_key, []).append(
+            base_date = _parse_optional_date8(raw.get("base_date"), allow_null=True)
+            parsed_rows.append(
                 {
                     "symbol": symbol,
                     "end_date": end_date,
@@ -558,8 +555,43 @@ def select_g1_corporate_actions(
                     "stock": stock,
                     "pay_date": pay_date,
                     "stock_list_date": list_date,
+                    # Exact-identity provenance only; not used for ledger math.
+                    "div_proc": div_proc,
+                    "stk_div_raw": _parse_strict_scalar(
+                        raw.get("stk_div"), allow_null=True
+                    ),
+                    "stk_bo_rate": _parse_strict_scalar(
+                        raw.get("stk_bo_rate"), allow_null=True
+                    ),
+                    "stk_co_rate": _parse_strict_scalar(
+                        raw.get("stk_co_rate"), allow_null=True
+                    ),
+                    "cash_div": _parse_strict_scalar(
+                        raw.get("cash_div"), allow_null=True
+                    ),
+                    "cash_div_tax_raw": _parse_strict_scalar(
+                        raw.get("cash_div_tax"), allow_null=True
+                    ),
+                    "base_date": base_date,
+                    "base_share": _parse_strict_scalar(
+                        raw.get("base_share"), allow_null=True
+                    ),
                 }
             )
+
+        groups: dict[
+            tuple[str, dt.date, dt.date, dt.date],
+            list[dict[str, Any]],
+        ] = {}
+        for item in _fold_dividend_cross_end_exact_duplicates(parsed_rows):
+            row = item["row"]
+            group_key = (
+                row["symbol"],
+                row["end_date"],
+                row["record_date"],
+                row["ex_date"],
+            )
+            groups.setdefault(group_key, []).append(item)
 
         ledger_rows: list[dict[str, Any]] = []
         evidence_rows: list[dict[str, Any]] = []
@@ -1575,12 +1607,84 @@ def _event_set_sha256(event_ids: list[str]) -> str:
     )
 
 
-def _fold_identical_candidates(
-    candidates_raw: list[dict[str, Any]],
+def _fold_dividend_cross_end_exact_duplicates(
+    rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    """Fold 实施 rows that match on all formal fields except ``end_date``.
+
+    Canonical ``end_date`` is the max within each exact cluster. ``raw_row_count``
+    is the total number of original rows folded into the cluster.
+    """
+    buckets: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for row in rows:
+        identity = _dividend_cross_end_exact_identity(row)
+        existing = buckets.get(identity)
+        if existing is None:
+            buckets[identity] = {"row": dict(row), "raw_row_count": 1}
+            continue
+        existing["raw_row_count"] += 1
+        if row["end_date"] > existing["row"]["end_date"]:
+            existing["row"]["end_date"] = row["end_date"]
+    return sorted(
+        buckets.values(),
+        key=lambda item: (
+            item["row"]["symbol"],
+            item["row"]["end_date"],
+            item["row"]["record_date"],
+            item["row"]["ex_date"],
+            item["row"]["imp_ann_date"] is not None,
+            item["row"]["imp_ann_date"]
+            if item["row"]["imp_ann_date"] is not None
+            else _DATE_MIN,
+            item["row"]["ann_date"] is not None,
+            item["row"]["ann_date"]
+            if item["row"]["ann_date"] is not None
+            else _DATE_MIN,
+            _norm_float(item["row"]["cash"]),
+            _norm_float(item["row"]["stock"]),
+            item["row"]["pay_date"] is not None,
+            item["row"]["pay_date"]
+            if item["row"]["pay_date"] is not None
+            else _DATE_MIN,
+            item["row"]["stock_list_date"] is not None,
+            item["row"]["stock_list_date"]
+            if item["row"]["stock_list_date"] is not None
+            else _DATE_MIN,
+            item["raw_row_count"],
+        ),
+    )
+
+
+def _dividend_cross_end_exact_identity(row: dict[str, Any]) -> tuple[Any, ...]:
+    """Identity for cross-``end_date`` exact fold: all formal fields except end_date."""
+    return (
+        row["symbol"],
+        row["ann_date"],
+        row["div_proc"],
+        row["stk_div_raw"],
+        row["stk_bo_rate"],
+        row["stk_co_rate"],
+        row["cash_div"],
+        row["cash_div_tax_raw"],
+        row["record_date"],
+        row["ex_date"],
+        row["pay_date"],
+        row["stock_list_date"],
+        row["imp_ann_date"],
+        row["base_date"],
+        row["base_share"],
+    )
+
+
+def _fold_identical_candidates(
+    candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Fold identical decision candidates; each item is ``{row, raw_row_count}``."""
     buckets: dict[tuple[Any, ...], dict[str, Any]] = {}
     order: list[tuple[Any, ...]] = []
-    for row in candidates_raw:
+    for item in candidates:
+        row = item["row"]
+        count = int(item["raw_row_count"])
         decision = _decision_fields(row)
         rank_key = _version_rank_key(row)
         identity = rank_key + decision
@@ -1590,10 +1694,10 @@ def _fold_identical_candidates(
             for other_id, other in buckets.items():
                 if other_id[:4] == rank_key and other_id[4:] != decision:
                     raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_VERSION_CONFLICT")
-            buckets[identity] = {"row": row, "raw_row_count": 1}
+            buckets[identity] = {"row": row, "raw_row_count": count}
             order.append(identity)
         else:
-            existing["raw_row_count"] += 1
+            existing["raw_row_count"] += count
     return [buckets[key] for key in order]
 
 

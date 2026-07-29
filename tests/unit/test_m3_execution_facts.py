@@ -473,6 +473,9 @@ def _assert_code(exc_info: pytest.ExceptionInfo[BaseException], code: str) -> No
 def test_version_constants() -> None:
     assert G1_PRICE_LIMIT_METHOD_VERSION == "tushare_stk_limit_suspension_aware_v2"
     assert G1_CORPORATE_ACTION_SELECTION_VERSION == (
+        "tushare_dividend_cninfo_rights_capital_iso_date_cross_end_exact_fold_v6"
+    )
+    assert G1_CORPORATE_ACTION_SELECTION_VERSION != (
         "tushare_dividend_cninfo_rights_capital_iso_date_v5"
     )
     assert G1_CORPORATE_ACTION_RECONCILIATION_VERSION == (
@@ -1083,14 +1086,15 @@ def test_dividend_event_id_stable_pay_changes_candidate() -> None:
 
 
 def test_dividend_distinct_end_dates_same_ex_fields_pass_closure() -> None:
-    """Two economic events that share ex/cash/stock/pay but differ in end_date.
+    """Two economic events that share ex/cash/stock/pay but differ in ann_date.
 
-    Pre-fix join omitted end_date and collided; closure must pass with distinct
-    event_ids after joining by event_id identity.
+    Formal 600930.SH shape: different end_date alone is no longer enough to prove
+    distinct events after cross-end exact fold; distinct ann_date must keep two
+    event_ids and pass ledger↔evidence closure.
     """
     rows = [
-        _dividend_row(end_date="20241231"),
-        _dividend_row(end_date="20251231"),
+        _dividend_row(end_date="20241231", ann_date="20260108"),
+        _dividend_row(end_date="20251231", ann_date="20260124"),
     ]
     result = select_g1_corporate_actions(
         response=_make_verified("dividend", _dividend_frame(rows)), history=_history()
@@ -1104,7 +1108,308 @@ def test_dividend_distinct_end_dates_same_ex_fields_pass_closure() -> None:
         dt.date(2024, 12, 31),
         dt.date(2025, 12, 31),
     }
+    assert set(selected["ann_date"].to_list()) == {
+        dt.date(2026, 1, 8),
+        dt.date(2026, 1, 24),
+    }
     verify_corporate_action_selection_result(result=result)
+
+
+def test_dividend_cross_end_exact_fold_600733_shape() -> None:
+    """Formal 600733.SH shape: only end_date differs → one event, max end_date."""
+    rows = [
+        _dividend_row(
+            end_date="20180201",
+            ann_date="20180201",
+            imp_ann_date="20180913",
+            stk_div=2.5,
+            stk_bo_rate=None,
+            stk_co_rate=2.5,
+            cash_div=0.0,
+            cash_div_tax=None,
+            record_date="20180918",
+            ex_date="20180919",
+            pay_date=None,
+            div_listdate="20180920",
+            base_date="20180823",
+            base_share=95867.1182,
+        ),
+        _dividend_row(
+            end_date="20180823",
+            ann_date="20180201",
+            imp_ann_date="20180913",
+            stk_div=2.5,
+            stk_bo_rate=None,
+            stk_co_rate=2.5,
+            cash_div=0.0,
+            cash_div_tax=None,
+            record_date="20180918",
+            ex_date="20180919",
+            pay_date=None,
+            div_listdate="20180920",
+            base_date="20180823",
+            base_share=95867.1182,
+        ),
+    ]
+    history = HistoryWindow(dt.date(2018, 1, 1), dt.date(2018, 12, 31))
+    result = select_g1_corporate_actions(
+        response=_make_verified("dividend", _dividend_frame(rows)), history=history
+    )
+    assert result.ledger.height == 1
+    assert result.ledger["stock_ratio"][0] == 2.5
+    assert result.ledger["cash_per_share_gross"][0] == 0.0
+    selected = result.selection_evidence.filter(pl.col("selected"))
+    assert selected.height == 1
+    assert selected["end_date"][0] == dt.date(2018, 8, 23)
+    assert selected["raw_row_count"][0] == 2
+    verify_corporate_action_selection_result(result=result)
+
+
+def test_dividend_cross_end_exact_fold_three_ends_order_independent() -> None:
+    """Three exact cross-end duplicates fold identically under reversed/shuffled input."""
+    base = dict(
+        ann_date="20260102",
+        imp_ann_date="20260103",
+        cash_div_tax=0.1,
+        stk_div=0.0,
+        record_date="20260106",
+        ex_date="20260107",
+        pay_date="20260108",
+        div_listdate=None,
+        base_date="20251231",
+        base_share=100.0,
+    )
+    ends = ["20231231", "20241231", "20251231"]
+    forward = [_dividend_row(end_date=end, **base) for end in ends]
+    reversed_rows = list(reversed(forward))
+    shuffled = [
+        _dividend_row(end_date=ends[1], **base),
+        _dividend_row(end_date=ends[2], **base),
+        _dividend_row(end_date=ends[0], **base),
+    ]
+    digests: list[tuple[str, str]] = []
+    for rows in (forward, reversed_rows, shuffled):
+        result = select_g1_corporate_actions(
+            response=_make_verified("dividend", _dividend_frame(rows)),
+            history=_history(),
+        )
+        assert result.ledger.height == 1
+        selected = result.selection_evidence.filter(pl.col("selected"))
+        assert selected.height == 1
+        assert selected["end_date"][0] == dt.date(2025, 12, 31)
+        assert selected["raw_row_count"][0] == 3
+        verify_corporate_action_selection_result(result=result)
+        digests.append((result.ledger_sha256, result.selection_evidence_sha256))
+    assert digests[0] == digests[1] == digests[2]
+
+
+def test_dividend_cross_end_exact_fold_with_same_end_duplicates_counts_all() -> None:
+    """Exact same-end duplicates plus cross-end duplicates sum into raw_row_count."""
+    rows = [
+        _dividend_row(end_date="20241231"),
+        _dividend_row(end_date="20241231"),
+        _dividend_row(end_date="20251231"),
+        _dividend_row(end_date="20251231"),
+        _dividend_row(end_date="20231231"),
+    ]
+    result = select_g1_corporate_actions(
+        response=_make_verified("dividend", _dividend_frame(rows)), history=_history()
+    )
+    assert result.ledger.height == 1
+    selected = result.selection_evidence.filter(pl.col("selected"))
+    assert selected.height == 1
+    assert selected["end_date"][0] == dt.date(2025, 12, 31)
+    assert selected["raw_row_count"][0] == 5
+    verify_corporate_action_selection_result(result=result)
+
+
+def test_dividend_cross_end_exact_fold_blocked_by_provenance_fields() -> None:
+    """Any non-end_date formal-field difference blocks cross-end exact fold."""
+    cases: list[tuple[dict[str, Any], dict[str, Any]]] = [
+        (
+            {"end_date": "20241231"},
+            {"end_date": "20251231", "imp_ann_date": "20260104"},
+        ),
+        (
+            {"end_date": "20241231"},
+            {"end_date": "20251231", "ann_date": "20260101"},
+        ),
+        (
+            {"end_date": "20241231"},
+            {"end_date": "20251231", "cash_div_tax": 0.11},
+        ),
+        (
+            {"end_date": "20241231"},
+            {"end_date": "20251231", "pay_date": "20260109"},
+        ),
+        (
+            {
+                "end_date": "20241231",
+                "cash_div_tax": None,
+                "stk_div": 0.05,
+                "pay_date": None,
+                "div_listdate": "20260107",
+            },
+            {
+                "end_date": "20251231",
+                "cash_div_tax": None,
+                "stk_div": 0.06,
+                "pay_date": None,
+                "div_listdate": "20260107",
+            },
+        ),
+        (
+            {
+                "end_date": "20241231",
+                "cash_div_tax": None,
+                "stk_div": 0.05,
+                "pay_date": None,
+                "div_listdate": "20260107",
+            },
+            {
+                "end_date": "20251231",
+                "cash_div_tax": None,
+                "stk_div": 0.05,
+                "pay_date": None,
+                "div_listdate": "20260108",
+            },
+        ),
+        (
+            {"end_date": "20241231"},
+            {"end_date": "20251231", "base_date": "20251130"},
+        ),
+        (
+            {"end_date": "20241231"},
+            {"end_date": "20251231", "base_share": 101.0},
+        ),
+        (
+            {"end_date": "20241231"},
+            {"end_date": "20251231", "stk_bo_rate": 0.1},
+        ),
+        (
+            {"end_date": "20241231"},
+            {"end_date": "20251231", "stk_co_rate": 0.1},
+        ),
+        (
+            {"end_date": "20241231"},
+            {"end_date": "20251231", "cash_div": 0.08},
+        ),
+        (
+            {
+                "end_date": "20241231",
+                "cash_div_tax": None,
+                "stk_div": 0.05,
+                "pay_date": None,
+                "div_listdate": "20260107",
+            },
+            {
+                "end_date": "20251231",
+                "cash_div_tax": 0.0,
+                "stk_div": 0.05,
+                "pay_date": None,
+                "div_listdate": "20260107",
+            },
+        ),
+    ]
+    for left, right in cases:
+        rows = [_dividend_row(**left), _dividend_row(**right)]
+        result = select_g1_corporate_actions(
+            response=_make_verified("dividend", _dividend_frame(rows)),
+            history=_history(),
+        )
+        assert result.ledger.height == 2, (left, right)
+        assert len(set(result.ledger["event_id"].to_list())) == 2, (left, right)
+        verify_corporate_action_selection_result(result=result)
+
+
+def test_dividend_cross_end_exact_fold_reconcile_stock_once() -> None:
+    """600733-shaped dual end_date stock rows reconcile as one declared stock event."""
+    stock = 2.5
+    prev_close = 10.0
+    declared = prev_close * (1.0 + stock) / prev_close
+    assert declared == 3.5
+    rows = [
+        _dividend_row(
+            end_date="20241231",
+            cash_div_tax=None,
+            stk_div=stock,
+            pay_date=None,
+            div_listdate="20260107",
+        ),
+        _dividend_row(
+            end_date="20251231",
+            cash_div_tax=None,
+            stk_div=stock,
+            pay_date=None,
+            div_listdate="20260107",
+        ),
+    ]
+    actions = select_g1_corporate_actions(
+        response=_make_verified("dividend", _dividend_frame(rows)),
+        history=_history(),
+    ).ledger
+    assert actions.height == 1
+    assert actions["stock_ratio"][0] == stock
+
+    closes: dict[dt.date, tuple[float, float]] = {
+        _D0: (prev_close, prev_close),
+        _D1: (prev_close, prev_close),
+        _D2: (prev_close / declared, prev_close / declared),
+    }
+    bars_rows = []
+    factor_rows = []
+    for day, (close, _) in sorted(closes.items()):
+        adj = 1.0 if day < _D2 else declared
+        bars_rows.append(
+            {
+                "symbol": _SYMBOL,
+                "trade_date": day,
+                "open": close,
+                "high": close,
+                "low": close,
+                "close": close,
+                "volume": 1.0,
+                "amount": 1.0,
+                "adj_factor": adj,
+                "source": "tushare",
+            }
+        )
+    for day in (_D0, _D1, _D2):
+        factor_rows.append(
+            {
+                "symbol": _SYMBOL,
+                "effective_date": day,
+                "adj_factor": 1.0 if day < _D2 else declared,
+                "source": "tushare",
+            }
+        )
+    bars = pl.DataFrame(bars_rows)
+    factors = pl.DataFrame(factor_rows)
+    daily = _make_verified(
+        "daily",
+        _daily_frame(closes),
+        parameters={
+            "ts_code": _SYMBOL,
+            "start_date": _START,
+            "end_date": _END,
+        },
+    )
+    result = reconcile_g1_corporate_actions(
+        corporate_actions=actions,
+        bars=bars,
+        adjustment_factors=factors,
+        daily_responses=[daily],
+        suspensions=_suspension(),
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+    )
+    event_row = result.evidence.filter(pl.col("event_count") > 0)
+    assert event_row.height == 1
+    assert event_row["stock_ratio"][0] == stock
+    assert event_row["event_count"][0] == 1
+    assert event_row["status"][0] == "MATCHED_EVENT_DECLARED_FORMULA"
+    verify_corporate_action_reconciliation_result(result=result)
 
 
 def test_ledger_evidence_closure_rejects_tampered_event_id_or_fields() -> None:
