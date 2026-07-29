@@ -2,7 +2,8 @@
 
 > **不宣称** Codex 终验 / Linux Gate / 新 VerifiedG1Release。
 > 旧 release `3c9bda84…` 仍禁止作 G2A 输入。
-> P0I v6 实现后正式探针已运行；P0I-R1 身份闭包尚待独立复验。本文件只冻结正式 `status` 首败证据，**不证明** P0I/Gate 通过，不启动实现扩大。
+> P0I 经 R1/R2 返工、外部独立复验及主 Agent 定向终验后已通过；本文件只冻结 P0I 之后的正式
+> `status` 首败证据，**不证明** G1 Gate 通过，不启动实现扩大。
 
 ## 正式命令
 
