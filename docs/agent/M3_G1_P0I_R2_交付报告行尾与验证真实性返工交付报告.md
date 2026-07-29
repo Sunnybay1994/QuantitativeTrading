@@ -29,7 +29,7 @@
 |---|---|---|
 | `pytest tests/unit/test_m3_g1_planning.py::test_static_plan_from_c0_and_forged_identity tests/unit/test_m3_reference.py::test_p0e_reconciliation_version_propagates_in_build_spec -q` | 0 | 2 passed |
 | `git diff --check d090d1e7dda1b315b51915b85d0f3f1fc3859bee -- docs/agent/M3_G1_P0I_R1_对账版本身份断言闭包返工交付报告.md docs/agent/M3_G1_P0I_R2_交付报告行尾与验证真实性返工交付报告.md` | 0 | 无 trailing whitespace / conflict marker |
-| `git show --check --oneline <R2提交>` | 0（提交后实测，哈希见交付摘要） | 仅含上述两文件；无 whitespace error |
+| `git show --check --oneline 15c5c0d213d8a0ace5523c64a682073642d166e6` | 0 | 仅含上述两文件；无 whitespace error |
 
 未运行：四文件长套件（独立复验已证 `308 passed, 5 skipped` 且代码未变）、全量 pytest/Ruff/mypy、正式网络、status/HISTORY/REFERENCE/PREPARE/PUBLISH、WSL Gate、600733 处置。属外部独立复验 / 主 Agent 终验。
 
