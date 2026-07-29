@@ -3036,11 +3036,11 @@ def test_package_exports_frozen_public_names() -> None:
 
 def test_p0e_reconciliation_version_propagates_in_build_spec() -> None:
     assert G1_CORPORATE_ACTION_RECONCILIATION_VERSION == (
-        "tushare_factor_daily_preclose_v5"
+        "tushare_factor_daily_preclose_suspension_resume_v6"
     )
     spec = _build_spec()
     assert spec.corporate_action_reconciliation_version == (
-        "tushare_factor_daily_preclose_v5"
+        G1_CORPORATE_ACTION_RECONCILIATION_VERSION
     )
     with pytest.raises(ValueError, match="corporate_action_reconciliation_version"):
         replace(

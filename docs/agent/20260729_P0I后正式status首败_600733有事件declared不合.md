@@ -1,8 +1,8 @@
 # 2026-07-29：P0I 后正式 status 首败证据（600733 有事件 declared 不合）
 
-> **不宣称** Codex 终验 / Linux Gate / 新 VerifiedG1Release。  
-> 旧 release `3c9bda84…` 仍禁止作 G2A 输入。  
-> P0I 独立初验已通过；本文件只冻结 **P0I 之后** 正式 `status` 首败，不启动实现扩大。
+> **不宣称** Codex 终验 / Linux Gate / 新 VerifiedG1Release。
+> 旧 release `3c9bda84…` 仍禁止作 G2A 输入。
+> P0I v6 实现后正式探针已运行；P0I-R1 身份闭包尚待独立复验。本文件只冻结正式 `status` 首败证据，**不证明** P0I/Gate 通过，不启动实现扩大。
 
 ## 正式命令
 
@@ -15,7 +15,7 @@ error_operation=INSPECT
 
 ## 零网络首败样本
 
-`artifacts/g1_component_diag_20260722/p0i_status_first_failure_v2.json`  
+`artifacts/g1_component_diag_20260722/p0i_status_first_failure_v2.json`
 （`recon=tushare_factor_daily_preclose_suspension_resume_v6`；抛出点 `m3_execution_facts.py` L1231）
 
 | 字段 | 值 |
@@ -37,6 +37,6 @@ error_operation=INSPECT
 
 ## 处置
 
-1. **保留本首败证据**；不启动 REFERENCE / PREPARE / PUBLISH。  
-2. 不放宽 `rtol`，不把本样本伪装成 `NO_EVENT`。  
+1. **保留本首败证据**；不启动 REFERENCE / PREPARE / PUBLISH。
+2. 不放宽 `rtol`，不把本样本伪装成 `NO_EVENT`。
 3. 下一轮若返工：须先冻结任务书，明确是否处理「停牌窗内复牌日多事件 stock 聚合 vs actual」或「缺 daily 时 FULL_DAY 仅靠 declared」合同；**不得**擅自新增事件类型。
