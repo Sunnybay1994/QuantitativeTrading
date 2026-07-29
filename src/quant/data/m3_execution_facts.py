@@ -1613,14 +1613,20 @@ def _fold_dividend_cross_end_exact_duplicates(
     """Fold 实施 rows that match on all formal fields except ``end_date``.
 
     Canonical ``end_date`` is the max within each exact cluster. ``raw_row_count``
-    is the total number of original rows folded into the cluster.
+    is the total number of original rows folded into the cluster. Each wrapper
+    carries ``exact_identity`` so later candidate folding cannot wash away
+    provenance distinctions after ``end_date`` is rewritten.
     """
     buckets: dict[tuple[Any, ...], dict[str, Any]] = {}
     for row in rows:
         identity = _dividend_cross_end_exact_identity(row)
         existing = buckets.get(identity)
         if existing is None:
-            buckets[identity] = {"row": dict(row), "raw_row_count": 1}
+            buckets[identity] = {
+                "row": dict(row),
+                "raw_row_count": 1,
+                "exact_identity": identity,
+            }
             continue
         existing["raw_row_count"] += 1
         if row["end_date"] > existing["row"]["end_date"]:
@@ -1679,7 +1685,12 @@ def _dividend_cross_end_exact_identity(row: dict[str, Any]) -> tuple[Any, ...]:
 def _fold_identical_candidates(
     candidates: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Fold identical decision candidates; each item is ``{row, raw_row_count}``."""
+    """Fold candidates only when rank, decision, and exact identity all match.
+
+    Each item is ``{row, raw_row_count, exact_identity}``. Same version rank with
+    differing decision fields or differing exact identity is fail-closed as
+    ``G1_CORPORATE_ACTION_VERSION_CONFLICT``.
+    """
     buckets: dict[tuple[Any, ...], dict[str, Any]] = {}
     order: list[tuple[Any, ...]] = []
     for item in candidates:
@@ -1687,15 +1698,19 @@ def _fold_identical_candidates(
         count = int(item["raw_row_count"])
         decision = _decision_fields(row)
         rank_key = _version_rank_key(row)
-        identity = rank_key + decision
-        existing = buckets.get(identity)
+        exact_identity = item["exact_identity"]
+        fold_key = rank_key + decision + (exact_identity,)
+        existing = buckets.get(fold_key)
         if existing is None:
-            # Conflict: same rank, different decision.
-            for other_id, other in buckets.items():
-                if other_id[:4] == rank_key and other_id[4:] != decision:
+            for other_key in buckets:
+                if other_key[:4] == rank_key and other_key != fold_key:
                     raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_VERSION_CONFLICT")
-            buckets[identity] = {"row": row, "raw_row_count": count}
-            order.append(identity)
+            buckets[fold_key] = {
+                "row": row,
+                "raw_row_count": count,
+                "exact_identity": exact_identity,
+            }
+            order.append(fold_key)
         else:
             existing["raw_row_count"] += count
     return [buckets[key] for key in order]

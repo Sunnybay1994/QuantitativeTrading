@@ -1322,6 +1322,80 @@ def test_dividend_cross_end_exact_fold_blocked_by_provenance_fields() -> None:
         verify_corporate_action_selection_result(result=result)
 
 
+def test_dividend_post_canonical_provenance_collision_fail_closed() -> None:
+    """A1+A2 exact fold to max end_date must not silently merge with B (base_share)."""
+    a1 = _dividend_row(end_date="20241231", base_share=100.0)
+    a2 = _dividend_row(end_date="20251231", base_share=100.0)
+    b = _dividend_row(end_date="20251231", base_share=101.0)
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        select_g1_corporate_actions(
+            response=_make_verified("dividend", _dividend_frame([a1, a2, b])),
+            history=_history(),
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_VERSION_CONFLICT")
+
+
+def test_dividend_cross_end_exact_fold_a1_a2_only_still_folds() -> None:
+    """Only A1+A2 (exact except end_date) still folds to one event with max end."""
+    rows = [
+        _dividend_row(end_date="20241231", base_share=100.0),
+        _dividend_row(end_date="20251231", base_share=100.0),
+    ]
+    result = select_g1_corporate_actions(
+        response=_make_verified("dividend", _dividend_frame(rows)), history=_history()
+    )
+    assert result.ledger.height == 1
+    selected = result.selection_evidence.filter(pl.col("selected"))
+    assert selected.height == 1
+    assert selected["end_date"][0] == dt.date(2025, 12, 31)
+    assert selected["raw_row_count"][0] == 2
+    verify_corporate_action_selection_result(result=result)
+
+
+def test_dividend_same_end_provenance_collision_fail_closed() -> None:
+    """Same end_date, same rank/decision, different base_share → VERSION_CONFLICT."""
+    rows = [
+        _dividend_row(end_date="20251231", base_share=100.0),
+        _dividend_row(end_date="20251231", base_share=101.0),
+    ]
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        select_g1_corporate_actions(
+            response=_make_verified("dividend", _dividend_frame(rows)),
+            history=_history(),
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_VERSION_CONFLICT")
+
+
+def test_dividend_same_end_exact_duplicates_still_accumulate() -> None:
+    """Fully exact same-end duplicates still accumulate raw_row_count."""
+    rows = [
+        _dividend_row(end_date="20251231", base_share=100.0),
+        _dividend_row(end_date="20251231", base_share=100.0),
+    ]
+    result = select_g1_corporate_actions(
+        response=_make_verified("dividend", _dividend_frame(rows)), history=_history()
+    )
+    assert result.ledger.height == 1
+    selected = result.selection_evidence.filter(pl.col("selected"))
+    assert selected.height == 1
+    assert selected["raw_row_count"][0] == 2
+    verify_corporate_action_selection_result(result=result)
+
+
+def test_dividend_post_canonical_provenance_collision_order_independent() -> None:
+    """Input order must not change the post-canonical provenance conflict code."""
+    a1 = _dividend_row(end_date="20241231", base_share=100.0)
+    a2 = _dividend_row(end_date="20251231", base_share=100.0)
+    b = _dividend_row(end_date="20251231", base_share=101.0)
+    for rows in ([a1, a2, b], [b, a2, a1], [a2, b, a1]):
+        with pytest.raises(M3G1ExecutionFactError) as caught:
+            select_g1_corporate_actions(
+                response=_make_verified("dividend", _dividend_frame(rows)),
+                history=_history(),
+            )
+        _assert_code(caught, "G1_CORPORATE_ACTION_VERSION_CONFLICT")
+
+
 def test_dividend_cross_end_exact_fold_reconcile_stock_once() -> None:
     """600733-shaped dual end_date stock rows reconcile as one declared stock event."""
     stock = 2.5
