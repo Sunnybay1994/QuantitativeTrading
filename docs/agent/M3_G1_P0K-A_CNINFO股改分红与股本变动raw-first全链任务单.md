@@ -4,8 +4,8 @@
 
 日期：2026-07-29（Asia/Shanghai）
 
-实现模型：`cursor-grok-4.5-high`  
-实现角色：全新外部实现 Agent  
+实现模型：`cursor-grok-4.5-high`
+实现角色：全新外部实现 Agent
 后续初验：另一全新外部 Agent，只读生产代码与实现者测试
 
 ## 1. 背景与目标
