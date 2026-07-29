@@ -98,8 +98,11 @@ artifacts/g1_component_diag_20260722/formal_status_p0j_v1.out.log
 artifacts/g1_component_diag_20260722/formal_status_p0j_v1.err.log
 ```
 
-该结果证明正式流程已重新进入候选审计，但顶层 CLI 折叠了具体失败上下文；下一首败正在用零网络捕获探针
-裁定，不能据此宣称 candidate 或 HISTORY Gate 已通过。
+该结果证明正式流程已重新进入候选审计，但顶层 CLI 折叠了具体失败上下文。零网络捕获探针随后裁定
+下一首败仍在 600733.SH，但已越过原 2018-09-19 重复送股，转为 2018-09-27 股改复牌日的独立
+no-event factor 跳变；证据见
+[`20260729_P0J后正式首败_600733股改对价复牌因子.md`](20260729_P0J后正式首败_600733股改对价复牌因子.md)。
+这不能证明 candidate 或 HISTORY Gate 已通过。
 
 ## 5. 提交卫生与已知非阻断项
 
@@ -111,9 +114,8 @@ artifacts/g1_component_diag_20260722/formal_status_p0j_v1.err.log
 
 ## 6. 下一步
 
-等待首败探针输出具体证券、日期和 reconciliation 现场后：
+下一首败已裁定为 600733 股改股份对价缺失。后续：
 
-1. 固化“现象—根因—应遵循规则—最小复现—新增测试—通过条件”；
-2. 冻结下一份独立任务书；
-3. 进入新的外部实现 → 全新外部独立初验 → 主 Agent 终验闭环；
-4. 只有正式 `status` 全部通过后，才按新源码身份重建 REFERENCE / PREPARE / PUBLISH。
+1. 按诊断记录拆分并冻结 P0K-A raw-first 数据链与 P0K-B 事件/对账语义；
+2. 分别进入新的外部实现 → 全新外部独立初验 → 主 Agent 终验闭环；
+3. 只有正式 `status` 全部通过后，才按新源码身份重建 REFERENCE / PREPARE / PUBLISH。
