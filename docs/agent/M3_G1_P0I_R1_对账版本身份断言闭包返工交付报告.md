@@ -2,8 +2,8 @@
 
 状态：**外部实现已交付，待外部独立复验**（自测 ≠ 独立复验 ≠ Gate）
 
-日期：2026-07-29（Asia/Shanghai）  
-实现基线：`e8e1cbbb55df28dd3e717e01b1f551f09b20a59c`（P0I 独立初验 FAIL）  
+日期：2026-07-29（Asia/Shanghai）
+实现基线：`e8e1cbbb55df28dd3e717e01b1f551f09b20a59c`（P0I 独立初验 FAIL）
 任务书：`docs/agent/M3_G1_P0I_R1_对账版本身份断言闭包返工任务单.md`
 
 ## 1. 修复摘要
@@ -41,3 +41,13 @@
 - 身份断言闭包仅覆盖白名单测试钉；生产 v6 语义与 600733 正式首败处置不在本轮。
 - 须由另一全新外部会话写独立复验报告并跑长套件后，方可进入主验。
 - 本交付仅为外部实现自测；不得宣称独立复验、G1 Gate、REFERENCE、PREPARE、PUBLISH 或 Linux Gate 通过。
+
+## 5. R2 更正（交付报告行尾与验证真实性）
+
+任务书：`docs/agent/M3_G1_P0I_R2_交付报告行尾与验证真实性返工任务单.md`
+
+- **错误记录**：§3 表将原提交 `66052b05c91ed2c9e02f9bc80bc4eb9ad723772a` 的 `git diff --check` / `git show --check` 自报为退出码 0，不真实。
+- **独立复验实测**：`git show --check 66052b0` 与 `git diff --check cb8dae8…` 均退出 2；原因为本报告第 5–6 行 trailing whitespace（markdown 硬换行双空格）。
+- **本 R2 修正**：已删除全文件 trailing whitespace；自 `d090d1e7dda1b315b51915b85d0f3f1fc3859bee` 至 R2 提交的白名单两文件 `git diff --check` 必须为退出码 0。
+- **保留**：上文 §3 功能测试结果（最小两测 2 passed、Ruff 0、`rg` 无 v5）不篡改；独立复验已证明的四文件 `308 passed, 5 skipped` 亦不改写。
+- **范围**：仅文档行尾与自报真实性；不改生产代码/测试/配置/600733 证据；不宣称独立复验或 Gate。
