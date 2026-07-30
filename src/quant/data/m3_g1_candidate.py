@@ -1469,6 +1469,11 @@ def audit_g1_candidate(*, candidate: G1Candidate) -> G1PrimaryAuditResult:
                     evidence_sha256=digests["corporate_action_reconciliation"],
                 )
             )
+            execution_facts.assert_corporate_action_reconciliation_ledger_closure(
+                corporate_actions=candidate.corporate_actions,
+                reconciliation=candidate.corporate_action_reconciliation,
+                input_receipts=candidate.input_receipts,
+            )
         except Exception:
             issues.append(
                 _issue(
@@ -1759,6 +1764,65 @@ def _build_candidate_body(inputs: G1BuildInputs) -> G1Candidate:
         execution_facts.verify_corporate_action_selection_result(result=selected)
         ledger_parts.append(selected.ledger)
         evidence_parts.append(selected.selection_evidence)
+    normalization_facts: list[execution_facts.StockRatioNormalizationFact] = []
+    pre_consideration_actions = _concat_or_empty(
+        ledger_parts,
+        schema={
+            "event_id": pl.Utf8,
+            "symbol": pl.Utf8,
+            "ex_date": pl.Date,
+            "cash_per_share_gross": pl.Float64,
+            "stock_ratio": pl.Float64,
+            "record_date": pl.Date,
+            "pay_date": pl.Date,
+            "stock_list_date": pl.Date,
+            "source": pl.Utf8,
+            "source_snapshot_id": pl.Utf8,
+            "action_type": pl.Utf8,
+            "rights_price": pl.Float64,
+            "rights_ratio": pl.Float64,
+            "rights_actual_shares": pl.Float64,
+            "rights_pre_shares": pl.Float64,
+            "rights_post_shares": pl.Float64,
+            "vendor_record_id": pl.Utf8,
+        },
+        sort_keys=["symbol", "ex_date", "event_id"],
+        schema_model=CorporateActionLedgerSchema,
+    )
+    share_change_by_symbol = {
+        dict(response.spec.parameters)["symbol"]: response
+        for response in cninfo_share_change_responses
+    }
+    if len(share_change_by_symbol) != len(cninfo_share_change_responses):
+        raise M3G1CandidateError("G1_CANDIDATE_INPUT_INVALID")
+    for dividend_response in cninfo_dividend_responses:
+        code = dict(dividend_response.spec.parameters).get("symbol")
+        if type(code) is not str:
+            raise M3G1CandidateError("G1_CANDIDATE_INPUT_INVALID")
+        share_change_response = share_change_by_symbol.get(code)
+        if share_change_response is None:
+            raise M3G1CandidateError("G1_CANDIDATE_INPUT_INVALID")
+        symbol = next(
+            (item for item in history_symbols if item.startswith(f"{code}.")),
+            None,
+        )
+        if symbol is None:
+            raise M3G1CandidateError("G1_CANDIDATE_INPUT_INVALID")
+        selected, facts = (
+            execution_facts.select_g1_cninfo_share_consideration_actions(
+                dividend_response=dividend_response,
+                share_change_response=share_change_response,
+                history=inputs.history,
+                symbols=(symbol,),
+                existing_actions=pre_consideration_actions.filter(
+                    pl.col("symbol") == symbol
+                ),
+            )
+        )
+        execution_facts.verify_corporate_action_selection_result(result=selected)
+        ledger_parts.append(selected.ledger)
+        evidence_parts.append(selected.selection_evidence)
+        normalization_facts.extend(facts)
     corporate_actions = _concat_or_empty(
         ledger_parts,
         schema={
@@ -1851,6 +1915,7 @@ def _build_candidate_body(inputs: G1BuildInputs) -> G1Candidate:
         calendars=inputs.calendars,
         history=inputs.history,
         factor_ratio_rtol=inputs.factor_ratio_rtol,
+        stock_ratio_normalization_facts=tuple(normalization_facts),
     )
     execution_facts.verify_corporate_action_reconciliation_result(result=reconciliation)
 
@@ -1920,6 +1985,11 @@ def _build_candidate_body(inputs: G1BuildInputs) -> G1Candidate:
             ],
             key=lambda value: (value.source, value.endpoint, value.request_id),
         )
+    )
+    execution_facts.assert_corporate_action_reconciliation_ledger_closure(
+        corporate_actions=corporate_actions,
+        reconciliation=corporate_action_reconciliation,
+        input_receipts=receipts,
     )
     primary_key = _primary_candidate_key(
         build_spec=inputs.build_spec,

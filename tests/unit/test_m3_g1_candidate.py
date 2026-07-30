@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import socket
 from dataclasses import asdict, replace
+from decimal import Decimal
 from typing import Any
 from unittest.mock import patch
 
@@ -25,16 +26,22 @@ from quant.data.m3_backfill import (
 )
 from quant.data.connectors.cninfo import (
     CNINFO_ADAPTER,
+    CNINFO_DIVIDEND_ENDPOINT,
     CNINFO_ENDPOINT,
+    CNINFO_SHARE_CHANGE_ENDPOINT,
     CNINFO_SOURCE,
     CNINFO_STOCK_ALLOTMENT_FIELDS,
+    CNINFO_STOCK_DIVIDEND_FIELDS,
+    CNINFO_STOCK_SHARE_CHANGE_FIELDS,
     empty_cninfo_allotment_frame,
 )
 from quant.data.m3_execution_facts import (
     G1_CORPORATE_ACTION_RECONCILIATION_VERSION,
     G1_CORPORATE_ACTION_SELECTION_VERSION,
     G1_PRICE_LIMIT_METHOD_VERSION,
+    M3G1ExecutionFactError,
     require_g1_price_limit_coverage,
+    select_g1_cninfo_share_consideration_actions,
 )
 from quant.data.m3_g1_candidate import (
     G1_MEMBERSHIP_METHOD_VERSION,
@@ -1573,7 +1580,7 @@ def test_package_exports() -> None:
 
 def test_p0d_versions_and_scoped_projection_bounds() -> None:
     assert G1_CORPORATE_ACTION_RECONCILIATION_VERSION == (
-        "tushare_factor_daily_preclose_suspension_resume_v6"
+        "tushare_factor_daily_preclose_suspension_resume_basis_terms_v7"
     )
     with pytest.raises(ValueError, match="corporate_action_reconciliation_version"):
         G1BuildSpec(
@@ -1719,7 +1726,7 @@ def test_p0d_build_excludes_pre_first_bar_factor_jump(
     assert candidate.build_spec.mapper_version == "m3-g1-tushare-mapper-v5"
     assert (
         candidate.build_spec.corporate_action_reconciliation_version
-        == "tushare_factor_daily_preclose_suspension_resume_v6"
+        == "tushare_factor_daily_preclose_suspension_resume_basis_terms_v7"
     )
     scoped = candidate.adjustment_factors.filter(pl.col("symbol") == symbol)
     assert scoped.get_column("effective_date").to_list() == [_D1]
@@ -2330,3 +2337,282 @@ def test_p0k_a_cninfo_ca_raw_changes_identity_without_ledger(
     assert physical_candidate.corporate_actions.equals(
         happy_candidate.corporate_actions
     )
+
+
+def _p0kb_dividend_frame(**overrides: Any) -> pl.DataFrame:
+    row = {name: None for name in CNINFO_STOCK_DIVIDEND_FIELDS}
+    row.update(
+        {
+            "F006D": "2018-08-20",
+            "F007V": "10送5股",
+            "F010N": "5",
+            "F018D": "2018-02-01",
+            "F044V": "承诺补偿",
+        }
+    )
+    row.update(overrides)
+    return pl.DataFrame(
+        [row], schema={name: pl.Utf8 for name in CNINFO_STOCK_DIVIDEND_FIELDS}
+    )
+
+
+def _p0kb_share_frame(
+    *, circulating_after: str = "39690", duplicate_reform: bool = False
+) -> pl.DataFrame:
+    before = {name: None for name in CNINFO_STOCK_SHARE_CHANGE_FIELDS}
+    before.update(
+        {
+            "DECLAREDATE": "2018-08-25",
+            "F001V": "015004,015020",
+            "F002V": "增发新股上市,股权分置",
+            "F003N": "95867.1182",
+            "F021N": "11340",
+            "SECCODE": "600733",
+            "VARYDATE": "2018-08-23",
+        }
+    )
+    after = {name: None for name in CNINFO_STOCK_SHARE_CHANGE_FIELDS}
+    after.update(
+        {
+            "DECLAREDATE": "2018-09-13",
+            "F001V": "015011",
+            "F002V": "转增",
+            "F003N": "335534.9137",
+            "F021N": circulating_after,
+            "SECCODE": "600733",
+            "VARYDATE": "2018-09-19",
+        }
+    )
+    rows = [before, after]
+    if duplicate_reform:
+        duplicate = dict(before)
+        duplicate["DECLAREDATE"] = "2018-08-26"
+        rows.insert(1, duplicate)
+    return pl.DataFrame(
+        rows, schema={name: pl.Utf8 for name in CNINFO_STOCK_SHARE_CHANGE_FIELDS}
+    )
+
+
+def _p0kb_tushare_actions() -> pl.DataFrame:
+    return pl.DataFrame(
+        [
+            {
+                "event_id": "1" * 64,
+                "symbol": "600733.SH",
+                "ex_date": dt.date(2018, 9, 19),
+                "action_type": "DIVIDEND_DISTRIBUTION",
+                "cash_per_share_gross": 0.0,
+                "stock_ratio": 2.5,
+                "rights_price": None,
+                "rights_ratio": 0.0,
+                "rights_actual_shares": None,
+                "rights_pre_shares": None,
+                "rights_post_shares": None,
+                "record_date": dt.date(2018, 9, 18),
+                "pay_date": None,
+                "stock_list_date": dt.date(2018, 9, 19),
+                "vendor_record_id": None,
+                "source": "tushare",
+                "source_snapshot_id": "2" * 64,
+            }
+        ]
+    )
+
+
+def _p0kb_select(
+    *,
+    dividend_frame: pl.DataFrame | None = None,
+    share_frame: pl.DataFrame | None = None,
+    existing_actions: pl.DataFrame | None = None,
+):
+    dividend_spec = backfill.CninfoCorporateActionRequestSpec.create(
+        endpoint=CNINFO_DIVIDEND_ENDPOINT,
+        parameters={"symbol": "600733"},
+    )
+    share_spec = backfill.CninfoCorporateActionRequestSpec.create(
+        endpoint=CNINFO_SHARE_CHANGE_ENDPOINT,
+        parameters={
+            "symbol": "600733",
+            "start_date": "20151009",
+            "end_date": "20260710",
+        },
+    )
+    return select_g1_cninfo_share_consideration_actions(
+        dividend_response=_make_cninfo_ca_verified(
+            dividend_spec,
+            frame=(
+                _p0kb_dividend_frame()
+                if dividend_frame is None
+                else dividend_frame
+            ),
+        ),
+        share_change_response=_make_cninfo_ca_verified(
+            share_spec,
+            frame=_p0kb_share_frame() if share_frame is None else share_frame,
+        ),
+        history=HistoryWindow(dt.date(2015, 10, 9), dt.date(2026, 7, 10)),
+        symbols=("600733.SH",),
+        existing_actions=(
+            _p0kb_tushare_actions()
+            if existing_actions is None
+            else existing_actions
+        ),
+    )
+
+
+def test_p0kb_selects_raw_consideration_and_proves_basis() -> None:
+    result, facts = _p0kb_select()
+    assert result.ledger.height == 1
+    row = result.ledger.row(0, named=True)
+    assert row["action_type"] == "SHARE_CONSIDERATION"
+    assert row["record_date"] == dt.date(2018, 2, 1)
+    assert row["ex_date"] == dt.date(2018, 8, 23)
+    assert row["stock_list_date"] == dt.date(2018, 8, 23)
+    assert row["stock_ratio"] == 0.5
+    assert len(facts) == 1
+    assert facts[0].basis_multiplier == Decimal("3.5")
+    assert facts[0].effective_stock_ratio == Decimal("0.5") / Decimal("3.5")
+
+
+@pytest.mark.parametrize(
+    ("overrides", "code"),
+    [
+        ({"F007V": "承诺补偿", "F044V": "10送5股"}, "G1_CORPORATE_ACTION_EVENT_INVALID"),
+        ({"F007V": "10送4股"}, "G1_CORPORATE_ACTION_EVENT_INVALID"),
+    ],
+)
+def test_p0kb_rejects_swapped_or_mismatched_dividend_fields(
+    overrides: dict[str, Any], code: str
+) -> None:
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        _p0kb_select(dividend_frame=_p0kb_dividend_frame(**overrides))
+    assert caught.value.code == code
+
+
+def test_p0kb_ordinary_cninfo_dividend_does_not_enter_ledger() -> None:
+    result, facts = _p0kb_select(
+        dividend_frame=_p0kb_dividend_frame(
+            F044V="股改分红", F007V="10转增25股", F010N=None, F011N="25"
+        )
+    )
+    assert result.ledger.is_empty()
+    assert result.selection_evidence.is_empty()
+    assert facts == ()
+
+
+def test_p0kb_dated_ordinary_compensation_does_not_enter_special_path() -> None:
+    result, facts = _p0kb_select(
+        dividend_frame=_p0kb_dividend_frame(
+            F001V="2017三季报",
+            F006D="2017-12-08",
+            F007V="10送0.03985947股",
+            F010N="0.039859470000000001",
+            F018D="2017-12-13",
+            F025D="2017-12-15",
+        )
+    )
+    assert result.ledger.is_empty()
+    assert facts == ()
+
+
+def test_p0kb_exact_tushare_consideration_is_not_duplicated() -> None:
+    exact = _p0kb_tushare_actions().with_columns(pl.lit(0).alias("_order"))
+    same = pl.DataFrame(
+        [
+            {
+                "event_id": "3" * 64,
+                "symbol": "600733.SH",
+                "ex_date": dt.date(2018, 8, 23),
+                "action_type": "DIVIDEND_DISTRIBUTION",
+                "cash_per_share_gross": 0.0,
+                "stock_ratio": 0.5,
+                "rights_price": None,
+                "rights_ratio": 0.0,
+                "rights_actual_shares": None,
+                "rights_pre_shares": None,
+                "rights_post_shares": None,
+                "record_date": dt.date(2018, 2, 1),
+                "pay_date": None,
+                "stock_list_date": dt.date(2018, 8, 23),
+                "vendor_record_id": None,
+                "source": "tushare",
+                "source_snapshot_id": "4" * 64,
+                "_order": 1,
+            }
+        ]
+    )
+    existing = (
+        pl.concat([exact, same], how="vertical_relaxed")
+        .sort("_order")
+        .drop("_order")
+    )
+    result, facts = _p0kb_select(existing_actions=existing)
+    assert result.ledger.is_empty()
+    assert result.selection_evidence.is_empty()
+    assert len(facts) == 1
+    assert facts[0].event_id == "3" * 64
+
+
+def test_p0kb_conflicting_tushare_consideration_fails_closed() -> None:
+    existing = _p0kb_tushare_actions()
+    conflict = existing.row(0, named=True)
+    conflict.update(
+        {
+            "event_id": "3" * 64,
+            "ex_date": dt.date(2018, 8, 23),
+            "record_date": dt.date(2018, 2, 1),
+            "stock_list_date": dt.date(2018, 8, 23),
+            "stock_ratio": 0.4,
+        }
+    )
+    existing = pl.concat([existing, pl.DataFrame([conflict])], how="vertical_relaxed")
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        _p0kb_select(existing_actions=existing)
+    assert caught.value.code == "G1_CORPORATE_ACTION_VERSION_CONFLICT"
+
+
+def test_p0kb_conflicting_tushare_record_date_fails_closed() -> None:
+    existing = _p0kb_tushare_actions()
+    conflict = existing.row(0, named=True)
+    conflict.update(
+        {
+            "event_id": "3" * 64,
+            "ex_date": dt.date(2018, 8, 23),
+            "record_date": dt.date(2018, 2, 2),
+            "stock_list_date": dt.date(2018, 8, 23),
+            "stock_ratio": 0.5,
+        }
+    )
+    existing = pl.concat([existing, pl.DataFrame([conflict])], how="vertical_relaxed")
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        _p0kb_select(existing_actions=existing)
+    assert caught.value.code == "G1_CORPORATE_ACTION_VERSION_CONFLICT"
+
+
+def test_p0kb_unexplained_issuance_cannot_prove_stock_basis() -> None:
+    attacked = _p0kb_share_frame().with_columns(
+        pl.when(pl.col("VARYDATE") == "2018-09-19")
+        .then(pl.lit("015004"))
+        .otherwise(pl.col("F001V"))
+        .alias("F001V"),
+        pl.when(pl.col("VARYDATE") == "2018-09-19")
+        .then(pl.lit("增发新股上市"))
+        .otherwise(pl.col("F002V"))
+        .alias("F002V"),
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        _p0kb_select(share_frame=attacked)
+    assert caught.value.code == "G1_CORPORATE_ACTION_BASIS_UNPROVEN"
+
+
+@pytest.mark.parametrize(
+    "share_frame",
+    [
+        _p0kb_share_frame(circulating_after="39000"),
+        _p0kb_share_frame(duplicate_reform=True),
+    ],
+)
+def test_p0kb_requires_unique_dual_share_basis(share_frame: pl.DataFrame) -> None:
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        _p0kb_select(share_frame=share_frame)
+    assert caught.value.code == "G1_CORPORATE_ACTION_BASIS_UNPROVEN"

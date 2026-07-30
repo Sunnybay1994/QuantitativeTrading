@@ -196,17 +196,17 @@ def _dividend_record(**overrides: Any) -> dict[str, Any]:
     base = {name: None for name in CNINFO_STOCK_DIVIDEND_FIELDS}
     base.update(
         {
-            "F001V": "股权分置",
-            "F006D": "2018-08-23",
-            "F007V": "承诺补偿",
+            "F001V": None,
+            "F006D": "2018-08-20",
+            "F007V": "10送5股",
             "F010N": "5",
             "F011N": None,
             "F012N": None,
-            "F018D": "2018-09-27",
+            "F018D": "2018-02-01",
             "F020D": None,
             "F023D": None,
             "F025D": None,
-            "F044V": "10送5",
+            "F044V": "承诺补偿",
         }
     )
     base.update(overrides)
@@ -219,9 +219,11 @@ def _share_change_record(**overrides: Any) -> dict[str, Any]:
     base = {name: None for name in CNINFO_STOCK_SHARE_CHANGE_FIELDS}
     base.update(
         {
-            "DECLAREDATE": "2018-08-23",
-            "F001V": "股权分置",
-            "F002V": "A股",
+            "DECLAREDATE": "2018-08-25",
+            "F001V": "015004,015020",
+            "F002V": "增发新股上市,股权分置",
+            "F003N": "95867.1182",
+            "F021N": "11340",
             "SECCODE": "600733",
             "SECNAME": "TEST",
             "ORGNAME": "ORG",

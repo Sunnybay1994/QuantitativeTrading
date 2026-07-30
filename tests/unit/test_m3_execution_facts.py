@@ -3,17 +3,28 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import importlib
+import json
 import sys
 from dataclasses import asdict
+from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import polars as pl
 import pytest
 
 from quant.data import m3_backfill as backfill
-from quant.data.connectors.cninfo import CNINFO_STOCK_ALLOTMENT_FIELDS
+from quant.data.connectors.cninfo import (
+    CNINFO_DIVIDEND_ENDPOINT,
+    CNINFO_SHARE_CHANGE_ENDPOINT,
+    CNINFO_SOURCE,
+    CNINFO_STOCK_ALLOTMENT_FIELDS,
+    CNINFO_STOCK_DIVIDEND_FIELDS,
+    CNINFO_STOCK_SHARE_CHANGE_FIELDS,
+)
 from quant.data.m3_backfill import (
     TUSHARE_FIELDS,
     CninfoRequestReceipt,
@@ -32,11 +43,15 @@ from quant.data.m3_execution_facts import (
     CorporateActionReconciliationResult,
     CorporateActionSelectionResult,
     M3G1ExecutionFactError,
+    assert_corporate_action_reconciliation_ledger_closure,
     _parse_cninfo_iso_date,
+    _consideration_event_id_sha256,
+    _decimal_token,
     map_g1_price_limit_response,
     reconcile_g1_corporate_actions,
     require_g1_price_limit_coverage,
     select_g1_cninfo_rights_actions,
+    select_g1_cninfo_share_consideration_actions,
     select_g1_corporate_actions,
     verify_corporate_action_reconciliation_result,
     verify_corporate_action_selection_result,
@@ -101,6 +116,76 @@ def _make_verified(
         columns=columns,
     )
     return VerifiedRawResponse(spec, receipt, backfill._sha256(asdict(receipt)), frame)
+
+
+def _make_cninfo_ca_verified(
+    *,
+    endpoint: str,
+    parameters: dict[str, str],
+    frame: pl.DataFrame,
+):
+    spec = backfill.CninfoCorporateActionRequestSpec.create(
+        endpoint=endpoint, parameters=parameters  # type: ignore[arg-type]
+    )
+    content = backfill.cninfo_corporate_action_response_content_sha256(
+        frame, endpoint=spec.endpoint
+    )
+    parameters_sha256 = backfill._parameters_hash(spec.parameters)
+    values = {
+        "request_id": spec.request_id,
+        "endpoint": spec.endpoint,
+        "adapter": spec.adapter,
+        "parameters_sha256": parameters_sha256,
+        "raw_snapshot_id": spec.request_id,
+        "raw_data_path": f"cninfo/{spec.endpoint}/{spec.request_id}.json",
+        "raw_metadata_path": (
+            f"cninfo/{spec.endpoint}/{spec.request_id}.metadata.json"
+        ),
+        "raw_file_sha256": _HEX,
+        "raw_metadata_sha256": _HEX,
+        "response_content_sha256": content,
+        "resultcode": 200,
+        "resultmsg": "success",
+        "count": frame.height,
+        "total": frame.height,
+        "raw_size_bytes": 1,
+        "row_count": frame.height,
+        "columns": tuple(frame.columns),
+    }
+    stable = backfill._cninfo_ca_stable_response_hash_values(values)
+    receipt = backfill.CninfoCorporateActionRequestReceipt(
+        schema_version="m3-g1-cninfo-corporate-action-receipt-v1",
+        request_id=spec.request_id,
+        source=CNINFO_SOURCE,
+        endpoint=spec.endpoint,
+        adapter=spec.adapter,
+        parameters=spec.parameters,
+        parameters_sha256=parameters_sha256,
+        raw_snapshot_id=spec.request_id,
+        raw_data_path=values["raw_data_path"],
+        raw_metadata_path=values["raw_metadata_path"],
+        raw_file_sha256=_HEX,
+        raw_metadata_sha256=_HEX,
+        response_content_sha256=content,
+        stable_response_sha256=stable,
+        resultcode=200,
+        resultmsg="success",
+        count=frame.height,
+        total=frame.height,
+        raw_size_bytes=1,
+        row_count=frame.height,
+        columns=tuple(frame.columns),
+    )
+    return backfill.VerifiedCninfoCorporateActionRawResponse(
+        spec=spec,
+        receipt=receipt,
+        receipt_sha256=backfill._sha256(asdict(receipt)),
+        frame=frame,
+        resultcode=200,
+        resultmsg="success",
+        count=frame.height,
+        total=frame.height,
+    )
 
 
 def _limit_frame(rows: list[dict[str, Any]] | None = None) -> pl.DataFrame:
@@ -473,13 +558,13 @@ def _assert_code(exc_info: pytest.ExceptionInfo[BaseException], code: str) -> No
 def test_version_constants() -> None:
     assert G1_PRICE_LIMIT_METHOD_VERSION == "tushare_stk_limit_suspension_aware_v2"
     assert G1_CORPORATE_ACTION_SELECTION_VERSION == (
-        "tushare_dividend_cninfo_rights_capital_iso_date_cross_end_exact_fold_v6"
+        "tushare_dividend_cninfo_rights_share_consideration_basis_v7"
     )
     assert G1_CORPORATE_ACTION_SELECTION_VERSION != (
         "tushare_dividend_cninfo_rights_capital_iso_date_v5"
     )
     assert G1_CORPORATE_ACTION_RECONCILIATION_VERSION == (
-        "tushare_factor_daily_preclose_suspension_resume_v6"
+        "tushare_factor_daily_preclose_suspension_resume_basis_terms_v7"
     )
 
 
@@ -3387,7 +3472,7 @@ def _p0i_halt_resume_frames(
 
 def test_p0i_version_constant_exact() -> None:
     assert G1_CORPORATE_ACTION_RECONCILIATION_VERSION == (
-        "tushare_factor_daily_preclose_suspension_resume_v6"
+        "tushare_factor_daily_preclose_suspension_resume_basis_terms_v7"
     )
 
 
@@ -3420,6 +3505,387 @@ def test_p0i_600717_shaped_delay_to_first_resume() -> None:
     stable = result.evidence.filter(pl.col("status") == "NO_EVENT_STABLE_FACTOR")
     assert set(stable["effective_date"].to_list()) == {_D1, _D2, _D3}
     verify_corporate_action_reconciliation_result(result=result)
+
+
+def _p0kb_reconciliation_inputs():
+    transfer_id = "d" * 64
+    transfer_actions = pl.DataFrame(
+        [
+            {
+                "event_id": transfer_id,
+                "symbol": _SYMBOL,
+                "ex_date": _D3,
+                "action_type": "DIVIDEND_DISTRIBUTION",
+                "cash_per_share_gross": 0.0,
+                "stock_ratio": 2.5,
+                "rights_price": None,
+                "rights_ratio": 0.0,
+                "rights_actual_shares": None,
+                "rights_pre_shares": None,
+                "rights_post_shares": None,
+                "record_date": _D2,
+                "pay_date": None,
+                "stock_list_date": _D3,
+                "vendor_record_id": None,
+                "source": "tushare",
+                "source_snapshot_id": "2" * 64,
+            },
+        ]
+    )
+    dividend_row = {name: None for name in CNINFO_STOCK_DIVIDEND_FIELDS}
+    dividend_row.update(
+        {
+            "F006D": _D0.isoformat(),
+            "F007V": "10送5股",
+            "F010N": "5",
+            "F018D": _D0.isoformat(),
+            "F044V": "承诺补偿",
+        }
+    )
+    dividend_frame = pl.DataFrame(
+        [dividend_row],
+        schema={name: pl.Utf8 for name in CNINFO_STOCK_DIVIDEND_FIELDS},
+    )
+    share_rows: list[dict[str, Any]] = []
+    for day, reason_code, reason_name, total, circulating in (
+        (_D1, "015020", "股权分置", "100", "20"),
+        (_D3, "015011", "转增", "350", "70"),
+    ):
+        row = {name: None for name in CNINFO_STOCK_SHARE_CHANGE_FIELDS}
+        row.update(
+            {
+                "DECLAREDATE": day.isoformat(),
+                "F001V": reason_code,
+                "F002V": reason_name,
+                "F003N": total,
+                "F021N": circulating,
+                "SECCODE": _SYMBOL[:6],
+                "VARYDATE": day.isoformat(),
+            }
+        )
+        share_rows.append(row)
+    share_frame = pl.DataFrame(
+        share_rows,
+        schema={name: pl.Utf8 for name in CNINFO_STOCK_SHARE_CHANGE_FIELDS},
+    )
+    selection, facts = select_g1_cninfo_share_consideration_actions(
+        dividend_response=_make_cninfo_ca_verified(
+            endpoint=CNINFO_DIVIDEND_ENDPOINT,
+            parameters={"symbol": _SYMBOL[:6]},
+            frame=dividend_frame,
+        ),
+        share_change_response=_make_cninfo_ca_verified(
+            endpoint=CNINFO_SHARE_CHANGE_ENDPOINT,
+            parameters={
+                "symbol": _SYMBOL[:6],
+                "start_date": _D0.strftime("%Y%m%d"),
+                "end_date": _D4.strftime("%Y%m%d"),
+            },
+            frame=share_frame,
+        ),
+        history=_history(),
+        symbols=(_SYMBOL,),
+        existing_actions=transfer_actions,
+    )
+    assert len(facts) == 1
+    fact = facts[0]
+    actions = pl.concat(
+        [selection.ledger, transfer_actions], how="vertical_relaxed"
+    )
+    factors = pl.DataFrame(
+        [
+            {
+                "symbol": _SYMBOL,
+                "effective_date": day,
+                "adj_factor": value,
+                "source": "tushare",
+            }
+            for day, value in [
+                (_D0, 2.34),
+                (_D1, 2.34),
+                (_D2, 2.34),
+                (_D3, 8.19),
+                (_D4, 9.36),
+            ]
+        ]
+    )
+    bars = pl.DataFrame(
+        [
+            {
+                "symbol": _SYMBOL,
+                "trade_date": day,
+                "open": close,
+                "high": close,
+                "low": close,
+                "close": close,
+                "volume": 1.0,
+                "amount": 1.0,
+                "adj_factor": factor,
+                "source": "tushare",
+            }
+            for day, close, factor in [(_D0, 10.0, 2.34), (_D4, 8.75, 9.36)]
+        ]
+    )
+    daily = _make_verified(
+        "daily",
+        pl.DataFrame(
+            _daily_rows(
+                closes={_D0: (10.0, 10.0), _D4: (8.75, 8.75)},
+                symbol=_SYMBOL,
+            )
+        ).select(TUSHARE_FIELDS["daily"].split(",")),
+    )
+    return actions, bars, factors, daily, fact
+
+
+def test_p0kb_reconciliation_applies_basis_only_after_resume() -> None:
+    actions, bars, factors, daily, fact = _p0kb_reconciliation_inputs()
+    result = reconcile_g1_corporate_actions(
+        corporate_actions=actions,
+        bars=bars,
+        adjustment_factors=factors,
+        daily_responses=[daily],
+        suspensions=_suspension(_p0i_full_day_rows(_D1, _D2, _D3)),
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+        stock_ratio_normalization_facts=(fact,),
+    )
+    transfer = result.evidence.filter(pl.col("effective_date") == _D3).row(
+        0, named=True
+    )
+    resume = result.evidence.filter(pl.col("effective_date") == _D4).row(
+        0, named=True
+    )
+    assert transfer["stock_ratio"] == 2.5
+    assert resume["stock_ratio"] == pytest.approx(0.5 / 3.5)
+    assert resume["actual_factor_ratio"] == pytest.approx(9.36 / 8.19)
+    assert resume["declared_dividend_relative_error"] <= 0.001
+    assert '"basis_multiplier":"3.5"' in resume["stock_ratio_terms_json"]
+    verify_corporate_action_reconciliation_result(result=result)
+    receipts = (
+        SimpleNamespace(
+            request_id=fact.dividend_request_id,
+            endpoint="stock_dividend",
+            stable_response_sha256=fact.dividend_stable_response_sha256,
+        ),
+        SimpleNamespace(
+            request_id=fact.share_change_request_id,
+            endpoint="stock_share_change",
+            stable_response_sha256=fact.share_change_stable_response_sha256,
+        ),
+    )
+    assert_corporate_action_reconciliation_ledger_closure(
+        corporate_actions=actions,
+        reconciliation=result.evidence,
+        input_receipts=receipts,
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        assert_corporate_action_reconciliation_ledger_closure(
+            corporate_actions=actions,
+            reconciliation=result.evidence,
+            input_receipts=receipts[:1],
+        )
+    assert caught.value.code == "G1_CORPORATE_ACTION_RECONCILIATION_INVALID"
+
+
+def test_p0kb_exact_tushare_alias_closes_with_cninfo_lineage() -> None:
+    actions, bars, factors, daily, fact = _p0kb_reconciliation_inputs()
+    actions = actions.with_columns(
+        pl.when(pl.col("event_id") == fact.event_id)
+        .then(pl.lit("DIVIDEND_DISTRIBUTION"))
+        .otherwise(pl.col("action_type"))
+        .alias("action_type"),
+        pl.when(pl.col("event_id") == fact.event_id)
+        .then(pl.lit("tushare"))
+        .otherwise(pl.col("source"))
+        .alias("source"),
+        pl.when(pl.col("event_id") == fact.event_id)
+        .then(pl.lit("8" * 64))
+        .otherwise(pl.col("source_snapshot_id"))
+        .alias("source_snapshot_id"),
+    )
+    result = reconcile_g1_corporate_actions(
+        corporate_actions=actions,
+        bars=bars,
+        adjustment_factors=factors,
+        daily_responses=[daily],
+        suspensions=_suspension(_p0i_full_day_rows(_D1, _D2, _D3)),
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+        stock_ratio_normalization_facts=(fact,),
+    )
+    assert_corporate_action_reconciliation_ledger_closure(
+        corporate_actions=actions,
+        reconciliation=result.evidence,
+        input_receipts=(
+            SimpleNamespace(
+                request_id=fact.dividend_request_id,
+                endpoint="stock_dividend",
+                stable_response_sha256=fact.dividend_stable_response_sha256,
+            ),
+            SimpleNamespace(
+                request_id=fact.share_change_request_id,
+                endpoint="stock_share_change",
+                stable_response_sha256=fact.share_change_stable_response_sha256,
+            ),
+        ),
+    )
+
+
+def test_p0kb_resume_raw_ratio_without_basis_still_fails() -> None:
+    actions, bars, factors, daily, _ = _p0kb_reconciliation_inputs()
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        reconcile_g1_corporate_actions(
+            corporate_actions=actions,
+            bars=bars,
+            adjustment_factors=factors,
+            daily_responses=[daily],
+            suspensions=_suspension(_p0i_full_day_rows(_D1, _D2, _D3)),
+            calendars=_default_calendar(),
+            history=_history(),
+            factor_ratio_rtol=0.001,
+        )
+    assert caught.value.code == "G1_CORPORATE_ACTION_BASIS_UNPROVEN"
+
+
+def test_p0kb_row_hash_tamper_fails_after_rehashing_all_self_digests() -> None:
+    actions, bars, factors, daily, fact = _p0kb_reconciliation_inputs()
+    result = reconcile_g1_corporate_actions(
+        corporate_actions=actions,
+        bars=bars,
+        adjustment_factors=factors,
+        daily_responses=[daily],
+        suspensions=_suspension(_p0i_full_day_rows(_D1, _D2, _D3)),
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+        stock_ratio_normalization_facts=(fact,),
+    )
+    rows = result.evidence.to_dicts()
+    resume = next(row for row in rows if row["effective_date"] == _D4)
+    terms = json.loads(resume["stock_ratio_terms_json"])
+    terms[0]["before_row_json"] = "{}"
+    terms[0]["before_row_sha256"] = hashlib.sha256(b"{}").hexdigest()
+    encoded = json.dumps(
+        terms, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+    )
+    resume["stock_ratio_terms_json"] = encoded
+    resume["stock_ratio_terms_sha256"] = hashlib.sha256(
+        encoded.encode("utf-8")
+    ).hexdigest()
+    attacked = pl.DataFrame(rows, schema=result.evidence.schema)
+    digest = clean_table_content_sha256(
+        table_name="corporate_action_reconciliation", frame=attacked
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        CorporateActionReconciliationResult(
+            evidence=attacked, evidence_sha256=digest
+        )
+    assert caught.value.code == "G1_CORPORATE_ACTION_RECONCILIATION_INVALID"
+
+
+def test_p0kb_forged_source_bundle_still_fails_formal_receipt_closure() -> None:
+    actions, bars, factors, daily, fact = _p0kb_reconciliation_inputs()
+    result = reconcile_g1_corporate_actions(
+        corporate_actions=actions,
+        bars=bars,
+        adjustment_factors=factors,
+        daily_responses=[daily],
+        suspensions=_suspension(_p0i_full_day_rows(_D1, _D2, _D3)),
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+        stock_ratio_normalization_facts=(fact,),
+    )
+    rows = result.evidence.to_dicts()
+    resume = next(row for row in rows if row["effective_date"] == _D4)
+    terms = json.loads(resume["stock_ratio_terms_json"])
+    term = terms[0]
+    before = json.loads(term["before_row_json"])
+    before["SECNAME"] = "FORGED"
+    before_json = json.dumps(
+        before, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+    )
+    response_rows = json.loads(term["share_change_response_json"])
+    response_rows = [
+        before if row["VARYDATE"] == before["VARYDATE"] else row
+        for row in response_rows
+    ]
+    response_json = json.dumps(
+        response_rows, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+    )
+    response_frame = pl.DataFrame(
+        response_rows,
+        schema={name: pl.Utf8 for name in CNINFO_STOCK_SHARE_CHANGE_FIELDS},
+    ).select(list(CNINFO_STOCK_SHARE_CHANGE_FIELDS))
+    receipt = json.loads(term["share_change_receipt_json"])
+    receipt["response_content_sha256"] = (
+        backfill.cninfo_corporate_action_response_content_sha256(
+            response_frame, endpoint=CNINFO_SHARE_CHANGE_ENDPOINT
+        )
+    )
+    receipt["stable_response_sha256"] = (
+        backfill._cninfo_ca_stable_response_hash_values(receipt)
+    )
+    term["share_change_receipt_json"] = json.dumps(
+        receipt, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+    )
+    term["share_change_response_json"] = response_json
+    term["share_change_stable_response_sha256"] = receipt[
+        "stable_response_sha256"
+    ]
+    term["before_row_json"] = before_json
+    term["before_row_sha256"] = hashlib.sha256(
+        before_json.encode("utf-8")
+    ).hexdigest()
+    encoded = json.dumps(
+        terms, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+    )
+    resume["stock_ratio_terms_json"] = encoded
+    resume["stock_ratio_terms_sha256"] = hashlib.sha256(
+        encoded.encode("utf-8")
+    ).hexdigest()
+    attacked = pl.DataFrame(rows, schema=result.evidence.schema)
+    attacked_result = CorporateActionReconciliationResult(
+        evidence=attacked,
+        evidence_sha256=clean_table_content_sha256(
+            table_name="corporate_action_reconciliation", frame=attacked
+        ),
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        assert_corporate_action_reconciliation_ledger_closure(
+            corporate_actions=actions,
+            reconciliation=attacked_result.evidence,
+            input_receipts=(
+                SimpleNamespace(
+                    request_id=fact.dividend_request_id,
+                    endpoint=CNINFO_DIVIDEND_ENDPOINT,
+                    stable_response_sha256=fact.dividend_stable_response_sha256,
+                ),
+                SimpleNamespace(
+                    request_id=fact.share_change_request_id,
+                    endpoint=CNINFO_SHARE_CHANGE_ENDPOINT,
+                    stable_response_sha256=fact.share_change_stable_response_sha256,
+                ),
+            ),
+        )
+    assert caught.value.code == "G1_CORPORATE_ACTION_RECONCILIATION_INVALID"
+
+
+def test_p0kb_event_identity_binds_lineage_and_decimal_canonical() -> None:
+    assert _decimal_token(Decimal("0.1")) == "0.1"
+    common = (
+        _SYMBOL,
+        _D0,
+        _D1,
+        Decimal("0.1"),
+        "1" * 64,
+    )
+    first = _consideration_event_id_sha256(*common, "2" * 64)
+    second = _consideration_event_id_sha256(*common, "3" * 64)
+    assert first != second
 
 
 def test_p0i_two_halt_events_aggregate_on_same_resume() -> None:

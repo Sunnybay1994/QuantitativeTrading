@@ -7,19 +7,28 @@ import hashlib
 import json
 import math
 import re
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import asdict, dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import polars as pl
 
-from quant.data.connectors.cninfo import CNINFO_SOURCE
+from quant.data.connectors.cninfo import (
+    CNINFO_DIVIDEND_ENDPOINT,
+    CNINFO_SHARE_CHANGE_ENDPOINT,
+    CNINFO_SOURCE,
+    CNINFO_STOCK_DIVIDEND_FIELDS,
+    CNINFO_STOCK_SHARE_CHANGE_FIELDS,
+)
 from quant.data.m3_backfill import (
     TUSHARE_FIELDS,
+    CninfoCorporateActionRequestReceipt,
     HistoryWindow,
+    VerifiedCninfoCorporateActionRawResponse,
     VerifiedCninfoRawResponse,
     VerifiedRawResponse,
+    cninfo_corporate_action_response_content_sha256,
 )
 from quant.data.m3_identity import clean_table_content_sha256
 from quant.domain import (
@@ -36,10 +45,10 @@ from quant.domain import (
 
 G1_PRICE_LIMIT_METHOD_VERSION = "tushare_stk_limit_suspension_aware_v2"
 G1_CORPORATE_ACTION_SELECTION_VERSION = (
-    "tushare_dividend_cninfo_rights_capital_iso_date_cross_end_exact_fold_v6"
+    "tushare_dividend_cninfo_rights_share_consideration_basis_v7"
 )
 G1_CORPORATE_ACTION_RECONCILIATION_VERSION = (
-    "tushare_factor_daily_preclose_suspension_resume_v6"
+    "tushare_factor_daily_preclose_suspension_resume_basis_terms_v7"
 )
 
 _SOURCE = "tushare"
@@ -67,6 +76,7 @@ _ERROR_CODES = frozenset(
         "G1_PRICE_LIMIT_SCHEMA_INVALID",
         "G1_PRICE_LIMIT_COVERAGE_INVALID",
         "G1_CORPORATE_ACTION_EVENT_INVALID",
+        "G1_CORPORATE_ACTION_BASIS_UNPROVEN",
         "G1_CORPORATE_ACTION_VERSION_CONFLICT",
         "G1_CORPORATE_ACTION_SCHEMA_INVALID",
         "G1_CORPORATE_ACTION_RESULT_INVALID",
@@ -150,6 +160,8 @@ _RECON_OUT = (
     "event_count",
     "event_ids_json",
     "event_ids_sha256",
+    "stock_ratio_terms_json",
+    "stock_ratio_terms_sha256",
     "cash_per_share_gross",
     "stock_ratio",
     "rights_ratio",
@@ -210,6 +222,118 @@ class CorporateActionReconciliationResult:
         except Exception:
             raise M3G1ExecutionFactError(
                 "G1_CORPORATE_ACTION_RECONCILIATION_INVALID"
+            ) from None
+
+
+@dataclass(frozen=True)
+class StockRatioNormalizationFact:
+    """Raw-to-current-basis proof for one selected share-consideration event."""
+
+    event_id: str
+    symbol: str
+    raw_stock_ratio: Decimal
+    basis_multiplier: Decimal
+    effective_stock_ratio: Decimal
+    basis_from_date: dt.date
+    basis_to_date: dt.date
+    before_total_shares: Decimal
+    after_total_shares: Decimal
+    before_circulating_shares: Decimal
+    after_circulating_shares: Decimal
+    dividend_request_id: str
+    dividend_snapshot_id: str
+    dividend_stable_response_sha256: str
+    share_change_request_id: str
+    share_change_snapshot_id: str
+    share_change_stable_response_sha256: str
+    dividend_receipt_json: str
+    dividend_response_json: str
+    dividend_row_json: str
+    share_change_receipt_json: str
+    share_change_response_json: str
+    before_row_json: str
+    after_row_json: str
+    before_row_sha256: str
+    after_row_sha256: str
+
+    def __post_init__(self) -> None:
+        try:
+            if (
+                type(self.event_id) is not str
+                or not _HEX64.fullmatch(self.event_id)
+                or type(self.symbol) is not str
+                or not _A_SHARE.fullmatch(self.symbol)
+                or type(self.basis_from_date) is not dt.date
+                or type(self.basis_to_date) is not dt.date
+                or self.basis_from_date >= self.basis_to_date
+            ):
+                raise ValueError
+            for decimal_value in (
+                self.raw_stock_ratio,
+                self.basis_multiplier,
+                self.effective_stock_ratio,
+                self.before_total_shares,
+                self.after_total_shares,
+                self.before_circulating_shares,
+                self.after_circulating_shares,
+            ):
+                if (
+                    type(decimal_value) is not Decimal
+                    or not decimal_value.is_finite()
+                    or decimal_value <= 0
+                ):
+                    raise ValueError
+            if self.basis_multiplier <= 1:
+                raise ValueError
+            if self.effective_stock_ratio != (
+                self.raw_stock_ratio / self.basis_multiplier
+            ):
+                raise ValueError
+            for digest_value in (
+                self.dividend_request_id,
+                self.dividend_snapshot_id,
+                self.dividend_stable_response_sha256,
+                self.share_change_request_id,
+                self.share_change_snapshot_id,
+                self.share_change_stable_response_sha256,
+                self.before_row_sha256,
+                self.after_row_sha256,
+            ):
+                if type(digest_value) is not str or not _HEX64.fullmatch(
+                    digest_value
+                ):
+                    raise ValueError
+            if (
+                self.dividend_request_id != self.dividend_snapshot_id
+                or self.share_change_request_id != self.share_change_snapshot_id
+            ):
+                raise ValueError
+            for row_json, row_sha256 in (
+                (self.before_row_json, self.before_row_sha256),
+                (self.after_row_json, self.after_row_sha256),
+            ):
+                if (
+                    type(row_json) is not str
+                    or _canonical_json(json.loads(row_json)) != row_json
+                    or hashlib.sha256(row_json.encode("utf-8")).hexdigest()
+                    != row_sha256
+                ):
+                    raise ValueError
+            for proof_json in (
+                self.dividend_receipt_json,
+                self.dividend_response_json,
+                self.dividend_row_json,
+                self.share_change_receipt_json,
+                self.share_change_response_json,
+            ):
+                if (
+                    type(proof_json) is not str
+                    or _canonical_json(json.loads(proof_json)) != proof_json
+                ):
+                    raise ValueError
+        except (ArithmeticError, ValueError):
+            raise M3G1ExecutionFactError(
+                "G1_CORPORATE_ACTION_BASIS_UNPROVEN"
             ) from None
 
 
@@ -967,6 +1091,327 @@ def select_g1_cninfo_rights_actions(
         raise _sanitize(exc, "G1_CORPORATE_ACTION_EVENT_INVALID") from None
 
 
+def select_g1_cninfo_share_consideration_actions(
+    *,
+    dividend_response: VerifiedCninfoCorporateActionRawResponse,
+    share_change_response: VerifiedCninfoCorporateActionRawResponse,
+    history: HistoryWindow,
+    symbols: Sequence[str],
+    existing_actions: pl.DataFrame,
+) -> tuple[
+    CorporateActionSelectionResult, tuple[StockRatioNormalizationFact, ...]
+]:
+    """Select independently proven CNINFO share-consideration events.
+
+    The ledger retains the raw consideration ratio.  A separate immutable fact
+    proves the later whole-share basis multiplier; reconciliation alone applies
+    that multiplier after suspension/resume assignment.
+    """
+    try:
+        history = _consume_history(
+            history, code="G1_CORPORATE_ACTION_CALENDAR_INVALID"
+        )
+        dividend = _consume_cninfo_ca_verified(
+            dividend_response, endpoint=CNINFO_DIVIDEND_ENDPOINT
+        )
+        share = _consume_cninfo_ca_verified(
+            share_change_response, endpoint=CNINFO_SHARE_CHANGE_ENDPOINT
+        )
+        dividend_code = _require_cninfo_ca_symbol(dividend)
+        share_code = _require_cninfo_ca_symbol(share)
+        if dividend_code != share_code:
+            raise M3G1ExecutionFactError(
+                "G1_EXECUTION_FACT_REQUEST_SCOPE_MISMATCH"
+            )
+        symbol_map = _build_cninfo_symbol_map(symbols)
+        symbol = symbol_map.get(dividend_code)
+        if symbol is None:
+            raise M3G1ExecutionFactError(
+                "G1_EXECUTION_FACT_REQUEST_SCOPE_MISMATCH"
+            )
+        existing = _validate_schema(
+            existing_actions,
+            CorporateActionLedgerSchema,
+            "G1_CORPORATE_ACTION_SCHEMA_INVALID",
+        )
+        if existing.height and set(existing.get_column("symbol").to_list()) != {symbol}:
+            raise M3G1ExecutionFactError(
+                "G1_EXECUTION_FACT_REQUEST_SCOPE_MISMATCH"
+            )
+
+        ledger_rows: list[dict[str, Any]] = []
+        evidence_rows: list[dict[str, Any]] = []
+        facts: list[StockRatioNormalizationFact] = []
+        seen_event_keys: set[str] = set()
+        dividend_rows = list(dividend.frame.iter_rows(named=True))
+        if any(
+            raw.get("F007V") == "承诺补偿"
+            or (
+                type(raw.get("F044V")) is str
+                and re.fullmatch(r"10送.*股", raw["F044V"]) is not None
+            )
+            for raw in dividend_rows
+        ):
+            raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
+        compensation = [
+            raw
+            for raw in dividend_rows
+            if raw.get("F044V") == "承诺补偿"
+            and raw.get("F001V") is None
+            and all(raw.get(field) is None for field in ("F020D", "F023D", "F025D"))
+        ]
+        if not compensation:
+            empty_ledger = _empty_or_frame([], _LEDGER_OUT, _ledger_schema())
+            empty_evidence = _empty_or_frame([], _EVIDENCE_OUT, _evidence_schema())
+            return (
+                CorporateActionSelectionResult(
+                    ledger=empty_ledger,
+                    selection_evidence=empty_evidence,
+                    ledger_sha256=clean_table_content_sha256(
+                        table_name="corporate_action_ledger", frame=empty_ledger
+                    ),
+                    selection_evidence_sha256=clean_table_content_sha256(
+                        table_name="corporate_action_selection_evidence",
+                        frame=empty_evidence,
+                    ),
+                ),
+                (),
+            )
+        share_rows = _parse_share_change_basis_rows(
+            share.frame.iter_rows(named=True), expected_code=dividend_code
+        )
+        dividend_receipt_json = _canonical_json(asdict(dividend.receipt))
+        dividend_response_json = _canonical_json(dividend.frame.to_dicts())
+        share_change_receipt_json = _canonical_json(asdict(share.receipt))
+        share_change_response_json = _canonical_json(share.frame.to_dicts())
+        considered_rows = 0
+        for raw in compensation:
+            ann_date = _parse_cninfo_iso_date(raw.get("F006D"))
+            record_date = _parse_cninfo_iso_date(raw.get("F018D"))
+            raw_ratio = _parse_share_consideration_ratio(raw)
+            if record_date > ann_date:
+                raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
+            implementation = [
+                item
+                for item in share_rows
+                if item["vary_date"] >= ann_date and item["is_equity_reform"]
+            ]
+            if len(implementation) != 1:
+                raise M3G1ExecutionFactError(
+                    "G1_CORPORATE_ACTION_BASIS_UNPROVEN"
+                )
+            before = implementation[0]
+            ex_date = before["vary_date"]
+            if ex_date < history.start or ex_date > history.end:
+                continue
+            considered_rows += 1
+            if record_date > ex_date:
+                raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
+            later_changed = [
+                item
+                for item in share_rows
+                if item["vary_date"] > ex_date
+                and (
+                    item["total_shares"] != before["total_shares"]
+                    or item["circulating_shares"] != before["circulating_shares"]
+                )
+            ]
+            if not later_changed:
+                raise M3G1ExecutionFactError(
+                    "G1_CORPORATE_ACTION_BASIS_UNPROVEN"
+                )
+            after = min(later_changed, key=lambda item: item["vary_date"])
+            if not after["is_whole_share_change"]:
+                raise M3G1ExecutionFactError(
+                    "G1_CORPORATE_ACTION_BASIS_UNPROVEN"
+                )
+            total_multiplier = after["total_shares"] / before["total_shares"]
+            circulating_multiplier = (
+                after["circulating_shares"] / before["circulating_shares"]
+            )
+            selected_multiplier = _selected_stock_event_multiplier(
+                existing,
+                symbol=symbol,
+                after_date=ex_date,
+                through_date=after["vary_date"],
+            )
+            if (
+                total_multiplier <= 1
+                or not _decimal_close(total_multiplier, circulating_multiplier)
+                or not _decimal_close(total_multiplier, selected_multiplier)
+            ):
+                raise M3G1ExecutionFactError(
+                    "G1_CORPORATE_ACTION_BASIS_UNPROVEN"
+                )
+            # Official share counts can carry binary-float serialization noise.
+            # The selected whole-share event chain is the canonical exact
+            # multiplier after both independent share ratios prove it.
+            basis_multiplier = selected_multiplier
+
+            raw_ratio_float = float(raw_ratio)
+            event_key = _consideration_economic_event_key_sha256(
+                symbol, record_date, ex_date
+            )
+            if event_key in seen_event_keys:
+                raise M3G1ExecutionFactError(
+                    "G1_CORPORATE_ACTION_VERSION_CONFLICT"
+                )
+            seen_event_keys.add(event_key)
+            potential_same_semantic = existing.filter(
+                (pl.col("stock_ratio") > 0)
+                & (
+                    (pl.col("record_date") == record_date)
+                    | (pl.col("ex_date") == ex_date)
+                    | (pl.col("stock_list_date") == ex_date)
+                )
+            )
+            if potential_same_semantic.height:
+                exact = potential_same_semantic.filter(
+                    (pl.col("record_date") == record_date)
+                    & (pl.col("ex_date") == ex_date)
+                    & (pl.col("stock_list_date") == ex_date)
+                    & (pl.col("stock_ratio") == raw_ratio_float)
+                )
+                if exact.height != 1 or potential_same_semantic.height != 1:
+                    raise M3G1ExecutionFactError(
+                        "G1_CORPORATE_ACTION_VERSION_CONFLICT"
+                    )
+                event_id = exact.row(0, named=True)["event_id"]
+            else:
+                event_id = _consideration_event_id_sha256(
+                    symbol,
+                    record_date,
+                    ex_date,
+                    raw_ratio,
+                    dividend.spec.request_id,
+                    share.spec.request_id,
+                )
+                candidate_id = _consideration_candidate_id_sha256(
+                    event_key,
+                    raw_ratio,
+                    dividend.spec.request_id,
+                    share.spec.request_id,
+                )
+                ledger_rows.append(
+                    {
+                        "event_id": event_id,
+                        "symbol": symbol,
+                        "ex_date": ex_date,
+                        "action_type": "SHARE_CONSIDERATION",
+                        "cash_per_share_gross": 0.0,
+                        "stock_ratio": raw_ratio_float,
+                        "rights_price": None,
+                        "rights_ratio": 0.0,
+                        "rights_actual_shares": None,
+                        "rights_pre_shares": None,
+                        "rights_post_shares": None,
+                        "record_date": record_date,
+                        "pay_date": None,
+                        "stock_list_date": ex_date,
+                        "vendor_record_id": share.spec.request_id,
+                        "source": _CNINFO_SOURCE,
+                        "source_snapshot_id": dividend.receipt.raw_snapshot_id,
+                    }
+                )
+                evidence_rows.append(
+                    {
+                        "economic_event_key_sha256": event_key,
+                        "candidate_id": candidate_id,
+                        "symbol": symbol,
+                        "action_type": "SHARE_CONSIDERATION",
+                        "end_date": None,
+                        "record_date": record_date,
+                        "ex_date": ex_date,
+                        "imp_ann_date": before["declare_date"],
+                        "ann_date": ann_date,
+                        "cash_per_share_gross": 0.0,
+                        "stock_ratio": raw_ratio_float,
+                        "rights_price": None,
+                        "rights_ratio": 0.0,
+                        "rights_actual_shares": None,
+                        "rights_pre_shares": None,
+                        "rights_post_shares": None,
+                        "pay_date": None,
+                        "stock_list_date": ex_date,
+                        "vendor_record_id": share.spec.request_id,
+                        "candidate_rank": 1,
+                        "candidate_count": 1,
+                        "raw_row_count": 1,
+                        "selected": True,
+                        "selection_reason": "SELECTED_LATEST",
+                        "source": _CNINFO_SOURCE,
+                        "source_request_id": dividend.spec.request_id,
+                        "source_snapshot_id": dividend.receipt.raw_snapshot_id,
+                    }
+                )
+            facts.append(
+                StockRatioNormalizationFact(
+                    event_id=event_id,
+                    symbol=symbol,
+                    raw_stock_ratio=raw_ratio,
+                    basis_multiplier=basis_multiplier,
+                    effective_stock_ratio=raw_ratio / basis_multiplier,
+                    basis_from_date=ex_date,
+                    basis_to_date=after["vary_date"],
+                    before_total_shares=before["total_shares"],
+                    after_total_shares=after["total_shares"],
+                    before_circulating_shares=before["circulating_shares"],
+                    after_circulating_shares=after["circulating_shares"],
+                    dividend_request_id=dividend.spec.request_id,
+                    dividend_snapshot_id=dividend.receipt.raw_snapshot_id,
+                    dividend_stable_response_sha256=(
+                        dividend.receipt.stable_response_sha256
+                    ),
+                    share_change_request_id=share.spec.request_id,
+                    share_change_snapshot_id=share.receipt.raw_snapshot_id,
+                    share_change_stable_response_sha256=(
+                        share.receipt.stable_response_sha256
+                    ),
+                    dividend_receipt_json=dividend_receipt_json,
+                    dividend_response_json=dividend_response_json,
+                    dividend_row_json=_canonical_json(dict(raw)),
+                    share_change_receipt_json=share_change_receipt_json,
+                    share_change_response_json=share_change_response_json,
+                    before_row_json=before["row_json"],
+                    after_row_json=after["row_json"],
+                    before_row_sha256=before["row_sha256"],
+                    after_row_sha256=after["row_sha256"],
+                )
+            )
+
+        if considered_rows != len(facts):
+            raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_BASIS_UNPROVEN")
+        ledger = _empty_or_frame(ledger_rows, _LEDGER_OUT, _ledger_schema()).sort(
+            ["symbol", "ex_date", "event_id"]
+        )
+        evidence = _empty_or_frame(
+            evidence_rows, _EVIDENCE_OUT, _evidence_schema()
+        ).sort(["economic_event_key_sha256", "candidate_rank", "candidate_id"])
+        ledger = _validate_schema(
+            ledger, CorporateActionLedgerSchema, "G1_CORPORATE_ACTION_SCHEMA_INVALID"
+        )
+        evidence = _validate_schema(
+            evidence,
+            CorporateActionSelectionEvidenceSchema,
+            "G1_CORPORATE_ACTION_SCHEMA_INVALID",
+        )
+        result = CorporateActionSelectionResult(
+            ledger=ledger,
+            selection_evidence=evidence,
+            ledger_sha256=clean_table_content_sha256(
+                table_name="corporate_action_ledger", frame=ledger
+            ),
+            selection_evidence_sha256=clean_table_content_sha256(
+                table_name="corporate_action_selection_evidence", frame=evidence
+            ),
+        )
+        return result, tuple(sorted(facts, key=lambda item: item.event_id))
+    except M3G1ExecutionFactError:
+        raise
+    except (ArithmeticError, pl.exceptions.PolarsError, TypeError, ValueError) as exc:
+        raise _sanitize(exc, "G1_CORPORATE_ACTION_EVENT_INVALID") from None
+
+
 def verify_corporate_action_selection_result(
     *, result: CorporateActionSelectionResult
 ) -> None:
@@ -991,6 +1436,7 @@ def reconcile_g1_corporate_actions(
     calendars: pl.DataFrame,
     history: HistoryWindow,
     factor_ratio_rtol: float,
+    stock_ratio_normalization_facts: Sequence[StockRatioNormalizationFact] = (),
 ) -> CorporateActionReconciliationResult:
     """Reconcile adjacent factor observations with declared and market references."""
     try:
@@ -1009,6 +1455,20 @@ def reconcile_g1_corporate_actions(
             CorporateActionLedgerSchema,
             "G1_CORPORATE_ACTION_SCHEMA_INVALID",
         )
+        normalization_by_event = _consume_normalization_facts(
+            stock_ratio_normalization_facts
+        )
+        action_ids = set(actions.get_column("event_id").to_list())
+        consideration_ids = set(
+            actions.filter(
+                pl.col("action_type") == "SHARE_CONSIDERATION"
+            ).get_column("event_id").to_list()
+        )
+        if (
+            not consideration_ids.issubset(normalization_by_event)
+            or not set(normalization_by_event).issubset(action_ids)
+        ):
+            raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_BASIS_UNPROVEN")
         bar_frame = _validate_schema(
             bars, Bar1dSchema, "G1_CORPORATE_ACTION_FACTOR_INVALID"
         )
@@ -1142,6 +1602,7 @@ def reconcile_g1_corporate_actions(
         )
 
         evidence_rows: list[dict[str, Any]] = []
+        used_normalization_events: set[str] = set()
         for symbol in sorted(bar_symbols):
             series = factors_by_symbol[symbol]
             daily_verified = daily_by_symbol[symbol]
@@ -1173,11 +1634,17 @@ def reconcile_g1_corporate_actions(
                 event_ids = [item["event_id"] for item in events_sorted]
                 event_ids_json = _event_ids_json(event_ids)
                 event_ids_digest = _event_set_sha256(event_ids)
+                (
+                    stock_terms_json,
+                    stock_terms_sha256,
+                    total_stock,
+                    normalized_event_ids,
+                ) = _stock_ratio_terms(
+                    events_sorted, normalization_by_event=normalization_by_event
+                )
+                used_normalization_events.update(normalized_event_ids)
                 total_cash = math.fsum(
                     float(item["cash_per_share_gross"]) for item in events_sorted
-                )
-                total_stock = math.fsum(
-                    float(item["stock_ratio"]) for item in events_sorted
                 )
                 total_rights_ratio = math.fsum(
                     float(item["rights_ratio"]) for item in events_sorted
@@ -1238,6 +1705,8 @@ def reconcile_g1_corporate_actions(
                             "event_count": len(events_sorted),
                             "event_ids_json": event_ids_json,
                             "event_ids_sha256": event_ids_digest,
+                            "stock_ratio_terms_json": stock_terms_json,
+                            "stock_ratio_terms_sha256": stock_terms_sha256,
                             "cash_per_share_gross": total_cash,
                             "stock_ratio": total_stock,
                             "rights_ratio": total_rights_ratio,
@@ -1276,6 +1745,8 @@ def reconcile_g1_corporate_actions(
                         "event_count": len(events_sorted),
                         "event_ids_json": event_ids_json,
                         "event_ids_sha256": event_ids_digest,
+                        "stock_ratio_terms_json": stock_terms_json,
+                        "stock_ratio_terms_sha256": stock_terms_sha256,
                         "cash_per_share_gross": total_cash,
                         "stock_ratio": total_stock,
                         "rights_ratio": total_rights_ratio,
@@ -1291,6 +1762,8 @@ def reconcile_g1_corporate_actions(
                     }
                 )
 
+        if used_normalization_events != set(normalization_by_event):
+            raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_BASIS_UNPROVEN")
         expected_rows = sum(max(len(series) - 1, 0) for series in factors_by_symbol.values())
         if len(evidence_rows) != expected_rows:
             raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
@@ -1324,6 +1797,137 @@ def verify_corporate_action_reconciliation_result(
     except M3G1ExecutionFactError:
         raise
     except Exception:
+        raise M3G1ExecutionFactError(
+            "G1_CORPORATE_ACTION_RECONCILIATION_INVALID"
+        ) from None
+
+
+def assert_corporate_action_reconciliation_ledger_closure(
+    *,
+    corporate_actions: pl.DataFrame,
+    reconciliation: pl.DataFrame,
+    input_receipts: Sequence[object],
+) -> None:
+    """Cross-bind normalization terms to ledger events and formal receipts."""
+    try:
+        actions = _validate_schema(
+            corporate_actions,
+            CorporateActionLedgerSchema,
+            "G1_CORPORATE_ACTION_RESULT_INVALID",
+        )
+        evidence = _validate_schema(
+            reconciliation,
+            CorporateActionReconciliationSchema,
+            "G1_CORPORATE_ACTION_RECONCILIATION_INVALID",
+        )
+        ledger_by_event = {
+            row["event_id"]: row for row in actions.iter_rows(named=True)
+        }
+        receipts: dict[str, object] = {}
+        for receipt in input_receipts:
+            request_id = getattr(receipt, "request_id", None)
+            if type(request_id) is not str or request_id in receipts:
+                raise M3G1ExecutionFactError(
+                    "G1_CORPORATE_ACTION_RECONCILIATION_INVALID"
+                )
+            receipts[request_id] = receipt
+        normalized_seen: set[str] = set()
+        for row in evidence.iter_rows(named=True):
+            terms = json.loads(row["stock_ratio_terms_json"])
+            for term in terms:
+                event_id = term["event_id"]
+                ledger = ledger_by_event.get(event_id)
+                if ledger is None or not _decimal_close(
+                    Decimal(term["raw_stock_ratio"]),
+                    Decimal(str(float(ledger["stock_ratio"]))),
+                ):
+                    raise M3G1ExecutionFactError(
+                        "G1_CORPORATE_ACTION_RECONCILIATION_INVALID"
+                    )
+                if Decimal(term["basis_multiplier"]) == 1:
+                    continue
+                if (
+                    event_id in normalized_seen
+                    or ledger["action_type"]
+                    not in {"SHARE_CONSIDERATION", "DIVIDEND_DISTRIBUTION"}
+                    or (
+                        ledger["action_type"] == "DIVIDEND_DISTRIBUTION"
+                        and ledger["source"] != _SOURCE
+                    )
+                    or ledger["ex_date"].isoformat() != term["basis_from_date"]
+                    or row["effective_date"] <= dt.date.fromisoformat(
+                        term["basis_to_date"]
+                    )
+                ):
+                    raise M3G1ExecutionFactError(
+                        "G1_CORPORATE_ACTION_RECONCILIATION_INVALID"
+                    )
+                dividend_row = json.loads(term["dividend_row_json"])
+                before_row = json.loads(term["before_row_json"])
+                dividend_ratio = _parse_share_consideration_ratio(dividend_row)
+                if (
+                    dividend_row.get("F044V") != "承诺补偿"
+                    or dividend_row.get("F001V") is not None
+                    or any(
+                        dividend_row.get(field) is not None
+                        for field in ("F020D", "F023D", "F025D")
+                    )
+                    or ledger["record_date"]
+                    != _parse_cninfo_iso_date(dividend_row.get("F018D"))
+                    or ledger["ex_date"]
+                    != _parse_cninfo_iso_date(before_row.get("VARYDATE"))
+                    or ledger["stock_list_date"] != ledger["ex_date"]
+                    or not _decimal_close(
+                        Decimal(str(float(ledger["stock_ratio"]))),
+                        dividend_ratio,
+                    )
+                    or (
+                        ledger["action_type"] == "SHARE_CONSIDERATION"
+                        and ledger["vendor_record_id"]
+                        != term["share_change_request_id"]
+                    )
+                ):
+                    raise M3G1ExecutionFactError(
+                        "G1_CORPORATE_ACTION_RECONCILIATION_INVALID"
+                    )
+                normalized_seen.add(event_id)
+                dividend_receipt = receipts.get(term["dividend_request_id"])
+                share_receipt = receipts.get(term["share_change_request_id"])
+                if (
+                    dividend_receipt is None
+                    or share_receipt is None
+                    or getattr(dividend_receipt, "endpoint", None)
+                    != CNINFO_DIVIDEND_ENDPOINT
+                    or getattr(share_receipt, "endpoint", None)
+                    != CNINFO_SHARE_CHANGE_ENDPOINT
+                    or getattr(
+                        dividend_receipt, "stable_response_sha256", None
+                    )
+                    != term["dividend_stable_response_sha256"]
+                    or getattr(share_receipt, "stable_response_sha256", None)
+                    != term["share_change_stable_response_sha256"]
+                    or (
+                        ledger["action_type"] == "SHARE_CONSIDERATION"
+                        and ledger["source_snapshot_id"]
+                        != term["dividend_snapshot_id"]
+                    )
+                ):
+                    raise M3G1ExecutionFactError(
+                        "G1_CORPORATE_ACTION_RECONCILIATION_INVALID"
+                    )
+        consideration_ids = {
+            row["event_id"]
+            for row in actions.filter(
+                pl.col("action_type") == "SHARE_CONSIDERATION"
+            ).iter_rows(named=True)
+        }
+        if not consideration_ids.issubset(normalized_seen):
+            raise M3G1ExecutionFactError(
+                "G1_CORPORATE_ACTION_RECONCILIATION_INVALID"
+            )
+    except M3G1ExecutionFactError:
+        raise
+    except (ArithmeticError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         raise M3G1ExecutionFactError(
             "G1_CORPORATE_ACTION_RECONCILIATION_INVALID"
         ) from None
@@ -1442,6 +2046,17 @@ def _assert_ledger_evidence_closure(
                 float(row["rights_pre_shares"]),
                 float(row["rights_post_shares"]),
             )
+        elif action_type == "SHARE_CONSIDERATION":
+            if row["vendor_record_id"] is None:
+                raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RESULT_INVALID")
+            expected_event = _consideration_event_id_sha256(
+                row["symbol"],
+                row["record_date"],
+                row["ex_date"],
+                Decimal(str(float(row["stock_ratio"]))),
+                row["source_request_id"],
+                row["vendor_record_id"],
+            )
         else:
             raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RESULT_INVALID")
         if expected_event in selected_by_event_id:
@@ -1488,6 +2103,7 @@ def _nullable_float_differs(left: float | None, right: float | None) -> bool:
 
 def _assert_reconciliation_row_formulas(row: dict[str, Any]) -> None:
     _assert_event_ids_identity(row)
+    term_stock_ratio = _assert_stock_ratio_terms_identity(row)
     actual = float(row["actual_factor_ratio"])
     declared = float(row["declared_dividend_factor_ratio"])
     rtol = float(row["factor_ratio_rtol"])
@@ -1501,10 +2117,14 @@ def _assert_reconciliation_row_formulas(row: dict[str, Any]) -> None:
             raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
         if int(row["event_count"]) != 0:
             raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
+        if term_stock_ratio != 0.0 or float(row["stock_ratio"]) != 0.0:
+            raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
         return
     prev_close = row["previous_close"]
     cash = float(row["cash_per_share_gross"])
     stock = float(row["stock_ratio"])
+    if stock != term_stock_ratio:
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
     rights_ratio = float(row["rights_ratio"])
     rights_cash = float(row["rights_subscription_cash_per_share"])
     if prev_close is None:
@@ -1551,6 +2171,264 @@ def _assert_reconciliation_row_formulas(row: dict[str, Any]) -> None:
             raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
     else:
         raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
+
+
+def _assert_stock_ratio_terms_identity(row: Mapping[str, Any]) -> float:
+    encoded = row.get("stock_ratio_terms_json")
+    digest = row.get("stock_ratio_terms_sha256")
+    if (
+        type(encoded) is not str
+        or type(digest) is not str
+        or not _HEX64.fullmatch(digest)
+        or hashlib.sha256(encoded.encode("utf-8")).hexdigest() != digest
+    ):
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
+    try:
+        parsed = json.loads(encoded)
+    except (json.JSONDecodeError, TypeError):
+        raise M3G1ExecutionFactError(
+            "G1_CORPORATE_ACTION_RECONCILIATION_INVALID"
+        ) from None
+    if not isinstance(parsed, list) or _canonical_json(parsed) != encoded:
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
+    event_ids = _parse_event_ids_json(row.get("event_ids_json"))
+    if [item.get("event_id") for item in parsed if isinstance(item, dict)] != event_ids:
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
+    expected_keys = {
+        "event_id",
+        "raw_stock_ratio",
+        "basis_multiplier",
+        "effective_stock_ratio",
+        "basis_from_date",
+        "basis_to_date",
+        "before_total_shares",
+        "after_total_shares",
+        "before_circulating_shares",
+        "after_circulating_shares",
+        "dividend_request_id",
+        "dividend_snapshot_id",
+        "dividend_stable_response_sha256",
+        "share_change_request_id",
+        "share_change_snapshot_id",
+        "share_change_stable_response_sha256",
+        "dividend_receipt_json",
+        "dividend_response_json",
+        "dividend_row_json",
+        "share_change_receipt_json",
+        "share_change_response_json",
+        "before_row_json",
+        "after_row_json",
+        "before_row_sha256",
+        "after_row_sha256",
+    }
+    total = Decimal(0)
+    for item in parsed:
+        if not isinstance(item, dict) or set(item) != expected_keys:
+            raise M3G1ExecutionFactError(
+                "G1_CORPORATE_ACTION_RECONCILIATION_INVALID"
+            )
+        try:
+            raw = Decimal(item["raw_stock_ratio"])
+            multiplier = Decimal(item["basis_multiplier"])
+            effective = Decimal(item["effective_stock_ratio"])
+        except (InvalidOperation, TypeError, ValueError):
+            raise M3G1ExecutionFactError(
+                "G1_CORPORATE_ACTION_RECONCILIATION_INVALID"
+            ) from None
+        if (
+            not raw.is_finite()
+            or not multiplier.is_finite()
+            or not effective.is_finite()
+            or raw < 0
+            or multiplier < 1
+            or effective < 0
+            or effective != raw / multiplier
+        ):
+            raise M3G1ExecutionFactError(
+                "G1_CORPORATE_ACTION_RECONCILIATION_INVALID"
+            )
+        if multiplier == 1:
+            if any(
+                item[key] is not None
+                for key in expected_keys
+                - {
+                    "event_id",
+                    "raw_stock_ratio",
+                    "basis_multiplier",
+                    "effective_stock_ratio",
+                }
+            ):
+                raise M3G1ExecutionFactError(
+                    "G1_CORPORATE_ACTION_RECONCILIATION_INVALID"
+                )
+        else:
+            _assert_normalized_stock_term(item, multiplier=multiplier)
+        total += effective
+    return float(total)
+
+
+def _assert_normalized_stock_term(
+    item: Mapping[str, Any], *, multiplier: Decimal
+) -> None:
+    for key in (
+        "dividend_request_id",
+        "dividend_snapshot_id",
+        "dividend_stable_response_sha256",
+        "share_change_request_id",
+        "share_change_snapshot_id",
+        "share_change_stable_response_sha256",
+        "before_row_sha256",
+        "after_row_sha256",
+    ):
+        value = item.get(key)
+        if type(value) is not str or not _HEX64.fullmatch(value):
+            raise M3G1ExecutionFactError(
+                "G1_CORPORATE_ACTION_RECONCILIATION_INVALID"
+            )
+    if (
+        item["dividend_request_id"] != item["dividend_snapshot_id"]
+        or item["share_change_request_id"] != item["share_change_snapshot_id"]
+    ):
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
+    for row_key, sha_key in (
+        ("before_row_json", "before_row_sha256"),
+        ("after_row_json", "after_row_sha256"),
+    ):
+        raw_json = item.get(row_key)
+        if type(raw_json) is not str:
+            raise M3G1ExecutionFactError(
+                "G1_CORPORATE_ACTION_RECONCILIATION_INVALID"
+            )
+        try:
+            raw_row = json.loads(raw_json)
+        except json.JSONDecodeError:
+            raise M3G1ExecutionFactError(
+                "G1_CORPORATE_ACTION_RECONCILIATION_INVALID"
+            ) from None
+        if (
+            not isinstance(raw_row, dict)
+            or _canonical_json(raw_row) != raw_json
+            or hashlib.sha256(raw_json.encode("utf-8")).hexdigest()
+            != item[sha_key]
+        ):
+            raise M3G1ExecutionFactError(
+                "G1_CORPORATE_ACTION_RECONCILIATION_INVALID"
+            )
+    _assert_term_source_membership(item)
+    try:
+        from_date = dt.date.fromisoformat(item["basis_from_date"])
+        to_date = dt.date.fromisoformat(item["basis_to_date"])
+        before_total = Decimal(item["before_total_shares"])
+        after_total = Decimal(item["after_total_shares"])
+        before_circulating = Decimal(item["before_circulating_shares"])
+        after_circulating = Decimal(item["after_circulating_shares"])
+    except (InvalidOperation, TypeError, ValueError):
+        raise M3G1ExecutionFactError(
+            "G1_CORPORATE_ACTION_RECONCILIATION_INVALID"
+        ) from None
+    if (
+        from_date >= to_date
+        or min(before_total, after_total, before_circulating, after_circulating)
+        <= 0
+        or not _decimal_close(after_total / before_total, multiplier)
+        or not _decimal_close(
+            after_circulating / before_circulating, multiplier
+        )
+    ):
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
+
+
+def _assert_term_source_membership(item: Mapping[str, Any]) -> None:
+    dividend_receipt, dividend_rows = _decode_term_source_bundle(
+        receipt_json=item.get("dividend_receipt_json"),
+        response_json=item.get("dividend_response_json"),
+        endpoint=CNINFO_DIVIDEND_ENDPOINT,
+        fields=CNINFO_STOCK_DIVIDEND_FIELDS,
+    )
+    share_receipt, share_rows = _decode_term_source_bundle(
+        receipt_json=item.get("share_change_receipt_json"),
+        response_json=item.get("share_change_response_json"),
+        endpoint=CNINFO_SHARE_CHANGE_ENDPOINT,
+        fields=CNINFO_STOCK_SHARE_CHANGE_FIELDS,
+    )
+    if (
+        dividend_receipt.request_id != item["dividend_request_id"]
+        or dividend_receipt.raw_snapshot_id != item["dividend_snapshot_id"]
+        or dividend_receipt.stable_response_sha256
+        != item["dividend_stable_response_sha256"]
+        or share_receipt.request_id != item["share_change_request_id"]
+        or share_receipt.raw_snapshot_id != item["share_change_snapshot_id"]
+        or share_receipt.stable_response_sha256
+        != item["share_change_stable_response_sha256"]
+    ):
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
+    for row_key, rows in (
+        ("dividend_row_json", dividend_rows),
+        ("before_row_json", share_rows),
+        ("after_row_json", share_rows),
+    ):
+        selected = item.get(row_key)
+        if type(selected) is not str or selected not in {
+            _canonical_json(row) for row in rows
+        }:
+            raise M3G1ExecutionFactError(
+                "G1_CORPORATE_ACTION_RECONCILIATION_INVALID"
+            )
+
+
+def _decode_term_source_bundle(
+    *,
+    receipt_json: object,
+    response_json: object,
+    endpoint: str,
+    fields: tuple[str, ...],
+) -> tuple[CninfoCorporateActionRequestReceipt, list[dict[str, Any]]]:
+    if type(receipt_json) is not str or type(response_json) is not str:
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
+    try:
+        receipt_payload = json.loads(receipt_json)
+        response_rows = json.loads(response_json)
+        if (
+            not isinstance(receipt_payload, dict)
+            or not isinstance(response_rows, list)
+            or _canonical_json(receipt_payload) != receipt_json
+            or _canonical_json(response_rows) != response_json
+        ):
+            raise ValueError
+        receipt_payload["parameters"] = tuple(
+            tuple(item) for item in receipt_payload["parameters"]
+        )
+        receipt_payload["columns"] = tuple(receipt_payload["columns"])
+        receipt = CninfoCorporateActionRequestReceipt(**receipt_payload)
+        if receipt.endpoint != endpoint or receipt.columns != fields:
+            raise ValueError
+        if any(
+            not isinstance(row, dict) or set(row) != set(fields)
+            for row in response_rows
+        ):
+            raise ValueError
+        frame = pl.DataFrame(
+            response_rows, schema={name: pl.Utf8 for name in fields}
+        ).select(list(fields))
+        if (
+            cninfo_corporate_action_response_content_sha256(
+                frame, endpoint=endpoint
+            )
+            != receipt.response_content_sha256
+            or frame.height != receipt.row_count
+        ):
+            raise ValueError
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+        pl.exceptions.PolarsError,
+    ):
+        raise M3G1ExecutionFactError(
+            "G1_CORPORATE_ACTION_RECONCILIATION_INVALID"
+        ) from None
+    return receipt, response_rows
 
 
 def _assert_event_ids_identity(row: dict[str, Any]) -> None:
@@ -1858,6 +2736,59 @@ def _rights_event_id_sha256(
     )
 
 
+def _consideration_economic_event_key_sha256(
+    symbol: str, record_date: dt.date, ex_date: dt.date
+) -> str:
+    return _sha256_json(
+        [
+            "m3-g1-corporate-action-share-consideration-key-v1",
+            symbol,
+            record_date.isoformat(),
+            ex_date.isoformat(),
+        ]
+    )
+
+
+def _consideration_candidate_id_sha256(
+    event_key: str,
+    stock_ratio: Decimal,
+    dividend_request_id: str,
+    share_change_request_id: str,
+) -> str:
+    return _sha256_json(
+        [
+            "m3-g1-corporate-action-share-consideration-candidate-v1",
+            event_key,
+            _decimal_token(stock_ratio),
+            dividend_request_id,
+            share_change_request_id,
+        ]
+    )
+
+
+def _consideration_event_id_sha256(
+    symbol: str,
+    record_date: dt.date,
+    ex_date: dt.date,
+    stock_ratio: Decimal,
+    dividend_request_id: str,
+    share_change_request_id: str,
+) -> str:
+    return _sha256_json(
+        [
+            "m3-g1-corporate-action-share-consideration-event-v1",
+            "SHARE_CONSIDERATION",
+            _CNINFO_SOURCE,
+            symbol,
+            record_date.isoformat(),
+            ex_date.isoformat(),
+            _decimal_token(stock_ratio),
+            dividend_request_id,
+            share_change_request_id,
+        ]
+    )
+
+
 def _sha256_json(value: Any) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
@@ -1911,6 +2842,139 @@ def _consume_cninfo_verified(response: object) -> VerifiedCninfoRawResponse:
         )
     except Exception:
         raise M3G1ExecutionFactError("G1_EXECUTION_FACT_RESPONSE_INVALID") from None
+
+
+def _consume_cninfo_ca_verified(
+    response: object, *, endpoint: str
+) -> VerifiedCninfoCorporateActionRawResponse:
+    if type(response) is not VerifiedCninfoCorporateActionRawResponse:
+        raise M3G1ExecutionFactError("G1_EXECUTION_FACT_RESPONSE_INVALID")
+    try:
+        rebuilt = VerifiedCninfoCorporateActionRawResponse(
+            response.spec,
+            response.receipt,
+            response.receipt_sha256,
+            response.frame,
+            response.resultcode,
+            response.resultmsg,
+            response.count,
+            response.total,
+        )
+    except Exception:
+        raise M3G1ExecutionFactError("G1_EXECUTION_FACT_RESPONSE_INVALID") from None
+    if rebuilt.spec.endpoint != endpoint or rebuilt.receipt.endpoint != endpoint:
+        raise M3G1ExecutionFactError("G1_EXECUTION_FACT_ENDPOINT_MISMATCH")
+    return rebuilt
+
+
+def _require_cninfo_ca_symbol(
+    response: VerifiedCninfoCorporateActionRawResponse,
+) -> str:
+    value = dict(response.spec.parameters).get("symbol")
+    if type(value) is not str or not re.fullmatch(r"[0-9]{6}", value):
+        raise M3G1ExecutionFactError("G1_EXECUTION_FACT_REQUEST_SCOPE_MISMATCH")
+    return value
+
+
+def _parse_share_consideration_ratio(raw: Mapping[str, Any]) -> Decimal:
+    if raw.get("F011N") not in (None, "0", "0.0", 0, 0.0) or raw.get(
+        "F012N"
+    ) not in (None, "0", "0.0", 0, 0.0):
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
+    value = _parse_decimal(raw.get("F010N"), positive=True)
+    text = raw.get("F007V")
+    if type(text) is not str:
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
+    match = re.fullmatch(r"10送((?:0|[1-9]\d*)(?:\.\d+)?)股", text)
+    if match is None or Decimal(match.group(1)) != value:
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
+    return value / Decimal(10)
+
+
+def _parse_share_change_basis_rows(
+    rows: Iterable[Mapping[str, Any]], *, expected_code: str
+) -> list[dict[str, Any]]:
+    parsed: list[dict[str, Any]] = []
+    seen: set[dt.date] = set()
+    for raw in rows:
+        if raw.get("SECCODE") != expected_code:
+            raise M3G1ExecutionFactError("G1_EXECUTION_FACT_REQUEST_SCOPE_MISMATCH")
+        vary_date = _parse_cninfo_iso_date(raw.get("VARYDATE"))
+        if vary_date in seen:
+            raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_BASIS_UNPROVEN")
+        seen.add(vary_date)
+        codes = _split_aligned_cninfo_tokens(raw.get("F001V"))
+        names = _split_aligned_cninfo_tokens(raw.get("F002V"))
+        if len(codes) != len(names):
+            raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
+        row_json = _canonical_json(dict(raw))
+        parsed.append(
+            {
+                "vary_date": vary_date,
+                "declare_date": _parse_cninfo_iso_date(raw.get("DECLAREDATE")),
+                "is_equity_reform": ("015020", "股权分置")
+                in set(zip(codes, names, strict=True)),
+                "is_whole_share_change": bool(names)
+                and all(name in {"送股", "转增"} for name in names),
+                "total_shares": _parse_decimal(raw.get("F003N"), positive=True),
+                "circulating_shares": _parse_decimal(
+                    raw.get("F021N"), positive=True
+                ),
+                "row_json": row_json,
+                "row_sha256": hashlib.sha256(row_json.encode("utf-8")).hexdigest(),
+            }
+        )
+    return sorted(parsed, key=lambda item: item["vary_date"])
+
+
+def _split_aligned_cninfo_tokens(value: object) -> tuple[str, ...]:
+    if type(value) is not str or not value:
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
+    tokens = tuple(value.split(","))
+    if any(not item or item != item.strip() for item in tokens):
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
+    return tokens
+
+
+def _parse_decimal(value: object, *, positive: bool) -> Decimal:
+    if type(value) is bool or value is None:
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID") from None
+    if not parsed.is_finite() or (parsed <= 0 if positive else parsed < 0):
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
+    return parsed
+
+
+def _decimal_close(left: Decimal, right: Decimal) -> bool:
+    scale = max(abs(left), abs(right), Decimal(1))
+    return abs(left - right) <= scale * Decimal("1e-12")
+
+
+def _selected_stock_event_multiplier(
+    actions: pl.DataFrame,
+    *,
+    symbol: str,
+    after_date: dt.date,
+    through_date: dt.date,
+) -> Decimal:
+    rows = actions.filter(
+        (pl.col("symbol") == symbol)
+        & (pl.col("ex_date") > after_date)
+        & (pl.col("ex_date") <= through_date)
+        & (pl.col("stock_ratio") > 0)
+    )
+    by_date: dict[dt.date, list[Decimal]] = {}
+    for row in rows.iter_rows(named=True):
+        by_date.setdefault(row["ex_date"], []).append(
+            Decimal(str(float(row["stock_ratio"])))
+        )
+    multiplier = Decimal(1)
+    for day in sorted(by_date):
+        multiplier *= Decimal(1) + sum(by_date[day], Decimal(0))
+    return multiplier
 
 
 def _build_cninfo_symbol_map(symbols: object) -> dict[str, str]:
@@ -2312,6 +3376,123 @@ def _event_cash_stock_rights_totals(
     return total_cash, total_stock, total_rights_ratio, total_rights_cash
 
 
+def _consume_normalization_facts(
+    values: object,
+) -> dict[str, StockRatioNormalizationFact]:
+    if not isinstance(values, Sequence) or type(values) is str:
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_BASIS_UNPROVEN")
+    out: dict[str, StockRatioNormalizationFact] = {}
+    for value in values:
+        if type(value) is not StockRatioNormalizationFact:
+            raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_BASIS_UNPROVEN")
+        rebuilt = StockRatioNormalizationFact(**value.__dict__)
+        if rebuilt.event_id in out:
+            raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_BASIS_UNPROVEN")
+        out[rebuilt.event_id] = rebuilt
+    return out
+
+
+def _stock_ratio_terms(
+    events_sorted: Sequence[Mapping[str, Any]],
+    *,
+    normalization_by_event: Mapping[str, StockRatioNormalizationFact],
+) -> tuple[str, str, float, set[str]]:
+    terms: list[dict[str, Any]] = []
+    effective_total = Decimal(0)
+    used: set[str] = set()
+    for event in events_sorted:
+        event_id = event["event_id"]
+        raw_ratio = Decimal(str(float(event["stock_ratio"])))
+        fact = normalization_by_event.get(event_id)
+        if fact is None:
+            effective = raw_ratio
+            term = {
+                "event_id": event_id,
+                "raw_stock_ratio": _decimal_token(raw_ratio),
+                "basis_multiplier": "1",
+                "effective_stock_ratio": _decimal_token(effective),
+                "basis_from_date": None,
+                "basis_to_date": None,
+                "before_total_shares": None,
+                "after_total_shares": None,
+                "before_circulating_shares": None,
+                "after_circulating_shares": None,
+                "dividend_request_id": None,
+                "dividend_snapshot_id": None,
+                "dividend_stable_response_sha256": None,
+                "share_change_request_id": None,
+                "share_change_snapshot_id": None,
+                "share_change_stable_response_sha256": None,
+                "dividend_receipt_json": None,
+                "dividend_response_json": None,
+                "dividend_row_json": None,
+                "share_change_receipt_json": None,
+                "share_change_response_json": None,
+                "before_row_json": None,
+                "after_row_json": None,
+                "before_row_sha256": None,
+                "after_row_sha256": None,
+            }
+        else:
+            if (
+                fact.symbol != event["symbol"]
+                or not _decimal_close(fact.raw_stock_ratio, raw_ratio)
+            ):
+                raise M3G1ExecutionFactError(
+                    "G1_CORPORATE_ACTION_BASIS_UNPROVEN"
+                )
+            used.add(event_id)
+            effective = fact.effective_stock_ratio
+            term = {
+                "event_id": event_id,
+                "raw_stock_ratio": _decimal_token(fact.raw_stock_ratio),
+                "basis_multiplier": _decimal_token(fact.basis_multiplier),
+                "effective_stock_ratio": _decimal_token(effective),
+                "basis_from_date": fact.basis_from_date.isoformat(),
+                "basis_to_date": fact.basis_to_date.isoformat(),
+                "before_total_shares": _decimal_token(fact.before_total_shares),
+                "after_total_shares": _decimal_token(fact.after_total_shares),
+                "before_circulating_shares": _decimal_token(
+                    fact.before_circulating_shares
+                ),
+                "after_circulating_shares": _decimal_token(
+                    fact.after_circulating_shares
+                ),
+                "dividend_request_id": fact.dividend_request_id,
+                "dividend_snapshot_id": fact.dividend_snapshot_id,
+                "dividend_stable_response_sha256": (
+                    fact.dividend_stable_response_sha256
+                ),
+                "share_change_request_id": fact.share_change_request_id,
+                "share_change_snapshot_id": fact.share_change_snapshot_id,
+                "share_change_stable_response_sha256": (
+                    fact.share_change_stable_response_sha256
+                ),
+                "dividend_receipt_json": fact.dividend_receipt_json,
+                "dividend_response_json": fact.dividend_response_json,
+                "dividend_row_json": fact.dividend_row_json,
+                "share_change_receipt_json": fact.share_change_receipt_json,
+                "share_change_response_json": fact.share_change_response_json,
+                "before_row_json": fact.before_row_json,
+                "after_row_json": fact.after_row_json,
+                "before_row_sha256": fact.before_row_sha256,
+                "after_row_sha256": fact.after_row_sha256,
+            }
+        effective_total += effective
+        terms.append(term)
+    encoded = _canonical_json(terms)
+    return encoded, hashlib.sha256(encoded.encode("utf-8")).hexdigest(), float(
+        effective_total
+    ), used
+
+
+def _decimal_token(value: Decimal) -> str:
+    if not value.is_finite():
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_BASIS_UNPROVEN")
+    normalized = Decimal(0) if value == 0 else value.normalize()
+    return format(normalized, "f")
+
+
 def _declared_factor_ratio(
     *,
     prev_close: float,
@@ -2444,6 +3625,8 @@ def _assign_events_with_suspension_resume_delay(
 
 _EMPTY_EVENT_IDS_JSON = "[]"
 _EMPTY_EVENT_IDS_SHA256: str | None = None
+_EMPTY_STOCK_TERMS_JSON = "[]"
+_EMPTY_STOCK_TERMS_SHA256 = hashlib.sha256(b"[]").hexdigest()
 
 
 def _no_event_evidence_row(
@@ -2474,6 +3657,8 @@ def _no_event_evidence_row(
         "event_count": 0,
         "event_ids_json": _EMPTY_EVENT_IDS_JSON,
         "event_ids_sha256": _EMPTY_EVENT_IDS_SHA256,
+        "stock_ratio_terms_json": _EMPTY_STOCK_TERMS_JSON,
+        "stock_ratio_terms_sha256": _EMPTY_STOCK_TERMS_SHA256,
         "cash_per_share_gross": 0.0,
         "stock_ratio": 0.0,
         "rights_ratio": 0.0,
@@ -2569,6 +3754,8 @@ def _recon_schema() -> dict[str, Any]:
         "event_count": pl.Int64,
         "event_ids_json": pl.Utf8,
         "event_ids_sha256": pl.Utf8,
+        "stock_ratio_terms_json": pl.Utf8,
+        "stock_ratio_terms_sha256": pl.Utf8,
         "cash_per_share_gross": pl.Float64,
         "stock_ratio": pl.Float64,
         "rights_ratio": pl.Float64,

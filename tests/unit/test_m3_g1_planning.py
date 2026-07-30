@@ -582,7 +582,7 @@ def test_static_plan_from_c0_and_forged_identity(
     assert plan.build_spec.mapper_version == "m3-g1-tushare-mapper-v5"
     assert plan.build_spec.schema_version == "m3-g1-schema-v3"
     assert G1_CORPORATE_ACTION_RECONCILIATION_VERSION == (
-        "tushare_factor_daily_preclose_suspension_resume_v6"
+        "tushare_factor_daily_preclose_suspension_resume_basis_terms_v7"
     )
     assert (
         plan.build_spec.corporate_action_reconciliation_version

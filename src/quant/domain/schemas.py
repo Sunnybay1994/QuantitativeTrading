@@ -201,7 +201,9 @@ class CorporateActionLedgerSchema(pa.DataFrameModel):
     event_id: str = pa.Field(unique=True)
     symbol: str = pa.Field(str_matches=r"^\d{6}\.(SH|SZ)$")
     ex_date: pl.Date
-    action_type: str = pa.Field(isin=["DIVIDEND_DISTRIBUTION", "RIGHTS"])
+    action_type: str = pa.Field(
+        isin=["DIVIDEND_DISTRIBUTION", "RIGHTS", "SHARE_CONSIDERATION"]
+    )
     cash_per_share_gross: float = pa.Field(ge=0)
     stock_ratio: float = pa.Field(ge=0)
     rights_price: float = pa.Field(gt=0, nullable=True)
@@ -224,7 +226,7 @@ class CorporateActionLedgerSchema(pa.DataFrameModel):
     def ledger_event_valid(  # type: ignore[misc]
         cls, data: pa.PolarsData
     ) -> pl.LazyFrame:
-        """经济效果、登记日非空,按 action_type 分支校验 dividend/rights 语义。"""
+        """经济效果、登记日非空，并按 action_type 分支校验事件语义。"""
         cash = pl.col("cash_per_share_gross")
         stock = pl.col("stock_ratio")
         rights_price = pl.col("rights_price")
@@ -286,8 +288,21 @@ class CorporateActionLedgerSchema(pa.DataFrameModel):
             & pl.col("pay_date").is_null()
             & pl.col("stock_list_date").is_not_null()
         )
+        consideration_branch = (
+            (action_type == "SHARE_CONSIDERATION")
+            & (cash == 0)
+            & (stock > 0)
+            & rights_price.is_null()
+            & (rights_ratio == 0)
+            & actual.is_null()
+            & pre.is_null()
+            & post.is_null()
+            & pl.col("pay_date").is_null()
+            & pl.col("stock_list_date").is_not_null()
+            & (pl.col("stock_list_date") == pl.col("ex_date"))
+        )
         return data.lazyframe.select(
-            (common & (dividend_branch | rights_branch)).all()
+            (common & (dividend_branch | rights_branch | consideration_branch)).all()
         )
 
 
@@ -297,8 +312,10 @@ class CorporateActionSelectionEvidenceSchema(pa.DataFrameModel):
     economic_event_key_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
     candidate_id: str = pa.Field(str_matches=r"^[0-9a-f]{64}$", unique=True)
     symbol: str = pa.Field(str_matches=r"^\d{6}\.(SH|SZ)$")
-    action_type: str = pa.Field(isin=["DIVIDEND_DISTRIBUTION", "RIGHTS"])
-    end_date: pl.Date
+    action_type: str = pa.Field(
+        isin=["DIVIDEND_DISTRIBUTION", "RIGHTS", "SHARE_CONSIDERATION"]
+    )
+    end_date: pl.Date = pa.Field(nullable=True)
     record_date: pl.Date
     ex_date: pl.Date
     imp_ann_date: pl.Date = pa.Field(nullable=True)
@@ -374,6 +391,7 @@ class CorporateActionSelectionEvidenceSchema(pa.DataFrameModel):
         )
         dividend_branch = (
             (action_type == "DIVIDEND_DISTRIBUTION")
+            & pl.col("end_date").is_not_null()
             & ((cash > 0) | (stock > 0))
             & rights_price.is_null()
             & (rights_ratio == 0)
@@ -385,6 +403,7 @@ class CorporateActionSelectionEvidenceSchema(pa.DataFrameModel):
         )
         rights_branch = (
             (action_type == "RIGHTS")
+            & pl.col("end_date").is_not_null()
             & (cash == 0)
             & (stock == 0)
             & rights_price.is_not_null()
@@ -401,8 +420,22 @@ class CorporateActionSelectionEvidenceSchema(pa.DataFrameModel):
             & pl.col("pay_date").is_null()
             & pl.col("stock_list_date").is_not_null()
         )
+        consideration_branch = (
+            (action_type == "SHARE_CONSIDERATION")
+            & pl.col("end_date").is_null()
+            & (cash == 0)
+            & (stock > 0)
+            & rights_price.is_null()
+            & (rights_ratio == 0)
+            & actual.is_null()
+            & pre.is_null()
+            & post.is_null()
+            & pl.col("pay_date").is_null()
+            & pl.col("stock_list_date").is_not_null()
+            & (pl.col("stock_list_date") == pl.col("ex_date"))
+        )
         return data.lazyframe.select(
-            (common & (dividend_branch | rights_branch)).all()
+            (common & (dividend_branch | rights_branch | consideration_branch)).all()
         )
 
 
@@ -420,6 +453,8 @@ class CorporateActionReconciliationSchema(pa.DataFrameModel):
     event_count: int = pa.Field(ge=0)
     event_ids_json: str
     event_ids_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+    stock_ratio_terms_json: str = pa.Field(str_matches=r"^\[.*\]$")
+    stock_ratio_terms_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
     cash_per_share_gross: float = pa.Field(ge=0)
     stock_ratio: float = pa.Field(ge=0)
     rights_ratio: float = pa.Field(ge=0)
@@ -471,6 +506,7 @@ class CorporateActionReconciliationSchema(pa.DataFrameModel):
         no_event = (
             (pl.col("status") == "NO_EVENT_STABLE_FACTOR")
             & (pl.col("event_count") == 0)
+            & (pl.col("stock_ratio_terms_json") == "[]")
             & (pl.col("cash_per_share_gross") == 0)
             & (pl.col("stock_ratio") == 0)
             & (pl.col("rights_ratio") == 0)
@@ -496,6 +532,7 @@ class CorporateActionReconciliationSchema(pa.DataFrameModel):
                 "MATCHED_EVENT_MARKET_REFERENCE",
             ]))
             & (pl.col("event_count") > 0)
+            & (pl.col("stock_ratio_terms_json") != "[]")
             & (
                 (pl.col("cash_per_share_gross") > 0)
                 | (pl.col("stock_ratio") > 0)
@@ -538,6 +575,7 @@ class CorporateActionReconciliationSchema(pa.DataFrameModel):
         matched_no_ref = (
             (pl.col("status") == "MATCHED_EVENT_DECLARED_FORMULA_NO_MARKET_REFERENCE")
             & (pl.col("event_count") > 0)
+            & (pl.col("stock_ratio_terms_json") != "[]")
             & (
                 (pl.col("cash_per_share_gross") > 0)
                 | (pl.col("stock_ratio") > 0)

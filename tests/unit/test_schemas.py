@@ -366,6 +366,39 @@ class TestM3ExecutionInputSchemas:
                 row.with_columns(pl.lit(200.0).alias("rights_actual_shares"))
             )
 
+    def test_share_consideration_ledger_branch_validates(self) -> None:
+        row = pl.DataFrame({
+            "event_id": ["event-share-consideration-1"],
+            "symbol": ["600733.SH"],
+            "ex_date": [dt.date(2018, 8, 23)],
+            "action_type": ["SHARE_CONSIDERATION"],
+            "cash_per_share_gross": [0.0],
+            "stock_ratio": [0.5],
+            "rights_price": [None],
+            "rights_ratio": [0.0],
+            "rights_actual_shares": [None],
+            "rights_pre_shares": [None],
+            "rights_post_shares": [None],
+            "record_date": [dt.date(2018, 2, 1)],
+            "pay_date": [None],
+            "stock_list_date": [dt.date(2018, 8, 23)],
+            "vendor_record_id": ["cninfo-consideration-row-1"],
+            "source": ["cninfo"],
+            "source_snapshot_id": ["raw-share-consideration-1"],
+        })
+        CorporateActionLedgerSchema.validate(row)
+        for invalid in (
+            row.with_columns(pl.lit(0.0).alias("stock_ratio")),
+            row.with_columns(pl.lit(0.01).alias("cash_per_share_gross")),
+            row.with_columns(pl.lit(0.1).alias("rights_ratio")),
+            row.with_columns(
+                pl.lit(dt.date(2018, 8, 24)).alias("stock_list_date")
+            ),
+            row.with_columns(pl.lit(dt.date(2018, 8, 23)).alias("pay_date")),
+        ):
+            with pytest.raises(pandera.errors.SchemaError):
+                CorporateActionLedgerSchema.validate(invalid)
+
     def test_corporate_action_selection_evidence_rank_and_selected(self) -> None:
         row = pl.DataFrame({
             "economic_event_key_sha256": ["a" * 64],
@@ -405,6 +438,48 @@ class TestM3ExecutionInputSchemas:
                 )
             )
 
+    def test_share_consideration_selection_evidence_branch_validates(self) -> None:
+        row = pl.DataFrame({
+            "economic_event_key_sha256": ["a" * 64],
+            "candidate_id": ["b" * 64],
+            "symbol": ["600733.SH"],
+            "action_type": ["SHARE_CONSIDERATION"],
+            "end_date": [None],
+            "record_date": [dt.date(2018, 2, 1)],
+            "ex_date": [dt.date(2018, 8, 23)],
+            "imp_ann_date": [None],
+            "ann_date": [dt.date(2018, 8, 20)],
+            "cash_per_share_gross": [0.0],
+            "stock_ratio": [0.5],
+            "rights_price": [None],
+            "rights_ratio": [0.0],
+            "rights_actual_shares": [None],
+            "rights_pre_shares": [None],
+            "rights_post_shares": [None],
+            "pay_date": [None],
+            "stock_list_date": [dt.date(2018, 8, 23)],
+            "vendor_record_id": ["cninfo-consideration-row-1"],
+            "candidate_rank": [1],
+            "candidate_count": [1],
+            "raw_row_count": [1],
+            "selected": [True],
+            "selection_reason": ["SELECTED_LATEST"],
+            "source": ["cninfo"],
+            "source_request_id": ["c" * 64],
+            "source_snapshot_id": ["d" * 64],
+        })
+        CorporateActionSelectionEvidenceSchema.validate(row)
+        for invalid in (
+            row.with_columns(pl.lit(dt.date(2018, 8, 20)).alias("end_date")),
+            row.with_columns(pl.lit(0.0).alias("stock_ratio")),
+            row.with_columns(pl.lit(0.01).alias("cash_per_share_gross")),
+            row.with_columns(
+                pl.lit(dt.date(2018, 8, 24)).alias("stock_list_date")
+            ),
+        ):
+            with pytest.raises(pandera.errors.SchemaError):
+                CorporateActionSelectionEvidenceSchema.validate(invalid)
+
     def test_corporate_action_reconciliation_status_branches(self) -> None:
         no_event = pl.DataFrame({
             "symbol": ["600000.SH"],
@@ -418,6 +493,8 @@ class TestM3ExecutionInputSchemas:
             "event_count": [0],
             "event_ids_json": ["[]"],
             "event_ids_sha256": ["c" * 64],
+            "stock_ratio_terms_json": ["[]"],
+            "stock_ratio_terms_sha256": ["d" * 64],
             "cash_per_share_gross": [0.0],
             "stock_ratio": [0.0],
             "rights_ratio": [0.0],
@@ -435,4 +512,53 @@ class TestM3ExecutionInputSchemas:
         with pytest.raises(pandera.errors.SchemaError):
             CorporateActionReconciliationSchema.validate(
                 no_event.with_columns(pl.lit(0.02).alias("factor_ratio_rtol"))
+            )
+        with pytest.raises(pandera.errors.SchemaError):
+            CorporateActionReconciliationSchema.validate(
+                no_event.with_columns(
+                    pl.lit('[{"event_id":"event-1"}]').alias(
+                        "stock_ratio_terms_json"
+                    )
+                )
+            )
+        with pytest.raises(pandera.errors.SchemaError):
+            CorporateActionReconciliationSchema.validate(
+                no_event.with_columns(
+                    pl.lit("not-json").alias("stock_ratio_terms_json")
+                )
+            )
+        with pytest.raises(pandera.errors.SchemaError):
+            CorporateActionReconciliationSchema.validate(
+                no_event.with_columns(
+                    pl.lit("not-a-sha256").alias("stock_ratio_terms_sha256")
+                )
+            )
+
+        matched = no_event.with_columns(
+            pl.lit(dt.date(2026, 6, 10)).alias("previous_close_date"),
+            pl.lit(10.0).alias("previous_close"),
+            pl.lit(1).alias("event_count"),
+            pl.lit('["event-share-consideration-1"]').alias("event_ids_json"),
+            pl.lit("e" * 64).alias("event_ids_sha256"),
+            pl.lit(
+                '[{"basis_multiplier":"3.5",'
+                '"effective_stock_ratio":"0.142857142857142857",'
+                '"event_id":"event-share-consideration-1",'
+                '"raw_stock_ratio":"0.5"}]'
+            ).alias("stock_ratio_terms_json"),
+            pl.lit("f" * 64).alias("stock_ratio_terms_sha256"),
+            pl.lit(0.5 / 3.5).alias("stock_ratio"),
+            pl.lit(1.0 + 0.5 / 3.5).alias(
+                "declared_dividend_factor_ratio"
+            ),
+            pl.lit(1.0 + 0.5 / 3.5).alias("actual_factor_ratio"),
+            pl.lit(0.0).alias("declared_dividend_relative_error"),
+            pl.lit("MATCHED_EVENT_DECLARED_FORMULA_NO_MARKET_REFERENCE").alias(
+                "status"
+            ),
+        )
+        CorporateActionReconciliationSchema.validate(matched)
+        with pytest.raises(pandera.errors.SchemaError):
+            CorporateActionReconciliationSchema.validate(
+                matched.with_columns(pl.lit("[]").alias("stock_ratio_terms_json"))
             )
