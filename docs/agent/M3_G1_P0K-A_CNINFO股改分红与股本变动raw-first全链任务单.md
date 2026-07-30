@@ -1,8 +1,12 @@
 # M3 G1 P0K-A：CNINFO 股改分红与股本变动 raw-first 全链任务单
 
-状态：**冻结，待外部实现**
+状态：**本地实现最终验收通过；正式 REAL1 待执行**
 
 日期：2026-07-29（Asia/Shanghai）
+
+验收更新：2026-07-30，用户明确要求本轮省略外部实现/独立初验，由主 Agent
+自行修复和双平台验证；最终验收见
+[`M3_G1_P0K-A_raw-first合同缺口修复主Agent最终验收报告.md`](M3_G1_P0K-A_raw-first合同缺口修复主Agent最终验收报告.md)。
 
 实现模型：`cursor-grok-4.5-high`
 实现角色：全新外部实现 Agent

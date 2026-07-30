@@ -16,7 +16,7 @@
 |---|---|
 | 独立 CA 类型 / schema v1 | `m3_backfill.py`：`CninfoCorporateAction*`、`m3-g1-cninfo-corporate-action-*-v1` |
 | endpoint/adapter 冻结 | `cninfo.py`：`stock_dividend`/`p_sysapi1139`；`stock_share_change`/`p_stock2215` |
-| 官方字段精确集合 | `CNINFO_STOCK_DIVIDEND_FIELDS`（11）/`CNINFO_STOCK_SHARE_CHANGE_FIELDS`（47） |
+| 官方字段精确集合 | `CNINFO_STOCK_DIVIDEND_FIELDS`（11）/`CNINFO_STOCK_SHARE_CHANGE_FIELDS`（46） |
 | plan v3 五 batch | `G1RequestPlan.schema_version=m3-g1-request-plan-v3` + dividend/share batches |
 | 旧 v2 fail-closed | backfill / planning 测试拒绝 v2 伪装 |
 | HISTORY 顺序与共享预算 | `g1_workflow.py`：tushare→rights→dividend→share；`max_new_requests` 跨段 |
