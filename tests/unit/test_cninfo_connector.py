@@ -329,10 +329,7 @@ def test_corporate_action_schema_failures(payload: dict[str, Any]) -> None:
     )
     with pytest.raises(CninfoConnectorError) as exc:
         connector.fetch_stock_dividend_raw(symbol="600733")
-    assert exc.value.code in {
-        "CNINFO_RESPONSE_SCHEMA_INVALID",
-        "CNINFO_REQUEST_PARAMS_INVALID",
-    }
+    assert exc.value.code == "CNINFO_RESPONSE_SCHEMA_INVALID"
 
 
 def test_corporate_action_row_limit_and_foreign_seccode() -> None:
@@ -366,7 +363,7 @@ def test_corporate_action_row_limit_and_foreign_seccode() -> None:
     )
     with pytest.raises(CninfoConnectorError) as exc:
         capped.fetch_stock_dividend_raw(symbol="600733")
-    assert exc.value.code == "CNINFO_RESPONSE_ROW_LIMIT"
+    assert exc.value.code == "CNINFO_RESPONSE_SCHEMA_INVALID"
 
     foreign = CninfoConnector(
         client=_FakeClient(
@@ -384,10 +381,7 @@ def test_corporate_action_row_limit_and_foreign_seccode() -> None:
         foreign.fetch_stock_share_change_raw(
             symbol="600733", start_date="20180101", end_date="20181231"
         )
-    assert exc2.value.code in {
-        "CNINFO_RESPONSE_SCOPE_INVALID",
-        "CNINFO_RESPONSE_SCHEMA_INVALID",
-    }
+    assert exc2.value.code == "CNINFO_RESPONSE_SCHEMA_INVALID"
 
     missing = CninfoConnector(
         client=_FakeClient(
@@ -401,10 +395,11 @@ def test_corporate_action_row_limit_and_foreign_seccode() -> None:
         ),
         enckey_provider=lambda: "fake-key",
     )
-    with pytest.raises(CninfoConnectorError):
+    with pytest.raises(CninfoConnectorError) as exc3:
         missing.fetch_stock_share_change_raw(
             symbol="600733", start_date="20180101", end_date="20181231"
         )
+    assert exc3.value.code == "CNINFO_RESPONSE_SCHEMA_INVALID"
 
 
 def test_corporate_action_params_and_date_order() -> None:
@@ -427,3 +422,11 @@ def test_corporate_action_params_and_date_order() -> None:
     assert exc.value.code == "CNINFO_REQUEST_PARAMS_INVALID"
     with pytest.raises(CninfoConnectorError):
         connector.fetch_stock_dividend_raw(symbol="600733.SH")
+    for invalid_date in ("20190229", "20261340", "20260100"):
+        with pytest.raises(CninfoConnectorError) as invalid:
+            connector.fetch_stock_share_change_raw(
+                symbol="600733",
+                start_date=invalid_date,
+                end_date="20261231",
+            )
+        assert invalid.value.code == "CNINFO_REQUEST_PARAMS_INVALID"

@@ -1361,6 +1361,7 @@ def test_p0k_a_r1_release_rejects_tampered_ca_receipt(
             receipt_sha256=first.receipt_sha256,
             frame=bad_frame,
             resultcode=first.resultcode,
+            resultmsg=first.resultmsg,
             count=first.count,
             total=first.total,
         )

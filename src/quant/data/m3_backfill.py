@@ -795,6 +795,24 @@ class CninfoCorporateActionRequestIntentV1:
 
 
 @dataclass(frozen=True)
+class _CninfoCorporateActionRawSnapshot:
+    """Strictly verified immutable JSON raw pair for one CNINFO CA request."""
+
+    snapshot_id: str
+    data_path: Path
+    metadata_path: Path
+    checksum_sha256: str
+    metadata_sha256: str
+    size_bytes: int
+    row_count: int
+    columns: tuple[str, ...]
+    resultcode: int
+    resultmsg: str
+    count: int
+    total: int
+
+
+@dataclass(frozen=True)
 class CninfoCorporateActionRawCandidateV1:
     schema_version: Literal["m3-g1-cninfo-corporate-action-candidate-v1"]
     request_id: str
@@ -811,6 +829,7 @@ class CninfoCorporateActionRawCandidateV1:
     raw_metadata_sha256: str
     response_content_sha256: str
     resultcode: int
+    resultmsg: str
     count: int
     total: int
     raw_size_bytes: int
@@ -842,7 +861,12 @@ class CninfoCorporateActionRawCandidateV1:
         expected_fields = _ca_fields_for_endpoint(self.endpoint)
         if self.columns != expected_fields:
             raise ValueError("cninfo corporate-action candidate columns 非法")
-        if self.resultcode != 200 or self.count != self.total or self.count != self.row_count:
+        if (
+            self.resultcode != 200
+            or self.resultmsg != "success"
+            or self.count != self.total
+            or self.count != self.row_count
+        ):
             raise ValueError("cninfo corporate-action candidate 计数元数据非法")
         if self.count < 0:
             raise ValueError("cninfo corporate-action candidate count 非法")
@@ -867,6 +891,7 @@ class CninfoCorporateActionRequestReceipt:
     response_content_sha256: str
     stable_response_sha256: str
     resultcode: int
+    resultmsg: str
     count: int
     total: int
     raw_size_bytes: int
@@ -903,9 +928,16 @@ class CninfoCorporateActionRequestReceipt:
         _validate_counts(self.raw_size_bytes, self.row_count, self.columns)
         if self.columns != _ca_fields_for_endpoint(self.endpoint):
             raise ValueError("cninfo corporate-action receipt columns 非法")
-        if self.resultcode != 200 or self.count != self.total or self.count != self.row_count:
+        if (
+            self.resultcode != 200
+            or self.resultmsg != "success"
+            or self.count != self.total
+            or self.count != self.row_count
+        ):
             raise ValueError("cninfo corporate-action receipt 计数元数据非法")
-        if self.stable_response_sha256 != _cninfo_stable_response_hash_values(asdict(self)):
+        if self.stable_response_sha256 != _cninfo_ca_stable_response_hash_values(
+            asdict(self)
+        ):
             raise ValueError("cninfo corporate-action stable_response_sha256 不一致")
 
 
@@ -916,6 +948,7 @@ class VerifiedCninfoCorporateActionRawResponse:
     receipt_sha256: str
     frame: pl.DataFrame
     resultcode: int
+    resultmsg: str
     count: int
     total: int
 
@@ -962,6 +995,7 @@ class VerifiedCninfoCorporateActionRawResponse:
             )
         if (
             self.resultcode != rebuilt_receipt.resultcode
+            or self.resultmsg != rebuilt_receipt.resultmsg
             or self.count != rebuilt_receipt.count
             or self.total != rebuilt_receipt.total
         ):
@@ -2319,10 +2353,9 @@ def _validate_cninfo_corporate_action_parameters(
         end = values["end_date"]
         if type(symbol) is not str or len(symbol) != 6 or not symbol.isdigit():
             raise ValueError("cninfo share-change symbol 非法")
-        for label, value in (("start_date", start), ("end_date", end)):
-            if type(value) is not str or len(value) != 8 or not value.isdigit():
-                raise ValueError(f"cninfo share-change {label} 非法")
-        if start > end:
+        start_date = _parse_request_date(start)
+        end_date = _parse_request_date(end)
+        if start_date > end_date:
             raise ValueError("cninfo share-change 日期范围非法")
         return
     raise ValueError("cninfo corporate-action endpoint 非法")
@@ -2417,6 +2450,30 @@ def _cninfo_stable_response_hash_values(values: Mapping[str, Any]) -> str:
             "resultcode": values["resultcode"],
             "count": values["count"],
             "total": values["total"],
+            "row_count": values["row_count"],
+            "columns": values["columns"],
+        }
+    )
+
+
+def _cninfo_ca_stable_response_hash_values(values: Mapping[str, Any]) -> str:
+    return _sha256(
+        {
+            "request_id": values["request_id"],
+            "endpoint": values["endpoint"],
+            "adapter": values["adapter"],
+            "parameters_sha256": values["parameters_sha256"],
+            "raw_snapshot_id": values["raw_snapshot_id"],
+            "raw_data_path": values["raw_data_path"],
+            "raw_metadata_path": values["raw_metadata_path"],
+            "raw_file_sha256": values["raw_file_sha256"],
+            "raw_metadata_sha256": values["raw_metadata_sha256"],
+            "response_content_sha256": values["response_content_sha256"],
+            "resultcode": values["resultcode"],
+            "resultmsg": values["resultmsg"],
+            "count": values["count"],
+            "total": values["total"],
+            "raw_size_bytes": values["raw_size_bytes"],
             "row_count": values["row_count"],
             "columns": values["columns"],
         }
@@ -3317,16 +3374,14 @@ def _execute_cninfo_corporate_action_batch_locked(
             assert result is not None
             _validate_cninfo_ca_frame(result, policy)
             try:
-                snapshot = raw_store.write_request(
-                    source=CNINFO_SOURCE,
-                    table=spec.endpoint,
-                    request_id=spec.request_id,
-                    frame=result.frame,
-                    parameters=dict(spec.parameters),
+                snapshot, _ = _write_cninfo_ca_raw_bundle(
+                    raw_root=raw_store.root,
+                    spec=spec,
+                    result=result,
                     after_data_write=lambda: _fault_point("after_data"),
                     after_metadata_write=lambda: _fault_point("after_metadata"),
                 )
-            except (OSError, ValueError):
+            except (OSError, ValueError, M3BackfillError):
                 raise M3BackfillError("RAW_WRITE_CONFLICT") from None
             candidate = _cninfo_ca_candidate_from_snapshot(
                 spec, snapshot, result, raw_store.root
@@ -3370,6 +3425,296 @@ def _fetch_cninfo_corporate_action(
     raise M3BackfillError("CNINFO_REQUEST_PERMANENT_FAILURE")
 
 
+def _cninfo_ca_raw_paths(
+    raw_root: Path, spec: CninfoCorporateActionRequestSpec
+) -> tuple[Path, Path]:
+    directory = raw_root / CNINFO_SOURCE / spec.endpoint
+    return (
+        directory / f"{spec.request_id}.json",
+        directory / f"{spec.request_id}.metadata.json",
+    )
+
+
+def _inspect_cninfo_ca_raw_state(
+    raw_root: Path, spec: CninfoCorporateActionRequestSpec
+) -> Literal["ABSENT", "PARTIAL", "COMPLETE"]:
+    _preflight_controlled_root(raw_root)
+    data_path, metadata_path = _cninfo_ca_raw_paths(raw_root, spec)
+    _reject_path_symlinks(raw_root, data_path)
+    _reject_path_symlinks(raw_root, metadata_path)
+    states: list[bool] = []
+    for path in (data_path, metadata_path):
+        try:
+            mode = os.lstat(path).st_mode
+        except FileNotFoundError:
+            states.append(False)
+            continue
+        except OSError:
+            raise M3BackfillError("RAW_ORPHAN_OR_INVALID_LAYOUT") from None
+        if not stat.S_ISREG(mode) or stat.S_ISLNK(mode):
+            raise M3BackfillError("RAW_ORPHAN_OR_INVALID_LAYOUT")
+        states.append(True)
+    if states == [False, False]:
+        return "ABSENT"
+    if states == [True, True]:
+        return "COMPLETE"
+    return "PARTIAL"
+
+
+def inspect_cninfo_corporate_action_raw_state(
+    *, raw_root: Path, spec: CninfoCorporateActionRequestSpec
+) -> Literal["ABSENT", "PARTIAL", "COMPLETE"]:
+    """Read-only physical state for one frozen CNINFO CA JSON raw pair."""
+    return _inspect_cninfo_ca_raw_state(raw_root, spec)
+
+
+def _cninfo_ca_records_payload(frame: pl.DataFrame) -> bytes:
+    records = [
+        {column: row[column] for column in frame.columns}
+        for row in frame.iter_rows(named=True)
+    ]
+    return _canonical_json(records).encode("utf-8")
+
+
+def _strict_json_records(payload: bytes) -> list[dict[str, Any]]:
+    try:
+        text = payload.decode("utf-8", errors="strict")
+
+        def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+            output: dict[str, Any] = {}
+            for key, value in items:
+                if key in output:
+                    raise ValueError("duplicate JSON key")
+                output[key] = value
+            return output
+
+        value = json.loads(
+            text,
+            object_pairs_hook=pairs,
+            parse_constant=lambda _value: (_ for _ in ()).throw(
+                ValueError("non-finite JSON")
+            ),
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        raise M3BackfillError("RECEIPT_RAW_INVALID") from None
+    if not isinstance(value, list) or any(not isinstance(row, dict) for row in value):
+        raise M3BackfillError("RECEIPT_RAW_INVALID")
+    return value
+
+
+def _write_payload_once(path: Path, payload: bytes) -> None:
+    temporary = path.parent / f".{path.name}.{os.getpid()}.tmp"
+    try:
+        with temporary.open("xb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            raise M3BackfillError("RAW_WRITE_CONFLICT") from None
+        except OSError:
+            raise M3BackfillError("RAW_WRITE_CONFLICT") from None
+    except M3BackfillError:
+        raise
+    except OSError:
+        raise M3BackfillError("RAW_WRITE_CONFLICT") from None
+    finally:
+        has_primary_error = sys.exc_info()[0] is not None
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            if not has_primary_error:
+                raise M3BackfillError("RAW_WRITE_CONFLICT") from None
+
+
+def _cninfo_ca_metadata_payload(
+    *,
+    spec: CninfoCorporateActionRequestSpec,
+    result: CninfoCorporateActionRawResult,
+    raw_payload: bytes,
+    fetched_at: dt.datetime,
+) -> bytes:
+    values: dict[str, Any] = {
+        "schema_version": "m3-g1-cninfo-corporate-action-raw-metadata-v1",
+        "snapshot_id": spec.request_id,
+        "request_id": spec.request_id,
+        "source": CNINFO_SOURCE,
+        "endpoint": spec.endpoint,
+        "adapter": spec.adapter,
+        "parameters": dict(spec.parameters),
+        "fetched_at": fetched_at.isoformat(),
+        "resultcode": result.resultcode,
+        "resultmsg": result.resultmsg,
+        "count": result.count,
+        "total": result.total,
+        "row_count": result.frame.height,
+        "columns": list(result.frame.columns),
+        "response_content_sha256": cninfo_corporate_action_response_content_sha256(
+            result.frame, endpoint=spec.endpoint
+        ),
+        "raw_file_sha256": hashlib.sha256(raw_payload).hexdigest(),
+        "raw_size_bytes": len(raw_payload),
+    }
+    values["metadata_content_sha256"] = _sha256(values)
+    return _canonical_json(values).encode("utf-8")
+
+
+def _write_cninfo_ca_raw_bundle(
+    *,
+    raw_root: Path,
+    spec: CninfoCorporateActionRequestSpec,
+    result: CninfoCorporateActionRawResult,
+    after_data_write: Callable[[], None] | None = None,
+    after_metadata_write: Callable[[], None] | None = None,
+) -> tuple[_CninfoCorporateActionRawSnapshot, pl.DataFrame]:
+    state = _inspect_cninfo_ca_raw_state(raw_root, spec)
+    raw_payload = _cninfo_ca_records_payload(result.frame)
+    if state == "COMPLETE":
+        snapshot, existing = _verify_cninfo_ca_raw_bundle(raw_root=raw_root, spec=spec)
+        if (
+            snapshot.checksum_sha256 != hashlib.sha256(raw_payload).hexdigest()
+            or snapshot.resultcode != result.resultcode
+            or snapshot.resultmsg != result.resultmsg
+            or snapshot.count != result.count
+            or snapshot.total != result.total
+        ):
+            raise M3BackfillError("RAW_WRITE_CONFLICT")
+        return snapshot, existing
+    if state != "ABSENT":
+        raise M3BackfillError("RAW_ORPHAN_OR_INVALID_LAYOUT")
+    data_path, metadata_path = _cninfo_ca_raw_paths(raw_root, spec)
+    try:
+        data_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        raise M3BackfillError("RAW_WRITE_CONFLICT") from None
+    _reject_path_symlinks(raw_root, data_path)
+    fetched_at = dt.datetime.now(dt.timezone.utc)
+    metadata_payload = _cninfo_ca_metadata_payload(
+        spec=spec, result=result, raw_payload=raw_payload, fetched_at=fetched_at
+    )
+    _write_payload_once(data_path, raw_payload)
+    if after_data_write is not None:
+        after_data_write()
+    _write_payload_once(metadata_path, metadata_payload)
+    if after_metadata_write is not None:
+        after_metadata_write()
+    return _verify_cninfo_ca_raw_bundle(raw_root=raw_root, spec=spec)
+
+
+def _verify_cninfo_ca_raw_bundle(
+    *, raw_root: Path, spec: CninfoCorporateActionRequestSpec
+) -> tuple[_CninfoCorporateActionRawSnapshot, pl.DataFrame]:
+    if _inspect_cninfo_ca_raw_state(raw_root, spec) != "COMPLETE":
+        raise M3BackfillError("RECEIPT_RAW_INVALID")
+    data_path, metadata_path = _cninfo_ca_raw_paths(raw_root, spec)
+    raw_payload = _read_bytes(data_path, "RECEIPT_RAW_INVALID")
+    metadata_payload = _read_bytes(metadata_path, "RECEIPT_RAW_INVALID")
+    try:
+        metadata = _strict_json(metadata_payload)
+        expected_keys = {
+            "schema_version",
+            "snapshot_id",
+            "request_id",
+            "source",
+            "endpoint",
+            "adapter",
+            "parameters",
+            "fetched_at",
+            "resultcode",
+            "resultmsg",
+            "count",
+            "total",
+            "row_count",
+            "columns",
+            "response_content_sha256",
+            "raw_file_sha256",
+            "raw_size_bytes",
+            "metadata_content_sha256",
+        }
+        if set(metadata) != expected_keys:
+            raise ValueError
+        metadata_hash = metadata["metadata_content_sha256"]
+        unsigned = dict(metadata)
+        del unsigned["metadata_content_sha256"]
+        if (
+            metadata["schema_version"]
+            != "m3-g1-cninfo-corporate-action-raw-metadata-v1"
+            or metadata["snapshot_id"] != spec.request_id
+            or metadata["request_id"] != spec.request_id
+            or metadata["source"] != CNINFO_SOURCE
+            or metadata["endpoint"] != spec.endpoint
+            or metadata["adapter"] != spec.adapter
+            or metadata["parameters"] != dict(spec.parameters)
+            or metadata_hash != _sha256(unsigned)
+        ):
+            raise ValueError
+        fetched_at = dt.datetime.fromisoformat(metadata["fetched_at"])
+        if fetched_at.tzinfo is None:
+            raise ValueError
+        fields = _ca_fields_for_endpoint(spec.endpoint)
+        if metadata["columns"] != list(fields):
+            raise ValueError
+        for key in ("resultcode", "count", "total", "row_count", "raw_size_bytes"):
+            if type(metadata[key]) is not int:
+                raise ValueError
+        if (
+            metadata["resultcode"] != 200
+            or metadata["resultmsg"] != "success"
+            or metadata["count"] < 0
+            or metadata["count"] != metadata["total"]
+            or metadata["count"] != metadata["row_count"]
+        ):
+            raise ValueError
+        raw_sha256 = hashlib.sha256(raw_payload).hexdigest()
+        if (
+            metadata["raw_file_sha256"] != raw_sha256
+            or metadata["raw_size_bytes"] != len(raw_payload)
+        ):
+            raise ValueError
+        records = _strict_json_records(raw_payload)
+        field_set = set(fields)
+        if len(records) != metadata["row_count"]:
+            raise ValueError
+        if any(
+            set(row) != field_set
+            or any(value is not None and type(value) is not str for value in row.values())
+            for row in records
+        ):
+            raise ValueError
+        frame = (
+            _ca_empty_frame(spec.endpoint)
+            if not records
+            else pl.DataFrame(records, schema={field: pl.Utf8 for field in fields})
+        )
+        content_sha256 = cninfo_corporate_action_response_content_sha256(
+            frame, endpoint=spec.endpoint
+        )
+        if metadata["response_content_sha256"] != content_sha256:
+            raise ValueError
+    except (KeyError, TypeError, ValueError, M3BackfillError):
+        raise M3BackfillError("RECEIPT_RAW_INVALID") from None
+    return (
+        _CninfoCorporateActionRawSnapshot(
+            snapshot_id=spec.request_id,
+            data_path=data_path,
+            metadata_path=metadata_path,
+            checksum_sha256=raw_sha256,
+            metadata_sha256=hashlib.sha256(metadata_payload).hexdigest(),
+            size_bytes=len(raw_payload),
+            row_count=frame.height,
+            columns=tuple(frame.columns),
+            resultcode=metadata["resultcode"],
+            resultmsg=metadata["resultmsg"],
+            count=metadata["count"],
+            total=metadata["total"],
+        ),
+        frame,
+    )
+
+
 def verify_cninfo_corporate_action_receipt(
     *,
     spec: CninfoCorporateActionRequestSpec,
@@ -3402,6 +3747,7 @@ def verify_cninfo_corporate_action_receipt(
             parsed["response_content_sha256"],
             parsed["stable_response_sha256"],
             parsed["resultcode"],
+            parsed["resultmsg"],
             parsed["count"],
             parsed["total"],
             parsed["raw_size_bytes"],
@@ -3420,13 +3766,10 @@ def verify_cninfo_corporate_action_receipt(
     data_path = _resolve_relative(raw_root, receipt.raw_data_path)
     metadata_path = _resolve_relative(raw_root, receipt.raw_metadata_path)
     try:
-        snapshot, frame = RawStore(raw_root).verify_request_bundle(
-            source=CNINFO_SOURCE,
-            table=spec.endpoint,
-            request_id=spec.request_id,
-            parameters=dict(spec.parameters),
+        snapshot, frame = _verify_cninfo_ca_raw_bundle(
+            raw_root=raw_root, spec=spec
         )
-    except (OSError, ValueError):
+    except M3BackfillError:
         raise M3BackfillError("RECEIPT_RAW_INVALID") from None
     if data_path != snapshot.data_path or metadata_path != snapshot.metadata_path:
         raise M3BackfillError("RECEIPT_RAW_PATH_MISMATCH")
@@ -3436,11 +3779,11 @@ def verify_cninfo_corporate_action_receipt(
         normalized = _ca_empty_frame(spec.endpoint)
     result = CninfoCorporateActionRawResult(
         endpoint=spec.endpoint,
-        frame=normalized,
-        resultcode=receipt.resultcode,
-        resultmsg="success",
-        count=receipt.count,
-        total=receipt.total,
+        frame=frame,
+        resultcode=snapshot.resultcode,
+        resultmsg=snapshot.resultmsg,
+        count=snapshot.count,
+        total=snapshot.total,
     )
     _validate_cninfo_ca_frame(result, policy)
     expected_candidate = _cninfo_ca_candidate_from_snapshot(
@@ -3459,6 +3802,7 @@ def verify_cninfo_corporate_action_receipt(
         or receipt.columns != snapshot.columns
         or receipt.response_content_sha256 != content_hash
         or receipt.resultcode != expected_receipt.resultcode
+        or receipt.resultmsg != expected_receipt.resultmsg
         or receipt.count != expected_receipt.count
         or receipt.total != expected_receipt.total
         or receipt.stable_response_sha256 != expected_receipt.stable_response_sha256
@@ -3473,6 +3817,7 @@ def verify_cninfo_corporate_action_receipt(
             receipt_sha256=hashlib.sha256(payload).hexdigest(),
             frame=normalized,
             resultcode=receipt.resultcode,
+            resultmsg=receipt.resultmsg,
             count=receipt.count,
             total=receipt.total,
         )
@@ -3488,7 +3833,7 @@ def _validate_cninfo_ca_frame(
         raise M3BackfillError("CNINFO_RESPONSE_COLUMNS_INVALID")
     if result.frame.height == 0 and policy.empty_response == "REJECT":
         raise M3BackfillError("CNINFO_EMPTY_RESPONSE_REJECTED")
-    if result.frame.height >= policy.row_limit:
+    if result.frame.height > policy.row_limit:
         raise M3BackfillError("CNINFO_RESPONSE_ROW_LIMIT")
     if (
         result.resultcode != 200
@@ -3555,13 +3900,13 @@ def _preflight_cninfo_ca_no_receipt(
     raw_store: RawStore,
 ) -> _NoReceiptPreflight:
     try:
-        raw_state = raw_store.inspect_request_state(
-            source=CNINFO_SOURCE, table=spec.endpoint, request_id=spec.request_id
-        )
+        raw_state = _inspect_cninfo_ca_raw_state(raw_store.root, spec)
         intent_exists = _regular_file_exists(intent_path)
         candidate_exists = _regular_file_exists(candidate_path)
     except (OSError, ValueError):
         raise M3BackfillError("RAW_ORPHAN_OR_INVALID_LAYOUT") from None
+    if raw_state == "PARTIAL":
+        raise M3BackfillError("RAW_ORPHAN_OR_INVALID_LAYOUT")
     if candidate_exists and (not intent_exists or raw_state != "COMPLETE"):
         raise M3BackfillError("REQUEST_EVIDENCE_CLOSURE_INVALID")
     if raw_state == "COMPLETE" and not intent_exists:
@@ -3572,6 +3917,77 @@ def _preflight_cninfo_ca_no_receipt(
         "RECOVER" if raw_state == "COMPLETE" else "NETWORK"
     )
     return _NoReceiptPreflight(raw_state, intent_exists, candidate_exists, mode)
+
+
+def validate_cninfo_corporate_action_partial_evidence(
+    *,
+    spec: CninfoCorporateActionRequestSpec,
+    raw_root: Path,
+    journal_root: Path,
+    policy: EndpointPolicy,
+) -> None:
+    """Read-only validation for an uncommitted CA request journal."""
+    request_dir = journal_root / spec.request_id
+    intent_path = request_dir / "intent.json"
+    candidate_path = request_dir / "candidate.json"
+    receipt_path = request_dir / "receipt.json"
+    if _regular_file_exists(receipt_path):
+        raise M3BackfillError("COMMITTED_JOURNAL_CONFLICT")
+    try:
+        raw_state = _inspect_cninfo_ca_raw_state(raw_root, spec)
+        intent_exists = _regular_file_exists(intent_path)
+        candidate_exists = _regular_file_exists(candidate_path)
+    except (OSError, ValueError, M3BackfillError):
+        raise M3BackfillError("RAW_ORPHAN_OR_INVALID_LAYOUT") from None
+    if raw_state == "PARTIAL":
+        raise M3BackfillError("RAW_ORPHAN_OR_INVALID_LAYOUT")
+    if candidate_exists and (not intent_exists or raw_state != "COMPLETE"):
+        raise M3BackfillError("REQUEST_EVIDENCE_CLOSURE_INVALID")
+    if raw_state == "COMPLETE" and not intent_exists:
+        raise M3BackfillError("REQUEST_EVIDENCE_CLOSURE_INVALID")
+    if intent_exists:
+        _verify_existing_cninfo_ca_intent(intent_path, spec)
+    if candidate_exists:
+        try:
+            parsed = _strict_json(_read_bytes(candidate_path, "CANDIDATE_INVALID"))
+            _exact_keys(parsed, CninfoCorporateActionRawCandidateV1)
+            candidate = CninfoCorporateActionRawCandidateV1(
+                parsed["schema_version"],
+                parsed["request_id"],
+                parsed["source"],
+                parsed["endpoint"],
+                parsed["adapter"],
+                parsed["parameters_sha256"],
+                parsed["raw_snapshot_id"],
+                parsed["raw_data_path"],
+                parsed["raw_metadata_path"],
+                parsed["raw_file_sha256"],
+                parsed["raw_metadata_sha256"],
+                parsed["response_content_sha256"],
+                parsed["resultcode"],
+                parsed["resultmsg"],
+                parsed["count"],
+                parsed["total"],
+                parsed["raw_size_bytes"],
+                parsed["row_count"],
+                _parse_columns(parsed["columns"]),
+            )
+        except (TypeError, ValueError, KeyError):
+            raise M3BackfillError("CANDIDATE_INVALID") from None
+        _verify_cninfo_ca_candidate(spec, candidate, RawStore(raw_root), policy)
+    elif raw_state == "COMPLETE":
+        snapshot, frame = _verify_cninfo_ca_raw_bundle(raw_root=raw_root, spec=spec)
+        _validate_cninfo_ca_frame(
+            CninfoCorporateActionRawResult(
+                endpoint=spec.endpoint,
+                frame=frame,
+                resultcode=snapshot.resultcode,
+                resultmsg=snapshot.resultmsg,
+                count=snapshot.count,
+                total=snapshot.total,
+            ),
+            policy,
+        )
 
 
 def _recover_cninfo_ca_candidate(
@@ -3587,10 +4003,8 @@ def _recover_cninfo_ca_candidate(
     if candidate_exists != expected_candidate_exists:
         raise M3BackfillError("REQUEST_EVIDENCE_CLOSURE_CHANGED")
     try:
-        state = raw_store.inspect_request_state(
-            source=CNINFO_SOURCE, table=spec.endpoint, request_id=spec.request_id
-        )
-    except (OSError, ValueError):
+        state = _inspect_cninfo_ca_raw_state(raw_store.root, spec)
+    except (OSError, ValueError, M3BackfillError):
         raise M3BackfillError("RAW_ORPHAN_OR_INVALID_LAYOUT") from None
     if expected_mode == "NETWORK":
         if candidate_exists or state == "COMPLETE":
@@ -3616,6 +4030,7 @@ def _recover_cninfo_ca_candidate(
                 parsed["raw_metadata_sha256"],
                 parsed["response_content_sha256"],
                 parsed["resultcode"],
+                parsed["resultmsg"],
                 parsed["count"],
                 parsed["total"],
                 parsed["raw_size_bytes"],
@@ -3626,31 +4041,22 @@ def _recover_cninfo_ca_candidate(
             raise M3BackfillError("CANDIDATE_INVALID") from None
         return _verify_cninfo_ca_candidate(spec, candidate, raw_store, policy)
     try:
-        snapshot, frame = raw_store.verify_request_bundle(
-            source=CNINFO_SOURCE,
-            table=spec.endpoint,
-            request_id=spec.request_id,
-            parameters=dict(spec.parameters),
+        snapshot, frame = _verify_cninfo_ca_raw_bundle(
+            raw_root=raw_store.root, spec=spec
         )
-        fields = _ca_fields_for_endpoint(spec.endpoint)
-        normalized = frame
-        if frame.height == 0 and tuple(frame.columns) != fields:
-            normalized = _ca_empty_frame(spec.endpoint)
         result = CninfoCorporateActionRawResult(
             endpoint=spec.endpoint,
-            frame=normalized,
-            resultcode=200,
-            resultmsg="success",
-            count=normalized.height,
-            total=normalized.height,
+            frame=frame,
+            resultcode=snapshot.resultcode,
+            resultmsg=snapshot.resultmsg,
+            count=snapshot.count,
+            total=snapshot.total,
         )
         _validate_cninfo_ca_frame(result, policy)
         candidate = _cninfo_ca_candidate_from_snapshot(
             spec, snapshot, result, raw_store.root
         )
-        current_state = raw_store.inspect_request_state(
-            source=CNINFO_SOURCE, table=spec.endpoint, request_id=spec.request_id
-        )
+        current_state = _inspect_cninfo_ca_raw_state(raw_store.root, spec)
         if current_state != "COMPLETE":
             raise M3BackfillError("REQUEST_EVIDENCE_CLOSURE_CHANGED")
         _verify_cninfo_ca_candidate(spec, candidate, raw_store, policy)
@@ -3678,25 +4084,18 @@ def _verify_cninfo_ca_candidate(
     ):
         raise M3BackfillError("CANDIDATE_SPEC_MISMATCH")
     try:
-        snapshot, frame = raw_store.verify_request_bundle(
-            source=CNINFO_SOURCE,
-            table=spec.endpoint,
-            request_id=spec.request_id,
-            parameters=dict(spec.parameters),
+        snapshot, frame = _verify_cninfo_ca_raw_bundle(
+            raw_root=raw_store.root, spec=spec
         )
-    except (OSError, ValueError):
+    except M3BackfillError:
         raise M3BackfillError("CANDIDATE_RAW_INVALID") from None
-    fields = _ca_fields_for_endpoint(spec.endpoint)
-    normalized = frame
-    if frame.height == 0 and tuple(frame.columns) != fields:
-        normalized = _ca_empty_frame(spec.endpoint)
     result = CninfoCorporateActionRawResult(
         endpoint=spec.endpoint,
-        frame=normalized,
-        resultcode=candidate.resultcode,
-        resultmsg="success",
-        count=candidate.count,
-        total=candidate.total,
+        frame=frame,
+        resultcode=snapshot.resultcode,
+        resultmsg=snapshot.resultmsg,
+        count=snapshot.count,
+        total=snapshot.total,
     )
     _validate_cninfo_ca_frame(result, policy)
     expected = _cninfo_ca_candidate_from_snapshot(
@@ -3709,7 +4108,7 @@ def _verify_cninfo_ca_candidate(
 
 def _cninfo_ca_candidate_from_snapshot(
     spec: CninfoCorporateActionRequestSpec,
-    snapshot: RequestRawSnapshot,
+    snapshot: _CninfoCorporateActionRawSnapshot,
     result: CninfoCorporateActionRawResult,
     raw_root: Path,
 ) -> CninfoCorporateActionRawCandidateV1:
@@ -3729,6 +4128,7 @@ def _cninfo_ca_candidate_from_snapshot(
             result.frame, endpoint=spec.endpoint
         ),
         result.resultcode,
+        result.resultmsg,
         result.count,
         result.total,
         snapshot.size_bytes,
@@ -3757,11 +4157,12 @@ def _cninfo_ca_receipt_from_candidate(
         "response_content_sha256": candidate.response_content_sha256,
         "stable_response_sha256": "0" * 64,
         "resultcode": candidate.resultcode,
+        "resultmsg": candidate.resultmsg,
         "count": candidate.count,
         "total": candidate.total,
         "raw_size_bytes": candidate.raw_size_bytes,
         "row_count": candidate.row_count,
         "columns": candidate.columns,
     }
-    values["stable_response_sha256"] = _cninfo_stable_response_hash_values(values)
+    values["stable_response_sha256"] = _cninfo_ca_stable_response_hash_values(values)
     return CninfoCorporateActionRequestReceipt(**values)

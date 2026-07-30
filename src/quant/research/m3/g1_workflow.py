@@ -29,6 +29,8 @@ from quant.data.m3_backfill import (
     execute_cninfo_batch,
     execute_cninfo_corporate_action_batch,
     execute_tushare_batch,
+    inspect_cninfo_corporate_action_raw_state,
+    validate_cninfo_corporate_action_partial_evidence,
     verify_cninfo_corporate_action_receipt,
     verify_cninfo_receipt,
     verify_tushare_receipt,
@@ -103,6 +105,7 @@ _REL_CAL_SZ = "data/clean/trade_calendar/market=SZ/data.parquet"
 _REL_INST_SH = "data/clean/instrument/market=SH/data.parquet"
 _REL_INST_SZ = "data/clean/instrument/market=SZ/data.parquet"
 _REL_RAW = "data/raw/m3_g1"
+_REL_CNINFO_CA_RAW = "data/raw"
 _REL_JOURNAL_TS = "data/run_state/m3_g1/tushare"
 _REL_JOURNAL_BS = "data/run_state/m3_g1/baostock"
 _REL_JOURNAL_CN = "data/run_state/m3_g1/cninfo"
@@ -303,6 +306,7 @@ class _Layout:
     root_id: tuple[int, int]
     ancestors: tuple[tuple[str, tuple[int, int]], ...]
     raw_root: Path
+    cninfo_ca_raw_root: Path
     tushare_journal: Path
     baostock_journal: Path
     cninfo_journal: Path
@@ -390,7 +394,7 @@ class G1HistoryStageResultV1:
         if type(self.state) is not VerifiedG1WorkflowStateV1:
             raise ValueError("history stage state type invalid")
         if self.max_new_requests is not None and (
-            type(self.max_new_requests) is not int or self.max_new_requests <= 0
+            type(self.max_new_requests) is not int or self.max_new_requests < 0
         ):
             raise ValueError("history stage max_new_requests invalid")
         if type(self.new_requests_committed) is not int or self.new_requests_committed < 0:
@@ -408,7 +412,7 @@ def run_g1_history_stage(
 ) -> G1HistoryStageResultV1:
     operation: Operation = "HISTORY"
     if max_new_requests is not None and (
-        type(max_new_requests) is not int or max_new_requests <= 0
+        type(max_new_requests) is not int or max_new_requests < 0
     ):
         raise M3G1WorkflowError(
             "G1_WORKFLOW_INPUT_INVALID", operation=operation, cause_category="INPUT"
@@ -499,7 +503,7 @@ def run_g1_history_stage(
                 dividend_executed = execute_cninfo_corporate_action_batch(
                     batch=state.derived_plan.request_plan.cninfo_dividend_batch,
                     connector=cninfo,
-                    raw_store=RawStore(layout.raw_root),
+                    raw_store=RawStore(layout.cninfo_ca_raw_root),
                     journal_root=layout.cninfo_dividend_journal,
                     row_limit=_cninfo_row_limit(config),
                     request_rate_per_minute=state.static_plan.request_rate_per_minute,
@@ -515,15 +519,16 @@ def run_g1_history_stage(
                     )
                 dividend_status = _recover_cninfo_corporate_action_batch(
                     batch=state.derived_plan.request_plan.cninfo_dividend_batch,
-                    raw_root=layout.raw_root,
+                    raw_root=layout.cninfo_ca_raw_root,
                     journal_root=layout.cninfo_dividend_journal,
+                    row_limit=_cninfo_row_limit(config),
                     operation=operation,
                 )
                 if dividend_status == "complete":
                     share_executed = execute_cninfo_corporate_action_batch(
                         batch=state.derived_plan.request_plan.cninfo_share_change_batch,
                         connector=cninfo,
-                        raw_store=RawStore(layout.raw_root),
+                        raw_store=RawStore(layout.cninfo_ca_raw_root),
                         journal_root=layout.cninfo_share_change_journal,
                         row_limit=_cninfo_row_limit(config),
                         request_rate_per_minute=state.static_plan.request_rate_per_minute,
@@ -813,28 +818,30 @@ def _inspect(
                 )
                 dividend_status = _recover_cninfo_corporate_action_batch(
                     batch=derived.request_plan.cninfo_dividend_batch,
-                    raw_root=layout.raw_root,
+                    raw_root=layout.cninfo_ca_raw_root,
                     journal_root=layout.cninfo_dividend_journal,
+                    row_limit=_cninfo_row_limit(config),
                     operation=operation,
                 )
                 if dividend_status == "complete":
                     verified_dividend = _verify_cninfo_corporate_action_complete(
                         batch=derived.request_plan.cninfo_dividend_batch,
-                        raw_root=layout.raw_root,
+                        raw_root=layout.cninfo_ca_raw_root,
                         journal_root=layout.cninfo_dividend_journal,
                         row_limit=_cninfo_row_limit(config),
                         operation=operation,
                     )
                     share_status = _recover_cninfo_corporate_action_batch(
                         batch=derived.request_plan.cninfo_share_change_batch,
-                        raw_root=layout.raw_root,
+                        raw_root=layout.cninfo_ca_raw_root,
                         journal_root=layout.cninfo_share_change_journal,
+                        row_limit=_cninfo_row_limit(config),
                         operation=operation,
                     )
                     if share_status == "complete":
                         verified_share = _verify_cninfo_corporate_action_complete(
                             batch=derived.request_plan.cninfo_share_change_batch,
-                            raw_root=layout.raw_root,
+                            raw_root=layout.cninfo_ca_raw_root,
                             journal_root=layout.cninfo_share_change_journal,
                             row_limit=_cninfo_row_limit(config),
                             operation=operation,
@@ -1486,6 +1493,7 @@ def _recover_cninfo_corporate_action_batch(
     batch: CninfoCorporateActionRequestBatch,
     raw_root: Path,
     journal_root: Path,
+    row_limit: int,
     operation: Operation,
 ) -> Literal["missing", "partial", "complete"]:
     _preflight_optional_root(journal_root, operation=operation)
@@ -1493,6 +1501,7 @@ def _recover_cninfo_corporate_action_batch(
     if not _path_exists_nofollow(journal_root):
         return "missing"
     _validate_tushare_journal_root(journal_root, operation=operation)
+    policy = EndpointPolicy(row_limit, "ALLOW")
     present = 0
     for spec in batch.requests:
         request_dir = journal_root / spec.request_id
@@ -1502,19 +1511,36 @@ def _recover_cninfo_corporate_action_batch(
             continue
         if _path_exists_nofollow(request_dir):
             _validate_request_journal_dir(request_dir, operation=operation)
+            try:
+                validate_cninfo_corporate_action_partial_evidence(
+                    spec=spec,
+                    raw_root=raw_root,
+                    journal_root=journal_root,
+                    policy=policy,
+                )
+            except M3BackfillError:
+                raise M3G1WorkflowError(
+                    "G1_WORKFLOW_JOURNAL_INVALID",
+                    operation=operation,
+                    cause_category="JOURNAL",
+                ) from None
             return "partial"
         try:
-            state = RawStore(raw_root).inspect_request_state(
-                source="cninfo", table=spec.endpoint, request_id=spec.request_id
+            state = inspect_cninfo_corporate_action_raw_state(
+                raw_root=raw_root, spec=spec
             )
-        except (OSError, ValueError):
+        except (OSError, ValueError, M3BackfillError):
             raise M3G1WorkflowError(
                 "G1_WORKFLOW_JOURNAL_INVALID",
                 operation=operation,
                 cause_category="JOURNAL",
             ) from None
         if state != "ABSENT":
-            return "partial"
+            raise M3G1WorkflowError(
+                "G1_WORKFLOW_JOURNAL_INVALID",
+                operation=operation,
+                cause_category="JOURNAL",
+            ) from None
     if present == 0:
         return "missing"
     if present == len(batch.requests):
@@ -1905,6 +1931,7 @@ def _open_layout(project_root: Path, *, operation: Operation) -> _Layout:
         root_id=root_id,
         ancestors=ancestors,
         raw_root=root / _REL_RAW,
+        cninfo_ca_raw_root=root / _REL_CNINFO_CA_RAW,
         tushare_journal=root / _REL_JOURNAL_TS,
         baostock_journal=root / _REL_JOURNAL_BS,
         cninfo_journal=root / _REL_JOURNAL_CN,

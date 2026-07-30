@@ -13,6 +13,7 @@ touches the network.
 
 from __future__ import annotations
 
+import datetime as dt
 import importlib
 import math
 from collections.abc import Callable, Mapping, Sequence
@@ -120,7 +121,7 @@ CNINFO_STOCK_DIVIDEND_FIELDS: tuple[str, ...] = (
 )
 CNINFO_STOCK_DIVIDEND_FIELD_SET = frozenset(CNINFO_STOCK_DIVIDEND_FIELDS)
 
-# Frozen official field set from p_stock2215 (47 columns).
+# Frozen official field set from p_stock2215 (46 columns).
 CNINFO_STOCK_SHARE_CHANGE_FIELDS: tuple[str, ...] = (
     "DECLAREDATE",
     "F001V",
@@ -588,7 +589,7 @@ def _validate_corporate_action_payload(
         if check_seccode:
             seccode = item.get("SECCODE")
             if type(seccode) is not str or seccode != requested_code:
-                raise CninfoConnectorError("CNINFO_RESPONSE_SCOPE_INVALID")
+                raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID")
         row: dict[str, Any] = {}
         for name in fields:
             row[name] = _canonicalize_cell(item[name])
@@ -635,7 +636,7 @@ def _parse_exact_envelope(
     if len(records) != count:
         raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID")
     if count > row_limit:
-        raise CninfoConnectorError("CNINFO_RESPONSE_ROW_LIMIT")
+        raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID")
     return resultcode, resultmsg, count, total, records
 
 
@@ -695,6 +696,10 @@ def _normalize_single_symbol(symbol: str) -> str:
 def _validate_date8(value: str) -> None:
     if type(value) is not str or len(value) != 8 or not value.isdigit():
         raise CninfoConnectorError("CNINFO_REQUEST_PARAMS_INVALID")
+    try:
+        dt.datetime.strptime(value, "%Y%m%d")
+    except ValueError:
+        raise CninfoConnectorError("CNINFO_REQUEST_PARAMS_INVALID") from None
 
 
 def _date8_to_iso(value: str) -> str:

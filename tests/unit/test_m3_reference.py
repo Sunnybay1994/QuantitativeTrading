@@ -162,20 +162,29 @@ def _make_cninfo_ca_verified(spec: backfill.CninfoCorporateActionRequestSpec):
     )
     content = cninfo_corporate_action_response_content_sha256(frame, endpoint=spec.endpoint)
     parameters_sha256 = backfill._parameters_hash(spec.parameters)
+    table = spec.endpoint
+    raw_data_path = f"cninfo/{table}/{spec.request_id}.json"
+    raw_metadata_path = f"cninfo/{table}/{spec.request_id}.metadata.json"
     values = {
         "request_id": spec.request_id,
         "endpoint": spec.endpoint,
         "adapter": spec.adapter,
         "parameters_sha256": parameters_sha256,
+        "raw_snapshot_id": spec.request_id,
+        "raw_data_path": raw_data_path,
+        "raw_metadata_path": raw_metadata_path,
+        "raw_file_sha256": _HEX,
+        "raw_metadata_sha256": _HEX,
         "response_content_sha256": content,
         "resultcode": 200,
+        "resultmsg": "success",
         "count": 0,
         "total": 0,
+        "raw_size_bytes": 1,
         "row_count": 0,
         "columns": tuple(frame.columns),
     }
-    stable = backfill._cninfo_stable_response_hash_values(values)
-    table = spec.endpoint
+    stable = backfill._cninfo_ca_stable_response_hash_values(values)
     receipt = CninfoCorporateActionRequestReceipt(
         schema_version="m3-g1-cninfo-corporate-action-receipt-v1",
         request_id=spec.request_id,
@@ -185,13 +194,14 @@ def _make_cninfo_ca_verified(spec: backfill.CninfoCorporateActionRequestSpec):
         parameters=spec.parameters,
         parameters_sha256=parameters_sha256,
         raw_snapshot_id=spec.request_id,
-        raw_data_path=f"cninfo/{table}/request=x/data.parquet",
-        raw_metadata_path=f"cninfo/{table}/request=x/metadata.json",
+        raw_data_path=raw_data_path,
+        raw_metadata_path=raw_metadata_path,
         raw_file_sha256=_HEX,
         raw_metadata_sha256=_HEX,
         response_content_sha256=content,
         stable_response_sha256=stable,
         resultcode=200,
+        resultmsg="success",
         count=0,
         total=0,
         raw_size_bytes=1,
@@ -204,6 +214,7 @@ def _make_cninfo_ca_verified(spec: backfill.CninfoCorporateActionRequestSpec):
         receipt_sha256=backfill._sha256(asdict(receipt)),
         frame=frame,
         resultcode=200,
+        resultmsg="success",
         count=0,
         total=0,
     )

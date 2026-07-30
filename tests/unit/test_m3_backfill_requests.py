@@ -2329,6 +2329,16 @@ def test_plan_cninfo_corporate_action_dedup_order_and_ids() -> None:
                 "end_date": "20180101",
             },
         )
+    for invalid_date in ("20190229", "20261340", "20260100"):
+        with pytest.raises(ValueError):
+            CninfoCorporateActionRequestSpec.create(
+                endpoint="stock_share_change",
+                parameters={
+                    "symbol": "600733",
+                    "start_date": invalid_date,
+                    "end_date": "20261231",
+                },
+            )
     with pytest.raises(ValueError):
         CninfoCorporateActionRequestSpec(
             "m3-g1-cninfo-corporate-action-request-v1",
@@ -2474,6 +2484,34 @@ def test_execute_cninfo_corporate_action_budget_and_verify(tmp_path: Path) -> No
     assert third.new_requests_committed == 1
     assert len(third.receipts) == 2
     for spec in div.requests:
+        raw_path = raw.root / "cninfo" / spec.endpoint / f"{spec.request_id}.json"
+        metadata_path = (
+            raw.root / "cninfo" / spec.endpoint / f"{spec.request_id}.metadata.json"
+        )
+        assert raw_path.is_file()
+        assert metadata_path.is_file()
+        assert json.loads(raw_path.read_text(encoding="utf-8")) == []
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        assert metadata["endpoint"] == spec.endpoint
+        assert metadata["adapter"] == spec.adapter
+        assert metadata["parameters"] == dict(spec.parameters)
+        assert metadata["resultcode"] == 200
+        assert metadata["resultmsg"] == "success"
+        assert metadata["count"] == metadata["total"] == metadata["row_count"] == 0
+        assert tuple(metadata["columns"]) == CNINFO_STOCK_DIVIDEND_FIELDS
+        assert metadata["raw_file_sha256"] == hashlib.sha256(
+            raw_path.read_bytes()
+        ).hexdigest()
+        assert (
+            third.receipts[
+                next(
+                    index
+                    for index, item in enumerate(third.receipts)
+                    if item.request_id == spec.request_id
+                )
+            ].raw_metadata_sha256
+            == hashlib.sha256(metadata_path.read_bytes()).hexdigest()
+        )
         verified = verify_cninfo_corporate_action_receipt(
             spec=spec,
             receipt_path=journal / spec.request_id / "receipt.json",
@@ -2497,6 +2535,146 @@ def test_execute_cninfo_corporate_action_budget_and_verify(tmp_path: Path) -> No
                 policy=EndpointPolicy(5000, "ALLOW"),
             )
         break
+
+
+def test_cninfo_corporate_action_row_limit_is_inclusive() -> None:
+    from quant.data.connectors.cninfo import (
+        CNINFO_DIVIDEND_ENDPOINT,
+        CNINFO_STOCK_DIVIDEND_FIELDS,
+        CninfoCorporateActionRawResult,
+    )
+
+    rows = pl.DataFrame(
+        {
+            name: pl.Series(name, [None] * 2, dtype=pl.Utf8)
+            for name in CNINFO_STOCK_DIVIDEND_FIELDS
+        }
+    )
+    exact = CninfoCorporateActionRawResult(
+        endpoint=CNINFO_DIVIDEND_ENDPOINT,
+        frame=rows,
+        resultcode=200,
+        resultmsg="success",
+        count=2,
+        total=2,
+    )
+    backfill._validate_cninfo_ca_frame(exact, EndpointPolicy(2, "ALLOW"))
+    with pytest.raises(M3BackfillError, match="CNINFO_RESPONSE_ROW_LIMIT"):
+        backfill._validate_cninfo_ca_frame(exact, EndpointPolicy(1, "ALLOW"))
+
+
+def _execute_one_empty_cninfo_ca(
+    root: Path,
+) -> tuple[Any, Path, Path, Path, EndpointPolicy]:
+    from quant.data.connectors.cninfo import CninfoConnector
+    from quant.data.m3_backfill import (
+        HistoryWindow,
+        execute_cninfo_corporate_action_batch,
+        plan_cninfo_corporate_action_requests,
+    )
+
+    class _Empty:
+        def post_json(
+            self, *, url: str, params: object, headers: object
+        ) -> dict[str, object]:
+            del url, params, headers
+            return {
+                "resultcode": 200,
+                "resultmsg": "success",
+                "count": 0,
+                "total": 0,
+                "records": [],
+            }
+
+    batch, _ = plan_cninfo_corporate_action_requests(
+        symbols=["600733.SH"],
+        history=HistoryWindow(dt.date(2018, 1, 1), dt.date(2018, 12, 31)),
+    )
+    raw_root = root / "raw"
+    journal = root / "journal"
+    execute_cninfo_corporate_action_batch(
+        batch=batch,
+        connector=CninfoConnector(client=_Empty(), enckey_provider=lambda: "k"),
+        raw_store=RawStore(raw_root),
+        journal_root=journal,
+        row_limit=5000,
+        request_rate_per_minute=600,
+        max_attempts=1,
+        retry_base_seconds=0.0,
+        classify_error=lambda _exc: "NETWORK",
+        max_new_requests=1,
+    )
+    spec = batch.requests[0]
+    return (
+        spec,
+        journal / spec.request_id / "receipt.json",
+        raw_root,
+        journal,
+        EndpointPolicy(5000, "ALLOW"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("raw_file_sha256", "b" * 64),
+        ("raw_metadata_sha256", "b" * 64),
+        ("response_content_sha256", "b" * 64),
+        ("columns", []),
+        ("endpoint", "stock_share_change"),
+        ("adapter", "akshare_cninfo_p_stock2215_v1"),
+        ("parameters", {"symbol": "000001"}),
+        ("count", 1),
+    ],
+)
+def test_cninfo_corporate_action_receipt_tamper_fails_closed(
+    tmp_path: Path, field: str, replacement: object
+) -> None:
+    from quant.data.m3_backfill import verify_cninfo_corporate_action_receipt
+
+    spec, receipt_path, raw_root, journal, policy = _execute_one_empty_cninfo_ca(
+        tmp_path
+    )
+    payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    payload[field] = replacement
+    receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(M3BackfillError):
+        verify_cninfo_corporate_action_receipt(
+            spec=spec,
+            receipt_path=receipt_path,
+            raw_root=raw_root,
+            journal_root=journal,
+            policy=policy,
+        )
+
+
+@pytest.mark.parametrize("target", ["raw", "metadata"])
+def test_cninfo_corporate_action_raw_tamper_fails_closed(
+    tmp_path: Path, target: str
+) -> None:
+    from quant.data.m3_backfill import verify_cninfo_corporate_action_receipt
+
+    spec, receipt_path, raw_root, journal, policy = _execute_one_empty_cninfo_ca(
+        tmp_path
+    )
+    raw_path = raw_root / "cninfo" / spec.endpoint / f"{spec.request_id}.json"
+    metadata_path = (
+        raw_root / "cninfo" / spec.endpoint / f"{spec.request_id}.metadata.json"
+    )
+    if target == "raw":
+        raw_path.write_bytes(raw_path.read_bytes() + b" ")
+    else:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["resultmsg"] = "tampered"
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    with pytest.raises(M3BackfillError, match="RECEIPT_RAW_INVALID"):
+        verify_cninfo_corporate_action_receipt(
+            spec=spec,
+            receipt_path=receipt_path,
+            raw_root=raw_root,
+            journal_root=journal,
+            policy=policy,
+        )
 
 
 def test_old_rights_types_rejected_as_corporate_action() -> None:

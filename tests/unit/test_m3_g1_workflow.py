@@ -1407,7 +1407,7 @@ def test_history_max_new_rejects_illegal_before_side_effects(tmp_path: Path) -> 
     raw = root / "data/raw/m3_g1"
     assert not journal.exists()
     assert not raw.exists()
-    for bad in (True, 0, -1, 1.0, "1"):
+    for bad in (True, -1, 1.0, "1"):
         with pytest.raises(M3G1WorkflowError) as excinfo:
             _run_history(
                 project_root=root,
@@ -1420,6 +1420,33 @@ def test_history_max_new_rejects_illegal_before_side_effects(tmp_path: Path) -> 
     assert pro.calls == before_calls
     assert not journal.exists()
     assert not raw.exists()
+
+
+def test_history_zero_budget_is_read_only_after_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_resume_fixture_scale(monkeypatch)
+    symbols = _resume_fixture_symbols()
+    root = _project_root(tmp_path, symbols=symbols)
+    config = _resume_fixture_config(tmp_path)
+    pro = _CountingProClient(symbols)
+    connector = TushareConnector(pro_client=pro)
+    run_g1_index_stage(
+        project_root=root, config=config, connector=connector, classify_error=_classify
+    )
+    calls_before = pro.calls
+    result = _run_history(
+        project_root=root,
+        config=config,
+        connector=connector,
+        classify_error=_classify,
+        max_new_requests=0,
+    )
+    assert result.new_requests_committed == 0
+    _assert_index_only_no_history_leak(result.state)
+    assert pro.calls == calls_before
+    assert not (root / "data/run_state/m3_g1/cninfo_dividend").exists()
+    assert not (root / "data/run_state/m3_g1/cninfo_share_change").exists()
 
 
 def test_history_bounded_incomplete_then_resume_success(
@@ -1909,3 +1936,42 @@ def test_p0k_a_partial_dividend_inspect_no_leak(
     _assert_index_only_no_history_leak(inspected)
     after = {path: path.stat().st_mtime_ns for path in root.rglob("*") if path.is_file()}
     assert after == before
+
+
+def test_p0k_a_corrupt_partial_dividend_is_journal_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_resume_fixture_scale(monkeypatch)
+    symbols = _resume_fixture_symbols()
+    root = _project_root(tmp_path, symbols=symbols)
+    config = _resume_fixture_config(tmp_path)
+    pro = _CountingProClient(symbols)
+    connector = TushareConnector(pro_client=pro)
+    index_state = run_g1_index_stage(
+        project_root=root, config=config, connector=connector, classify_error=_classify
+    )
+    assert index_state.derived_plan is not None
+    plan = index_state.derived_plan.request_plan
+    budget = len(plan.history_batch.requests) + len(plan.cninfo_rights_batch.requests) + 1
+    _run_history(
+        project_root=root,
+        config=config,
+        connector=connector,
+        classify_error=_classify,
+        max_new_requests=budget,
+    )
+    request_id = plan.cninfo_dividend_batch.requests[0].request_id
+    request_dir = root / "data/run_state/m3_g1/cninfo_dividend" / request_id
+    (request_dir / "receipt.json").unlink()
+    (request_dir / "candidate.json").write_text("{", encoding="utf-8")
+    with pytest.raises(M3G1WorkflowError) as excinfo:
+        _run_history(
+            project_root=root,
+            config=config,
+            connector=connector,
+            classify_error=_classify,
+            max_new_requests=0,
+        )
+    assert excinfo.value.code == "G1_WORKFLOW_JOURNAL_INVALID"
+    assert excinfo.value.operation == "HISTORY"
+    assert excinfo.value.cause_category == "JOURNAL"

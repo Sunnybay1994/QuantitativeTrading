@@ -2170,6 +2170,7 @@ def _consume_cninfo_corporate_action_responses(
                 receipt_sha256=item.receipt_sha256,
                 frame=item.frame,
                 resultcode=item.resultcode,
+                resultmsg=item.resultmsg,
                 count=item.count,
                 total=item.total,
             )

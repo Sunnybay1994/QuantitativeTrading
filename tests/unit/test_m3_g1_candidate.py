@@ -134,6 +134,8 @@ def _make_cninfo_verified(spec: backfill.CninfoRequestSpec) -> VerifiedCninfoRaw
 def _make_cninfo_ca_verified(
     spec: backfill.CninfoCorporateActionRequestSpec,
     frame: pl.DataFrame | None = None,
+    *,
+    raw_metadata_sha256: str = _HEX,
 ):
     from quant.data.connectors.cninfo import (
         CNINFO_SOURCE,
@@ -154,20 +156,29 @@ def _make_cninfo_ca_verified(
         )
     content = cninfo_corporate_action_response_content_sha256(frame, endpoint=spec.endpoint)
     parameters_sha256 = backfill._parameters_hash(spec.parameters)
+    table = spec.endpoint
+    raw_data_path = f"cninfo/{table}/{spec.request_id}.json"
+    raw_metadata_path = f"cninfo/{table}/{spec.request_id}.metadata.json"
     values = {
         "request_id": spec.request_id,
         "endpoint": spec.endpoint,
         "adapter": spec.adapter,
         "parameters_sha256": parameters_sha256,
+        "raw_snapshot_id": spec.request_id,
+        "raw_data_path": raw_data_path,
+        "raw_metadata_path": raw_metadata_path,
+        "raw_file_sha256": _HEX,
+        "raw_metadata_sha256": raw_metadata_sha256,
         "response_content_sha256": content,
         "resultcode": 200,
+        "resultmsg": "success",
         "count": frame.height,
         "total": frame.height,
+        "raw_size_bytes": 1,
         "row_count": frame.height,
         "columns": tuple(frame.columns),
     }
-    stable = backfill._cninfo_stable_response_hash_values(values)
-    table = spec.endpoint
+    stable = backfill._cninfo_ca_stable_response_hash_values(values)
     receipt = CninfoCorporateActionRequestReceipt(
         schema_version="m3-g1-cninfo-corporate-action-receipt-v1",
         request_id=spec.request_id,
@@ -177,13 +188,14 @@ def _make_cninfo_ca_verified(
         parameters=spec.parameters,
         parameters_sha256=parameters_sha256,
         raw_snapshot_id=spec.request_id,
-        raw_data_path=f"cninfo/{table}/request=x/data.parquet",
-        raw_metadata_path=f"cninfo/{table}/request=x/metadata.json",
+        raw_data_path=raw_data_path,
+        raw_metadata_path=raw_metadata_path,
         raw_file_sha256=_HEX,
-        raw_metadata_sha256=_HEX,
+        raw_metadata_sha256=raw_metadata_sha256,
         response_content_sha256=content,
         stable_response_sha256=stable,
         resultcode=200,
+        resultmsg="success",
         count=frame.height,
         total=frame.height,
         raw_size_bytes=1,
@@ -196,6 +208,7 @@ def _make_cninfo_ca_verified(
         receipt_sha256=backfill._sha256(asdict(receipt)),
         frame=frame,
         resultcode=200,
+        resultmsg="success",
         count=frame.height,
         total=frame.height,
     )
@@ -2296,3 +2309,24 @@ def test_p0k_a_cninfo_ca_raw_changes_identity_without_ledger(
     # endpoints are projected but not selected into ledger in P0K-A
     assert any(item.endpoint == CNINFO_DIVIDEND_ENDPOINT for item in other.input_receipts)
     assert any(item.endpoint == "stock_share_change" for item in other.input_receipts)
+
+    physical_only = list(happy_inputs.cninfo_dividend_responses)
+    original = physical_only[0]
+    physical_only[0] = _make_cninfo_ca_verified(
+        original.spec,
+        frame=original.frame,
+        raw_metadata_sha256="b" * 64,
+    )
+    physical_candidate = build_g1_candidate(
+        inputs=replace(
+            happy_inputs,
+            cninfo_dividend_responses=tuple(physical_only),
+        )
+    )
+    assert (
+        physical_candidate.primary_candidate_key
+        != happy_candidate.primary_candidate_key
+    )
+    assert physical_candidate.corporate_actions.equals(
+        happy_candidate.corporate_actions
+    )
