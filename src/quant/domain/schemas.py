@@ -471,6 +471,7 @@ class CorporateActionReconciliationSchema(pa.DataFrameModel):
             "MATCHED_EVENT_DECLARED_FORMULA",
             "MATCHED_EVENT_MARKET_REFERENCE",
             "MATCHED_EVENT_DECLARED_FORMULA_NO_MARKET_REFERENCE",
+            "MATCHED_EVENT_BASIS_NORMALIZED_DECLARED_FORMULA",
         ]
     )
     source: str = pa.Field(isin=["tushare"])
@@ -530,6 +531,7 @@ class CorporateActionReconciliationSchema(pa.DataFrameModel):
             (pl.col("status").is_in([
                 "MATCHED_EVENT_DECLARED_FORMULA",
                 "MATCHED_EVENT_MARKET_REFERENCE",
+                "MATCHED_EVENT_BASIS_NORMALIZED_DECLARED_FORMULA",
             ]))
             & (pl.col("event_count") > 0)
             & (pl.col("stock_ratio_terms_json") != "[]")
@@ -572,6 +574,20 @@ class CorporateActionReconciliationSchema(pa.DataFrameModel):
                 <= pl.col("factor_ratio_rtol")
             )
         )
+        matched_basis_normalized = (
+            (
+                pl.col("status")
+                == "MATCHED_EVENT_BASIS_NORMALIZED_DECLARED_FORMULA"
+            )
+            & (
+                pl.col("declared_dividend_relative_error")
+                <= pl.col("factor_ratio_rtol")
+            )
+            & (
+                pl.col("market_reference_relative_error")
+                > pl.col("factor_ratio_rtol")
+            )
+        )
         matched_no_ref = (
             (pl.col("status") == "MATCHED_EVENT_DECLARED_FORMULA_NO_MARKET_REFERENCE")
             & (pl.col("event_count") > 0)
@@ -599,6 +615,7 @@ class CorporateActionReconciliationSchema(pa.DataFrameModel):
             no_event
             | (matched_market & matched_declared)
             | (matched_market & matched_market_ref)
+            | (matched_market & matched_basis_normalized)
             | matched_no_ref
         )
         return lf.select(

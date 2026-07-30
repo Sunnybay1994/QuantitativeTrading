@@ -564,7 +564,7 @@ def test_version_constants() -> None:
         "tushare_dividend_cninfo_rights_capital_iso_date_v5"
     )
     assert G1_CORPORATE_ACTION_RECONCILIATION_VERSION == (
-        "tushare_factor_daily_preclose_suspension_resume_basis_terms_v7"
+        "tushare_factor_daily_preclose_suspension_resume_basis_terms_v8"
     )
 
 
@@ -3472,7 +3472,7 @@ def _p0i_halt_resume_frames(
 
 def test_p0i_version_constant_exact() -> None:
     assert G1_CORPORATE_ACTION_RECONCILIATION_VERSION == (
-        "tushare_factor_daily_preclose_suspension_resume_basis_terms_v7"
+        "tushare_factor_daily_preclose_suspension_resume_basis_terms_v8"
     )
 
 
@@ -3687,6 +3687,73 @@ def test_p0kb_reconciliation_applies_basis_only_after_resume() -> None:
             input_receipts=receipts[:1],
         )
     assert caught.value.code == "G1_CORPORATE_ACTION_RECONCILIATION_INVALID"
+
+
+def test_p0kb_formal_resume_uses_proven_basis_when_market_reference_is_not_comparable(
+) -> None:
+    actions, bars, factors, _daily, fact = _p0kb_reconciliation_inputs()
+    pre_transfer_factor = 8.192 / 3.5
+    factors = factors.with_columns(
+        pl.when(pl.col("effective_date").is_in([_D0, _D1, _D2]))
+        .then(pl.lit(pre_transfer_factor))
+        .when(pl.col("effective_date") == _D3)
+        .then(pl.lit(8.192))
+        .otherwise(pl.lit(9.36))
+        .alias("adj_factor")
+    )
+    bars = bars.with_columns(
+        pl.when(pl.col("trade_date") == _D0)
+        .then(pl.lit(52.69))
+        .otherwise(pl.lit(9.5))
+        .alias("open"),
+        pl.when(pl.col("trade_date") == _D0)
+        .then(pl.lit(52.69))
+        .otherwise(pl.lit(9.5))
+        .alias("high"),
+        pl.when(pl.col("trade_date") == _D0)
+        .then(pl.lit(52.69))
+        .otherwise(pl.lit(9.5))
+        .alias("low"),
+        pl.when(pl.col("trade_date") == _D0)
+        .then(pl.lit(52.69))
+        .otherwise(pl.lit(9.5))
+        .alias("close"),
+        pl.when(pl.col("trade_date") == _D0)
+        .then(pl.lit(pre_transfer_factor))
+        .otherwise(pl.lit(9.36))
+        .alias("adj_factor"),
+    )
+    daily = _make_verified(
+        "daily",
+        pl.DataFrame(
+            _daily_rows(
+                closes={_D0: (52.69, 52.69), _D4: (9.5, 15.05)},
+                symbol=_SYMBOL,
+            )
+        ).select(TUSHARE_FIELDS["daily"].split(",")),
+    )
+    result = reconcile_g1_corporate_actions(
+        corporate_actions=actions,
+        bars=bars,
+        adjustment_factors=factors,
+        daily_responses=[daily],
+        suspensions=_suspension(_p0i_full_day_rows(_D1, _D2, _D3)),
+        calendars=_default_calendar(),
+        history=_history(),
+        factor_ratio_rtol=0.001,
+        stock_ratio_normalization_facts=(fact,),
+    )
+    resume = result.evidence.filter(pl.col("effective_date") == _D4).row(
+        0, named=True
+    )
+    assert resume["status"] == (
+        "MATCHED_EVENT_BASIS_NORMALIZED_DECLARED_FORMULA"
+    )
+    assert resume["actual_factor_ratio"] == pytest.approx(9.36 / 8.192)
+    assert resume["stock_ratio"] == pytest.approx(0.5 / 3.5)
+    assert resume["declared_dividend_relative_error"] <= 0.001
+    assert resume["market_reference_relative_error"] > 0.001
+    verify_corporate_action_reconciliation_result(result=result)
 
 
 def test_p0kb_exact_tushare_alias_closes_with_cninfo_lineage() -> None:

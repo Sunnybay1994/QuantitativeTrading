@@ -1,5 +1,22 @@
 # Codex 项目迁移交接
 
+### 2026-07-31 最新续写摘要（覆盖下文旧停止点与执行模式）
+
+- 当前分支为 `main`；P0K-A-REAL1 闭包提交 `dec16c8`，P0K-B 主实现提交 `3ba098d`。本摘要之后
+  的文档提交以实际新 HEAD 为准。现有多份旧 `docs/agent/*.md` 工作树改动属于用户内容，禁止混入提交。
+- G1 正式数据闭包现为：3190 个既有 Tushare/基金 HISTORY receipt、13 个 CNINFO rights 批次、
+  CNINFO `stock_dividend` 与 `stock_share_change` 各 637（共 1274）个正式 request。
+- P0K-B 已证明 600733 raw `0.5`、basis `3.5`、effective `0.5/3.5`。顶层 Windows 零网络
+  `status` 首轮仍在旧 market-reference 分支失败；最小返工后，Windows/WSL P0E/P0I/P0K-B 相邻
+  合同均 `42 passed`，正式 receipt 单次候选重放已越过 600733。
+- 当前正式首败为 `601016.SH@2022-11-28` no-event factor jump
+  (`actual=1.1272352132049517`)。下一动作是 P0K-C 只读真实证据诊断；HISTORY 成功前禁止
+  REFERENCE/PREPARE/PUBLISH。
+- 当前无有效 `VerifiedG1Release`；旧 Windows release 的 source-tree identity 已失效，G2A 未启动。
+- 用户当前要求主 Agent 自行串行实现、自行验证，不调用外部 Agent；必要时可用内部 subagent 做互斥、
+  只读并行工作。Windows 原生 Miniforge 用于开发与 Windows 正式轨，WSL Miniforge base 仍是
+  Linux/平台特有 Gate 权威；Windows 绿测不等于 Linux Gate。
+
 > 生成时间：2026-07-17；最近续写：2026-07-22（Asia/Shanghai）
 > 当前工作路径：Windows `F:\AI_Coding\QuantitativeTrading`；WSL
 > `/home/mabw/AI_Coding_win/QuantitativeTrading` 解析到同一目录。Git 已有 `master` 与初始提交

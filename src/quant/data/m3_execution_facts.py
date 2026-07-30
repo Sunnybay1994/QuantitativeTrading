@@ -48,7 +48,7 @@ G1_CORPORATE_ACTION_SELECTION_VERSION = (
     "tushare_dividend_cninfo_rights_share_consideration_basis_v7"
 )
 G1_CORPORATE_ACTION_RECONCILIATION_VERSION = (
-    "tushare_factor_daily_preclose_suspension_resume_basis_terms_v7"
+    "tushare_factor_daily_preclose_suspension_resume_basis_terms_v8"
 )
 
 _SOURCE = "tushare"
@@ -1684,14 +1684,19 @@ def reconcile_g1_corporate_actions(
                         )
                     market_error = abs(actual / market - 1.0)
                     if market_error > rtol:
-                        raise M3G1ExecutionFactError(
-                            "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED"
+                        if not normalized_event_ids or declared_error > rtol:
+                            raise M3G1ExecutionFactError(
+                                "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED"
+                            )
+                        status = (
+                            "MATCHED_EVENT_BASIS_NORMALIZED_DECLARED_FORMULA"
                         )
-                    status = (
-                        "MATCHED_EVENT_DECLARED_FORMULA"
-                        if declared_error <= rtol
-                        else "MATCHED_EVENT_MARKET_REFERENCE"
-                    )
+                    else:
+                        status = (
+                            "MATCHED_EVENT_DECLARED_FORMULA"
+                            if declared_error <= rtol
+                            else "MATCHED_EVENT_MARKET_REFERENCE"
+                        )
                     evidence_rows.append(
                         {
                             "symbol": symbol,
@@ -2103,7 +2108,9 @@ def _nullable_float_differs(left: float | None, right: float | None) -> bool:
 
 def _assert_reconciliation_row_formulas(row: dict[str, Any]) -> None:
     _assert_event_ids_identity(row)
-    term_stock_ratio = _assert_stock_ratio_terms_identity(row)
+    term_stock_ratio, has_normalized_stock_term = (
+        _assert_stock_ratio_terms_identity(row)
+    )
     actual = float(row["actual_factor_ratio"])
     declared = float(row["declared_dividend_factor_ratio"])
     rtol = float(row["factor_ratio_rtol"])
@@ -2145,6 +2152,7 @@ def _assert_reconciliation_row_formulas(row: dict[str, Any]) -> None:
     if status in {
         "MATCHED_EVENT_DECLARED_FORMULA",
         "MATCHED_EVENT_MARKET_REFERENCE",
+        "MATCHED_EVENT_BASIS_NORMALIZED_DECLARED_FORMULA",
     }:
         ex_ref = row["ex_reference_price"]
         market = row["market_reference_factor_ratio"]
@@ -2158,8 +2166,19 @@ def _assert_reconciliation_row_formulas(row: dict[str, Any]) -> None:
         expected_market_error = abs(actual / float(market) - 1.0)
         if expected_market_error != float(row["market_reference_relative_error"]):
             raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
-        if expected_market_error > rtol:
-            raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
+        if status == "MATCHED_EVENT_BASIS_NORMALIZED_DECLARED_FORMULA":
+            if (
+                not has_normalized_stock_term
+                or expected_declared_error > rtol
+                or expected_market_error <= rtol
+            ):
+                raise M3G1ExecutionFactError(
+                    "G1_CORPORATE_ACTION_RECONCILIATION_INVALID"
+                )
+        elif expected_market_error > rtol:
+            raise M3G1ExecutionFactError(
+                "G1_CORPORATE_ACTION_RECONCILIATION_INVALID"
+            )
         if status == "MATCHED_EVENT_DECLARED_FORMULA" and expected_declared_error > rtol:
             raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
         if status == "MATCHED_EVENT_MARKET_REFERENCE" and expected_declared_error <= rtol:
@@ -2173,7 +2192,9 @@ def _assert_reconciliation_row_formulas(row: dict[str, Any]) -> None:
         raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RECONCILIATION_INVALID")
 
 
-def _assert_stock_ratio_terms_identity(row: Mapping[str, Any]) -> float:
+def _assert_stock_ratio_terms_identity(
+    row: Mapping[str, Any],
+) -> tuple[float, bool]:
     encoded = row.get("stock_ratio_terms_json")
     digest = row.get("stock_ratio_terms_sha256")
     if (
@@ -2222,6 +2243,7 @@ def _assert_stock_ratio_terms_identity(row: Mapping[str, Any]) -> float:
         "after_row_sha256",
     }
     total = Decimal(0)
+    has_normalized = False
     for item in parsed:
         if not isinstance(item, dict) or set(item) != expected_keys:
             raise M3G1ExecutionFactError(
@@ -2263,8 +2285,9 @@ def _assert_stock_ratio_terms_identity(row: Mapping[str, Any]) -> float:
                 )
         else:
             _assert_normalized_stock_term(item, multiplier=multiplier)
+            has_normalized = True
         total += effective
-    return float(total)
+    return float(total), has_normalized
 
 
 def _assert_normalized_stock_term(
