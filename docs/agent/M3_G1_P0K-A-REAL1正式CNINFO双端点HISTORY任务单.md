@@ -1,6 +1,6 @@
 # M3 G1 P0K-A-REAL1：正式 CNINFO 双端点 HISTORY 任务单
 
-状态：**冻结，待执行**
+状态：**已执行并通过（raw-first 闭包）；后续 candidate 质量失败转入 P0K-B**
 
 日期：2026-07-30（Asia/Shanghai）
 
@@ -89,3 +89,17 @@ D:\Miniforge3\python.exe -m quant.research.m3.run_g1 `
 - 首个失败（若有）的 code、operation 与可复现边界。
 
 完成 REAL1-B 后新增主 Agent 验收报告，再进入 P0K-B。
+
+## 6. 执行结论
+
+- REAL1-A：exit 0，2229.1 秒，`new_requests_committed=637`，
+  `outcome=INCOMPLETE`，仅 dividend 新增 637 个完整 identity；
+- REAL1-B：网络阶段新增 share-change 637 个完整 identity；命令在随后 candidate 审计以
+  exit 6、`G1_WORKFLOW_QUALITY_FAILED/HISTORY` 结束，5790.7 秒；
+- 两端点 journal 均为 637 个 intent/candidate/receipt，raw 均为 637 个 data +
+  637 个 metadata，partial/temp 均为 0；
+- 失败发生在所有新响应通过生产 verifier 之后，不属于 raw、metadata、journal、网络或预算失败；
+- 按本任务冻结边界停止于 HISTORY，不启动 REFERENCE/PREPARE/PUBLISH。
+
+完整证据见
+[`M3_G1_P0K-A-REAL1正式CNINFO双端点HISTORY主Agent最终验收报告.md`](M3_G1_P0K-A-REAL1正式CNINFO双端点HISTORY主Agent最终验收报告.md)。
