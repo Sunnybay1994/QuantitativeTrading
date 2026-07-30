@@ -1,65 +1,104 @@
-# M3 G1 P0K-A-R2 交付报告
+# M3 G1 P0K-A-R2 交付报告：五阶段最小 fixture 与中断恢复
 
-状态：**已交付，待独立初验**（不宣布 Gate / P0K / 主验通过）
+状态：**实现完成（未宣布 Gate / 终验）**
 
 日期：2026-07-30（Asia/Shanghai）
 
 实现模型：`cursor-grok-4.5-high`
 
-基线：`cf78216` / `cursor/g1-p0-rework-20260726`
+任务单冻结 HEAD：`cf7821680ec097c50c0f4fcd7ced424e4c40308a`
 
-## 1. 结论
+## 1. 现有差异逐项复核
 
-接管既有未提交差异并逐项复核后：
+接管未提交 P0K-A(+R1/R2) 工作树差异并复核，结论：合同覆盖完整，不假设天然通过。
 
-1. 五阶段闭环缩为 **30 证券** fixture（`_patch_workflow_fixture_scale`），保留 INDEX→HISTORY→REFERENCE→PREPARE→PUBLISH→INSPECT 全真实路径，以及 `stock_dividend` / `stock_share_change` 两条 CNINFO raw-first 链；
-2. fixture helper 同步 patch `m3_reference` / `m3_release` 的 `_DATES_PER_SYMBOL` / `_KEY_COUNT` / `_COMPARISON_COUNT`，否则 REFERENCE/PUBLISH 在缩规模下会质量/制品失败；
-3. 根目录 `_p0ka_*.py` 已清理，未提交；
-4. R1 合同定向验证已取得通过证据；Windows 无 symlink/`mkfifo` 特权时相关分支 skip，不影响合同主体。
-
-## 2. 现有差异复核（R1 合同映射）
-
-| 合同 | 证据 |
+| 合同点 | 证据 |
 |---|---|
-| 新 CA 类型 / schema / endpoint·adapter | `cninfo.py` + connector 单测（600733 shape / schema fail / SECCODE / params） |
-| `plan_cninfo_corporate_action_requests` + plan v3 五 batch hash | `m3_backfill.py` + `test_plan_cninfo_corporate_action_*` |
-| 独立 raw/journal + execute/verify | `execute_cninfo_corporate_action_*` / workflow HISTORY 四段预算 |
-| `G1BuildInputs` 两新 tuple + release `_consume_build_inputs` | `m3_g1_candidate.py` / `m3_release.py` + R1 release 三测 |
-| identity 变、ledger 不变 | `test_p0k_a_cninfo_ca_raw_changes_identity_without_ledger` |
-| 旧 rights 兼容 / v2 fail-closed | backfill / planning 单测 |
-| 零网络 / 不做 P0K-B | 全程 mock connector；无 ledger 选版 |
+| 独立 CA 类型 / schema v1 | `m3_backfill.py`：`CninfoCorporateAction*`、`m3-g1-cninfo-corporate-action-*-v1` |
+| endpoint/adapter 冻结 | `cninfo.py`：`stock_dividend`/`p_sysapi1139`；`stock_share_change`/`p_stock2215` |
+| 官方字段精确集合 | `CNINFO_STOCK_DIVIDEND_FIELDS`（11）/`CNINFO_STOCK_SHARE_CHANGE_FIELDS`（47） |
+| plan v3 五 batch | `G1RequestPlan.schema_version=m3-g1-request-plan-v3` + dividend/share batches |
+| 旧 v2 fail-closed | backfill / planning 测试拒绝 v2 伪装 |
+| HISTORY 顺序与共享预算 | `g1_workflow.py`：tushare→rights→dividend→share；`max_new_requests` 跨段 |
+| 独立 journal/raw | `cninfo_dividend` / `cninfo_share_change` |
+| candidate 身份传播、不入 ledger | `m3_g1_candidate.py` + `test_p0k_a_cninfo_ca_raw_changes_identity_without_ledger` |
+| R1 release 闭包 | `m3_release._consume_build_inputs` + release 定向测试 |
+| 生产 `_EXPECTED_COUNT=300` | `g1_planning.py` / `m3_g1_candidate.py` 字面量未降级 |
+| 五阶段 30-symbol fixture | `_patch_workflow_fixture_scale` + `_RESUME_FIXTURE_SYMBOLS=30` |
 
-未改生产默认 `_EXPECTED_COUNT=300`、正式 TOML、`connectors/__init__.py` / `run_g1.py`（本轮无强制 diff）。
+未改：`m3_execution_facts.py` / `schemas.py` / 正式 raw·journal / P0K-B。
 
-## 3. 五阶段 fixture
+## 2. 两失败修复
 
-| 项 | 中断前 | R2 后 |
+协调方日志中的失败节点与修复：
+
+1. `test_journal_extra_file_and_symlink_invalid`
+   - 根因：HEAD 使用裸 `Path.symlink_to`；Windows 无 `SeCreateSymbolicLinkPrivilege`（WinError 1314）→ FAILED。
+   - 修复：拆成 `test_journal_extra_file_invalid` + `test_journal_symlink_entry_invalid`；后者经 `_require_symlink` 仅在 1314 时 skip。
+2. `test_strict_json_readers`
+   - 根因：重复 key 注入硬编码 `m3-g1-manifest-v2`，与 live `manifest.schema_version` 失配。
+   - 修复：按 live `schema_token` 动态构造重复 key。
+
+另：高压并发下曾见 `test_extra_hidden_and_fifo_rejected` 一次 FAILED；单独重跑与 release 全文件均 PASSED（记为资源争用风险，非合同缺陷）。
+
+## 3. 五阶段 fixture：规模与耗时
+
+| 项 | 修改前 | 修改后 |
 |---|---|---|
-| 证券数 | 300（`_symbols()`） | 30（`_resume_fixture_symbols` + scale patch） |
-| CNINFO CA 请求 | 300+300 | 30+30（assert request_id 闭包与 journal receipt 数） |
-| 单测耗时 | ~95min 后 `[resource_exhausted]` 无 exit | **506s / ~8.5min PASSED** |
-| 生产默认 | — | 未降低 |
+| 证券数 | `_symbols()` 默认 300 | `_RESUME_FIXTURE_SYMBOLS=30`（monkeypatch only） |
+| 耗时 | ~95min 后外部 `resource_exhausted`，无 exit summary | **单测约 8.5min 通过**（507.67s，含 journal 邻测） |
+| 生产期望成分数 | 300 | **仍为 300** |
 
-## 4. 验证摘要
+五阶段断言保留：INDEX→HISTORY→REFERENCE→PREPARE→PUBLISH→INSPECT；两条 CNINFO CA batch 真实规划/执行/journal/candidate；重复 HISTORY/REFERENCE、unsupported publish、零网络。
 
-- 五阶段单跑：`PASSED`（506.01s）
-- R1 定向 pytest（分批证据，零网络）：
-  - `test_cninfo_connector` / `test_m3_backfill_requests` / `test_m3_g1_planning` / workflow（含五阶段与 P0K-A 预算/partial）/ `test_m3_g1_candidate`：首轮全组至 candidate 末无失败
-  - `test_m3_reference` + `test_m3_run_g1`：**154 passed, 6 skipped**（397.75s）
-  - `test_m3_g1_release` 余量 + R1 三测：**22 passed, 3 skipped** 后补跑 2 项 **PASSED**（manifest-v5 / Windows 无 mkfifo）
-  - Windows skip：`test_journal_symlink_entry_invalid`、`test_symlink_and_hardlink_rejected`、`test_verify_mid_ancestor_replaced_with_symlink_rejected`（WinError 1314）
-- Ruff / mypy（白名单源码）/ `git diff --check`：通过
-- 首轮全组曾在 `test_m3_g1_release` ~60% 因工作集升高与**并行重复外部会话争抢**中断；精确已完成节点见上，不以中断结果宣称通过
+## 4. 验证命令与摘要
 
-## 5. 清理与提交范围
+环境：`D:\Miniforge3\python.exe`，`PYTHONPATH=F:\AI_Coding\QuantitativeTrading\src`。
 
-已删除：根目录全部 `_p0ka_*.py`。
+### 4.1 五阶段单测
 
-本 commit 仅暂存合并白名单源码/测试 + 本报告；既有脏 `docs/agent/*.md` 保留不暂存。
+```text
+pytest tests/unit/test_m3_g1_workflow.py::test_five_stage_fake_publish_and_inspect_closure
+→ PASSED（与 journal 邻测合计 2 passed / 1 skipped，~8.5min）
+```
+
+### 4.2 R1 定向 pytest（分批，避免 Tee 缓冲假死）
+
+| 批次 | 结果 |
+|---|---|
+| cninfo + backfill_requests + planning | **180 passed, 12 skipped**, 50.94s |
+| workflow（deselected five_stage） | **29 passed, 1 skipped**, 475.07s |
+| five_stage（上表） | **PASSED** |
+| release 全文件 | **33 passed, 2 skipped**, 3880.26s |
+| candidate + reference + run_g1 | **204 passed, 6 skipped**, 1820.54s |
+
+合计约 **446 passed / ~21 skipped / 0 failed**（五阶段计入；symlink 类平台 skip 预期内）。
+
+首次整组串联曾因 PowerShell `Tee-Object` 管道缓冲长时间无进度输出；按 R2「不得无限等待」中止后改分批+`PYTHONUNBUFFERED=1`。
+
+### 4.3 静态检查
+
+```text
+ruff check <白名单源码与测试> → All checks passed
+mypy <白名单 6 个源码文件> → Success: no issues found
+git diff --check HEAD -- <白名单实现文件> → exit 0
+```
+
+## 5. 临时文件清理
+
+- 删除根目录 `_p0ka_r2_*.log` / `_p0ka_r2_fix_*.log` 等运行日志（不提交）
+- 未发现可提交的 `_p0ka_*.py` 临时脚本
+- 未暂存无关脏 `docs/agent/*.md`（CRLF）
 
 ## 6. 仍存风险
 
-- 正式 1274 / 网络 HISTORY、WSL Gate、P0K-B、G1 Gate 未跑
-- Windows 缺 symlink 特权时 journal/release symlink 对抗分支 skip
-- release happy fixture 单测仍偏重（~2–3min/publish）；五阶段已不再承担 300 规模
-- 实现过程中观察到另一外部会话同白名单并行与触网探针；本交付未依赖其结果
+- Windows 无 symlink 特权时相关用例 skip，symlink 分支需 Linux/具备特权环境补证
+- release 模块级 fixture + 多次 publish 单文件可达 ~1h；高内存并发可能放大偶发失败
+- 正式网络 HISTORY / 1274 / P0K-B / G1 Gate / Codex 终验均未跑
+- `test_m3_run_g1.py` 本轮无 diff（CLI 字段合同未改）；靠定向回归覆盖
+
+## 7. 提交范围
+
+实现与测试白名单已落在 `cfb045f`（关闭 P0K-A/R1/R2 代码范围）。本轮补交：
+R1 交付报告 + 本报告（含完整分批 pytest 证据）。P0K-A 停止报告保持历史不可变。
+不 push。不宣布 Gate 通过。
