@@ -7,6 +7,7 @@ import dataclasses
 import importlib
 import os
 import socket
+import sys
 import traceback
 import warnings
 from pathlib import Path
@@ -76,6 +77,18 @@ class _EmptyCninfoClient:
             "total": 0,
             "records": [],
         }
+
+
+def _require_symlink(
+    link: Path, target: Path, *, target_is_directory: bool = False
+) -> None:
+    """Create a symlink; skip only when Windows reports missing symlink privilege (1314)."""
+    try:
+        link.symlink_to(target, target_is_directory=target_is_directory)
+    except OSError as exc:
+        if sys.platform == "win32" and getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows session lacks SeCreateSymbolicLinkPrivilege")
+        raise
 
 
 def _empty_cninfo() -> CninfoConnector:
@@ -563,24 +576,24 @@ def _fast_config(tmp_path: Path) -> LoadedM3Config:
     return load_m3_config(path)
 
 
-# Resume-semantics fixtures must stay large enough for hardcoded reconciliation
-# sample_symbols=30, but far smaller than the 300-symbol workflow default so
-# inspect/journal recovery does not re-walk a 1500-request HISTORY plan.
+# Workflow control-flow / resume fixtures must stay large enough for hardcoded
+# reconciliation sample_symbols=30, but far smaller than the 300-symbol default
+# so five-stage and journal recovery do not re-walk a full CSI300 HISTORY plan.
 _RESUME_FIXTURE_SYMBOLS = 30
 _RESUME_FIXTURE_WARMUP = 1
 _RESUME_FIXTURE_DATES_PER_SYMBOL = 2
 
 
-def _patch_resume_fixture_scale(
+def _patch_workflow_fixture_scale(
     monkeypatch: pytest.MonkeyPatch,
     *,
     n_symbols: int = _RESUME_FIXTURE_SYMBOLS,
     feature_warmup: int = _RESUME_FIXTURE_WARMUP,
     dates_per_symbol: int = _RESUME_FIXTURE_DATES_PER_SYMBOL,
 ) -> None:
-    """Shrink frozen CSI300/literal scale for resume tests only.
+    """Shrink frozen CSI300/literal scale for workflow control-flow fixtures.
 
-    Keeps real planner/raw/journal/candidate/workflow paths; only relaxes
+    Keeps real planner/raw/journal/candidate/workflow/CNINFO paths; only relaxes
     expected-constituent and reconciliation date-count literals that otherwise
     force a 300-symbol × long-window HISTORY plan.
     """
@@ -588,7 +601,13 @@ def _patch_resume_fixture_scale(
     monkeypatch.setattr(candidate_mod, "_EXPECTED_COUNT", n_symbols)
     monkeypatch.setattr(planning_mod, "_EXPECTED_COUNT", n_symbols)
     monkeypatch.setattr(reference_mod, "_DATES_PER_SYMBOL", dates_per_symbol)
-    monkeypatch.setattr(reference_mod, "_KEY_COUNT", n_symbols * dates_per_symbol)
+    key_count = n_symbols * dates_per_symbol
+    comparison_count = key_count * reference_mod._FIELD_COUNT
+    monkeypatch.setattr(reference_mod, "_KEY_COUNT", key_count)
+    monkeypatch.setattr(reference_mod, "_COMPARISON_COUNT", comparison_count)
+    monkeypatch.setattr(release_mod, "_DATES_PER_SYMBOL", dates_per_symbol)
+    monkeypatch.setattr(release_mod, "_KEY_COUNT", key_count)
+    monkeypatch.setattr(release_mod, "_COMPARISON_COUNT", comparison_count)
 
     specs = dict(config_mod._FIELD_SPECS)
     for path, literal in (
@@ -634,6 +653,10 @@ def _patch_resume_fixture_scale(
     monkeypatch.setattr(
         planning_mod, "_build_cross_source_policy", _build_cross_source_policy
     )
+
+
+# Backward-compatible alias used by existing resume-oriented tests.
+_patch_resume_fixture_scale = _patch_workflow_fixture_scale
 
 
 def _resume_fixture_config(
@@ -794,9 +817,12 @@ def test_history_requires_index(tmp_path: Path) -> None:
 def test_five_stage_fake_publish_and_inspect_closure(
     tmp_path: Path, publish_capable: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    root = _project_root(tmp_path)
-    config = _fast_config(tmp_path)
-    pro = _CountingProClient(_symbols())
+    # Keep real five-stage + CNINFO CA chains; shrink CSI300 default to 30 symbols.
+    _patch_workflow_fixture_scale(monkeypatch)
+    symbols = _resume_fixture_symbols()
+    root = _project_root(tmp_path, symbols=symbols)
+    config = _resume_fixture_config(tmp_path)
+    pro = _CountingProClient(symbols)
     tushare = TushareConnector(pro_client=pro)
     bao_client = _MatchingBaoClient()
     bao = BaostockConnector(client=bao_client)
@@ -807,6 +833,16 @@ def test_five_stage_fake_publish_and_inspect_closure(
     assert index_state.completed_stages == ("INDEX",)
 
     assert index_state.derived_plan is not None
+    assert len(index_state.derived_plan.history_symbols) == _RESUME_FIXTURE_SYMBOLS
+    plan = index_state.derived_plan.request_plan
+    expected_dividend_ids = tuple(
+        spec.request_id for spec in plan.cninfo_dividend_batch.requests
+    )
+    expected_share_ids = tuple(
+        spec.request_id for spec in plan.cninfo_share_change_batch.requests
+    )
+    assert len(expected_dividend_ids) == _RESUME_FIXTURE_SYMBOLS
+    assert len(expected_share_ids) == _RESUME_FIXTURE_SYMBOLS
     expected_adj = _planned_fund_adj_count(index_state.derived_plan)
 
     history_state = _run_history(
@@ -815,6 +851,22 @@ def test_five_stage_fake_publish_and_inspect_closure(
     assert history_state.completed_stages == ("INDEX", "HISTORY")
     assert history_state.candidate is not None
     assert history_state.counts.reference_requests == 30
+    assert (
+        tuple(item.spec.request_id for item in history_state.cninfo_dividend_responses)
+        == expected_dividend_ids
+    )
+    assert (
+        tuple(
+            item.spec.request_id for item in history_state.cninfo_share_change_responses
+        )
+        == expected_share_ids
+    )
+    div_journal = root / "data/run_state/m3_g1/cninfo_dividend"
+    share_journal = root / "data/run_state/m3_g1/cninfo_share_change"
+    assert sum(1 for _ in div_journal.rglob("receipt.json")) == _RESUME_FIXTURE_SYMBOLS
+    assert (
+        sum(1 for _ in share_journal.rglob("receipt.json")) == _RESUME_FIXTURE_SYMBOLS
+    )
     _assert_history_fund_fake_closure(pro, expected_adj=expected_adj)
     history_calls = pro.calls
     fund_ids_after_history = list(pro.fund_request_identities)
@@ -825,6 +877,16 @@ def test_five_stage_fake_publish_and_inspect_closure(
     assert history_again.completed_stages == ("INDEX", "HISTORY")
     assert pro.calls == history_calls
     assert pro.fund_request_identities == fund_ids_after_history
+    assert (
+        tuple(item.spec.request_id for item in history_again.cninfo_dividend_responses)
+        == expected_dividend_ids
+    )
+    assert (
+        tuple(
+            item.spec.request_id for item in history_again.cninfo_share_change_responses
+        )
+        == expected_share_ids
+    )
     _assert_history_fund_fake_closure(pro, expected_adj=expected_adj)
 
     ref_state = run_g1_reference_stage(project_root=root, config=config, connector=bao)
@@ -901,7 +963,7 @@ def test_five_stage_fake_publish_and_inspect_closure(
     assert final.prepared.release_id == final.published.release.release_id
 
 
-def test_journal_extra_file_and_symlink_invalid(tmp_path: Path) -> None:
+def test_journal_extra_file_invalid(tmp_path: Path) -> None:
     root = _project_root(tmp_path)
     config = _fast_config(tmp_path)
     tushare = TushareConnector(pro_client=_CountingProClient(_symbols()))
@@ -914,10 +976,19 @@ def test_journal_extra_file_and_symlink_invalid(tmp_path: Path) -> None:
     with pytest.raises(M3G1WorkflowError) as excinfo:
         inspect_g1_workflow(project_root=root, config=config)
     assert excinfo.value.code == "G1_WORKFLOW_JOURNAL_INVALID"
-    (target / "extra.txt").unlink()
 
+
+def test_journal_symlink_entry_invalid(tmp_path: Path) -> None:
+    root = _project_root(tmp_path)
+    config = _fast_config(tmp_path)
+    tushare = TushareConnector(pro_client=_CountingProClient(_symbols()))
+    run_g1_index_stage(
+        project_root=root, config=config, connector=tushare, classify_error=_classify
+    )
+    journal = root / "data/run_state/m3_g1/tushare"
+    target = next(p for p in journal.iterdir() if p.is_dir())
     link = journal / ("b" * 64)
-    link.symlink_to(target)
+    _require_symlink(link, target, target_is_directory=True)
     with pytest.raises(M3G1WorkflowError) as excinfo2:
         inspect_g1_workflow(project_root=root, config=config)
     assert excinfo2.value.code == "G1_WORKFLOW_JOURNAL_INVALID"
@@ -1447,7 +1518,12 @@ def test_history_bounded_incomplete_then_resume_success(
     assert done.state.completed_stages == ("INDEX", "HISTORY")
     assert done.new_requests_committed > 0
     tushare_delta = pro.calls - calls_before_done
-    cninfo_n = len(index_state.derived_plan.request_plan.cninfo_rights_batch.requests)
+    plan = index_state.derived_plan.request_plan
+    cninfo_n = (
+        len(plan.cninfo_rights_batch.requests)
+        + len(plan.cninfo_dividend_batch.requests)
+        + len(plan.cninfo_share_change_batch.requests)
+    )
     assert done.new_requests_committed == tushare_delta + cninfo_n
     _assert_history_fund_fake_closure(pro, expected_adj=expected_adj)
     assert (
@@ -1503,6 +1579,8 @@ def _assert_index_only_no_history_leak(state: VerifiedG1WorkflowStateV1) -> None
     assert state.derived_plan is not None
     assert state.history_responses == ()
     assert state.cninfo_responses == ()
+    assert state.cninfo_dividend_responses == ()
+    assert state.cninfo_share_change_responses == ()
     assert state.reference_responses == ()
     assert state.candidate is None
     assert state.prepared is None
@@ -1621,7 +1699,16 @@ def test_p0g_both_batches_complete_history_succeeds(
         spec.request_id
         for spec in index_state.derived_plan.request_plan.cninfo_rights_batch.requests
     )
+    expected_dividend_ids = tuple(
+        spec.request_id
+        for spec in index_state.derived_plan.request_plan.cninfo_dividend_batch.requests
+    )
+    expected_share_ids = tuple(
+        spec.request_id
+        for spec in index_state.derived_plan.request_plan.cninfo_share_change_batch.requests
+    )
     assert expected_history_ids and expected_cninfo_ids
+    assert expected_dividend_ids and expected_share_ids
 
     done = _run_history(
         project_root=root, config=config, connector=connector, classify_error=_classify
@@ -1637,12 +1724,28 @@ def test_p0g_both_batches_complete_history_succeeds(
         tuple(item.spec.request_id for item in state.cninfo_responses)
         == expected_cninfo_ids
     )
+    assert (
+        tuple(item.spec.request_id for item in state.cninfo_dividend_responses)
+        == expected_dividend_ids
+    )
+    assert (
+        tuple(item.spec.request_id for item in state.cninfo_share_change_responses)
+        == expected_share_ids
+    )
 
     again = inspect_g1_workflow(project_root=root, config=config)
     assert again.completed_stages == ("INDEX", "HISTORY")
     assert (
         tuple(item.spec.request_id for item in again.cninfo_responses)
         == expected_cninfo_ids
+    )
+    assert (
+        tuple(item.spec.request_id for item in again.cninfo_dividend_responses)
+        == expected_dividend_ids
+    )
+    assert (
+        tuple(item.spec.request_id for item in again.cninfo_share_change_responses)
+        == expected_share_ids
     )
 
 
@@ -1690,3 +1793,119 @@ def test_p0g_cninfo_response_closure_rejects_tampering(
             dataclasses.replace(
                 history_state, cninfo_responses=tuple(reversed(cninfo))
             )
+
+def test_p0k_a_cninfo_segment_budget_blocks_later_segments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Shared max_new_requests: rights incomplete blocks dividend/share-change."""
+    _patch_resume_fixture_scale(monkeypatch)
+    symbols = _resume_fixture_symbols()
+    root = _project_root(tmp_path, symbols=symbols)
+    config = _resume_fixture_config(tmp_path)
+    pro = _CountingProClient(symbols)
+    connector = TushareConnector(pro_client=pro)
+    index_state = run_g1_index_stage(
+        project_root=root, config=config, connector=connector, classify_error=_classify
+    )
+    assert index_state.derived_plan is not None
+    plan = index_state.derived_plan.request_plan
+    tushare_n = len(plan.history_batch.requests)
+    rights_n = len(plan.cninfo_rights_batch.requests)
+    dividend_n = len(plan.cninfo_dividend_batch.requests)
+    share_n = len(plan.cninfo_share_change_batch.requests)
+    assert tushare_n > 0 and rights_n > 0 and dividend_n > 0 and share_n > 0
+
+    # Exhaust budget on Tushare only → later CNINFO segments must not commit.
+    bounded = _run_history(
+        project_root=root,
+        config=config,
+        connector=connector,
+        classify_error=_classify,
+        max_new_requests=tushare_n,
+    )
+    assert bounded.new_requests_committed == tushare_n
+    _assert_index_only_no_history_leak(bounded.state)
+    div_journal = root / "data/run_state/m3_g1/cninfo_dividend"
+    share_journal = root / "data/run_state/m3_g1/cninfo_share_change"
+    assert not list(div_journal.rglob("receipt.json"))
+    assert not list(share_journal.rglob("receipt.json"))
+
+    # Complete rights with exact remaining rights budget; dividend still blocked.
+    after_rights = _run_history(
+        project_root=root,
+        config=config,
+        connector=connector,
+        classify_error=_classify,
+        max_new_requests=rights_n,
+    )
+    assert after_rights.new_requests_committed == rights_n
+    _assert_index_only_no_history_leak(after_rights.state)
+    assert not list(div_journal.rglob("receipt.json"))
+    assert not list(share_journal.rglob("receipt.json"))
+
+    # One dividend request only → share-change must not start; still INDEX-only.
+    after_one_div = _run_history(
+        project_root=root,
+        config=config,
+        connector=connector,
+        classify_error=_classify,
+        max_new_requests=1,
+    )
+    assert after_one_div.new_requests_committed == 1
+    _assert_index_only_no_history_leak(after_one_div.state)
+    assert sum(1 for _ in div_journal.rglob("receipt.json")) == 1
+    assert not list(share_journal.rglob("receipt.json"))
+
+    # Finish remaining dividend+share → HISTORY completes with both new tuples.
+    remain = (dividend_n - 1) + share_n
+    done = _run_history(
+        project_root=root,
+        config=config,
+        connector=connector,
+        classify_error=_classify,
+        max_new_requests=remain,
+    )
+    assert done.new_requests_committed == remain
+    assert done.state.completed_stages == ("INDEX", "HISTORY")
+    assert len(done.state.cninfo_dividend_responses) == dividend_n
+    assert len(done.state.cninfo_share_change_responses) == share_n
+
+
+def test_p0k_a_partial_dividend_inspect_no_leak(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_resume_fixture_scale(monkeypatch)
+    symbols = _resume_fixture_symbols()
+    root = _project_root(tmp_path, symbols=symbols)
+    config = _resume_fixture_config(tmp_path)
+    pro = _CountingProClient(symbols)
+    connector = TushareConnector(pro_client=pro)
+    index_state = run_g1_index_stage(
+        project_root=root, config=config, connector=connector, classify_error=_classify
+    )
+    assert index_state.derived_plan is not None
+    plan = index_state.derived_plan.request_plan
+    budget = (
+        len(plan.history_batch.requests)
+        + len(plan.cninfo_rights_batch.requests)
+        + 1
+    )
+    _run_history(
+        project_root=root,
+        config=config,
+        connector=connector,
+        classify_error=_classify,
+        max_new_requests=budget,
+    )
+    before = {
+        path: path.stat().st_mtime_ns for path in root.rglob("*") if path.is_file()
+    }
+
+    def boom(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("network forbidden")
+
+    with patch.object(socket, "socket", boom):
+        inspected = inspect_g1_workflow(project_root=root, config=config)
+    _assert_index_only_no_history_leak(inspected)
+    after = {path: path.stat().st_mtime_ns for path in root.rglob("*") if path.is_file()}
+    assert after == before

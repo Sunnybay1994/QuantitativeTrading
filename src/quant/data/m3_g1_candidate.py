@@ -18,14 +18,19 @@ from quant.data import index_membership as index_membership
 from quant.data import m3_execution_facts as execution_facts
 from quant.data import m3_mappers as mappers
 from quant.data.connectors.cninfo import (
+    CNINFO_DIVIDEND_ENDPOINT,
     CNINFO_ENDPOINT,
+    CNINFO_SHARE_CHANGE_ENDPOINT,
     CNINFO_SOURCE,
     CNINFO_STOCK_ALLOTMENT_FIELDS,
+    CNINFO_STOCK_DIVIDEND_FIELDS,
+    CNINFO_STOCK_SHARE_CHANGE_FIELDS,
 )
 from quant.data.m3_backfill import (
     G1RequestPlan,
     HistoryWindow,
     VerifiedCninfoRawResponse,
+    VerifiedCninfoCorporateActionRawResponse,
     VerifiedRawResponse,
 )
 from quant.data.m3_identity import clean_table_content_sha256
@@ -319,6 +324,12 @@ class G1ReceiptProjectionV1:
         if self.source == CNINFO_SOURCE and self.endpoint == CNINFO_ENDPOINT:
             if self.columns != CNINFO_STOCK_ALLOTMENT_FIELDS:
                 raise ValueError("cninfo stock_allotment columns 必须精确绑定官方字段")
+        if self.source == CNINFO_SOURCE and self.endpoint == CNINFO_DIVIDEND_ENDPOINT:
+            if self.columns != CNINFO_STOCK_DIVIDEND_FIELDS:
+                raise ValueError("cninfo stock_dividend columns 必须精确绑定官方字段")
+        if self.source == CNINFO_SOURCE and self.endpoint == CNINFO_SHARE_CHANGE_ENDPOINT:
+            if self.columns != CNINFO_STOCK_SHARE_CHANGE_FIELDS:
+                raise ValueError("cninfo stock_share_change columns 必须精确绑定官方字段")
 
 
 @dataclass(frozen=True)
@@ -327,6 +338,8 @@ class G1BuildInputs:
     request_plan: G1RequestPlan
     responses: tuple[VerifiedRawResponse, ...]
     cninfo_responses: tuple[VerifiedCninfoRawResponse, ...]
+    cninfo_dividend_responses: tuple[VerifiedCninfoCorporateActionRawResponse, ...]
+    cninfo_share_change_responses: tuple[VerifiedCninfoCorporateActionRawResponse, ...]
     calendars: pl.DataFrame
     instruments: pl.DataFrame
     universe: Literal["CSI300_TUSHARE_MONTHLY_OBSERVED_PIT_V1"]
@@ -343,6 +356,12 @@ class G1BuildInputs:
             history = _consume_history(self.history)
             responses = _consume_responses(self.responses)
             cninfo_responses = _consume_cninfo_responses(self.cninfo_responses)
+            cninfo_dividend_responses = _consume_cninfo_corporate_action_responses(
+                self.cninfo_dividend_responses
+            )
+            cninfo_share_change_responses = _consume_cninfo_corporate_action_responses(
+                self.cninfo_share_change_responses
+            )
             calendars = _validate_schema(
                 self.calendars, TradeCalendarSchema, "G1_CANDIDATE_INPUT_INVALID"
             )
@@ -372,6 +391,12 @@ class G1BuildInputs:
             object.__setattr__(self, "request_plan", request_plan)
             object.__setattr__(self, "responses", responses)
             object.__setattr__(self, "cninfo_responses", cninfo_responses)
+            object.__setattr__(
+                self, "cninfo_dividend_responses", cninfo_dividend_responses
+            )
+            object.__setattr__(
+                self, "cninfo_share_change_responses", cninfo_share_change_responses
+            )
             object.__setattr__(self, "calendars", calendars)
             object.__setattr__(self, "instruments", instruments)
             object.__setattr__(self, "history", history)
@@ -1521,8 +1546,16 @@ def _build_candidate_body(inputs: G1BuildInputs) -> G1Candidate:
     plan = inputs.request_plan
     responses = list(inputs.responses)
     cninfo_responses = list(inputs.cninfo_responses)
+    cninfo_dividend_responses = list(inputs.cninfo_dividend_responses)
+    cninfo_share_change_responses = list(inputs.cninfo_share_change_responses)
     _assert_plan_response_multiset(plan, responses)
     _assert_cninfo_response_multiset(plan, cninfo_responses)
+    _assert_cninfo_corporate_action_response_multiset(
+        plan.cninfo_dividend_batch, cninfo_dividend_responses
+    )
+    _assert_cninfo_corporate_action_response_multiset(
+        plan.cninfo_share_change_batch, cninfo_share_change_responses
+    )
     _assert_endpoint_closures(plan, responses, history=inputs.history)
 
     by_id = {item.spec.request_id: item for item in responses}
@@ -1876,7 +1909,15 @@ def _build_candidate_body(inputs: G1BuildInputs) -> G1Candidate:
     receipts = tuple(
         sorted(
             [_project_receipt(item) for item in responses]
-            + [_project_cninfo_receipt(item) for item in cninfo_responses],
+            + [_project_cninfo_receipt(item) for item in cninfo_responses]
+            + [
+                _project_cninfo_corporate_action_receipt(item)
+                for item in cninfo_dividend_responses
+            ]
+            + [
+                _project_cninfo_corporate_action_receipt(item)
+                for item in cninfo_share_change_responses
+            ],
             key=lambda value: (value.source, value.endpoint, value.request_id),
         )
     )
@@ -2074,6 +2115,68 @@ def _project_receipt(response: VerifiedRawResponse) -> G1ReceiptProjectionV1:
     )
 
 
+def _project_cninfo_corporate_action_receipt(
+    response: VerifiedCninfoCorporateActionRawResponse,
+) -> G1ReceiptProjectionV1:
+    return G1ReceiptProjectionV1(
+        source="cninfo",
+        request_id=response.spec.request_id,
+        endpoint=response.spec.endpoint,
+        parameters_sha256=response.receipt.parameters_sha256,
+        stable_response_sha256=response.receipt.stable_response_sha256,
+        row_count=response.receipt.row_count,
+        columns=response.receipt.columns,
+    )
+
+
+def _assert_cninfo_corporate_action_response_multiset(
+    batch: object, responses: Sequence[VerifiedCninfoCorporateActionRawResponse]
+) -> None:
+    from quant.data.m3_backfill import CninfoCorporateActionRequestBatch
+
+    if type(batch) is not CninfoCorporateActionRequestBatch:
+        raise M3G1CandidateError("G1_CANDIDATE_PLAN_RESPONSE_MISMATCH")
+    plan_ids = [spec.request_id for spec in batch.requests]
+    response_ids = [item.spec.request_id for item in responses]
+    if Counter(plan_ids) != Counter(response_ids):
+        raise M3G1CandidateError("G1_CANDIDATE_PLAN_RESPONSE_MISMATCH")
+    if len(set(response_ids)) != len(response_ids):
+        raise M3G1CandidateError("G1_CANDIDATE_PLAN_RESPONSE_MISMATCH")
+    by_id = {item.spec.request_id: item for item in responses}
+    for spec in batch.requests:
+        verified = by_id[spec.request_id]
+        if (
+            verified.spec.request_id != spec.request_id
+            or verified.spec.endpoint != spec.endpoint
+            or verified.spec.parameters != spec.parameters
+            or verified.spec.adapter != spec.adapter
+        ):
+            raise M3G1CandidateError("G1_CANDIDATE_PLAN_RESPONSE_MISMATCH")
+
+
+def _consume_cninfo_corporate_action_responses(
+    responses: object,
+) -> tuple[VerifiedCninfoCorporateActionRawResponse, ...]:
+    if not isinstance(responses, tuple):
+        raise M3G1CandidateError("G1_CANDIDATE_INPUT_INVALID")
+    rebuilt: list[VerifiedCninfoCorporateActionRawResponse] = []
+    for item in responses:
+        if type(item) is not VerifiedCninfoCorporateActionRawResponse:
+            raise M3G1CandidateError("G1_CANDIDATE_INPUT_INVALID")
+        rebuilt.append(
+            VerifiedCninfoCorporateActionRawResponse(
+                spec=item.spec,
+                receipt=item.receipt,
+                receipt_sha256=item.receipt_sha256,
+                frame=item.frame,
+                resultcode=item.resultcode,
+                count=item.count,
+                total=item.total,
+            )
+        )
+    return tuple(rebuilt)
+
+
 def _project_cninfo_receipt(response: VerifiedCninfoRawResponse) -> G1ReceiptProjectionV1:
     return G1ReceiptProjectionV1(
         source="cninfo",
@@ -2185,6 +2288,8 @@ def _consume_build_inputs(inputs: object) -> G1BuildInputs:
         request_plan=inputs.request_plan,
         responses=inputs.responses,
         cninfo_responses=inputs.cninfo_responses,
+        cninfo_dividend_responses=inputs.cninfo_dividend_responses,
+        cninfo_share_change_responses=inputs.cninfo_share_change_responses,
         calendars=inputs.calendars,
         instruments=inputs.instruments,
         universe=inputs.universe,
@@ -2232,6 +2337,8 @@ def _consume_request_plan(plan: object) -> G1RequestPlan:
             plan.index_weight_batch,
             plan.history_batch,
             plan.cninfo_rights_batch,
+            plan.cninfo_dividend_batch,
+            plan.cninfo_share_change_batch,
             plan.plan_sha256,
         )
     except Exception:

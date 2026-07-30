@@ -185,3 +185,245 @@ def test_637_symbols_make_13_batches() -> None:
     flat = [code for group in groups for code in group]
     assert flat == sorted(set(flat))
     assert len(flat) == 637
+
+
+# --- P0K-A corporate-action endpoints ---
+
+
+def _dividend_record(**overrides: Any) -> dict[str, Any]:
+    from quant.data.connectors.cninfo import CNINFO_STOCK_DIVIDEND_FIELDS
+
+    base = {name: None for name in CNINFO_STOCK_DIVIDEND_FIELDS}
+    base.update(
+        {
+            "F001V": "股权分置",
+            "F006D": "2018-08-23",
+            "F007V": "承诺补偿",
+            "F010N": "5",
+            "F011N": None,
+            "F012N": None,
+            "F018D": "2018-09-27",
+            "F020D": None,
+            "F023D": None,
+            "F025D": None,
+            "F044V": "10送5",
+        }
+    )
+    base.update(overrides)
+    return base
+
+
+def _share_change_record(**overrides: Any) -> dict[str, Any]:
+    from quant.data.connectors.cninfo import CNINFO_STOCK_SHARE_CHANGE_FIELDS
+
+    base = {name: None for name in CNINFO_STOCK_SHARE_CHANGE_FIELDS}
+    base.update(
+        {
+            "DECLAREDATE": "2018-08-23",
+            "F001V": "股权分置",
+            "F002V": "A股",
+            "SECCODE": "600733",
+            "SECNAME": "TEST",
+            "ORGNAME": "ORG",
+            "VARYDATE": "2018-08-23",
+        }
+    )
+    base.update(overrides)
+    return base
+
+
+def test_stock_dividend_600733_shape_success() -> None:
+    from quant.data.connectors.cninfo import (
+        CNINFO_DIVIDEND_API_URL,
+        CNINFO_STOCK_DIVIDEND_FIELDS,
+        empty_cninfo_dividend_frame,
+    )
+
+    client = _FakeClient(
+        {
+            "resultcode": 200,
+            "resultmsg": "success",
+            "count": 1,
+            "total": 1,
+            "records": [_dividend_record()],
+        }
+    )
+    connector = CninfoConnector(client=client, enckey_provider=lambda: "fake-key")
+    result = connector.fetch_stock_dividend_raw(symbol="600733")
+    assert result.endpoint == "stock_dividend"
+    assert result.count == 1
+    assert tuple(result.frame.columns) == CNINFO_STOCK_DIVIDEND_FIELDS
+    assert result.frame["F010N"][0] == "5"
+    assert empty_cninfo_dividend_frame().columns == list(CNINFO_STOCK_DIVIDEND_FIELDS)
+    # ensure dividend hits official URL path
+    assert CNINFO_DIVIDEND_API_URL.endswith("/api/sysapi/p_sysapi1139")
+
+
+def test_stock_share_change_600733_shape_success() -> None:
+    from quant.data.connectors.cninfo import (
+        CNINFO_SHARE_CHANGE_API_URL,
+        CNINFO_STOCK_SHARE_CHANGE_FIELDS,
+        empty_cninfo_share_change_frame,
+    )
+
+    client = _FakeClient(
+        {
+            "resultcode": 200,
+            "resultmsg": "success",
+            "count": 1,
+            "total": 1,
+            "records": [_share_change_record()],
+        }
+    )
+    connector = CninfoConnector(client=client, enckey_provider=lambda: "fake-key")
+    result = connector.fetch_stock_share_change_raw(
+        symbol="600733", start_date="20180101", end_date="20181231"
+    )
+    assert result.endpoint == "stock_share_change"
+    assert result.count == 1
+    assert tuple(result.frame.columns) == CNINFO_STOCK_SHARE_CHANGE_FIELDS
+    assert result.frame["VARYDATE"][0] == "2018-08-23"
+    assert empty_cninfo_share_change_frame().columns == list(
+        CNINFO_STOCK_SHARE_CHANGE_FIELDS
+    )
+    assert CNINFO_SHARE_CHANGE_API_URL.endswith("/api/stock/p_stock2215")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "resultcode": 200,
+            "resultmsg": "ok",
+            "count": 0,
+            "total": 0,
+            "records": [],
+        },
+        {
+            "resultcode": 200,
+            "resultmsg": "success",
+            "count": 1,
+            "total": 0,
+            "records": [],
+        },
+        {
+            "resultcode": 200,
+            "resultmsg": "success",
+            "count": 1,
+            "total": 1,
+            "records": [{"F001V": "x"}],
+        },
+        {
+            "resultcode": 200,
+            "resultmsg": "success",
+            "count": 0,
+            "total": 0,
+            "records": [],
+            "extra": 1,
+        },
+    ],
+)
+def test_corporate_action_schema_failures(payload: dict[str, Any]) -> None:
+    connector = CninfoConnector(
+        client=_FakeClient(payload), enckey_provider=lambda: "fake-key"
+    )
+    with pytest.raises(CninfoConnectorError) as exc:
+        connector.fetch_stock_dividend_raw(symbol="600733")
+    assert exc.value.code in {
+        "CNINFO_RESPONSE_SCHEMA_INVALID",
+        "CNINFO_REQUEST_PARAMS_INVALID",
+    }
+
+
+def test_corporate_action_row_limit_and_foreign_seccode() -> None:
+    over = CninfoConnector(
+        client=_FakeClient(
+            {
+                "resultcode": 200,
+                "resultmsg": "success",
+                "count": 1,
+                "total": 1,
+                "records": [_dividend_record()],
+            }
+        ),
+        enckey_provider=lambda: "fake-key",
+        row_limit=1,
+    )
+    # count==1 within limit ok
+    over.fetch_stock_dividend_raw(symbol="600733")
+    capped = CninfoConnector(
+        client=_FakeClient(
+            {
+                "resultcode": 200,
+                "resultmsg": "success",
+                "count": 2,
+                "total": 2,
+                "records": [_dividend_record(), _dividend_record(F010N="6")],
+            }
+        ),
+        enckey_provider=lambda: "fake-key",
+        row_limit=1,
+    )
+    with pytest.raises(CninfoConnectorError) as exc:
+        capped.fetch_stock_dividend_raw(symbol="600733")
+    assert exc.value.code == "CNINFO_RESPONSE_ROW_LIMIT"
+
+    foreign = CninfoConnector(
+        client=_FakeClient(
+            {
+                "resultcode": 200,
+                "resultmsg": "success",
+                "count": 1,
+                "total": 1,
+                "records": [_share_change_record(SECCODE="000001")],
+            }
+        ),
+        enckey_provider=lambda: "fake-key",
+    )
+    with pytest.raises(CninfoConnectorError) as exc2:
+        foreign.fetch_stock_share_change_raw(
+            symbol="600733", start_date="20180101", end_date="20181231"
+        )
+    assert exc2.value.code in {
+        "CNINFO_RESPONSE_SCOPE_INVALID",
+        "CNINFO_RESPONSE_SCHEMA_INVALID",
+    }
+
+    missing = CninfoConnector(
+        client=_FakeClient(
+            {
+                "resultcode": 200,
+                "resultmsg": "success",
+                "count": 1,
+                "total": 1,
+                "records": [_share_change_record(SECCODE=None)],
+            }
+        ),
+        enckey_provider=lambda: "fake-key",
+    )
+    with pytest.raises(CninfoConnectorError):
+        missing.fetch_stock_share_change_raw(
+            symbol="600733", start_date="20180101", end_date="20181231"
+        )
+
+
+def test_corporate_action_params_and_date_order() -> None:
+    connector = CninfoConnector(
+        client=_FakeClient(
+            {
+                "resultcode": 200,
+                "resultmsg": "success",
+                "count": 0,
+                "total": 0,
+                "records": [],
+            }
+        ),
+        enckey_provider=lambda: "fake-key",
+    )
+    with pytest.raises(CninfoConnectorError) as exc:
+        connector.fetch_stock_share_change_raw(
+            symbol="600733", start_date="20181231", end_date="20180101"
+        )
+    assert exc.value.code == "CNINFO_REQUEST_PARAMS_INVALID"
+    with pytest.raises(CninfoConnectorError):
+        connector.fetch_stock_dividend_raw(symbol="600733.SH")

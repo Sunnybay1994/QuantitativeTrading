@@ -129,6 +129,78 @@ def _make_cninfo_verified(spec: backfill.CninfoRequestSpec) -> VerifiedCninfoRaw
     )
 
 
+
+
+def _make_cninfo_ca_verified(
+    spec: backfill.CninfoCorporateActionRequestSpec,
+    frame: pl.DataFrame | None = None,
+):
+    from quant.data.connectors.cninfo import (
+        CNINFO_SOURCE,
+        empty_cninfo_dividend_frame,
+        empty_cninfo_share_change_frame,
+        CNINFO_DIVIDEND_ENDPOINT,
+    )
+    from quant.data.m3_backfill import (
+        cninfo_corporate_action_response_content_sha256,
+        VerifiedCninfoCorporateActionRawResponse,
+        CninfoCorporateActionRequestReceipt,
+    )
+    if frame is None:
+        frame = (
+            empty_cninfo_dividend_frame()
+            if spec.endpoint == CNINFO_DIVIDEND_ENDPOINT
+            else empty_cninfo_share_change_frame()
+        )
+    content = cninfo_corporate_action_response_content_sha256(frame, endpoint=spec.endpoint)
+    parameters_sha256 = backfill._parameters_hash(spec.parameters)
+    values = {
+        "request_id": spec.request_id,
+        "endpoint": spec.endpoint,
+        "adapter": spec.adapter,
+        "parameters_sha256": parameters_sha256,
+        "response_content_sha256": content,
+        "resultcode": 200,
+        "count": frame.height,
+        "total": frame.height,
+        "row_count": frame.height,
+        "columns": tuple(frame.columns),
+    }
+    stable = backfill._cninfo_stable_response_hash_values(values)
+    table = spec.endpoint
+    receipt = CninfoCorporateActionRequestReceipt(
+        schema_version="m3-g1-cninfo-corporate-action-receipt-v1",
+        request_id=spec.request_id,
+        source=CNINFO_SOURCE,
+        endpoint=spec.endpoint,
+        adapter=spec.adapter,
+        parameters=spec.parameters,
+        parameters_sha256=parameters_sha256,
+        raw_snapshot_id=spec.request_id,
+        raw_data_path=f"cninfo/{table}/request=x/data.parquet",
+        raw_metadata_path=f"cninfo/{table}/request=x/metadata.json",
+        raw_file_sha256=_HEX,
+        raw_metadata_sha256=_HEX,
+        response_content_sha256=content,
+        stable_response_sha256=stable,
+        resultcode=200,
+        count=frame.height,
+        total=frame.height,
+        raw_size_bytes=1,
+        row_count=frame.height,
+        columns=tuple(frame.columns),
+    )
+    return VerifiedCninfoCorporateActionRawResponse(
+        spec=spec,
+        receipt=receipt,
+        receipt_sha256=backfill._sha256(asdict(receipt)),
+        frame=frame,
+        resultcode=200,
+        count=frame.height,
+        total=frame.height,
+    )
+
+
 def _make_verified(
     endpoint: str,
     frame: pl.DataFrame,
@@ -546,6 +618,12 @@ def _build_inputs(
         cninfo_responses=tuple(
             _make_cninfo_verified(spec) for spec in plan.cninfo_rights_batch.requests
         ),
+        cninfo_dividend_responses=tuple(
+            _make_cninfo_ca_verified(spec) for spec in plan.cninfo_dividend_batch.requests
+        ),
+        cninfo_share_change_responses=tuple(
+            _make_cninfo_ca_verified(spec) for spec in plan.cninfo_share_change_batch.requests
+        ),
         calendars=_calendar(dt.date(2016, 1, 1), dt.date(2016, 3, 10)),
         instruments=_instruments(syms),
         universe=_UNIVERSE,
@@ -699,6 +777,8 @@ def test_calendar_list_date_change_changes_primary_key(
         request_plan=happy_inputs.request_plan,
         responses=happy_inputs.responses,
         cninfo_responses=happy_inputs.cninfo_responses,
+        cninfo_dividend_responses=happy_inputs.cninfo_dividend_responses,
+        cninfo_share_change_responses=happy_inputs.cninfo_share_change_responses,
         calendars=happy_inputs.calendars,
         instruments=instruments,
         universe=happy_inputs.universe,
@@ -752,7 +832,9 @@ def test_frame_receipt_spec_drift(happy_inputs: G1BuildInputs) -> None:
                 build_spec=happy_inputs.build_spec,
                 request_plan=happy_inputs.request_plan,
                 responses=tuple(responses),
-        cninfo_responses=happy_inputs.cninfo_responses,
+                cninfo_responses=happy_inputs.cninfo_responses,
+                cninfo_dividend_responses=happy_inputs.cninfo_dividend_responses,
+                cninfo_share_change_responses=happy_inputs.cninfo_share_change_responses,
                 calendars=happy_inputs.calendars,
                 instruments=happy_inputs.instruments,
                 universe=happy_inputs.universe,
@@ -1368,14 +1450,18 @@ def _rebuild_inputs_with_suspend_specs(
     ] + list(suspend_specs)
     history_batch = backfill._make_batch("HISTORY", history_requests)
     plan = backfill.G1RequestPlan(
-        "m3-g1-request-plan-v2",
+        "m3-g1-request-plan-v3",
         inputs.request_plan.index_weight_batch,
         history_batch,
         inputs.request_plan.cninfo_rights_batch,
+        inputs.request_plan.cninfo_dividend_batch,
+        inputs.request_plan.cninfo_share_change_batch,
         backfill._plan_hash(
             inputs.request_plan.index_weight_batch,
             history_batch,
             inputs.request_plan.cninfo_rights_batch,
+            inputs.request_plan.cninfo_dividend_batch,
+            inputs.request_plan.cninfo_share_change_batch,
         ),
     )
     non_suspend = [
@@ -1403,6 +1489,8 @@ def _rebuild_inputs_with_suspend_specs(
         request_plan=plan,
         responses=tuple(ordered),
         cninfo_responses=inputs.cninfo_responses,
+        cninfo_dividend_responses=inputs.cninfo_dividend_responses,
+        cninfo_share_change_responses=inputs.cninfo_share_change_responses,
         calendars=inputs.calendars,
         instruments=inputs.instruments,
         universe=inputs.universe,
@@ -2137,3 +2225,74 @@ def test_p0d_r1_happy_and_no_event_jump_still_pass(
     assert audit.issues == ()
     verify_g1_candidate(inputs=happy_inputs, candidate=happy_candidate)
     assert happy_candidate.corporate_action_reconciliation.height == 300
+def test_p0k_a_cninfo_ca_raw_changes_identity_without_ledger(
+    happy_inputs: G1BuildInputs, happy_candidate: G1Candidate
+) -> None:
+    """Mutating F010N/VARYDATE changes candidate key; CA frames stay out of ledger."""
+    from quant.data.connectors.cninfo import (
+        CNINFO_DIVIDEND_ENDPOINT,
+        CNINFO_STOCK_DIVIDEND_FIELDS,
+        CNINFO_STOCK_SHARE_CHANGE_FIELDS,
+    )
+
+    base_actions = happy_candidate.corporate_actions.height
+    base_evidence = happy_candidate.corporate_action_selection_evidence.height
+    div_spec = happy_inputs.request_plan.cninfo_dividend_batch.requests[0]
+    share_spec = happy_inputs.request_plan.cninfo_share_change_batch.requests[0]
+
+    div_row = {name: None for name in CNINFO_STOCK_DIVIDEND_FIELDS}
+    div_row.update({"F001V": "股权分置", "F010N": "5", "F044V": "10送5"})
+    div_frame = pl.DataFrame(
+        [div_row], schema={name: pl.Utf8 for name in CNINFO_STOCK_DIVIDEND_FIELDS}
+    )
+    share_row = {name: None for name in CNINFO_STOCK_SHARE_CHANGE_FIELDS}
+    share_row.update(
+        {
+            "SECCODE": dict(share_spec.parameters)["symbol"],
+            "VARYDATE": "2018-08-23",
+            "F001V": "股权分置",
+        }
+    )
+    share_frame = pl.DataFrame(
+        [share_row], schema={name: pl.Utf8 for name in CNINFO_STOCK_SHARE_CHANGE_FIELDS}
+    )
+
+    mutated_div = []
+    for item in happy_inputs.cninfo_dividend_responses:
+        if item.spec.request_id == div_spec.request_id:
+            mutated_div.append(_make_cninfo_ca_verified(item.spec, frame=div_frame))
+        else:
+            mutated_div.append(item)
+    mutated_share = []
+    for item in happy_inputs.cninfo_share_change_responses:
+        if item.spec.request_id == share_spec.request_id:
+            mutated_share.append(_make_cninfo_ca_verified(item.spec, frame=share_frame))
+        else:
+            mutated_share.append(item)
+
+    altered = G1BuildInputs(
+        build_spec=happy_inputs.build_spec,
+        request_plan=happy_inputs.request_plan,
+        responses=happy_inputs.responses,
+        cninfo_responses=happy_inputs.cninfo_responses,
+        cninfo_dividend_responses=tuple(mutated_div),
+        cninfo_share_change_responses=tuple(mutated_share),
+        calendars=happy_inputs.calendars,
+        instruments=happy_inputs.instruments,
+        universe=happy_inputs.universe,
+        signal_start=happy_inputs.signal_start,
+        signal_end=happy_inputs.signal_end,
+        history=happy_inputs.history,
+        expected_constituent_count=happy_inputs.expected_constituent_count,
+        factor_ratio_rtol=happy_inputs.factor_ratio_rtol,
+    )
+    other = build_g1_candidate(inputs=altered)
+    assert other.primary_candidate_key != happy_candidate.primary_candidate_key
+    assert other.request_plan.plan_sha256 == happy_candidate.request_plan.plan_sha256
+    # receipt projection digest must move with CA content
+    assert other.input_receipts != happy_candidate.input_receipts
+    assert other.corporate_actions.height == base_actions
+    assert other.corporate_action_selection_evidence.height == base_evidence
+    # endpoints are projected but not selected into ledger in P0K-A
+    assert any(item.endpoint == CNINFO_DIVIDEND_ENDPOINT for item in other.input_receipts)
+    assert any(item.endpoint == "stock_share_change" for item in other.input_receipts)

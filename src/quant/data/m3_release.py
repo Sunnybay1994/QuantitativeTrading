@@ -2171,6 +2171,8 @@ def _consume_build_inputs(value: object) -> G1BuildInputs:
         request_plan=value.request_plan,
         responses=value.responses,
         cninfo_responses=value.cninfo_responses,
+        cninfo_dividend_responses=value.cninfo_dividend_responses,
+        cninfo_share_change_responses=value.cninfo_share_change_responses,
         calendars=value.calendars,
         instruments=value.instruments,
         universe=value.universe,

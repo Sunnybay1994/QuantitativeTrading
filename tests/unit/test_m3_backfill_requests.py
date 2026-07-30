@@ -456,12 +456,18 @@ def test_direct_batch_and_plan_revalidate_nested_contracts() -> None:
     object.__setattr__(plan.history_batch, "batch_sha256", "0" * 64)
     with pytest.raises(ValueError, match="batch_sha256"):
         backfill.G1RequestPlan(
-            "m3-g1-request-plan-v2",
+            "m3-g1-request-plan-v3",
             plan.index_weight_batch,
             plan.history_batch,
             plan.cninfo_rights_batch,
+            plan.cninfo_dividend_batch,
+            plan.cninfo_share_change_batch,
             backfill._plan_hash(
-                plan.index_weight_batch, plan.history_batch, plan.cninfo_rights_batch
+                plan.index_weight_batch,
+                plan.history_batch,
+                plan.cninfo_rights_batch,
+                plan.cninfo_dividend_batch,
+                plan.cninfo_share_change_batch,
             ),
         )
 
@@ -1992,7 +1998,8 @@ def _execute_result(
 def test_max_new_requests_rejects_illegal_before_fs_or_api(tmp_path: Path) -> None:
     connector = FakeConnector()
     batch = _daily_batch(2)
-    for bad in (True, 0, -1, 1.0, "1"):
+    # 0 is legal: shared HISTORY budget may be exhausted before a later segment.
+    for bad in (True, -1, 1.0, "1"):
         with pytest.raises(ValueError, match="max_new_requests"):
             execute_tushare_batch(
                 batch=batch,
@@ -2258,3 +2265,257 @@ def test_b1b_r3_synthetic_637_equity_3185_total_3190() -> None:
         dict(item.parameters).get("ts_code") == "H00300.CSI"
         for item in etf.history_batch.requests
     )
+
+# --- P0K-A CNINFO corporate-action plan / identity / execute ---
+
+
+def test_plan_cninfo_corporate_action_dedup_order_and_ids() -> None:
+    import datetime as dt
+
+    from quant.data.connectors.cninfo import (
+        CNINFO_DIVIDEND_ADAPTER,
+        CNINFO_DIVIDEND_ENDPOINT,
+        CNINFO_SHARE_CHANGE_ADAPTER,
+        CNINFO_SHARE_CHANGE_ENDPOINT,
+    )
+    from quant.data.m3_backfill import (
+        CninfoCorporateActionRequestSpec,
+        HistoryWindow,
+        plan_cninfo_corporate_action_requests,
+        plan_history_requests,
+        plan_index_weight_requests,
+    )
+
+    history = HistoryWindow(dt.date(2018, 1, 1), dt.date(2018, 12, 31))
+    symbols = ["600733.SH", "000001.SZ", "600733.SH", "000002.SZ"]
+    div_a, share_a = plan_cninfo_corporate_action_requests(
+        symbols=symbols, history=history
+    )
+    div_b, share_b = plan_cninfo_corporate_action_requests(
+        symbols=list(reversed(symbols)), history=history
+    )
+    assert len(div_a.requests) == 3
+    assert len(share_a.requests) == 3
+    assert div_a.batch_sha256 == div_b.batch_sha256
+    assert share_a.batch_sha256 == share_b.batch_sha256
+    assert all(item.endpoint == CNINFO_DIVIDEND_ENDPOINT for item in div_a.requests)
+    assert all(item.endpoint == CNINFO_SHARE_CHANGE_ENDPOINT for item in share_a.requests)
+    assert all(item.adapter == CNINFO_DIVIDEND_ADAPTER for item in div_a.requests)
+    assert all(item.adapter == CNINFO_SHARE_CHANGE_ADAPTER for item in share_a.requests)
+    same_symbol_div = next(
+        item for item in div_a.requests if dict(item.parameters)["symbol"] == "600733"
+    )
+    same_symbol_share = next(
+        item for item in share_a.requests if dict(item.parameters)["symbol"] == "600733"
+    )
+    assert same_symbol_div.request_id != same_symbol_share.request_id
+
+    with pytest.raises(ValueError):
+        CninfoCorporateActionRequestSpec.create(
+            endpoint="stock_dividend",
+            parameters={"symbol": "600733", "start_date": "20180101"},
+        )
+    with pytest.raises(ValueError):
+        CninfoCorporateActionRequestSpec.create(
+            endpoint="stock_share_change",
+            parameters={"symbol": "600733"},
+        )
+    with pytest.raises(ValueError):
+        CninfoCorporateActionRequestSpec.create(
+            endpoint="stock_share_change",
+            parameters={
+                "symbol": "600733",
+                "start_date": "20181231",
+                "end_date": "20180101",
+            },
+        )
+    with pytest.raises(ValueError):
+        CninfoCorporateActionRequestSpec(
+            "m3-g1-cninfo-corporate-action-request-v1",
+            "0" * 64,
+            "cninfo",
+            "stock_dividend",
+            CNINFO_SHARE_CHANGE_ADAPTER,
+            (("symbol", "600733"),),
+        )
+
+    # v3 plan five-batch hash; omitting new batches / v2 schema fail closed
+    index = plan_index_weight_requests(
+        index_code="000300.SH",
+        start=dt.date(2018, 1, 1),
+        end=dt.date(2018, 1, 31),
+        warmup_months=0,
+    )
+    plan = plan_history_requests(
+        index_weight_batch=index,
+        symbols=("600733.SH", "000001.SZ"),
+        benchmark="000300.SH",
+        history=history,
+    )
+    assert plan.schema_version == "m3-g1-request-plan-v3"
+    assert len(plan.cninfo_dividend_batch.requests) == 2
+    assert len(plan.cninfo_share_change_batch.requests) == 2
+    five = backfill._plan_hash(
+        plan.index_weight_batch,
+        plan.history_batch,
+        plan.cninfo_rights_batch,
+        plan.cninfo_dividend_batch,
+        plan.cninfo_share_change_batch,
+    )
+    assert plan.plan_sha256 == five
+    swapped = backfill._plan_hash(
+        plan.index_weight_batch,
+        plan.history_batch,
+        plan.cninfo_rights_batch,
+        plan.cninfo_share_change_batch,
+        plan.cninfo_dividend_batch,
+    )
+    assert swapped != plan.plan_sha256
+    with pytest.raises(ValueError):
+        backfill.G1RequestPlan(
+            "m3-g1-request-plan-v2",
+            plan.index_weight_batch,
+            plan.history_batch,
+            plan.cninfo_rights_batch,
+            plan.cninfo_dividend_batch,
+            plan.cninfo_share_change_batch,
+            five,
+        )
+    with pytest.raises(TypeError):
+        backfill.G1RequestPlan(
+            "m3-g1-request-plan-v3",
+            plan.index_weight_batch,
+            plan.history_batch,
+            plan.cninfo_rights_batch,
+            five,
+        )
+
+
+def test_execute_cninfo_corporate_action_budget_and_verify(tmp_path: Path) -> None:
+    import datetime as dt
+
+    from quant.data.connectors.cninfo import (
+        CNINFO_STOCK_DIVIDEND_FIELDS,
+        CninfoConnector,
+    )
+    from quant.data.m3_backfill import (
+        EndpointPolicy,
+        HistoryWindow,
+        execute_cninfo_corporate_action_batch,
+        plan_cninfo_corporate_action_requests,
+        verify_cninfo_corporate_action_receipt,
+    )
+    from quant.data.storage import RawStore
+
+    class _Empty:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def post_json(self, *, url: str, params: object, headers: object) -> dict[str, object]:
+            del url, params, headers
+            self.calls += 1
+            return {
+                "resultcode": 200,
+                "resultmsg": "success",
+                "count": 0,
+                "total": 0,
+                "records": [],
+            }
+
+    history = HistoryWindow(dt.date(2018, 1, 1), dt.date(2018, 12, 31))
+    div, _share = plan_cninfo_corporate_action_requests(
+        symbols=["600733.SH", "000001.SZ"], history=history
+    )
+    client = _Empty()
+    connector = CninfoConnector(client=client, enckey_provider=lambda: "k")
+    raw = RawStore(tmp_path / "raw")
+    journal = tmp_path / "journal_div"
+    first = execute_cninfo_corporate_action_batch(
+        batch=div,
+        connector=connector,
+        raw_store=raw,
+        journal_root=journal,
+        row_limit=5000,
+        request_rate_per_minute=600,
+        max_attempts=1,
+        retry_base_seconds=0.0,
+        classify_error=lambda _exc: "NETWORK",
+        max_new_requests=0,
+    )
+    assert first.new_requests_committed == 0
+    assert first.receipts == ()
+    assert client.calls == 0
+    second = execute_cninfo_corporate_action_batch(
+        batch=div,
+        connector=connector,
+        raw_store=raw,
+        journal_root=journal,
+        row_limit=5000,
+        request_rate_per_minute=600,
+        max_attempts=1,
+        retry_base_seconds=0.0,
+        classify_error=lambda _exc: "NETWORK",
+        max_new_requests=1,
+    )
+    assert second.new_requests_committed == 1
+    assert len(second.receipts) == 1
+    third = execute_cninfo_corporate_action_batch(
+        batch=div,
+        connector=connector,
+        raw_store=raw,
+        journal_root=journal,
+        row_limit=5000,
+        request_rate_per_minute=600,
+        max_attempts=1,
+        retry_base_seconds=0.0,
+        classify_error=lambda _exc: "NETWORK",
+        max_new_requests=10,
+    )
+    assert third.new_requests_committed == 1
+    assert len(third.receipts) == 2
+    for spec in div.requests:
+        verified = verify_cninfo_corporate_action_receipt(
+            spec=spec,
+            receipt_path=journal / spec.request_id / "receipt.json",
+            raw_root=raw.root,
+            journal_root=journal,
+            policy=EndpointPolicy(5000, "ALLOW"),
+        )
+        assert verified.count == 0
+        assert tuple(verified.frame.columns) == CNINFO_STOCK_DIVIDEND_FIELDS
+        # tamper receipt count
+        receipt_path = journal / spec.request_id / "receipt.json"
+        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+        payload["count"] = 1
+        receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(backfill.M3BackfillError):
+            verify_cninfo_corporate_action_receipt(
+                spec=spec,
+                receipt_path=receipt_path,
+                raw_root=raw.root,
+                journal_root=journal,
+                policy=EndpointPolicy(5000, "ALLOW"),
+            )
+        break
+
+
+def test_old_rights_types_rejected_as_corporate_action() -> None:
+    import datetime as dt
+
+    from quant.data.m3_backfill import (
+        CninfoCorporateActionRequestBatch,
+        CninfoRequestSpec,
+        HistoryWindow,
+        plan_cninfo_rights_requests,
+    )
+
+    history = HistoryWindow(dt.date(2018, 1, 1), dt.date(2018, 12, 31))
+    rights = plan_cninfo_rights_requests(symbols=["600733.SH"], history=history)
+    assert isinstance(rights.requests[0], CninfoRequestSpec)
+    with pytest.raises(ValueError):
+        CninfoCorporateActionRequestBatch(
+            schema_version="m3-g1-cninfo-corporate-action-request-batch-v1",
+            phase="HISTORY",
+            requests=rights.requests,  # type: ignore[arg-type]
+            batch_sha256="0" * 64,
+        )

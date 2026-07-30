@@ -141,6 +141,74 @@ def _weights(n: int = 300) -> list[float]:
     return [100.0 / n] * n
 
 
+
+
+def _make_cninfo_ca_verified(spec: backfill.CninfoCorporateActionRequestSpec):
+    from quant.data.connectors.cninfo import (
+        CNINFO_SOURCE,
+        empty_cninfo_dividend_frame,
+        empty_cninfo_share_change_frame,
+        CNINFO_DIVIDEND_ENDPOINT,
+    )
+    from quant.data.m3_backfill import (
+        cninfo_corporate_action_response_content_sha256,
+        VerifiedCninfoCorporateActionRawResponse,
+        CninfoCorporateActionRequestReceipt,
+    )
+    frame = (
+        empty_cninfo_dividend_frame()
+        if spec.endpoint == CNINFO_DIVIDEND_ENDPOINT
+        else empty_cninfo_share_change_frame()
+    )
+    content = cninfo_corporate_action_response_content_sha256(frame, endpoint=spec.endpoint)
+    parameters_sha256 = backfill._parameters_hash(spec.parameters)
+    values = {
+        "request_id": spec.request_id,
+        "endpoint": spec.endpoint,
+        "adapter": spec.adapter,
+        "parameters_sha256": parameters_sha256,
+        "response_content_sha256": content,
+        "resultcode": 200,
+        "count": 0,
+        "total": 0,
+        "row_count": 0,
+        "columns": tuple(frame.columns),
+    }
+    stable = backfill._cninfo_stable_response_hash_values(values)
+    table = spec.endpoint
+    receipt = CninfoCorporateActionRequestReceipt(
+        schema_version="m3-g1-cninfo-corporate-action-receipt-v1",
+        request_id=spec.request_id,
+        source=CNINFO_SOURCE,
+        endpoint=spec.endpoint,
+        adapter=spec.adapter,
+        parameters=spec.parameters,
+        parameters_sha256=parameters_sha256,
+        raw_snapshot_id=spec.request_id,
+        raw_data_path=f"cninfo/{table}/request=x/data.parquet",
+        raw_metadata_path=f"cninfo/{table}/request=x/metadata.json",
+        raw_file_sha256=_HEX,
+        raw_metadata_sha256=_HEX,
+        response_content_sha256=content,
+        stable_response_sha256=stable,
+        resultcode=200,
+        count=0,
+        total=0,
+        raw_size_bytes=1,
+        row_count=0,
+        columns=tuple(frame.columns),
+    )
+    return VerifiedCninfoCorporateActionRawResponse(
+        spec=spec,
+        receipt=receipt,
+        receipt_sha256=backfill._sha256(asdict(receipt)),
+        frame=frame,
+        resultcode=200,
+        count=0,
+        total=0,
+    )
+
+
 def _make_verified(
     endpoint: str,
     frame: pl.DataFrame,
@@ -552,6 +620,12 @@ def _build_inputs() -> G1BuildInputs:
         responses=tuple(ordered),
         cninfo_responses=tuple(
             _make_cninfo_verified(spec) for spec in plan.cninfo_rights_batch.requests
+        ),
+        cninfo_dividend_responses=tuple(
+            _make_cninfo_ca_verified(spec) for spec in plan.cninfo_dividend_batch.requests
+        ),
+        cninfo_share_change_responses=tuple(
+            _make_cninfo_ca_verified(spec) for spec in plan.cninfo_share_change_batch.requests
         ),
         calendars=_calendar(dt.date(2016, 1, 1), _D1 + dt.timedelta(days=10)),
         instruments=_instruments(syms),

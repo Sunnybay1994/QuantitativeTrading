@@ -1,4 +1,9 @@
-"""CNINFO official API thin adapter for A-share rights issues (p_stock2232).
+"""CNINFO official API thin adapter for A-share corporate actions.
+
+Supports:
+- stock_allotment (p_stock2232) — existing rights contract
+- stock_dividend (p_sysapi1139) — share reform / dividend announcements
+- stock_share_change (p_stock2215) — capital structure changes
 
 AKShare is used only for Accept-Enckey generation. Production raw keeps official
 field codes; Chinese display names are not part of the contract. Tests must
@@ -12,7 +17,7 @@ import importlib
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 import polars as pl
 
@@ -22,6 +27,20 @@ CNINFO_ADAPTER = "akshare_cninfo_p_stock2232_v1"
 CNINFO_API_PATH = "/api/stock/p_stock2232"
 CNINFO_API_HOST = "webapi.cninfo.com.cn"
 CNINFO_API_URL = f"https://{CNINFO_API_HOST}{CNINFO_API_PATH}"
+
+CNINFO_DIVIDEND_ENDPOINT: Literal["stock_dividend"] = "stock_dividend"
+CNINFO_DIVIDEND_ADAPTER: Literal["akshare_cninfo_p_sysapi1139_v1"] = (
+    "akshare_cninfo_p_sysapi1139_v1"
+)
+CNINFO_DIVIDEND_API_PATH = "/api/sysapi/p_sysapi1139"
+CNINFO_DIVIDEND_API_URL = f"https://{CNINFO_API_HOST}{CNINFO_DIVIDEND_API_PATH}"
+
+CNINFO_SHARE_CHANGE_ENDPOINT: Literal["stock_share_change"] = "stock_share_change"
+CNINFO_SHARE_CHANGE_ADAPTER: Literal["akshare_cninfo_p_stock2215_v1"] = (
+    "akshare_cninfo_p_stock2215_v1"
+)
+CNINFO_SHARE_CHANGE_API_PATH = "/api/stock/p_stock2215"
+CNINFO_SHARE_CHANGE_API_URL = f"https://{CNINFO_API_HOST}{CNINFO_SHARE_CHANGE_API_PATH}"
 
 # Frozen official field set from p_stock2232 (57 columns). Exact set match required.
 CNINFO_STOCK_ALLOTMENT_FIELDS: tuple[str, ...] = (
@@ -85,7 +104,75 @@ CNINFO_STOCK_ALLOTMENT_FIELDS: tuple[str, ...] = (
 )
 CNINFO_STOCK_ALLOTMENT_FIELD_SET = frozenset(CNINFO_STOCK_ALLOTMENT_FIELDS)
 
+# Frozen official field set from p_sysapi1139 (11 columns).
+CNINFO_STOCK_DIVIDEND_FIELDS: tuple[str, ...] = (
+    "F001V",
+    "F006D",
+    "F007V",
+    "F010N",
+    "F011N",
+    "F012N",
+    "F018D",
+    "F020D",
+    "F023D",
+    "F025D",
+    "F044V",
+)
+CNINFO_STOCK_DIVIDEND_FIELD_SET = frozenset(CNINFO_STOCK_DIVIDEND_FIELDS)
+
+# Frozen official field set from p_stock2215 (47 columns).
+CNINFO_STOCK_SHARE_CHANGE_FIELDS: tuple[str, ...] = (
+    "DECLAREDATE",
+    "F001V",
+    "F002V",
+    "F003N",
+    "F004N",
+    "F005N",
+    "F006N",
+    "F007N",
+    "F008N",
+    "F009N",
+    "F010N",
+    "F011N",
+    "F012N",
+    "F013N",
+    "F014N",
+    "F015N",
+    "F016N",
+    "F017N",
+    "F018N",
+    "F019N",
+    "F020N",
+    "F021N",
+    "F022N",
+    "F023N",
+    "F024N",
+    "F025N",
+    "F026N",
+    "F027C",
+    "F028N",
+    "F029N",
+    "F030N",
+    "F031N",
+    "F032N",
+    "F033N",
+    "F034N",
+    "F035N",
+    "F036N",
+    "F037N",
+    "F038N",
+    "F040N",
+    "F049N",
+    "F050N",
+    "ORGNAME",
+    "SECCODE",
+    "SECNAME",
+    "VARYDATE",
+)
+CNINFO_STOCK_SHARE_CHANGE_FIELD_SET = frozenset(CNINFO_STOCK_SHARE_CHANGE_FIELDS)
+
 _DEFAULT_ROW_LIMIT = 5000
+_PAYLOAD_KEYS = frozenset({"resultcode", "resultmsg", "count", "total", "records"})
 
 
 class CninfoConnectorError(RuntimeError):
@@ -138,6 +225,35 @@ class CninfoAllotmentRawResult:
             raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID")
 
 
+@dataclass(frozen=True)
+class CninfoCorporateActionRawResult:
+    """Validated raw corporate-action response with official field codes."""
+
+    endpoint: Literal["stock_dividend", "stock_share_change"]
+    frame: pl.DataFrame
+    resultcode: int
+    resultmsg: str
+    count: int
+    total: int
+
+    def __post_init__(self) -> None:
+        fields = _fields_for_endpoint(self.endpoint)
+        if not isinstance(self.frame, pl.DataFrame):
+            raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID")
+        if self.resultcode != 200:
+            raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID")
+        if self.resultmsg != "success":
+            raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID")
+        if type(self.count) is not int or type(self.total) is not int:
+            raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID")
+        if self.count < 0 or self.total < 0:
+            raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID")
+        if self.count != self.total or self.count != self.frame.height:
+            raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID")
+        if tuple(self.frame.columns) != fields:
+            raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID")
+
+
 class _RequestsCninfoClient:
     """Production HTTP client; never logs headers or Enckey."""
 
@@ -166,7 +282,7 @@ class _RequestsCninfoClient:
 
 
 class CninfoConnector:
-    """CNINFO p_stock2232 adapter with injectable client/enckey for tests."""
+    """CNINFO adapter with injectable client/enckey for tests."""
 
     source = CNINFO_SOURCE
 
@@ -201,6 +317,51 @@ class CninfoConnector:
             "sdate": _date8_to_iso(start_date),
             "edate": _date8_to_iso(end_date),
         }
+        payload = self._post(url=CNINFO_API_URL, params=params)
+        return _validate_allotment_payload(
+            payload, requested_codes=set(codes), row_limit=self._row_limit
+        )
+
+    def fetch_stock_dividend_raw(self, *, symbol: str) -> CninfoCorporateActionRawResult:
+        """Fetch and validate one stock_dividend request; returns official codes."""
+        code = _normalize_single_symbol(symbol)
+        payload = self._post(url=CNINFO_DIVIDEND_API_URL, params={"scode": code})
+        return _validate_corporate_action_payload(
+            payload,
+            endpoint=CNINFO_DIVIDEND_ENDPOINT,
+            requested_code=code,
+            row_limit=self._row_limit,
+            check_seccode=False,
+        )
+
+    def fetch_stock_share_change_raw(
+        self,
+        *,
+        symbol: str,
+        start_date: str,
+        end_date: str,
+    ) -> CninfoCorporateActionRawResult:
+        """Fetch and validate one stock_share_change request; returns official codes."""
+        code = _normalize_single_symbol(symbol)
+        _validate_date8(start_date)
+        _validate_date8(end_date)
+        if start_date > end_date:
+            raise CninfoConnectorError("CNINFO_REQUEST_PARAMS_INVALID")
+        params = {
+            "scode": code,
+            "sdate": _date8_to_iso(start_date),
+            "edate": _date8_to_iso(end_date),
+        }
+        payload = self._post(url=CNINFO_SHARE_CHANGE_API_URL, params=params)
+        return _validate_corporate_action_payload(
+            payload,
+            endpoint=CNINFO_SHARE_CHANGE_ENDPOINT,
+            requested_code=code,
+            row_limit=self._row_limit,
+            check_seccode=True,
+        )
+
+    def _post(self, *, url: str, params: Mapping[str, str]) -> Mapping[str, Any]:
         headers = {
             "Accept": "*/*",
             "Accept-Enckey": self._enckey(),
@@ -217,14 +378,11 @@ class CninfoConnector:
         }
         client = self._client if self._client is not None else _RequestsCninfoClient()
         try:
-            payload = client.post_json(url=CNINFO_API_URL, params=params, headers=headers)
+            return client.post_json(url=url, params=params, headers=headers)
         except CninfoConnectorError:
             raise
         except Exception as exc:
             raise _sanitize_network(exc) from None
-        return _validate_allotment_payload(
-            payload, requested_codes=set(codes), row_limit=self._row_limit
-        )
 
     def _enckey(self) -> str:
         if self._enckey_provider is not None:
@@ -280,12 +438,60 @@ def empty_cninfo_allotment_frame() -> pl.DataFrame:
     )
 
 
+def empty_cninfo_dividend_frame() -> pl.DataFrame:
+    """Complete empty stock_dividend schema with frozen official field order."""
+    return pl.DataFrame(
+        {name: [] for name in CNINFO_STOCK_DIVIDEND_FIELDS},
+        schema={name: pl.Utf8 for name in CNINFO_STOCK_DIVIDEND_FIELDS},
+    )
+
+
+def empty_cninfo_share_change_frame() -> pl.DataFrame:
+    """Complete empty stock_share_change schema with frozen official field order."""
+    return pl.DataFrame(
+        {name: [] for name in CNINFO_STOCK_SHARE_CHANGE_FIELDS},
+        schema={name: pl.Utf8 for name in CNINFO_STOCK_SHARE_CHANGE_FIELDS},
+    )
+
+
+def _fields_for_endpoint(
+    endpoint: Literal["stock_dividend", "stock_share_change"],
+) -> tuple[str, ...]:
+    if endpoint == CNINFO_DIVIDEND_ENDPOINT:
+        return CNINFO_STOCK_DIVIDEND_FIELDS
+    if endpoint == CNINFO_SHARE_CHANGE_ENDPOINT:
+        return CNINFO_STOCK_SHARE_CHANGE_FIELDS
+    raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID")
+
+
+def _field_set_for_endpoint(
+    endpoint: Literal["stock_dividend", "stock_share_change"],
+) -> frozenset[str]:
+    if endpoint == CNINFO_DIVIDEND_ENDPOINT:
+        return CNINFO_STOCK_DIVIDEND_FIELD_SET
+    if endpoint == CNINFO_SHARE_CHANGE_ENDPOINT:
+        return CNINFO_STOCK_SHARE_CHANGE_FIELD_SET
+    raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID")
+
+
+def _empty_frame_for_endpoint(
+    endpoint: Literal["stock_dividend", "stock_share_change"],
+) -> pl.DataFrame:
+    if endpoint == CNINFO_DIVIDEND_ENDPOINT:
+        return empty_cninfo_dividend_frame()
+    if endpoint == CNINFO_SHARE_CHANGE_ENDPOINT:
+        return empty_cninfo_share_change_frame()
+    raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID")
+
+
 def _validate_allotment_payload(
     payload: Mapping[str, Any],
     *,
     requested_codes: set[str],
     row_limit: int,
 ) -> CninfoAllotmentRawResult:
+    # Rights allotment keeps historical envelope tolerance (required keys present);
+    # corporate-action endpoints enforce exact key sets separately.
     if not isinstance(payload, Mapping):
         raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID")
     try:
@@ -312,7 +518,6 @@ def _validate_allotment_payload(
         raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID")
     if count > row_limit:
         raise CninfoConnectorError("CNINFO_RESPONSE_ROW_LIMIT")
-
     if count == 0:
         frame = empty_cninfo_allotment_frame()
         return CninfoAllotmentRawResult(
@@ -343,11 +548,95 @@ def _validate_allotment_payload(
     frame = pl.DataFrame(rows, schema={name: pl.Utf8 for name in CNINFO_STOCK_ALLOTMENT_FIELDS})
     return CninfoAllotmentRawResult(
         frame=frame,
-        resultcode=200,
-        resultmsg="success",
+        resultcode=resultcode,
+        resultmsg=resultmsg,
         count=count,
         total=total,
     )
+
+
+def _validate_corporate_action_payload(
+    payload: Mapping[str, Any],
+    *,
+    endpoint: Literal["stock_dividend", "stock_share_change"],
+    requested_code: str,
+    row_limit: int,
+    check_seccode: bool,
+) -> CninfoCorporateActionRawResult:
+    fields = _fields_for_endpoint(endpoint)
+    field_set = _field_set_for_endpoint(endpoint)
+    resultcode, resultmsg, count, total, records = _parse_exact_envelope(
+        payload, row_limit=row_limit
+    )
+    if count == 0:
+        return CninfoCorporateActionRawResult(
+            endpoint=endpoint,
+            frame=_empty_frame_for_endpoint(endpoint),
+            resultcode=200,
+            resultmsg="success",
+            count=0,
+            total=0,
+        )
+
+    rows: list[dict[str, Any]] = []
+    for item in records:
+        if not isinstance(item, Mapping):
+            raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID")
+        keys = frozenset(item.keys())
+        if keys != field_set:
+            raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID")
+        if check_seccode:
+            seccode = item.get("SECCODE")
+            if type(seccode) is not str or seccode != requested_code:
+                raise CninfoConnectorError("CNINFO_RESPONSE_SCOPE_INVALID")
+        row: dict[str, Any] = {}
+        for name in fields:
+            row[name] = _canonicalize_cell(item[name])
+        rows.append(row)
+
+    frame = pl.DataFrame(rows, schema={name: pl.Utf8 for name in fields})
+    return CninfoCorporateActionRawResult(
+        endpoint=endpoint,
+        frame=frame,
+        resultcode=resultcode,
+        resultmsg=resultmsg,
+        count=count,
+        total=total,
+    )
+
+
+def _parse_exact_envelope(
+    payload: Mapping[str, Any], *, row_limit: int
+) -> tuple[int, str, int, int, list[Any]]:
+    if not isinstance(payload, Mapping):
+        raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID")
+    if frozenset(payload.keys()) != _PAYLOAD_KEYS:
+        raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID")
+    try:
+        resultcode = payload["resultcode"]
+        resultmsg = payload["resultmsg"]
+        count = payload["count"]
+        total = payload["total"]
+        records = payload["records"]
+    except Exception:
+        raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID") from None
+    if type(resultcode) is not int or resultcode != 200:
+        raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID")
+    if type(resultmsg) is not str or resultmsg != "success":
+        raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID")
+    if type(count) is not int or type(total) is not int:
+        raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID")
+    if count < 0 or total < 0 or count != total:
+        raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID")
+    if records is None:
+        raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID")
+    if not isinstance(records, list):
+        raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID")
+    if len(records) != count:
+        raise CninfoConnectorError("CNINFO_RESPONSE_SCHEMA_INVALID")
+    if count > row_limit:
+        raise CninfoConnectorError("CNINFO_RESPONSE_ROW_LIMIT")
+    return resultcode, resultmsg, count, total, records
 
 
 def _canonicalize_cell(value: object) -> str | None:
@@ -390,6 +679,17 @@ def _normalize_symbol_codes(symbols: str) -> list[str]:
     if not (1 <= len(codes) <= 50):
         raise CninfoConnectorError("CNINFO_REQUEST_PARAMS_INVALID")
     return list(codes)
+
+
+def _normalize_single_symbol(symbol: str) -> str:
+    if type(symbol) is not str or not symbol:
+        raise CninfoConnectorError("CNINFO_REQUEST_PARAMS_INVALID")
+    if "," in symbol:
+        raise CninfoConnectorError("CNINFO_REQUEST_PARAMS_INVALID")
+    codes = normalize_cninfo_symbols([symbol])
+    if len(codes) != 1 or codes[0] != symbol:
+        raise CninfoConnectorError("CNINFO_REQUEST_PARAMS_INVALID")
+    return codes[0]
 
 
 def _validate_date8(value: str) -> None:

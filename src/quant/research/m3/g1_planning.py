@@ -702,12 +702,22 @@ def plan_g1_etf_history_requests(
         _tushare_batch_hash("HISTORY", merged),
     )
     cninfo_rights_batch = base.cninfo_rights_batch
+    cninfo_dividend_batch = base.cninfo_dividend_batch
+    cninfo_share_change_batch = base.cninfo_share_change_batch
     return G1RequestPlan(
-        "m3-g1-request-plan-v2",
+        "m3-g1-request-plan-v3",
         index_weight_batch,
         history_batch,
         cninfo_rights_batch,
-        _tushare_plan_hash(index_weight_batch, history_batch, cninfo_rights_batch),
+        cninfo_dividend_batch,
+        cninfo_share_change_batch,
+        _tushare_plan_hash(
+            index_weight_batch,
+            history_batch,
+            cninfo_rights_batch,
+            cninfo_dividend_batch,
+            cninfo_share_change_batch,
+        ),
     )
 
 
@@ -1379,6 +1389,8 @@ def _rebuild_request_plan(plan: object) -> G1RequestPlan:
             plan.index_weight_batch,
             plan.history_batch,
             plan.cninfo_rights_batch,
+            plan.cninfo_dividend_batch,
+            plan.cninfo_share_change_batch,
             plan.plan_sha256,
         )
     except Exception:
@@ -1472,10 +1484,39 @@ def _derived_plan_sha256(
             "cninfo_rights_batch": _cninfo_batch_to_jsonable(
                 request_plan.cninfo_rights_batch
             ),
+            "cninfo_dividend_batch": _cninfo_corporate_action_batch_to_jsonable(
+                request_plan.cninfo_dividend_batch
+            ),
+            "cninfo_share_change_batch": _cninfo_corporate_action_batch_to_jsonable(
+                request_plan.cninfo_share_change_batch
+            ),
             "plan_sha256": request_plan.plan_sha256,
         },
     }
     return _sha256_json(payload)
+
+
+def _cninfo_corporate_action_batch_to_jsonable(batch: object) -> dict[str, Any]:
+    from quant.data.m3_backfill import CninfoCorporateActionRequestBatch
+
+    if type(batch) is not CninfoCorporateActionRequestBatch:
+        raise M3G1PlanningError("G1_PLANNING_IDENTITY_MISMATCH")
+    return {
+        "schema_version": batch.schema_version,
+        "phase": batch.phase,
+        "requests": [
+            {
+                "schema_version": item.schema_version,
+                "request_id": item.request_id,
+                "source": item.source,
+                "endpoint": item.endpoint,
+                "adapter": item.adapter,
+                "parameters": list(item.parameters),
+            }
+            for item in batch.requests
+        ],
+        "batch_sha256": batch.batch_sha256,
+    }
 
 
 def _cninfo_batch_to_jsonable(batch: object) -> dict[str, Any]:

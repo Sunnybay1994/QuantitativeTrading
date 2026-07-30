@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import socket
+import sys
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,21 @@ from quant.data.m3_release import (
 )
 from quant.data.storage import RawStore
 from tests.unit import test_m3_reference as ref_tests
+
+
+def _require_symlink(
+    link: Path | str, target: Path | str, *, target_is_directory: bool = False
+) -> None:
+    """Create a symlink; skip only when Windows reports missing symlink privilege (1314)."""
+    try:
+        if isinstance(link, Path):
+            link.symlink_to(target, target_is_directory=target_is_directory)
+        else:
+            os.symlink(target, link, target_is_directory=target_is_directory)
+    except OSError as exc:
+        if sys.platform == "win32" and getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows session lacks SeCreateSymbolicLinkPrivilege")
+        raise
 
 
 def _injectable_renameat2_noreplace(src: Path, dst: Path) -> None:
@@ -172,6 +188,8 @@ def test_release_identity_stable_under_row_shuffle(
         request_plan=release_inputs.build_inputs.request_plan,
         responses=rebuilt,
         cninfo_responses=release_inputs.build_inputs.cninfo_responses,
+        cninfo_dividend_responses=release_inputs.build_inputs.cninfo_dividend_responses,
+        cninfo_share_change_responses=release_inputs.build_inputs.cninfo_share_change_responses,
         calendars=release_inputs.build_inputs.calendars.reverse(),
         instruments=release_inputs.build_inputs.instruments.reverse(),
         universe=release_inputs.build_inputs.universe,
@@ -205,6 +223,8 @@ def test_release_identity_changes_on_calendar_cell(
         request_plan=release_inputs.build_inputs.request_plan,
         responses=release_inputs.build_inputs.responses,
         cninfo_responses=release_inputs.build_inputs.cninfo_responses,
+        cninfo_dividend_responses=release_inputs.build_inputs.cninfo_dividend_responses,
+        cninfo_share_change_responses=release_inputs.build_inputs.cninfo_share_change_responses,
         calendars=calendars,
         instruments=release_inputs.build_inputs.instruments,
         universe=release_inputs.build_inputs.universe,
@@ -366,10 +386,12 @@ def test_strict_json_readers(
         read_g1_manifest(bom_path)
     assert exc.value.code == "G1_RELEASE_JSON_INVALID"
 
-    # duplicate key
+    # duplicate key (must match the live manifest schema_version token)
+    schema_token = f'"schema_version":"{manifest.schema_version}"'
+    assert schema_token.encode("utf-8") in raw
     dup = raw.decode("utf-8").replace(
-        '"schema_version":"m3-g1-manifest-v2"',
-        '"schema_version":"m3-g1-manifest-v2","schema_version":"m3-g1-manifest-v2"',
+        schema_token,
+        f"{schema_token},{schema_token}",
         1,
     )
     dup_path = tmp_path / "dup.json"
@@ -485,7 +507,7 @@ def test_primary_table_tamper_with_self_consistent_manifest_rejected(
                 max_key=max_key,
             )
         )
-    new_manifest = G1ManifestV3(
+    new_manifest = G1ManifestV5(
         schema_version=manifest.schema_version,
         release_id=manifest.release_id,
         primary_candidate_key=manifest.primary_candidate_key,
@@ -555,6 +577,9 @@ def test_extra_hidden_and_fifo_rejected(
         )
     shutil.rmtree(target)
     shutil.copytree(release.root, target)
+    if not hasattr(os, "mkfifo"):
+        # POSIX-only second branch; .hidden rejection already asserted above.
+        return
     fifo = target / "noise.fifo"
     os.mkfifo(fifo)
     with pytest.raises(M3ReleaseError):
@@ -575,7 +600,7 @@ def test_symlink_and_hardlink_rejected(
     target = tmp_path / "link" / release.release_id
     shutil.copytree(release.root, target)
     os.remove(target / "quality.json")
-    os.symlink("manifest.json", target / "quality.json")
+    _require_symlink(target / "quality.json", "manifest.json")
     with pytest.raises(M3ReleaseError):
         verify_g1_release(
             release=G1Release(
@@ -628,7 +653,7 @@ def test_verify_mid_ancestor_replaced_with_symlink_rejected(
         result = real_parse(payload)
         if mid.exists() and not mid.is_symlink():
             shutil.move(mid, alt)
-            os.symlink(alt, mid)
+            _require_symlink(mid, alt, target_is_directory=True)
         return result
 
     monkeypatch.setattr(release_mod, "_parse_manifest_bytes", swap_then_parse)
@@ -1288,3 +1313,86 @@ def test_p0f_r1_cninfo_projection_columns_exact_lock() -> None:
         release_mod._parse_manifest_bytes(
             release_mod._canonical_json_bytes(truncated)
         )
+
+def test_p0k_a_r1_consume_build_inputs_preserves_ca_tuples(
+    release_inputs: G1ReleaseInputs,
+) -> None:
+    rebuilt = release_mod._consume_build_inputs(release_inputs.build_inputs)
+    assert [
+        (item.spec.request_id, item.receipt_sha256, item.count)
+        for item in rebuilt.cninfo_dividend_responses
+    ] == [
+        (item.spec.request_id, item.receipt_sha256, item.count)
+        for item in release_inputs.build_inputs.cninfo_dividend_responses
+    ]
+    assert [
+        (item.spec.request_id, item.receipt_sha256, item.count)
+        for item in rebuilt.cninfo_share_change_responses
+    ] == [
+        (item.spec.request_id, item.receipt_sha256, item.count)
+        for item in release_inputs.build_inputs.cninfo_share_change_responses
+    ]
+    assert len(rebuilt.cninfo_dividend_responses) > 0
+    assert len(rebuilt.cninfo_share_change_responses) > 0
+
+
+def test_p0k_a_r1_release_rejects_tampered_ca_receipt(
+    release_inputs: G1ReleaseInputs,
+) -> None:
+    from dataclasses import replace as dc_replace
+
+    from quant.data.m3_backfill import VerifiedCninfoCorporateActionRawResponse
+    from quant.data.connectors.cninfo import CNINFO_STOCK_DIVIDEND_FIELDS
+
+    first = release_inputs.build_inputs.cninfo_dividend_responses[0]
+    with pytest.raises(ValueError):
+        dc_replace(first.receipt, count=first.receipt.count + 1)
+
+    # Frame content drift vs receipt digest must fail closed.
+    row = {name: None for name in CNINFO_STOCK_DIVIDEND_FIELDS}
+    row["F010N"] = "5"
+    bad_frame = pl.DataFrame(
+        [row], schema={name: pl.Utf8 for name in CNINFO_STOCK_DIVIDEND_FIELDS}
+    )
+    with pytest.raises(ValueError):
+        VerifiedCninfoCorporateActionRawResponse(
+            spec=first.spec,
+            receipt=first.receipt,
+            receipt_sha256=first.receipt_sha256,
+            frame=bad_frame,
+            resultcode=first.resultcode,
+            count=first.count,
+            total=first.total,
+        )
+
+    # Release entry must rebuild G1BuildInputs; missing CA tuple fails closed.
+    with pytest.raises((TypeError, ValueError, M3ReleaseError)):
+        G1BuildInputs(
+            build_spec=release_inputs.build_inputs.build_spec,
+            request_plan=release_inputs.build_inputs.request_plan,
+            responses=release_inputs.build_inputs.responses,
+            cninfo_responses=release_inputs.build_inputs.cninfo_responses,
+            # intentionally omit CA tuples via wrong arity through object()
+            calendars=release_inputs.build_inputs.calendars,
+            instruments=release_inputs.build_inputs.instruments,
+            universe=release_inputs.build_inputs.universe,
+            signal_start=release_inputs.build_inputs.signal_start,
+            signal_end=release_inputs.build_inputs.signal_end,
+            history=release_inputs.build_inputs.history,
+            expected_constituent_count=release_inputs.build_inputs.expected_constituent_count,
+            factor_ratio_rtol=release_inputs.build_inputs.factor_ratio_rtol,
+        )  # type: ignore[call-arg]
+
+
+def test_p0k_a_r1_prepare_keeps_ca_receipt_projection(
+    release_inputs: G1ReleaseInputs, prepared: G1PreparedRelease
+) -> None:
+    assert prepared.candidate.input_receipts
+    endpoints = {item.endpoint for item in prepared.candidate.input_receipts}
+    assert "stock_dividend" in endpoints
+    assert "stock_share_change" in endpoints
+    assert "stock_allotment" in endpoints
+    # Identity follows build inputs that carry CA tuples
+    again = prepare_g1_release(inputs=release_inputs)
+    assert again.release_id == prepared.release_id
+    assert again.candidate.primary_candidate_key == prepared.candidate.primary_candidate_key

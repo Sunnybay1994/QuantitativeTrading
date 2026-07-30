@@ -913,3 +913,36 @@ def test_package_exports_planning_symbols() -> None:
     assert m3.build_g1_static_plan is build_g1_static_plan
     assert m3.derive_g1_history_plan is derive_g1_history_plan
     assert m3.M3G1PlanningError is M3G1PlanningError
+
+def test_p0k_a_derived_plan_includes_v3_cninfo_batches(
+    tmp_path: Path,
+) -> None:
+    config = _short_config(tmp_path)
+    root = _minimal_project(tmp_path / "proj")
+    static = build_g1_static_plan(config=config, project_root=root)
+    responses = _index_responses_for_batch(static.index_weight_batch)
+    calendars = _calendar(dt.date(2015, 10, 1), dt.date(2016, 3, 31))
+    instruments = _instruments(_symbols())
+    derived = derive_g1_history_plan(
+        config=config,
+        project_root=root,
+        static_plan=static,
+        index_responses=responses,
+        calendars=calendars,
+        instruments=instruments,
+    )
+    plan = derived.request_plan
+    assert plan.schema_version == "m3-g1-request-plan-v3"
+    n = len(derived.history_symbols)
+    assert len(plan.cninfo_dividend_batch.requests) == n
+    assert len(plan.cninfo_share_change_batch.requests) == n
+    assert {item.endpoint for item in plan.cninfo_dividend_batch.requests} == {
+        "stock_dividend"
+    }
+    assert {item.endpoint for item in plan.cninfo_share_change_batch.requests} == {
+        "stock_share_change"
+    }
+    # rights batch remains independent allotment contract
+    assert all(
+        item.endpoint == "stock_allotment" for item in plan.cninfo_rights_batch.requests
+    )
