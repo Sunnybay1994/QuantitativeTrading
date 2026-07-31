@@ -202,7 +202,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         1 + result["total_return"] for result in one_x_results
     ) - 1
     report = {
-        "config": str(args.config),
+        "config": args.config.as_posix(),
         "selection_metric": walk["selection_metric"],
         "folds": fold_reports,
         "aggregate_1x": {
@@ -235,8 +235,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     pl.concat(trade_outputs, how="vertical_relaxed").write_parquet(
         output / "test_trades.parquet"
     )
-    (output / "report.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    (output / "report.json").write_bytes(
+        json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8")
     )
     print(json.dumps({"output": str(output), **report}, ensure_ascii=False))
     return 0

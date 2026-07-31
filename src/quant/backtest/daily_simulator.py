@@ -123,6 +123,10 @@ def simulate_daily_targets(
             named=True
         )
     }
+    calendar_pairs = {
+        (row["market"], row["date"])
+        for row in clean_calendar.iter_rows(named=True)
+    }
     for row in clean_targets.iter_rows(named=True):
         instrument = instrument_rows[row["symbol"]]
         if not _instrument_active(instrument, row["execution_date"]):
@@ -157,6 +161,12 @@ def simulate_daily_targets(
     )
     if active_symbols and not sessions:
         raise ValueError("BACKTEST_CALENDAR_COVERAGE_MISSING")
+    if any(
+        (market, date) not in calendar_pairs
+        for date in sessions
+        for market in active_markets
+    ):
+        raise ValueError("BACKTEST_CALENDAR_COVERAGE_MISSING")
     initial_equity_decimal = Decimal(str(initial_cash)) + sum(
         (
             Decimal(positions[symbol].quantity)
@@ -175,20 +185,14 @@ def simulate_daily_targets(
     trade_rows: list[dict[str, Any]] = []
     position_rows: list[dict[str, Any]] = []
     rejection_rows: list[dict[str, Any]] = []
-    seen_markets: set[str] = set()
-
-    for date in sessions:
+    for session_index, date in enumerate(sessions):
         open_markets = {
             market
             for market in active_markets
             if (market, date) in open_pairs
         }
-        _settle_previous_session(
-            positions,
-            instrument_rows,
-            markets=open_markets & seen_markets,
-        )
-        seen_markets.update(open_markets)
+        if session_index > 0:
+            _settle_previous_session(positions)
 
         target_frame = targets_by_date.get(date)
         batch_weights = (
@@ -499,13 +503,9 @@ def _load_initial_positions(
 
 def _settle_previous_session(
     positions: Mapping[str, _Position],
-    instrument_rows: Mapping[str, Mapping[str, Any]],
-    *,
-    markets: set[str],
 ) -> None:
-    for symbol, position in positions.items():
-        if instrument_rows[symbol]["market"] in markets:
-            position.settled = position.quantity
+    for position in positions.values():
+        position.settled = position.quantity
 
 
 def _require_instrument_policy(
@@ -585,10 +585,31 @@ def _build_references(
         if not state.suspended:
             raise ValueError("BACKTEST_TRADABLE_BAR_MISSING")
         position = positions.get(symbol)
-        if position is None or position.mark <= 0:
+        carried_mark = (
+            position.mark
+            if position is not None
+            else _latest_prior_close(
+                date=date, symbol=symbol, bar_rows=bar_rows
+            )
+        )
+        if carried_mark is None or carried_mark <= 0:
             raise ValueError("BACKTEST_INITIAL_MARK_MISSING")
-        result[symbol] = {"open": position.mark, "close": position.mark}
+        result[symbol] = {"open": carried_mark, "close": carried_mark}
     return result
+
+
+def _latest_prior_close(
+    *, date: dt.date, symbol: str,
+    bar_rows: Mapping[tuple[dt.date, str], Mapping[str, Any]],
+) -> float | None:
+    prior_dates = [
+        trade_date
+        for trade_date, current_symbol in bar_rows
+        if current_symbol == symbol and trade_date < date
+    ]
+    if not prior_dates:
+        return None
+    return float(bar_rows[(max(prior_dates), symbol)]["close"])
 
 
 def _round_lot(
