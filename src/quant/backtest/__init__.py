@@ -14,6 +14,10 @@ from quant.backtest.connect_execution import (
     evaluate_connect_intent,
 )
 from quant.backtest.rules import DailyMarketState, execution_reject_reason
+from quant.backtest.daily_simulator import (
+    DailySimulationResult,
+    simulate_daily_targets,
+)
 from quant.backtest.simulator import SimulationResult, simulate_etf_targets
 
 __all__ = [
@@ -21,6 +25,7 @@ __all__ = [
     "ConnectRuleConfig",
     "ConnectRuleInputError",
     "DailyMarketState",
+    "DailySimulationResult",
     "EtfCostModel",
     "SimulationResult",
     "build_connect_rule_config",
@@ -28,4 +33,5 @@ __all__ = [
     "execution_reject_reason",
     "schedule_next_trading_day",
     "simulate_etf_targets",
+    "simulate_daily_targets",
 ]

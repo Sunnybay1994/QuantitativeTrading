@@ -1137,7 +1137,29 @@ class BacktestNavSchema(pa.DataFrameModel):
 
     @pa.dataframe_check
     def key_unique(cls, data: pa.PolarsData) -> pl.LazyFrame:  # type: ignore[misc]
-        return _rows_are_unique(data, ["strategy", "date"])
+        expected_equity = pl.col("cash") + pl.col("market_value")
+        tolerance = pl.max_horizontal(
+            pl.lit(1.0), expected_equity.abs()
+        ) * 1e-9
+        numeric = [
+            "equity",
+            "unit_nav",
+            "cash",
+            "market_value",
+            "cumulative_fees",
+        ]
+        return data.lazyframe.select(
+            (
+                _unique_expr(["strategy", "date"])
+                & pl.all_horizontal(
+                    [pl.col(column).is_finite() for column in numeric]
+                ).all()
+                & (
+                    (pl.col("equity") - expected_equity).abs()
+                    <= tolerance
+                ).all()
+            ).alias("nav_valid")
+        )
 
 
 class BacktestTradeSchema(pa.DataFrameModel):
@@ -1156,6 +1178,108 @@ class BacktestTradeSchema(pa.DataFrameModel):
     class Config:
         strict = True
         coerce = True
+
+
+class BacktestPositionSchema(pa.DataFrameModel):
+    """日频回测的证券持仓证据。"""
+
+    strategy: str  # type: ignore[assignment]
+    date: pl.Date
+    symbol: str = pa.Field(str_matches=SYMBOL_PATTERN)
+    quantity: int = pa.Field(ge=0)
+    settled_quantity: int = pa.Field(ge=0)
+    unsettled_quantity: int = pa.Field(ge=0)
+    mark_price: float = pa.Field(gt=0)
+    market_value: float = pa.Field(ge=0)
+    target_weight: float = pa.Field(ge=0, le=1, nullable=True)
+
+    class Config:
+        strict = True
+        coerce = True
+
+    @pa.dataframe_check
+    def position_valid(  # type: ignore[misc]
+        cls, data: pa.PolarsData
+    ) -> pl.LazyFrame:
+        expected_value = (
+            pl.col("quantity").cast(pl.Float64) * pl.col("mark_price")
+        )
+        tolerance = pl.max_horizontal(
+            pl.lit(1.0), expected_value.abs()
+        ) * 1e-9
+        return data.lazyframe.select(
+            (
+                (
+                    pl.col("quantity")
+                    == pl.col("settled_quantity")
+                    + pl.col("unsettled_quantity")
+                ).all()
+                & (
+                    (pl.col("market_value") - expected_value).abs()
+                    <= tolerance
+                ).all()
+                & pl.col("mark_price").is_finite().all()
+                & pl.col("market_value").is_finite().all()
+                & (
+                    pl.col("target_weight").is_null()
+                    | pl.col("target_weight").is_finite()
+                ).all()
+                & _unique_expr(["strategy", "date", "symbol"])
+            ).alias("position_valid")
+        )
+
+
+class BacktestRejectionSchema(pa.DataFrameModel):
+    """日频回测的完整执行拒绝证据。"""
+
+    strategy: str  # type: ignore[assignment]
+    date: pl.Date
+    symbol: str = pa.Field(str_matches=SYMBOL_PATTERN)
+    side: str = pa.Field(isin=["BUY", "SELL"])
+    reason: str = pa.Field(
+        isin=[
+            "SUSPENDED",
+            "BUY_AT_UPPER_LIMIT",
+            "SELL_AT_LOWER_LIMIT",
+            "T_PLUS_ONE",
+        ]
+    )
+    requested_quantity: int = pa.Field(gt=0)
+    rejected_quantity: int = pa.Field(gt=0)
+    reference_price: float = pa.Field(gt=0)
+
+    class Config:
+        strict = True
+        coerce = True
+
+    @pa.dataframe_check
+    def rejection_valid(  # type: ignore[misc]
+        cls, data: pa.PolarsData
+    ) -> pl.LazyFrame:
+        side_matches = (
+            (pl.col("reason") == "SUSPENDED")
+            | (
+                (pl.col("reason") == "BUY_AT_UPPER_LIMIT")
+                & (pl.col("side") == "BUY")
+            )
+            | (
+                pl.col("reason").is_in(
+                    ["SELL_AT_LOWER_LIMIT", "T_PLUS_ONE"]
+                )
+                & (pl.col("side") == "SELL")
+            )
+        )
+        return data.lazyframe.select(
+            (
+                (
+                    pl.col("requested_quantity")
+                    == pl.col("rejected_quantity")
+                ).all()
+                & side_matches.all()
+                & pl.col("reference_price").is_finite().all()
+                & _unique_expr(["strategy", "date", "symbol", "side"])
+            ).alias("rejection_valid")
+        )
 
 
 class OrderSchema(pa.DataFrameModel):

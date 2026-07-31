@@ -10,6 +10,9 @@ from quant.domain import (
     AdjustmentFactorSchema,
     Bar1dSchema,
     CashSchema,
+    BacktestPositionSchema,
+    BacktestRejectionSchema,
+    BacktestNavSchema,
     CorporateActionLedgerSchema,
     CorporateActionReconciliationSchema,
     CorporateActionSelectionEvidenceSchema,
@@ -117,6 +120,135 @@ class TestTargetWeightSchema:
         row = self.make_weights([0.4])
         with pytest.raises(pandera.errors.SchemaError):
             TargetWeightSchema.validate(pl.concat([row, row]))
+
+
+class TestBacktestAccountEvidenceSchemas:
+    @staticmethod
+    def position() -> pl.DataFrame:
+        return pl.DataFrame({
+            "strategy": ["m2-u1"],
+            "date": [dt.date(2026, 1, 5)],
+            "symbol": ["600000.SH"],
+            "quantity": [200],
+            "settled_quantity": [100],
+            "unsettled_quantity": [100],
+            "mark_price": [10.0],
+            "market_value": [2_000.0],
+            "target_weight": [0.5],
+        })
+
+    @staticmethod
+    def rejection() -> pl.DataFrame:
+        return pl.DataFrame({
+            "strategy": ["m2-u1"],
+            "date": [dt.date(2026, 1, 5)],
+            "symbol": ["600000.SH"],
+            "side": ["SELL"],
+            "reason": ["T_PLUS_ONE"],
+            "requested_quantity": [200],
+            "rejected_quantity": [200],
+            "reference_price": [10.0],
+        })
+
+    def test_valid_position_and_rejection_pass(self) -> None:
+        BacktestPositionSchema.validate(self.position())
+        BacktestRejectionSchema.validate(self.rejection())
+        BacktestPositionSchema.validate(
+            self.position().with_columns(
+                pl.lit(None, dtype=pl.Float64).alias("target_weight")
+            )
+        )
+
+    def test_nav_requires_finite_balanced_account_values(self) -> None:
+        valid = pl.DataFrame({
+            "strategy": ["m2-u1"],
+            "date": [dt.date(2026, 1, 5)],
+            "equity": [2_000.0],
+            "unit_nav": [1.0],
+            "cash": [1_000.0],
+            "market_value": [1_000.0],
+            "cumulative_fees": [0.0],
+        })
+        BacktestNavSchema.validate(valid)
+        with pytest.raises(pandera.errors.SchemaError):
+            BacktestNavSchema.validate(
+                valid.with_columns(pl.lit(float("inf")).alias("unit_nav"))
+            )
+        with pytest.raises(pandera.errors.SchemaError):
+            BacktestNavSchema.validate(
+                valid.with_columns(pl.lit(1_999.0).alias("equity"))
+            )
+
+    @pytest.mark.parametrize(
+        ("column", "value"),
+        [
+            ("quantity", 201),
+            ("market_value", 1_999.0),
+            ("target_weight", 1.01),
+        ],
+    )
+    def test_position_account_invariants_are_enforced(
+        self, column: str, value: float
+    ) -> None:
+        with pytest.raises(pandera.errors.SchemaError):
+            BacktestPositionSchema.validate(
+                self.position().with_columns(pl.lit(value).alias(column))
+            )
+
+    def test_position_key_is_unique(self) -> None:
+        row = self.position()
+        with pytest.raises(pandera.errors.SchemaError):
+            BacktestPositionSchema.validate(pl.concat([row, row]))
+
+    @pytest.mark.parametrize(
+        ("column", "value"),
+        [
+            ("rejected_quantity", 100),
+            ("reason", "UNKNOWN"),
+            ("reference_price", 0.0),
+            ("reference_price", float("inf")),
+        ],
+    )
+    def test_rejection_requires_full_known_positive_evidence(
+        self, column: str, value: object
+    ) -> None:
+        with pytest.raises(pandera.errors.SchemaError):
+            BacktestRejectionSchema.validate(
+                self.rejection().with_columns(pl.lit(value).alias(column))
+            )
+
+    @pytest.mark.parametrize(
+        ("side", "reason"),
+        [
+            ("BUY", "SELL_AT_LOWER_LIMIT"),
+            ("BUY", "T_PLUS_ONE"),
+            ("SELL", "BUY_AT_UPPER_LIMIT"),
+        ],
+    )
+    def test_rejection_side_and_reason_are_consistent(
+        self, side: str, reason: str
+    ) -> None:
+        with pytest.raises(pandera.errors.SchemaError):
+            BacktestRejectionSchema.validate(
+                self.rejection().with_columns(
+                    pl.lit(side).alias("side"),
+                    pl.lit(reason).alias("reason"),
+                )
+            )
+
+    @pytest.mark.parametrize("side", ["BUY", "SELL"])
+    def test_suspension_rejection_is_valid_for_both_sides(self, side: str) -> None:
+        BacktestRejectionSchema.validate(
+            self.rejection().with_columns(
+                pl.lit(side).alias("side"),
+                pl.lit("SUSPENDED").alias("reason"),
+            )
+        )
+
+    def test_rejection_key_is_unique(self) -> None:
+        row = self.rejection()
+        with pytest.raises(pandera.errors.SchemaError):
+            BacktestRejectionSchema.validate(pl.concat([row, row]))
 
 
 class TestCrossFieldConstraints:

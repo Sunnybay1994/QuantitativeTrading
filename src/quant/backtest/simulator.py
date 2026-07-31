@@ -1,4 +1,8 @@
-"""ETF 目标权重的日频薄模拟器。"""
+"""ETF 目标权重的兼容模拟器。
+
+该入口保留 S0/S1 的历史分红反推与数值语义。股票/ETF 共用的权威
+calendar-driven 事件循环由 :mod:`quant.backtest.daily_simulator` 提供。
+"""
 
 import datetime as dt
 from dataclasses import dataclass
