@@ -23,7 +23,9 @@ from quant.research.m3 import (
     compute_snapshot_request_key,
     compute_work_key,
     publish_stage_receipt,
+    select_artifact_root,
     verify_stage_receipt,
+    verify_stage_receipt_with_bytes,
 )
 
 
@@ -1753,4 +1755,75 @@ def test_no_os_replace_in_run_state_source() -> None:
 
     source = Path(mod.__file__).read_text(encoding="utf-8")
     assert "os.replace" not in source
+
+
+def test_nested_roots_select_most_specific_and_verify_distinct_files(
+    fs_tmp_path: Path,
+) -> None:
+    parent = fs_tmp_path / "artifacts"
+    child = parent / "child"
+    child.mkdir(parents=True)
+    parent_file = _write(parent / "parent.bin", b"parent")
+    child_file = _write(child / "child.bin", b"child")
+    receipt_path = parent / "receipt.json"
+    roots = {"parent": parent, "child": child}
+    receipt = publish_stage_receipt(
+        receipt_path=receipt_path,
+        stage="labels",
+        scope="EXPERIMENT",
+        scope_key=_hex(1),
+        artifact_roots=roots,
+        inputs=[("parent", parent_file)],
+        outputs=[("child", child_file)],
+    )
+
+    verified = verify_stage_receipt_with_bytes(
+        receipt_path=receipt_path, artifact_roots=roots
+    )
+    assert verified is not None
+    assert verified.receipt == receipt
+    assert verified.sha256 == hashlib.sha256(verified.raw).hexdigest()
+    assert select_artifact_root(parent_file, artifact_roots=roots) == (
+        "parent",
+        parent,
+    )
+    assert select_artifact_root(child_file, artifact_roots=roots) == (
+        "child",
+        child,
+    )
+
+
+def test_verify_rejects_unused_and_referenced_symlink_root(
+    fs_tmp_path: Path,
+) -> None:
+    root = fs_tmp_path / "root"
+    _, receipt_path, roots, _ = _publish_simple(root)
+    target = fs_tmp_path / "target"
+    target.mkdir()
+    linked = fs_tmp_path / "linked"
+    try:
+        linked.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlink unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="symlink|root"):
+        verify_stage_receipt(
+            receipt_path=receipt_path,
+            artifact_roots={**roots, "unused": linked},
+        )
+    with pytest.raises(ValueError, match="symlink|root"):
+        verify_stage_receipt(
+            receipt_path=linked / "missing.json",
+            artifact_roots={"linked": linked},
+        )
+
+
+def test_verify_rejects_duplicate_physical_root_alias(fs_tmp_path: Path) -> None:
+    root = fs_tmp_path / "root"
+    _, receipt_path, _, _ = _publish_simple(root)
+    with pytest.raises(ValueError, match="root alias"):
+        verify_stage_receipt(
+            receipt_path=receipt_path,
+            artifact_roots={"first": root, "second": root},
+        )
 

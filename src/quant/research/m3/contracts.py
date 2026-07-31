@@ -649,6 +649,174 @@ class VerifiedProviderValidationArtifact:
         _require_bare_hex64("validation_receipt_sha256", self.validation_receipt_sha256)
 
 
+@dataclass(frozen=True)
+class ExperimentIdentitySpec:
+    scientific_config_sha256: str
+    dependency_fingerprint_sha256: str
+    code_version: str
+
+    def __post_init__(self) -> None:
+        _require_bare_hex64("scientific_config_sha256", self.scientific_config_sha256)
+        _require_bare_hex64(
+            "dependency_fingerprint_sha256", self.dependency_fingerprint_sha256
+        )
+        if type(self.code_version) is not str or not self.code_version.strip():
+            raise ValueError("experiment code_version 非法")
+
+
+@dataclass(frozen=True)
+class ExperimentIdentityManifestV1:
+    schema_version: Literal["m3-experiment-identity-v1"]
+    experiment_key: str
+    snapshot_id: str
+    snapshot_manifest_sha256: str
+    provider_key: str
+    provider_manifest_sha256: str
+    provider_receipt_sha256: str
+    scientific_config_sha256: str
+    dependency_fingerprint_sha256: str
+    code_version: str
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "m3-experiment-identity-v1":
+            raise ValueError("experiment manifest schema 非法")
+        for name in (
+            "experiment_key", "snapshot_id", "snapshot_manifest_sha256",
+            "provider_key", "provider_manifest_sha256", "provider_receipt_sha256",
+            "scientific_config_sha256", "dependency_fingerprint_sha256",
+        ):
+            _require_bare_hex64(name, getattr(self, name))
+        if type(self.code_version) is not str or not self.code_version.strip():
+            raise ValueError("experiment manifest code_version 非法")
+
+
+@dataclass(frozen=True)
+class VerifiedExperimentIdentity:
+    root: Path
+    manifest: ExperimentIdentityManifestV1
+    manifest_sha256: str
+    experiment_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.root, Path):
+            raise ValueError("verified experiment root 非法")
+        if type(self.manifest) is not ExperimentIdentityManifestV1:
+            raise ValueError("verified experiment manifest 非法")
+        _require_bare_hex64("manifest_sha256", self.manifest_sha256)
+        _require_bare_hex64(
+            "experiment_receipt_sha256", self.experiment_receipt_sha256
+        )
+
+
+@dataclass(frozen=True)
+class LabelBuildSpec:
+    experiment_key: str
+    experiment_manifest_sha256: str
+    horizon_sessions: Literal[5, 10]
+    benchmark: Literal["510300.SH"]
+    label_version: str
+    label_build_code_version: str
+
+    def __post_init__(self) -> None:
+        _require_bare_hex64("experiment_key", self.experiment_key)
+        _require_bare_hex64(
+            "experiment_manifest_sha256", self.experiment_manifest_sha256
+        )
+        if (
+            type(self.horizon_sessions) is not int
+            or self.horizon_sessions not in {5, 10}
+            or self.benchmark != "510300.SH"
+        ):
+            raise ValueError("label spec horizon/benchmark 非法")
+        for name in ("label_version", "label_build_code_version"):
+            value = getattr(self, name)
+            if type(value) is not str or not value.strip():
+                raise ValueError(f"label spec {name} 非法")
+
+
+@dataclass(frozen=True)
+class LabelArtifactManifest:
+    schema_version: Literal["m3-label-artifact-v1"]
+    experiment_key: str
+    experiment_manifest_sha256: str
+    g1_release_id: str
+    g1_release_manifest_sha256: str
+    snapshot_id: str
+    snapshot_manifest_sha256: str
+    horizon_sessions: int
+    benchmark: str
+    label_version: str
+    label_build_code_version: str
+    eligible_keys_sha256: str
+    bars_sha256: str
+    session_calendar_sha256: str
+    benchmark_bars_sha256: str
+    labels_sha256: str
+    labels_row_count: int
+    label_key_sha256: str
+    diagnostics_sha256: str
+    diagnostics_row_count: int
+    diagnostic_key_sha256: str
+    candidate_count: int
+    success_count: int
+    diagnostic_count: int
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "m3-label-artifact-v1":
+            raise ValueError("label manifest schema 非法")
+        for name in (
+            "experiment_key", "experiment_manifest_sha256", "g1_release_id",
+            "g1_release_manifest_sha256", "snapshot_id",
+            "snapshot_manifest_sha256", "eligible_keys_sha256", "bars_sha256",
+            "session_calendar_sha256", "benchmark_bars_sha256", "labels_sha256",
+            "label_key_sha256", "diagnostics_sha256", "diagnostic_key_sha256",
+        ):
+            _require_bare_hex64(name, getattr(self, name))
+        if (
+            type(self.horizon_sessions) is not int
+            or self.horizon_sessions not in {5, 10}
+            or self.benchmark != "510300.SH"
+        ):
+            raise ValueError("label manifest horizon/benchmark 非法")
+        for name in ("label_version", "label_build_code_version"):
+            value = getattr(self, name)
+            if type(value) is not str or not value.strip():
+                raise ValueError(f"label manifest {name} 非法")
+        for name in (
+            "labels_row_count", "diagnostics_row_count", "candidate_count",
+            "success_count", "diagnostic_count",
+        ):
+            value = getattr(self, name)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"label manifest {name} 非法")
+        if self.success_count != self.labels_row_count:
+            raise ValueError("label manifest success/labels count 漂移")
+        if self.candidate_count != self.success_count + self.diagnostic_count:
+            raise ValueError("label manifest conservation 非法")
+
+
+@dataclass(frozen=True)
+class VerifiedLabelArtifact:
+    root: Path
+    labels: pl.DataFrame
+    diagnostics: pl.DataFrame
+    manifest: LabelArtifactManifest
+    manifest_sha256: str
+    label_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.root, Path):
+            raise ValueError("verified label root 非法")
+        if not isinstance(self.labels, pl.DataFrame) or not isinstance(
+            self.diagnostics, pl.DataFrame
+        ):
+            raise ValueError("verified label frames 非法")
+        if type(self.manifest) is not LabelArtifactManifest:
+            raise ValueError("verified label manifest 非法")
+        _require_bare_hex64("manifest_sha256", self.manifest_sha256)
+        _require_bare_hex64("label_receipt_sha256", self.label_receipt_sha256)
+
+
 def _validate_snapshot_dates(value: object) -> None:
     dates = tuple(getattr(value, name) for name in (
         "history_start", "history_end", "signal_start", "signal_end"

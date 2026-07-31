@@ -65,9 +65,9 @@ Qlib 内部类的自定义 Parquet Provider。
   `(close(t+h) * adj_factor(t+h)) / (open(t+1) * adj_factor(t+1)) - 1`；因子比例消除任意归一化
   基准并修正分红送转。Schema 中历史字段名 `raw_return` 表示“减基准之前的证券收益”，不是
   “未复权价格收益”。
-- excess 标签：上述证券总回报减去沪深300**全收益指数 `H00300.CSI`** 同一
-  `open(t+1) -> close(t+h)` 区间收益；基准不套用个股复权因子。不得改用价格指数 `000300.SH`
-  后仍称同口径 excess return。
+- excess 标签：上述证券总回报减去已批准的 `510300.SH` ETF HFQ 总回报代理同一
+  `open(t+1) -> close(t+h)` 区间收益；基准不套用个股复权因子，也不得与价格指数
+  `000300.SH` 或旧设计的 `H00300.CSI` 序列混用。
 - daily open 是理论收益代理：部分时段停牌或一字涨停时未必可成交。训练标签不读取执行状态、不宣称
   能按该价格成交；最终统一回测必须用真实停牌/涨跌停规则检验可实现收益。
 - 首轮分别训练 `h=5` 与 `h=10` 两个模型，不把两个 horizon 混成同一个训练样本。
@@ -77,8 +77,8 @@ Qlib 内部类的自定义 Parquet Provider。
 
 基准行情由 `BenchmarkBar1dSchema` 定义，固定字段为
 `benchmark,trade_date,open,high,low,close,source,source_snapshot_id`；它不是可交易证券，不得伪装成
-`Bar1dSchema` 的 SH/SZ instrument。`ForwardReturnLabelSchema.benchmark` 允许价格指数兼容值和
-`H00300.CSI`，首个 M3 配置只允许后者。
+`Bar1dSchema` 的普通证券行情。`ForwardReturnLabelSchema.benchmark` 允许受控基准代码；当前首个 M3
+配置和正式 G1 只允许用户批准的 `510300.SH`。
 
 标准表由 `ForwardReturnLabelSchema` 和 `PredictionScoreSchema` 定义。任何 Qlib 特有 MultiIndex
 或列名必须在适配器出口转换，不能泄漏到 `quant.strategies`。
@@ -917,6 +917,12 @@ class ExperimentIdentityManifestV1:
     code_version: str
 
 @dataclass(frozen=True)
+class ExperimentIdentitySpec:
+    scientific_config_sha256: str
+    dependency_fingerprint_sha256: str
+    code_version: str
+
+@dataclass(frozen=True)
 class VerifiedExperimentIdentity:
     root: Path
     manifest: ExperimentIdentityManifestV1
@@ -928,7 +934,8 @@ def read_experiment_identity_manifest(path: Path) -> ExperimentIdentityManifestV
 def verify_experiment_identity(
     *, experiment_root: Path, experiment_receipt_path: Path,
     snapshot: VerifiedSnapshotArtifact, provider: VerifiedProviderArtifact,
-    config: LoadedM3Config, artifact_roots: Mapping[str, Path],
+    config: LoadedM3Config, spec: ExperimentIdentitySpec,
+    artifact_roots: Mapping[str, Path],
 ) -> VerifiedExperimentIdentity: ...
 
 @dataclass(frozen=True)
@@ -936,7 +943,7 @@ class LabelBuildSpec:
     experiment_key: str
     experiment_manifest_sha256: str
     horizon_sessions: Literal[5, 10]
-    benchmark: Literal["H00300.CSI"]
+    benchmark: Literal["510300.SH"]
     label_version: str
     label_build_code_version: str
 
@@ -979,7 +986,8 @@ class VerifiedLabelArtifact:
 def build_label_artifact(
     *, release: VerifiedG1Release, snapshot: VerifiedSnapshotArtifact,
     experiment: VerifiedExperimentIdentity,
-    config: LoadedM3Config, spec: LabelBuildSpec, output_root: Path,
+    config: LoadedM3Config, experiment_spec: ExperimentIdentitySpec,
+    spec: LabelBuildSpec, output_root: Path,
 ) -> LabelArtifactManifest: ...
 
 def read_label_artifact_manifest(path: Path) -> LabelArtifactManifest: ...
@@ -988,7 +996,9 @@ def verify_label_artifact(
     *, label_root: Path, label_receipt_path: Path,
     release: VerifiedG1Release, snapshot: VerifiedSnapshotArtifact,
     experiment: VerifiedExperimentIdentity,
-    config: LoadedM3Config, artifact_roots: Mapping[str, Path],
+    config: LoadedM3Config, experiment_spec: ExperimentIdentitySpec,
+    spec: LabelBuildSpec,
+    artifact_roots: Mapping[str, Path],
 ) -> VerifiedLabelArtifact: ...
 
 def compute_forward_relative_labels(
@@ -1113,7 +1123,7 @@ diagnostics row-count/sample-count 区分和唯一 label/diagnostic key hash；`
 
 reason 优先级按上段列举顺序固定：tail → benchmark entry → benchmark exit → asset entry bar → asset
 exit bar → entry factor → exit factor。`benchmark_bars` 必须通过实际代码 SSOT 的
-`BenchmarkBar1dSchema`，且只含显式 `benchmark` 参数对应切片；首版配置验证只接受 `H00300.CSI`。
+`BenchmarkBar1dSchema`，且只含显式 `benchmark` 参数对应切片；现行配置验证只接受 `510300.SH`。
 `ForwardReturnLabelSchema` 对三列收益要求 finite，benchmark 使用独立 benchmark pattern，绝不放宽可交易
 证券 `SYMBOL_PATTERN`。当前 Schema/label builder 已有初次实现和测试；readiness 虽已移除个股必需列，
 但消费边界必须执行 exact `BenchmarkBar1dSchema`，required-column subset 不得代替 strict Schema。extra
@@ -1431,7 +1441,7 @@ provider history domain 与 model sample domain 必须分离：前者为历史�
 `eligible_keys`。禁止通过删 provider 历史来表达样本资格，也禁止保留历史后省略资格 join。
 
 G3 的 Qlib 对账只是语义审计：在日期 `t` 计算
-`Ref($close, -h) / Ref($open, -1) - 1` 的证券调整后收益，并减去独立 `H00300.CSI` 全收益指数
+`Ref($close, -h) / Ref($open, -1) - 1` 的证券调整后收益，并减去独立 `510300.SH` ETF HFQ 总回报代理
 区间收益，与独立标签的
 `raw_return/benchmark_return/relative_return` 三列逐行比较。对账表达式不得反向成为训练标签 SSOT。
 
@@ -1450,7 +1460,7 @@ G3 的 Qlib 对账只是语义审计：在日期 `t` 计算
 
 1. 对每个 label key，另外通过 Qlib 直接读取 return start 的 `$open` 和 return end 的 `$close`，手算
    `provider_raw_return`；与 Qlib `Ref` expression 的误差使用 `validation.labels.qlib_expression_atol`。
-2. benchmark audit 不调用 `compute_forward_relative_labels`，而以 SH session 和原始 `H00300.CSI`
+2. benchmark audit 不调用 `compute_forward_relative_labels`，而以 SH session 和原始 `510300.SH`
    open/close 独立向量化查表；与 label `benchmark_return` 使用 `benchmark_return_atol`。
 3. `provider_raw_return` 与权威 Float64 label `raw_return`、以及
    `provider_raw_return-audit_benchmark_return` 与 label `relative_return` 使用 `label_return_atol`，明确容纳
@@ -2078,6 +2088,12 @@ root、文件存在性、物理身份与内容 hash 由 publish/verify 的上下
 不同均非法。物理文件身份使用 `lstat` 后的 `(st_dev,st_ino)` 或 `os.path.samestat` 等价语义；不能用
 `resolve()` 或内容 hash 冒充 hard-link 身份，无法可靠取得时 fail-closed。verify 必须先验证 root registry、
 receipt containment、parent 与 leaf 的 lstat；只有 leaf 真正 ENOENT 才返回 `None`，dangling symlink 不是缺失。
+
+消费者同时需要 parsed receipt 与 receipt hash 时，必须使用共享
+`verify_stage_receipt_with_bytes`，不得在下游复制第二套 verifier。该入口对 receipt 使用同一
+打开文件描述符完成读取、parse 和 hash，并复用本节完整 root registry 和 digest 物理身份契约。
+嵌套 roots 从路径反推 alias 时选择包含该路径的最具体子 root；同一物理 root 的重复 alias
+仍在任何 digest 读取前失败。
 
 发布端不得以 `os.replace` 覆盖并发进程刚发布的 immutable receipt。固定流程为：同目录临时普通文件写入
 并 `fsync`，再次验真声明 artifact，以 Linux/WSL 的原子 no-clobber 创建（例如同文件系统 `os.link`），

@@ -8,8 +8,10 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+import quant.research.m3.labels as labels_module
 
 from quant.domain import BenchmarkBar1dSchema, ForwardReturnLabelSchema
+from quant.research.m3.contracts import LabelArtifactManifest, LabelBuildSpec
 from quant.research.m3.labels import LabelBuildResult, compute_forward_relative_labels
 
 FIXTURE_ROOT = Path("tests/fixtures/m3")
@@ -195,6 +197,68 @@ def test_cross_holiday_uses_session_offset_not_calendar_days() -> None:
     assert row["relative_return"] == pytest.approx(0.05, abs=1e-10)
 
 
+def test_horizon_one_is_same_session_open_to_close() -> None:
+    eligible = _eligible((dt.date(2026, 1, 5), "000001.SZ"))
+    result = _build(eligible_keys=eligible, horizons=[1])
+    row = result.labels.row(0, named=True)
+    assert row["return_start_date"] == dt.date(2026, 1, 6)
+    assert row["return_end_date"] == row["return_start_date"]
+    assert row["available_as_of"] == row["return_end_date"]
+    ForwardReturnLabelSchema.validate(result.labels)
+
+
+@pytest.mark.parametrize("horizons", [[True], [1.5], [5, 5], [10, 5]])
+def test_horizons_require_exact_unique_increasing_ints(horizons: list[object]) -> None:
+    with pytest.raises(ValueError, match="horizon"):
+        _build(horizons=horizons)  # type: ignore[arg-type]
+
+
+def test_label_contract_horizon_requires_exact_int() -> None:
+    with pytest.raises(ValueError):
+        LabelBuildSpec(
+            experiment_key="a" * 64,
+            experiment_manifest_sha256="b" * 64,
+            horizon_sessions=5.0,  # type: ignore[arg-type]
+            benchmark="510300.SH",
+            label_version="v1",
+            label_build_code_version="code-v1",
+        )
+    with pytest.raises(ValueError):
+        LabelArtifactManifest(
+            schema_version="m3-label-artifact-v1",
+            experiment_key="a" * 64,
+            experiment_manifest_sha256="b" * 64,
+            g1_release_id="c" * 64,
+            g1_release_manifest_sha256="d" * 64,
+            snapshot_id="e" * 64,
+            snapshot_manifest_sha256="f" * 64,
+            horizon_sessions=5.0,  # type: ignore[arg-type]
+            benchmark="510300.SH",
+            label_version="v1",
+            label_build_code_version="code-v1",
+            eligible_keys_sha256="1" * 64,
+            bars_sha256="2" * 64,
+            session_calendar_sha256="3" * 64,
+            benchmark_bars_sha256="4" * 64,
+            labels_sha256="5" * 64,
+            labels_row_count=1,
+            label_key_sha256="6" * 64,
+            diagnostics_sha256="7" * 64,
+            diagnostics_row_count=0,
+            diagnostic_key_sha256="8" * 64,
+            candidate_count=1,
+            success_count=1,
+            diagnostic_count=0,
+        )
+
+
+def test_duplicate_open_calendar_session_is_rejected() -> None:
+    calendar = _read("calendar.csv")
+    duplicate = pl.concat([calendar, calendar.filter(pl.col("is_open")).head(1)])
+    with pytest.raises(ValueError, match="calendar"):
+        _build(calendars=duplicate, horizons=[5])
+
+
 def test_corporate_action_adj_factor_hand_calc() -> None:
     """entry open=100 factor=1; exit close=50 factor=2 → raw_return=0 not -0.5."""
     as_of = dt.date(2026, 1, 5)
@@ -353,6 +417,80 @@ def test_diagnostics_conservation_across_reason_classes() -> None:
     _assert_conservation(result, eligible, [5, 10])
     # No overlapping assignment: every diag reason count is positive int
     assert result.diagnostics.filter(pl.col("sample_count") <= 0).is_empty()
+
+
+def test_first_failure_reason_uses_full_frozen_priority() -> None:
+    dates = [
+        dt.date(2026, 1, 5),
+        dt.date(2026, 1, 6),
+        dt.date(2026, 1, 7),
+    ]
+    valid = {"open": 1.0, "close": 1.0, "adj_factor": 1.0}
+    invalid = {"open": 1.0, "close": 1.0, "adj_factor": -1.0}
+    bench_complete = {
+        date: {"open": 1.0, "close": 1.0} for date in dates
+    }
+    cases = [
+        (None, {}, {}, "TAIL_INCOMPLETE"),
+        (0, {}, {}, "BENCHMARK_ENTRY_MISSING"),
+        (
+            0,
+            {},
+            {dates[1]: {"open": 1.0, "close": 1.0}},
+            "BENCHMARK_EXIT_MISSING",
+        ),
+        (
+            0,
+            {},
+            bench_complete,
+            "ASSET_ENTRY_BAR_MISSING",
+        ),
+        (
+            0,
+            {("000001.SZ", dates[1]): invalid},
+            bench_complete,
+            "ASSET_EXIT_BAR_MISSING",
+        ),
+        (
+            0,
+            {
+                ("000001.SZ", dates[1]): invalid,
+                ("000001.SZ", dates[2]): invalid,
+            },
+            bench_complete,
+            "ASSET_ENTRY_FACTOR_INVALID",
+        ),
+        (
+            0,
+            {
+                ("000001.SZ", dates[1]): valid,
+                ("000001.SZ", dates[2]): invalid,
+            },
+            bench_complete,
+            "ASSET_EXIT_FACTOR_INVALID",
+        ),
+    ]
+    for as_of_idx, stock, bench, expected in cases:
+        assert labels_module._first_failure_reason(
+            as_of_idx=as_of_idx,
+            horizon=2,
+            n_sessions=len(dates),
+            symbol="000001.SZ",
+            open_dates=dates,
+            stock_lookup=stock,
+            bench_lookup=bench,
+        ) == expected
+
+
+def test_diagnostics_row_count_differs_from_sample_sum_when_aggregated() -> None:
+    eligible = _eligible(
+        (dt.date(2026, 1, 5), "MISSING_A.SZ"),
+        (dt.date(2026, 1, 5), "MISSING_B.SZ"),
+    )
+    result = _build(eligible_keys=eligible, horizons=[5])
+    assert result.diagnostics.height == 1
+    assert result.diagnostics.item(0, "sample_count") == 2
+    _assert_conservation(result, eligible, [5])
 
 
 def test_rejects_foreign_benchmark_in_frame() -> None:
