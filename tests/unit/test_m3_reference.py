@@ -3120,10 +3120,16 @@ def test_package_exports_frozen_public_names() -> None:
 
 
 def test_p0e_reconciliation_version_propagates_in_build_spec() -> None:
+    assert G1_CORPORATE_ACTION_SELECTION_VERSION == (
+        "tushare_dividend_cninfo_rights_share_consideration_basis_v8"
+    )
     assert G1_CORPORATE_ACTION_RECONCILIATION_VERSION == (
-        "tushare_factor_daily_preclose_suspension_resume_basis_terms_v8"
+        "tushare_factor_daily_preclose_suspension_resume_basis_terms_v9"
     )
     spec = _build_spec()
+    assert spec.corporate_action_selection_version == (
+        G1_CORPORATE_ACTION_SELECTION_VERSION
+    )
     assert spec.corporate_action_reconciliation_version == (
         G1_CORPORATE_ACTION_RECONCILIATION_VERSION
     )

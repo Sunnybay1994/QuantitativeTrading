@@ -211,6 +211,11 @@ class CorporateActionLedgerSchema(pa.DataFrameModel):
     rights_actual_shares: float = pa.Field(gt=0, nullable=True)
     rights_pre_shares: float = pa.Field(gt=0, nullable=True)
     rights_post_shares: float = pa.Field(gt=0, nullable=True)
+    rights_pre_circulating_shares: float = pa.Field(gt=0, nullable=True)
+    rights_post_circulating_shares: float = pa.Field(gt=0, nullable=True)
+    rights_mixed_change_proof_sha256: str = pa.Field(
+        str_matches=r"^[0-9a-f]{64}$", nullable=True
+    )
     record_date: pl.Date
     pay_date: pl.Date = pa.Field(nullable=True)
     stock_list_date: pl.Date = pa.Field(nullable=True)
@@ -234,11 +239,45 @@ class CorporateActionLedgerSchema(pa.DataFrameModel):
         actual = pl.col("rights_actual_shares")
         pre = pl.col("rights_pre_shares")
         post = pl.col("rights_post_shares")
+        pre_circulating = pl.col("rights_pre_circulating_shares")
+        post_circulating = pl.col("rights_post_circulating_shares")
+        mixed_proof_sha256 = pl.col("rights_mixed_change_proof_sha256")
         action_type = pl.col("action_type")
         share_delta = (post - pre).abs()
-        share_close = (post - pre - actual).abs() <= pl.max_horizontal(
+        representation_tolerance = pl.max_horizontal(
             pl.max_horizontal(share_delta, actual.abs()) * 1e-6,
             pl.lit(1e-6),
+        )
+        share_close = (post - pre - actual).abs() <= representation_tolerance
+        circulating_delta = post_circulating - pre_circulating
+        mixed_representation_tolerance = pl.max_horizontal(
+            pl.max_horizontal(share_delta, actual.abs()) * 1e-12,
+            pl.lit(1e-12),
+        )
+        delta_tolerance = pl.max_horizontal(
+            pl.max_horizontal(share_delta, circulating_delta.abs()) * 1e-12,
+            pl.lit(1e-12),
+        )
+        deltas_close = (post - pre - circulating_delta).abs() <= delta_tolerance
+        strict_rights = (
+            share_close
+            & pre_circulating.is_null()
+            & post_circulating.is_null()
+            & mixed_proof_sha256.is_null()
+        )
+        mixed_rights = (
+            pre_circulating.is_not_null()
+            & (pre_circulating > 0)
+            & post_circulating.is_not_null()
+            & (post_circulating > pre_circulating)
+            & deltas_close
+            & ((post - pre - actual) > mixed_representation_tolerance)
+            & mixed_proof_sha256.is_not_null()
+        )
+        no_mixed_rights_fields = (
+            pre_circulating.is_null()
+            & post_circulating.is_null()
+            & mixed_proof_sha256.is_null()
         )
         common = (
             cash.is_finite()
@@ -267,6 +306,7 @@ class CorporateActionLedgerSchema(pa.DataFrameModel):
             & actual.is_null()
             & pre.is_null()
             & post.is_null()
+            & no_mixed_rights_fields
             & ((cash > 0) == pl.col("pay_date").is_not_null())
             & ((stock > 0) == pl.col("stock_list_date").is_not_null())
         )
@@ -284,7 +324,7 @@ class CorporateActionLedgerSchema(pa.DataFrameModel):
             & post.is_not_null()
             & (post > 0)
             & (post > pre)
-            & share_close
+            & (strict_rights | mixed_rights)
             & pl.col("pay_date").is_null()
             & pl.col("stock_list_date").is_not_null()
         )
@@ -297,6 +337,7 @@ class CorporateActionLedgerSchema(pa.DataFrameModel):
             & actual.is_null()
             & pre.is_null()
             & post.is_null()
+            & no_mixed_rights_fields
             & pl.col("pay_date").is_null()
             & pl.col("stock_list_date").is_not_null()
             & (pl.col("stock_list_date") == pl.col("ex_date"))
@@ -327,6 +368,14 @@ class CorporateActionSelectionEvidenceSchema(pa.DataFrameModel):
     rights_actual_shares: float = pa.Field(gt=0, nullable=True)
     rights_pre_shares: float = pa.Field(gt=0, nullable=True)
     rights_post_shares: float = pa.Field(gt=0, nullable=True)
+    rights_pre_circulating_shares: float = pa.Field(gt=0, nullable=True)
+    rights_post_circulating_shares: float = pa.Field(gt=0, nullable=True)
+    rights_mixed_change_proof_sha256: str = pa.Field(
+        str_matches=r"^[0-9a-f]{64}$", nullable=True
+    )
+    rights_mixed_change_proof_json: str = pa.Field(
+        str_matches=r"^\{.*\}$", nullable=True
+    )
     pay_date: pl.Date = pa.Field(nullable=True)
     stock_list_date: pl.Date = pa.Field(nullable=True)
     vendor_record_id: str = pa.Field(nullable=True)
@@ -355,11 +404,49 @@ class CorporateActionSelectionEvidenceSchema(pa.DataFrameModel):
         actual = pl.col("rights_actual_shares")
         pre = pl.col("rights_pre_shares")
         post = pl.col("rights_post_shares")
+        pre_circulating = pl.col("rights_pre_circulating_shares")
+        post_circulating = pl.col("rights_post_circulating_shares")
+        mixed_proof_sha256 = pl.col("rights_mixed_change_proof_sha256")
+        mixed_proof_json = pl.col("rights_mixed_change_proof_json")
         action_type = pl.col("action_type")
         share_delta = (post - pre).abs()
-        share_close = (post - pre - actual).abs() <= pl.max_horizontal(
+        representation_tolerance = pl.max_horizontal(
             pl.max_horizontal(share_delta, actual.abs()) * 1e-6,
             pl.lit(1e-6),
+        )
+        share_close = (post - pre - actual).abs() <= representation_tolerance
+        circulating_delta = post_circulating - pre_circulating
+        mixed_representation_tolerance = pl.max_horizontal(
+            pl.max_horizontal(share_delta, actual.abs()) * 1e-12,
+            pl.lit(1e-12),
+        )
+        delta_tolerance = pl.max_horizontal(
+            pl.max_horizontal(share_delta, circulating_delta.abs()) * 1e-12,
+            pl.lit(1e-12),
+        )
+        deltas_close = (post - pre - circulating_delta).abs() <= delta_tolerance
+        strict_rights = (
+            share_close
+            & pre_circulating.is_null()
+            & post_circulating.is_null()
+            & mixed_proof_sha256.is_null()
+            & mixed_proof_json.is_null()
+        )
+        mixed_rights = (
+            pre_circulating.is_not_null()
+            & (pre_circulating > 0)
+            & post_circulating.is_not_null()
+            & (post_circulating > pre_circulating)
+            & deltas_close
+            & ((post - pre - actual) > mixed_representation_tolerance)
+            & mixed_proof_sha256.is_not_null()
+            & mixed_proof_json.is_not_null()
+        )
+        no_mixed_rights_fields = (
+            pre_circulating.is_null()
+            & post_circulating.is_null()
+            & mixed_proof_sha256.is_null()
+            & mixed_proof_json.is_null()
         )
         common = (
             cash.is_finite()
@@ -398,6 +485,7 @@ class CorporateActionSelectionEvidenceSchema(pa.DataFrameModel):
             & actual.is_null()
             & pre.is_null()
             & post.is_null()
+            & no_mixed_rights_fields
             & ((cash > 0) == pl.col("pay_date").is_not_null())
             & ((stock > 0) == pl.col("stock_list_date").is_not_null())
         )
@@ -416,7 +504,7 @@ class CorporateActionSelectionEvidenceSchema(pa.DataFrameModel):
             & post.is_not_null()
             & (post > 0)
             & (post > pre)
-            & share_close
+            & (strict_rights | mixed_rights)
             & pl.col("pay_date").is_null()
             & pl.col("stock_list_date").is_not_null()
         )
@@ -430,6 +518,7 @@ class CorporateActionSelectionEvidenceSchema(pa.DataFrameModel):
             & actual.is_null()
             & pre.is_null()
             & post.is_null()
+            & no_mixed_rights_fields
             & pl.col("pay_date").is_null()
             & pl.col("stock_list_date").is_not_null()
             & (pl.col("stock_list_date") == pl.col("ex_date"))

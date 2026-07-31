@@ -1474,6 +1474,10 @@ def audit_g1_candidate(*, candidate: G1Candidate) -> G1PrimaryAuditResult:
                 reconciliation=candidate.corporate_action_reconciliation,
                 input_receipts=candidate.input_receipts,
             )
+            execution_facts.assert_corporate_action_selection_receipt_closure(
+                selection_evidence=candidate.corporate_action_selection_evidence,
+                input_receipts=candidate.input_receipts,
+            )
         except Exception:
             issues.append(
                 _issue(
@@ -1748,6 +1752,12 @@ def _build_candidate_body(inputs: G1BuildInputs) -> G1Candidate:
 
     ledger_parts: list[pl.DataFrame] = []
     evidence_parts: list[pl.DataFrame] = []
+    share_change_by_symbol = {
+        dict(response.spec.parameters)["symbol"]: response
+        for response in cninfo_share_change_responses
+    }
+    if len(share_change_by_symbol) != len(cninfo_share_change_responses):
+        raise M3G1CandidateError("G1_CANDIDATE_INPUT_INVALID")
     for response in dividend_responses:
         selected = execution_facts.select_g1_corporate_actions(
             response=response, history=inputs.history
@@ -1760,6 +1770,7 @@ def _build_candidate_body(inputs: G1BuildInputs) -> G1Candidate:
             response=cninfo_response,
             history=inputs.history,
             symbols=history_symbols,
+            share_change_responses_by_code=share_change_by_symbol,
         )
         execution_facts.verify_corporate_action_selection_result(result=selected)
         ledger_parts.append(selected.ledger)
@@ -1784,17 +1795,14 @@ def _build_candidate_body(inputs: G1BuildInputs) -> G1Candidate:
             "rights_actual_shares": pl.Float64,
             "rights_pre_shares": pl.Float64,
             "rights_post_shares": pl.Float64,
+            "rights_pre_circulating_shares": pl.Float64,
+            "rights_post_circulating_shares": pl.Float64,
+            "rights_mixed_change_proof_sha256": pl.Utf8,
             "vendor_record_id": pl.Utf8,
         },
         sort_keys=["symbol", "ex_date", "event_id"],
         schema_model=CorporateActionLedgerSchema,
     )
-    share_change_by_symbol = {
-        dict(response.spec.parameters)["symbol"]: response
-        for response in cninfo_share_change_responses
-    }
-    if len(share_change_by_symbol) != len(cninfo_share_change_responses):
-        raise M3G1CandidateError("G1_CANDIDATE_INPUT_INVALID")
     for dividend_response in cninfo_dividend_responses:
         code = dict(dividend_response.spec.parameters).get("symbol")
         if type(code) is not str:
@@ -1842,6 +1850,9 @@ def _build_candidate_body(inputs: G1BuildInputs) -> G1Candidate:
             "rights_actual_shares": pl.Float64,
             "rights_pre_shares": pl.Float64,
             "rights_post_shares": pl.Float64,
+            "rights_pre_circulating_shares": pl.Float64,
+            "rights_post_circulating_shares": pl.Float64,
+            "rights_mixed_change_proof_sha256": pl.Utf8,
             "vendor_record_id": pl.Utf8,
         },
         sort_keys=["symbol", "ex_date", "event_id"],
@@ -1876,6 +1887,10 @@ def _build_candidate_body(inputs: G1BuildInputs) -> G1Candidate:
             "rights_actual_shares": pl.Float64,
             "rights_pre_shares": pl.Float64,
             "rights_post_shares": pl.Float64,
+            "rights_pre_circulating_shares": pl.Float64,
+            "rights_post_circulating_shares": pl.Float64,
+            "rights_mixed_change_proof_sha256": pl.Utf8,
+            "rights_mixed_change_proof_json": pl.Utf8,
             "vendor_record_id": pl.Utf8,
         },
         sort_keys=["symbol", "ex_date", "candidate_rank", "candidate_id"],
@@ -1989,6 +2004,10 @@ def _build_candidate_body(inputs: G1BuildInputs) -> G1Candidate:
     execution_facts.assert_corporate_action_reconciliation_ledger_closure(
         corporate_actions=corporate_actions,
         reconciliation=corporate_action_reconciliation,
+        input_receipts=receipts,
+    )
+    execution_facts.assert_corporate_action_selection_receipt_closure(
+        selection_evidence=selection_evidence,
         input_receipts=receipts,
     )
     primary_key = _primary_candidate_key(

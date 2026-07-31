@@ -43,6 +43,7 @@ from quant.data.m3_execution_facts import (
     CorporateActionReconciliationResult,
     CorporateActionSelectionResult,
     M3G1ExecutionFactError,
+    assert_corporate_action_selection_receipt_closure,
     assert_corporate_action_reconciliation_ledger_closure,
     _parse_cninfo_iso_date,
     _consideration_event_id_sha256,
@@ -558,13 +559,13 @@ def _assert_code(exc_info: pytest.ExceptionInfo[BaseException], code: str) -> No
 def test_version_constants() -> None:
     assert G1_PRICE_LIMIT_METHOD_VERSION == "tushare_stk_limit_suspension_aware_v2"
     assert G1_CORPORATE_ACTION_SELECTION_VERSION == (
-        "tushare_dividend_cninfo_rights_share_consideration_basis_v7"
+        "tushare_dividend_cninfo_rights_share_consideration_basis_v8"
     )
     assert G1_CORPORATE_ACTION_SELECTION_VERSION != (
         "tushare_dividend_cninfo_rights_capital_iso_date_v5"
     )
     assert G1_CORPORATE_ACTION_RECONCILIATION_VERSION == (
-        "tushare_factor_daily_preclose_suspension_resume_basis_terms_v8"
+        "tushare_factor_daily_preclose_suspension_resume_basis_terms_v9"
     )
 
 
@@ -2809,6 +2810,281 @@ def test_rights_selection_maps_f004n_and_populates_fields() -> None:
     verify_corporate_action_selection_result(result=result)
 
 
+def _mixed_rights_share_change_response(
+    **overrides: Any,
+) -> backfill.VerifiedCninfoCorporateActionRawResponse:
+    row = {name: None for name in CNINFO_STOCK_SHARE_CHANGE_FIELDS}
+    row.update(
+        {
+            "DECLAREDATE": _D3.isoformat(),
+            "VARYDATE": _D4.isoformat(),
+            "F001V": "015012,015005",
+            "F002V": "可转债转股,配股上市",
+            "F003N": "647507.6893",
+            "F021N": "594324.6574",
+            "F022N": "594324.6574",
+            "SECCODE": "600000",
+        }
+    )
+    row.update(overrides)
+    frame = pl.DataFrame(
+        [row], schema={name: pl.Utf8 for name in CNINFO_STOCK_SHARE_CHANGE_FIELDS}
+    )
+    return _make_cninfo_ca_verified(
+        endpoint=CNINFO_SHARE_CHANGE_ENDPOINT,
+        parameters={
+            "symbol": "600000",
+            "start_date": _START,
+            "end_date": _END,
+        },
+        frame=frame,
+    )
+
+
+def _mixed_rights_response(**overrides: Any) -> VerifiedCninfoRawResponse:
+    row = {
+        "F017N": "146252.3613",
+        "F024N": "501254.9956",
+        "F025N": "647507.6893",
+        "F041N": "448071.9637",
+        "F042N": "594324.6574",
+    }
+    row.update(overrides)
+    return _make_cninfo_verified(
+        _cninfo_frame([_rights_row(**row)])
+    )
+
+
+def test_p0kc_mixed_rights_requires_unique_listing_and_conversion_proof() -> None:
+    share = _mixed_rights_share_change_response()
+    result = select_g1_cninfo_rights_actions(
+        response=_mixed_rights_response(),
+        history=_history(),
+        symbols=[_SYMBOL],
+        share_change_responses_by_code={"600000": share},
+    )
+    assert result.ledger.height == 1
+    ledger = result.ledger.row(0, named=True)
+    evidence = result.selection_evidence.row(0, named=True)
+    assert ledger["rights_pre_circulating_shares"] == pytest.approx(448071.9637)
+    assert ledger["rights_post_circulating_shares"] == pytest.approx(594324.6574)
+    assert ledger["rights_mixed_change_proof_sha256"] == evidence[
+        "rights_mixed_change_proof_sha256"
+    ]
+    proof = json.loads(evidence["rights_mixed_change_proof_json"])
+    assert proof["rights_non_rights_residual"] == "0.3324"
+    assert proof["reason_pairs"] == [
+        ["015005", "配股上市"],
+        ["015012", "可转债转股"],
+    ]
+    verify_corporate_action_selection_result(result=result)
+
+
+def test_p0kc_mixed_rights_without_share_proof_fails_closed() -> None:
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        select_g1_cninfo_rights_actions(
+            response=_mixed_rights_response(),
+            history=_history(),
+            symbols=[_SYMBOL],
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_RIGHTS_MIXED_CHANGE_UNPROVEN")
+
+
+def test_p0kc_strict_rights_keeps_mixed_fields_null() -> None:
+    result = select_g1_cninfo_rights_actions(
+        response=_make_cninfo_verified(_cninfo_frame()),
+        history=_history(),
+        symbols=[_SYMBOL],
+    )
+    ledger = result.ledger.row(0, named=True)
+    evidence = result.selection_evidence.row(0, named=True)
+    for name in (
+        "rights_pre_circulating_shares",
+        "rights_post_circulating_shares",
+        "rights_mixed_change_proof_sha256",
+    ):
+        assert ledger[name] is None
+        assert evidence[name] is None
+    assert evidence["rights_mixed_change_proof_json"] is None
+
+
+def test_p0kc_small_real_positive_residual_requires_mixed_proof() -> None:
+    rights = _mixed_rights_response(F017N="146252.6936")
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        select_g1_cninfo_rights_actions(
+            response=rights,
+            history=_history(),
+            symbols=[_SYMBOL],
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_RIGHTS_MIXED_CHANGE_UNPROVEN")
+
+    result = select_g1_cninfo_rights_actions(
+        response=rights,
+        history=_history(),
+        symbols=[_SYMBOL],
+        share_change_responses_by_code={
+            "600000": _mixed_rights_share_change_response()
+        },
+    )
+    assert result.ledger["rights_mixed_change_proof_sha256"][0] is not None
+    proof = json.loads(
+        result.selection_evidence["rights_mixed_change_proof_json"][0]
+    )
+    assert proof["rights_non_rights_residual"] == "0.0001"
+
+
+def test_p0kc_small_negative_residual_fails_even_with_mixed_proof() -> None:
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        select_g1_cninfo_rights_actions(
+            response=_mixed_rights_response(F017N="146252.6938"),
+            history=_history(),
+            symbols=[_SYMBOL],
+            share_change_responses_by_code={
+                "600000": _mixed_rights_share_change_response()
+            },
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_RIGHTS_MIXED_CHANGE_UNPROVEN")
+
+
+def test_p0kc_representation_only_residual_remains_strict() -> None:
+    result = select_g1_cninfo_rights_actions(
+        response=_mixed_rights_response(F017N="146252.69369999"),
+        history=_history(),
+        symbols=[_SYMBOL],
+    )
+    assert result.ledger["rights_mixed_change_proof_sha256"][0] is None
+    assert result.selection_evidence["rights_mixed_change_proof_json"][0] is None
+
+
+def test_p0kc_mixed_rights_proof_binds_formal_receipt_projection() -> None:
+    official_share = _mixed_rights_share_change_response()
+    forged_share = _mixed_rights_share_change_response(F004N="1")
+    rights = _mixed_rights_response()
+    official = select_g1_cninfo_rights_actions(
+        response=rights,
+        history=_history(),
+        symbols=[_SYMBOL],
+        share_change_responses_by_code={"600000": official_share},
+    )
+    forged = select_g1_cninfo_rights_actions(
+        response=rights,
+        history=_history(),
+        symbols=[_SYMBOL],
+        share_change_responses_by_code={"600000": forged_share},
+    )
+    verify_corporate_action_selection_result(result=forged)
+    assert forged.ledger["event_id"][0] != official.ledger["event_id"][0]
+    assert (
+        forged.selection_evidence["candidate_id"][0]
+        != official.selection_evidence["candidate_id"][0]
+    )
+    formal_receipts = (
+        SimpleNamespace(
+            source="cninfo",
+            endpoint="stock_allotment",
+            request_id=rights.receipt.request_id,
+            stable_response_sha256=rights.receipt.stable_response_sha256,
+        ),
+        SimpleNamespace(
+            source="cninfo",
+            endpoint=CNINFO_SHARE_CHANGE_ENDPOINT,
+            request_id=official_share.receipt.request_id,
+            stable_response_sha256=official_share.receipt.stable_response_sha256,
+        ),
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        assert_corporate_action_selection_receipt_closure(
+            selection_evidence=forged.selection_evidence,
+            input_receipts=formal_receipts,
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_RESULT_INVALID")
+
+
+@pytest.mark.parametrize(
+    "column", ["economic_event_key_sha256", "candidate_id"]
+)
+def test_p0kc_mixed_rights_verifier_recomputes_candidate_identity(
+    column: str,
+) -> None:
+    result = select_g1_cninfo_rights_actions(
+        response=_mixed_rights_response(),
+        history=_history(),
+        symbols=[_SYMBOL],
+        share_change_responses_by_code={
+            "600000": _mixed_rights_share_change_response()
+        },
+    )
+    poisoned_evidence = result.selection_evidence.with_columns(
+        pl.lit("0" * 64).alias(column)
+    )
+    poisoned_evidence_sha = clean_table_content_sha256(
+        table_name="corporate_action_selection_evidence",
+        frame=poisoned_evidence,
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        CorporateActionSelectionResult(
+            ledger=result.ledger,
+            selection_evidence=poisoned_evidence,
+            ledger_sha256=result.ledger_sha256,
+            selection_evidence_sha256=poisoned_evidence_sha,
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_RESULT_INVALID")
+
+
+def test_p0kc_mixed_rights_rejects_two_equally_valid_share_rows() -> None:
+    one = _mixed_rights_share_change_response()
+    duplicate_frame = pl.concat([one.frame, one.frame])
+    duplicate = _make_cninfo_ca_verified(
+        endpoint=CNINFO_SHARE_CHANGE_ENDPOINT,
+        parameters={
+            "symbol": "600000",
+            "start_date": _START,
+            "end_date": _END,
+        },
+        frame=duplicate_frame,
+    )
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        select_g1_cninfo_rights_actions(
+            response=_mixed_rights_response(),
+            history=_history(),
+            symbols=[_SYMBOL],
+            share_change_responses_by_code={"600000": duplicate},
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_RIGHTS_MIXED_CHANGE_UNPROVEN")
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"VARYDATE": _D3.isoformat()},
+        {"F001V": "015005", "F002V": "配股上市"},
+        {
+            "F001V": "015005,015012",
+            "F002V": "可转债转股,配股上市",
+        },
+        {
+            "F001V": "015005,015012,015020",
+            "F002V": "配股上市,可转债转股,股权分置",
+        },
+        {"F003N": "647508.0"},
+        {"F021N": "594325.0"},
+        {"F022N": "594325.0"},
+    ],
+)
+def test_p0kc_mixed_rights_rejects_unproven_share_change(
+    overrides: dict[str, Any],
+) -> None:
+    share = _mixed_rights_share_change_response(**overrides)
+    with pytest.raises(M3G1ExecutionFactError) as caught:
+        select_g1_cninfo_rights_actions(
+            response=_mixed_rights_response(),
+            history=_history(),
+            symbols=[_SYMBOL],
+            share_change_responses_by_code={"600000": share},
+        )
+    _assert_code(caught, "G1_CORPORATE_ACTION_RIGHTS_MIXED_CHANGE_UNPROVEN")
+
+
 def test_rights_market_reference_happy_path() -> None:
     """000661-shaped fixture: declared diverges from actual, market matches."""
     prev_close = 103.20
@@ -3472,7 +3748,7 @@ def _p0i_halt_resume_frames(
 
 def test_p0i_version_constant_exact() -> None:
     assert G1_CORPORATE_ACTION_RECONCILIATION_VERSION == (
-        "tushare_factor_daily_preclose_suspension_resume_basis_terms_v8"
+        "tushare_factor_daily_preclose_suspension_resume_basis_terms_v9"
     )
 
 
@@ -3523,6 +3799,9 @@ def _p0kb_reconciliation_inputs():
                 "rights_actual_shares": None,
                 "rights_pre_shares": None,
                 "rights_post_shares": None,
+                "rights_pre_circulating_shares": None,
+                "rights_post_circulating_shares": None,
+                "rights_mixed_change_proof_sha256": None,
                 "record_date": _D2,
                 "pay_date": None,
                 "stock_list_date": _D3,

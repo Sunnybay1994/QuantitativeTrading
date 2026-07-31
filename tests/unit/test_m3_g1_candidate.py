@@ -86,10 +86,15 @@ def _weights(n: int = 300) -> list[float]:
     return [100.0 / n] * n
 
 
-def _make_cninfo_verified(spec: backfill.CninfoRequestSpec) -> VerifiedCninfoRawResponse:
-    frame = empty_cninfo_allotment_frame()
+def _make_cninfo_verified(
+    spec: backfill.CninfoRequestSpec,
+    frame: pl.DataFrame | None = None,
+) -> VerifiedCninfoRawResponse:
+    if frame is None:
+        frame = empty_cninfo_allotment_frame()
     content = cninfo_response_content_sha256(frame)
     parameters_sha256 = backfill._parameters_hash(spec.parameters)
+    row_count = frame.height
     values = {
         "request_id": spec.request_id,
         "endpoint": CNINFO_ENDPOINT,
@@ -97,9 +102,9 @@ def _make_cninfo_verified(spec: backfill.CninfoRequestSpec) -> VerifiedCninfoRaw
         "parameters_sha256": parameters_sha256,
         "response_content_sha256": content,
         "resultcode": 200,
-        "count": 0,
-        "total": 0,
-        "row_count": 0,
+        "count": row_count,
+        "total": row_count,
+        "row_count": row_count,
         "columns": CNINFO_STOCK_ALLOTMENT_FIELDS,
     }
     stable = backfill._cninfo_stable_response_hash_values(values)
@@ -119,10 +124,10 @@ def _make_cninfo_verified(spec: backfill.CninfoRequestSpec) -> VerifiedCninfoRaw
         response_content_sha256=content,
         stable_response_sha256=stable,
         resultcode=200,
-        count=0,
-        total=0,
+        count=row_count,
+        total=row_count,
         raw_size_bytes=1,
-        row_count=0,
+        row_count=row_count,
         columns=CNINFO_STOCK_ALLOTMENT_FIELDS,
     )
     return VerifiedCninfoRawResponse(
@@ -131,8 +136,8 @@ def _make_cninfo_verified(spec: backfill.CninfoRequestSpec) -> VerifiedCninfoRaw
         receipt_sha256=backfill._sha256(asdict(receipt)),
         frame=frame,
         resultcode=200,
-        count=0,
-        total=0,
+        count=row_count,
+        total=row_count,
     )
 
 
@@ -1579,8 +1584,11 @@ def test_package_exports() -> None:
 
 
 def test_p0d_versions_and_scoped_projection_bounds() -> None:
+    assert G1_CORPORATE_ACTION_SELECTION_VERSION == (
+        "tushare_dividend_cninfo_rights_share_consideration_basis_v8"
+    )
     assert G1_CORPORATE_ACTION_RECONCILIATION_VERSION == (
-        "tushare_factor_daily_preclose_suspension_resume_basis_terms_v8"
+        "tushare_factor_daily_preclose_suspension_resume_basis_terms_v9"
     )
     with pytest.raises(ValueError, match="corporate_action_reconciliation_version"):
         G1BuildSpec(
@@ -1725,8 +1733,12 @@ def test_p0d_build_excludes_pre_first_bar_factor_jump(
     assert audit.passed is True
     assert candidate.build_spec.mapper_version == "m3-g1-tushare-mapper-v5"
     assert (
+        candidate.build_spec.corporate_action_selection_version
+        == "tushare_dividend_cninfo_rights_share_consideration_basis_v8"
+    )
+    assert (
         candidate.build_spec.corporate_action_reconciliation_version
-        == "tushare_factor_daily_preclose_suspension_resume_basis_terms_v8"
+        == "tushare_factor_daily_preclose_suspension_resume_basis_terms_v9"
     )
     scoped = candidate.adjustment_factors.filter(pl.col("symbol") == symbol)
     assert scoped.get_column("effective_date").to_list() == [_D1]
@@ -2339,6 +2351,181 @@ def test_p0k_a_cninfo_ca_raw_changes_identity_without_ledger(
     )
 
 
+def _p0kc_candidate_inputs(
+    inputs: G1BuildInputs,
+    *,
+    share_row_overrides: dict[str, Any] | None = None,
+) -> G1BuildInputs:
+    symbol = "000001.SZ"
+    code = "000001"
+    declared_factor = 10.0 * 1.3 / (10.0 + 2.0 * 0.3)
+    ex_reference = 10.0 / declared_factor
+
+    responses: list[VerifiedRawResponse] = []
+    for item in inputs.responses:
+        parameters = dict(item.spec.parameters)
+        is_target = parameters.get("ts_code") == symbol
+        if item.spec.endpoint == "daily" and is_target:
+            frame = _daily_frame(symbol, [_D0, _D1]).with_columns(
+                pl.when(pl.col("trade_date") == _D1.strftime("%Y%m%d"))
+                .then(pl.lit(ex_reference))
+                .otherwise(pl.col(name))
+                .alias(name)
+                for name in ("open", "high", "low", "close", "pre_close")
+            )
+            responses.append(_make_verified("daily", frame, parameters=parameters))
+        elif item.spec.endpoint == "adj_factor" and is_target:
+            frame = pl.DataFrame(
+                [
+                    {
+                        "ts_code": symbol,
+                        "trade_date": _D0.strftime("%Y%m%d"),
+                        "adj_factor": 1.0,
+                    },
+                    {
+                        "ts_code": symbol,
+                        "trade_date": _D1.strftime("%Y%m%d"),
+                        "adj_factor": declared_factor,
+                    },
+                ]
+            ).select(TUSHARE_FIELDS["adj_factor"].split(","))
+            responses.append(
+                _make_verified("adj_factor", frame, parameters=parameters)
+            )
+        elif item.spec.endpoint == "stk_limit" and is_target:
+            frame = _limit_frame(symbol, [_D0, _D1]).with_columns(
+                pl.when(pl.col("trade_date") == _D1.strftime("%Y%m%d"))
+                .then(pl.lit(ex_reference))
+                .otherwise(pl.col("pre_close"))
+                .alias("pre_close"),
+                pl.when(pl.col("trade_date") == _D1.strftime("%Y%m%d"))
+                .then(pl.lit(ex_reference * 1.1))
+                .otherwise(pl.col("up_limit"))
+                .alias("up_limit"),
+                pl.when(pl.col("trade_date") == _D1.strftime("%Y%m%d"))
+                .then(pl.lit(ex_reference * 0.9))
+                .otherwise(pl.col("down_limit"))
+                .alias("down_limit"),
+            )
+            responses.append(
+                _make_verified("stk_limit", frame, parameters=parameters)
+            )
+        else:
+            responses.append(item)
+
+    rights_row = {name: None for name in CNINFO_STOCK_ALLOTMENT_FIELDS}
+    rights_row.update(
+        {
+            "DECLAREDATE": _D0.isoformat(),
+            "F001V": "001001",
+            "F002V": "A股",
+            "F004N": "3",
+            "F005N": "2",
+            "F011D": _D0.isoformat(),
+            "F012D": _D1.isoformat(),
+            "F013D": "2016-01-31",
+            "F014D": "2016-01-31",
+            "F017N": "300",
+            "F024N": "1000",
+            "F025N": "1300.5",
+            "F038D": _D1.isoformat(),
+            "F041N": "800",
+            "F042N": "1100.5",
+            "F052D": _D1.isoformat(),
+            "ORGNAME": "P0KC测试公司",
+            "SECCODE": code,
+            "SECNAME": "P0KC测试",
+            "SUBID": "p0kc-1",
+        }
+    )
+    rights_frame = pl.DataFrame(
+        [rights_row],
+        schema={name: pl.Utf8 for name in CNINFO_STOCK_ALLOTMENT_FIELDS},
+    )
+    rights_responses = []
+    for item in inputs.cninfo_responses:
+        symbols = dict(item.spec.parameters)["symbols"].split(",")
+        rights_responses.append(
+            _make_cninfo_verified(
+                item.spec,
+                frame=rights_frame if code in symbols else None,
+            )
+        )
+
+    share_row = {name: None for name in CNINFO_STOCK_SHARE_CHANGE_FIELDS}
+    share_row.update(
+        {
+            "DECLAREDATE": _D1.isoformat(),
+            "VARYDATE": _D1.isoformat(),
+            "F001V": "015012,015005",
+            "F002V": "可转债转股,配股上市",
+            "F003N": "1300.5",
+            "F021N": "1100.5",
+            "F022N": "1100.5",
+            "SECCODE": code,
+        }
+    )
+    if share_row_overrides:
+        share_row.update(share_row_overrides)
+    share_frame = pl.DataFrame(
+        [share_row],
+        schema={name: pl.Utf8 for name in CNINFO_STOCK_SHARE_CHANGE_FIELDS},
+    )
+    share_responses = []
+    for item in inputs.cninfo_share_change_responses:
+        item_code = dict(item.spec.parameters)["symbol"]
+        share_responses.append(
+            _make_cninfo_ca_verified(
+                item.spec,
+                frame=share_frame if item_code == code else None,
+            )
+        )
+
+    return replace(
+        inputs,
+        responses=tuple(responses),
+        cninfo_responses=tuple(rights_responses),
+        cninfo_share_change_responses=tuple(share_responses),
+    )
+
+
+def test_p0kc_candidate_build_audit_and_formal_receipt_closure(
+    happy_inputs: G1BuildInputs,
+) -> None:
+    official = build_g1_candidate(
+        inputs=_p0kc_candidate_inputs(happy_inputs)
+    )
+    rights = official.corporate_actions.filter(pl.col("action_type") == "RIGHTS")
+    assert rights.height == 1
+    assert rights["rights_mixed_change_proof_sha256"][0] is not None
+    assert audit_g1_candidate(candidate=official).passed is True
+
+    forged = build_g1_candidate(
+        inputs=_p0kc_candidate_inputs(
+            happy_inputs,
+            share_row_overrides={"F004N": "1"},
+        )
+    )
+    assert audit_g1_candidate(candidate=forged).passed is True
+    assert not forged.corporate_actions.equals(official.corporate_actions)
+
+    attacked = _rebind_identity(
+        official,
+        corporate_actions=forged.corporate_actions,
+        corporate_action_selection_evidence=(
+            forged.corporate_action_selection_evidence
+        ),
+        corporate_action_reconciliation=forged.corporate_action_reconciliation,
+    )
+    audit = audit_g1_candidate(candidate=attacked)
+    assert audit.passed is False
+    assert any(
+        issue.code == "CORPORATE_ACTION_FACTOR_MISMATCH"
+        and issue.message == "reconciliation result failed verification"
+        for issue in audit.issues
+    )
+
+
 def _p0kb_dividend_frame(**overrides: Any) -> pl.DataFrame:
     row = {name: None for name in CNINFO_STOCK_DIVIDEND_FIELDS}
     row.update(
@@ -2408,6 +2595,9 @@ def _p0kb_tushare_actions() -> pl.DataFrame:
                 "rights_actual_shares": None,
                 "rights_pre_shares": None,
                 "rights_post_shares": None,
+                "rights_pre_circulating_shares": None,
+                "rights_post_circulating_shares": None,
+                "rights_mixed_change_proof_sha256": None,
                 "record_date": dt.date(2018, 9, 18),
                 "pay_date": None,
                 "stock_list_date": dt.date(2018, 9, 19),
@@ -2531,6 +2721,9 @@ def test_p0kb_exact_tushare_consideration_is_not_duplicated() -> None:
                 "rights_actual_shares": None,
                 "rights_pre_shares": None,
                 "rights_post_shares": None,
+                "rights_pre_circulating_shares": None,
+                "rights_post_circulating_shares": None,
+                "rights_mixed_change_proof_sha256": None,
                 "record_date": dt.date(2018, 2, 1),
                 "pay_date": None,
                 "stock_list_date": dt.date(2018, 8, 23),

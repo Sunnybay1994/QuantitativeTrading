@@ -18,17 +18,20 @@ from quant.data.connectors.cninfo import (
     CNINFO_DIVIDEND_ENDPOINT,
     CNINFO_SHARE_CHANGE_ENDPOINT,
     CNINFO_SOURCE,
+    CNINFO_STOCK_ALLOTMENT_FIELDS,
     CNINFO_STOCK_DIVIDEND_FIELDS,
     CNINFO_STOCK_SHARE_CHANGE_FIELDS,
 )
 from quant.data.m3_backfill import (
     TUSHARE_FIELDS,
     CninfoCorporateActionRequestReceipt,
+    CninfoRequestReceipt,
     HistoryWindow,
     VerifiedCninfoCorporateActionRawResponse,
     VerifiedCninfoRawResponse,
     VerifiedRawResponse,
     cninfo_corporate_action_response_content_sha256,
+    cninfo_response_content_sha256,
 )
 from quant.data.m3_identity import clean_table_content_sha256
 from quant.domain import (
@@ -45,10 +48,10 @@ from quant.domain import (
 
 G1_PRICE_LIMIT_METHOD_VERSION = "tushare_stk_limit_suspension_aware_v2"
 G1_CORPORATE_ACTION_SELECTION_VERSION = (
-    "tushare_dividend_cninfo_rights_share_consideration_basis_v7"
+    "tushare_dividend_cninfo_rights_share_consideration_basis_v8"
 )
 G1_CORPORATE_ACTION_RECONCILIATION_VERSION = (
-    "tushare_factor_daily_preclose_suspension_resume_basis_terms_v8"
+    "tushare_factor_daily_preclose_suspension_resume_basis_terms_v9"
 )
 
 _SOURCE = "tushare"
@@ -84,6 +87,7 @@ _ERROR_CODES = frozenset(
         "G1_CORPORATE_ACTION_FACTOR_INVALID",
         "G1_CORPORATE_ACTION_FACTOR_UNEXPLAINED",
         "G1_CORPORATE_ACTION_RECONCILIATION_INVALID",
+        "G1_CORPORATE_ACTION_RIGHTS_MIXED_CHANGE_UNPROVEN",
     }
 )
 
@@ -110,6 +114,9 @@ _LEDGER_OUT = (
     "rights_actual_shares",
     "rights_pre_shares",
     "rights_post_shares",
+    "rights_pre_circulating_shares",
+    "rights_post_circulating_shares",
+    "rights_mixed_change_proof_sha256",
     "record_date",
     "pay_date",
     "stock_list_date",
@@ -135,6 +142,10 @@ _EVIDENCE_OUT = (
     "rights_actual_shares",
     "rights_pre_shares",
     "rights_post_shares",
+    "rights_pre_circulating_shares",
+    "rights_post_circulating_shares",
+    "rights_mixed_change_proof_sha256",
+    "rights_mixed_change_proof_json",
     "pay_date",
     "stock_list_date",
     "vendor_record_id",
@@ -776,6 +787,10 @@ def select_g1_corporate_actions(
                         "rights_actual_shares": None,
                         "rights_pre_shares": None,
                         "rights_post_shares": None,
+                        "rights_pre_circulating_shares": None,
+                        "rights_post_circulating_shares": None,
+                        "rights_mixed_change_proof_sha256": None,
+                        "rights_mixed_change_proof_json": None,
                         "pay_date": row["pay_date"],
                         "stock_list_date": row["stock_list_date"],
                         "vendor_record_id": None,
@@ -813,6 +828,9 @@ def select_g1_corporate_actions(
                     "rights_actual_shares": None,
                     "rights_pre_shares": None,
                     "rights_post_shares": None,
+                    "rights_pre_circulating_shares": None,
+                    "rights_post_circulating_shares": None,
+                    "rights_mixed_change_proof_sha256": None,
                     "record_date": record_date,
                     "pay_date": selected_row["pay_date"],
                     "stock_list_date": selected_row["stock_list_date"],
@@ -859,6 +877,10 @@ def select_g1_cninfo_rights_actions(
     response: VerifiedCninfoRawResponse,
     history: HistoryWindow,
     symbols: Sequence[str],
+    share_change_responses_by_code: Mapping[
+        str, VerifiedCninfoCorporateActionRawResponse
+    ]
+    | None = None,
 ) -> CorporateActionSelectionResult:
     """Select implemented A-share rights (配股) events from a CNINFO response.
 
@@ -875,6 +897,10 @@ def select_g1_cninfo_rights_actions(
             history, code="G1_CORPORATE_ACTION_CALENDAR_INVALID"
         )
         verified = _consume_cninfo_verified(response)
+        if share_change_responses_by_code is None:
+            share_change_responses_by_code = {}
+        elif not isinstance(share_change_responses_by_code, Mapping):
+            raise M3G1ExecutionFactError("G1_EXECUTION_FACT_RESPONSE_INVALID")
         code_to_symbol = _build_cninfo_symbol_map(symbols)
         request_id = verified.spec.request_id
         snapshot = verified.receipt.raw_snapshot_id
@@ -946,13 +972,32 @@ def select_g1_cninfo_rights_actions(
                 continue
             if post_shares <= pre_shares:
                 continue
-            if not math.isclose(
-                post_shares - pre_shares,
-                actual_shares,
-                rel_tol=_RIGHTS_SHARE_REL_TOL,
-                abs_tol=_RIGHTS_SHARE_ABS_TOL,
-            ):
-                continue
+            actual_shares_decimal = _parse_decimal(
+                raw.get("F017N"), positive=True
+            )
+            pre_shares_decimal = _parse_decimal(raw.get("F024N"), positive=True)
+            post_shares_decimal = _parse_decimal(raw.get("F025N"), positive=True)
+            strict_rights = _decimal_close(
+                post_shares_decimal - pre_shares_decimal,
+                actual_shares_decimal,
+            )
+            pre_circulating: float | None = None
+            post_circulating: float | None = None
+            mixed_proof_json: str | None = None
+            mixed_proof_sha256: str | None = None
+            if not strict_rights:
+                (
+                    pre_circulating,
+                    post_circulating,
+                    mixed_proof_json,
+                    mixed_proof_sha256,
+                ) = _build_rights_mixed_change_proof(
+                    rights_response=verified,
+                    rights_row=raw,
+                    share_change_response=share_change_responses_by_code.get(seccode),
+                    symbol=symbol,
+                    list_date=list_date,
+                )
 
             key = (symbol, ex_date)
             if key in by_key:
@@ -974,6 +1019,10 @@ def select_g1_cninfo_rights_actions(
                 "rights_actual_shares": actual_shares,
                 "rights_pre_shares": pre_shares,
                 "rights_post_shares": post_shares,
+                "rights_pre_circulating_shares": pre_circulating,
+                "rights_post_circulating_shares": post_circulating,
+                "rights_mixed_change_proof_json": mixed_proof_json,
+                "rights_mixed_change_proof_sha256": mixed_proof_sha256,
             }
 
         ledger_rows: list[dict[str, Any]] = []
@@ -993,6 +1042,9 @@ def select_g1_cninfo_rights_actions(
                 item["rights_actual_shares"],
                 item["rights_pre_shares"],
                 item["rights_post_shares"],
+                item["rights_pre_circulating_shares"],
+                item["rights_post_circulating_shares"],
+                item["rights_mixed_change_proof_sha256"],
             )
             event_key = _rights_economic_event_key_sha256(
                 symbol, record_date, ex_date
@@ -1005,6 +1057,9 @@ def select_g1_cninfo_rights_actions(
                 item["rights_actual_shares"],
                 item["rights_pre_shares"],
                 item["rights_post_shares"],
+                item["rights_pre_circulating_shares"],
+                item["rights_post_circulating_shares"],
+                item["rights_mixed_change_proof_sha256"],
             )
             ledger_rows.append(
                 {
@@ -1019,6 +1074,15 @@ def select_g1_cninfo_rights_actions(
                     "rights_actual_shares": item["rights_actual_shares"],
                     "rights_pre_shares": item["rights_pre_shares"],
                     "rights_post_shares": item["rights_post_shares"],
+                    "rights_pre_circulating_shares": item[
+                        "rights_pre_circulating_shares"
+                    ],
+                    "rights_post_circulating_shares": item[
+                        "rights_post_circulating_shares"
+                    ],
+                    "rights_mixed_change_proof_sha256": item[
+                        "rights_mixed_change_proof_sha256"
+                    ],
                     "record_date": record_date,
                     "pay_date": None,
                     "stock_list_date": item["list_date"],
@@ -1045,6 +1109,18 @@ def select_g1_cninfo_rights_actions(
                     "rights_actual_shares": item["rights_actual_shares"],
                     "rights_pre_shares": item["rights_pre_shares"],
                     "rights_post_shares": item["rights_post_shares"],
+                    "rights_pre_circulating_shares": item[
+                        "rights_pre_circulating_shares"
+                    ],
+                    "rights_post_circulating_shares": item[
+                        "rights_post_circulating_shares"
+                    ],
+                    "rights_mixed_change_proof_sha256": item[
+                        "rights_mixed_change_proof_sha256"
+                    ],
+                    "rights_mixed_change_proof_json": item[
+                        "rights_mixed_change_proof_json"
+                    ],
                     "pay_date": None,
                     "stock_list_date": item["list_date"],
                     "vendor_record_id": item["subid"],
@@ -1089,6 +1165,155 @@ def select_g1_cninfo_rights_actions(
         raise
     except (pl.exceptions.PolarsError, TypeError, ValueError, OSError) as exc:
         raise _sanitize(exc, "G1_CORPORATE_ACTION_EVENT_INVALID") from None
+
+
+def _build_rights_mixed_change_proof(
+    *,
+    rights_response: VerifiedCninfoRawResponse,
+    rights_row: Mapping[str, Any],
+    share_change_response: VerifiedCninfoCorporateActionRawResponse | None,
+    symbol: str,
+    list_date: dt.date,
+) -> tuple[float, float, str, str]:
+    """Bind a mixed rights/conversion capital delta to both official responses."""
+    code = symbol.split(".", maxsplit=1)[0]
+    try:
+        actual = _parse_decimal(rights_row.get("F017N"), positive=True)
+        pre_total = _parse_decimal(rights_row.get("F024N"), positive=True)
+        post_total = _parse_decimal(rights_row.get("F025N"), positive=True)
+        pre_circulating = _parse_decimal(rights_row.get("F041N"), positive=True)
+        post_circulating = _parse_decimal(rights_row.get("F042N"), positive=True)
+        total_delta = post_total - pre_total
+        circulating_delta = post_circulating - pre_circulating
+        residual = total_delta - actual
+        if (
+            total_delta <= 0
+            or circulating_delta <= 0
+            or not _decimal_close(total_delta, circulating_delta)
+            or residual <= 0
+            or _decimal_close(total_delta, actual)
+        ):
+            raise M3G1ExecutionFactError(
+                "G1_CORPORATE_ACTION_RIGHTS_MIXED_CHANGE_UNPROVEN"
+            )
+        if share_change_response is None:
+            raise M3G1ExecutionFactError(
+                "G1_CORPORATE_ACTION_RIGHTS_MIXED_CHANGE_UNPROVEN"
+            )
+        share = _consume_cninfo_ca_verified(
+            share_change_response, endpoint=CNINFO_SHARE_CHANGE_ENDPOINT
+        )
+        if _require_cninfo_ca_symbol(share) != code:
+            raise M3G1ExecutionFactError(
+                "G1_CORPORATE_ACTION_RIGHTS_MIXED_CHANGE_UNPROVEN"
+            )
+        params = dict(share.spec.parameters)
+        start_date = _parse_request_date(params.get("start_date"))  # type: ignore[arg-type]
+        end_date = _parse_request_date(params.get("end_date"))  # type: ignore[arg-type]
+        if not start_date <= list_date <= end_date:
+            raise M3G1ExecutionFactError(
+                "G1_CORPORATE_ACTION_RIGHTS_MIXED_CHANGE_UNPROVEN"
+            )
+
+        expected_reasons = {
+            ("015005", "配股上市"),
+            ("015012", "可转债转股"),
+        }
+        matches: list[dict[str, Any]] = []
+        for row in share.frame.iter_rows(named=True):
+            if row.get("SECCODE") != code:
+                raise M3G1ExecutionFactError(
+                    "G1_CORPORATE_ACTION_RIGHTS_MIXED_CHANGE_UNPROVEN"
+                )
+            if _parse_cninfo_iso_date(row.get("VARYDATE")) != list_date:
+                continue
+            codes = _split_aligned_cninfo_tokens(row.get("F001V"))
+            names = _split_aligned_cninfo_tokens(row.get("F002V"))
+            if len(codes) != len(names):
+                continue
+            reasons = set(zip(codes, names, strict=True))
+            if len(codes) != 2 or reasons != expected_reasons:
+                continue
+            if (
+                not _decimal_close(
+                    _parse_decimal(row.get("F003N"), positive=True), post_total
+                )
+                or not _decimal_close(
+                    _parse_decimal(row.get("F021N"), positive=True),
+                    post_circulating,
+                )
+                or not _decimal_close(
+                    _parse_decimal(row.get("F022N"), positive=True),
+                    post_circulating,
+                )
+            ):
+                continue
+            matches.append(dict(row))
+        if len(matches) != 1:
+            raise M3G1ExecutionFactError(
+                "G1_CORPORATE_ACTION_RIGHTS_MIXED_CHANGE_UNPROVEN"
+            )
+
+        rights_rows = [dict(row) for row in rights_response.frame.iter_rows(named=True)]
+        share_rows = [dict(row) for row in share.frame.iter_rows(named=True)]
+        rights_row_json = _canonical_json(dict(rights_row))
+        share_row_json = _canonical_json(matches[0])
+        proof = {
+            "schema_version": "m3-g1-cninfo-rights-mixed-change-proof-v1",
+            "symbol": symbol,
+            "list_date": list_date.isoformat(),
+            "reason_pairs": [list(item) for item in sorted(expected_reasons)],
+            "rights_request_id": rights_response.receipt.request_id,
+            "rights_snapshot_id": rights_response.receipt.raw_snapshot_id,
+            "rights_stable_response_sha256": (
+                rights_response.receipt.stable_response_sha256
+            ),
+            "rights_receipt_json": _canonical_json(asdict(rights_response.receipt)),
+            "rights_response_json": _canonical_json(rights_rows),
+            "rights_row_json": rights_row_json,
+            "rights_row_sha256": hashlib.sha256(
+                rights_row_json.encode("utf-8")
+            ).hexdigest(),
+            "share_change_request_id": share.receipt.request_id,
+            "share_change_snapshot_id": share.receipt.raw_snapshot_id,
+            "share_change_stable_response_sha256": (
+                share.receipt.stable_response_sha256
+            ),
+            "share_change_receipt_json": _canonical_json(asdict(share.receipt)),
+            "share_change_response_json": _canonical_json(share_rows),
+            "share_change_row_json": share_row_json,
+            "share_change_row_sha256": hashlib.sha256(
+                share_row_json.encode("utf-8")
+            ).hexdigest(),
+            "rights_actual_shares": _decimal_token(actual),
+            "rights_pre_total_shares": _decimal_token(pre_total),
+            "rights_post_total_shares": _decimal_token(post_total),
+            "rights_pre_circulating_shares": _decimal_token(pre_circulating),
+            "rights_post_circulating_shares": _decimal_token(post_circulating),
+            "rights_total_delta": _decimal_token(total_delta),
+            "rights_circulating_delta": _decimal_token(circulating_delta),
+            "rights_non_rights_residual": _decimal_token(residual),
+        }
+        proof_json = _canonical_json(proof)
+        return (
+            float(pre_circulating),
+            float(post_circulating),
+            proof_json,
+            hashlib.sha256(proof_json.encode("utf-8")).hexdigest(),
+        )
+    except M3G1ExecutionFactError as exc:
+        if exc.code in {
+            "G1_CORPORATE_ACTION_EVENT_INVALID",
+            "G1_CORPORATE_ACTION_RIGHTS_MIXED_CHANGE_UNPROVEN",
+        }:
+            raise
+        raise M3G1ExecutionFactError(
+            "G1_CORPORATE_ACTION_RIGHTS_MIXED_CHANGE_UNPROVEN"
+        ) from None
+    except (KeyError, TypeError, ValueError, InvalidOperation, pl.exceptions.PolarsError):
+        raise M3G1ExecutionFactError(
+            "G1_CORPORATE_ACTION_RIGHTS_MIXED_CHANGE_UNPROVEN"
+        ) from None
 
 
 def select_g1_cninfo_share_consideration_actions(
@@ -1305,6 +1530,9 @@ def select_g1_cninfo_share_consideration_actions(
                         "rights_actual_shares": None,
                         "rights_pre_shares": None,
                         "rights_post_shares": None,
+                        "rights_pre_circulating_shares": None,
+                        "rights_post_circulating_shares": None,
+                        "rights_mixed_change_proof_sha256": None,
                         "record_date": record_date,
                         "pay_date": None,
                         "stock_list_date": ex_date,
@@ -1331,6 +1559,10 @@ def select_g1_cninfo_share_consideration_actions(
                         "rights_actual_shares": None,
                         "rights_pre_shares": None,
                         "rights_post_shares": None,
+                        "rights_pre_circulating_shares": None,
+                        "rights_post_circulating_shares": None,
+                        "rights_mixed_change_proof_sha256": None,
+                        "rights_mixed_change_proof_json": None,
                         "pay_date": None,
                         "stock_list_date": ex_date,
                         "vendor_record_id": share.spec.request_id,
@@ -1971,7 +2203,44 @@ def _verify_selection_result_body(result: CorporateActionSelectionResult) -> Non
         or evidence_sha != result.selection_evidence_sha256
     ):
         raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RESULT_INVALID")
+    for row in result.selection_evidence.iter_rows(named=True):
+        if row["rights_mixed_change_proof_json"] is not None:
+            _assert_rights_mixed_change_proof(row)
     _assert_ledger_evidence_closure(result.ledger, result.selection_evidence)
+
+
+def assert_corporate_action_selection_receipt_closure(
+    *,
+    selection_evidence: pl.DataFrame,
+    input_receipts: Sequence[Any],
+) -> None:
+    """Bind embedded mixed-rights source bundles to frozen candidate receipts."""
+    try:
+        receipts = {
+            (item.source, item.endpoint, item.request_id): item
+            for item in input_receipts
+        }
+        if len(receipts) != len(input_receipts):
+            raise ValueError
+        for row in selection_evidence.iter_rows(named=True):
+            proof_json = row.get("rights_mixed_change_proof_json")
+            if proof_json is None:
+                continue
+            proof = json.loads(proof_json)
+            for prefix, endpoint in (
+                ("rights", "stock_allotment"),
+                ("share_change", CNINFO_SHARE_CHANGE_ENDPOINT),
+            ):
+                request_id = proof[f"{prefix}_request_id"]
+                receipt = receipts.get(("cninfo", endpoint, request_id))
+                if (
+                    receipt is None
+                    or receipt.stable_response_sha256
+                    != proof[f"{prefix}_stable_response_sha256"]
+                ):
+                    raise ValueError
+    except Exception:
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RESULT_INVALID") from None
 
 
 def _verify_reconciliation_result_body(
@@ -2032,7 +2301,8 @@ def _assert_ledger_evidence_closure(
             )
         elif action_type == "RIGHTS":
             rights_price = row["rights_price"]
-            if rights_price is None:
+            subid = row["vendor_record_id"]
+            if rights_price is None or type(subid) is not str:
                 raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RESULT_INVALID")
             if (
                 row["rights_actual_shares"] is None
@@ -2040,9 +2310,39 @@ def _assert_ledger_evidence_closure(
                 or row["rights_post_shares"] is None
             ):
                 raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RESULT_INVALID")
+            pre_circulating = (
+                None
+                if row["rights_pre_circulating_shares"] is None
+                else float(row["rights_pre_circulating_shares"])
+            )
+            post_circulating = (
+                None
+                if row["rights_post_circulating_shares"] is None
+                else float(row["rights_post_circulating_shares"])
+            )
+            expected_event_key = _rights_economic_event_key_sha256(
+                row["symbol"], row["record_date"], row["ex_date"]
+            )
+            expected_candidate = _rights_candidate_id_sha256(
+                expected_event_key,
+                subid,
+                float(rights_price),
+                float(row["rights_ratio"]),
+                float(row["rights_actual_shares"]),
+                float(row["rights_pre_shares"]),
+                float(row["rights_post_shares"]),
+                pre_circulating,
+                post_circulating,
+                row["rights_mixed_change_proof_sha256"],
+            )
+            if (
+                row["economic_event_key_sha256"] != expected_event_key
+                or row["candidate_id"] != expected_candidate
+            ):
+                raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RESULT_INVALID")
             expected_event = _rights_event_id_sha256(
                 row["symbol"],
-                row["vendor_record_id"],
+                subid,
                 row["record_date"],
                 row["ex_date"],
                 float(rights_price),
@@ -2050,6 +2350,9 @@ def _assert_ledger_evidence_closure(
                 float(row["rights_actual_shares"]),
                 float(row["rights_pre_shares"]),
                 float(row["rights_post_shares"]),
+                pre_circulating,
+                post_circulating,
+                row["rights_mixed_change_proof_sha256"],
             )
         elif action_type == "SHARE_CONSIDERATION":
             if row["vendor_record_id"] is None:
@@ -2092,6 +2395,16 @@ def _assert_ledger_evidence_closure(
             or _nullable_float_differs(
                 row["rights_post_shares"], match["rights_post_shares"]
             )
+            or _nullable_float_differs(
+                row["rights_pre_circulating_shares"],
+                match["rights_pre_circulating_shares"],
+            )
+            or _nullable_float_differs(
+                row["rights_post_circulating_shares"],
+                match["rights_post_circulating_shares"],
+            )
+            or row["rights_mixed_change_proof_sha256"]
+            != match["rights_mixed_change_proof_sha256"]
             or row["record_date"] != match["record_date"]
             or row["pay_date"] != match["pay_date"]
             or row["stock_list_date"] != match["stock_list_date"]
@@ -2454,6 +2767,258 @@ def _decode_term_source_bundle(
     return receipt, response_rows
 
 
+def _decode_rights_source_bundle(
+    *, receipt_json: object, response_json: object
+) -> tuple[CninfoRequestReceipt, list[dict[str, Any]]]:
+    if type(receipt_json) is not str or type(response_json) is not str:
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RESULT_INVALID")
+    try:
+        receipt_payload = json.loads(receipt_json)
+        response_rows = json.loads(response_json)
+        if (
+            not isinstance(receipt_payload, dict)
+            or not isinstance(response_rows, list)
+            or _canonical_json(receipt_payload) != receipt_json
+            or _canonical_json(response_rows) != response_json
+        ):
+            raise ValueError
+        receipt_payload["parameters"] = tuple(
+            tuple(item) for item in receipt_payload["parameters"]
+        )
+        receipt_payload["columns"] = tuple(receipt_payload["columns"])
+        receipt = CninfoRequestReceipt(**receipt_payload)
+        if any(
+            not isinstance(row, dict)
+            or set(row) != set(CNINFO_STOCK_ALLOTMENT_FIELDS)
+            for row in response_rows
+        ):
+            raise ValueError
+        frame = pl.DataFrame(
+            response_rows,
+            schema={name: pl.Utf8 for name in CNINFO_STOCK_ALLOTMENT_FIELDS},
+        ).select(list(CNINFO_STOCK_ALLOTMENT_FIELDS))
+        if (
+            cninfo_response_content_sha256(frame)
+            != receipt.response_content_sha256
+            or frame.height != receipt.row_count
+        ):
+            raise ValueError
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+        pl.exceptions.PolarsError,
+    ):
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RESULT_INVALID") from None
+    return receipt, response_rows
+
+
+def _assert_rights_mixed_change_proof(row: Mapping[str, Any]) -> None:
+    try:
+        proof_json = row["rights_mixed_change_proof_json"]
+        if (
+            type(proof_json) is not str
+            or hashlib.sha256(proof_json.encode("utf-8")).hexdigest()
+            != row["rights_mixed_change_proof_sha256"]
+        ):
+            raise ValueError
+        proof = json.loads(proof_json)
+        expected_keys = {
+            "schema_version",
+            "symbol",
+            "list_date",
+            "reason_pairs",
+            "rights_request_id",
+            "rights_snapshot_id",
+            "rights_stable_response_sha256",
+            "rights_receipt_json",
+            "rights_response_json",
+            "rights_row_json",
+            "rights_row_sha256",
+            "share_change_request_id",
+            "share_change_snapshot_id",
+            "share_change_stable_response_sha256",
+            "share_change_receipt_json",
+            "share_change_response_json",
+            "share_change_row_json",
+            "share_change_row_sha256",
+            "rights_actual_shares",
+            "rights_pre_total_shares",
+            "rights_post_total_shares",
+            "rights_pre_circulating_shares",
+            "rights_post_circulating_shares",
+            "rights_total_delta",
+            "rights_circulating_delta",
+            "rights_non_rights_residual",
+        }
+        if (
+            not isinstance(proof, dict)
+            or set(proof) != expected_keys
+            or _canonical_json(proof) != proof_json
+            or proof["schema_version"]
+            != "m3-g1-cninfo-rights-mixed-change-proof-v1"
+            or proof["symbol"] != row["symbol"]
+            or proof["list_date"] != row["stock_list_date"].isoformat()
+            or proof["reason_pairs"]
+            != [["015005", "配股上市"], ["015012", "可转债转股"]]
+        ):
+            raise ValueError
+        rights_receipt, rights_rows = _decode_rights_source_bundle(
+            receipt_json=proof["rights_receipt_json"],
+            response_json=proof["rights_response_json"],
+        )
+        share_receipt, share_rows = _decode_term_source_bundle(
+            receipt_json=proof["share_change_receipt_json"],
+            response_json=proof["share_change_response_json"],
+            endpoint=CNINFO_SHARE_CHANGE_ENDPOINT,
+            fields=CNINFO_STOCK_SHARE_CHANGE_FIELDS,
+        )
+        if (
+            rights_receipt.request_id != proof["rights_request_id"]
+            or rights_receipt.raw_snapshot_id != proof["rights_snapshot_id"]
+            or rights_receipt.stable_response_sha256
+            != proof["rights_stable_response_sha256"]
+            or share_receipt.request_id != proof["share_change_request_id"]
+            or share_receipt.raw_snapshot_id != proof["share_change_snapshot_id"]
+            or share_receipt.stable_response_sha256
+            != proof["share_change_stable_response_sha256"]
+            or row["source_request_id"] != rights_receipt.request_id
+            or row["source_snapshot_id"] != rights_receipt.raw_snapshot_id
+        ):
+            raise ValueError
+        rights_raw = json.loads(proof["rights_row_json"])
+        share_raw = json.loads(proof["share_change_row_json"])
+        if (
+            not isinstance(rights_raw, dict)
+            or not isinstance(share_raw, dict)
+            or _canonical_json(rights_raw) != proof["rights_row_json"]
+            or _canonical_json(share_raw) != proof["share_change_row_json"]
+            or hashlib.sha256(proof["rights_row_json"].encode("utf-8")).hexdigest()
+            != proof["rights_row_sha256"]
+            or hashlib.sha256(
+                proof["share_change_row_json"].encode("utf-8")
+            ).hexdigest()
+            != proof["share_change_row_sha256"]
+            or proof["rights_row_json"]
+            not in {_canonical_json(item) for item in rights_rows}
+            or proof["share_change_row_json"]
+            not in {_canonical_json(item) for item in share_rows}
+        ):
+            raise ValueError
+
+        list_date = dt.date.fromisoformat(proof["list_date"])
+        code = row["symbol"].split(".", maxsplit=1)[0]
+        share_params = dict(share_receipt.parameters)
+        if (
+            rights_raw.get("SECCODE") != code
+            or rights_raw.get("SUBID") != row["vendor_record_id"]
+            or _parse_cninfo_iso_date(rights_raw.get("F038D")) != list_date
+            or share_raw.get("SECCODE") != code
+            or _parse_cninfo_iso_date(share_raw.get("VARYDATE")) != list_date
+            or not (
+                _parse_request_date(share_params["start_date"])
+                <= list_date
+                <= _parse_request_date(share_params["end_date"])
+            )
+        ):
+            raise ValueError
+        codes = _split_aligned_cninfo_tokens(share_raw.get("F001V"))
+        names = _split_aligned_cninfo_tokens(share_raw.get("F002V"))
+        if len(codes) != 2 or set(zip(codes, names, strict=True)) != {
+            ("015005", "配股上市"),
+            ("015012", "可转债转股"),
+        }:
+            raise ValueError
+
+        actual = _parse_decimal(rights_raw.get("F017N"), positive=True)
+        pre_total = _parse_decimal(rights_raw.get("F024N"), positive=True)
+        post_total = _parse_decimal(rights_raw.get("F025N"), positive=True)
+        pre_circulating = _parse_decimal(rights_raw.get("F041N"), positive=True)
+        post_circulating = _parse_decimal(rights_raw.get("F042N"), positive=True)
+        total_delta = post_total - pre_total
+        circulating_delta = post_circulating - pre_circulating
+        residual = total_delta - actual
+        expected_tokens = {
+            "rights_actual_shares": actual,
+            "rights_pre_total_shares": pre_total,
+            "rights_post_total_shares": post_total,
+            "rights_pre_circulating_shares": pre_circulating,
+            "rights_post_circulating_shares": post_circulating,
+            "rights_total_delta": total_delta,
+            "rights_circulating_delta": circulating_delta,
+            "rights_non_rights_residual": residual,
+        }
+        if any(proof[key] != _decimal_token(value) for key, value in expected_tokens.items()):
+            raise ValueError
+        if (
+            total_delta <= 0
+            or circulating_delta <= 0
+            or residual <= 0
+            or _decimal_close(total_delta, actual)
+            or not _decimal_close(total_delta, circulating_delta)
+            or not _decimal_close(
+                _parse_decimal(share_raw.get("F003N"), positive=True), post_total
+            )
+            or not _decimal_close(
+                _parse_decimal(share_raw.get("F021N"), positive=True),
+                post_circulating,
+            )
+            or not _decimal_close(
+                _parse_decimal(share_raw.get("F022N"), positive=True),
+                post_circulating,
+            )
+            or float(actual) != float(row["rights_actual_shares"])
+            or float(pre_total) != float(row["rights_pre_shares"])
+            or float(post_total) != float(row["rights_post_shares"])
+            or float(pre_circulating)
+            != float(row["rights_pre_circulating_shares"])
+            or float(post_circulating)
+            != float(row["rights_post_circulating_shares"])
+        ):
+            raise ValueError
+        matching_share_rows = 0
+        for candidate in share_rows:
+            if (
+                candidate.get("SECCODE") == code
+                and candidate.get("VARYDATE") == proof["list_date"]
+                and candidate.get("F001V") is not None
+                and candidate.get("F002V") is not None
+            ):
+                candidate_codes = _split_aligned_cninfo_tokens(candidate["F001V"])
+                candidate_names = _split_aligned_cninfo_tokens(candidate["F002V"])
+                if (
+                    len(candidate_codes) == 2
+                    and set(zip(candidate_codes, candidate_names, strict=True))
+                    == {("015005", "配股上市"), ("015012", "可转债转股")}
+                    and _decimal_close(
+                        _parse_decimal(candidate.get("F003N"), positive=True),
+                        post_total,
+                    )
+                    and _decimal_close(
+                        _parse_decimal(candidate.get("F021N"), positive=True),
+                        post_circulating,
+                    )
+                    and _decimal_close(
+                        _parse_decimal(candidate.get("F022N"), positive=True),
+                        post_circulating,
+                    )
+                ):
+                    matching_share_rows += 1
+        if matching_share_rows != 1:
+            raise ValueError
+    except M3G1ExecutionFactError:
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RESULT_INVALID") from None
+    except (
+        ArithmeticError,
+        KeyError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+    ):
+        raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_RESULT_INVALID") from None
+
+
 def _assert_event_ids_identity(row: dict[str, Any]) -> None:
     try:
         parsed_ids = _parse_event_ids_json(row.get("event_ids_json"))
@@ -2716,10 +3281,13 @@ def _rights_candidate_id_sha256(
     rights_actual_shares: float,
     rights_pre_shares: float,
     rights_post_shares: float,
+    rights_pre_circulating_shares: float | None,
+    rights_post_circulating_shares: float | None,
+    rights_mixed_change_proof_sha256: str | None,
 ) -> str:
     return _sha256_json(
         [
-            "m3-g1-corporate-action-rights-candidate-v2",
+            "m3-g1-corporate-action-rights-candidate-v3",
             event_key,
             subid,
             _float_token(rights_price),
@@ -2727,6 +3295,9 @@ def _rights_candidate_id_sha256(
             _float_token(rights_actual_shares),
             _float_token(rights_pre_shares),
             _float_token(rights_post_shares),
+            _nullable_float_token(rights_pre_circulating_shares),
+            _nullable_float_token(rights_post_circulating_shares),
+            rights_mixed_change_proof_sha256,
         ]
     )
 
@@ -2741,10 +3312,13 @@ def _rights_event_id_sha256(
     rights_actual_shares: float,
     rights_pre_shares: float,
     rights_post_shares: float,
+    rights_pre_circulating_shares: float | None,
+    rights_post_circulating_shares: float | None,
+    rights_mixed_change_proof_sha256: str | None,
 ) -> str:
     return _sha256_json(
         [
-            "m3-g1-corporate-action-rights-event-v2",
+            "m3-g1-corporate-action-rights-event-v3",
             "RIGHTS",
             symbol,
             subid,
@@ -2755,6 +3329,9 @@ def _rights_event_id_sha256(
             _float_token(rights_actual_shares),
             _float_token(rights_pre_shares),
             _float_token(rights_post_shares),
+            _nullable_float_token(rights_pre_circulating_shares),
+            _nullable_float_token(rights_post_circulating_shares),
+            rights_mixed_change_proof_sha256,
         ]
     )
 
@@ -2830,6 +3407,10 @@ def _float_token(value: float) -> str:
     if not math.isfinite(normalized):
         raise M3G1ExecutionFactError("G1_CORPORATE_ACTION_EVENT_INVALID")
     return format(normalized, ".17g")
+
+
+def _nullable_float_token(value: float | None) -> str | None:
+    return None if value is None else _float_token(value)
 
 
 def _norm_float(value: float) -> float:
@@ -3723,6 +4304,9 @@ def _ledger_schema() -> dict[str, Any]:
         "rights_actual_shares": pl.Float64,
         "rights_pre_shares": pl.Float64,
         "rights_post_shares": pl.Float64,
+        "rights_pre_circulating_shares": pl.Float64,
+        "rights_post_circulating_shares": pl.Float64,
+        "rights_mixed_change_proof_sha256": pl.Utf8,
         "record_date": pl.Date,
         "pay_date": pl.Date,
         "stock_list_date": pl.Date,
@@ -3750,6 +4334,10 @@ def _evidence_schema() -> dict[str, Any]:
         "rights_actual_shares": pl.Float64,
         "rights_pre_shares": pl.Float64,
         "rights_post_shares": pl.Float64,
+        "rights_pre_circulating_shares": pl.Float64,
+        "rights_post_circulating_shares": pl.Float64,
+        "rights_mixed_change_proof_sha256": pl.Utf8,
+        "rights_mixed_change_proof_json": pl.Utf8,
         "pay_date": pl.Date,
         "stock_list_date": pl.Date,
         "vendor_record_id": pl.Utf8,

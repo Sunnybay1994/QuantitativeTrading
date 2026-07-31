@@ -26,7 +26,10 @@ from quant.data.m3_backfill import (
     VerifiedRawResponse,
     response_content_sha256,
 )
-from quant.data.m3_execution_facts import G1_CORPORATE_ACTION_RECONCILIATION_VERSION
+from quant.data.m3_execution_facts import (
+    G1_CORPORATE_ACTION_RECONCILIATION_VERSION,
+    G1_CORPORATE_ACTION_SELECTION_VERSION,
+)
 from quant.data.storage import RawStore
 from quant.research.m3.config import LoadedM3Config, load_m3_config
 from quant.research.m3 import g1_planning
@@ -581,8 +584,15 @@ def test_static_plan_from_c0_and_forged_identity(
     )
     assert plan.build_spec.mapper_version == "m3-g1-tushare-mapper-v5"
     assert plan.build_spec.schema_version == "m3-g1-schema-v3"
+    assert G1_CORPORATE_ACTION_SELECTION_VERSION == (
+        "tushare_dividend_cninfo_rights_share_consideration_basis_v8"
+    )
+    assert (
+        plan.build_spec.corporate_action_selection_version
+        == G1_CORPORATE_ACTION_SELECTION_VERSION
+    )
     assert G1_CORPORATE_ACTION_RECONCILIATION_VERSION == (
-        "tushare_factor_daily_preclose_suspension_resume_basis_terms_v8"
+        "tushare_factor_daily_preclose_suspension_resume_basis_terms_v9"
     )
     assert (
         plan.build_spec.corporate_action_reconciliation_version

@@ -275,6 +275,9 @@ class TestM3ExecutionInputSchemas:
             "rights_actual_shares": [None],
             "rights_pre_shares": [None],
             "rights_post_shares": [None],
+            "rights_pre_circulating_shares": [None],
+            "rights_post_circulating_shares": [None],
+            "rights_mixed_change_proof_sha256": [None],
             "record_date": [dt.date(2026, 6, 11)],
             "pay_date": [dt.date(2026, 6, 12)],
             "stock_list_date": [None],
@@ -307,6 +310,12 @@ class TestM3ExecutionInputSchemas:
             CorporateActionLedgerSchema.validate(
                 row.with_columns(pl.lit(100.0).alias("rights_actual_shares"))
             )
+        with pytest.raises(pandera.errors.SchemaError):
+            CorporateActionLedgerSchema.validate(
+                row.with_columns(
+                    pl.lit(100.0).alias("rights_pre_circulating_shares")
+                )
+            )
 
     def test_corporate_action_rights_branch_validates(self) -> None:
         row = pl.DataFrame({
@@ -321,6 +330,9 @@ class TestM3ExecutionInputSchemas:
             "rights_actual_shares": [300.0],
             "rights_pre_shares": [1000.0],
             "rights_post_shares": [1300.0],
+            "rights_pre_circulating_shares": [None],
+            "rights_post_circulating_shares": [None],
+            "rights_mixed_change_proof_sha256": [None],
             "record_date": [dt.date(2026, 6, 10)],
             "pay_date": [None],
             "stock_list_date": [dt.date(2026, 6, 20)],
@@ -366,6 +378,71 @@ class TestM3ExecutionInputSchemas:
                 row.with_columns(pl.lit(200.0).alias("rights_actual_shares"))
             )
 
+    def test_mixed_rights_ledger_branch_validates(self) -> None:
+        row = pl.DataFrame({
+            "event_id": ["event-rights-mixed-1"],
+            "symbol": ["601016.SH"],
+            "ex_date": [dt.date(2022, 11, 28)],
+            "action_type": ["RIGHTS"],
+            "cash_per_share_gross": [0.0],
+            "stock_ratio": [0.0],
+            "rights_price": [2.28],
+            "rights_ratio": [0.3],
+            "rights_actual_shares": [146252.3613],
+            "rights_pre_shares": [501254.9956],
+            "rights_post_shares": [647507.6893],
+            "rights_pre_circulating_shares": [448071.9637],
+            "rights_post_circulating_shares": [594324.6574],
+            "rights_mixed_change_proof_sha256": ["a" * 64],
+            "record_date": [dt.date(2022, 11, 17)],
+            "pay_date": [None],
+            "stock_list_date": [dt.date(2022, 12, 13)],
+            "vendor_record_id": ["5067319259"],
+            "source": ["cninfo"],
+            "source_snapshot_id": ["raw-rights-mixed-1"],
+        })
+        CorporateActionLedgerSchema.validate(row)
+
+        for invalid in (
+            row.with_columns(
+                pl.lit(None, dtype=pl.Float64).alias(
+                    "rights_pre_circulating_shares"
+                )
+            ),
+            row.with_columns(
+                pl.lit(594325.6574).alias("rights_post_circulating_shares")
+            ),
+            row.with_columns(
+                pl.lit(None, dtype=pl.Utf8).alias(
+                    "rights_mixed_change_proof_sha256"
+                )
+            ),
+            # A residual within the Decimal representation band is not mixed.
+            row.with_columns(
+                pl.lit(146252.69369999).alias("rights_actual_shares")
+            ),
+        ):
+            with pytest.raises(pandera.errors.SchemaError):
+                CorporateActionLedgerSchema.validate(invalid)
+
+        strict_with_representation_residual = row.with_columns(
+            pl.lit(146252.69369999).alias("rights_actual_shares"),
+            pl.lit(None, dtype=pl.Float64).alias(
+                "rights_pre_circulating_shares"
+            ),
+            pl.lit(None, dtype=pl.Float64).alias(
+                "rights_post_circulating_shares"
+            ),
+            pl.lit(None, dtype=pl.Utf8).alias(
+                "rights_mixed_change_proof_sha256"
+            ),
+        )
+        CorporateActionLedgerSchema.validate(strict_with_representation_residual)
+        small_but_real_mixed_residual = row.with_columns(
+            pl.lit(146252.6936).alias("rights_actual_shares")
+        )
+        CorporateActionLedgerSchema.validate(small_but_real_mixed_residual)
+
     def test_share_consideration_ledger_branch_validates(self) -> None:
         row = pl.DataFrame({
             "event_id": ["event-share-consideration-1"],
@@ -379,6 +456,9 @@ class TestM3ExecutionInputSchemas:
             "rights_actual_shares": [None],
             "rights_pre_shares": [None],
             "rights_post_shares": [None],
+            "rights_pre_circulating_shares": [None],
+            "rights_post_circulating_shares": [None],
+            "rights_mixed_change_proof_sha256": [None],
             "record_date": [dt.date(2018, 2, 1)],
             "pay_date": [None],
             "stock_list_date": [dt.date(2018, 8, 23)],
@@ -395,6 +475,9 @@ class TestM3ExecutionInputSchemas:
                 pl.lit(dt.date(2018, 8, 24)).alias("stock_list_date")
             ),
             row.with_columns(pl.lit(dt.date(2018, 8, 23)).alias("pay_date")),
+            row.with_columns(
+                pl.lit("a" * 64).alias("rights_mixed_change_proof_sha256")
+            ),
         ):
             with pytest.raises(pandera.errors.SchemaError):
                 CorporateActionLedgerSchema.validate(invalid)
@@ -417,6 +500,10 @@ class TestM3ExecutionInputSchemas:
             "rights_actual_shares": [None],
             "rights_pre_shares": [None],
             "rights_post_shares": [None],
+            "rights_pre_circulating_shares": [None],
+            "rights_post_circulating_shares": [None],
+            "rights_mixed_change_proof_sha256": [None],
+            "rights_mixed_change_proof_json": [None],
             "pay_date": [dt.date(2026, 6, 12)],
             "stock_list_date": [None],
             "vendor_record_id": [None],
@@ -435,6 +522,12 @@ class TestM3ExecutionInputSchemas:
                 row.with_columns(
                     pl.lit(False).alias("selected"),
                     pl.lit("SUPERSEDED_OLDER").alias("selection_reason"),
+                )
+            )
+        with pytest.raises(pandera.errors.SchemaError):
+            CorporateActionSelectionEvidenceSchema.validate(
+                row.with_columns(
+                    pl.lit("{}").alias("rights_mixed_change_proof_json")
                 )
             )
 
@@ -456,6 +549,10 @@ class TestM3ExecutionInputSchemas:
             "rights_actual_shares": [None],
             "rights_pre_shares": [None],
             "rights_post_shares": [None],
+            "rights_pre_circulating_shares": [None],
+            "rights_post_circulating_shares": [None],
+            "rights_mixed_change_proof_sha256": [None],
+            "rights_mixed_change_proof_json": [None],
             "pay_date": [None],
             "stock_list_date": [dt.date(2018, 8, 23)],
             "vendor_record_id": ["cninfo-consideration-row-1"],
@@ -476,9 +573,95 @@ class TestM3ExecutionInputSchemas:
             row.with_columns(
                 pl.lit(dt.date(2018, 8, 24)).alias("stock_list_date")
             ),
+            row.with_columns(
+                pl.lit("{}").alias("rights_mixed_change_proof_json")
+            ),
         ):
             with pytest.raises(pandera.errors.SchemaError):
                 CorporateActionSelectionEvidenceSchema.validate(invalid)
+
+    def test_mixed_rights_selection_evidence_branch_validates(self) -> None:
+        proof_json = (
+            '{"schema_version":"m3-g1-cninfo-rights-mixed-change-proof-v1"}'
+        )
+        row = pl.DataFrame({
+            "economic_event_key_sha256": ["a" * 64],
+            "candidate_id": ["b" * 64],
+            "symbol": ["601016.SH"],
+            "action_type": ["RIGHTS"],
+            "end_date": [dt.date(2022, 11, 10)],
+            "record_date": [dt.date(2022, 11, 17)],
+            "ex_date": [dt.date(2022, 11, 28)],
+            "imp_ann_date": [dt.date(2022, 11, 24)],
+            "ann_date": [dt.date(2022, 11, 10)],
+            "cash_per_share_gross": [0.0],
+            "stock_ratio": [0.0],
+            "rights_price": [2.28],
+            "rights_ratio": [0.3],
+            "rights_actual_shares": [146252.3613],
+            "rights_pre_shares": [501254.9956],
+            "rights_post_shares": [647507.6893],
+            "rights_pre_circulating_shares": [448071.9637],
+            "rights_post_circulating_shares": [594324.6574],
+            "rights_mixed_change_proof_sha256": ["c" * 64],
+            "rights_mixed_change_proof_json": [proof_json],
+            "pay_date": [None],
+            "stock_list_date": [dt.date(2022, 12, 13)],
+            "vendor_record_id": ["5067319259"],
+            "candidate_rank": [1],
+            "candidate_count": [1],
+            "raw_row_count": [1],
+            "selected": [True],
+            "selection_reason": ["SELECTED_LATEST"],
+            "source": ["cninfo"],
+            "source_request_id": ["d" * 64],
+            "source_snapshot_id": ["e" * 64],
+        })
+        CorporateActionSelectionEvidenceSchema.validate(row)
+
+        for invalid in (
+            row.with_columns(
+                pl.lit(None, dtype=pl.Utf8).alias(
+                    "rights_mixed_change_proof_json"
+                )
+            ),
+            row.with_columns(
+                pl.lit(None, dtype=pl.Utf8).alias(
+                    "rights_mixed_change_proof_sha256"
+                )
+            ),
+            row.with_columns(
+                pl.lit(594325.6574).alias("rights_post_circulating_shares")
+            ),
+            row.with_columns(
+                pl.lit(146252.69369999).alias("rights_actual_shares")
+            ),
+        ):
+            with pytest.raises(pandera.errors.SchemaError):
+                CorporateActionSelectionEvidenceSchema.validate(invalid)
+
+        strict = row.with_columns(
+            pl.lit(146252.6937).alias("rights_actual_shares"),
+            pl.lit(None, dtype=pl.Float64).alias(
+                "rights_pre_circulating_shares"
+            ),
+            pl.lit(None, dtype=pl.Float64).alias(
+                "rights_post_circulating_shares"
+            ),
+            pl.lit(None, dtype=pl.Utf8).alias(
+                "rights_mixed_change_proof_sha256"
+            ),
+            pl.lit(None, dtype=pl.Utf8).alias(
+                "rights_mixed_change_proof_json"
+            ),
+        )
+        CorporateActionSelectionEvidenceSchema.validate(strict)
+        small_but_real_mixed_residual = row.with_columns(
+            pl.lit(146252.6936).alias("rights_actual_shares")
+        )
+        CorporateActionSelectionEvidenceSchema.validate(
+            small_but_real_mixed_residual
+        )
 
     def test_corporate_action_reconciliation_status_branches(self) -> None:
         no_event = pl.DataFrame({
