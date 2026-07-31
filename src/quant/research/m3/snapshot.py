@@ -23,11 +23,11 @@ import math
 import os
 import stat
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from functools import wraps
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Callable, ParamSpec, TypeVar, cast
+from typing import Any, Callable, Literal, ParamSpec, TypeVar, cast
 
 import polars as pl
 
@@ -42,6 +42,12 @@ from quant.research.m3.contracts import (
     SnapshotManifestV1,
     SnapshotRequestRecordV1,
     VerifiedSnapshotArtifact,
+)
+from quant.research.m3.development_example import (
+    VerifiedDevelopmentExampleG1Release,
+    VerifiedDevelopmentExampleSnapshotArtifact,
+    compute_development_snapshot_request_key_from_parts,
+    verify_development_example_g1_release,
 )
 from quant.research.m3.run_state import (
     ArtifactDigest,
@@ -106,6 +112,34 @@ class M3SnapshotError(ValueError):
 
     def __repr__(self) -> str:
         return f"M3SnapshotError({self.code!r})"
+
+
+@dataclass(frozen=True)
+class _SnapshotSourceView:
+    trust_domain: Literal["FORMAL_G1", "DEVELOPMENT_EXAMPLE_G1"]
+    source_id: str
+    development_example_id: str | None
+    development_request_key: str | None
+    manifest_sha256: str
+    manifest_path: Path
+    history_start: dt.date
+    history_end: dt.date
+    signal_start: dt.date
+    signal_end: dt.date
+    files: tuple[Any, ...]
+    artifact_paths: tuple[tuple[str, Path], ...]
+
+
+@dataclass(frozen=True)
+class _VerifiedSnapshotParts:
+    root: Path
+    request: SnapshotRequestRecordV1
+    request_sha256: str
+    manifest: SnapshotManifestV1
+    manifest_sha256: str
+    snapshot_receipt_sha256: str
+    session_calendar_path: Path
+    staging_paths: tuple[Path, ...]
 
 
 def _snapshot_boundary(
@@ -176,12 +210,14 @@ def _prepare_qlib_staging(
             raise ValueError("release 模式不得混用裸 DataFrame")
         if type(history_start) is not dt.date or type(history_end) is not dt.date:
             raise ValueError("release 模式必须提供精确 history 日期")
-        verified = _reverify_release(release)
-        bars = _read_verified_g1_parquet(verified, "bar_1d.parquet")
-        membership = _read_verified_g1_parquet(
-            verified, "universe_membership.parquet"
+        source_view = _formal_snapshot_source(release)
+        bars = _read_snapshot_source_parquet(source_view, "bar_1d.parquet")
+        membership = _read_snapshot_source_parquet(
+            source_view, "universe_membership.parquet"
         )
-        calendars = _read_verified_g1_parquet(verified, "trade_calendar.parquet")
+        calendars = _read_snapshot_source_parquet(
+            source_view, "trade_calendar.parquet"
+        )
         source = _SOURCE
         universe = _UNIVERSE
     elif any(value is not None for value in (history_start, history_end)):
@@ -343,12 +379,36 @@ def build_snapshot_session_calendar(
     *, release: VerifiedG1Release, history_start: dt.date, history_end: dt.date,
 ) -> pl.DataFrame:
     """Project the strict SH open-session calendar from a reverified G1 release."""
-    verified = _reverify_release(release)
+    return _build_snapshot_session_calendar(
+        source=_formal_snapshot_source(release),
+        history_start=history_start,
+        history_end=history_end,
+    )
+
+
+@_snapshot_boundary("SNAPSHOT_INPUT_INVALID")
+def build_development_example_snapshot_session_calendar(
+    *, release: VerifiedDevelopmentExampleG1Release,
+    history_start: dt.date,
+    history_end: dt.date,
+) -> pl.DataFrame:
+    return _build_snapshot_session_calendar(
+        source=_development_snapshot_source(release),
+        history_start=history_start,
+        history_end=history_end,
+    )
+
+
+def _build_snapshot_session_calendar(
+    *, source: _SnapshotSourceView,
+    history_start: dt.date,
+    history_end: dt.date,
+) -> pl.DataFrame:
     if type(history_start) is not dt.date or type(history_end) is not dt.date:
         raise ValueError("history 日期必须为精确 date")
     if history_end < history_start:
         raise ValueError("history_end 不得早于 history_start")
-    calendars = _read_verified_g1_parquet(verified, "trade_calendar.parquet")
+    calendars = _read_snapshot_source_parquet(source, "trade_calendar.parquet")
     result = (
         calendars.filter(
             (pl.col("market") == "SH")
@@ -386,18 +446,39 @@ def build_snapshot_artifact(
     spec: SnapshotBuildSpec, output_root: Path,
 ) -> SnapshotBuildResult:
     """Materialize one complete G2A snapshot inside an already-empty temp root."""
-    verified = _reverify_release(release)
+    source = _formal_snapshot_source(release)
+    return _build_snapshot_artifact(
+        source=source, config=config, spec=spec, output_root=output_root
+    )
+
+
+@_snapshot_boundary("SNAPSHOT_OUTPUT_INVALID")
+def build_development_example_snapshot_artifact(
+    *, release: VerifiedDevelopmentExampleG1Release, config: LoadedM3Config,
+    spec: SnapshotBuildSpec, output_root: Path,
+) -> SnapshotBuildResult:
+    """Build a G2A-shaped artifact in the isolated development trust domain."""
+    source = _development_snapshot_source(release)
+    return _build_snapshot_artifact(
+        source=source, config=config, spec=spec, output_root=output_root
+    )
+
+
+def _build_snapshot_artifact(
+    *, source: _SnapshotSourceView, config: LoadedM3Config,
+    spec: SnapshotBuildSpec, output_root: Path,
+) -> SnapshotBuildResult:
     try:
-        _validate_build_inputs(verified=verified, config=config, spec=spec)
+        _validate_build_inputs(source=source, config=config, spec=spec)
     except (TypeError, ValueError, OSError, pl.exceptions.PolarsError):
         raise M3SnapshotError("SNAPSHOT_INPUT_INVALID") from None
     _require_empty_real_directory(output_root, label="snapshot output_root")
 
-    bars = _read_verified_g1_parquet(verified, "bar_1d.parquet")
-    membership = _read_verified_g1_parquet(
-        verified, "universe_membership.parquet"
+    bars = _read_snapshot_source_parquet(source, "bar_1d.parquet")
+    membership = _read_snapshot_source_parquet(
+        source, "universe_membership.parquet"
     )
-    calendars = _read_verified_g1_parquet(verified, "trade_calendar.parquet")
+    calendars = _read_snapshot_source_parquet(source, "trade_calendar.parquet")
     calendar = _calendar_from_frame(
         calendars=calendars,
         history_start=spec.history_start,
@@ -426,7 +507,7 @@ def build_snapshot_artifact(
         staging_paths=staging_paths,
     )
     manifest = _make_manifest(
-        verified=verified,
+        source=source,
         config=config,
         spec=spec,
         calendar=calendar,
@@ -449,8 +530,28 @@ def build_snapshot_request_record(
     spec: SnapshotBuildSpec, result: SnapshotBuildResult,
 ) -> SnapshotRequestRecordV1:
     """Build the immutable request-key to content-id mapping without publishing it."""
-    verified = _reverify_release(release)
-    _validate_build_inputs(verified=verified, config=config, spec=spec)
+    return _build_snapshot_request_record(
+        source=_formal_snapshot_source(release), config=config, spec=spec,
+        result=result,
+    )
+
+
+@_snapshot_boundary("SNAPSHOT_IDENTITY_MISMATCH")
+def build_development_example_snapshot_request_record(
+    *, release: VerifiedDevelopmentExampleG1Release, config: LoadedM3Config,
+    spec: SnapshotBuildSpec, result: SnapshotBuildResult,
+) -> SnapshotRequestRecordV1:
+    return _build_snapshot_request_record(
+        source=_development_snapshot_source(release), config=config, spec=spec,
+        result=result,
+    )
+
+
+def _build_snapshot_request_record(
+    *, source: _SnapshotSourceView, config: LoadedM3Config,
+    spec: SnapshotBuildSpec, result: SnapshotBuildResult,
+) -> SnapshotRequestRecordV1:
+    _validate_build_inputs(source=source, config=config, spec=spec)
     rebuilt = read_snapshot_manifest(result.root / _MANIFEST_NAME)
     raw = (result.root / _MANIFEST_NAME).read_bytes()
     manifest_sha = hashlib.sha256(raw).hexdigest()
@@ -461,14 +562,68 @@ def build_snapshot_request_record(
         snapshot_request_key=spec.snapshot_request_key,
         snapshot_id=rebuilt.snapshot_id,
         snapshot_manifest_sha256=manifest_sha,
-        g1_release_id=verified.manifest.release_id,
-        g1_release_manifest_sha256=verified.manifest_sha256,
+        g1_release_id=source.source_id,
+        g1_release_manifest_sha256=source.manifest_sha256,
         snapshot_config_sha256=spec.snapshot_config_sha256,
         code_version=spec.code_version,
         history_start=rebuilt.history_start,
         history_end=rebuilt.history_end,
         signal_start=rebuilt.signal_start,
         signal_end=rebuilt.signal_end,
+    )
+
+
+def snapshot_request_record_bytes(record: SnapshotRequestRecordV1) -> bytes:
+    """Return the only canonical byte representation accepted for publication."""
+    if type(record) is not SnapshotRequestRecordV1:
+        raise M3SnapshotError("SNAPSHOT_INPUT_INVALID")
+    return _canonical_json_bytes(asdict(record))
+
+
+@_snapshot_boundary("SNAPSHOT_IDENTITY_MISMATCH")
+def verify_snapshot_build_result(
+    *, snapshot_root: Path, release: VerifiedG1Release,
+    config: LoadedM3Config, spec: SnapshotBuildSpec,
+) -> SnapshotBuildResult:
+    """Verify a complete temp/final snapshot before request/receipt publication."""
+    return _verify_snapshot_build_result(
+        snapshot_root=snapshot_root, source=_formal_snapshot_source(release),
+        config=config, spec=spec,
+    )
+
+
+@_snapshot_boundary("SNAPSHOT_IDENTITY_MISMATCH")
+def verify_development_example_snapshot_build_result(
+    *, snapshot_root: Path, release: VerifiedDevelopmentExampleG1Release,
+    config: LoadedM3Config, spec: SnapshotBuildSpec,
+) -> SnapshotBuildResult:
+    return _verify_snapshot_build_result(
+        snapshot_root=snapshot_root, source=_development_snapshot_source(release),
+        config=config, spec=spec,
+    )
+
+
+def _verify_snapshot_build_result(
+    *, snapshot_root: Path, source: _SnapshotSourceView,
+    config: LoadedM3Config, spec: SnapshotBuildSpec,
+) -> SnapshotBuildResult:
+    _validate_build_inputs(source=source, config=config, spec=spec)
+    _require_real_directory(snapshot_root, label="snapshot root")
+    root_entries = {entry.name for entry in os.scandir(snapshot_root)}
+    if root_entries != {_MANIFEST_NAME, _CALENDAR_NAME, _STAGING_DIR}:
+        raise ValueError("snapshot root 文件树非法")
+    _require_real_directory(snapshot_root / _STAGING_DIR, label="snapshot staging")
+    manifest_path = snapshot_root / _MANIFEST_NAME
+    manifest = read_snapshot_manifest(manifest_path)
+    manifest_raw = _read_regular_file(manifest_path, label="snapshot manifest")
+    manifest_sha = hashlib.sha256(manifest_raw).hexdigest()
+    _verify_manifest_identity(
+        manifest=manifest, source=source, config=config, spec=spec
+    )
+    _verify_manifest_files(snapshot_root, manifest)
+    return SnapshotBuildResult(
+        root=snapshot_root.resolve(strict=True), manifest=manifest,
+        manifest_sha256=manifest_sha,
     )
 
 
@@ -549,8 +704,65 @@ def verify_snapshot_artifact(
     artifact_roots: Mapping[str, Path],
 ) -> VerifiedSnapshotArtifact:
     """Rebuild physical, logical, identity and exact StageReceipt closure."""
-    verified_release = _reverify_release(release)
-    _validate_build_inputs(verified=verified_release, config=config, spec=spec)
+    parts = _verify_snapshot_artifact(
+        snapshot_root=snapshot_root,
+        snapshot_request_path=snapshot_request_path,
+        snapshot_receipt_path=snapshot_receipt_path,
+        source=_formal_snapshot_source(release),
+        config=config,
+        spec=spec,
+        artifact_roots=artifact_roots,
+        expected_stage="snapshot",
+    )
+    return VerifiedSnapshotArtifact(
+        root=parts.root, request=parts.request,
+        request_sha256=parts.request_sha256, manifest=parts.manifest,
+        manifest_sha256=parts.manifest_sha256,
+        snapshot_receipt_sha256=parts.snapshot_receipt_sha256,
+        session_calendar_path=parts.session_calendar_path,
+        staging_paths=parts.staging_paths,
+    )
+
+
+@_snapshot_boundary("SNAPSHOT_IDENTITY_MISMATCH")
+def verify_development_example_snapshot_artifact(
+    *, snapshot_root: Path, snapshot_request_path: Path,
+    snapshot_receipt_path: Path, release: VerifiedDevelopmentExampleG1Release,
+    config: LoadedM3Config, spec: SnapshotBuildSpec,
+    artifact_roots: Mapping[str, Path],
+) -> VerifiedDevelopmentExampleSnapshotArtifact:
+    source = _development_snapshot_source(release)
+    parts = _verify_snapshot_artifact(
+        snapshot_root=snapshot_root,
+        snapshot_request_path=snapshot_request_path,
+        snapshot_receipt_path=snapshot_receipt_path,
+        source=source,
+        config=config,
+        spec=spec,
+        artifact_roots=artifact_roots,
+        expected_stage="development-snapshot",
+    )
+    assert source.development_example_id is not None
+    return VerifiedDevelopmentExampleSnapshotArtifact(
+        release_kind="development_example",
+        formal_gate_eligible=False,
+        example_id=source.development_example_id,
+        root=parts.root, request=parts.request,
+        request_sha256=parts.request_sha256, manifest=parts.manifest,
+        manifest_sha256=parts.manifest_sha256,
+        snapshot_receipt_sha256=parts.snapshot_receipt_sha256,
+        session_calendar_path=parts.session_calendar_path,
+        staging_paths=parts.staging_paths,
+    )
+
+
+def _verify_snapshot_artifact(
+    *, snapshot_root: Path, snapshot_request_path: Path,
+    snapshot_receipt_path: Path, source: _SnapshotSourceView,
+    config: LoadedM3Config, spec: SnapshotBuildSpec,
+    artifact_roots: Mapping[str, Path], expected_stage: str,
+) -> _VerifiedSnapshotParts:
+    _validate_build_inputs(source=source, config=config, spec=spec)
     _require_real_directory(snapshot_root, label="snapshot root")
     root_entries = {entry.name for entry in os.scandir(snapshot_root)}
     if root_entries != {_MANIFEST_NAME, _CALENDAR_NAME, _STAGING_DIR}:
@@ -566,7 +778,7 @@ def verify_snapshot_artifact(
     request_sha = hashlib.sha256(request_raw).hexdigest()
     _verify_request_and_manifest(
         request=request, manifest=manifest, manifest_sha=manifest_sha,
-        verified=verified_release, config=config, spec=spec,
+        source=source, config=config, spec=spec,
     )
     calendar_path, staging_paths = _verify_manifest_files(snapshot_root, manifest)
 
@@ -575,13 +787,13 @@ def verify_snapshot_artifact(
     )
     if receipt is None:
         raise ValueError("snapshot receipt 缺失")
-    if receipt.stage != "snapshot" or receipt.scope != "SNAPSHOT":
+    if receipt.stage != expected_stage or receipt.scope != "SNAPSHOT":
         raise ValueError("snapshot receipt stage/scope 非法")
     if receipt.scope_key != spec.snapshot_request_key:
         raise ValueError("snapshot receipt scope_key 非法")
     expected_inputs = {
-        verified_release.release.manifest_path.resolve(strict=True),
-        *(dict(verified_release.artifact_paths)[name].resolve(strict=True) for name in (
+        source.manifest_path.resolve(strict=True),
+        *(dict(source.artifact_paths)[name].resolve(strict=True) for name in (
             "bar_1d.parquet", "universe_membership.parquet", "trade_calendar.parquet"
         )),
     }
@@ -595,7 +807,7 @@ def verify_snapshot_artifact(
     if _receipt_paths(receipt.outputs, artifact_roots) != expected_outputs:
         raise ValueError("snapshot receipt outputs 闭包非法")
     receipt_raw = _read_regular_file(snapshot_receipt_path, label="snapshot receipt")
-    return VerifiedSnapshotArtifact(
+    return _VerifiedSnapshotParts(
         root=snapshot_root.resolve(strict=True), request=request,
         request_sha256=request_sha, manifest=manifest, manifest_sha256=manifest_sha,
         snapshot_receipt_sha256=hashlib.sha256(receipt_raw).hexdigest(),
@@ -741,18 +953,58 @@ def _reverify_release(release: VerifiedG1Release) -> VerifiedG1Release:
     return verify_g1_release(release=release.release)
 
 
-def _read_verified_g1_parquet(
-    verified: VerifiedG1Release, name: str,
+def _formal_snapshot_source(release: VerifiedG1Release) -> _SnapshotSourceView:
+    verified = _reverify_release(release)
+    return _SnapshotSourceView(
+        trust_domain="FORMAL_G1",
+        source_id=verified.manifest.release_id,
+        development_example_id=None,
+        development_request_key=None,
+        manifest_sha256=verified.manifest_sha256,
+        manifest_path=verified.release.manifest_path,
+        history_start=verified.manifest.history_start,
+        history_end=verified.manifest.history_end,
+        signal_start=verified.manifest.signal_start,
+        signal_end=verified.manifest.signal_end,
+        files=verified.manifest.files,
+        artifact_paths=verified.artifact_paths,
+    )
+
+
+def _development_snapshot_source(
+    release: VerifiedDevelopmentExampleG1Release,
+) -> _SnapshotSourceView:
+    if type(release) is not VerifiedDevelopmentExampleG1Release:
+        raise ValueError("release 必须为 VerifiedDevelopmentExampleG1Release")
+    verified = verify_development_example_g1_release(root=release.release.root)
+    return _SnapshotSourceView(
+        trust_domain="DEVELOPMENT_EXAMPLE_G1",
+        source_id=verified.manifest.contract_release_id,
+        development_example_id=verified.manifest.example_id,
+        development_request_key=verified.request.example_request_key,
+        manifest_sha256=verified.manifest_sha256,
+        manifest_path=verified.release.manifest_path,
+        history_start=verified.manifest.history_start,
+        history_end=verified.manifest.history_end,
+        signal_start=verified.manifest.signal_start,
+        signal_end=verified.manifest.signal_end,
+        files=verified.manifest.files,
+        artifact_paths=verified.artifact_paths,
+    )
+
+
+def _read_snapshot_source_parquet(
+    source: _SnapshotSourceView, name: str,
 ) -> pl.DataFrame:
     manifest_raw = _read_regular_file(
-        verified.release.manifest_path, label="G1 release manifest"
+        source.manifest_path, label="G1 release manifest"
     )
-    if hashlib.sha256(manifest_raw).hexdigest() != verified.manifest_sha256:
+    if hashlib.sha256(manifest_raw).hexdigest() != source.manifest_sha256:
         raise ValueError("G1 release manifest 读取前漂移")
-    path = dict(verified.artifact_paths).get(name)
+    path = dict(source.artifact_paths).get(name)
     if path is None:
         raise ValueError("G1 release artifact path 缺失")
-    entry = next((item for item in verified.manifest.files if item.path == name), None)
+    entry = next((item for item in source.files if item.path == name), None)
     if entry is None:
         raise ValueError("G1 release manifest artifact 缺失")
     raw = _read_regular_file(path, label="G1 release artifact")
@@ -762,7 +1014,7 @@ def _read_verified_g1_parquet(
 
 
 def _validate_build_inputs(
-    *, verified: VerifiedG1Release, config: LoadedM3Config, spec: SnapshotBuildSpec,
+    *, source: _SnapshotSourceView, config: LoadedM3Config, spec: SnapshotBuildSpec,
 ) -> None:
     if type(config) is not LoadedM3Config or type(spec) is not SnapshotBuildSpec:
         raise ValueError("snapshot config/spec 类型非法")
@@ -773,9 +1025,8 @@ def _validate_build_inputs(
         raise ValueError("SnapshotBuildSpec config hash 非法")
     if spec.config_version != config.config_version:
         raise ValueError("SnapshotBuildSpec config_version 非法")
-    manifest = verified.manifest
     if (spec.history_start, spec.history_end) != (
-        manifest.history_start, manifest.history_end,
+        source.history_start, source.history_end,
     ):
         raise ValueError("SnapshotBuildSpec history window 非法")
     data = config.section("data")
@@ -783,16 +1034,26 @@ def _validate_build_inputs(
     signal_end = data["end_date"]
     if type(signal_start) is not dt.date or type(signal_end) is not dt.date:
         raise ValueError("snapshot config signal 日期非法")
-    if (manifest.signal_start, manifest.signal_end) != (signal_start, signal_end):
+    if (source.signal_start, source.signal_end) != (signal_start, signal_end):
         raise ValueError("G1 release 与 snapshot config signal window 不一致")
     if not spec.history_start <= signal_start <= signal_end <= spec.history_end:
         raise ValueError("snapshot history/signal 日期闭包非法")
-    expected_key = compute_snapshot_request_key(
-        g1_release_id=manifest.release_id,
-        g1_release_manifest_sha256=verified.manifest_sha256,
-        snapshot_config_sha256=config_hash,
-        code_version=spec.code_version,
-    )
+    if source.trust_domain == "FORMAL_G1":
+        expected_key = compute_snapshot_request_key(
+            g1_release_id=source.source_id,
+            g1_release_manifest_sha256=source.manifest_sha256,
+            snapshot_config_sha256=config_hash,
+            code_version=spec.code_version,
+        )
+    else:
+        assert source.development_request_key is not None
+        expected_key = compute_development_snapshot_request_key_from_parts(
+            development_request_key=source.development_request_key,
+            contract_release_id=source.source_id,
+            manifest_sha256=source.manifest_sha256,
+            snapshot_config_sha256=config_hash,
+            code_version=spec.code_version,
+        )
     if spec.snapshot_request_key != expected_key:
         raise ValueError("snapshot_request_key 非法")
     if spec.adjustment_formula_version != ADJUSTMENT_SPEC["formula_version"]:
@@ -858,7 +1119,7 @@ def _entry_from_parquet(
 
 
 def _make_manifest(
-    *, verified: VerifiedG1Release, config: LoadedM3Config, spec: SnapshotBuildSpec,
+    *, source: _SnapshotSourceView, config: LoadedM3Config, spec: SnapshotBuildSpec,
     calendar: pl.DataFrame, staging: pl.DataFrame,
     entries: tuple[SnapshotArtifactEntryV1, ...],
 ) -> SnapshotManifestV1:
@@ -877,8 +1138,8 @@ def _make_manifest(
         schema_version="m3-snapshot-manifest-v1", snapshot_id="0" * 64,
         config_version=config.config_version,
         snapshot_config_sha256=spec.snapshot_config_sha256,
-        g1_release_id=verified.manifest.release_id,
-        g1_release_manifest_sha256=verified.manifest_sha256,
+        g1_release_id=source.source_id,
+        g1_release_manifest_sha256=source.manifest_sha256,
         source="tushare", universe="CSI300_TUSHARE_MONTHLY_OBSERVED_PIT_V1",
         history_start=spec.history_start, history_end=spec.history_end,
         signal_start=signal_start, signal_end=signal_end,
@@ -906,13 +1167,13 @@ def _snapshot_id(manifest: SnapshotManifestV1) -> str:
 
 def _verify_request_and_manifest(
     *, request: SnapshotRequestRecordV1, manifest: SnapshotManifestV1,
-    manifest_sha: str, verified: VerifiedG1Release, config: LoadedM3Config,
+    manifest_sha: str, source: _SnapshotSourceView, config: LoadedM3Config,
     spec: SnapshotBuildSpec,
 ) -> None:
     data = config.section("data")
     expected = (
         spec.snapshot_request_key, manifest.snapshot_id, manifest_sha,
-        verified.manifest.release_id, verified.manifest_sha256,
+        source.source_id, source.manifest_sha256,
         spec.snapshot_config_sha256, spec.code_version, spec.history_start,
         spec.history_end, data["start_date"], data["end_date"],
     )
@@ -925,9 +1186,19 @@ def _verify_request_and_manifest(
     )
     if actual != expected:
         raise ValueError("snapshot request mapping 与 verified 输入不一致")
+    _verify_manifest_identity(
+        manifest=manifest, source=source, config=config, spec=spec
+    )
+
+
+def _verify_manifest_identity(
+    *, manifest: SnapshotManifestV1, source: _SnapshotSourceView,
+    config: LoadedM3Config, spec: SnapshotBuildSpec,
+) -> None:
+    data = config.section("data")
     manifest_expected = (
         config.config_version, spec.snapshot_config_sha256,
-        verified.manifest.release_id, verified.manifest_sha256,
+        source.source_id, source.manifest_sha256,
         spec.history_start, spec.history_end, data["start_date"], data["end_date"],
         spec.staging_schema_version, spec.adjustment_formula_version,
     )

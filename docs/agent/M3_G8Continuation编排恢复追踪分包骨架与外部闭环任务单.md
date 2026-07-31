@@ -10,6 +10,11 @@
 > 本文取代旧 O1–O5 的执行颗粒度，补齐 verified continuation 输入、stage-owned 原子目录、handler 能力边界和
 > G7 `backtest_plan`。本文不宣称 G8、G9、M3 或任何 Gate 已实现或通过。
 
+> **开发并行轨边界（2026-07-31）：** G8A/G8B 可按
+> [`M3_DevelopmentExampleRelease开发并行轨任务单.md`](M3_DevelopmentExampleRelease开发并行轨任务单.md)
+> 使用 development example 验证 snapshot plan、首次发布、恢复和幂等执行。其节点名/receipt stage 与正式
+> `snapshot` 分离，正式 runner 拒绝该节点；这些结果不代表真实 handlers、正式 G8 或任何 Gate 通过。
+
 ## 1. 六包拆分
 
 | 包 | 唯一职责 | 前置 |
