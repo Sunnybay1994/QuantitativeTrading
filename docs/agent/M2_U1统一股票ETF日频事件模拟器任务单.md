@@ -70,8 +70,14 @@ def simulate_daily_targets(
     ...
 ```
 
-`initial_positions` 最少包含 `symbol, quantity, settled_quantity, mark_price`。允许注入未交收初始持仓，
-使纯日频循环能真实覆盖 T+1 拒绝，而不是构造同日第二事件。
+`initial_positions` 最少包含 `symbol, quantity, settled_quantity, mark_price`。它表示**首个模拟 session
+已完成盘前交收后的快照**：注入的 `quantity-settled_quantity` 在首日仍未交收，于第二个模拟 session
+开始时才转为 settled。首日新买股票同样在下一模拟 session 开始时转 settled。这样纯日频循环能真实覆盖
+首日 T+1 拒绝，而不需要没有时间依据的同日第二事件或额外猜测 acquisition date。
+
+每个 `(strategy, execution_date)` target batch 必须只有一个 `as_of` 和一个 `strategy_version`，symbol
+唯一，且按整个 execution batch 汇总后的权重和不超过 1。不能利用不同 as_of/version 分组分别通过
+`TargetWeightSchema` 后在同一执行日叠加超过 1。
 
 ## 4. 文件范围
 
@@ -94,12 +100,14 @@ def simulate_daily_targets(
 ## 5. 每日事件顺序
 
 1. 按权威 calendar 推进 session，即使当日所有持仓均无 bar；
-2. 上一 session 买入数量转为 settled；
+2. 除首个模拟 session 外，上一个模拟 session 留存的未交收股票数量转为 settled；ETF 保持既有 M2
+   非 T+1 行为，不因 `settled_quantity` 不足拒绝；
 3. 构造盘前权益：
    - 有 bar：使用当日 open；
    - 明确 `FULL_DAY` 停牌且无 bar：沿用上一合法 mark；
    - 非停牌但缺 bar：fail closed；
-4. 证券集合为“当前持仓 ∪ 当日 target”；target 缺行表示目标 0；
+4. 当日存在 target batch 时，证券集合为“当前持仓 ∪ 当日 target”，batch 内缺行表示目标 0；
+   当日完全没有 target batch 时只估值并延续持仓，不得隐式清仓；
 5. 先卖后买；
 6. 每笔意图先调用 `execution_reject_reason`：
    - 停牌；
@@ -113,6 +121,17 @@ def simulate_daily_targets(
    - 明确全天停牌且无 bar：沿用上一合法 mark；
    - 其他缺失：fail closed；
 10. 写 NAV、position、trade、rejection，并核对现金非负、数量与权益守恒。
+
+成本压力由模型自身提供确定构造器：
+
+```python
+EtfCostModel.with_execution_cost_multiplier(multiplier)
+AShareCostModel.with_execution_cost_multiplier(multiplier)
+```
+
+`multiplier` 必须是正有限数。ETF 缩放 commission rate/min 与 slippage；股票只缩放 commission
+rate/min 与 slippage，stamp tax 和 transfer fee 保持原值。每个压力档返回新 immutable model，
+不得修改原对象或复用其他压力档的 fills。
 
 `market_states` 必须是执行时点已知的显式投影。不得用当日 close/high/low/volume 反推开盘状态。
 
@@ -145,7 +164,24 @@ rejected_quantity
 reference_price
 ```
 
-四张输出必须稳定排序；输入行顺序变化不得改变摘要和经济结果。
+四张输出必须稳定排序；输入行顺序变化不得改变摘要和经济结果。固定顺序为：NAV `date`；
+position `date/symbol`；rejection `date/symbol/side`；trade 按 `date` 后保持事件顺序（SELL 在 BUY 前，
+同一 side 内按 symbol）。
+
+Schema 跨字段约束：
+
+- `quantity == settled_quantity + unsettled_quantity`；
+- `market_value` 在表示容差内等于 `quantity * mark_price`；
+- position key `strategy/date/symbol` 唯一；
+- position 每个 session 覆盖“非零持仓 ∪ 当日 batch symbols”；当日卖至 0 的 symbol 保留该日零仓位
+  evidence，后续无 batch 且仍为 0 时可省略；
+- `target_weight` 可空：初始持仓在首个 target batch 前为 null；有 batch 时使用该 symbol 的目标权重，
+  batch 省略的现持仓记 0；后续无 batch 时延续最近一次已知目标；
+- 当前最小切片只产生整笔拒绝，故 `rejected_quantity == requested_quantity`；
+- `BUY_AT_UPPER_LIMIT` 只配 BUY，`SELL_AT_LOWER_LIMIT/T_PLUS_ONE` 只配 SELL，
+  `SUSPENDED` 可配双边；
+- rejection key `strategy/date/symbol/side` 唯一。
+- rejection `reference_price`：有 bar 时使用当日 open；明确全天停牌且无 bar 时使用上一合法 carried mark。
 
 ## 7. 失败语义
 
@@ -174,6 +210,7 @@ reference_price
 4. 持仓股票开盘等于下限，卖单写 `SELL_AT_LOWER_LIMIT`。
 5. 收盘涨停但开盘未触限：不得前视拒单。
 6. 初始 `quantity=200, settled=100`，目标清仓：整单 T+1 拒绝并保留 200 股；不得使用未成交卖款买入 ETF。
+   同形状 ETF 即使 `settled_quantity=0` 也保持既有非 T+1 行为，可正常卖出。
 7. 0.5× / 1× / 2× 必须从相同初始账户独立重放：
    - ETF 的佣金、最低佣金、滑点按冻结压力合同缩放；
    - 股票只缩放佣金、最低佣金、滑点，印花税和过户费不缩放；
