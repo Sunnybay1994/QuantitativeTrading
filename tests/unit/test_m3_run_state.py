@@ -1580,7 +1580,10 @@ def test_publish_link_and_cleanup_dual_fail_prefers_link(
 def test_fsync_parent_dir_close_priority(
     fs_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import quant.research.m3.run_state as run_state_mod
     from quant.research.m3.run_state import _fsync_parent_dir
+
+    monkeypatch.setattr(run_state_mod, "_directory_fsync_supported", lambda: True)
 
     parent = fs_tmp_path / "parent"
     parent.mkdir()

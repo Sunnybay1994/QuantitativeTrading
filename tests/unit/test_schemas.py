@@ -18,10 +18,34 @@ from quant.domain import (
     OrderSchema,
     PositionSchema,
     PriceLimit1dSchema,
+    SnapshotSessionCalendarSchema,
     TargetWeightSchema,
     TradeCalendarSchema,
     UniverseMembershipSchema,
 )
+
+
+class TestSnapshotSessionCalendarSchema:
+    def test_strictly_increasing_dates_pass(self) -> None:
+        SnapshotSessionCalendarSchema.validate(pl.DataFrame({
+            "date": [dt.date(2026, 1, 5), dt.date(2026, 1, 6)]
+        }))
+
+    @pytest.mark.parametrize(
+        "dates",
+        [
+            [],
+            [dt.date(2026, 1, 5), dt.date(2026, 1, 5)],
+            [dt.date(2026, 1, 6), dt.date(2026, 1, 5)],
+        ],
+    )
+    def test_empty_duplicate_or_unsorted_dates_fail(
+        self, dates: list[dt.date],
+    ) -> None:
+        with pytest.raises(pandera.errors.SchemaError):
+            SnapshotSessionCalendarSchema.validate(
+                pl.DataFrame({"date": dates}, schema={"date": pl.Date})
+            )
 
 
 def make_bar(**overrides) -> pl.DataFrame:

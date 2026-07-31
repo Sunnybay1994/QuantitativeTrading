@@ -1,8 +1,8 @@
 # M3 G2–G3 Snapshot、Provider 与标签对账分包骨架及外部闭环任务单
 
 日期：2026-07-14  
-状态：**设计冻结；等待 G1 真实全量 release 在支持 `RENAME_NOREPLACE` 的目标文件系统正式发布并经主 Agent 验真后，从 G2A 开始实施**  
-运行环境：WSL Miniforge `base`；不兼容 Windows 原生 Python  
+状态：**设计冻结；G2A 合同实现中；正式数据运行仍等待当前 G1 Windows release 发布并经主 Agent 验真**
+运行环境：G2A parent 为 Windows/WSL 双平台；Qlib worker 仍使用 WSL `py312`，Linux Gate 单独验收
 设计 SSOT：[`M3实施与Agent交接.md`](../M3实施与Agent交接.md) §4.2、§4.3、§4.5、§4.9  
 历史设计与审查：[`M3_G2-G3Provider与标签对账实现初验任务单.md`](../archive/M3_G2-G3Provider与标签对账实现初验任务单.md)、
 [`M3_G2-G3设计审查与修订记录.md`](M3_G2-G3设计审查与修订记录.md)、
@@ -315,6 +315,10 @@ def verify_snapshot_artifact(
 - `session_calendar_sha256` 是对严格日期序列的逻辑 canonical digest，不是 Parquet bytes；
   `adjustment_spec_sha256` 是对项目 `ADJUSTMENT_SPEC` 完整具名对象的 canonical digest。每个 file entry 的
   `sha256` 才是物理 bytes hash。
+- snapshot request 期望在冻结 writer/runtime 下产生确定物理 bytes；若同一 request key 在另一平台或依赖
+  版本产生不同 Parquet bytes，request mapping 必须冲突并 fail-closed，禁止静默重指向。当前受控 Windows/WSL
+  探针均为 Python 3.13.13、Polars 1.42.1，固定 writer 的 calendar/staging bytes SHA-256 已逐文件一致；依赖
+  版本变化后必须重跑该探针，探针证据不替代正式 full snapshot 验真。
 - snapshot temp 根精确只有 `manifest.json`、`session_calendar.parquet` 和 `staging/`；staging 文件名集合必须
   与 manifest 精确相等。Parquet 写参数固定为 `compression="zstd"`、`compression_level=3`、
   `statistics=True`、`row_group_size=65536`、`use_pyarrow=False`，不得依赖 Polars 默认值。
@@ -1005,11 +1009,14 @@ docs/M3_G3B标签全量对账独立初验报告.md
 不得参与实现，至少增加两个不同 dtype/identity/故障点反例。失败按“现象—根因—规则—最小复现—新增
 测试—通过条件”退回循环。外部通过只可表述“可交主 Agent 终验”，不得勾选 G2/G3/Gate。
 
-实施顺序固定：
+原顺序把 snapshot receipt 的唯一 publisher 放在 G8B，却又要求 G2B 先消费 `VerifiedSnapshotArtifact`，形成
+执行依赖循环。修订后的实现/正式运行顺序为：
 
 ```text
 G1-P4C 主验
-  -> G2A 外部闭环 + 主验
+  -> G2A temp builder/strict verifier 合同实现 + 双平台定向主验
+  -> G8A/G8B 最小 publication/StageRunner 前置
+  -> 正式 G2A publish + receipt + VerifiedSnapshotArtifact 主验
   -> G2B 外部闭环 + 主验
   -> G2C 外部闭环 + 主验
   -> G3A 外部闭环 + 主验

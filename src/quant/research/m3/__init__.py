@@ -30,7 +30,18 @@ from quant.research.m3.g1_workflow import (
     run_g1_index_stage,
     run_g1_reference_stage,
 )
-from quant.research.m3.contracts import DatasetSnapshot, DateSegment, QlibDumpToolSpec, TemporalFold
+from quant.research.m3.contracts import (
+    DatasetSnapshot,
+    DateSegment,
+    QlibDumpToolSpec,
+    SnapshotArtifactEntryV1,
+    SnapshotBuildResult,
+    SnapshotBuildSpec,
+    SnapshotManifestV1,
+    SnapshotRequestRecordV1,
+    TemporalFold,
+    VerifiedSnapshotArtifact,
+)
 from quant.research.m3.evaluate import rank_ic_by_date, summarize_prediction_metrics
 from quant.research.m3.folds import eligible_training_labels, make_temporal_folds
 from quant.research.m3.labels import LabelBuildResult, compute_forward_relative_labels
@@ -48,10 +59,17 @@ from quant.research.m3.run_state import (
     verify_stage_receipt,
 )
 from quant.research.m3.snapshot import (
+    M3SnapshotError,
+    build_snapshot_artifact,
     build_snapshot_manifest,
+    build_snapshot_request_record,
+    build_snapshot_session_calendar,
     from_qlib_symbol,
     prepare_qlib_staging,
+    read_snapshot_manifest,
+    read_snapshot_request_record,
     to_qlib_symbol,
+    verify_snapshot_artifact,
     write_staging_by_symbol,
 )
 
@@ -60,6 +78,13 @@ __all__ = [
     "DateSegment",
     "QlibDumpToolSpec",
     "TemporalFold",
+    "SnapshotBuildSpec",
+    "SnapshotRequestRecordV1",
+    "SnapshotArtifactEntryV1",
+    "SnapshotManifestV1",
+    "SnapshotBuildResult",
+    "VerifiedSnapshotArtifact",
+    "M3SnapshotError",
     "ConfigIssue",
     "LoadedM3Config",
     "M3ConfigError",
@@ -93,7 +118,13 @@ __all__ = [
     "LabelBuildResult",
     "compute_forward_relative_labels",
     "prepare_qlib_staging",
+    "build_snapshot_session_calendar",
     "write_staging_by_symbol",
+    "build_snapshot_artifact",
+    "build_snapshot_request_record",
+    "read_snapshot_manifest",
+    "read_snapshot_request_record",
+    "verify_snapshot_artifact",
     "build_snapshot_manifest",
     "to_qlib_symbol",
     "from_qlib_symbol",

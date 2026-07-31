@@ -897,6 +897,10 @@ def _verify_digest_bytes(
 
 
 def _fsync_parent_dir(parent: Path) -> None:
+    if not _directory_fsync_supported():
+        # Windows has no reliable directory-fd fsync. Receipt file bytes are
+        # flushed above; this matches the accepted Windows native publish rail.
+        return
     try:
         fd = os.open(str(parent), os.O_RDONLY)
     except OSError as exc:
@@ -919,4 +923,8 @@ def _fsync_parent_dir(parent: Path) -> None:
         except OSError:
             if primary_error is None:
                 raise ValueError("父目录 fsync 失败") from None
+
+
+def _directory_fsync_supported() -> bool:
+    return os.name != "nt"
 

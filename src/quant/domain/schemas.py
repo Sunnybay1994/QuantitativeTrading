@@ -71,6 +71,27 @@ class TradeCalendarSchema(pa.DataFrameModel):
         return _rows_are_unique(data, ["market", "date"])
 
 
+class SnapshotSessionCalendarSchema(pa.DataFrameModel):
+    """G2A 使用的唯一、严格递增 SH session 日期序列。"""
+
+    date: pl.Date = pa.Field(unique=True)
+
+    class Config:
+        strict = True
+        coerce = False
+
+    @pa.dataframe_check
+    def non_empty_and_strictly_increasing(  # type: ignore[misc]
+        cls, data: pa.PolarsData
+    ) -> pl.LazyFrame:
+        frame = data.lazyframe
+        return frame.select(
+            (pl.len() > 0)
+            & pl.col("date").is_not_null().all()
+            & (pl.col("date") == pl.col("date").sort()).all()
+        )
+
+
 class Bar1dSchema(pa.DataFrameModel):
     """日线行情 bar_1d（不复权价 + 累计后复权因子）。
 
