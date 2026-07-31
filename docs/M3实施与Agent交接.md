@@ -770,9 +770,14 @@ def verify_provider_validation_artifact(
     *, validation_root: Path, validation_receipt_path: Path,
     snapshot: VerifiedSnapshotArtifact,
     provider: VerifiedProviderArtifact,
-    config: LoadedM3Config, artifact_roots: Mapping[str, Path],
+    config: LoadedM3Config, spec: ProviderValidationSpec,
+    artifact_roots: Mapping[str, Path],
 ) -> VerifiedProviderValidationArtifact: ...
 ```
+
+validation verifier 必须接收已经冻结的 `ProviderValidationSpec`，用它独立重算 formal/development key 和
+完整 deterministic probe；不得从 details 自报 keys 反构造“期望计划”。无 `spec` 的旧签名不能证明
+`provider_validation_key`，已经废止。
 
 输出 staging 列固定为 `symbol,date,open,high,low,close,vwap,volume,factor`，每证券一个 Parquet，日期
 升序。必须先按 `source` 过滤 bars，按 `universe` 过滤 membership 并取得历史 symbol 并集，再用该
@@ -857,8 +862,13 @@ formal_gate_eligible=False, example_id=...)`；identity 使用带固定 domain t
 `development` 与 `example`。正式 `materialize_qlib_provider/verify_provider_artifact` 只接受精确
 `VerifiedSnapshotArtifact`，不得用 union、包装或重命名把开发对象提升为 `VerifiedProviderArtifact`。开发轨
 复用同一个 `ProviderManifestV1`、七字段 bin 格式和静态 inspector，仅证明开发契约、跨平台兼容和编排恢复；
-不证明正式 G2B/G2C、真实数据覆盖/性能或任何 Gate。三交易日 fixture 可完成 G2B 全量静态验真，但不满足
-下述 G2C 每证券至少 20 行的正式抽样前提；正式抽样规则不得为 fixture 放宽。
+不证明正式 G2B/G2C、真实数据覆盖/性能或任何 Gate。开发 fixture 固定为 21 个连续 SH session；
+`000001.SZ` 因一个全日停牌输出 20 行，另两证券各输出 21 行，同时保留公司行动/复权和退市生命周期边界。
+因此开发轨可原样运行下述 G2C `3×20×7` sampling policy，不放宽正式规则。开发 G2C 另用
+`compute_development_provider_validation_key` 的固定 domain tag/`example_id`、
+`development-provider-validation` receipt stage 和开发专用 nominal verified 类型闭合；正式入口仍精确拒绝
+开发类型。该结果只证明 development example 的 fresh-process 公共 API、确定性抽样和跨平台工程契约，
+不提升为正式 `VerifiedProviderValidationArtifact`。
 
 probe 不是随机数调用：策略固定为 `provider_market_stratified_hash_first_last_v1`，先按
 规范 JSON 数组 `["provider-symbol-v1",snapshot_id,provider_key,symbol]` 的 SHA-256 各选 1 个 SH/SZ，再选

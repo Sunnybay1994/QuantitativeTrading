@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import polars as pl
+
 from quant.research.m3.run_state import ArtifactDigest
 
 _HEX64 = frozenset("0123456789abcdef")
@@ -472,6 +474,179 @@ class VerifiedProviderArtifact:
             raise ValueError("verified provider manifest 非法")
         _require_bare_hex64("manifest_sha256", self.manifest_sha256)
         _require_bare_hex64("provider_receipt_sha256", self.provider_receipt_sha256)
+
+
+@dataclass(frozen=True)
+class ProviderValidationSpec:
+    provider_validation_key: str
+    provider_validation_config_sha256: str
+    code_version: str
+    qlib_version: Literal["0.9.7"]
+    sampling_policy_version: Literal[
+        "provider_market_stratified_hash_first_last_v1"
+    ]
+    worker_protocol_version: Literal["m3-qlib-worker-v1"]
+
+    def __post_init__(self) -> None:
+        _require_bare_hex64("provider_validation_key", self.provider_validation_key)
+        _require_bare_hex64(
+            "provider_validation_config_sha256",
+            self.provider_validation_config_sha256,
+        )
+        if type(self.code_version) is not str or not self.code_version.strip():
+            raise ValueError("provider validation code_version 非法")
+        if self.qlib_version != "0.9.7":
+            raise ValueError("provider validation qlib_version 非法")
+        if (
+            self.sampling_policy_version
+            != "provider_market_stratified_hash_first_last_v1"
+            or self.worker_protocol_version != "m3-qlib-worker-v1"
+        ):
+            raise ValueError("provider validation protocol 非法")
+
+
+@dataclass(frozen=True)
+class ProviderProbePlan:
+    schema_version: Literal["m3-provider-probe-v1"]
+    provider_validation_key: str
+    provider_key: str
+    snapshot_id: str
+    sampling_policy_version: Literal[
+        "provider_market_stratified_hash_first_last_v1"
+    ]
+    candidate_keys_sha256: str
+    selected_rows: tuple[tuple[str, dt.date], ...]
+    selected_gap_rows: tuple[tuple[str, dt.date], ...]
+    emitted_keys_sha256: str
+    gap_keys_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "m3-provider-probe-v1":
+            raise ValueError("provider probe schema 非法")
+        for name in (
+            "provider_validation_key", "provider_key", "snapshot_id",
+            "candidate_keys_sha256", "emitted_keys_sha256", "gap_keys_sha256",
+        ):
+            _require_bare_hex64(name, getattr(self, name))
+        if (
+            self.sampling_policy_version
+            != "provider_market_stratified_hash_first_last_v1"
+        ):
+            raise ValueError("provider probe sampling policy 非法")
+        for rows, expected in ((self.selected_rows, 60), (self.selected_gap_rows, None)):
+            if type(rows) is not tuple or rows != tuple(sorted(rows)):
+                raise ValueError("provider probe rows 必须唯一排序")
+            if len(rows) != len(set(rows)) or (expected is not None and len(rows) != expected):
+                raise ValueError("provider probe rows 数量非法")
+            if any(
+                type(item) is not tuple or len(item) != 2
+                or type(item[0]) is not str or type(item[1]) is not dt.date
+                for item in rows
+            ):
+                raise ValueError("provider probe row 非法")
+        if len(self.selected_gap_rows) > 15:
+            raise ValueError("provider probe gap rows 数量非法")
+
+
+@dataclass(frozen=True)
+class ProviderValidationSummaryV1:
+    schema_version: Literal["m3-provider-validation-v1"]
+    provider_validation_key: str
+    provider_key: str
+    provider_receipt_sha256: str
+    provider_manifest_sha256: str
+    snapshot_id: str
+    provider_validation_config_sha256: str
+    provider_runtime_fingerprint_sha256: str
+    qlib_version: str
+    sampling_policy_version: str
+    worker_protocol_version: str
+    probe_plan_sha256: str
+    candidate_keys_sha256: str
+    emitted_keys_sha256: str
+    gap_keys_sha256: str
+    emitted_key_count: int
+    gap_key_count: int
+    emitted_comparison_count: int
+    gap_comparison_count: int
+    details_sha256: str
+    details_row_count: int
+    api_calendar_sha256: str
+    api_instrument_ranges_sha256: str
+    missing_emitted_cell_count: int
+    extra_cell_count: int
+    duplicate_cell_count: int
+    non_finite_emitted_cell_count: int
+    emitted_mismatch_cell_count: int
+    gap_finite_cell_count: int
+    calendar_mismatch_count: int
+    instrument_mismatch_count: int
+    provider_uri_sha256: str
+    parent_import_audit_sha256: str
+    read_audit_sha256: str
+    passed: bool
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "m3-provider-validation-v1":
+            raise ValueError("provider validation summary schema 非法")
+        digest_fields = (
+            "provider_validation_key", "provider_key", "provider_receipt_sha256",
+            "provider_manifest_sha256", "snapshot_id",
+            "provider_validation_config_sha256",
+            "provider_runtime_fingerprint_sha256", "probe_plan_sha256",
+            "candidate_keys_sha256", "emitted_keys_sha256", "gap_keys_sha256",
+            "details_sha256", "api_calendar_sha256",
+            "api_instrument_ranges_sha256", "provider_uri_sha256",
+            "parent_import_audit_sha256", "read_audit_sha256",
+        )
+        for name in digest_fields:
+            _require_bare_hex64(name, getattr(self, name))
+        if self.qlib_version != "0.9.7" or (
+            self.sampling_policy_version
+            != "provider_market_stratified_hash_first_last_v1"
+        ) or self.worker_protocol_version != "m3-qlib-worker-v1":
+            raise ValueError("provider validation summary protocol 非法")
+        count_fields = (
+            "emitted_key_count", "gap_key_count", "emitted_comparison_count",
+            "gap_comparison_count", "details_row_count",
+            "missing_emitted_cell_count", "extra_cell_count",
+            "duplicate_cell_count", "non_finite_emitted_cell_count",
+            "emitted_mismatch_cell_count", "gap_finite_cell_count",
+            "calendar_mismatch_count", "instrument_mismatch_count",
+        )
+        if any(type(getattr(self, name)) is not int or getattr(self, name) < 0 for name in count_fields):
+            raise ValueError("provider validation summary count 非法")
+        if type(self.passed) is not bool:
+            raise ValueError("provider validation summary passed 非法")
+
+
+@dataclass(frozen=True)
+class ProviderValidationResult:
+    details: pl.DataFrame
+    summary: ProviderValidationSummaryV1
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.details, pl.DataFrame):
+            raise ValueError("provider validation details 非法")
+        if type(self.summary) is not ProviderValidationSummaryV1:
+            raise ValueError("provider validation summary 非法")
+
+
+@dataclass(frozen=True)
+class VerifiedProviderValidationArtifact:
+    root: Path
+    details: pl.DataFrame
+    summary: ProviderValidationSummaryV1
+    summary_sha256: str
+    validation_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.root, Path) or not isinstance(self.details, pl.DataFrame):
+            raise ValueError("verified provider validation artifact 非法")
+        if type(self.summary) is not ProviderValidationSummaryV1:
+            raise ValueError("verified provider validation summary 非法")
+        _require_bare_hex64("summary_sha256", self.summary_sha256)
+        _require_bare_hex64("validation_receipt_sha256", self.validation_receipt_sha256)
 
 
 def _validate_snapshot_dates(value: object) -> None:

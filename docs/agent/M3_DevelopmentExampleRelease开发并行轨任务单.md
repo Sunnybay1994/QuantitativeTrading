@@ -73,10 +73,11 @@ WSL 定向绿测也只代表本开发契约，不自动关闭正式 Linux Gate�
 任何 subprocess 或写入前拒绝混用。pinned `dump_bin.py` 由 `.gitattributes` 固定为 binary，防止 Windows
 checkout 把 LF 改为 CRLF 后破坏冻结的 21847 bytes/SHA-256。
 
-开发 G2B 可验证真实 pinned Qlib dump、calendar/instrument/七字段静态回读、receipt 闭包与跨平台接口；
-当前三日 fixture 仍不满足 G2C 正式 `3×20×7` 的每证券 20 行前提，因此没有解锁正式 G2C 抽样结论。后续
-若推进开发 G2C，应扩充 development fixture 的 session 数并保留现有停牌、公司行动和生命周期边界，不能
-放宽正式 sampling policy。
+开发 G2B 可验证真实 pinned Qlib dump、calendar/instrument/七字段静态回读、receipt 闭包与跨平台接口。
+fixture 已扩为 21 个连续开市日：`000001.SZ` 保留一个全日停牌并恰有 20 个 emitted rows，另两证券各 21
+行；公司行动/复权和退市生命周期边界继续保留。开发 G2C 因此直接复用正式 `3×20×7` sampling policy，
+不降低抽样数量。开发 validation 使用独立 domain-separated key、`development-provider-validation` stage、
+显式 development/example 输出根和开发专用 nominal verified 类型；不得将其描述为正式 G2C 或任何 Gate。
 
 ## 5. 最小验收
 

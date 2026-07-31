@@ -20,13 +20,14 @@
 
 当前工作区的真实状态：
 
-- `snapshot.py` 已有初版 staging 变换，但 manifest 仍为松散 dict、没有严格 session-calendar artifact，writer
-  会创建/复用目录并可能覆盖；
-- `contracts.py` 只有早期 `DatasetSnapshot/QlibDumpToolSpec`；字段与当前 SSOT 不一致；
-- `provider.py`、fresh Qlib worker、provider manifest/validation 尚不存在；
+- `snapshot.py` 的 strict manifest/session-calendar/request/receipt 与开发 nominal G2A 已实现；正式 G2A 仍等待
+  `VerifiedG1Release`；
+- `contracts.py` 已包含现行 G2A/G2B/G2C 冻结 value objects；
+- 开发轨已实现 provider manifest/static inspector 与 G2C fresh Qlib worker/validation；正式轨仍等待
+  `VerifiedG1Release` 后执行并主验，开发证据不得用于关闭正式 G2B/G2C 或 Gate；
 - `labels.py` 已有独立标签公式和守恒，但没有 label artifact manifest、verified bundle 或 G3 对账；
-- WSL base 当前为 Python 3.13，配置明确要求 `<3.13`，且没有可用 `pyqlib 0.9.7`；fake 契约可实现，真实
-  G2/G3 Gate 仍需后续兼容环境证据。
+- WSL base 当前为 Python 3.13 且不承载 `pyqlib 0.9.7`；已验收的 WSL `py312` 用于无网络真实 Qlib
+  development smoke。该证据仍不代替正式 G2/G3 Gate。
 
 旧任务书合并了 snapshot 文件系统、dump subprocess、Qlib 全局状态和标签语义四种风险。现拆为五包：
 
@@ -604,9 +605,13 @@ def read_provider_validation_summary(path: Path) -> ProviderValidationSummaryV1:
 def verify_provider_validation_artifact(
     *, validation_root: Path, validation_receipt_path: Path,
     snapshot: VerifiedSnapshotArtifact, provider: VerifiedProviderArtifact,
-    config: LoadedM3Config, artifact_roots: Mapping[str, Path],
+    config: LoadedM3Config, spec: ProviderValidationSpec,
+    artifact_roots: Mapping[str, Path],
 ) -> VerifiedProviderValidationArtifact: ...
 ```
+
+`spec` 是重算 `provider_validation_key` 与确定性 probe 的可信输入；若 verifier 不接收它，summary key、receipt
+scope 和 plan hash 可被整套自洽替换，因此旧无 `spec` 签名废止。
 
 ### 5.4 确定性 sample
 
