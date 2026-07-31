@@ -3,7 +3,8 @@
 日期：2026-07-31
 状态：**开发契约已实现并完成定向验证；不代表正式 G1、G2、G8、G9 或 M3 Gate 通过**
 适用范围：G1 长时真实 I/O 运行期间，解锁 G2–G9 的无网络工程开发与契约验证
-验证证据：[`M3_DevelopmentExampleRelease主Agent验证报告.md`](M3_DevelopmentExampleRelease主Agent验证报告.md)
+验证证据：[`M3_DevelopmentExampleRelease主Agent验证报告.md`](M3_DevelopmentExampleRelease主Agent验证报告.md)、
+[`M3_DevelopmentExampleProvider主Agent验证报告.md`](M3_DevelopmentExampleProvider主Agent验证报告.md)
 
 ## 1. 冻结身份与目录边界
 
@@ -62,6 +63,20 @@ receipt 类型和 schema marker，避免名义上冒充正式 G1 质量报告。
 以下事项仍等待正式 G1：正式 `VerifiedG1Release` 输入下的 G2A 主验、真实全量覆盖和性能结论、真实 provider/
 训练/评估结果、正式不可变发布验收、Linux Gate 与任何正式 Gate 关闭。Windows 绿测只代表 Windows 开发反馈；
 WSL 定向绿测也只代表本开发契约，不自动关闭正式 Linux Gate。
+
+### 4.1 已解锁的 G2B 开发合同
+
+开发 Provider 复用正式 `ProviderManifestV1`、固定 `dump_all` argv、七字段 `<f4` bin、tree digest 和
+`StageReceipt`，但使用独立 `compute_development_provider_key`、
+`VerifiedDevelopmentExampleProviderArtifact`、`development-provider` stage 与显式
+`development-example` 根目录。正式和开发 materialize/inspect/verify 均为不同公开入口，精确名义类型在
+任何 subprocess 或写入前拒绝混用。pinned `dump_bin.py` 由 `.gitattributes` 固定为 binary，防止 Windows
+checkout 把 LF 改为 CRLF 后破坏冻结的 21847 bytes/SHA-256。
+
+开发 G2B 可验证真实 pinned Qlib dump、calendar/instrument/七字段静态回读、receipt 闭包与跨平台接口；
+当前三日 fixture 仍不满足 G2C 正式 `3×20×7` 的每证券 20 行前提，因此没有解锁正式 G2C 抽样结论。后续
+若推进开发 G2C，应扩充 development fixture 的 session 数并保留现有停牌、公司行动和生命周期边界，不能
+放宽正式 sampling policy。
 
 ## 5. 最小验收
 

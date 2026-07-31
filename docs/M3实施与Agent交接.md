@@ -645,8 +645,8 @@ class ProviderManifestV1:
 class ProviderBuildResult:
     root: Path
     qlib_dir: Path
-    provider_manifest: ProviderManifestV1
-    provider_manifest_sha256: str
+    manifest: ProviderManifestV1
+    manifest_sha256: str
 
 @dataclass(frozen=True)
 class VerifiedProviderArtifact:
@@ -847,6 +847,18 @@ tool/code/runtime identities、逻辑 argv、calendar/instrument 摘要及所有
 唯一；`instruments/all.txt` 恰为 staging symbol 集及各自 min/max；每个 symbol 只有七个
 `<field>.day.bin`，无额外 symbol/field；bin 首 float32 是正确 calendar offset，字节数等于该证券全局
 calendar 起止跨度的 `4*(1+n)`，实际 staging 日期有限值、缺口位置 NaN。所有 symlink 和未声明文件失败。
+
+正式 G1 长时 I/O 期间允许使用 development example 轨做工程反馈，但必须保持独立信任域：开发 Provider
+materializer 只接受 `VerifiedDevelopmentExampleSnapshotArtifact` 并返回与正式路径同形的未发布
+`ProviderBuildResult`；只有开发最终 verifier 返回
+`VerifiedDevelopmentExampleProviderArtifact(release_kind="development_example",
+formal_gate_eligible=False, example_id=...)`；identity 使用带固定 domain tag 和 `example_id` 的
+`compute_development_provider_key`，receipt stage 固定为 `development-provider`，输出根名必须同时显式包含
+`development` 与 `example`。正式 `materialize_qlib_provider/verify_provider_artifact` 只接受精确
+`VerifiedSnapshotArtifact`，不得用 union、包装或重命名把开发对象提升为 `VerifiedProviderArtifact`。开发轨
+复用同一个 `ProviderManifestV1`、七字段 bin 格式和静态 inspector，仅证明开发契约、跨平台兼容和编排恢复；
+不证明正式 G2B/G2C、真实数据覆盖/性能或任何 Gate。三交易日 fixture 可完成 G2B 全量静态验真，但不满足
+下述 G2C 每证券至少 20 行的正式抽样前提；正式抽样规则不得为 fixture 放宽。
 
 probe 不是随机数调用：策略固定为 `provider_market_stratified_hash_first_last_v1`，先按
 规范 JSON 数组 `["provider-symbol-v1",snapshot_id,provider_key,symbol]` 的 SHA-256 各选 1 个 SH/SZ，再选

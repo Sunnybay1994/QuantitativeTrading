@@ -33,6 +33,10 @@ from quant.research.m3.g1_workflow import (
 from quant.research.m3.contracts import (
     DatasetSnapshot,
     DateSegment,
+    ProviderBuildResult,
+    ProviderBuildSpec,
+    ProviderManifestV1,
+    ProviderRuntimeFingerprint,
     QlibDumpToolSpec,
     SnapshotArtifactEntryV1,
     SnapshotBuildResult,
@@ -41,6 +45,7 @@ from quant.research.m3.contracts import (
     SnapshotRequestRecordV1,
     TemporalFold,
     VerifiedSnapshotArtifact,
+    VerifiedProviderArtifact,
 )
 from quant.research.m3.development_example import (
     DevelopmentExampleG1ManifestV1,
@@ -51,12 +56,18 @@ from quant.research.m3.development_example import (
     M3DevelopmentExampleError,
     VerifiedDevelopmentExampleG1Release,
     VerifiedDevelopmentExampleSnapshotArtifact,
+    VerifiedDevelopmentExampleProviderArtifact,
     build_development_example_g1_release,
     compute_development_snapshot_request_key,
+    compute_development_provider_key,
     derive_development_example_m3_config,
     verify_development_example_g1_release,
 )
 from quant.research.m3.evaluate import rank_ic_by_date, summarize_prediction_metrics
+from quant.research.m3.fetch_qlib_tool import (
+    build_qlib_dump_tool_spec,
+    ensure_qlib_dump_tool,
+)
 from quant.research.m3.folds import eligible_training_labels, make_temporal_folds
 from quant.research.m3.labels import LabelBuildResult, compute_forward_relative_labels
 from quant.research.m3.orchestration import (
@@ -78,6 +89,17 @@ from quant.research.m3.orchestration import (
     make_snapshot_run_plan,
 )
 from quant.research.m3.readiness import ReadinessIssue, audit_m3_readiness
+from quant.research.m3.provider import (
+    M3ProviderError,
+    build_provider_runtime_fingerprint,
+    inspect_development_example_provider_structure,
+    inspect_provider_structure,
+    materialize_development_example_qlib_provider,
+    materialize_qlib_provider,
+    read_provider_manifest,
+    verify_development_example_provider_artifact,
+    verify_provider_artifact,
+)
 from quant.research.m3.run_state import (
     ArtifactDigest,
     StageReceipt,
@@ -116,6 +138,11 @@ __all__ = [
     "DatasetSnapshot",
     "DateSegment",
     "QlibDumpToolSpec",
+    "ProviderRuntimeFingerprint",
+    "ProviderBuildSpec",
+    "ProviderManifestV1",
+    "ProviderBuildResult",
+    "VerifiedProviderArtifact",
     "TemporalFold",
     "SnapshotBuildSpec",
     "SnapshotRequestRecordV1",
@@ -130,6 +157,7 @@ __all__ = [
     "DevelopmentExampleReleaseHandle",
     "VerifiedDevelopmentExampleG1Release",
     "VerifiedDevelopmentExampleSnapshotArtifact",
+    "VerifiedDevelopmentExampleProviderArtifact",
     "M3DevelopmentExampleError",
     "M3SnapshotError",
     "M3StageRunnerError",
@@ -185,6 +213,18 @@ __all__ = [
     "verify_development_example_g1_release",
     "derive_development_example_m3_config",
     "compute_development_snapshot_request_key",
+    "compute_development_provider_key",
+    "build_qlib_dump_tool_spec",
+    "ensure_qlib_dump_tool",
+    "M3ProviderError",
+    "build_provider_runtime_fingerprint",
+    "materialize_qlib_provider",
+    "materialize_development_example_qlib_provider",
+    "inspect_provider_structure",
+    "inspect_development_example_provider_structure",
+    "read_provider_manifest",
+    "verify_provider_artifact",
+    "verify_development_example_provider_artifact",
     "build_development_example_snapshot_session_calendar",
     "build_development_example_snapshot_artifact",
     "build_development_example_snapshot_request_record",

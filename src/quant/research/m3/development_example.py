@@ -42,7 +42,11 @@ from quant.domain.schemas import (
     TradeCalendarSchema,
     UniverseMembershipSchema,
 )
-from quant.research.m3.contracts import SnapshotManifestV1, SnapshotRequestRecordV1
+from quant.research.m3.contracts import (
+    ProviderManifestV1,
+    SnapshotManifestV1,
+    SnapshotRequestRecordV1,
+)
 from quant.research.m3.config import (
     LoadedM3Config,
     _loaded_from_normalized,
@@ -353,6 +357,34 @@ class VerifiedDevelopmentExampleSnapshotArtifact:
         object.__setattr__(self, "staging_paths", staging)
 
 
+@dataclass(frozen=True)
+class VerifiedDevelopmentExampleProviderArtifact:
+    release_kind: Literal["development_example"]
+    formal_gate_eligible: Literal[False]
+    example_id: str
+    root: Path
+    qlib_dir: Path
+    manifest: ProviderManifestV1
+    manifest_sha256: str
+    provider_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.release_kind != _KIND or self.formal_gate_eligible is not False:
+            raise ValueError("verified development provider kind 非法")
+        _require_example_id(self.example_id)
+        _require_hex64(self.manifest_sha256)
+        _require_hex64(self.provider_receipt_sha256)
+        if type(self.manifest) is not ProviderManifestV1:
+            raise ValueError("verified development provider manifest 非法")
+        root = self.root.resolve(strict=True)
+        qlib_dir = self.qlib_dir.resolve(strict=True)
+        _require_development_root_name(root)
+        if qlib_dir != root / "provider":
+            raise ValueError("verified development provider paths 非法")
+        object.__setattr__(self, "root", root)
+        object.__setattr__(self, "qlib_dir", qlib_dir)
+
+
 def build_development_example_g1_release(
     *, output_root: Path,
 ) -> VerifiedDevelopmentExampleG1Release:
@@ -551,6 +583,37 @@ def compute_development_snapshot_request_key_from_parts(
         contract_release_id,
         manifest_sha256,
         snapshot_config_sha256,
+        code_version,
+    ])
+
+
+def compute_development_provider_key(
+    *, example_id: str, snapshot_id: str, snapshot_manifest_sha256: str,
+    provider_config_sha256: str, dump_tool_sha256: str, qlib_version: str,
+    provider_runtime_fingerprint_sha256: str, code_version: str,
+) -> str:
+    """Domain-separated identity for a development-only Provider artifact."""
+    _require_example_id(example_id)
+    for value in (
+        snapshot_id, snapshot_manifest_sha256, provider_config_sha256,
+        dump_tool_sha256, provider_runtime_fingerprint_sha256,
+    ):
+        _require_hex64(value)
+    if qlib_version != "0.9.7":
+        raise ValueError("development provider qlib version 非法")
+    if type(code_version) is not str or not code_version.startswith(
+        "development-example/"
+    ):
+        raise ValueError("development provider code version 非法")
+    return _sha256_json([
+        "m3-development-example-provider-key-v1",
+        example_id,
+        snapshot_id,
+        snapshot_manifest_sha256,
+        provider_config_sha256,
+        dump_tool_sha256,
+        qlib_version,
+        provider_runtime_fingerprint_sha256,
         code_version,
     ])
 

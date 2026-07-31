@@ -1,9 +1,13 @@
 """M3 编排层的稳定值对象，不依赖 Qlib、LightGBM 或 MLflow。"""
 
 import datetime as dt
+import hashlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+
+from quant.research.m3.run_state import ArtifactDigest
 
 _HEX64 = frozenset("0123456789abcdef")
 
@@ -21,16 +25,19 @@ class QlibDumpToolSpec:
 
     url: str
     sha256: str
-    bytes: int
-    version: str
+    size_bytes: int
+    qlib_version: Literal["0.9.7"]
+    command: Literal["dump_all"]
 
     def __post_init__(self) -> None:
-        if not self.url or not self.version:
+        if not self.url or self.qlib_version != "0.9.7":
             raise ValueError("Qlib dump tool URL and version must not be empty")
         if len(self.sha256) != 64 or any(char not in "0123456789abcdef" for char in self.sha256):
             raise ValueError("Qlib dump tool SHA-256 must be 64 lowercase hexadecimal characters")
-        if self.bytes <= 0:
+        if type(self.size_bytes) is not int or self.size_bytes <= 0:
             raise ValueError("Qlib dump tool byte count must be positive")
+        if self.command != "dump_all":
+            raise ValueError("Qlib dump tool command must be dump_all")
 
 
 @dataclass(frozen=True)
@@ -276,6 +283,195 @@ class VerifiedSnapshotArtifact:
             raise ValueError("verified staging_paths 非法")
         if any(not isinstance(path, Path) for path in self.staging_paths):
             raise ValueError("verified staging_paths 元素非法")
+
+
+@dataclass(frozen=True)
+class ProviderRuntimeFingerprint:
+    python_version: str
+    packages: tuple[tuple[str, str], ...]
+    sha256: str
+
+    def __post_init__(self) -> None:
+        if type(self.python_version) is not str or not self.python_version:
+            raise ValueError("provider python_version 非法")
+        if type(self.packages) is not tuple or not self.packages:
+            raise ValueError("provider packages 非法")
+        if any(
+            type(item) is not tuple
+            or len(item) != 2
+            or any(type(value) is not str or not value for value in item)
+            for item in self.packages
+        ):
+            raise ValueError("provider package entry 非法")
+        if self.packages != tuple(sorted(self.packages)):
+            raise ValueError("provider packages 必须按 name 排序")
+        expected_names = (
+            "fire", "loguru", "numpy", "pandas", "pyarrow", "pyqlib", "python", "tqdm",
+        )
+        if tuple(name for name, _ in self.packages) != expected_names:
+            raise ValueError("provider packages 闭包非法")
+        if dict(self.packages)["python"] != self.python_version:
+            raise ValueError("provider python version 闭包非法")
+        _require_bare_hex64("runtime sha256", self.sha256)
+        payload = json.dumps(
+            {"packages": self.packages, "python_version": self.python_version},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        if hashlib.sha256(payload).hexdigest() != self.sha256:
+            raise ValueError("provider runtime sha256 闭包非法")
+
+
+@dataclass(frozen=True)
+class ProviderBuildSpec:
+    snapshot_id: str
+    snapshot_manifest_sha256: str
+    provider_key: str
+    provider_config_sha256: str
+    dump_tool: QlibDumpToolSpec
+    qlib_version: Literal["0.9.7"]
+    code_version: str
+    runtime_fingerprint: ProviderRuntimeFingerprint
+    fields: tuple[str, ...]
+    frequency: Literal["day"]
+    dump_contract_version: Literal["m3-qlib-dump-all-v1"]
+
+    def __post_init__(self) -> None:
+        for name in (
+            "snapshot_id", "snapshot_manifest_sha256", "provider_key",
+            "provider_config_sha256",
+        ):
+            _require_bare_hex64(name, getattr(self, name))
+        if type(self.dump_tool) is not QlibDumpToolSpec:
+            raise ValueError("provider dump_tool 非法")
+        if self.qlib_version != "0.9.7" or self.dump_tool.qlib_version != self.qlib_version:
+            raise ValueError("provider qlib_version 非法")
+        if type(self.code_version) is not str or not self.code_version.strip():
+            raise ValueError("provider code_version 非法")
+        if type(self.runtime_fingerprint) is not ProviderRuntimeFingerprint:
+            raise ValueError("provider runtime fingerprint 非法")
+        expected_fields = ("open", "high", "low", "close", "vwap", "volume", "factor")
+        if self.fields != expected_fields:
+            raise ValueError("provider fields 非法")
+        if self.frequency != "day" or self.dump_contract_version != "m3-qlib-dump-all-v1":
+            raise ValueError("provider dump contract 非法")
+
+
+@dataclass(frozen=True)
+class ProviderManifestV1:
+    schema_version: Literal["m3-provider-manifest-v1"]
+    provider_key: str
+    snapshot_id: str
+    snapshot_manifest_sha256: str
+    provider_config_sha256: str
+    qlib_version: str
+    dump_tool_sha256: str
+    dump_tool_bytes: int
+    dump_contract_version: str
+    provider_runtime_fingerprint_sha256: str
+    code_version: str
+    frequency: Literal["day"]
+    fields: tuple[str, ...]
+    storage_dtype: Literal["<f4"]
+    calendar_sha256: str
+    calendar_count: int
+    calendar_start: dt.date
+    calendar_end: dt.date
+    instrument_count: int
+    instrument_ranges_sha256: str
+    output_tree_sha256: str
+    logical_argv: tuple[str, ...]
+    files: tuple[ArtifactDigest, ...]
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "m3-provider-manifest-v1":
+            raise ValueError("provider manifest schema 非法")
+        for name in (
+            "provider_key", "snapshot_id", "snapshot_manifest_sha256",
+            "provider_config_sha256", "dump_tool_sha256",
+            "provider_runtime_fingerprint_sha256", "calendar_sha256",
+            "instrument_ranges_sha256", "output_tree_sha256",
+        ):
+            _require_bare_hex64(name, getattr(self, name))
+        if self.qlib_version != "0.9.7" or self.dump_contract_version != "m3-qlib-dump-all-v1":
+            raise ValueError("provider manifest version 非法")
+        if type(self.code_version) is not str or not self.code_version.strip():
+            raise ValueError("provider manifest code_version 非法")
+        if self.frequency != "day" or self.storage_dtype != "<f4":
+            raise ValueError("provider manifest storage 非法")
+        expected_fields = ("open", "high", "low", "close", "vwap", "volume", "factor")
+        if self.fields != expected_fields:
+            raise ValueError("provider manifest fields 非法")
+        if type(self.dump_tool_bytes) is not int or self.dump_tool_bytes <= 0:
+            raise ValueError("provider dump_tool_bytes 非法")
+        for name in ("calendar_count", "instrument_count"):
+            value = getattr(self, name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"provider {name} 非法")
+        if type(self.calendar_start) is not dt.date or type(self.calendar_end) is not dt.date:
+            raise ValueError("provider calendar dates 非法")
+        if self.calendar_end < self.calendar_start:
+            raise ValueError("provider calendar range 非法")
+        expected_argv = (
+            "<PYTHON>", "<DUMP_TOOL>", "dump_all", "--data_path",
+            "<SNAPSHOT_STAGING>", "--qlib_dir", "<PROVIDER_TEMP>/provider",
+            "--freq", "day", "--file_suffix", ".parquet", "--date_field_name",
+            "date", "--symbol_field_name", "symbol", "--include_fields",
+            "open,high,low,close,vwap,volume,factor", "--max_workers", "1",
+        )
+        if self.logical_argv != expected_argv:
+            raise ValueError("provider logical argv 非法")
+        if type(self.files) is not tuple or not self.files:
+            raise ValueError("provider files 非法")
+        if any(type(item) is not ArtifactDigest for item in self.files):
+            raise ValueError("provider file digest 非法")
+        if any(
+            item.root_alias != "provider"
+            or not item.relative_path.startswith("provider/")
+            for item in self.files
+        ):
+            raise ValueError("provider file digest trust domain 非法")
+        paths = tuple(item.relative_path for item in self.files)
+        if paths != tuple(sorted(paths)) or len(paths) != len(set(paths)):
+            raise ValueError("provider files 必须唯一排序")
+
+
+@dataclass(frozen=True)
+class ProviderBuildResult:
+    root: Path
+    qlib_dir: Path
+    manifest: ProviderManifestV1
+    manifest_sha256: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.root, Path) or not isinstance(self.qlib_dir, Path):
+            raise ValueError("provider build paths 非法")
+        if self.qlib_dir != self.root / "provider":
+            raise ValueError("provider build path closure 非法")
+        if type(self.manifest) is not ProviderManifestV1:
+            raise ValueError("provider build manifest 非法")
+        _require_bare_hex64("manifest_sha256", self.manifest_sha256)
+
+
+@dataclass(frozen=True)
+class VerifiedProviderArtifact:
+    root: Path
+    qlib_dir: Path
+    manifest: ProviderManifestV1
+    manifest_sha256: str
+    provider_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.root, Path) or not isinstance(self.qlib_dir, Path):
+            raise ValueError("verified provider paths 非法")
+        if self.qlib_dir != self.root / "provider":
+            raise ValueError("verified provider path closure 非法")
+        if type(self.manifest) is not ProviderManifestV1:
+            raise ValueError("verified provider manifest 非法")
+        _require_bare_hex64("manifest_sha256", self.manifest_sha256)
+        _require_bare_hex64("provider_receipt_sha256", self.provider_receipt_sha256)
 
 
 def _validate_snapshot_dates(value: object) -> None:
