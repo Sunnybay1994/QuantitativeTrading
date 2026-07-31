@@ -424,6 +424,63 @@ def test_closed_market_rejects_unexpected_bar_on_other_market_session() -> None:
         )
 
 
+def test_missing_calendar_row_for_active_market_fails_closed() -> None:
+    sz_symbol = "000001.SZ"
+    instruments = pl.concat([
+        _instruments(),
+        _instruments().with_columns(
+            pl.lit(sz_symbol).alias("symbol"),
+            pl.lit("SZ").alias("market"),
+        ),
+    ])
+    initial = pl.DataFrame({
+        "symbol": [STOCK, sz_symbol],
+        "quantity": [100, 100],
+        "settled_quantity": [100, 100],
+        "mark_price": [10.0, 10.0],
+    })
+    with pytest.raises(ValueError, match="BACKTEST_CALENDAR_COVERAGE_MISSING"):
+        simulate_daily_targets(
+            calendar=_calendar(SESSION),
+            bars=_bar(),
+            scheduled_targets=_empty_targets(),
+            instruments=instruments,
+            market_states={(SESSION, STOCK): DailyMarketState()},
+            initial_cash=1_000.0,
+            etf_costs=_etf_costs(),
+            stock_costs=_stock_costs(),
+            strategy="m2-u1",
+            initial_positions=initial,
+        )
+
+
+def test_suspended_new_target_uses_prior_close_for_rejection() -> None:
+    previous = SESSION - dt.timedelta(days=3)
+    result = simulate_daily_targets(
+        calendar=_calendar(SESSION),
+        bars=_bar(previous, close_price=9.5),
+        scheduled_targets=_target(1.0),
+        instruments=_instruments(),
+        market_states={(SESSION, STOCK): DailyMarketState(suspended=True)},
+        initial_cash=10_000.0,
+        etf_costs=_etf_costs(),
+        stock_costs=_stock_costs(),
+        strategy="m2-u1",
+    )
+    assert result.trades.is_empty()
+    assert result.rejections.row(0, named=True) == {
+        "strategy": "m2-u1",
+        "date": SESSION,
+        "symbol": STOCK,
+        "side": "BUY",
+        "reason": "SUSPENDED",
+        "requested_quantity": 1_000,
+        "rejected_quantity": 1_000,
+        "reference_price": 9.5,
+    }
+    assert result.positions.row(0, named=True)["mark_price"] == 9.5
+
+
 def test_execution_batch_rejects_duplicate_symbol_from_distinct_signals() -> None:
     targets = pl.concat([
         _target(0.5),
@@ -824,6 +881,72 @@ def test_initial_etf_unsettled_evidence_is_preserved_until_second_session() -> N
     ).rows() == [
         (SESSION, 0, 200),
         (second_session, 200, 0),
+    ]
+
+
+def test_all_positions_settle_on_second_global_session() -> None:
+    second_session = SESSION + dt.timedelta(days=1)
+    sz_symbol = "000001.SZ"
+    calendar = pl.DataFrame({
+        "market": ["SH", "SZ", "SH", "SZ"],
+        "date": [SESSION, SESSION, second_session, second_session],
+        "is_open": [True, True, False, True],
+        "is_connect_open": [False] * 4,
+        "is_half_day": [False] * 4,
+    })
+    instruments = _stock_and_etf_instruments().with_columns(
+        pl.when(pl.col("symbol") == ETF)
+        .then(pl.lit(sz_symbol))
+        .otherwise(pl.col("symbol"))
+        .alias("symbol"),
+        pl.when(pl.col("symbol") == ETF)
+        .then(pl.lit("SZ"))
+        .otherwise(pl.col("market"))
+        .alias("market"),
+        pl.lit("STOCK").alias("instrument_type"),
+    )
+    bars = (
+        _stock_and_etf_bars(SESSION, second_session)
+        .with_columns(
+            pl.when(pl.col("symbol") == ETF)
+            .then(pl.lit(sz_symbol))
+            .otherwise(pl.col("symbol"))
+            .alias("symbol")
+        )
+        .filter(
+            ~(
+                (pl.col("trade_date") == second_session)
+                & (pl.col("symbol") == STOCK)
+            )
+        )
+    )
+    initial = pl.DataFrame({
+        "symbol": [STOCK, sz_symbol],
+        "quantity": [100, 100],
+        "settled_quantity": [0, 0],
+        "mark_price": [10.0, 4.0],
+    })
+    result = simulate_daily_targets(
+        calendar=calendar,
+        bars=bars,
+        scheduled_targets=_empty_targets(),
+        instruments=instruments,
+        market_states={
+            (SESSION, STOCK): DailyMarketState(),
+            (SESSION, sz_symbol): DailyMarketState(),
+            (second_session, sz_symbol): DailyMarketState(),
+        },
+        initial_cash=100.0,
+        etf_costs=_etf_costs(),
+        stock_costs=_stock_costs(),
+        strategy="m2-u1",
+        initial_positions=initial,
+    )
+    assert result.positions.filter(
+        pl.col("date") == second_session
+    ).select("symbol", "settled_quantity").rows() == [
+        (sz_symbol, 100),
+        (STOCK, 100),
     ]
 
 

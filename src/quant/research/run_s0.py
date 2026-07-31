@@ -138,7 +138,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gross_nav = pl.concat([result.nav for result in gross_results])
     trades = pl.concat([result.trades for result in results])
     report = {
-        "config": str(args.config),
+        "config": args.config.as_posix(),
         "start": start.isoformat(),
         "end": end.isoformat(),
         "candidate_symbols": len(candidates),
@@ -163,8 +163,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     nav.write_parquet(output / "nav.parquet")
     gross_nav.write_parquet(output / "gross_nav.parquet")
     trades.write_parquet(output / "trades.parquet")
-    (output / "report.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    (output / "report.json").write_bytes(
+        json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8")
     )
     print(json.dumps({"output": str(output), **report}, ensure_ascii=False))
     return 0

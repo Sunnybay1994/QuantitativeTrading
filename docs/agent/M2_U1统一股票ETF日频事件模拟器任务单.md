@@ -1,6 +1,6 @@
 # M2 U1：统一股票 / ETF 日频事件模拟器任务单
 
-状态：**合同已冻结，待当前 G1 正式 status 结束后由主 Agent 实现与自验**
+状态：**隔离实现与主 Agent 双平台定向验证通过；不依赖正式 G1，待合流**
 
 日期：2026-07-31（Asia/Shanghai）
 
@@ -88,6 +88,9 @@ def simulate_daily_targets(
 - 按需最小修改 `src/quant/backtest/costs.py`，统一内部费用调用并增加压力倍数构造；
 - 修改 `src/quant/domain/schemas.py`，新增 position / rejection Schema；
 - 修改 `src/quant/backtest/__init__.py` 导出新接口。
+- 最小修改 `src/quant/research/run_s0.py` 与 `run_s1_walk_forward.py`：报告中的相对配置路径固定为
+  POSIX 形式，JSON 固定以 UTF-8/LF 字节写入，避免 Windows/WSL 仅因路径分隔符或 CRLF 产生不同
+  artifact hash；不改变 S0/S1 经济计算。
 
 测试：
 
@@ -102,6 +105,8 @@ def simulate_daily_targets(
 1. 按权威 calendar 推进 session，即使当日所有持仓均无 bar；
 2. 除首个模拟 session 外，上一个模拟 session 留存的未交收股票数量转为 settled；ETF 保持既有 M2
    非 T+1 行为，不因 `settled_quantity` 不足拒绝；
+   此处“模拟 session”是多市场合并后的 global session；不得等待该证券所属市场再次开市才更新
+   `settled_quantity`。ETF 的 evidence 字段同样在第二个 global session 归零 unsettled，但不参与卖出限制。
 3. 构造盘前权益：
    - 有 bar：使用当日 open；
    - 明确 `FULL_DAY` 停牌且无 bar：沿用上一合法 mark；
@@ -206,6 +211,8 @@ Schema 跨字段约束：
    - 清仓目标写 `SUSPENDED`；
    - 持仓不消失。
 2. 同样缺 bar 但 `suspended=False`：必须失败。
+   新目标证券若当日明确停牌且无 bar，使用最近一个过去合法 close 生成 `SUSPENDED` rejection；缺少过去
+   合法 mark 才使用 `BACKTEST_INITIAL_MARK_MISSING`。
 3. 股票开盘等于上限，买单写 `BUY_AT_UPPER_LIMIT`。
 4. 持仓股票开盘等于下限，卖单写 `SELL_AT_LOWER_LIMIT`。
 5. 收盘涨停但开盘未触限：不得前视拒单。
@@ -217,6 +224,7 @@ Schema 跨字段约束：
    - 2× 可少买一手，但现金始终非负；
    - 禁止复用 1× fills 后只重算费用。
 8. bars、targets、instruments、states 逆序后，四张输出和经济结果一致。
+   多市场模拟窗口中每个 active market 对每个推进日期都必须有显式开/闭市 calendar 行；缺行不得当成休市。
 9. 现有 ETF 分红回归仍保持两日权益 `[10000, 10000]`，S0 / S1 调用接口不变。
 
 ## 9. 跨平台与数值边界
