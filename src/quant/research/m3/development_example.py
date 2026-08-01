@@ -55,6 +55,8 @@ from quant.research.m3.contracts import (
     PredictionManifestV1,
     ProviderManifestV1,
     ProviderValidationSummaryV1,
+    ResearchSummaryManifestV1,
+    ResearchSummaryMetricsV1,
     SnapshotManifestV1,
     SnapshotRequestRecordV1,
 )
@@ -594,6 +596,37 @@ class VerifiedDevelopmentExampleEvaluationArtifact:
             raise ValueError("verified development evaluation artifact 非法")
         _require_hex64(self.manifest_sha256)
         _require_hex64(self.evaluation_receipt_sha256)
+        root = self.root.resolve(strict=True)
+        _require_development_root_name(root)
+        object.__setattr__(self, "root", root)
+
+
+@dataclass(frozen=True)
+class VerifiedDevelopmentExampleResearchSummaryArtifact:
+    release_kind: Literal["development_example"]
+    formal_gate_eligible: Literal[False]
+    example_id: str
+    root: Path
+    daily: pl.DataFrame
+    fold_metrics: pl.DataFrame
+    metrics: ResearchSummaryMetricsV1
+    manifest: ResearchSummaryManifestV1
+    manifest_sha256: str
+    summary_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.release_kind != _KIND or self.formal_gate_eligible is not False:
+            raise ValueError("verified development research summary kind 非法")
+        _require_example_id(self.example_id)
+        if (
+            not isinstance(self.daily, pl.DataFrame)
+            or not isinstance(self.fold_metrics, pl.DataFrame)
+            or type(self.metrics) is not ResearchSummaryMetricsV1
+            or type(self.manifest) is not ResearchSummaryManifestV1
+        ):
+            raise ValueError("verified development research summary artifact 非法")
+        _require_hex64(self.manifest_sha256)
+        _require_hex64(self.summary_receipt_sha256)
         root = self.root.resolve(strict=True)
         _require_development_root_name(root)
         object.__setattr__(self, "root", root)

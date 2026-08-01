@@ -2,6 +2,10 @@
 
 ### 2026-08-02 G6A 续写摘要（覆盖下文旧停止点）
 
+- development example G6B 也已完成：同 horizon 跨折 summary、严格 fold metrics、跨日重算和 experiment
+  receipt 闭包在 Windows/WSL base 均为 `8 passed`；开发研究链 G4A→G6B 的工程合同至此闭合，但正式
+  production G4–G6 与真实绩效 Gate 仍保持开放。详见
+  [`docs/agent/M3_G6B开发示例跨折研究汇总Artifact主Agent阶段验收报告.md`](agent/M3_G6B开发示例跨折研究汇总Artifact主Agent阶段验收报告.md)。
 - development example 研究链已推进到 G6A：逐 work evaluation artifact、八状态 IC、五层 key 闭包、
   四类 coverage、canonical manifest 与 fresh receipt verifier 已完成；Windows 与 WSL base 定向集合均为
   `19 passed`。详见

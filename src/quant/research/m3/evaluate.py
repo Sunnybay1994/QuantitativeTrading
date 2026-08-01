@@ -33,6 +33,9 @@ from quant.research.m3.contracts import (
     LightgbmTrainingSpec,
     PredictionBuildSpec,
     ProviderBuildSpec,
+    ResearchSummaryManifestV1,
+    ResearchSummaryMetricsV1,
+    ResearchSummaryUpstreamPaths,
     SnapshotBuildSpec,
 )
 from quant.research.m3.development_example import (
@@ -46,6 +49,7 @@ from quant.research.m3.development_example import (
     VerifiedDevelopmentExampleModelArtifact,
     VerifiedDevelopmentExamplePredictionArtifact,
     VerifiedDevelopmentExampleProviderArtifact,
+    VerifiedDevelopmentExampleResearchSummaryArtifact,
     VerifiedDevelopmentExampleSnapshotArtifact,
 )
 from quant.research.m3.predictions import (
@@ -790,6 +794,433 @@ def read_evaluation_manifest(path: Path) -> EvaluationManifestV1:
     if raw != _canonical_bytes(asdict(manifest)):
         raise ValueError("evaluation manifest non-canonical")
     return manifest
+
+
+_SUMMARY_FILES = {
+    "daily_ic.parquet",
+    "fold_metrics.parquet",
+    "manifest.json",
+    "metrics.json",
+}
+_FOLD_METRICS_SCHEMA = {
+    "fold": pl.Utf8,
+    "n_dates": pl.Int64,
+    "n_computable_dates": pl.Int64,
+    "n_eligible": pl.Int64,
+    "n_scorable": pl.Int64,
+    "n_predicted": pl.Int64,
+    "n_labeled": pl.Int64,
+    "n_evaluated": pl.Int64,
+    "feature_coverage": pl.Float64,
+    "prediction_coverage": pl.Float64,
+    "label_coverage": pl.Float64,
+    "evaluation_coverage": pl.Float64,
+    "pearson_ic_mean": pl.Float64,
+    "rank_ic_mean": pl.Float64,
+    "pearson_icir": pl.Float64,
+    "rank_icir": pl.Float64,
+    "status_count_no_eligible": pl.Int64,
+    "status_count_no_labels": pl.Int64,
+    "status_count_no_predictions": pl.Int64,
+    "status_count_insufficient_symbols": pl.Int64,
+    "status_count_both_zero_variance": pl.Int64,
+    "status_count_score_zero_variance": pl.Int64,
+    "status_count_label_zero_variance": pl.Int64,
+    "status_count_computable": pl.Int64,
+}
+
+
+def build_development_example_research_summary_artifact(
+    *,
+    evaluations: Sequence[VerifiedDevelopmentExampleEvaluationArtifact],
+    experiment: VerifiedDevelopmentExampleExperimentIdentity,
+    config: LoadedM3Config,
+    horizon_sessions: int,
+    output_root: Path,
+) -> ResearchSummaryManifestV1:
+    """Build a deterministic, experiment-scoped cross-fold research summary."""
+    ordered = _validate_summary_inputs(
+        evaluations, experiment, config, horizon_sessions
+    )
+    _require_empty_directory(output_root)
+    daily = pl.concat([item.daily for item in ordered]).sort("as_of")
+    _assert_summary_dates(daily)
+    fold_metrics = _build_fold_metrics(ordered)
+    daily_path = output_root / "daily_ic.parquet"
+    fold_metrics_path = output_root / "fold_metrics.parquet"
+    _write_parquet(daily, daily_path)
+    _write_parquet(fold_metrics, fold_metrics_path)
+    daily_sha = _file_sha(daily_path)
+    metrics = _summarize_research(
+        daily=daily,
+        experiment_key=experiment.manifest.experiment_key,
+        horizon_sessions=horizon_sessions,
+        model=ordered[0].manifest.model,
+        model_version=ordered[0].manifest.model_version,
+        folds=tuple(item.manifest.fold for item in ordered),
+        daily_sha256=daily_sha,
+    )
+    metrics_path = output_root / "metrics.json"
+    _write_exclusive(metrics_path, _canonical_bytes(asdict(metrics)))
+    manifest = ResearchSummaryManifestV1(
+        schema_version="m3-research-summary-v1",
+        experiment_key=experiment.manifest.experiment_key,
+        horizon_sessions=horizon_sessions,
+        model=ordered[0].manifest.model,
+        model_version=ordered[0].manifest.model_version,
+        scientific_config_sha256=config.scientific_config_sha256,
+        folds=tuple(item.manifest.fold for item in ordered),
+        evaluation_manifest_sha256s=tuple(item.manifest_sha256 for item in ordered),
+        evaluation_receipt_sha256s=tuple(
+            item.evaluation_receipt_sha256 for item in ordered
+        ),
+        test_dates_sha256=_sha_dates(
+            tuple(cast(list[dt.date], daily.get_column("as_of").to_list()))
+        ),
+        daily_sha256=daily_sha,
+        fold_metrics_sha256=_file_sha(fold_metrics_path),
+        metrics_sha256=_file_sha(metrics_path),
+    )
+    _write_exclusive(output_root / "manifest.json", _canonical_bytes(asdict(manifest)))
+    return manifest
+
+
+@_evaluation_boundary
+def verify_development_example_research_summary_artifact(
+    *,
+    root: Path,
+    receipt_path: Path,
+    evaluations: Sequence[VerifiedDevelopmentExampleEvaluationArtifact],
+    experiment: VerifiedDevelopmentExampleExperimentIdentity,
+    config: LoadedM3Config,
+    horizon_sessions: int,
+    upstream_paths: ResearchSummaryUpstreamPaths,
+    artifact_roots: Mapping[str, Path],
+) -> VerifiedDevelopmentExampleResearchSummaryArtifact:
+    ordered = _validate_summary_inputs(
+        evaluations, experiment, config, horizon_sessions
+    )
+    if len(upstream_paths.evaluation_receipt_paths) != len(ordered):
+        raise ValueError("research summary receipt path count drift")
+    _fresh_verify_summary_upstreams(
+        ordered, experiment, upstream_paths
+    )
+    if (
+        not root.is_dir()
+        or root.is_symlink()
+        or {item.name for item in os.scandir(root)} != _SUMMARY_FILES
+    ):
+        raise ValueError("research summary tree closure drift")
+    raw_manifest = (root / "manifest.json").read_bytes()
+    manifest = read_research_summary_manifest(root / "manifest.json")
+    metrics = read_research_summary_metrics(root / "metrics.json")
+    daily = _read_evaluation_daily(root / "daily_ic.parquet")
+    fold_metrics = _read_fold_metrics(root / "fold_metrics.parquet")
+    expected_daily = pl.concat([item.daily for item in ordered]).sort("as_of")
+    _assert_summary_dates(expected_daily)
+    expected_fold_metrics = _build_fold_metrics(ordered)
+    if not daily.equals(expected_daily) or not fold_metrics.equals(expected_fold_metrics):
+        raise ValueError("research summary table content drift")
+    expected_metrics = _summarize_research(
+        daily=daily,
+        experiment_key=experiment.manifest.experiment_key,
+        horizon_sessions=horizon_sessions,
+        model=ordered[0].manifest.model,
+        model_version=ordered[0].manifest.model_version,
+        folds=tuple(item.manifest.fold for item in ordered),
+        daily_sha256=_file_sha(root / "daily_ic.parquet"),
+    )
+    if metrics != expected_metrics:
+        raise ValueError("research summary metrics/content drift")
+    expected_manifest = ResearchSummaryManifestV1(
+        schema_version="m3-research-summary-v1",
+        experiment_key=experiment.manifest.experiment_key,
+        horizon_sessions=horizon_sessions,
+        model=ordered[0].manifest.model,
+        model_version=ordered[0].manifest.model_version,
+        scientific_config_sha256=config.scientific_config_sha256,
+        folds=tuple(item.manifest.fold for item in ordered),
+        evaluation_manifest_sha256s=tuple(item.manifest_sha256 for item in ordered),
+        evaluation_receipt_sha256s=tuple(
+            item.evaluation_receipt_sha256 for item in ordered
+        ),
+        test_dates_sha256=_sha_dates(
+            tuple(cast(list[dt.date], daily.get_column("as_of").to_list()))
+        ),
+        daily_sha256=_file_sha(root / "daily_ic.parquet"),
+        fold_metrics_sha256=_file_sha(root / "fold_metrics.parquet"),
+        metrics_sha256=_file_sha(root / "metrics.json"),
+    )
+    if manifest != expected_manifest:
+        raise ValueError("research summary manifest/content drift")
+    verified_receipt = verify_stage_receipt_with_bytes(
+        receipt_path=receipt_path, artifact_roots=artifact_roots
+    )
+    if verified_receipt is None:
+        raise ValueError("research summary receipt missing")
+    receipt = verified_receipt.receipt
+    inputs = _summary_receipt_inputs(ordered, experiment, upstream_paths)
+    outputs = tuple(root / name for name in sorted(_SUMMARY_FILES))
+    if (
+        receipt.stage != "development-research-summary"
+        or receipt.scope != "EXPERIMENT"
+        or receipt.scope_key != experiment.manifest.experiment_key
+        or not _digest_paths_equal(receipt.inputs, inputs, artifact_roots)
+        or not _digest_paths_equal(receipt.outputs, outputs, artifact_roots)
+    ):
+        raise ValueError("research summary receipt closure drift")
+    return VerifiedDevelopmentExampleResearchSummaryArtifact(
+        release_kind="development_example",
+        formal_gate_eligible=False,
+        example_id=experiment.example_id,
+        root=root.resolve(strict=True),
+        daily=daily,
+        fold_metrics=fold_metrics,
+        metrics=metrics,
+        manifest=manifest,
+        manifest_sha256=hashlib.sha256(raw_manifest).hexdigest(),
+        summary_receipt_sha256=verified_receipt.sha256,
+    )
+
+
+def read_research_summary_metrics(path: Path) -> ResearchSummaryMetricsV1:
+    raw = path.read_bytes()
+    payload = _strict_json_object(raw)
+    if set(payload) != {field.name for field in fields(ResearchSummaryMetricsV1)}:
+        raise ValueError("research summary metrics fields drift")
+    raw_counts = payload.get("status_counts")
+    raw_folds = payload.get("folds")
+    if (
+        type(raw_counts) is not list
+        or any(type(item) is not list or len(item) != 2 for item in raw_counts)
+        or type(raw_folds) is not list
+    ):
+        raise ValueError("research summary metrics nested fields invalid")
+    payload["status_counts"] = tuple(
+        (cast(Any, item[0]), cast(Any, item[1])) for item in raw_counts
+    )
+    payload["folds"] = tuple(cast(list[str], raw_folds))
+    metrics = ResearchSummaryMetricsV1(**cast(Any, payload))
+    if raw != _canonical_bytes(asdict(metrics)):
+        raise ValueError("research summary metrics non-canonical")
+    return metrics
+
+
+def read_research_summary_manifest(path: Path) -> ResearchSummaryManifestV1:
+    raw = path.read_bytes()
+    payload = _strict_json_object(raw)
+    if set(payload) != {field.name for field in fields(ResearchSummaryManifestV1)}:
+        raise ValueError("research summary manifest fields drift")
+    for name in (
+        "folds", "evaluation_manifest_sha256s", "evaluation_receipt_sha256s"
+    ):
+        value = payload.get(name)
+        if type(value) is not list:
+            raise ValueError("research summary manifest nested fields invalid")
+        payload[name] = tuple(cast(list[str], value))
+    manifest = ResearchSummaryManifestV1(**cast(Any, payload))
+    if raw != _canonical_bytes(asdict(manifest)):
+        raise ValueError("research summary manifest non-canonical")
+    return manifest
+
+
+def _validate_summary_inputs(
+    evaluations: Sequence[VerifiedDevelopmentExampleEvaluationArtifact],
+    experiment: VerifiedDevelopmentExampleExperimentIdentity,
+    config: LoadedM3Config,
+    horizon_sessions: int,
+) -> tuple[VerifiedDevelopmentExampleEvaluationArtifact, ...]:
+    if (
+        not isinstance(evaluations, Sequence)
+        or len(evaluations) < 2
+        or any(
+            type(item) is not VerifiedDevelopmentExampleEvaluationArtifact
+            for item in evaluations
+        )
+        or type(experiment) is not VerifiedDevelopmentExampleExperimentIdentity
+        or type(config) is not LoadedM3Config
+        or type(horizon_sessions) is not int
+        or horizon_sessions not in {5, 10}
+    ):
+        raise ValueError("research summary inputs invalid")
+    ordered = tuple(sorted(evaluations, key=lambda item: item.manifest.fold))
+    first = ordered[0]
+    if (
+        len({item.manifest.fold for item in ordered}) != len(ordered)
+        or len({item.example_id for item in ordered} | {experiment.example_id}) != 1
+        or config.scientific_config_sha256
+        != experiment.manifest.scientific_config_sha256
+        or any(
+            item.manifest.experiment_key != experiment.manifest.experiment_key
+            or item.manifest.horizon_sessions != horizon_sessions
+            or item.manifest.model != first.manifest.model
+            or item.manifest.model_version != first.manifest.model_version
+            or item.manifest.scientific_config_sha256
+            != config.scientific_config_sha256
+            for item in ordered
+        )
+    ):
+        raise ValueError("research summary identity drift")
+    dates: list[dt.date] = []
+    for item in ordered:
+        item_dates = cast(list[dt.date], item.daily.get_column("as_of").to_list())
+        if len(item_dates) != len(set(item_dates)):
+            raise ValueError("research summary evaluation dates invalid")
+        dates.extend(item_dates)
+    if len(dates) != len(set(dates)):
+        raise ValueError("research summary fold dates overlap")
+    return ordered
+
+
+def _assert_summary_dates(daily: pl.DataFrame) -> None:
+    if daily.columns != list(_DAILY_SCHEMA) or daily.schema != _DAILY_SCHEMA:
+        raise ValueError("research summary daily schema drift")
+    dates = cast(list[dt.date], daily.get_column("as_of").to_list())
+    if not dates or dates != sorted(dates) or len(dates) != len(set(dates)):
+        raise ValueError("research summary dates drift")
+
+
+def _build_fold_metrics(
+    evaluations: Sequence[VerifiedDevelopmentExampleEvaluationArtifact],
+) -> pl.DataFrame:
+    rows: list[dict[str, object]] = []
+    status_columns: dict[IcStatus, str] = {
+        "NO_ELIGIBLE": "status_count_no_eligible",
+        "NO_LABELS": "status_count_no_labels",
+        "NO_PREDICTIONS": "status_count_no_predictions",
+        "INSUFFICIENT_SYMBOLS": "status_count_insufficient_symbols",
+        "BOTH_ZERO_VARIANCE": "status_count_both_zero_variance",
+        "SCORE_ZERO_VARIANCE": "status_count_score_zero_variance",
+        "LABEL_ZERO_VARIANCE": "status_count_label_zero_variance",
+        "COMPUTABLE": "status_count_computable",
+    }
+    for item in evaluations:
+        metrics = item.metrics
+        row: dict[str, object] = {
+            "fold": item.manifest.fold,
+            **{
+                name: getattr(metrics, name)
+                for name in tuple(_FOLD_METRICS_SCHEMA)[1:16]
+            },
+        }
+        counts = dict(metrics.status_counts)
+        row.update({column: counts[status] for status, column in status_columns.items()})
+        rows.append(row)
+    frame = pl.DataFrame(rows, schema=_FOLD_METRICS_SCHEMA).sort("fold")
+    if frame.get_column("fold").to_list() != sorted(frame.get_column("fold").to_list()):
+        raise ValueError("research summary fold order drift")
+    return frame
+
+
+def _read_fold_metrics(path: Path) -> pl.DataFrame:
+    frame = pl.read_parquet(path)
+    if (
+        frame.columns != list(_FOLD_METRICS_SCHEMA)
+        or frame.schema != _FOLD_METRICS_SCHEMA
+        or frame.height < 2
+        or frame.get_column("fold").to_list()
+        != sorted(frame.get_column("fold").to_list())
+        or frame.get_column("fold").n_unique() != frame.height
+    ):
+        raise ValueError("research summary fold metrics drift")
+    return frame
+
+
+def _summarize_research(
+    *,
+    daily: pl.DataFrame,
+    experiment_key: str,
+    horizon_sessions: int,
+    model: str,
+    model_version: str,
+    folds: tuple[str, ...],
+    daily_sha256: str,
+) -> ResearchSummaryMetricsV1:
+    totals = {
+        name: int(daily.get_column(name).sum())
+        for name in (
+            "n_eligible", "n_scorable", "n_predicted", "n_labeled", "n_evaluated"
+        )
+    }
+    computable = daily.filter(pl.col("ic_status") == "COMPUTABLE")
+    pearsons = [float(value) for value in computable.get_column("pearson_ic")]
+    ranks = [float(value) for value in computable.get_column("rank_ic")]
+    status_counter = Counter(cast(list[str], daily.get_column("ic_status").to_list()))
+    return ResearchSummaryMetricsV1(
+        schema_version="m3-research-summary-metrics-v1",
+        experiment_key=experiment_key,
+        horizon_sessions=horizon_sessions,
+        model=model,
+        model_version=model_version,
+        folds=folds,
+        n_dates=daily.height,
+        n_computable_dates=computable.height,
+        n_eligible=totals["n_eligible"],
+        n_scorable=totals["n_scorable"],
+        n_predicted=totals["n_predicted"],
+        n_labeled=totals["n_labeled"],
+        n_evaluated=totals["n_evaluated"],
+        feature_coverage=_ratio(totals["n_scorable"], totals["n_eligible"]),
+        prediction_coverage=_ratio(totals["n_predicted"], totals["n_scorable"]),
+        label_coverage=_ratio(totals["n_labeled"], totals["n_eligible"]),
+        evaluation_coverage=_ratio(totals["n_evaluated"], totals["n_labeled"]),
+        pearson_ic_mean=_optional_mean(pearsons),
+        rank_ic_mean=_optional_mean(ranks),
+        pearson_icir=_optional_icir(pearsons),
+        rank_icir=_optional_icir(ranks),
+        status_counts=tuple(
+            (status, status_counter.get(status, 0)) for status in _IC_STATUSES
+        ),
+        daily_sha256=daily_sha256,
+    )
+
+
+def _fresh_verify_summary_upstreams(
+    evaluations: Sequence[VerifiedDevelopmentExampleEvaluationArtifact],
+    experiment: VerifiedDevelopmentExampleExperimentIdentity,
+    upstream_paths: ResearchSummaryUpstreamPaths,
+) -> None:
+    if (
+        not upstream_paths.experiment_receipt_path.is_file()
+        or _file_sha(upstream_paths.experiment_receipt_path)
+        != experiment.experiment_receipt_sha256
+    ):
+        raise ValueError("research summary experiment receipt stale")
+    for item, receipt_path in zip(
+        evaluations, upstream_paths.evaluation_receipt_paths, strict=True
+    ):
+        if (
+            not receipt_path.is_file()
+            or _file_sha(receipt_path) != item.evaluation_receipt_sha256
+            or read_evaluation_manifest(item.root / "evaluation_manifest.json")
+            != item.manifest
+            or read_evaluation_metrics(item.root / "metrics.json") != item.metrics
+            or not _read_evaluation_daily(item.root / "daily_ic.parquet").equals(item.daily)
+        ):
+            raise ValueError("research summary evaluation stale")
+
+
+def _summary_receipt_inputs(
+    evaluations: Sequence[VerifiedDevelopmentExampleEvaluationArtifact],
+    experiment: VerifiedDevelopmentExampleExperimentIdentity,
+    upstream_paths: ResearchSummaryUpstreamPaths,
+) -> tuple[Path, ...]:
+    paths = [
+        experiment.root / "experiment_manifest.json",
+        upstream_paths.experiment_receipt_path,
+    ]
+    for item, receipt_path in zip(
+        evaluations, upstream_paths.evaluation_receipt_paths, strict=True
+    ):
+        paths.extend(
+            (
+                item.root / "daily_ic.parquet",
+                item.root / "metrics.json",
+                item.root / "evaluation_manifest.json",
+                receipt_path,
+            )
+        )
+    return tuple(paths)
 
 
 def _read_evaluation_daily(path: Path) -> pl.DataFrame:

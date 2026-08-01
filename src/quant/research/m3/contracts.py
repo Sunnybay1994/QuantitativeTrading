@@ -1673,6 +1673,151 @@ class VerifiedEvaluationArtifact:
 
 
 @dataclass(frozen=True)
+class ResearchSummaryUpstreamPaths:
+    experiment_receipt_path: Path
+    evaluation_receipt_paths: tuple[Path, ...]
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.experiment_receipt_path, Path)
+            or not self.evaluation_receipt_paths
+            or any(not isinstance(path, Path) for path in self.evaluation_receipt_paths)
+            or len(set(self.evaluation_receipt_paths)) != len(self.evaluation_receipt_paths)
+        ):
+            raise ValueError("research summary upstream paths 非法")
+
+
+@dataclass(frozen=True)
+class ResearchSummaryMetricsV1:
+    schema_version: Literal["m3-research-summary-metrics-v1"]
+    experiment_key: str
+    horizon_sessions: int
+    model: str
+    model_version: str
+    folds: tuple[str, ...]
+    n_dates: int
+    n_computable_dates: int
+    n_eligible: int
+    n_scorable: int
+    n_predicted: int
+    n_labeled: int
+    n_evaluated: int
+    feature_coverage: float | None
+    prediction_coverage: float | None
+    label_coverage: float | None
+    evaluation_coverage: float | None
+    pearson_ic_mean: float | None
+    rank_ic_mean: float | None
+    pearson_icir: float | None
+    rank_icir: float | None
+    status_counts: tuple[tuple[IcStatus, int], ...]
+    daily_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "m3-research-summary-metrics-v1":
+            raise ValueError("research summary metrics schema 非法")
+        _require_bare_hex64("experiment_key", self.experiment_key)
+        _require_bare_hex64("daily_sha256", self.daily_sha256)
+        EvaluationMetricsV1(
+            schema_version="m3-evaluation-metrics-v1",
+            experiment_key=self.experiment_key,
+            work_key="0" * 64,
+            fold="summary",
+            horizon_sessions=self.horizon_sessions,
+            model=self.model,
+            model_version=self.model_version,
+            n_dates=self.n_dates,
+            n_computable_dates=self.n_computable_dates,
+            n_eligible=self.n_eligible,
+            n_scorable=self.n_scorable,
+            n_predicted=self.n_predicted,
+            n_labeled=self.n_labeled,
+            n_evaluated=self.n_evaluated,
+            feature_coverage=self.feature_coverage,
+            prediction_coverage=self.prediction_coverage,
+            label_coverage=self.label_coverage,
+            evaluation_coverage=self.evaluation_coverage,
+            pearson_ic_mean=self.pearson_ic_mean,
+            rank_ic_mean=self.rank_ic_mean,
+            pearson_icir=self.pearson_icir,
+            rank_icir=self.rank_icir,
+            status_counts=self.status_counts,
+            daily_sha256=self.daily_sha256,
+        )
+        if (
+            not self.folds
+            or tuple(sorted(self.folds)) != self.folds
+            or len(set(self.folds)) != len(self.folds)
+        ):
+            raise ValueError("research summary folds 非法")
+
+
+@dataclass(frozen=True)
+class ResearchSummaryManifestV1:
+    schema_version: Literal["m3-research-summary-v1"]
+    experiment_key: str
+    horizon_sessions: int
+    model: str
+    model_version: str
+    scientific_config_sha256: str
+    folds: tuple[str, ...]
+    evaluation_manifest_sha256s: tuple[str, ...]
+    evaluation_receipt_sha256s: tuple[str, ...]
+    test_dates_sha256: str
+    daily_sha256: str
+    fold_metrics_sha256: str
+    metrics_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "m3-research-summary-v1":
+            raise ValueError("research summary manifest schema 非法")
+        for name in (
+            "experiment_key", "scientific_config_sha256", "test_dates_sha256",
+            "daily_sha256", "fold_metrics_sha256", "metrics_sha256",
+        ):
+            _require_bare_hex64(name, getattr(self, name))
+        for value in (*self.evaluation_manifest_sha256s, *self.evaluation_receipt_sha256s):
+            _require_bare_hex64("evaluation_sha256", value)
+        if (
+            type(self.horizon_sessions) is not int
+            or self.horizon_sessions not in {5, 10}
+            or type(self.model) is not str
+            or not self.model
+            or type(self.model_version) is not str
+            or not self.model_version
+            or not self.folds
+            or self.folds != tuple(sorted(self.folds))
+            or len(set(self.folds)) != len(self.folds)
+            or len(self.folds) != len(self.evaluation_manifest_sha256s)
+            or len(self.folds) != len(self.evaluation_receipt_sha256s)
+        ):
+            raise ValueError("research summary manifest 非法")
+
+
+@dataclass(frozen=True)
+class VerifiedResearchSummaryArtifact:
+    root: Path
+    daily: pl.DataFrame
+    fold_metrics: pl.DataFrame
+    metrics: ResearchSummaryMetricsV1
+    manifest: ResearchSummaryManifestV1
+    manifest_sha256: str
+    summary_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.root, Path)
+            or not isinstance(self.daily, pl.DataFrame)
+            or not isinstance(self.fold_metrics, pl.DataFrame)
+            or type(self.metrics) is not ResearchSummaryMetricsV1
+            or type(self.manifest) is not ResearchSummaryManifestV1
+        ):
+            raise ValueError("verified research summary artifact 非法")
+        _require_bare_hex64("manifest_sha256", self.manifest_sha256)
+        _require_bare_hex64("summary_receipt_sha256", self.summary_receipt_sha256)
+
+
+@dataclass(frozen=True)
 class LabelBuildSpec:
     experiment_key: str
     experiment_manifest_sha256: str
