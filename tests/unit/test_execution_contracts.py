@@ -29,6 +29,7 @@ from quant.execution.contracts import (
     OrderIntent,
     OrderIntentSpec,
     OrderPlan,
+    OrderPlanDecision,
     RuleDecision,
     VerifiedConnectMarketContext,
     VerifiedMarketSnapshot,
@@ -45,6 +46,7 @@ from quant.execution.contracts import (
     build_order_intent,
     build_order_intent_identity,
     build_order_plan,
+    build_order_plan_decision,
     build_order_plan_identity,
     build_position_balance,
     build_rule_decision,
@@ -504,6 +506,127 @@ def test_order_plan_unique_intent_keys_and_identity() -> None:
             intent_specs=(spec_buy, dup_spec),
             rejections=(),
             residual_cash=(),
+        )
+
+
+def test_order_plan_decision_closes_quantities_identity_and_intent() -> None:
+    accepted = build_rule_decision(
+        accepted=True,
+        code="ACCEPTED",
+        normalized_quantity=100,
+        normalized_limit_price=Decimal("10"),
+        rule_version="a-v1",
+    )
+    decision = build_order_plan_decision(
+        symbol="600000.SH",
+        market=Market.SH,
+        connect_route=None,
+        side=OrderSide.BUY,
+        requested_quantity=150,
+        accepted_quantity=100,
+        rejected_quantity=0,
+        zero_delta_quantity=50,
+        outcome=accepted,
+        reason_class="ACCEPTED",
+    )
+    spec = OrderIntentSpec(
+        symbol="600000.SH",
+        market=Market.SH,
+        side=OrderSide.BUY,
+        quantity=100,
+        limit_price=Decimal("10"),
+        quote_currency=Currency.CNY,
+        session_date=dt.date(2026, 7, 16),
+        generated_at=_utc(),
+        target_identity=_hex64("decision-target"),
+        market_snapshot_id=_hex64("decision-market"),
+        account_snapshot_id=_hex64("decision-account"),
+        config_identity=_hex64("decision-config"),
+        connect_route=None,
+    )
+    plan = build_order_plan(
+        target_identity=spec.target_identity,
+        market_snapshot_id=spec.market_snapshot_id,
+        account_snapshot_id=spec.account_snapshot_id,
+        config_identity=spec.config_identity,
+        intent_specs=(spec,),
+        rejections=(),
+        residual_cash=(),
+        decisions=(decision,),
+    )
+    assert plan.decisions == (decision,)
+    assert build_order_plan_identity(plan) == plan.plan_id
+
+    with pytest.raises(ContractError, match="quantity conservation"):
+        OrderPlanDecision(
+            target_key=decision.target_key,
+            symbol=decision.symbol,
+            market=decision.market,
+            connect_route=decision.connect_route,
+            side=decision.side,
+            requested_quantity=150,
+            accepted_quantity=100,
+            rejected_quantity=0,
+            zero_delta_quantity=49,
+            outcome=decision.outcome,
+            reason_class=decision.reason_class,
+        )
+    with pytest.raises(ContractError, match="intents must match"):
+        build_order_plan(
+            target_identity=spec.target_identity,
+            market_snapshot_id=spec.market_snapshot_id,
+            account_snapshot_id=spec.account_snapshot_id,
+            config_identity=spec.config_identity,
+            intent_specs=(),
+            rejections=(),
+            residual_cash=(),
+            decisions=(decision,),
+        )
+
+
+def test_order_plan_decision_route_and_rejection_are_identity_bound() -> None:
+    rejected = build_rule_decision(
+        accepted=False,
+        code="SUSPENDED",
+        normalized_quantity=0,
+        normalized_limit_price=Decimal("0"),
+        rule_version="hk-v1",
+    )
+    sh_route = build_order_plan_decision(
+        symbol="00700.HK",
+        market=Market.HK,
+        connect_route=ConnectRoute.SH_CONNECT,
+        side=OrderSide.BUY,
+        requested_quantity=100,
+        accepted_quantity=0,
+        rejected_quantity=100,
+        zero_delta_quantity=0,
+        outcome=rejected,
+        reason_class="RULE_REJECTED",
+    )
+    sz_route = build_order_plan_decision(
+        symbol="00700.HK",
+        market=Market.HK,
+        connect_route=ConnectRoute.SZ_CONNECT,
+        side=OrderSide.BUY,
+        requested_quantity=100,
+        accepted_quantity=0,
+        rejected_quantity=100,
+        zero_delta_quantity=0,
+        outcome=rejected,
+        reason_class="RULE_REJECTED",
+    )
+    assert sh_route.target_key != sz_route.target_key
+    with pytest.raises(ContractError, match="rejections must match"):
+        build_order_plan(
+            target_identity=_hex64("rejected-target"),
+            market_snapshot_id=_hex64("rejected-market"),
+            account_snapshot_id=_hex64("rejected-account"),
+            config_identity=_hex64("rejected-config"),
+            intent_specs=(),
+            rejections=(),
+            residual_cash=(),
+            decisions=(sh_route,),
         )
 
 

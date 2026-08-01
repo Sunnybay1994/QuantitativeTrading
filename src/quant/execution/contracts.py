@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
-from typing import Any
+from typing import Any, Literal, TypeAlias
 
 from quant.domain.enums import (
     ConnectRoute,
@@ -262,6 +262,40 @@ def _rule_decision_payload(decision: "RuleDecision") -> dict[str, object]:
         "normalized_quantity": decision.normalized_quantity,
         "normalized_limit_price": decision.normalized_limit_price,
         "rule_version": decision.rule_version,
+    }
+
+
+def _order_plan_decision_target_digest(
+    *,
+    symbol: str,
+    market: Market,
+    connect_route: ConnectRoute | None,
+) -> str:
+    return _sha256_envelope(
+        type_name="OrderPlanDecisionTarget",
+        payload={
+            "symbol": symbol,
+            "market": market,
+            "connect_route": connect_route,
+        },
+    )
+
+
+def _order_plan_decision_payload(
+    decision: "OrderPlanDecision",
+) -> dict[str, object]:
+    return {
+        "target_key": decision.target_key,
+        "symbol": decision.symbol,
+        "market": decision.market,
+        "connect_route": decision.connect_route,
+        "side": decision.side,
+        "requested_quantity": decision.requested_quantity,
+        "accepted_quantity": decision.accepted_quantity,
+        "rejected_quantity": decision.rejected_quantity,
+        "zero_delta_quantity": decision.zero_delta_quantity,
+        "outcome": _rule_decision_payload(decision.outcome),
+        "reason_class": decision.reason_class,
     }
 
 
@@ -550,6 +584,7 @@ def _order_plan_digest(
     intent_bodies: list[dict[str, object]],
     rejections: tuple["RuleDecision", ...],
     residual_cash: tuple[MoneyAmount, ...],
+    decisions: tuple["OrderPlanDecision", ...],
 ) -> str:
     return _sha256_envelope(
         type_name="OrderPlan",
@@ -561,6 +596,7 @@ def _order_plan_digest(
             "intents": intent_bodies,
             "rejections": [_rule_decision_payload(item) for item in rejections],
             "residual_cash": [_money_payload(item) for item in residual_cash],
+            "decisions": [_order_plan_decision_payload(item) for item in decisions],
         },
     )
 
@@ -1073,6 +1109,111 @@ class RuleDecision:
         _require_non_empty_str("rule_version", self.rule_version)
 
 
+OrderPlanReasonClass: TypeAlias = Literal[
+    "ACCEPTED",
+    "RULE_REJECTED",
+    "ECONOMIC_REJECTED",
+    "CASH_REJECTED",
+    "ZERO_DELTA",
+    "PARTIAL_CASH",
+]
+_ORDER_PLAN_REASON_CLASSES = frozenset(
+    {
+        "ACCEPTED",
+        "RULE_REJECTED",
+        "ECONOMIC_REJECTED",
+        "CASH_REJECTED",
+        "ZERO_DELTA",
+        "PARTIAL_CASH",
+    }
+)
+_ORDER_PLAN_REJECTION_CLASSES = frozenset(
+    {"RULE_REJECTED", "ECONOMIC_REJECTED", "CASH_REJECTED"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class OrderPlanDecision:
+    """Per-target auditable allocation outcome with package-computed target key."""
+
+    target_key: str
+    symbol: str
+    market: Market
+    connect_route: ConnectRoute | None
+    side: OrderSide
+    requested_quantity: int
+    accepted_quantity: int
+    rejected_quantity: int
+    zero_delta_quantity: int
+    outcome: RuleDecision
+    reason_class: OrderPlanReasonClass
+
+    def __post_init__(self) -> None:
+        _require_hex64("target_key", self.target_key)
+        _require_non_empty_str("symbol", self.symbol)
+        market = _require_enum("market", self.market, Market)
+        route = _require_connect_route_for_market(market, self.connect_route)
+        _require_enum("side", self.side, OrderSide)
+        requested = _require_int(
+            "requested_quantity", self.requested_quantity, minimum=0
+        )
+        accepted = _require_int(
+            "accepted_quantity", self.accepted_quantity, minimum=0
+        )
+        rejected = _require_int(
+            "rejected_quantity", self.rejected_quantity, minimum=0
+        )
+        zero_delta = _require_int(
+            "zero_delta_quantity", self.zero_delta_quantity, minimum=0
+        )
+        if requested != accepted + rejected + zero_delta:
+            raise ContractError("order plan decision quantity conservation failed")
+        if type(self.outcome) is not RuleDecision:
+            raise ContractError("outcome must be RuleDecision")
+        if self.reason_class not in _ORDER_PLAN_REASON_CLASSES:
+            raise ContractError("order plan decision reason_class invalid")
+        expected_key = _order_plan_decision_target_digest(
+            symbol=self.symbol,
+            market=market,
+            connect_route=route,
+        )
+        _reject_forged_identity("target_key", self.target_key, expected_key)
+
+        if self.reason_class == "ACCEPTED":
+            valid = (
+                requested > 0
+                and accepted > 0
+                and rejected == 0
+                and self.outcome.accepted
+                and self.outcome.normalized_quantity == accepted
+            )
+        elif self.reason_class == "PARTIAL_CASH":
+            valid = (
+                accepted > 0
+                and rejected > 0
+                and self.outcome.accepted
+                and self.outcome.normalized_quantity == accepted
+            )
+        elif self.reason_class == "ZERO_DELTA":
+            valid = (
+                accepted == 0
+                and rejected == 0
+                and zero_delta == requested
+                and self.outcome.accepted
+                and self.outcome.normalized_quantity == 0
+            )
+        else:
+            valid = (
+                requested > 0
+                and accepted == 0
+                and rejected > 0
+                and not self.outcome.accepted
+                and self.outcome.normalized_quantity == 0
+            )
+        if not valid:
+            raise ContractError("order plan decision state combination invalid")
+
+
 @dataclass(frozen=True, slots=True)
 class OrderPlan:
     """Sorted unique intents plus rejections; plan_id is package-computed."""
@@ -1085,6 +1226,7 @@ class OrderPlan:
     intents: tuple[OrderIntent, ...]
     rejections: tuple[RuleDecision, ...]
     residual_cash: tuple[MoneyAmount, ...]
+    decisions: tuple[OrderPlanDecision, ...] = ()
 
     def __post_init__(self) -> None:
         _require_hex64("plan_id", self.plan_id)
@@ -1104,11 +1246,18 @@ class OrderPlan:
             not isinstance(item, MoneyAmount) for item in self.residual_cash
         ):
             raise ContractError("residual_cash must be tuple[MoneyAmount, ...]")
+        if type(self.decisions) is not tuple or any(
+            type(item) is not OrderPlanDecision for item in self.decisions
+        ):
+            raise ContractError("decisions must be tuple[OrderPlanDecision, ...]")
         _ensure_unique_keys(
             ((item.market, item.symbol, item.side) for item in self.intents),
             label="intent",
         )
         _ensure_unique_keys((item.currency for item in self.residual_cash), label="residual cash")
+        _ensure_unique_keys(
+            (item.target_key for item in self.decisions), label="target decision"
+        )
         for intent in self.intents:
             if intent.plan_id != self.plan_id:
                 raise ContractError("intent.plan_id must match plan_id")
@@ -1125,6 +1274,39 @@ class OrderPlan:
         for decision in self.rejections:
             if decision.accepted:
                 raise ContractError("rejections must have accepted=False")
+        if self.decisions:
+            expected_rejections = tuple(
+                item.outcome
+                for item in self.decisions
+                if item.reason_class in _ORDER_PLAN_REJECTION_CLASSES
+            )
+            if self.rejections != expected_rejections:
+                raise ContractError("rejections must match failed target decisions")
+            accepted_decisions = tuple(
+                item for item in self.decisions if item.accepted_quantity > 0
+            )
+            if len(self.intents) != len(accepted_decisions):
+                raise ContractError("intents must match accepted target decisions")
+            intents_by_key = {
+                (item.market, item.symbol, item.connect_route, item.side): item
+                for item in self.intents
+            }
+            for target_decision in accepted_decisions:
+                matched_intent = intents_by_key.get(
+                    (
+                        target_decision.market,
+                        target_decision.symbol,
+                        target_decision.connect_route,
+                        target_decision.side,
+                    )
+                )
+                if (
+                    matched_intent is None
+                    or matched_intent.quantity != target_decision.accepted_quantity
+                ):
+                    raise ContractError(
+                        "intent quantity must match accepted target decision"
+                    )
         expected = _order_plan_digest(
             target_identity=self.target_identity,
             market_snapshot_id=self.market_snapshot_id,
@@ -1150,12 +1332,20 @@ class OrderPlan:
             ],
             rejections=self.rejections,
             residual_cash=self.residual_cash,
+            decisions=self.decisions,
         )
         _reject_forged_identity("plan_id", self.plan_id, expected)
 
 
 def _intent_sort_key(spec: OrderIntentSpec | OrderIntent) -> tuple[str, str, str]:
     return (spec.market.value, spec.symbol, spec.side.value)
+
+
+def _plan_decision_sort_key(
+    decision: OrderPlanDecision,
+) -> tuple[str, str, str, str]:
+    route = "" if decision.connect_route is None else decision.connect_route.value
+    return (decision.market.value, decision.symbol, route, decision.side.value)
 
 
 def build_money_amount(currency: Currency, amount: Decimal) -> MoneyAmount:
@@ -1681,6 +1871,42 @@ def build_rule_decision_identity(decision: RuleDecision) -> str:
     )
 
 
+def build_order_plan_decision(
+    *,
+    symbol: str,
+    market: Market,
+    connect_route: ConnectRoute | None,
+    side: OrderSide,
+    requested_quantity: int,
+    accepted_quantity: int,
+    rejected_quantity: int,
+    zero_delta_quantity: int,
+    outcome: RuleDecision,
+    reason_class: OrderPlanReasonClass,
+) -> OrderPlanDecision:
+    """Build one strict target-level planning decision."""
+    market_e = _require_enum("market", market, Market)
+    route = _require_connect_route_for_market(market_e, connect_route)
+    target_key = _order_plan_decision_target_digest(
+        symbol=symbol,
+        market=market_e,
+        connect_route=route,
+    )
+    return OrderPlanDecision(
+        target_key=target_key,
+        symbol=symbol,
+        market=market_e,
+        connect_route=route,
+        side=side,
+        requested_quantity=requested_quantity,
+        accepted_quantity=accepted_quantity,
+        rejected_quantity=rejected_quantity,
+        zero_delta_quantity=zero_delta_quantity,
+        outcome=outcome,
+        reason_class=reason_class,
+    )
+
+
 def build_order_plan(
     *,
     target_identity: str,
@@ -1690,6 +1916,7 @@ def build_order_plan(
     intent_specs: Sequence[OrderIntentSpec],
     rejections: Sequence[RuleDecision],
     residual_cash: Sequence[MoneyAmount],
+    decisions: Sequence[OrderPlanDecision] = (),
 ) -> OrderPlan:
     """Build OrderPlan: compute plan_id, then intents bound to that plan_id."""
     target = _require_hex64("target_identity", target_identity)
@@ -1699,6 +1926,9 @@ def build_order_plan(
     spec_items = _require_sequence_of("intent_specs", intent_specs, OrderIntentSpec)
     rejection_items = _require_sequence_of("rejections", rejections, RuleDecision)
     cash_items = _require_sequence_of("residual_cash", residual_cash, MoneyAmount)
+    decision_items = _require_sequence_of(
+        "decisions", decisions, OrderPlanDecision
+    )
     for spec in spec_items:
         _require_plan_intent_source_closure(
             target_identity=target,
@@ -1713,6 +1943,7 @@ def build_order_plan(
     ordered_specs = tuple(sorted(spec_items, key=_intent_sort_key))
     ordered_rejections = rejection_items
     ordered_cash = _sorted_money(cash_items)
+    ordered_decisions = tuple(sorted(decision_items, key=_plan_decision_sort_key))
     bodies = [
         _intent_body_payload(
             symbol=spec.symbol,
@@ -1739,6 +1970,7 @@ def build_order_plan(
         intent_bodies=bodies,
         rejections=ordered_rejections,
         residual_cash=ordered_cash,
+        decisions=ordered_decisions,
     )
     intents = tuple(
         build_order_intent(
@@ -1768,6 +2000,7 @@ def build_order_plan(
         intents=intents,
         rejections=ordered_rejections,
         residual_cash=ordered_cash,
+        decisions=ordered_decisions,
     )
 
 
@@ -1800,6 +2033,7 @@ def build_order_plan_identity(plan: OrderPlan) -> str:
         ],
         rejections=plan.rejections,
         residual_cash=plan.residual_cash,
+        decisions=plan.decisions,
     )
     _reject_forged_identity("plan_id", plan.plan_id, digest)
     return digest
@@ -1816,6 +2050,8 @@ __all__ = [
     "OrderIntent",
     "OrderIntentSpec",
     "OrderPlan",
+    "OrderPlanDecision",
+    "OrderPlanReasonClass",
     "PositionBalance",
     "RuleDecision",
     "SymbolMarketState",
@@ -1836,6 +2072,7 @@ __all__ = [
     "build_order_intent",
     "build_order_intent_identity",
     "build_order_plan",
+    "build_order_plan_decision",
     "build_order_plan_identity",
     "build_position_balance",
     "build_position_balance_identity",
