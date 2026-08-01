@@ -80,6 +80,13 @@ from quant.research.m3.development_example import (
     verify_development_example_g1_release,
 )
 from quant.research.m3.evaluate import rank_ic_by_date, summarize_prediction_metrics
+from quant.research.m3.experiment_identity import (
+    build_experiment_identity_manifest,
+    experiment_identity_manifest_bytes,
+    make_experiment_identity_handler,
+    make_experiment_identity_run_plan,
+    verify_experiment_identity_output,
+)
 from quant.research.m3.fetch_qlib_tool import (
     build_qlib_dump_tool_spec,
     ensure_qlib_dump_tool,
@@ -99,7 +106,9 @@ from quant.research.m3.labels import (
     verify_label_artifact,
 )
 from quant.research.m3.orchestration import (
+    EXPERIMENT_IDENTITY_STAGE_SPEC,
     ExternalInput,
+    ExperimentIdentityStageResult,
     M3StageRunnerError,
     OutputSpec,
     ResolvedInput,
@@ -153,6 +162,14 @@ from quant.research.m3.run_state import (
     select_artifact_root,
     verify_stage_receipt,
     verify_stage_receipt_with_bytes,
+)
+from quant.research.m3.runtime_identity import (
+    M3DependencyVersionV1,
+    M3RuntimeIdentityError,
+    M3RuntimeIdentityV1,
+    M3SourceDigestV1,
+    compute_m3_runtime_identity,
+    runtime_identity_bytes,
 )
 from quant.research.m3.snapshot import (
     M3SnapshotError,
@@ -229,9 +246,16 @@ __all__ = [
     "StageContext",
     "StageBuildReport",
     "SnapshotStageResult",
+    "ExperimentIdentityStageResult",
+    "EXPERIMENT_IDENTITY_STAGE_SPEC",
     "StageRunner",
     "make_snapshot_run_plan",
     "make_development_snapshot_run_plan",
+    "make_experiment_identity_run_plan",
+    "make_experiment_identity_handler",
+    "build_experiment_identity_manifest",
+    "experiment_identity_manifest_bytes",
+    "verify_experiment_identity_output",
     "ConfigIssue",
     "LoadedM3Config",
     "M3ConfigError",
@@ -247,6 +271,12 @@ __all__ = [
     "compute_g1_runtime_identity",
     "build_g1_static_plan",
     "derive_g1_history_plan",
+    "M3DependencyVersionV1",
+    "M3SourceDigestV1",
+    "M3RuntimeIdentityV1",
+    "M3RuntimeIdentityError",
+    "compute_m3_runtime_identity",
+    "runtime_identity_bytes",
     "G1WorkflowCountsV1",
     "VerifiedG1WorkflowStateV1",
     "M3G1WorkflowError",

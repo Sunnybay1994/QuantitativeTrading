@@ -17,8 +17,10 @@ from quant.data._journal_lock import hold_journal_writer_lock
 from quant.data.m3_release import commit_directory_noreplace
 from quant.research.m3.config import LoadedM3Config
 from quant.research.m3.contracts import (
+    ExperimentIdentityManifestV1,
     SnapshotBuildResult,
     SnapshotRequestRecordV1,
+    VerifiedExperimentIdentity,
 )
 from quant.research.m3.run_state import (
     ArtifactDigest,
@@ -267,6 +269,8 @@ StageHandler: TypeAlias = Callable[[StageContext], StageBuildReport]
 SnapshotClosureVerifier: TypeAlias = Callable[
     [Path], tuple[SnapshotBuildResult, SnapshotRequestRecordV1]
 ]
+ExperimentOutputVerifier: TypeAlias = Callable[[Path], ExperimentIdentityManifestV1]
+ExperimentFinalVerifier: TypeAlias = Callable[[Path, Path], VerifiedExperimentIdentity]
 
 
 @dataclass(frozen=True)
@@ -280,8 +284,17 @@ class SnapshotStageResult:
     reused: bool
 
 
+@dataclass(frozen=True)
+class ExperimentIdentityStageResult:
+    experiment_root: Path
+    receipt_path: Path
+    verified: VerifiedExperimentIdentity
+    receipt: StageReceipt
+    reused: bool
+
+
 class StageRunner:
-    """Serial G8B runner; this increment implements snapshot publication only."""
+    """Serial G8B runner for snapshot and formal experiment-identity publication."""
 
     def __init__(
         self, *, stage_root: Path, artifact_roots: Mapping[str, Path],
@@ -346,6 +359,161 @@ class StageRunner:
             raise
         except Exception:
             raise M3StageRunnerError("STAGE_LOCK_FAILED") from None
+
+    def run_experiment_identity(
+        self,
+        *,
+        node: StageNode,
+        handler: StageHandler,
+        output_verifier: ExperimentOutputVerifier,
+        final_verifier: ExperimentFinalVerifier,
+        resume: bool = True,
+    ) -> ExperimentIdentityStageResult:
+        """Publish the exact one-file formal ExperimentIdentity stage."""
+        try:
+            self._validate_experiment_identity_node(node)
+            if type(resume) is not bool:
+                raise ValueError
+            lock_root = self._lock_root(node)
+        except (TypeError, ValueError, OSError):
+            raise M3StageRunnerError("STAGE_INPUT_INVALID") from None
+        try:
+            with hold_journal_writer_lock(journal_root=lock_root):
+                return self._run_experiment_identity_locked(
+                    node=node,
+                    handler=handler,
+                    output_verifier=output_verifier,
+                    final_verifier=final_verifier,
+                    resume=resume,
+                )
+        except M3StageRunnerError:
+            raise
+        except Exception:
+            raise M3StageRunnerError("STAGE_LOCK_FAILED") from None
+
+    def _run_experiment_identity_locked(
+        self,
+        *,
+        node: StageNode,
+        handler: StageHandler,
+        output_verifier: ExperimentOutputVerifier,
+        final_verifier: ExperimentFinalVerifier,
+        resume: bool,
+    ) -> ExperimentIdentityStageResult:
+        publication = cast(StaticDirectoryPublication, node.publication)
+        final_root = self._stage_root / publication.final_directory
+        receipt_path = self._stage_root / node.receipt_path
+        existing_receipt = self._read_receipt(receipt_path)
+        if existing_receipt is not None:
+            result = self._verify_completed_experiment_identity(
+                node=node,
+                final_root=final_root,
+                receipt_path=receipt_path,
+                receipt=existing_receipt,
+                final_verifier=final_verifier,
+            )
+            if not resume:
+                raise M3StageRunnerError("STAGE_ALREADY_COMPLETE")
+            return result
+
+        resolved = self._resolve_external_inputs(node)
+        temp_root = Path(
+            tempfile.mkdtemp(
+                prefix=f".{node.node_id}.", dir=self._stage_root / ".stage-tmp"
+            )
+        )
+        committed = False
+        try:
+            context = StageContext(
+                node=node,
+                inputs=resolved,
+                temp_output_root=temp_root,
+                config=self._config,
+            )
+            try:
+                report = handler(context)
+            except Exception:
+                raise M3StageRunnerError("STAGE_BUILD_FAILED") from None
+            if type(report) is not StageBuildReport:
+                raise M3StageRunnerError("STAGE_OUTPUT_INVALID")
+            try:
+                manifest = output_verifier(temp_root)
+                if (
+                    type(manifest) is not ExperimentIdentityManifestV1
+                    or manifest.experiment_key != node.scope_key
+                    or report.output_relative_paths != ("experiment_manifest.json",)
+                    or _regular_tree_relative_paths(temp_root)
+                    != ("experiment_manifest.json",)
+                ):
+                    raise ValueError
+            except Exception:
+                raise M3StageRunnerError("STAGE_OUTPUT_INVALID") from None
+
+            state = _leaf_state(final_root)
+            if state not in {"missing", "directory"}:
+                raise M3StageRunnerError("STAGE_RECOVERY_CONFLICT")
+            if state == "directory":
+                if not resume:
+                    raise M3StageRunnerError("STAGE_ALREADY_COMPLETE")
+                try:
+                    existing_manifest = output_verifier(final_root)
+                except Exception:
+                    raise M3StageRunnerError("STAGE_RECOVERY_CONFLICT") from None
+                if existing_manifest != manifest or not _trees_equal(temp_root, final_root):
+                    raise M3StageRunnerError("STAGE_RECOVERY_CONFLICT")
+            else:
+                try:
+                    commit_directory_noreplace(temp_root, final_root)
+                    committed = True
+                except Exception:
+                    if _leaf_state(final_root) != "directory" or not _trees_equal(
+                        temp_root, final_root
+                    ):
+                        raise M3StageRunnerError("STAGE_PUBLISH_FAILED") from None
+
+            output_path = final_root / "experiment_manifest.json"
+            receipt = publish_stage_receipt(
+                receipt_path=receipt_path,
+                stage="experiment-identity",
+                scope="EXPERIMENT",
+                scope_key=node.scope_key,
+                artifact_roots=self._artifact_roots,
+                inputs=tuple(
+                    (item.digest.root_alias, item.path) for item in resolved
+                ),
+                outputs=((_alias_for_path(output_path, self._artifact_roots), output_path),),
+            )
+            try:
+                verified = final_verifier(final_root, receipt_path)
+            except Exception:
+                raise M3StageRunnerError("STAGE_RECOVERY_CONFLICT") from None
+            if (
+                type(verified) is not VerifiedExperimentIdentity
+                or verified.manifest.experiment_key != node.scope_key
+            ):
+                raise M3StageRunnerError("STAGE_RECOVERY_CONFLICT")
+            _validate_receipt_paths(
+                receipt=receipt,
+                roots=self._artifact_roots,
+                expected_inputs={item.path for item in resolved},
+                expected_outputs={output_path},
+                expected_stage="experiment-identity",
+                expected_scope="EXPERIMENT",
+            )
+            return ExperimentIdentityStageResult(
+                experiment_root=final_root,
+                receipt_path=receipt_path,
+                verified=verified,
+                receipt=receipt,
+                reused=False,
+            )
+        finally:
+            if not committed and temp_root.exists():
+                _remove_owned_temp(
+                    temp_root,
+                    self._stage_root / ".stage-tmp",
+                    expected_prefix=f".{node.node_id}.",
+                )
 
     def _run_snapshot_locked(
         self, *, node: StageNode, handler: StageHandler,
@@ -466,7 +634,11 @@ class StageRunner:
             )
         finally:
             if not committed and temp_root.exists():
-                _remove_owned_temp(temp_root, self._stage_root / ".stage-tmp")
+                _remove_owned_temp(
+                    temp_root,
+                    self._stage_root / ".stage-tmp",
+                    expected_prefix=f".{node.node_id}.",
+                )
 
     def _verify_completed_snapshot(
         self, *, node: StageNode, request_path: Path, receipt_path: Path,
@@ -493,6 +665,44 @@ class StageRunner:
                 snapshot_root=final_root, request_record_path=request_path,
                 receipt_path=receipt_path, build=build, request=rebuilt_request,
                 receipt=receipt, reused=True,
+            )
+        except M3StageRunnerError:
+            raise
+        except Exception:
+            raise M3StageRunnerError("STAGE_RECOVERY_CONFLICT") from None
+
+    def _verify_completed_experiment_identity(
+        self,
+        *,
+        node: StageNode,
+        final_root: Path,
+        receipt_path: Path,
+        receipt: StageReceipt,
+        final_verifier: ExperimentFinalVerifier,
+    ) -> ExperimentIdentityStageResult:
+        try:
+            resolved = self._resolve_external_inputs(node)
+            verified = final_verifier(final_root, receipt_path)
+            output_path = final_root / "experiment_manifest.json"
+            if (
+                type(verified) is not VerifiedExperimentIdentity
+                or verified.manifest.experiment_key != node.scope_key
+            ):
+                raise ValueError
+            _validate_receipt_paths(
+                receipt=receipt,
+                roots=self._artifact_roots,
+                expected_inputs={item.path for item in resolved},
+                expected_outputs={output_path},
+                expected_stage="experiment-identity",
+                expected_scope="EXPERIMENT",
+            )
+            return ExperimentIdentityStageResult(
+                experiment_root=final_root,
+                receipt_path=receipt_path,
+                verified=verified,
+                receipt=receipt,
+                reused=True,
             )
         except M3StageRunnerError:
             raise
@@ -529,7 +739,8 @@ class StageRunner:
     def _prepare_owned_directories(self) -> None:
         for relative in (
             ".stage-locks", ".stage-tmp", "snapshots", "snapshot-requests",
-            "receipts", "receipts/snapshot", "receipts/development-snapshot",
+            "runs", "receipts", "receipts/snapshot", "receipts/development-snapshot",
+            "receipts/experiment-identity",
         ):
             path = self._stage_root / relative
             try:
@@ -588,6 +799,25 @@ class StageRunner:
         if node.receipt_path != expected_receipt:
             raise ValueError
 
+    @staticmethod
+    def _validate_experiment_identity_node(node: StageNode) -> None:
+        if type(node) is not StageNode:
+            raise ValueError
+        if node.spec_name != "experiment-identity" or node.scope != "EXPERIMENT":
+            raise ValueError
+        if node.dependencies or node.fold is not None or node.horizon is not None:
+            raise ValueError
+        if type(node.publication) is not StaticDirectoryPublication:
+            raise ValueError
+        if node.output_specs != EXPERIMENT_IDENTITY_STAGE_SPEC.outputs:
+            raise ValueError
+        expected_directory = f"runs/{node.scope_key}"
+        expected_receipt = f"receipts/experiment-identity/{node.scope_key}.json"
+        if node.publication.final_directory != expected_directory:
+            raise ValueError
+        if node.receipt_path != expected_receipt:
+            raise ValueError
+
 
 def _validate_relative(value: str, *, allow_dot: bool) -> None:
     if type(value) is not str or not value or "\\" in value:
@@ -640,8 +870,7 @@ def _validate_roots(roots: Mapping[str, Path]) -> dict[str, Path]:
         raise ValueError("artifact roots 非法")
     result: dict[str, Path] = {}
     for alias, root in roots.items():
-        if type(alias) is not str or _NODE_PATTERN.fullmatch(alias) is None:
-            raise ValueError("artifact root alias 非法")
+        _validate_root_alias(alias)
         _require_real_directory(root, label="artifact root")
         resolved = root.resolve(strict=True)
         if resolved in result.values():
@@ -653,6 +882,19 @@ def _validate_roots(roots: Mapping[str, Path]) -> dict[str, Path]:
             if left != right and (left.is_relative_to(right) or right.is_relative_to(left)):
                 raise ValueError("artifact roots 不得嵌套")
     return result
+
+
+def _validate_root_alias(alias: object) -> None:
+    if (
+        type(alias) is not str
+        or not alias
+        or alias != alias.strip()
+        or "/" in alias
+        or "\\" in alias
+        or alias in {".", ".."}
+        or any(ord(char) < 32 or ord(char) == 127 for char in alias)
+    ):
+        raise ValueError("artifact root alias 非法")
 
 
 def _alias_for_path(path: Path, roots: Mapping[str, Path]) -> str:
@@ -794,8 +1036,9 @@ def _digest_paths(
 def _validate_receipt_paths(
     *, receipt: StageReceipt, roots: Mapping[str, Path],
     expected_inputs: set[Path], expected_outputs: set[Path], expected_stage: str,
+    expected_scope: Scope = "SNAPSHOT",
 ) -> None:
-    if receipt.stage != expected_stage or receipt.scope != "SNAPSHOT":
+    if receipt.stage != expected_stage or receipt.scope != expected_scope:
         raise M3StageRunnerError("STAGE_RECOVERY_CONFLICT")
     if _digest_paths(receipt.inputs, roots) != {
         path.resolve(strict=True) for path in expected_inputs
@@ -807,11 +1050,17 @@ def _validate_receipt_paths(
         raise M3StageRunnerError("STAGE_RECOVERY_CONFLICT")
 
 
-def _remove_owned_temp(path: Path, temp_parent: Path) -> None:
+def _remove_owned_temp(
+    path: Path, temp_parent: Path, *, expected_prefix: str
+) -> None:
     try:
+        if not expected_prefix.startswith(".") or len(expected_prefix) < 3:
+            raise ValueError
         resolved_parent = temp_parent.resolve(strict=True)
         resolved = path.resolve(strict=True)
-        if resolved.parent != resolved_parent or not resolved.name.startswith(".snapshot."):
+        if resolved.parent != resolved_parent or not resolved.name.startswith(
+            expected_prefix
+        ):
             raise ValueError
         shutil.rmtree(resolved)
     except FileNotFoundError:
@@ -836,6 +1085,13 @@ DEVELOPMENT_SNAPSHOT_STAGE_SPEC = StageSpec(
     scope="SNAPSHOT",
     dependencies=(),
     outputs=SNAPSHOT_STAGE_SPEC.outputs,
+)
+
+EXPERIMENT_IDENTITY_STAGE_SPEC = StageSpec(
+    name="experiment-identity",
+    scope="EXPERIMENT",
+    dependencies=(),
+    outputs=(OutputSpec("experiment_manifest.json", "FILE", None),),
 )
 
 
