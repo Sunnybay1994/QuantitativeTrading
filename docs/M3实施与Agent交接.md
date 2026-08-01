@@ -3,9 +3,10 @@
 状态（2026-08-02）：正式 Windows G1 已完成 INDEX→HISTORY→REFERENCE→PREPARE→PUBLISH，发布
 `release_id=08eb9b31…`、manifest `d3923fa1…`；独立磁盘 `verify_g1_release` 正在后台执行，通过前仍不把
 Windows G1 Gate 标记为最终关闭，且 Windows 结果不替代 Linux/ext4 Gate。隔离 development/example 路径已完成
-G2B、G2C、G3A、G3B、G4A，并通过 G4B parent/fresh-worker/receipt 阶段验收；development 结果不升级为
-formal verified artifact，也不关闭真实 Qlib、正式 G2–G9 或性能 Gate。后续以正式 G1 磁盘验收→正式 G2A，
-以及 development G4C 为两条互不阻塞的推进线。
+G2B、G2C、G3A、G3B、G4A，并通过 G4B parent/fresh-worker/receipt 与 G4C 监督对齐/无标签 inference
+阶段验收；development 结果不升级为 formal verified artifact，也不关闭真实 Qlib、正式 G2–G9 或性能
+Gate。正式 G1 Windows 发布物已通过磁盘验收；正式 G2A 与 development G5A 为两条互不阻塞的推进线，
+Linux/ext4 Gate 仍单独保留。
 当前验收与返工顺序见 [`M3当前验收与返工总览.md`](M3当前验收与返工总览.md)。
 本文是 **M3 实现契约的 SSOT**；技术选型理由仍以
 [`../A股港股通个人量化投研交易系统调研.md`](../A股港股通个人量化投研交易系统调研.md)

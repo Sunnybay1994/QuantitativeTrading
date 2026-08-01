@@ -43,6 +43,7 @@ from quant.domain.schemas import (
     UniverseMembershipSchema,
 )
 from quant.research.m3.contracts import (
+    AlignmentManifestV1,
     ExperimentIdentityManifestV1,
     FeatureManifestV1,
     FoldPlanManifestV1,
@@ -487,6 +488,29 @@ class VerifiedDevelopmentExampleFeatureArtifact:
             raise ValueError("verified development feature manifest 非法")
         _require_hex64(self.manifest_sha256)
         _require_hex64(self.feature_receipt_sha256)
+        root = self.root.resolve(strict=True)
+        _require_development_root_name(root)
+        object.__setattr__(self, "root", root)
+
+
+@dataclass(frozen=True)
+class VerifiedDevelopmentExampleAlignmentArtifact:
+    release_kind: Literal["development_example"]
+    formal_gate_eligible: Literal[False]
+    example_id: str
+    root: Path
+    manifest: AlignmentManifestV1
+    manifest_sha256: str
+    alignment_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.release_kind != _KIND or self.formal_gate_eligible is not False:
+            raise ValueError("verified development alignment kind 非法")
+        _require_example_id(self.example_id)
+        if type(self.manifest) is not AlignmentManifestV1:
+            raise ValueError("verified development alignment manifest 非法")
+        _require_hex64(self.manifest_sha256)
+        _require_hex64(self.alignment_receipt_sha256)
         root = self.root.resolve(strict=True)
         _require_development_root_name(root)
         object.__setattr__(self, "root", root)

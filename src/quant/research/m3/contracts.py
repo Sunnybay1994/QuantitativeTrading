@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Literal
 
 import polars as pl
+import pandas as pd  # type: ignore[import-untyped]
 
 from quant.research.m3.run_state import ArtifactDigest
 
@@ -1061,6 +1062,182 @@ class VerifiedFeatureArtifact:
             raise ValueError("verified feature artifact 非法")
         _require_bare_hex64("manifest_sha256", self.manifest_sha256)
         _require_bare_hex64("feature_receipt_sha256", self.feature_receipt_sha256)
+
+
+@dataclass(frozen=True)
+class AlignmentBuildSpec:
+    experiment_key: str
+    work_key: str
+    fold: str
+    planned_fold_sha256: str
+    horizon_sessions: Literal[5, 10]
+    feature_manifest_sha256: str
+    label_manifest_sha256: str
+
+    def __post_init__(self) -> None:
+        for name in (
+            "experiment_key", "work_key", "planned_fold_sha256",
+            "feature_manifest_sha256", "label_manifest_sha256",
+        ):
+            _require_bare_hex64(name, getattr(self, name))
+        if (
+            type(self.fold) is not str
+            or len(self.fold) != 8
+            or not self.fold.startswith("fold_")
+            or not self.fold[5:].isdigit()
+            or type(self.horizon_sessions) is not int
+            or self.horizon_sessions not in {5, 10}
+        ):
+            raise ValueError("alignment build spec 非法")
+
+
+@dataclass(frozen=True)
+class AlignmentUpstreamPaths:
+    feature_receipt_path: Path
+    feature_upstream_paths: FeatureUpstreamPaths
+    label_receipt_path: Path
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.feature_receipt_path, Path)
+            or type(self.feature_upstream_paths) is not FeatureUpstreamPaths
+            or not isinstance(self.label_receipt_path, Path)
+        ):
+            raise ValueError("alignment upstream paths 非法")
+
+
+@dataclass(frozen=True)
+class InferenceUpstreamPaths:
+    feature_receipt_path: Path
+    feature_upstream_paths: FeatureUpstreamPaths
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.feature_receipt_path, Path)
+            or type(self.feature_upstream_paths) is not FeatureUpstreamPaths
+        ):
+            raise ValueError("inference upstream paths 非法")
+
+
+@dataclass(frozen=True)
+class AlignmentSegmentManifestV1:
+    name: Literal["train", "validation"]
+    path: str
+    bytes_sha256: str
+    row_keys_sha256: str
+    matrix_sha256: str
+    labels_sha256: str
+    n_feature_scorable: int
+    n_label_identity: int
+    n_label_joined: int
+    n_cutoff_dropped: int
+    n_final: int
+
+    def __post_init__(self) -> None:
+        if self.name not in {"train", "validation"} or self.path != f"{self.name}.parquet":
+            raise ValueError("alignment segment identity 非法")
+        for name in ("bytes_sha256", "row_keys_sha256", "matrix_sha256", "labels_sha256"):
+            _require_bare_hex64(name, getattr(self, name))
+        counts = (
+            self.n_feature_scorable, self.n_label_identity, self.n_label_joined,
+            self.n_cutoff_dropped, self.n_final,
+        )
+        if any(type(value) is not int or value < 0 for value in counts):
+            raise ValueError("alignment segment count 非法")
+        if (
+            self.n_label_joined > self.n_feature_scorable
+            or self.n_label_joined > self.n_label_identity
+            or self.n_cutoff_dropped > self.n_label_joined
+            or self.n_final != self.n_label_joined - self.n_cutoff_dropped
+        ):
+            raise ValueError("alignment segment conservation 非法")
+
+
+@dataclass(frozen=True)
+class AlignmentManifestV1:
+    schema_version: Literal["m3-alignment-artifact-v1"]
+    experiment_key: str
+    work_key: str
+    fold: str
+    planned_fold_sha256: str
+    horizon_sessions: int
+    feature_manifest_sha256: str
+    label_manifest_sha256: str
+    selected_feature_schema_sha256: str
+    segments: tuple[AlignmentSegmentManifestV1, ...]
+    diagnostics_path: str
+    diagnostics_sha256: str
+    diagnostics_row_count: int
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "m3-alignment-artifact-v1":
+            raise ValueError("alignment manifest schema 非法")
+        for name in (
+            "experiment_key", "work_key", "planned_fold_sha256",
+            "feature_manifest_sha256", "label_manifest_sha256",
+            "selected_feature_schema_sha256", "diagnostics_sha256",
+        ):
+            _require_bare_hex64(name, getattr(self, name))
+        if (
+            type(self.fold) is not str
+            or self.horizon_sessions not in {5, 10}
+            or type(self.segments) is not tuple
+            or tuple(item.name for item in self.segments) != ("train", "validation")
+            or any(type(item) is not AlignmentSegmentManifestV1 for item in self.segments)
+            or self.diagnostics_path != "diagnostics.parquet"
+            or type(self.diagnostics_row_count) is not int
+            or self.diagnostics_row_count < 0
+        ):
+            raise ValueError("alignment manifest 非法")
+
+
+@dataclass(frozen=True)
+class VerifiedAlignmentArtifact:
+    root: Path
+    manifest: AlignmentManifestV1
+    manifest_sha256: str
+    alignment_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.root, Path) or type(self.manifest) is not AlignmentManifestV1:
+            raise ValueError("verified alignment artifact 非法")
+        _require_bare_hex64("manifest_sha256", self.manifest_sha256)
+        _require_bare_hex64("alignment_receipt_sha256", self.alignment_receipt_sha256)
+
+
+@dataclass(frozen=True)
+class SupervisedSegment:
+    name: Literal["train", "validation"]
+    features: pd.DataFrame
+    labels: pd.Series
+    metadata: pl.DataFrame
+
+    def __post_init__(self) -> None:
+        if (
+            self.name not in {"train", "validation"}
+            or not isinstance(self.features, pd.DataFrame)
+            or not isinstance(self.labels, pd.Series)
+            or not isinstance(self.metadata, pl.DataFrame)
+            or len(self.features) != len(self.labels)
+            or len(self.features) != self.metadata.height
+        ):
+            raise ValueError("supervised segment 非法")
+
+
+@dataclass(frozen=True)
+class InferenceSegment:
+    name: Literal["test"]
+    features: pd.DataFrame
+    metadata: pl.DataFrame
+
+    def __post_init__(self) -> None:
+        if (
+            self.name != "test"
+            or not isinstance(self.features, pd.DataFrame)
+            or not isinstance(self.metadata, pl.DataFrame)
+            or len(self.features) != self.metadata.height
+        ):
+            raise ValueError("inference segment 非法")
 
 
 @dataclass(frozen=True)
