@@ -43,6 +43,8 @@ from quant.domain.schemas import (
     UniverseMembershipSchema,
 )
 from quant.research.m3.contracts import (
+    ExperimentIdentityManifestV1,
+    LabelArtifactManifest,
     ProviderManifestV1,
     ProviderValidationSummaryV1,
     SnapshotManifestV1,
@@ -417,6 +419,58 @@ class VerifiedDevelopmentExampleProviderValidationArtifact:
         object.__setattr__(self, "root", root)
 
 
+@dataclass(frozen=True)
+class VerifiedDevelopmentExampleExperimentIdentity:
+    release_kind: Literal["development_example"]
+    formal_gate_eligible: Literal[False]
+    example_id: str
+    root: Path
+    manifest: ExperimentIdentityManifestV1
+    manifest_sha256: str
+    experiment_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.release_kind != _KIND or self.formal_gate_eligible is not False:
+            raise ValueError("verified development experiment kind 非法")
+        _require_example_id(self.example_id)
+        if type(self.manifest) is not ExperimentIdentityManifestV1:
+            raise ValueError("verified development experiment manifest 非法")
+        _require_hex64(self.manifest_sha256)
+        _require_hex64(self.experiment_receipt_sha256)
+        root = self.root.resolve(strict=True)
+        _require_development_root_name(root)
+        object.__setattr__(self, "root", root)
+
+
+@dataclass(frozen=True)
+class VerifiedDevelopmentExampleLabelArtifact:
+    release_kind: Literal["development_example"]
+    formal_gate_eligible: Literal[False]
+    example_id: str
+    root: Path
+    labels: pl.DataFrame
+    diagnostics: pl.DataFrame
+    manifest: LabelArtifactManifest
+    manifest_sha256: str
+    label_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.release_kind != _KIND or self.formal_gate_eligible is not False:
+            raise ValueError("verified development label kind 非法")
+        _require_example_id(self.example_id)
+        if not isinstance(self.labels, pl.DataFrame) or not isinstance(
+            self.diagnostics, pl.DataFrame
+        ):
+            raise ValueError("verified development label frames 非法")
+        if type(self.manifest) is not LabelArtifactManifest:
+            raise ValueError("verified development label manifest 非法")
+        _require_hex64(self.manifest_sha256)
+        _require_hex64(self.label_receipt_sha256)
+        root = self.root.resolve(strict=True)
+        _require_development_root_name(root)
+        object.__setattr__(self, "root", root)
+
+
 def build_development_example_g1_release(
     *, output_root: Path,
 ) -> VerifiedDevelopmentExampleG1Release:
@@ -676,6 +730,29 @@ def compute_development_provider_validation_key(
         provider_validation_config_sha256,
         provider_runtime_fingerprint_sha256,
         code_version,
+    ])
+
+
+def compute_development_experiment_key(
+    *, example_id: str, snapshot_id: str, provider_receipt_sha256: str,
+    scientific_config_sha256: str, code_version: str,
+    dependency_fingerprint_sha256: str,
+) -> str:
+    """Domain-separated identity for a development-only experiment."""
+    _require_example_id(example_id)
+    for value in (
+        snapshot_id, provider_receipt_sha256, scientific_config_sha256,
+        dependency_fingerprint_sha256,
+    ):
+        _require_hex64(value)
+    if type(code_version) is not str or not code_version.startswith(
+        "development-example/"
+    ):
+        raise ValueError("development experiment code version 非法")
+    return _sha256_json([
+        "m3-development-example-experiment-key-v1", example_id, snapshot_id,
+        provider_receipt_sha256, scientific_config_sha256, code_version,
+        dependency_fingerprint_sha256,
     ])
 
 

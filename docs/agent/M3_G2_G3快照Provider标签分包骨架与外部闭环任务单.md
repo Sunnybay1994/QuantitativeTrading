@@ -700,6 +700,12 @@ class ExperimentIdentityManifestV1:
     code_version: str
 
 @dataclass(frozen=True)
+class ExperimentIdentitySpec:
+    scientific_config_sha256: str
+    dependency_fingerprint_sha256: str
+    code_version: str
+
+@dataclass(frozen=True)
 class VerifiedExperimentIdentity:
     root: Path
     manifest: ExperimentIdentityManifestV1
@@ -711,7 +717,8 @@ def read_experiment_identity_manifest(path: Path) -> ExperimentIdentityManifestV
 def verify_experiment_identity(
     *, experiment_root: Path, experiment_receipt_path: Path,
     snapshot: VerifiedSnapshotArtifact, provider: VerifiedProviderArtifact,
-    config: LoadedM3Config, artifact_roots: Mapping[str, Path],
+    config: LoadedM3Config, spec: ExperimentIdentitySpec,
+    artifact_roots: Mapping[str, Path],
 ) -> VerifiedExperimentIdentity: ...
 
 @dataclass(frozen=True)
@@ -719,7 +726,7 @@ class LabelBuildSpec:
     experiment_key: str
     experiment_manifest_sha256: str
     horizon_sessions: Literal[5, 10]
-    benchmark: Literal["H00300.CSI"]
+    benchmark: Literal["510300.SH"]
     label_version: str
     label_build_code_version: str
 
@@ -766,7 +773,8 @@ class VerifiedLabelArtifact:
 def build_label_artifact(
     *, release: VerifiedG1Release, snapshot: VerifiedSnapshotArtifact,
     experiment: VerifiedExperimentIdentity,
-    config: LoadedM3Config, spec: LabelBuildSpec, output_root: Path,
+    config: LoadedM3Config, experiment_spec: ExperimentIdentitySpec,
+    spec: LabelBuildSpec, output_root: Path,
 ) -> LabelArtifactManifest: ...
 
 def read_label_artifact_manifest(path: Path) -> LabelArtifactManifest: ...
@@ -775,13 +783,27 @@ def verify_label_artifact(
     *, label_root: Path, label_receipt_path: Path,
     release: VerifiedG1Release, snapshot: VerifiedSnapshotArtifact,
     experiment: VerifiedExperimentIdentity,
-    config: LoadedM3Config, artifact_roots: Mapping[str, Path],
+    config: LoadedM3Config, experiment_spec: ExperimentIdentitySpec,
+    spec: LabelBuildSpec,
+    artifact_roots: Mapping[str, Path],
 ) -> VerifiedLabelArtifact: ...
 ```
 
 `ExperimentIdentityManifestV1` 的生产和 receipt 发布仍属于 G8；G3A 实现 strict reader/consumer verifier，
 不能为了提前实现 G3A 而临时生成 experiment key。manifest 必须调用唯一 `compute_experiment_key` 重算，
 且 verified bundle 必须由 experiment stage receipt 证明。G8 后续只编排/发布这一合同，不得另定义字段。
+consumer verifier 必须接收可信 `ExperimentIdentitySpec`/`LabelBuildSpec`，防止 manifest、key 与重签 receipt
+整体替换后仍凭内部自洽通过；scientific identity 必须同时与 `LoadedM3Config` 精确一致。
+
+G3A 不得复制一套弱化的 receipt verifier。需要 receipt 原始字节或 hash 时，必须复用
+`run_state.verify_stage_receipt_with_bytes`：它从同一打开文件身份完成 parse/hash，在读取任一 digest
+前验真完整 root registry，并保留 E3 对嵌套 roots、symlink/reparse、重复物理 alias 和自引用的
+全部失败语义。嵌套 root 下从路径推导 alias 时固定选择最具体的子 root；显式 receipt digest
+仍以其 `root_alias` 为准。
+
+用户已批准正式 G1 的 B 路径，现行配置和正式候选基准均为 `510300.SH` ETF HFQ 总回报代理；本节旧版
+`H00300.CSI` Literal 已同步替换。开发示例与正式入口均从已验真配置和 G1 benchmark artifact 取得该值，
+不得在标签实现中另写第二套基准。
 
 生产 stage 每次只构建一个 horizon；内部可调用既有 `compute_forward_relative_labels(horizons=[h])`。入口从
 verified G1 release 读取 bars/benchmark/eligible keys，从 verified snapshot 读取唯一 session calendar；所有
@@ -925,7 +947,7 @@ Parquet bytes 冒充。
    `provider_raw_return`；
 4. echo 全部 identity 和 row-key digest，不计算 benchmark、label diff 或最终 PASS。
 
-parent 使用 snapshot session calendar 独立推导每行 start/end；用 verified G1 原始 `H00300.CSI` open/close
+parent 使用 snapshot session calendar 独立推导每行 start/end；用 verified G1 原始 `510300.SH` open/close
 独立计算 `audit_benchmark_return`，不得调用 label builder或复制 label benchmark。然后形成四个误差序列：
 
 ```text
