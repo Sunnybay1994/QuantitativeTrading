@@ -9,7 +9,8 @@ import datetime as dt
 
 import polars as pl
 
-from quant.domain import PredictionScoreSchema, TargetWeightSchema
+from quant.domain import TargetWeightSchema
+from quant.research.m3.predictions import normalize_prediction_scores
 from quant.strategies.base import Strategy
 
 _IDENTITY_COLS = (
@@ -19,42 +20,6 @@ _IDENTITY_COLS = (
     "fold",
     "horizon_sessions",
 )
-
-
-def normalize_prediction_scores(frame: pl.DataFrame) -> pl.DataFrame:
-    """标准化预测表：按固定排序重算 rank，并通过 PredictionScoreSchema。"""
-    required = {
-        "as_of",
-        "symbol",
-        "score",
-        "model",
-        "model_version",
-        "dataset_snapshot_id",
-        "fold",
-        "horizon_sessions",
-    }
-    missing = sorted(required - set(frame.columns))
-    if missing:
-        raise ValueError(f"predictions 缺少字段: {missing}")
-
-    ranked = frame.sort(
-        ["as_of", "score", "symbol"], descending=[False, True, False]
-    ).with_columns(
-        (
-            pl.col("symbol")
-            .cum_count()
-            .over(
-                [
-                    "as_of",
-                    "model_version",
-                    "dataset_snapshot_id",
-                    "fold",
-                    "horizon_sessions",
-                ]
-            )
-        ).alias("rank")
-    )
-    return PredictionScoreSchema.validate(ranked)
 
 
 class MlTopkStrategy(Strategy):

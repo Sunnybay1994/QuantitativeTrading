@@ -1367,6 +1367,118 @@ class VerifiedModelArtifact:
 
 
 @dataclass(frozen=True)
+class PredictionBuildSpec:
+    experiment_key: str
+    work_key: str
+    fold: str
+    horizon_sessions: Literal[5, 10]
+    model: Literal["lightgbm"]
+    model_version: str
+
+    def __post_init__(self) -> None:
+        _require_bare_hex64("experiment_key", self.experiment_key)
+        _require_bare_hex64("work_key", self.work_key)
+        if (
+            type(self.fold) is not str
+            or len(self.fold) != 8
+            or not self.fold.startswith("fold_")
+            or not self.fold[5:].isdigit()
+            or type(self.horizon_sessions) is not int
+            or self.horizon_sessions not in {5, 10}
+            or self.model != "lightgbm"
+            or type(self.model_version) is not str
+            or not self.model_version.strip()
+        ):
+            raise ValueError("prediction build spec 非法")
+
+
+@dataclass(frozen=True)
+class PredictionUpstreamPaths:
+    model_receipt_path: Path
+    model_upstream_paths: ModelUpstreamPaths
+    feature_receipt_path: Path
+    feature_upstream_paths: FeatureUpstreamPaths
+    fold_receipt_path: Path
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.model_receipt_path, Path)
+            or type(self.model_upstream_paths) is not ModelUpstreamPaths
+            or not isinstance(self.feature_receipt_path, Path)
+            or type(self.feature_upstream_paths) is not FeatureUpstreamPaths
+            or not isinstance(self.fold_receipt_path, Path)
+        ):
+            raise ValueError("prediction upstream paths 非法")
+
+
+@dataclass(frozen=True)
+class PredictionManifestV1:
+    schema_version: Literal["m3-prediction-artifact-v1"]
+    experiment_key: str
+    work_key: str
+    model_manifest_sha256: str
+    model_sha256: str
+    feature_manifest_sha256: str
+    selected_feature_schema_sha256: str
+    eligibility_sha256: str
+    signal_dates_sha256: str
+    snapshot_id: str
+    fold: str
+    horizon_sessions: int
+    model: str
+    model_version: str
+    n_eligible: int
+    n_scorable: int
+    n_predicted: int
+    prediction_keys_sha256: str
+    predictions_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "m3-prediction-artifact-v1":
+            raise ValueError("prediction manifest schema 非法")
+        for name in (
+            "experiment_key", "work_key", "model_manifest_sha256", "model_sha256",
+            "feature_manifest_sha256", "selected_feature_schema_sha256",
+            "eligibility_sha256", "signal_dates_sha256", "snapshot_id",
+            "prediction_keys_sha256", "predictions_sha256",
+        ):
+            _require_bare_hex64(name, getattr(self, name))
+        if (
+            type(self.fold) is not str
+            or not self.fold
+            or type(self.horizon_sessions) is not int
+            or self.horizon_sessions not in {5, 10}
+            or self.model != "lightgbm"
+            or type(self.model_version) is not str
+            or not self.model_version
+            or any(type(value) is not int or value < 0 for value in (
+                self.n_eligible, self.n_scorable, self.n_predicted,
+            ))
+            or not 0 < self.n_predicted == self.n_scorable <= self.n_eligible
+        ):
+            raise ValueError("prediction manifest 非法")
+
+
+@dataclass(frozen=True)
+class VerifiedPredictionArtifact:
+    root: Path
+    predictions: pl.DataFrame
+    manifest: PredictionManifestV1
+    manifest_sha256: str
+    prediction_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.root, Path)
+            or not isinstance(self.predictions, pl.DataFrame)
+            or type(self.manifest) is not PredictionManifestV1
+        ):
+            raise ValueError("verified prediction artifact 非法")
+        _require_bare_hex64("manifest_sha256", self.manifest_sha256)
+        _require_bare_hex64("prediction_receipt_sha256", self.prediction_receipt_sha256)
+
+
+@dataclass(frozen=True)
 class LabelBuildSpec:
     experiment_key: str
     experiment_manifest_sha256: str

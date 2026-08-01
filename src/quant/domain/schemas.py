@@ -1075,6 +1075,12 @@ class PredictionScoreSchema(pa.DataFrameModel):
         coerce = True
 
     @pa.dataframe_check
+    def scores_finite(  # type: ignore[misc]
+        cls, data: pa.PolarsData
+    ) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("score").is_finite().all())
+
+    @pa.dataframe_check
     def prediction_key_unique(  # type: ignore[misc]
         cls, data: pa.PolarsData
     ) -> pl.LazyFrame:
@@ -1083,6 +1089,7 @@ class PredictionScoreSchema(pa.DataFrameModel):
             [
                 "as_of",
                 "symbol",
+                "model",
                 "model_version",
                 "dataset_snapshot_id",
                 "fold",
@@ -1097,6 +1104,7 @@ class PredictionScoreSchema(pa.DataFrameModel):
         return (
             data.lazyframe.group_by(
                 "as_of",
+                "model",
                 "model_version",
                 "dataset_snapshot_id",
                 "fold",

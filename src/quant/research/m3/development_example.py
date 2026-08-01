@@ -50,6 +50,7 @@ from quant.research.m3.contracts import (
     LabelArtifactManifest,
     LabelReconciliationSummaryV1,
     ModelManifestV1,
+    PredictionManifestV1,
     ProviderManifestV1,
     ProviderValidationSummaryV1,
     SnapshotManifestV1,
@@ -535,6 +536,33 @@ class VerifiedDevelopmentExampleModelArtifact:
             raise ValueError("verified development model manifest 非法")
         _require_hex64(self.manifest_sha256)
         _require_hex64(self.model_receipt_sha256)
+        root = self.root.resolve(strict=True)
+        _require_development_root_name(root)
+        object.__setattr__(self, "root", root)
+
+
+@dataclass(frozen=True)
+class VerifiedDevelopmentExamplePredictionArtifact:
+    release_kind: Literal["development_example"]
+    formal_gate_eligible: Literal[False]
+    example_id: str
+    root: Path
+    predictions: pl.DataFrame
+    manifest: PredictionManifestV1
+    manifest_sha256: str
+    prediction_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.release_kind != _KIND or self.formal_gate_eligible is not False:
+            raise ValueError("verified development prediction kind 非法")
+        _require_example_id(self.example_id)
+        if (
+            not isinstance(self.predictions, pl.DataFrame)
+            or type(self.manifest) is not PredictionManifestV1
+        ):
+            raise ValueError("verified development prediction artifact 非法")
+        _require_hex64(self.manifest_sha256)
+        _require_hex64(self.prediction_receipt_sha256)
         root = self.root.resolve(strict=True)
         _require_development_root_name(root)
         object.__setattr__(self, "root", root)
