@@ -44,6 +44,7 @@ from quant.domain.schemas import (
 )
 from quant.research.m3.contracts import (
     ExperimentIdentityManifestV1,
+    FoldPlanManifestV1,
     LabelArtifactManifest,
     LabelReconciliationSummaryV1,
     ProviderManifestV1,
@@ -59,7 +60,7 @@ from quant.research.m3.config import (
 from quant.research.m3.run_state import ArtifactDigest
 
 _KIND: Literal["development_example"] = "development_example"
-_FIXTURE_VERSION = "m3-a-share-development-example-v1"
+_FIXTURE_VERSION = "m3-a-share-development-example-v2"
 _UNIVERSE: Literal["CSI300_TUSHARE_MONTHLY_OBSERVED_PIT_V1"] = (
     "CSI300_TUSHARE_MONTHLY_OBSERVED_PIT_V1"
 )
@@ -71,10 +72,11 @@ _D1 = dt.date(2026, 1, 5)
 _D2 = dt.date(2026, 1, 6)
 _SESSIONS = tuple(
     _D1 + dt.timedelta(days=offset)
-    for offset in range(29)
+    for offset in range(52)
     if (_D1 + dt.timedelta(days=offset)).weekday() < 5
 )
 _D3 = _SESSIONS[-1]
+_SIGNAL_END = _SESSIONS[27]
 _PARQUET_WRITE_KWARGS: Mapping[str, object] = {
     "compression": "zstd",
     "compression_level": 3,
@@ -444,6 +446,29 @@ class VerifiedDevelopmentExampleExperimentIdentity:
 
 
 @dataclass(frozen=True)
+class VerifiedDevelopmentExampleFoldPlanArtifact:
+    release_kind: Literal["development_example"]
+    formal_gate_eligible: Literal[False]
+    example_id: str
+    root: Path
+    manifest: FoldPlanManifestV1
+    manifest_sha256: str
+    folds_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.release_kind != _KIND or self.formal_gate_eligible is not False:
+            raise ValueError("verified development fold plan kind 非法")
+        _require_example_id(self.example_id)
+        if type(self.manifest) is not FoldPlanManifestV1:
+            raise ValueError("verified development fold plan manifest 非法")
+        _require_hex64(self.manifest_sha256)
+        _require_hex64(self.folds_receipt_sha256)
+        root = self.root.resolve(strict=True)
+        _require_development_root_name(root)
+        object.__setattr__(self, "root", root)
+
+
+@dataclass(frozen=True)
 class VerifiedDevelopmentExampleLabelArtifact:
     release_kind: Literal["development_example"]
     formal_gate_eligible: Literal[False]
@@ -568,7 +593,7 @@ def build_development_example_g1_release(
             source=_SOURCE,
             universe=_UNIVERSE,
             signal_start=_D1,
-            signal_end=_D3,
+            signal_end=_SIGNAL_END,
             history_start=_D1,
             history_end=_D3,
             input_summary_sha256=input_sha,
@@ -659,10 +684,16 @@ def derive_development_example_m3_config(
     meta["purpose"] = "M3 DEVELOPMENT EXAMPLE ONLY; NOT FORMAL GATE EVIDENCE"
     meta["enabled"] = False
     data["start_date"] = _D1
-    data["end_date"] = _D3
+    data["end_date"] = _SIGNAL_END
     data["minimum_train_sessions"] = 2
     data["minimum_cross_section_symbols"] = 2
     portfolio["top_k"] = 2
+    walk_forward = cast(dict[str, object], document["walk_forward"])
+    walk_forward["train_sessions"] = 2
+    walk_forward["validation_sessions"] = 2
+    walk_forward["test_sessions"] = 2
+    walk_forward["step_sessions"] = 2
+    walk_forward["embargo_sessions"] = 10
     tracking["experiment_name"] = "m3_development_example_only"
     tracking["tracking_uri"] = (
         "sqlite:///artifacts/research/m3-development-example/mlflow.db"

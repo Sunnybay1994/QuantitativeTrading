@@ -108,12 +108,12 @@ def test_development_g1_build_verify_and_boundary_rows(tmp_path: Path) -> None:
     suspension = pl.read_parquet(paths["suspension_1d.parquet"])
     factors = pl.read_parquet(paths["adjustment_factor.parquet"])
     instruments = pl.read_parquet(paths["instrument.parquet"])
-    assert bars.height == 62
+    assert bars.height == 113
     emitted_counts = bars.group_by("symbol").len().sort("symbol")
     assert emitted_counts.to_dicts() == [
-        {"symbol": "000001.SZ", "len": 20},
-        {"symbol": "000002.SZ", "len": 21},
-        {"symbol": "600000.SH", "len": 21},
+        {"symbol": "000001.SZ", "len": 37},
+        {"symbol": "000002.SZ", "len": 38},
+        {"symbol": "600000.SH", "len": 38},
     ]
     assert suspension.row(0, named=True)["suspension_scope"] == "FULL_DAY"
     suspended_key = suspension.select("symbol", "trade_date").row(0)

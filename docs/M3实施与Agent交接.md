@@ -1213,6 +1213,14 @@ class FoldPlanManifestV1:
     folds: tuple[PlannedFold, ...]
 
 @dataclass(frozen=True)
+class FoldPlanUpstreamPaths:
+    snapshot_request_path: Path
+    snapshot_receipt_path: Path
+    provider_dump_tool_path: Path
+    provider_receipt_path: Path
+    experiment_receipt_path: Path
+
+@dataclass(frozen=True)
 class VerifiedFoldPlanArtifact:
     root: Path
     manifest: FoldPlanManifestV1
@@ -1225,14 +1233,36 @@ def build_temporal_fold_plan(
     spec: FoldPlanBuildSpec, output_root: Path,
 ) -> FoldPlanManifestV1: ...
 
-def verify_fold_plan_artifact(...) -> VerifiedFoldPlanArtifact: ...
+def verify_fold_plan_artifact(
+    *, root: Path, receipt_path: Path, release: VerifiedG1Release,
+    snapshot: VerifiedSnapshotArtifact, snapshot_spec: SnapshotBuildSpec,
+    provider: VerifiedProviderArtifact, provider_spec: ProviderBuildSpec,
+    experiment: VerifiedExperimentIdentity,
+    experiment_spec: ExperimentIdentitySpec, config: LoadedM3Config,
+    spec: FoldPlanBuildSpec, upstream_paths: FoldPlanUpstreamPaths,
+    artifact_roots: Mapping[str, Path],
+) -> VerifiedFoldPlanArtifact: ...
 
 def select_supervised_labels(
     *, label: VerifiedLabelArtifact, folds: VerifiedFoldPlanArtifact,
-    fold_name: str,
+    release: VerifiedG1Release, snapshot: VerifiedSnapshotArtifact,
+    snapshot_spec: SnapshotBuildSpec, provider: VerifiedProviderArtifact,
+    provider_spec: ProviderBuildSpec, experiment: VerifiedExperimentIdentity,
+    experiment_spec: ExperimentIdentitySpec, config: LoadedM3Config,
+    label_spec: LabelBuildSpec, fold_spec: FoldPlanBuildSpec,
+    label_receipt_path: Path, folds_receipt_path: Path,
+    upstream_paths: FoldPlanUpstreamPaths,
+    artifact_roots: Mapping[str, Path], fold_name: str,
     segment: Literal["train", "validation"],
 ) -> pl.DataFrame: ...
 ```
+
+development example 复用完全相同的 manifest、schema、hash 与 receipt 形态，但使用精确平行 API 和
+`VerifiedDevelopmentExampleFoldPlanArtifact(release_kind="development_example", formal_gate_eligible=False,
+example_id=...)`。formal API 在写入前拒绝 development nominal；development 产物只允许位于显式
+development/example 路径，不能进入正式 G1/G4 发布根、journal 或候选映射。当前最小 fixture 含 38 个
+history sessions：前 28 个 signal sessions 加 10 个 label-tail sessions；development walk-forward 为
+`2/2/2/2/10`，恰好两折。该链通过只表示开发契约通过，不关闭正式 G4 Gate。
 
 M3 使用固定长度 rolling window，不使用 expanding train。`open_dates` 必须唯一、严格递增且全部是冻结
 SH session；函数先取 `[signal_start,signal_end]`，provider 的 60-session warmup 和 10-session label tail
@@ -1250,6 +1280,14 @@ validation 标签允许使用到 `embargo_2` 最后一个 session 已知的数�
 每折日期 hash；只存
 首尾日期不足以证明 session 数、embargo 或日历未漂移。fold name 由规范日期计划稳定生成。跨折 train
 可以重叠，test 日期不得重叠；任何 test 指标不得用于参数、iteration 或 feature schema 选择。
+
+FoldPlan 必须非空。fold receipt 固定为 `EXPERIMENT` scope，formal/development stage 分别为
+`folds`/`development-folds`；直接输入精确为 snapshot request、snapshot manifest/receipt/calendar、
+experiment manifest/receipt，输出只允许 `folds.json`。标签选择器每次消费都用完整上游 nominal、配置、
+spec、receipt 和 artifact roots 重新验真 label 与 FoldPlan，拒绝漏项、增项、decoy 或仅信已构造 dataclass。
+`FoldPlanUpstreamPaths` 是上游 request/receipt/tool 的唯一物理路径来源；不得从 snapshot 的最具体 alias
+反推公共 artifacts base。Fold verifier 必须 fresh 验真 snapshot、provider、experiment 各自的完整 receipt
+闭包，并按 digest 解析出的精确物理路径处理重叠 root alias；禁止 basename 搜索或同 bytes decoy 替换。
 spec 的 signal window 必须等于 snapshot request/manifest 从 G1 继承的窗口，walk-forward 数值必须等于
 `LoadedM3Config` scientific selector；C0 不存在独立 `walk_forward_config_sha256`，不得新增伪 selector。
 

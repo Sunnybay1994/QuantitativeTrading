@@ -710,6 +710,178 @@ class VerifiedExperimentIdentity:
 
 
 @dataclass(frozen=True)
+class PlannedFold:
+    name: str
+    train_dates: tuple[dt.date, ...]
+    train_validation_embargo_dates: tuple[dt.date, ...]
+    validation_dates: tuple[dt.date, ...]
+    validation_test_embargo_dates: tuple[dt.date, ...]
+    test_dates: tuple[dt.date, ...]
+    train_label_available_by: dt.date
+    validation_label_available_by: dt.date
+    planned_fold_sha256: str
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.name) is not str
+            or len(self.name) != 8
+            or not self.name.startswith("fold_")
+            or not self.name[5:].isdigit()
+        ):
+            raise ValueError("planned fold name 非法")
+        segments = (
+            self.train_dates,
+            self.train_validation_embargo_dates,
+            self.validation_dates,
+            self.validation_test_embargo_dates,
+            self.test_dates,
+        )
+        if any(
+            type(segment) is not tuple
+            or not segment
+            or any(type(day) is not dt.date for day in segment)
+            or tuple(sorted(set(segment))) != segment
+            for segment in segments
+        ):
+            raise ValueError("planned fold dates 非法")
+        if any(
+            left[-1] >= right[0]
+            for left, right in zip(segments, segments[1:])
+        ):
+            raise ValueError("planned fold segment order 非法")
+        if (
+            type(self.train_label_available_by) is not dt.date
+            or type(self.validation_label_available_by) is not dt.date
+            or self.train_label_available_by
+            != self.train_validation_embargo_dates[-1]
+            or self.validation_label_available_by
+            != self.validation_test_embargo_dates[-1]
+        ):
+            raise ValueError("planned fold label cutoff 非法")
+        _require_bare_hex64("planned_fold_sha256", self.planned_fold_sha256)
+
+
+@dataclass(frozen=True)
+class FoldPlanBuildSpec:
+    experiment_key: str
+    experiment_manifest_sha256: str
+    snapshot_id: str
+    snapshot_manifest_sha256: str
+    signal_start: dt.date
+    signal_end: dt.date
+    train_sessions: int
+    validation_sessions: int
+    test_sessions: int
+    step_sessions: int
+    embargo_sessions: int
+    max_horizon_sessions: int
+
+    def __post_init__(self) -> None:
+        for name in (
+            "experiment_key", "experiment_manifest_sha256", "snapshot_id",
+            "snapshot_manifest_sha256",
+        ):
+            _require_bare_hex64(name, getattr(self, name))
+        if (
+            type(self.signal_start) is not dt.date
+            or type(self.signal_end) is not dt.date
+            or self.signal_end < self.signal_start
+        ):
+            raise ValueError("fold plan signal range 非法")
+        counts = (
+            self.train_sessions, self.validation_sessions, self.test_sessions,
+            self.step_sessions, self.embargo_sessions, self.max_horizon_sessions,
+        )
+        if any(type(value) is not int or value <= 0 for value in counts):
+            raise ValueError("fold plan session count 非法")
+        if (
+            self.embargo_sessions < self.max_horizon_sessions
+            or self.step_sessions < self.test_sessions
+        ):
+            raise ValueError("fold plan embargo/step 非法")
+
+
+@dataclass(frozen=True)
+class FoldPlanUpstreamPaths:
+    """Explicit upstream receipt locations; never infer a shared base from aliases."""
+
+    snapshot_request_path: Path
+    snapshot_receipt_path: Path
+    provider_dump_tool_path: Path
+    provider_receipt_path: Path
+    experiment_receipt_path: Path
+
+    def __post_init__(self) -> None:
+        if any(
+            not isinstance(value, Path)
+            for value in (
+                self.snapshot_request_path,
+                self.snapshot_receipt_path,
+                self.provider_dump_tool_path,
+                self.provider_receipt_path,
+                self.experiment_receipt_path,
+            )
+        ):
+            raise ValueError("fold plan upstream path 非法")
+
+
+@dataclass(frozen=True)
+class FoldPlanManifestV1:
+    schema_version: Literal["m3-fold-plan-v1"]
+    experiment_key: str
+    experiment_manifest_sha256: str
+    snapshot_id: str
+    snapshot_manifest_sha256: str
+    session_calendar_sha256: str
+    signal_dates_sha256: str
+    scientific_config_sha256: str
+    signal_start: dt.date
+    signal_end: dt.date
+    max_horizon_sessions: int
+    folds: tuple[PlannedFold, ...]
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "m3-fold-plan-v1":
+            raise ValueError("fold plan schema 非法")
+        for name in (
+            "experiment_key", "experiment_manifest_sha256", "snapshot_id",
+            "snapshot_manifest_sha256", "session_calendar_sha256",
+            "signal_dates_sha256", "scientific_config_sha256",
+        ):
+            _require_bare_hex64(name, getattr(self, name))
+        if (
+            type(self.signal_start) is not dt.date
+            or type(self.signal_end) is not dt.date
+            or self.signal_end < self.signal_start
+            or type(self.max_horizon_sessions) is not int
+            or self.max_horizon_sessions <= 0
+            or type(self.folds) is not tuple
+            or not self.folds
+            or any(type(fold) is not PlannedFold for fold in self.folds)
+            or tuple(fold.name for fold in self.folds)
+            != tuple(f"fold_{index:03d}" for index in range(1, len(self.folds) + 1))
+        ):
+            raise ValueError("fold plan manifest 非法")
+        test_dates = tuple(day for fold in self.folds for day in fold.test_dates)
+        if len(test_dates) != len(set(test_dates)):
+            raise ValueError("fold plan test dates overlap")
+
+
+@dataclass(frozen=True)
+class VerifiedFoldPlanArtifact:
+    root: Path
+    manifest: FoldPlanManifestV1
+    manifest_sha256: str
+    folds_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.root, Path) or type(self.manifest) is not FoldPlanManifestV1:
+            raise ValueError("verified fold plan artifact 非法")
+        _require_bare_hex64("manifest_sha256", self.manifest_sha256)
+        _require_bare_hex64("folds_receipt_sha256", self.folds_receipt_sha256)
+
+
+@dataclass(frozen=True)
 class LabelBuildSpec:
     experiment_key: str
     experiment_manifest_sha256: str
