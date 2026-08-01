@@ -57,7 +57,8 @@ class MlTopkStrategy(Strategy):
 
         eligibility = _resolve_eligibility(day)
         pred_cols = [col for col in day.columns if col != "eligible"]
-        predictions = normalize_prediction_scores(day.select(pred_cols))
+        prediction_rows = day.filter(pl.col("score").is_not_null())
+        predictions = normalize_prediction_scores(prediction_rows.select(pred_cols))
         _assert_single_slice(predictions)
 
         cross = predictions.join(eligibility, on="symbol", how="left").with_columns(
@@ -68,7 +69,10 @@ class MlTopkStrategy(Strategy):
         )
         selected = eligible.head(self.top_k)
         investable = 1.0 - self.cash_buffer
-        weights = {row["symbol"]: 0.0 for row in cross.iter_rows(named=True)}
+        weights = {
+            row["symbol"]: 0.0
+            for row in eligibility.iter_rows(named=True)
+        }
         if not selected.is_empty():
             raw = investable / selected.height
             if self.max_weight is not None:

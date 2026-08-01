@@ -59,6 +59,7 @@ from quant.research.m3.contracts import (
     ResearchSummaryMetricsV1,
     SnapshotManifestV1,
     SnapshotRequestRecordV1,
+    TargetManifestV1,
 )
 from quant.research.m3.config import (
     LoadedM3Config,
@@ -573,6 +574,35 @@ class VerifiedDevelopmentExamplePredictionArtifact:
 
 
 @dataclass(frozen=True)
+class VerifiedDevelopmentExampleTargetArtifact:
+    release_kind: Literal["development_example"]
+    formal_gate_eligible: Literal[False]
+    example_id: str
+    root: Path
+    targets: pl.DataFrame
+    target_daily: pl.DataFrame
+    manifest: TargetManifestV1
+    manifest_sha256: str
+    target_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.release_kind != _KIND or self.formal_gate_eligible is not False:
+            raise ValueError("verified development target kind 非法")
+        _require_example_id(self.example_id)
+        if (
+            not isinstance(self.targets, pl.DataFrame)
+            or not isinstance(self.target_daily, pl.DataFrame)
+            or type(self.manifest) is not TargetManifestV1
+        ):
+            raise ValueError("verified development target artifact 非法")
+        _require_hex64(self.manifest_sha256)
+        _require_hex64(self.target_receipt_sha256)
+        root = self.root.resolve(strict=True)
+        _require_development_root_name(root)
+        object.__setattr__(self, "root", root)
+
+
+@dataclass(frozen=True)
 class VerifiedDevelopmentExampleEvaluationArtifact:
     release_kind: Literal["development_example"]
     formal_gate_eligible: Literal[False]
@@ -843,6 +873,7 @@ def derive_development_example_m3_config(
     document = _thaw(base.document)
     meta = cast(dict[str, object], document["meta"])
     data = cast(dict[str, object], document["data"])
+    features = cast(dict[str, object], document["features"])
     portfolio = cast(dict[str, object], document["portfolio"])
     tracking = cast(dict[str, object], document["tracking"])
     meta["purpose"] = "M3 DEVELOPMENT EXAMPLE ONLY; NOT FORMAL GATE EVIDENCE"
@@ -851,6 +882,10 @@ def derive_development_example_m3_config(
     data["end_date"] = _SIGNAL_END
     data["minimum_train_sessions"] = 2
     data["minimum_cross_section_symbols"] = 2
+    # The deliberately tiny fixture retains one unscorable eligible row.  Keep
+    # the development-only coverage gate meaningful without inheriting the
+    # production threshold that assumes a broad cross-section.
+    features["minimum_scorable_coverage"] = 0.5
     portfolio["top_k"] = 2
     walk_forward = cast(dict[str, object], document["walk_forward"])
     walk_forward["train_sessions"] = 2

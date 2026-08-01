@@ -1478,6 +1478,143 @@ class VerifiedPredictionArtifact:
         _require_bare_hex64("prediction_receipt_sha256", self.prediction_receipt_sha256)
 
 
+@dataclass(frozen=True)
+class TargetBuildSpec:
+    experiment_key: str
+    work_key: str
+    fold: str
+    horizon_sessions: Literal[5, 10]
+    strategy: Literal["topk"]
+    strategy_version: str
+    top_k: int
+    cash_buffer: float
+    max_weight: float
+    minimum_scorable_coverage: float
+
+    def __post_init__(self) -> None:
+        _require_bare_hex64("experiment_key", self.experiment_key)
+        _require_bare_hex64("work_key", self.work_key)
+        values = (self.cash_buffer, self.max_weight, self.minimum_scorable_coverage)
+        if (
+            type(self.fold) is not str
+            or not self.fold
+            or type(self.horizon_sessions) is not int
+            or self.horizon_sessions not in {5, 10}
+            or self.strategy != "topk"
+            or type(self.strategy_version) is not str
+            or not self.strategy_version
+            or type(self.top_k) is not int
+            or self.top_k < 1
+            or any(type(value) is not float or not math.isfinite(value) for value in values)
+            or not 0.0 <= self.cash_buffer < 1.0
+            or not 0.0 < self.max_weight <= 1.0
+            or not 0.0 <= self.minimum_scorable_coverage <= 1.0
+        ):
+            raise ValueError("target build spec 非法")
+
+
+@dataclass(frozen=True)
+class TargetUpstreamPaths:
+    feature_receipt_path: Path
+    prediction_receipt_path: Path
+    prediction_upstream_paths: PredictionUpstreamPaths
+    fold_receipt_path: Path
+    experiment_receipt_path: Path
+
+    def __post_init__(self) -> None:
+        paths = (
+            self.feature_receipt_path, self.prediction_receipt_path,
+            self.fold_receipt_path, self.experiment_receipt_path,
+        )
+        if (
+            any(not isinstance(path, Path) for path in paths)
+            or type(self.prediction_upstream_paths) is not PredictionUpstreamPaths
+            or len(set(paths)) != 4
+        ):
+            raise ValueError("target upstream paths 非法")
+
+
+@dataclass(frozen=True)
+class TargetManifestV1:
+    schema_version: Literal["m3-target-artifact-v1"]
+    experiment_key: str
+    experiment_manifest_sha256: str
+    work_key: str
+    g1_release_id: str
+    g1_release_manifest_sha256: str
+    scientific_config_sha256: str
+    prediction_manifest_sha256: str
+    feature_manifest_sha256: str
+    fold_plan_manifest_sha256: str
+    snapshot_id: str
+    fold: str
+    horizon_sessions: int
+    model: str
+    model_version: str
+    strategy: str
+    strategy_version: str
+    eligible_keys_sha256: str
+    signal_dates_sha256: str
+    n_dates: int
+    n_eligible: int
+    n_scorable: int
+    n_predicted: int
+    n_selected: int
+    target_keys_sha256: str
+    targets_sha256: str
+    target_daily_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "m3-target-artifact-v1":
+            raise ValueError("target manifest schema 非法")
+        for name in (
+            "experiment_key", "experiment_manifest_sha256", "work_key",
+            "g1_release_id", "g1_release_manifest_sha256", "scientific_config_sha256",
+            "prediction_manifest_sha256", "feature_manifest_sha256",
+            "fold_plan_manifest_sha256", "snapshot_id", "eligible_keys_sha256",
+            "signal_dates_sha256", "target_keys_sha256", "targets_sha256",
+            "target_daily_sha256",
+        ):
+            _require_bare_hex64(name, getattr(self, name))
+        counts = (
+            self.n_dates, self.n_eligible, self.n_scorable,
+            self.n_predicted, self.n_selected,
+        )
+        if (
+            type(self.fold) is not str
+            or not self.fold
+            or type(self.horizon_sessions) is not int
+            or self.horizon_sessions not in {5, 10}
+            or any(type(value) is not str or not value for value in (
+                self.model, self.model_version, self.strategy, self.strategy_version
+            ))
+            or any(type(value) is not int or value < 0 for value in counts)
+            or self.n_selected > self.n_predicted
+        ):
+            raise ValueError("target manifest 非法")
+
+
+@dataclass(frozen=True)
+class VerifiedTargetArtifact:
+    root: Path
+    targets: pl.DataFrame
+    target_daily: pl.DataFrame
+    manifest: TargetManifestV1
+    manifest_sha256: str
+    target_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.root, Path)
+            or not isinstance(self.targets, pl.DataFrame)
+            or not isinstance(self.target_daily, pl.DataFrame)
+            or type(self.manifest) is not TargetManifestV1
+        ):
+            raise ValueError("verified target artifact 非法")
+        _require_bare_hex64("manifest_sha256", self.manifest_sha256)
+        _require_bare_hex64("target_receipt_sha256", self.target_receipt_sha256)
+
+
 IcStatus = Literal[
     "NO_ELIGIBLE",
     "NO_LABELS",
