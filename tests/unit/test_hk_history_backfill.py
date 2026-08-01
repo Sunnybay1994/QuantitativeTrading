@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import json
 import os
 from pathlib import Path
 
@@ -13,15 +14,66 @@ from quant.data.hk_history_backfill import (
     HK_HISTORY_RAW_TABLE,
     HKHistoryBackfillError,
     HKHistorySeed,
+    build_hk_history_plan_v2,
     build_hk_history_plan,
     execute_next_hk_history_request,
     finalize_hk_history,
     load_hk_history_plan,
+    load_hk_no_trade_evidence,
+    recover_existing_hk_history_requests,
     write_or_verify_plan,
 )
 from quant.data.storage import RawStore
 
 UTC = dt.timezone.utc
+
+
+def _canonical(value: object) -> bytes:
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+
+def _evidence(root: Path, *, symbol: str, trade_date: dt.date):
+    selector = "hkex/daily/d260710e.html"
+    raw_path = root / selector
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_payload = b"SYNTHETIC HKEX DAILY QUOTATIONS FIXTURE"
+    raw_path.write_bytes(raw_payload)
+    base = {
+        "schema_version": "hk-no-trade-evidence-v1",
+        "symbol": symbol,
+        "trade_date": trade_date.isoformat(),
+        "market": "HK",
+        "reason": "NO_DAILY_TRADING_V1",
+        "source": "HKEX_DAILY_QUOTATIONS",
+        "source_record_id": "synthetic-fixture-record",
+        "source_as_of": "2026-07-31T00:00:00+00:00",
+        "raw_selector": selector,
+        "raw_file_sha256": hashlib.sha256(raw_payload).hexdigest(),
+        "raw_metadata_sha256": "0" * 64,
+    }
+    metadata = {
+        "schema_version": "hk-no-trade-raw-metadata-v1",
+        "source": base["source"],
+        "source_record_id": base["source_record_id"],
+        "source_as_of": base["source_as_of"],
+        "raw_selector": selector,
+        "raw_file_sha256": base["raw_file_sha256"],
+    }
+    metadata_payload = _canonical(metadata)
+    raw_path.with_suffix(".json").write_bytes(metadata_payload)
+    base["raw_metadata_sha256"] = hashlib.sha256(metadata_payload).hexdigest()
+    base["evidence_sha256"] = hashlib.sha256(_canonical(base)).hexdigest()
+    evidences = [base]
+    value = {
+        "schema_version": "hk-no-trade-evidence-set-v1",
+        "evidences": evidences,
+        "evidence_set_sha256": hashlib.sha256(_canonical(evidences)).hexdigest(),
+    }
+    path = root / "evidence.json"
+    path.write_bytes(_canonical(value))
+    return load_hk_no_trade_evidence(path, raw_root=root), path, raw_path
 
 
 def _raw(symbol_dates: dict[str, list[dt.date]]) -> pl.DataFrame:
@@ -121,6 +173,135 @@ def test_plan_tracks_seed_unresolved_and_short_windows(tmp_path: Path) -> None:
     )
     assert plan.requests[0].symbols == ("00700.HK",)
     assert dict(plan.unresolved)["02983.HK"] == ("2026-07-10",)
+
+
+def test_v2_plan_binds_evidence_and_preserves_wire_identity(tmp_path: Path) -> None:
+    raw_root = tmp_path / "raw"
+    dates = [dt.date(2026, 7, 9), dt.date(2026, 7, 10)]
+    seed, _ = _seed(raw_root, {"00001.HK": dates})
+    evidence, _, _ = _evidence(
+        raw_root, symbol="00002.HK", trade_date=dates[0]
+    )
+    expected = {"00001.HK": dates, "00002.HK": dates}
+    v1 = build_hk_history_plan(
+        expected_dates=expected,
+        seed=seed,
+        unresolved={},
+        as_of=dates[-1],
+        window_start=dt.date(2026, 4, 14),
+    )
+    v2 = build_hk_history_plan_v2(
+        expected_dates=expected,
+        seed=seed,
+        unresolved={},
+        evidence=evidence,
+        as_of=dates[-1],
+        window_start=dt.date(2026, 4, 14),
+    )
+    assert v2.requests[0].request_id == v1.requests[0].request_id
+    assert dict(v2.requests[0].expected_dates)["00002.HK"] == (
+        "2026-07-09",
+        "2026-07-10",
+    )
+    assert dict(v2.requests[0].effective_expected_dates)["00002.HK"] == (
+        "2026-07-10",
+    )
+    path = tmp_path / "v2.json"
+    write_or_verify_plan(path, v2)
+    assert load_hk_history_plan(path) == v2
+
+
+def test_evidence_raw_or_identity_drift_fails_closed(tmp_path: Path) -> None:
+    evidence, path, raw_path = _evidence(
+        tmp_path / "evidence_raw",
+        symbol="00002.HK",
+        trade_date=dt.date(2026, 7, 9),
+    )
+    assert evidence.evidences[0].reason == "NO_DAILY_TRADING_V1"
+    raw_path.write_bytes(b"drift")
+    with pytest.raises(HKHistoryBackfillError, match="^HK_HISTORY_REFERENCE_INVALID$"):
+        load_hk_no_trade_evidence(path, raw_root=tmp_path / "evidence_raw")
+
+
+def test_v2_offline_recovery_writes_only_new_receipt_and_stops_at_absent(
+    tmp_path: Path,
+) -> None:
+    raw_root = tmp_path / "raw"
+    dates = [dt.date(2026, 7, 9), dt.date(2026, 7, 10)]
+    seed, fetched_at = _seed(raw_root, {"00001.HK": dates})
+    evidence, _, evidence_raw_path = _evidence(
+        raw_root, symbol="00002.HK", trade_date=dates[0]
+    )
+    symbols = tuple(f"{number:05d}.HK" for number in range(2, 83))
+    expected = {"00001.HK": dates, **{symbol: dates for symbol in symbols}}
+    plan = build_hk_history_plan_v2(
+        expected_dates=expected,
+        seed=seed,
+        unresolved={},
+        evidence=evidence,
+        as_of=dates[-1],
+        window_start=dt.date(2026, 4, 14),
+    )
+    first = plan.requests[0]
+    first_raw = {
+        symbol: ([dates[-1]] if symbol == "00002.HK" else dates)
+        for symbol in first.symbols
+    }
+    RawStore(raw_root).write_request(
+        source="tushare",
+        table=HK_HISTORY_RAW_TABLE,
+        request_id=first.request_id,
+        frame=_raw(first_raw),
+        parameters=dict(first.parameters),
+        fetched_at=fetched_at,
+    )
+    journal = tmp_path / "journal-v2"
+    with pytest.raises(HKHistoryBackfillError, match="^HK_HISTORY_INCOMPLETE$"):
+        recover_existing_hk_history_requests(
+            plan=plan,
+            raw_store=RawStore(raw_root),
+            journal_root=journal,
+            seed_raw_root=raw_root,
+        )
+    request_dir = journal / "requests" / first.request_id
+    assert (request_dir / "receipt.json").exists()
+    assert not (request_dir / "intent.json").exists()
+    assert not (request_dir / "attempts").exists()
+    assert not (request_dir / "failures").exists()
+    assert not (journal / "finalize.json").exists()
+    evidence_raw_path.write_bytes(b"evidence drift")
+    with pytest.raises(HKHistoryBackfillError, match="^HK_HISTORY_REFERENCE_INVALID$"):
+        recover_existing_hk_history_requests(
+            plan=plan,
+            raw_store=RawStore(raw_root),
+            journal_root=journal,
+            seed_raw_root=raw_root,
+        )
+
+
+def test_v2_rejects_preexisting_unbound_journal(tmp_path: Path) -> None:
+    raw_root = tmp_path / "raw"
+    date = dt.date(2026, 7, 10)
+    seed, _ = _seed(raw_root, {"00001.HK": [date]})
+    evidence, _, _ = _evidence(raw_root, symbol="00002.HK", trade_date=date)
+    plan = build_hk_history_plan_v2(
+        expected_dates={"00001.HK": [date], "00002.HK": [date]},
+        seed=seed,
+        unresolved={},
+        evidence=evidence,
+        as_of=date,
+        window_start=dt.date(2026, 4, 14),
+    )
+    journal = tmp_path / "old-journal"
+    journal.mkdir()
+    (journal / "legacy.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(HKHistoryBackfillError, match="^HK_HISTORY_PLAN_CONFLICT$"):
+        recover_existing_hk_history_requests(
+            plan=plan,
+            raw_store=RawStore(raw_root),
+            journal_root=journal,
+            seed_raw_root=raw_root,
+        )
 
 
 def test_success_writes_intent_raw_then_receipt_and_never_refetches(tmp_path: Path) -> None:

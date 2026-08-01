@@ -54,6 +54,11 @@ def _available_history_payload(
         "unexpected_session_counts": unexpected_counts,
         "missing_session_total": sum(len(dates) for _, dates in coverage.missing_sessions),
         "unexpected_session_total": sum(len(dates) for _, dates in coverage.unexpected_sessions),
+        "exempted_session_count": coverage.exempted_session_count,
+        "exemption_reason_counts": [
+            [reason, count] for reason, count in coverage.exemption_reason_counts
+        ],
+        "no_trade_evidence_sha256": coverage.no_trade_evidence_sha256,
         "min_required_sessions": coverage.min_required_sessions,
         "max_required_sessions": coverage.max_required_sessions,
         "is_available_history_complete": coverage.is_available_history_complete,
@@ -154,6 +159,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 instrument_path=(clean_root / "instrument" / "market=HK" / "data.parquet"),
                 eligibility_snapshot_root=(clean_root / "connect_snapshot"),
                 eligibility_event_root=(clean_root / "connect_event"),
+                no_trade_evidence_path=(
+                    clean_root / "hk_no_trade_evidence" / "evidence.json"
+                ),
+                no_trade_raw_root=(args.data_root / "raw"),
             )
             available_history = available_audited.available_history
             if not available_history.is_available_history_complete:

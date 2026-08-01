@@ -26,6 +26,29 @@ from quant.domain import (
     TradeCalendarSchema,
     UniverseMembershipSchema,
 )
+from quant.domain.schemas import HKNoTradeEvidenceSchema
+
+
+def test_hk_no_trade_evidence_schema_rejects_duplicate_key() -> None:
+    row = {
+        "schema_version": "hk-no-trade-evidence-v1",
+        "evidence_sha256": "a" * 64,
+        "symbol": "01065.HK",
+        "trade_date": dt.date(2026, 5, 5),
+        "market": "HK",
+        "reason": "NO_DAILY_TRADING_V1",
+        "source": "HKEX_DAILY_QUOTATIONS",
+        "source_record_id": "synthetic-fixture",
+        "source_as_of": dt.datetime(2026, 7, 31),
+        "raw_selector": "hkex/d260505e.html",
+        "raw_file_sha256": "b" * 64,
+        "raw_metadata_sha256": "c" * 64,
+    }
+    HKNoTradeEvidenceSchema.validate(pl.DataFrame([row]))
+    duplicate = dict(row)
+    duplicate["evidence_sha256"] = "d" * 64
+    with pytest.raises(pandera.errors.SchemaError):
+        HKNoTradeEvidenceSchema.validate(pl.DataFrame([row, duplicate]))
 
 
 class TestSnapshotSessionCalendarSchema:

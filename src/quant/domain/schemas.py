@@ -141,6 +141,36 @@ class Bar1dSchema(pa.DataFrameModel):
         return _rows_are_unique(data, ["symbol", "trade_date", "source"])
 
 
+class HKNoTradeEvidenceSchema(pa.DataFrameModel):
+    """Verified one-key HK no-daily-trading evidence projection.
+
+    The projection is deliberately narrower than an HKEX source parser.  It
+    binds an authoritative source record to retained raw bytes; source-format
+    interpretation remains a separately frozen/licensed ingestion concern.
+    """
+
+    schema_version: str = pa.Field(isin=["hk-no-trade-evidence-v1"])
+    evidence_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$", unique=True)
+    symbol: str = pa.Field(str_matches=r"^[0-9]{5}\.HK$")
+    trade_date: pl.Date
+    market: str = pa.Field(isin=["HK"])
+    reason: str = pa.Field(isin=["NO_DAILY_TRADING_V1"])
+    source: str = pa.Field(isin=["HKEX_DAILY_QUOTATIONS"])
+    source_record_id: str
+    source_as_of: pl.Datetime
+    raw_selector: str
+    raw_file_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+    raw_metadata_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+
+    class Config:
+        strict = True
+        coerce = True
+
+    @pa.dataframe_check
+    def evidence_key_unique(cls, data: pa.PolarsData) -> pl.LazyFrame:  # type: ignore[misc]
+        return _rows_are_unique(data, ["symbol", "trade_date"])
+
+
 class AdjustmentFactorSchema(pa.DataFrameModel):
     """累计后复权因子；从 effective_date 起生效。"""
 
