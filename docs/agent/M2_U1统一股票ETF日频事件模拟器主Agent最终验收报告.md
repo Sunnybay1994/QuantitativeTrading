@@ -2,9 +2,13 @@
 
 日期：2026-07-31（Asia/Shanghai）
 
-结论：**隔离分支通过，关闭 M2 统一回测器工程项；待合流复验。**
+结论：**已合流 main 并完成双平台复验，关闭 M2 统一回测器工程项。**
 
 分支：`codex/m2-unified`
+
+2026-08-02 合流证据：main 由 `6b64973` fast-forward 至 `e487581`；合流后 Windows Miniforge 与 WSL
+Miniforge `base` 分别重跑同一组 `118 passed`，Ruff 与 5 个生产源码 mypy 均通过。WSL 工作区位于
+DrvFS，该结果证明 Linux 解释器兼容性，不宣称 ext4 平台 Gate。
 
 ## 1. 交付内容
 
