@@ -1,5 +1,23 @@
 # Codex 项目迁移交接
 
+### 2026-08-02 最新续写摘要（覆盖下文旧停止点）
+
+- 正式 G1 Windows release 已完成磁盘验真：release id
+  `08eb9b31ab4d8c8473c0a7bb612df83009a68b761b8a35816653b2ce07807359`，manifest SHA-256
+  `d3923fa1143fbc5c4ff352f7b4d0cf5baeb197d2bb161ead34255bd7375f99c4`，17 个 artifact。该事实不等于
+  Linux/ext4 Gate；正式 release、journal 和候选目录继续只读。
+- 正式 G2A 在独立 `artifacts/formal_g2a_windows/` 根并行执行：snapshot 物理构建、request 与约 630 个
+  output 的 receipt 已 no-clobber 发布，当前在最终 fresh G1 + snapshot 全链 verifier；未取得
+  `VerifiedSnapshotArtifact` 前不得启动正式 G2B。
+- development example 路径严格隔离，身份固定 `development_example`、`formal_gate_eligible=false`。
+  G4A/G4B/G4C 和 G5A 的开发合同已完成；最新 G5A 双平台 fixture 测试为 14 项，Windows 真实
+  LightGBM 4.6.0 native train/save/load/predict 冷启动通过。它们不能关闭 production G4/G5 或正式 Gate。
+- M2 统一股票/ETF 日频模拟器已合入 main 并双平台通过 118 项定向测试。M4 P3-RC1 日风险计数器 SQLite
+  CAS 持久化已合入 main；Windows 197 passed/5 skipped，WSL base 202 passed，并补齐 v2→v3 migration
+  回归。M4 仍待 cancel 接入、PaperGateway、服务编排、恢复对账、运维报告和连续 28 天 PAPER。
+- 当前执行方式：主 Agent 自行实现与验证；正式 G1/G2 长时 I/O 低频异步推进，不能阻塞 development
+  G2–G9 与 M4 工程。内部 subagent 仅用于文件互斥的只读审查或独立后台工作，不调用外部 Cursor Agent。
+
 ### 2026-07-31 最新续写摘要（覆盖下文旧停止点与执行模式）
 
 - 当前分支为 `main`；P0K-A-REAL1 闭包提交 `dec16c8`，P0K-B 主实现提交 `3ba098d`。本摘要之后

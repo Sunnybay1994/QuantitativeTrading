@@ -1241,6 +1241,132 @@ class InferenceSegment:
 
 
 @dataclass(frozen=True)
+class LightgbmTrainingSpec:
+    model_version: str
+    booster_params: tuple[tuple[str, str | int | float | bool], ...]
+    num_boost_round: int
+    early_stopping_rounds: int
+    early_stopping_min_delta: float
+
+    def __post_init__(self) -> None:
+        if type(self.model_version) is not str or not self.model_version.strip():
+            raise ValueError("lightgbm model version 非法")
+        if type(self.booster_params) is not tuple or not self.booster_params:
+            raise ValueError("lightgbm booster params 非法")
+        keys: list[str] = []
+        for item in self.booster_params:
+            if type(item) is not tuple or len(item) != 2:
+                raise ValueError("lightgbm booster param 非法")
+            key, value = item
+            if type(key) is not str or not key or type(value) not in {str, int, float, bool}:
+                raise ValueError("lightgbm booster param 非法")
+            if type(value) is float and not math.isfinite(value):
+                raise ValueError("lightgbm booster param non-finite")
+            keys.append(key)
+        if keys != sorted(keys) or len(keys) != len(set(keys)):
+            raise ValueError("lightgbm booster params 必须唯一排序")
+        if (
+            type(self.num_boost_round) is not int
+            or self.num_boost_round < 1
+            or type(self.early_stopping_rounds) is not int
+            or not 1 <= self.early_stopping_rounds < self.num_boost_round
+            or type(self.early_stopping_min_delta) is not float
+            or not math.isfinite(self.early_stopping_min_delta)
+            or self.early_stopping_min_delta < 0.0
+        ):
+            raise ValueError("lightgbm training controls 非法")
+
+
+@dataclass(frozen=True)
+class ModelUpstreamPaths:
+    alignment_receipt_path: Path
+    alignment_upstream_paths: AlignmentUpstreamPaths
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.alignment_receipt_path, Path)
+            or type(self.alignment_upstream_paths) is not AlignmentUpstreamPaths
+        ):
+            raise ValueError("model upstream paths 非法")
+
+
+@dataclass(frozen=True)
+class ModelManifestV1:
+    schema_version: Literal["m3-lightgbm-model-v1"]
+    experiment_key: str
+    work_key: str
+    snapshot_id: str
+    provider_receipt_sha256: str
+    fold: str
+    horizon_sessions: int
+    model: Literal["lightgbm"]
+    model_version: str
+    alignment_manifest_sha256: str
+    feature_manifest_sha256: str
+    label_manifest_sha256: str
+    input_feature_schema_sha256: str
+    selected_feature_names: tuple[str, ...]
+    selected_feature_schema_sha256: str
+    params_sha256: str
+    train_row_keys_sha256: str
+    validation_row_keys_sha256: str
+    train_matrix_sha256: str
+    validation_matrix_sha256: str
+    train_labels_sha256: str
+    validation_labels_sha256: str
+    lightgbm_version: str
+    best_iteration: int
+    best_validation_l2: float
+    model_sha256: str
+    validation_curve_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "m3-lightgbm-model-v1" or self.model != "lightgbm":
+            raise ValueError("model manifest schema/model 非法")
+        for name in (
+            "experiment_key", "work_key", "snapshot_id", "provider_receipt_sha256",
+            "alignment_manifest_sha256", "feature_manifest_sha256",
+            "label_manifest_sha256", "input_feature_schema_sha256",
+            "selected_feature_schema_sha256", "params_sha256",
+            "train_row_keys_sha256", "validation_row_keys_sha256",
+            "train_matrix_sha256", "validation_matrix_sha256",
+            "train_labels_sha256", "validation_labels_sha256", "model_sha256",
+            "validation_curve_sha256",
+        ):
+            _require_bare_hex64(name, getattr(self, name))
+        if (
+            type(self.fold) is not str
+            or self.horizon_sessions not in {5, 10}
+            or type(self.model_version) is not str
+            or not self.model_version
+            or type(self.selected_feature_names) is not tuple
+            or not self.selected_feature_names
+            or len(set(self.selected_feature_names)) != len(self.selected_feature_names)
+            or type(self.lightgbm_version) is not str
+            or not self.lightgbm_version
+            or type(self.best_iteration) is not int
+            or self.best_iteration < 1
+            or type(self.best_validation_l2) is not float
+            or not math.isfinite(self.best_validation_l2)
+        ):
+            raise ValueError("model manifest 非法")
+
+
+@dataclass(frozen=True)
+class VerifiedModelArtifact:
+    root: Path
+    manifest: ModelManifestV1
+    manifest_sha256: str
+    model_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.root, Path) or type(self.manifest) is not ModelManifestV1:
+            raise ValueError("verified model artifact 非法")
+        _require_bare_hex64("manifest_sha256", self.manifest_sha256)
+        _require_bare_hex64("model_receipt_sha256", self.model_receipt_sha256)
+
+
+@dataclass(frozen=True)
 class LabelBuildSpec:
     experiment_key: str
     experiment_manifest_sha256: str

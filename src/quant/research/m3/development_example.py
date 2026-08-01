@@ -49,6 +49,7 @@ from quant.research.m3.contracts import (
     FoldPlanManifestV1,
     LabelArtifactManifest,
     LabelReconciliationSummaryV1,
+    ModelManifestV1,
     ProviderManifestV1,
     ProviderValidationSummaryV1,
     SnapshotManifestV1,
@@ -511,6 +512,29 @@ class VerifiedDevelopmentExampleAlignmentArtifact:
             raise ValueError("verified development alignment manifest 非法")
         _require_hex64(self.manifest_sha256)
         _require_hex64(self.alignment_receipt_sha256)
+        root = self.root.resolve(strict=True)
+        _require_development_root_name(root)
+        object.__setattr__(self, "root", root)
+
+
+@dataclass(frozen=True)
+class VerifiedDevelopmentExampleModelArtifact:
+    release_kind: Literal["development_example"]
+    formal_gate_eligible: Literal[False]
+    example_id: str
+    root: Path
+    manifest: ModelManifestV1
+    manifest_sha256: str
+    model_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.release_kind != _KIND or self.formal_gate_eligible is not False:
+            raise ValueError("verified development model kind 非法")
+        _require_example_id(self.example_id)
+        if type(self.manifest) is not ModelManifestV1:
+            raise ValueError("verified development model manifest 非法")
+        _require_hex64(self.manifest_sha256)
+        _require_hex64(self.model_receipt_sha256)
         root = self.root.resolve(strict=True)
         _require_development_root_name(root)
         object.__setattr__(self, "root", root)
