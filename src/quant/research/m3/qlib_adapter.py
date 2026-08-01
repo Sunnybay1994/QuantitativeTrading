@@ -484,7 +484,10 @@ def build_development_example_alpha158(request_path: Path, output_root: Path) ->
             raise ValueError("development feature segment invalid")
         dt.date.fromisoformat(date_text)
         parsed_rows.append((segment, date_text, symbol))
-    if tuple(parsed_rows) != tuple(sorted(set(parsed_rows))):
+    segment_rank = {"train": 0, "validation": 1, "test": 2}
+    if tuple(parsed_rows) != tuple(sorted(
+        set(parsed_rows), key=lambda row: (segment_rank[row[0]], row[1], row[2])
+    )):
         raise ValueError("development feature rows must be unique and sorted")
     for name, values in cast(dict[str, object], segments).items():
         if (
@@ -517,7 +520,9 @@ def build_development_example_alpha158(request_path: Path, output_root: Path) ->
                     (dt.date.fromisoformat(date_text).toordinal() % 997)
                     + symbol_seed / 1000.0 + feature_index / 10000.0
                 )
-                if feature_index == 158 and segment == "train":
+                if segment == "test" and row_index == 0 and feature_index <= 157:
+                    value = math.nan
+                elif feature_index == 158 and segment == "train":
                     value = None
                 elif feature_index == 157 and row_index == 0:
                     value = math.nan

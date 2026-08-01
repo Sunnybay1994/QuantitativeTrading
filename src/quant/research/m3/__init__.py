@@ -104,10 +104,13 @@ from quant.research.m3.fetch_qlib_tool import (
     ensure_qlib_dump_tool,
 )
 from quant.research.m3.features import (
+    build_development_example_feature_artifact,
     canonical_row_keys_sha256,
     f64_matrix_sha256,
     feature_schema_sha256,
     feature_segment_content_sha256,
+    read_feature_manifest,
+    verify_development_example_feature_artifact,
 )
 from quant.research.m3.folds import (
     M3FoldPlanError,
@@ -356,9 +359,12 @@ __all__ = [
     "build_qlib_dump_tool_spec",
     "ensure_qlib_dump_tool",
     "canonical_row_keys_sha256",
+    "build_development_example_feature_artifact",
     "f64_matrix_sha256",
     "feature_schema_sha256",
     "feature_segment_content_sha256",
+    "read_feature_manifest",
+    "verify_development_example_feature_artifact",
     "M3ProviderError",
     "build_provider_runtime_fingerprint",
     "materialize_qlib_provider",

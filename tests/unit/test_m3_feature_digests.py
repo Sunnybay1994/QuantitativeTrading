@@ -90,12 +90,11 @@ def test_development_feature_worker_emits_strict_158_shape(tmp_path: Path) -> No
             "test": ["2026-01-07"],
         },
         "eligible_rows": [
-            ["test", "2026-01-07", "000001.SZ"],
             ["train", "2026-01-05", "000001.SZ"],
             ["validation", "2026-01-06", "000001.SZ"],
+            ["test", "2026-01-07", "000001.SZ"],
         ],
     }
-    request["eligible_rows"] = sorted(request["eligible_rows"])
     request_path = tmp_path / "request.json"
     output = tmp_path / "output"
     output.mkdir()
