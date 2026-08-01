@@ -313,6 +313,7 @@ StageHandler: TypeAlias = Callable[[StageContext], StageBuildReport]
 SnapshotClosureVerifier: TypeAlias = Callable[
     [Path], tuple[SnapshotBuildResult, SnapshotRequestRecordV1]
 ]
+StaticClosureVerifier: TypeAlias = Callable[[Path], None]
 
 
 @dataclass(frozen=True)
@@ -326,8 +327,25 @@ class SnapshotStageResult:
     reused: bool
 
 
+@dataclass(frozen=True)
+class StaticStageResult:
+    final_root: Path
+    receipt_path: Path
+    receipt: StageReceipt
+    reused: bool
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.final_root, Path)
+            or not isinstance(self.receipt_path, Path)
+            or type(self.receipt) is not StageReceipt
+            or type(self.reused) is not bool
+        ):
+            raise ValueError("static stage result invalid")
+
+
 class StageRunner:
-    """Serial G8B runner; this increment implements snapshot publication only."""
+    """Serial G8B runner for snapshot and static immutable publications."""
 
     def __init__(
         self, *, stage_root: Path, artifact_roots: Mapping[str, Path],
@@ -392,6 +410,140 @@ class StageRunner:
             raise
         except Exception:
             raise M3StageRunnerError("STAGE_LOCK_FAILED") from None
+
+    def run_static(
+        self, *, node: StageNode, handler: StageHandler,
+        closure_verifier: StaticClosureVerifier, resume: bool = True,
+        plan: RunPlan | None = None,
+    ) -> StaticStageResult:
+        """Run one fully resolved static node with immutable recovery semantics."""
+        try:
+            self._validate_static_node(node)
+            if type(resume) is not bool or not callable(closure_verifier):
+                raise ValueError
+            plan_nodes = self._plan_nodes_for(node=node, plan=plan)
+            self._prepare_static_parents(node)
+            lock_root = self._lock_root(node)
+        except (TypeError, ValueError, OSError):
+            raise M3StageRunnerError("STAGE_INPUT_INVALID") from None
+        try:
+            with hold_journal_writer_lock(journal_root=lock_root):
+                return self._run_static_locked(
+                    node=node, handler=handler,
+                    closure_verifier=closure_verifier, resume=resume,
+                    plan_nodes=plan_nodes,
+                )
+        except M3StageRunnerError:
+            raise
+        except Exception:
+            raise M3StageRunnerError("STAGE_LOCK_FAILED") from None
+
+    def _run_static_locked(
+        self, *, node: StageNode, handler: StageHandler,
+        closure_verifier: StaticClosureVerifier, resume: bool,
+        plan_nodes: Mapping[str, StageNode],
+    ) -> StaticStageResult:
+        publication = cast(StaticDirectoryPublication, node.publication)
+        final_root = self._stage_root / publication.final_directory
+        receipt_path = self._stage_root / node.receipt_path
+        receipt = self._read_receipt(receipt_path)
+        if receipt is not None:
+            result = self._verify_completed_static(
+                node=node, final_root=final_root, receipt_path=receipt_path,
+                receipt=receipt, closure_verifier=closure_verifier,
+                plan_nodes=plan_nodes,
+            )
+            if not resume:
+                raise M3StageRunnerError("STAGE_ALREADY_COMPLETE")
+            return result
+
+        final_state = _leaf_state(final_root)
+        if final_state not in {"missing", "directory"}:
+            raise M3StageRunnerError("STAGE_RECOVERY_CONFLICT")
+        final_preexisting = final_state == "directory"
+        if final_preexisting:
+            try:
+                self._verify_static_closure(
+                    root=final_root, node=node,
+                    closure_verifier=closure_verifier,
+                )
+            except Exception:
+                raise M3StageRunnerError("STAGE_RECOVERY_CONFLICT") from None
+
+        resolved = self._resolve_static_inputs(node=node, plan_nodes=plan_nodes)
+        temp_root = Path(tempfile.mkdtemp(
+            prefix=f".{node.node_id}.", dir=self._stage_root / ".stage-tmp"
+        ))
+        committed = False
+        try:
+            context = StageContext(
+                node=node, inputs=resolved, temp_output_root=temp_root,
+                config=self._config,
+            )
+            try:
+                report = handler(context)
+            except Exception:
+                raise M3StageRunnerError("STAGE_BUILD_FAILED") from None
+            if type(report) is not StageBuildReport:
+                raise M3StageRunnerError("STAGE_OUTPUT_INVALID")
+            try:
+                temp_outputs = self._verify_static_closure(
+                    root=temp_root, node=node,
+                    closure_verifier=closure_verifier,
+                )
+                if report.output_relative_paths != tuple(
+                    path.relative_to(temp_root).as_posix() for path in temp_outputs
+                ):
+                    raise ValueError
+            except M3StageRunnerError:
+                raise
+            except Exception:
+                raise M3StageRunnerError("STAGE_OUTPUT_INVALID") from None
+
+            if final_preexisting:
+                if not _trees_equal(temp_root, final_root):
+                    raise M3StageRunnerError("STAGE_RECOVERY_CONFLICT")
+            else:
+                try:
+                    commit_directory_noreplace(temp_root, final_root)
+                    committed = True
+                except Exception:
+                    if (
+                        _leaf_state(final_root) != "directory"
+                        or not _trees_equal(temp_root, final_root)
+                    ):
+                        raise M3StageRunnerError("STAGE_PUBLISH_FAILED") from None
+
+            try:
+                final_outputs = self._verify_static_closure(
+                    root=final_root, node=node,
+                    closure_verifier=closure_verifier,
+                )
+                if tuple(
+                    path.relative_to(final_root).as_posix()
+                    for path in final_outputs
+                ) != report.output_relative_paths:
+                    raise ValueError
+            except Exception:
+                raise M3StageRunnerError("STAGE_RECOVERY_CONFLICT") from None
+            receipt = self._publish_static_receipt(
+                node=node, receipt_path=receipt_path,
+                resolved=resolved, outputs=final_outputs,
+            )
+            self._validate_static_receipt(
+                node=node, receipt=receipt, resolved=resolved,
+                outputs=final_outputs,
+            )
+            return StaticStageResult(
+                final_root=final_root, receipt_path=receipt_path,
+                receipt=receipt, reused=final_preexisting,
+            )
+        finally:
+            if not committed and temp_root.exists():
+                _remove_owned_temp(
+                    temp_root, self._stage_root / ".stage-tmp",
+                    expected_prefix=f".{node.node_id}.",
+                )
 
     def _run_snapshot_locked(
         self, *, node: StageNode, handler: StageHandler,
@@ -512,7 +664,10 @@ class StageRunner:
             )
         finally:
             if not committed and temp_root.exists():
-                _remove_owned_temp(temp_root, self._stage_root / ".stage-tmp")
+                _remove_owned_temp(
+                    temp_root, self._stage_root / ".stage-tmp",
+                    expected_prefix=".snapshot.",
+                )
 
     def _verify_completed_snapshot(
         self, *, node: StageNode, request_path: Path, receipt_path: Path,
@@ -572,6 +727,183 @@ class StageRunner:
             raise M3StageRunnerError("STAGE_INPUT_INVALID") from None
         return tuple(resolved)
 
+    def _resolve_static_inputs(
+        self, *, node: StageNode, plan_nodes: Mapping[str, StageNode],
+    ) -> tuple[ResolvedInput, ...]:
+        dependency_receipts: dict[str, StageReceipt] = {}
+        for dependency_id in node.dependencies:
+            producer = plan_nodes[dependency_id]
+            dependency_receipts[dependency_id] = self._verify_dependency_static(
+                producer
+            )
+        resolved: list[ResolvedInput] = []
+        try:
+            for item in node.inputs:
+                if type(item) is ExternalInput:
+                    digest = item.artifact
+                    path = self._path_for_digest(digest)
+                else:
+                    stage_input = cast(StageOutputInput, item)
+                    producer = plan_nodes[stage_input.producer_node_id]
+                    publication = cast(
+                        StaticDirectoryPublication, producer.publication
+                    )
+                    expected = (
+                        self._stage_root / publication.final_directory
+                        / stage_input.relative_path
+                    ).resolve(strict=True)
+                    matches = tuple(
+                        digest
+                        for digest in dependency_receipts[
+                            stage_input.producer_node_id
+                        ].outputs
+                        if digest.root_alias == stage_input.root_alias
+                        and self._path_for_digest(digest) == expected
+                    )
+                    if len(matches) != 1:
+                        raise ValueError
+                    digest = matches[0]
+                    path = expected
+                resolved.append(ResolvedInput(digest=digest, path=path))
+        except M3StageRunnerError:
+            raise
+        except Exception:
+            raise M3StageRunnerError("STAGE_INPUT_INVALID") from None
+        return tuple(resolved)
+
+    def _path_for_digest(self, digest: ArtifactDigest) -> Path:
+        root = self._artifact_roots[digest.root_alias]
+        path = root / Path(digest.relative_path)
+        raw = _read_plain_file(path)
+        if (
+            len(raw) != digest.size_bytes
+            or hashlib.sha256(raw).hexdigest() != digest.sha256
+        ):
+            raise ValueError
+        return path.resolve(strict=True)
+
+    def _verify_dependency_static(self, node: StageNode) -> StageReceipt:
+        try:
+            self._validate_static_node(node)
+            receipt_path = self._stage_root / node.receipt_path
+            receipt = self._read_receipt(receipt_path)
+            if receipt is None:
+                raise ValueError
+            publication = cast(StaticDirectoryPublication, node.publication)
+            final_root = self._stage_root / publication.final_directory
+            outputs = _static_output_paths(final_root, node.output_specs)
+            self._validate_static_receipt_outputs(
+                node=node, receipt=receipt, outputs=outputs,
+            )
+        except Exception:
+            raise M3StageRunnerError("STAGE_INPUT_INVALID") from None
+        return receipt
+
+    def _verify_static_closure(
+        self, *, root: Path, node: StageNode,
+        closure_verifier: StaticClosureVerifier,
+    ) -> tuple[Path, ...]:
+        closure_verifier(root)
+        return _static_output_paths(root, node.output_specs)
+
+    def _verify_completed_static(
+        self, *, node: StageNode, final_root: Path, receipt_path: Path,
+        receipt: StageReceipt, closure_verifier: StaticClosureVerifier,
+        plan_nodes: Mapping[str, StageNode],
+    ) -> StaticStageResult:
+        try:
+            resolved = self._resolve_static_inputs(
+                node=node, plan_nodes=plan_nodes
+            )
+            outputs = self._verify_static_closure(
+                root=final_root, node=node,
+                closure_verifier=closure_verifier,
+            )
+            self._validate_static_receipt(
+                node=node, receipt=receipt, resolved=resolved,
+                outputs=outputs,
+            )
+            return StaticStageResult(
+                final_root=final_root, receipt_path=receipt_path,
+                receipt=receipt, reused=True,
+            )
+        except M3StageRunnerError:
+            raise
+        except Exception:
+            raise M3StageRunnerError("STAGE_RECOVERY_CONFLICT") from None
+
+    def _publish_static_receipt(
+        self, *, node: StageNode, receipt_path: Path,
+        resolved: tuple[ResolvedInput, ...], outputs: tuple[Path, ...],
+    ) -> StageReceipt:
+        try:
+            return publish_stage_receipt(
+                receipt_path=receipt_path,
+                stage=node.spec_name,
+                scope=node.scope,
+                scope_key=node.scope_key,
+                artifact_roots=self._artifact_roots,
+                inputs=tuple(
+                    (item.digest.root_alias, item.path) for item in resolved
+                ),
+                outputs=tuple(
+                    (_alias_for_path(path, self._artifact_roots), path)
+                    for path in outputs
+                ),
+            )
+        except Exception:
+            raise M3StageRunnerError("STAGE_PUBLISH_FAILED") from None
+
+    def _validate_static_receipt(
+        self, *, node: StageNode, receipt: StageReceipt,
+        resolved: tuple[ResolvedInput, ...], outputs: tuple[Path, ...],
+    ) -> None:
+        self._validate_static_receipt_outputs(
+            node=node, receipt=receipt, outputs=outputs,
+        )
+        if _digest_paths(receipt.inputs, self._artifact_roots) != {
+            item.path.resolve(strict=True) for item in resolved
+        }:
+            raise M3StageRunnerError("STAGE_RECOVERY_CONFLICT")
+
+    def _validate_static_receipt_outputs(
+        self, *, node: StageNode, receipt: StageReceipt,
+        outputs: tuple[Path, ...],
+    ) -> None:
+        if (
+            receipt.stage != node.spec_name
+            or receipt.scope != node.scope
+            or receipt.scope_key != node.scope_key
+            or _digest_paths(receipt.outputs, self._artifact_roots)
+            != {path.resolve(strict=True) for path in outputs}
+        ):
+            raise M3StageRunnerError("STAGE_RECOVERY_CONFLICT")
+
+    def _prepare_static_parents(self, node: StageNode) -> None:
+        publication = cast(StaticDirectoryPublication, node.publication)
+        for path in (
+            self._stage_root / publication.final_directory,
+            self._stage_root / node.receipt_path,
+        ):
+            _ensure_real_parent_directories(path=path, root=self._stage_root)
+
+    @staticmethod
+    def _plan_nodes_for(
+        *, node: StageNode, plan: RunPlan | None,
+    ) -> dict[str, StageNode]:
+        if plan is None:
+            if node.dependencies:
+                raise ValueError("static dependency nodes require a RunPlan")
+            return {node.node_id: node}
+        if type(plan) is not RunPlan:
+            raise ValueError
+        nodes = {item.node_id: item for item in plan.nodes}
+        if nodes.get(node.node_id) != node:
+            raise ValueError("static node is not the plan node")
+        if any(dependency not in nodes for dependency in node.dependencies):
+            raise ValueError("static dependency absent from plan")
+        return nodes
+
     def _prepare_owned_directories(self) -> None:
         for relative in (
             ".stage-locks", ".stage-tmp", "snapshots", "snapshot-requests",
@@ -614,6 +946,27 @@ class StageRunner:
             raise ValueError
         if node.receipt_path != expected_receipt:
             raise ValueError
+
+    @staticmethod
+    def _validate_static_node(node: StageNode) -> None:
+        if type(node) is not StageNode:
+            raise ValueError
+        spec = STAGE_SPEC_REGISTRY.get(node.spec_name)
+        if (
+            spec is None
+            or type(node.publication) is not StaticDirectoryPublication
+            or node.scope != spec.scope
+            or node.output_specs != spec.outputs
+        ):
+            raise ValueError("static node contract drift")
+        final_path = PurePosixPath(node.publication.final_directory)
+        receipt_path = PurePosixPath(node.receipt_path)
+        if (
+            final_path == receipt_path
+            or final_path in receipt_path.parents
+            or receipt_path in final_path.parents
+        ):
+            raise ValueError("static receipt must be outside output")
 
     @staticmethod
     def _validate_development_snapshot_node(node: StageNode) -> None:
@@ -721,6 +1074,21 @@ def _alias_for_path(path: Path, roots: Mapping[str, Path]) -> str:
     return aliases[0]
 
 
+def _ensure_real_parent_directories(*, path: Path, root: Path) -> None:
+    resolved_root = root.resolve(strict=True)
+    parent = path.parent.absolute()
+    if not parent.is_relative_to(resolved_root):
+        raise ValueError("stage-owned parent escaped stage root")
+    current = resolved_root
+    for part in parent.relative_to(resolved_root).parts:
+        current = current / part
+        try:
+            current.mkdir()
+        except FileExistsError:
+            pass
+        _require_real_directory(current, label="stage-owned parent")
+
+
 def _require_real_directory(path: Path, *, label: str) -> None:
     _reject_parent_links(path.parent, label=label)
     st = os.lstat(path)
@@ -781,6 +1149,57 @@ def _regular_tree_relative_paths(root: Path) -> tuple[str, ...]:
     return tuple(path.relative_to(root.resolve(strict=True)).as_posix() for path in (
         _regular_tree_paths(root)
     ))
+
+
+def _static_output_paths(
+    root: Path, output_specs: tuple[OutputSpec, ...],
+) -> tuple[Path, ...]:
+    _require_real_directory(root, label="static output")
+    all_paths = _regular_tree_paths(root)
+    actual = {
+        path.relative_to(root.resolve(strict=True)).as_posix(): path
+        for path in all_paths
+    }
+    expected: set[str] = set()
+    tree_roots: list[PurePosixPath] = []
+    for output in output_specs:
+        relative = PurePosixPath(output.relative_path)
+        target = root / output.relative_path
+        if output.kind == "FILE":
+            _read_plain_file(target)
+            expected.add(output.relative_path)
+            continue
+        _require_real_directory(target, label="static TREE output")
+        tree_roots.append(relative)
+        closure = cast(str, output.closure_manifest)
+        _read_plain_file(root / closure)
+        expected.add(closure)
+        expected.update(
+            path.relative_to(root.resolve(strict=True)).as_posix()
+            for path in _regular_tree_paths(target)
+        )
+    if set(actual) != expected:
+        raise ValueError("static output file closure drift")
+    for current, directories, _files in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        for name in directories:
+            directory = current_path / name
+            _require_real_directory(directory, label="static output directory")
+            relative = PurePosixPath(
+                directory.relative_to(root.resolve(strict=True)).as_posix()
+            )
+            if not any(
+                relative == tree
+                or tree in relative.parents
+                or relative in PurePosixPath(output.relative_path).parents
+                for tree in tree_roots
+                for output in output_specs
+            ) and not any(
+                relative in PurePosixPath(output.relative_path).parents
+                for output in output_specs
+            ):
+                raise ValueError("static output directory closure drift")
+    return tuple(actual[name] for name in sorted(actual))
 
 
 def _trees_equal(left: Path, right: Path) -> bool:
@@ -865,11 +1284,16 @@ def _validate_receipt_paths(
         raise M3StageRunnerError("STAGE_RECOVERY_CONFLICT")
 
 
-def _remove_owned_temp(path: Path, temp_parent: Path) -> None:
+def _remove_owned_temp(
+    path: Path, temp_parent: Path, *, expected_prefix: str,
+) -> None:
     try:
         resolved_parent = temp_parent.resolve(strict=True)
         resolved = path.resolve(strict=True)
-        if resolved.parent != resolved_parent or not resolved.name.startswith(".snapshot."):
+        if (
+            resolved.parent != resolved_parent
+            or not resolved.name.startswith(expected_prefix)
+        ):
             raise ValueError
         shutil.rmtree(resolved)
     except FileNotFoundError:
@@ -997,9 +1421,9 @@ BACKTEST_PLAN_STAGE_SPEC = StageSpec(
 BACKTEST_STAGE_SPEC = StageSpec(
     "backtest", "WORK", ("backtest_plan",),
     (
-        OutputSpec("0p5x", "TREE", "backtest_manifest.json"),
-        OutputSpec("1p0x", "TREE", "backtest_manifest.json"),
-        OutputSpec("2p0x", "TREE", "backtest_manifest.json"),
+        OutputSpec("0p5x", "TREE", "0p5x/manifest.json"),
+        OutputSpec("1p0x", "TREE", "1p0x/manifest.json"),
+        OutputSpec("2p0x", "TREE", "2p0x/manifest.json"),
         OutputSpec("backtest_manifest.json", "FILE", None),
         OutputSpec("backtest_metrics.json", "FILE", None),
     ),
