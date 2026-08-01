@@ -44,6 +44,8 @@ from quant.domain.schemas import (
 )
 from quant.research.m3.contracts import (
     AlignmentManifestV1,
+    EvaluationManifestV1,
+    EvaluationMetricsV1,
     ExperimentIdentityManifestV1,
     FeatureManifestV1,
     FoldPlanManifestV1,
@@ -563,6 +565,35 @@ class VerifiedDevelopmentExamplePredictionArtifact:
             raise ValueError("verified development prediction artifact 非法")
         _require_hex64(self.manifest_sha256)
         _require_hex64(self.prediction_receipt_sha256)
+        root = self.root.resolve(strict=True)
+        _require_development_root_name(root)
+        object.__setattr__(self, "root", root)
+
+
+@dataclass(frozen=True)
+class VerifiedDevelopmentExampleEvaluationArtifact:
+    release_kind: Literal["development_example"]
+    formal_gate_eligible: Literal[False]
+    example_id: str
+    root: Path
+    daily: pl.DataFrame
+    metrics: EvaluationMetricsV1
+    manifest: EvaluationManifestV1
+    manifest_sha256: str
+    evaluation_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.release_kind != _KIND or self.formal_gate_eligible is not False:
+            raise ValueError("verified development evaluation kind 非法")
+        _require_example_id(self.example_id)
+        if (
+            not isinstance(self.daily, pl.DataFrame)
+            or type(self.metrics) is not EvaluationMetricsV1
+            or type(self.manifest) is not EvaluationManifestV1
+        ):
+            raise ValueError("verified development evaluation artifact 非法")
+        _require_hex64(self.manifest_sha256)
+        _require_hex64(self.evaluation_receipt_sha256)
         root = self.root.resolve(strict=True)
         _require_development_root_name(root)
         object.__setattr__(self, "root", root)

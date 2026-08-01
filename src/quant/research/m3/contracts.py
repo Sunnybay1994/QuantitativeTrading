@@ -1478,6 +1478,200 @@ class VerifiedPredictionArtifact:
         _require_bare_hex64("prediction_receipt_sha256", self.prediction_receipt_sha256)
 
 
+IcStatus = Literal[
+    "NO_ELIGIBLE",
+    "NO_LABELS",
+    "NO_PREDICTIONS",
+    "INSUFFICIENT_SYMBOLS",
+    "BOTH_ZERO_VARIANCE",
+    "SCORE_ZERO_VARIANCE",
+    "LABEL_ZERO_VARIANCE",
+    "COMPUTABLE",
+]
+
+
+@dataclass(frozen=True)
+class EvaluationSpec:
+    experiment_key: str
+    work_key: str
+    fold: str
+    horizon_sessions: Literal[5, 10]
+    minimum_ic_symbols: int
+
+    def __post_init__(self) -> None:
+        _require_bare_hex64("experiment_key", self.experiment_key)
+        _require_bare_hex64("work_key", self.work_key)
+        if (
+            type(self.fold) is not str
+            or not self.fold
+            or type(self.horizon_sessions) is not int
+            or self.horizon_sessions not in {5, 10}
+            or type(self.minimum_ic_symbols) is not int
+            or self.minimum_ic_symbols < 2
+        ):
+            raise ValueError("evaluation spec 非法")
+
+
+@dataclass(frozen=True)
+class EvaluationUpstreamPaths:
+    prediction_receipt_path: Path
+    prediction_upstream_paths: PredictionUpstreamPaths
+    label_receipt_path: Path
+    feature_receipt_path: Path
+    fold_receipt_path: Path
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.prediction_receipt_path, Path)
+            or type(self.prediction_upstream_paths) is not PredictionUpstreamPaths
+            or not isinstance(self.label_receipt_path, Path)
+            or not isinstance(self.feature_receipt_path, Path)
+            or not isinstance(self.fold_receipt_path, Path)
+        ):
+            raise ValueError("evaluation upstream paths 非法")
+
+
+@dataclass(frozen=True)
+class EvaluationMetricsV1:
+    schema_version: Literal["m3-evaluation-metrics-v1"]
+    experiment_key: str
+    work_key: str
+    fold: str
+    horizon_sessions: int
+    model: str
+    model_version: str
+    n_dates: int
+    n_computable_dates: int
+    n_eligible: int
+    n_scorable: int
+    n_predicted: int
+    n_labeled: int
+    n_evaluated: int
+    feature_coverage: float | None
+    prediction_coverage: float | None
+    label_coverage: float | None
+    evaluation_coverage: float | None
+    pearson_ic_mean: float | None
+    rank_ic_mean: float | None
+    pearson_icir: float | None
+    rank_icir: float | None
+    status_counts: tuple[tuple[IcStatus, int], ...]
+    daily_sha256: str
+
+    def __post_init__(self) -> None:
+        statuses = (
+            "NO_ELIGIBLE", "NO_LABELS", "NO_PREDICTIONS",
+            "INSUFFICIENT_SYMBOLS", "BOTH_ZERO_VARIANCE",
+            "SCORE_ZERO_VARIANCE", "LABEL_ZERO_VARIANCE", "COMPUTABLE",
+        )
+        if self.schema_version != "m3-evaluation-metrics-v1":
+            raise ValueError("evaluation metrics schema 非法")
+        for name in ("experiment_key", "work_key", "daily_sha256"):
+            _require_bare_hex64(name, getattr(self, name))
+        counts = (
+            self.n_dates, self.n_computable_dates, self.n_eligible,
+            self.n_scorable, self.n_predicted, self.n_labeled, self.n_evaluated,
+        )
+        ratios = (
+            self.feature_coverage, self.prediction_coverage, self.label_coverage,
+            self.evaluation_coverage,
+        )
+        metrics = (
+            self.pearson_ic_mean, self.rank_ic_mean, self.pearson_icir,
+            self.rank_icir,
+        )
+        if (
+            type(self.fold) is not str
+            or not self.fold
+            or type(self.horizon_sessions) is not int
+            or self.horizon_sessions not in {5, 10}
+            or type(self.model) is not str
+            or not self.model
+            or type(self.model_version) is not str
+            or not self.model_version
+            or any(type(value) is not int or value < 0 for value in counts)
+            or self.n_computable_dates > self.n_dates
+            or any(
+                value is not None
+                and (type(value) is not float or not math.isfinite(value) or not 0.0 <= value <= 1.0)
+                for value in ratios
+            )
+            or any(
+                value is not None
+                and (type(value) is not float or not math.isfinite(value))
+                for value in metrics
+            )
+            or tuple(name for name, _ in self.status_counts) != statuses
+            or any(type(count) is not int or count < 0 for _, count in self.status_counts)
+            or sum(count for _, count in self.status_counts) != self.n_dates
+        ):
+            raise ValueError("evaluation metrics 非法")
+
+
+@dataclass(frozen=True)
+class EvaluationManifestV1:
+    schema_version: Literal["m3-evaluation-artifact-v1"]
+    experiment_key: str
+    work_key: str
+    prediction_manifest_sha256: str
+    label_manifest_sha256: str
+    feature_manifest_sha256: str
+    fold_plan_manifest_sha256: str
+    eligible_keys_sha256: str
+    evaluation_dates_sha256: str
+    scientific_config_sha256: str
+    fold: str
+    horizon_sessions: int
+    model: str
+    model_version: str
+    daily_sha256: str
+    metrics_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "m3-evaluation-artifact-v1":
+            raise ValueError("evaluation manifest schema 非法")
+        for name in (
+            "experiment_key", "work_key", "prediction_manifest_sha256",
+            "label_manifest_sha256", "feature_manifest_sha256",
+            "fold_plan_manifest_sha256", "eligible_keys_sha256",
+            "evaluation_dates_sha256", "scientific_config_sha256",
+            "daily_sha256", "metrics_sha256",
+        ):
+            _require_bare_hex64(name, getattr(self, name))
+        if (
+            type(self.fold) is not str
+            or not self.fold
+            or type(self.horizon_sessions) is not int
+            or self.horizon_sessions not in {5, 10}
+            or type(self.model) is not str
+            or not self.model
+            or type(self.model_version) is not str
+            or not self.model_version
+        ):
+            raise ValueError("evaluation manifest 非法")
+
+
+@dataclass(frozen=True)
+class VerifiedEvaluationArtifact:
+    root: Path
+    daily: pl.DataFrame
+    metrics: EvaluationMetricsV1
+    manifest: EvaluationManifestV1
+    manifest_sha256: str
+    evaluation_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.root, Path)
+            or not isinstance(self.daily, pl.DataFrame)
+            or type(self.metrics) is not EvaluationMetricsV1
+            or type(self.manifest) is not EvaluationManifestV1
+        ):
+            raise ValueError("verified evaluation artifact 非法")
+        _require_bare_hex64("manifest_sha256", self.manifest_sha256)
+        _require_bare_hex64("evaluation_receipt_sha256", self.evaluation_receipt_sha256)
+
+
 @dataclass(frozen=True)
 class LabelBuildSpec:
     experiment_key: str

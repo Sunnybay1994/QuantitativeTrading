@@ -1,5 +1,14 @@
 # Codex 项目迁移交接
 
+### 2026-08-02 G6A 续写摘要（覆盖下文旧停止点）
+
+- development example 研究链已推进到 G6A：逐 work evaluation artifact、八状态 IC、五层 key 闭包、
+  四类 coverage、canonical manifest 与 fresh receipt verifier 已完成；Windows 与 WSL base 定向集合均为
+  `19 passed`。详见
+  [`docs/agent/M3_G6A开发示例逐Work评价Artifact主Agent阶段验收报告.md`](agent/M3_G6A开发示例逐Work评价Artifact主Agent阶段验收报告.md)。
+- 正式 G2A 已完成 Windows 独立发布与 fresh verify；正式 G2B 当前在独立工作树执行，G1 fresh verify 已
+  PASS，正在 fresh 验证 G2A snapshot，尚未进入 provider materialize。development 结果仍不得关闭正式 Gate。
+
 ### 2026-08-02 最新续写摘要（覆盖下文旧停止点）
 
 - 正式 G1 Windows release 已完成磁盘验真：release id

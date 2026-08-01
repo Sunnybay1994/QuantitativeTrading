@@ -3,12 +3,59 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 import math
-from collections.abc import Sequence
+import os
+from collections import Counter
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict, fields
+from functools import wraps
+from pathlib import Path
+from typing import Any, Callable, ParamSpec, TypeVar, cast
 
 import polars as pl
 
 from quant.domain import ForwardReturnLabelSchema, PredictionScoreSchema
+from quant.research.m3.alignment import _read_feature_segment, _scorable_expression
+from quant.research.m3.config import LoadedM3Config
+from quant.research.m3.contracts import (
+    AlignmentBuildSpec,
+    EvaluationManifestV1,
+    EvaluationMetricsV1,
+    EvaluationSpec,
+    EvaluationUpstreamPaths,
+    ExperimentIdentitySpec,
+    FeatureBuildSpec,
+    FoldPlanBuildSpec,
+    IcStatus,
+    LabelBuildSpec,
+    LightgbmTrainingSpec,
+    PredictionBuildSpec,
+    ProviderBuildSpec,
+    SnapshotBuildSpec,
+)
+from quant.research.m3.development_example import (
+    VerifiedDevelopmentExampleAlignmentArtifact,
+    VerifiedDevelopmentExampleEvaluationArtifact,
+    VerifiedDevelopmentExampleExperimentIdentity,
+    VerifiedDevelopmentExampleFeatureArtifact,
+    VerifiedDevelopmentExampleFoldPlanArtifact,
+    VerifiedDevelopmentExampleG1Release,
+    VerifiedDevelopmentExampleLabelArtifact,
+    VerifiedDevelopmentExampleModelArtifact,
+    VerifiedDevelopmentExamplePredictionArtifact,
+    VerifiedDevelopmentExampleProviderArtifact,
+    VerifiedDevelopmentExampleSnapshotArtifact,
+)
+from quant.research.m3.predictions import (
+    verify_development_example_prediction_artifact,
+)
+from quant.research.m3.run_state import (
+    ArtifactDigest,
+    path_for_artifact_digest,
+    verify_stage_receipt_with_bytes,
+)
 
 _IDENTITY_COLS = (
     "model",
@@ -269,3 +316,722 @@ def _average_ranks(values: list[float]) -> list[float]:
             ranks[indexed[k][0]] = avg_rank
         i = j + 1
     return ranks
+
+
+_EVALUATION_FILES = {
+    "daily_ic.parquet",
+    "evaluation_manifest.json",
+    "metrics.json",
+}
+_IC_STATUSES: tuple[IcStatus, ...] = (
+    "NO_ELIGIBLE",
+    "NO_LABELS",
+    "NO_PREDICTIONS",
+    "INSUFFICIENT_SYMBOLS",
+    "BOTH_ZERO_VARIANCE",
+    "SCORE_ZERO_VARIANCE",
+    "LABEL_ZERO_VARIANCE",
+    "COMPUTABLE",
+)
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
+
+
+def _evaluation_boundary(function: Callable[_P, _T]) -> Callable[_P, _T]:
+    @wraps(function)
+    def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _T:
+        try:
+            return function(*args, **kwargs)
+        except ValueError:
+            raise
+        except Exception:
+            raise ValueError("M3_EVALUATION_ARTIFACT_INVALID") from None
+
+    return wrapped
+
+
+_DAILY_SCHEMA = {
+    "as_of": pl.Date,
+    "n_eligible": pl.Int64,
+    "n_scorable": pl.Int64,
+    "n_predicted": pl.Int64,
+    "n_labeled": pl.Int64,
+    "n_evaluated": pl.Int64,
+    "feature_coverage": pl.Float64,
+    "prediction_coverage": pl.Float64,
+    "label_coverage": pl.Float64,
+    "evaluation_coverage": pl.Float64,
+    "pearson_ic": pl.Float64,
+    "rank_ic": pl.Float64,
+    "ic_status": pl.Utf8,
+}
+
+
+def build_evaluation_spec(
+    *,
+    prediction: VerifiedDevelopmentExamplePredictionArtifact,
+    config: LoadedM3Config,
+) -> EvaluationSpec:
+    section = config.section("evaluation")
+    minimum = section.get("minimum_ic_symbols")
+    if type(minimum) is not int:
+        raise ValueError("evaluation minimum_ic_symbols invalid")
+    return EvaluationSpec(
+        experiment_key=prediction.manifest.experiment_key,
+        work_key=prediction.manifest.work_key,
+        fold=prediction.manifest.fold,
+        horizon_sessions=cast(Any, prediction.manifest.horizon_sessions),
+        minimum_ic_symbols=minimum,
+    )
+
+
+def build_development_example_evaluation_artifact(
+    *,
+    release: VerifiedDevelopmentExampleG1Release,
+    feature: VerifiedDevelopmentExampleFeatureArtifact,
+    prediction: VerifiedDevelopmentExamplePredictionArtifact,
+    label: VerifiedDevelopmentExampleLabelArtifact,
+    folds: VerifiedDevelopmentExampleFoldPlanArtifact,
+    experiment: VerifiedDevelopmentExampleExperimentIdentity,
+    config: LoadedM3Config,
+    spec: EvaluationSpec,
+    output_root: Path,
+) -> EvaluationManifestV1:
+    """Build one deterministic work-scoped evaluation artifact."""
+    _validate_evaluation_identity(
+        release, feature, prediction, label, folds, experiment, config, spec
+    )
+    _require_empty_directory(output_root)
+    planned = next(item for item in folds.manifest.folds if item.name == spec.fold)
+    dates = planned.test_dates
+    eligible = _eligible_test_keys(release, dates)
+    scorable = _scorable_test_keys(feature)
+    predictions = prediction.predictions.select("as_of", "symbol", "score")
+    labels = (
+        label.labels.filter(
+            (pl.col("horizon_sessions") == spec.horizon_sessions)
+            & pl.col("as_of").is_in(list(dates))
+        )
+        .select("as_of", "symbol", "relative_return")
+        .sort("as_of", "symbol")
+    )
+    daily = _evaluate_daily_slices(
+        eligible=eligible,
+        scorable=scorable,
+        predictions=predictions,
+        labels=labels,
+        evaluation_dates=dates,
+        minimum_ic_symbols=spec.minimum_ic_symbols,
+    )
+    if int(daily.get_column("n_eligible").sum()) == 0:
+        raise ValueError("evaluation has no eligible rows")
+    if int(daily.get_column("n_labeled").sum()) == 0:
+        raise ValueError("evaluation has no labeled rows")
+    daily_path = output_root / "daily_ic.parquet"
+    _write_parquet(daily, daily_path)
+    daily_sha = _file_sha(daily_path)
+    metrics = _summarize_evaluation(
+        daily=daily,
+        prediction=prediction,
+        spec=spec,
+        daily_sha256=daily_sha,
+    )
+    metrics_path = output_root / "metrics.json"
+    _write_exclusive(metrics_path, _canonical_bytes(asdict(metrics)))
+    manifest = EvaluationManifestV1(
+        schema_version="m3-evaluation-artifact-v1",
+        experiment_key=spec.experiment_key,
+        work_key=spec.work_key,
+        prediction_manifest_sha256=prediction.manifest_sha256,
+        label_manifest_sha256=label.manifest_sha256,
+        feature_manifest_sha256=feature.manifest_sha256,
+        fold_plan_manifest_sha256=folds.manifest_sha256,
+        eligible_keys_sha256=prediction.manifest.eligibility_sha256,
+        evaluation_dates_sha256=_sha_dates(dates),
+        scientific_config_sha256=config.scientific_config_sha256,
+        fold=spec.fold,
+        horizon_sessions=spec.horizon_sessions,
+        model=prediction.manifest.model,
+        model_version=prediction.manifest.model_version,
+        daily_sha256=daily_sha,
+        metrics_sha256=_file_sha(metrics_path),
+    )
+    _write_exclusive(
+        output_root / "evaluation_manifest.json",
+        _canonical_bytes(asdict(manifest)),
+    )
+    return manifest
+
+
+@_evaluation_boundary
+def verify_development_example_evaluation_artifact(
+    *,
+    root: Path,
+    receipt_path: Path,
+    release: VerifiedDevelopmentExampleG1Release,
+    snapshot: VerifiedDevelopmentExampleSnapshotArtifact,
+    snapshot_spec: SnapshotBuildSpec,
+    provider: VerifiedDevelopmentExampleProviderArtifact,
+    provider_spec: ProviderBuildSpec,
+    experiment: VerifiedDevelopmentExampleExperimentIdentity,
+    experiment_spec: ExperimentIdentitySpec,
+    folds: VerifiedDevelopmentExampleFoldPlanArtifact,
+    fold_spec: FoldPlanBuildSpec,
+    feature: VerifiedDevelopmentExampleFeatureArtifact,
+    feature_spec: FeatureBuildSpec,
+    label: VerifiedDevelopmentExampleLabelArtifact,
+    label_spec: LabelBuildSpec,
+    alignment: VerifiedDevelopmentExampleAlignmentArtifact,
+    alignment_spec: AlignmentBuildSpec,
+    model: VerifiedDevelopmentExampleModelArtifact,
+    model_spec: LightgbmTrainingSpec,
+    prediction: VerifiedDevelopmentExamplePredictionArtifact,
+    prediction_spec: PredictionBuildSpec,
+    config: LoadedM3Config,
+    spec: EvaluationSpec,
+    upstream_paths: EvaluationUpstreamPaths,
+    artifact_roots: Mapping[str, Path],
+) -> VerifiedDevelopmentExampleEvaluationArtifact:
+    """Freshly verify the full lineage and one development evaluation bundle."""
+    fresh_prediction = verify_development_example_prediction_artifact(
+        root=prediction.root,
+        receipt_path=upstream_paths.prediction_receipt_path,
+        release=release,
+        snapshot=snapshot,
+        snapshot_spec=snapshot_spec,
+        provider=provider,
+        provider_spec=provider_spec,
+        experiment=experiment,
+        experiment_spec=experiment_spec,
+        folds=folds,
+        fold_spec=fold_spec,
+        feature=feature,
+        feature_spec=feature_spec,
+        label=label,
+        label_spec=label_spec,
+        alignment=alignment,
+        alignment_spec=alignment_spec,
+        model=model,
+        model_spec=model_spec,
+        spec=prediction_spec,
+        upstream_paths=upstream_paths.prediction_upstream_paths,
+        config=config,
+        artifact_roots=artifact_roots,
+    )
+    if not _same_verified_prediction(fresh_prediction, prediction):
+        raise ValueError("evaluation prediction stale")
+    _validate_evaluation_identity(
+        release, feature, prediction, label, folds, experiment, config, spec
+    )
+    if (
+        not root.is_dir()
+        or root.is_symlink()
+        or {item.name for item in os.scandir(root)} != _EVALUATION_FILES
+    ):
+        raise ValueError("evaluation tree closure drift")
+
+    raw_manifest = (root / "evaluation_manifest.json").read_bytes()
+    manifest = read_evaluation_manifest(root / "evaluation_manifest.json")
+    daily = _read_evaluation_daily(root / "daily_ic.parquet")
+    metrics = read_evaluation_metrics(root / "metrics.json")
+    planned = next(item for item in folds.manifest.folds if item.name == spec.fold)
+    expected_daily = _evaluate_daily_slices(
+        eligible=_eligible_test_keys(release, planned.test_dates),
+        scorable=_scorable_test_keys(feature),
+        predictions=prediction.predictions.select("as_of", "symbol", "score"),
+        labels=label.labels.filter(
+            (pl.col("horizon_sessions") == spec.horizon_sessions)
+            & pl.col("as_of").is_in(list(planned.test_dates))
+        )
+        .select("as_of", "symbol", "relative_return")
+        .sort("as_of", "symbol"),
+        evaluation_dates=planned.test_dates,
+        minimum_ic_symbols=spec.minimum_ic_symbols,
+    )
+    if not daily.equals(expected_daily):
+        raise ValueError("evaluation daily content drift")
+    expected_metrics = _summarize_evaluation(
+        daily=daily,
+        prediction=prediction,
+        spec=spec,
+        daily_sha256=_file_sha(root / "daily_ic.parquet"),
+    )
+    if metrics != expected_metrics:
+        raise ValueError("evaluation metrics/content drift")
+    expected_manifest = EvaluationManifestV1(
+        schema_version="m3-evaluation-artifact-v1",
+        experiment_key=spec.experiment_key,
+        work_key=spec.work_key,
+        prediction_manifest_sha256=prediction.manifest_sha256,
+        label_manifest_sha256=label.manifest_sha256,
+        feature_manifest_sha256=feature.manifest_sha256,
+        fold_plan_manifest_sha256=folds.manifest_sha256,
+        eligible_keys_sha256=prediction.manifest.eligibility_sha256,
+        evaluation_dates_sha256=_sha_dates(planned.test_dates),
+        scientific_config_sha256=config.scientific_config_sha256,
+        fold=spec.fold,
+        horizon_sessions=spec.horizon_sessions,
+        model=prediction.manifest.model,
+        model_version=prediction.manifest.model_version,
+        daily_sha256=_file_sha(root / "daily_ic.parquet"),
+        metrics_sha256=_file_sha(root / "metrics.json"),
+    )
+    if manifest != expected_manifest:
+        raise ValueError("evaluation manifest/content drift")
+
+    verified_receipt = verify_stage_receipt_with_bytes(
+        receipt_path=receipt_path, artifact_roots=artifact_roots
+    )
+    if verified_receipt is None:
+        raise ValueError("evaluation receipt missing")
+    receipt = verified_receipt.receipt
+    inputs = _evaluation_receipt_inputs(
+        release, feature, prediction, label, folds, experiment, upstream_paths
+    )
+    outputs = tuple(root / name for name in sorted(_EVALUATION_FILES))
+    if (
+        receipt.stage != "development-evaluation"
+        or receipt.scope != "WORK"
+        or receipt.scope_key != spec.work_key
+        or not _digest_paths_equal(receipt.inputs, inputs, artifact_roots)
+        or not _digest_paths_equal(receipt.outputs, outputs, artifact_roots)
+    ):
+        raise ValueError("evaluation receipt closure drift")
+    return VerifiedDevelopmentExampleEvaluationArtifact(
+        release_kind="development_example",
+        formal_gate_eligible=False,
+        example_id=prediction.example_id,
+        root=root.resolve(strict=True),
+        daily=daily,
+        metrics=metrics,
+        manifest=manifest,
+        manifest_sha256=hashlib.sha256(raw_manifest).hexdigest(),
+        evaluation_receipt_sha256=verified_receipt.sha256,
+    )
+
+
+def _evaluate_daily_slices(
+    *,
+    eligible: pl.DataFrame,
+    scorable: pl.DataFrame,
+    predictions: pl.DataFrame,
+    labels: pl.DataFrame,
+    evaluation_dates: tuple[dt.date, ...],
+    minimum_ic_symbols: int,
+) -> pl.DataFrame:
+    """Rebuild five key layers and compute daily IC with explicit status."""
+    _assert_evaluation_dates(evaluation_dates)
+    if type(minimum_ic_symbols) is not int or minimum_ic_symbols < 2:
+        raise ValueError("minimum_ic_symbols invalid")
+    eligible = _validated_keys(eligible, value_column=None, name="eligible")
+    scorable = _validated_keys(scorable, value_column=None, name="scorable")
+    predictions = _validated_keys(predictions, value_column="score", name="predictions")
+    labels = _validated_keys(labels, value_column="relative_return", name="labels")
+    date_set = set(evaluation_dates)
+    for name, frame in (
+        ("eligible", eligible),
+        ("scorable", scorable),
+        ("predictions", predictions),
+        ("labels", labels),
+    ):
+        if set(frame.get_column("as_of").to_list()) - date_set:
+            raise ValueError(f"evaluation {name} date outside fold")
+    eligible_keys = _key_set(eligible)
+    scorable_keys = _key_set(scorable)
+    prediction_keys = _key_set(predictions)
+    label_keys = _key_set(labels)
+    if not scorable_keys <= eligible_keys:
+        raise ValueError("evaluation scorable not subset eligible")
+    if prediction_keys != scorable_keys:
+        raise ValueError("evaluation predicted differs from scorable")
+    if not label_keys <= eligible_keys:
+        raise ValueError("evaluation labeled not subset eligible")
+    joined = predictions.join(labels, on=["as_of", "symbol"], how="inner")
+    rows: list[dict[str, object]] = []
+    for day in evaluation_dates:
+        e = _day_count(eligible, day)
+        s = _day_count(scorable, day)
+        p = _day_count(predictions, day)
+        lab = _day_count(labels, day)
+        evaluated = joined.filter(pl.col("as_of") == day).sort("symbol")
+        n_eval = evaluated.height
+        scores = [float(value) for value in evaluated.get_column("score")]
+        returns = [float(value) for value in evaluated.get_column("relative_return")]
+        status = _daily_status(
+            n_eligible=e,
+            n_labeled=lab,
+            n_predicted=p,
+            n_evaluated=n_eval,
+            minimum_ic_symbols=minimum_ic_symbols,
+            scores=scores,
+            returns=returns,
+        )
+        pearson = _pearson(scores, returns) if status == "COMPUTABLE" else None
+        rank_ic = _spearman(scores, returns) if status == "COMPUTABLE" else None
+        if status == "COMPUTABLE" and (pearson is None or rank_ic is None):
+            raise ValueError("evaluation computable IC missing")
+        rows.append(
+            {
+                "as_of": day,
+                "n_eligible": e,
+                "n_scorable": s,
+                "n_predicted": p,
+                "n_labeled": lab,
+                "n_evaluated": n_eval,
+                "feature_coverage": _ratio(s, e),
+                "prediction_coverage": _ratio(p, s),
+                "label_coverage": _ratio(lab, e),
+                "evaluation_coverage": _ratio(n_eval, lab),
+                "pearson_ic": pearson,
+                "rank_ic": rank_ic,
+                "ic_status": status,
+            }
+        )
+    return pl.DataFrame(rows, schema=_DAILY_SCHEMA).sort("as_of")
+
+
+def _daily_status(
+    *,
+    n_eligible: int,
+    n_labeled: int,
+    n_predicted: int,
+    n_evaluated: int,
+    minimum_ic_symbols: int,
+    scores: list[float],
+    returns: list[float],
+) -> IcStatus:
+    if n_eligible == 0:
+        return "NO_ELIGIBLE"
+    if n_labeled == 0:
+        return "NO_LABELS"
+    if n_predicted == 0:
+        return "NO_PREDICTIONS"
+    if n_evaluated < minimum_ic_symbols:
+        return "INSUFFICIENT_SYMBOLS"
+    score_zero = min(scores) == max(scores)
+    label_zero = min(returns) == max(returns)
+    if score_zero and label_zero:
+        return "BOTH_ZERO_VARIANCE"
+    if score_zero:
+        return "SCORE_ZERO_VARIANCE"
+    if label_zero:
+        return "LABEL_ZERO_VARIANCE"
+    return "COMPUTABLE"
+
+
+def _summarize_evaluation(
+    *,
+    daily: pl.DataFrame,
+    prediction: VerifiedDevelopmentExamplePredictionArtifact,
+    spec: EvaluationSpec,
+    daily_sha256: str,
+) -> EvaluationMetricsV1:
+    totals = {
+        name: int(daily.get_column(name).sum())
+        for name in ("n_eligible", "n_scorable", "n_predicted", "n_labeled", "n_evaluated")
+    }
+    computable = daily.filter(pl.col("ic_status") == "COMPUTABLE")
+    pearsons = [float(value) for value in computable.get_column("pearson_ic")]
+    ranks = [float(value) for value in computable.get_column("rank_ic")]
+    status_counter = Counter(cast(list[str], daily.get_column("ic_status").to_list()))
+    return EvaluationMetricsV1(
+        schema_version="m3-evaluation-metrics-v1",
+        experiment_key=spec.experiment_key,
+        work_key=spec.work_key,
+        fold=spec.fold,
+        horizon_sessions=spec.horizon_sessions,
+        model=prediction.manifest.model,
+        model_version=prediction.manifest.model_version,
+        n_dates=daily.height,
+        n_computable_dates=computable.height,
+        n_eligible=totals["n_eligible"],
+        n_scorable=totals["n_scorable"],
+        n_predicted=totals["n_predicted"],
+        n_labeled=totals["n_labeled"],
+        n_evaluated=totals["n_evaluated"],
+        feature_coverage=_ratio(totals["n_scorable"], totals["n_eligible"]),
+        prediction_coverage=_ratio(totals["n_predicted"], totals["n_scorable"]),
+        label_coverage=_ratio(totals["n_labeled"], totals["n_eligible"]),
+        evaluation_coverage=_ratio(totals["n_evaluated"], totals["n_labeled"]),
+        pearson_ic_mean=_optional_mean(pearsons),
+        rank_ic_mean=_optional_mean(ranks),
+        pearson_icir=_optional_icir(pearsons),
+        rank_icir=_optional_icir(ranks),
+        status_counts=tuple((status, status_counter.get(status, 0)) for status in _IC_STATUSES),
+        daily_sha256=daily_sha256,
+    )
+
+
+def read_evaluation_metrics(path: Path) -> EvaluationMetricsV1:
+    raw = path.read_bytes()
+    payload = _strict_json_object(raw)
+    if set(payload) != {field.name for field in fields(EvaluationMetricsV1)}:
+        raise ValueError("evaluation metrics fields drift")
+    raw_counts = payload.get("status_counts")
+    if type(raw_counts) is not list or any(
+        type(item) is not list or len(item) != 2 for item in raw_counts
+    ):
+        raise ValueError("evaluation status_counts invalid")
+    payload["status_counts"] = tuple(
+        (cast(Any, item[0]), cast(Any, item[1])) for item in raw_counts
+    )
+    metrics = EvaluationMetricsV1(**cast(Any, payload))
+    if raw != _canonical_bytes(asdict(metrics)):
+        raise ValueError("evaluation metrics non-canonical")
+    return metrics
+
+
+def read_evaluation_manifest(path: Path) -> EvaluationManifestV1:
+    raw = path.read_bytes()
+    payload = _strict_json_object(raw)
+    if set(payload) != {field.name for field in fields(EvaluationManifestV1)}:
+        raise ValueError("evaluation manifest fields drift")
+    manifest = EvaluationManifestV1(**cast(Any, payload))
+    if raw != _canonical_bytes(asdict(manifest)):
+        raise ValueError("evaluation manifest non-canonical")
+    return manifest
+
+
+def _read_evaluation_daily(path: Path) -> pl.DataFrame:
+    frame = pl.read_parquet(path)
+    if frame.columns != list(_DAILY_SCHEMA) or frame.schema != _DAILY_SCHEMA:
+        raise ValueError("evaluation daily schema drift")
+    if frame.height == 0 or frame.get_column("as_of").to_list() != sorted(
+        frame.get_column("as_of").to_list()
+    ):
+        raise ValueError("evaluation daily date drift")
+    if frame.get_column("as_of").n_unique() != frame.height:
+        raise ValueError("evaluation daily duplicate dates")
+    if any(value not in _IC_STATUSES for value in frame.get_column("ic_status")):
+        raise ValueError("evaluation daily status drift")
+    return frame
+
+
+def _evaluation_receipt_inputs(
+    release: VerifiedDevelopmentExampleG1Release,
+    feature: VerifiedDevelopmentExampleFeatureArtifact,
+    prediction: VerifiedDevelopmentExamplePredictionArtifact,
+    label: VerifiedDevelopmentExampleLabelArtifact,
+    folds: VerifiedDevelopmentExampleFoldPlanArtifact,
+    experiment: VerifiedDevelopmentExampleExperimentIdentity,
+    upstream_paths: EvaluationUpstreamPaths,
+) -> tuple[Path, ...]:
+    return (
+        release.release.manifest_path,
+        feature.root / "feature_manifest.json",
+        upstream_paths.feature_receipt_path,
+        prediction.root / "prediction_manifest.json",
+        upstream_paths.prediction_receipt_path,
+        label.root / "label_manifest.json",
+        upstream_paths.label_receipt_path,
+        folds.root / "folds.json",
+        upstream_paths.fold_receipt_path,
+        experiment.root / "experiment_manifest.json",
+    )
+
+
+def _same_verified_prediction(
+    left: VerifiedDevelopmentExamplePredictionArtifact,
+    right: VerifiedDevelopmentExamplePredictionArtifact,
+) -> bool:
+    return (
+        left.release_kind == right.release_kind
+        and left.formal_gate_eligible == right.formal_gate_eligible
+        and left.example_id == right.example_id
+        and left.root == right.root
+        and left.predictions.equals(right.predictions)
+        and left.manifest == right.manifest
+        and left.manifest_sha256 == right.manifest_sha256
+        and left.prediction_receipt_sha256 == right.prediction_receipt_sha256
+    )
+
+
+def _digest_paths_equal(
+    digests: tuple[ArtifactDigest, ...],
+    paths: Sequence[Path],
+    roots: Mapping[str, Path],
+) -> bool:
+    if len(digests) != len(paths):
+        return False
+    actual = tuple(
+        sorted(
+            os.path.normcase(os.path.abspath(path_for_artifact_digest(item, artifact_roots=roots)))
+            for item in digests
+        )
+    )
+    expected = tuple(sorted(os.path.normcase(os.path.abspath(path)) for path in paths))
+    return actual == expected and len(set(actual)) == len(actual)
+
+
+def _validate_evaluation_identity(
+    release: VerifiedDevelopmentExampleG1Release,
+    feature: VerifiedDevelopmentExampleFeatureArtifact,
+    prediction: VerifiedDevelopmentExamplePredictionArtifact,
+    label: VerifiedDevelopmentExampleLabelArtifact,
+    folds: VerifiedDevelopmentExampleFoldPlanArtifact,
+    experiment: VerifiedDevelopmentExampleExperimentIdentity,
+    config: LoadedM3Config,
+    spec: EvaluationSpec,
+) -> None:
+    example_ids = {
+        release.manifest.example_id,
+        feature.example_id,
+        prediction.example_id,
+        label.example_id,
+        folds.example_id,
+        experiment.example_id,
+    }
+    if len(example_ids) != 1:
+        raise ValueError("evaluation development identity mismatch")
+    planned = next((item for item in folds.manifest.folds if item.name == spec.fold), None)
+    if (
+        planned is None
+        or build_evaluation_spec(prediction=prediction, config=config) != spec
+        or prediction.manifest.feature_manifest_sha256 != feature.manifest_sha256
+        or prediction.manifest.eligibility_sha256
+        != next(
+            item for item in feature.manifest.segments if item.name == "test"
+        ).eligible_keys_sha256
+        or prediction.manifest.experiment_key != experiment.manifest.experiment_key
+        or label.manifest.experiment_key != experiment.manifest.experiment_key
+        or label.manifest.horizon_sessions != spec.horizon_sessions
+        or feature.manifest.planned_fold_sha256 != planned.planned_fold_sha256
+        or config.scientific_config_sha256 != experiment.manifest.scientific_config_sha256
+    ):
+        raise ValueError("evaluation identity/config drift")
+
+
+def _eligible_test_keys(
+    release: VerifiedDevelopmentExampleG1Release,
+    dates: tuple[dt.date, ...],
+) -> pl.DataFrame:
+    path = dict(release.artifact_paths)["eligible_keys.parquet"]
+    frame = (
+        pl.read_parquet(path)
+        .select("as_of", "symbol")
+        .filter(pl.col("as_of").is_in(list(dates)))
+        .sort("as_of", "symbol")
+    )
+    return _validated_keys(frame, value_column=None, name="eligible")
+
+
+def _scorable_test_keys(
+    feature: VerifiedDevelopmentExampleFeatureArtifact,
+) -> pl.DataFrame:
+    names = feature.manifest.schema.selected_names
+    frame = (
+        _read_feature_segment(feature, "test")
+        .filter(_scorable_expression(names))
+        .select("as_of", "symbol")
+        .sort("as_of", "symbol")
+    )
+    return _validated_keys(frame, value_column=None, name="scorable")
+
+
+def _validated_keys(
+    frame: pl.DataFrame,
+    *,
+    value_column: str | None,
+    name: str,
+) -> pl.DataFrame:
+    expected = ["as_of", "symbol", *(() if value_column is None else (value_column,))]
+    if not isinstance(frame, pl.DataFrame) or frame.columns != expected:
+        raise ValueError(f"evaluation {name} schema drift")
+    if frame.schema["as_of"] != pl.Date or frame.schema["symbol"] != pl.Utf8:
+        raise ValueError(f"evaluation {name} dtype drift")
+    if value_column is not None and (
+        frame.schema[value_column] != pl.Float64
+        or not frame.get_column(value_column).is_finite().all()
+    ):
+        raise ValueError(f"evaluation {name} value invalid")
+    ordered = frame.sort("as_of", "symbol")
+    if ordered.select("as_of", "symbol").n_unique() != ordered.height:
+        raise ValueError(f"evaluation {name} duplicate keys")
+    return ordered
+
+
+def _key_set(frame: pl.DataFrame) -> set[tuple[dt.date, str]]:
+    return set(cast(list[tuple[dt.date, str]], frame.select("as_of", "symbol").rows()))
+
+
+def _day_count(frame: pl.DataFrame, day: dt.date) -> int:
+    return frame.filter(pl.col("as_of") == day).height
+
+
+def _ratio(numerator: int, denominator: int) -> float | None:
+    return float(numerator / denominator) if denominator else None
+
+
+def _optional_mean(values: list[float]) -> float | None:
+    return sum(values) / len(values) if values else None
+
+
+def _optional_icir(values: list[float]) -> float | None:
+    if len(values) < 2:
+        return None
+    mean = sum(values) / len(values)
+    variance = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+    if variance == 0.0:
+        return None
+    return mean / math.sqrt(variance)
+
+
+def _sha_dates(dates: tuple[dt.date, ...]) -> str:
+    return hashlib.sha256(_canonical_bytes([day.isoformat() for day in dates])).hexdigest()
+
+
+def _strict_json_object(raw: bytes) -> dict[str, object]:
+    def hook(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON key")
+            result[key] = value
+        return result
+
+    value = json.loads(
+        raw.decode("utf-8"),
+        object_pairs_hook=hook,
+        parse_constant=lambda _: (_ for _ in ()).throw(ValueError("non-finite JSON")),
+    )
+    if type(value) is not dict or raw != _canonical_bytes(value):
+        raise ValueError("non-canonical JSON")
+    return value
+
+
+def _canonical_bytes(value: object) -> bytes:
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+
+
+def _file_sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _require_empty_directory(path: Path) -> None:
+    if not path.is_dir() or path.is_symlink() or any(path.iterdir()):
+        raise ValueError("evaluation output must be an empty real directory")
+
+
+def _write_exclusive(path: Path, raw: bytes) -> None:
+    descriptor = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+        0o644,
+    )
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(raw)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _write_parquet(frame: pl.DataFrame, path: Path) -> None:
+    frame.write_parquet(
+        path,
+        compression="zstd",
+        compression_level=3,
+        statistics=True,
+        row_group_size=65536,
+        use_pyarrow=False,
+    )
