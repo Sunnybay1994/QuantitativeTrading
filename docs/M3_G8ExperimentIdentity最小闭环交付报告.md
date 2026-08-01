@@ -16,6 +16,8 @@ M3 Gate 或 Linux/ext4 Gate 已关闭。
   - 首选 Git commit 加受控 source/config/pyproject content identity；clean 与 dirty 均绑定实际源码树，
     `assume-unchanged` 或 ignored Python 文件不能隐藏内容变化；
   - Git metadata 不存在或 Git executable 不存在时才使用 canonical source/config tree fallback；
+  - POSIX 环境读取到 Windows 创建的 drive-letter worktree `.git` 指针时，显式使用同一 canonical
+    source/config tree fallback；其他 Git metadata 错误仍 fail closed；
   - 完整 dependency fingerprint 包含 Python/platform、`pyproject.toml` 和 15 个研究/回测 distribution，
     缺包稳定记录 `NOT_INSTALLED`；
   - source、Git、platform 和 dependency probe 连续测量两次，任一漂移 fail-closed；值对象可重算验证自身闭包。

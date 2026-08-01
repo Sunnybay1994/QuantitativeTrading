@@ -428,6 +428,8 @@ def _probe_git(root: Path, configs: tuple[PurePosixPath, ...]) -> _GitProbe:
         return _GitProbe(False, None, None, False)
     if stat.S_ISLNK(marker_state.st_mode) or _is_reparse(marker_state):
         raise M3RuntimeIdentityError("M3_RUNTIME_IDENTITY_GIT_INVALID")
+    if stat.S_ISREG(marker_state.st_mode) and _is_foreign_worktree_gitfile(marker):
+        return _GitProbe(False, None, None, False)
     try:
         commit_result = subprocess.run(
             ["git", "-C", str(root), "rev-parse", "--verify", "HEAD"],
@@ -474,6 +476,29 @@ def _probe_git(root: Path, configs: tuple[PurePosixPath, ...]) -> _GitProbe:
         hashlib.sha256(status).hexdigest(),
         bool(status),
     )
+
+
+def _is_foreign_worktree_gitfile(marker: Path) -> bool:
+    """Recognize a Windows worktree pointer that POSIX Git cannot resolve."""
+    if os.name == "nt":
+        return False
+    try:
+        before = os.lstat(marker)
+        payload = marker.read_bytes()
+        after = os.lstat(marker)
+        if (
+            _is_reparse(before)
+            or _is_reparse(after)
+            or not stat.S_ISREG(before.st_mode)
+            or not stat.S_ISREG(after.st_mode)
+            or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+            or len(payload) != before.st_size
+        ):
+            raise OSError
+    except OSError:
+        raise M3RuntimeIdentityError("M3_RUNTIME_IDENTITY_GIT_INVALID") from None
+    return bool(re.fullmatch(rb"gitdir: [A-Za-z]:[\\/][^\r\n]+\r?\n?", payload))
 
 
 def _platform_values() -> tuple[str, ...]:

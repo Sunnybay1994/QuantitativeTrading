@@ -197,3 +197,18 @@ def test_git_metadata_failure_does_not_silently_fallback(
     with pytest.raises(M3RuntimeIdentityError) as exc:
         compute_m3_runtime_identity(project_root=root)
     assert exc.value.code == "M3_RUNTIME_IDENTITY_GIT_INVALID"
+
+
+def test_foreign_windows_worktree_pointer_uses_content_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path)
+    _versions(monkeypatch)
+    (root / ".git").write_bytes(b"gitdir: F:/repo/.git/worktrees/fixture\r\n")
+    monkeypatch.setattr(identity_module.os, "name", "posix")
+
+    identity = compute_m3_runtime_identity(project_root=root)
+
+    assert identity.code_source == "source-tree-fallback"
+    assert identity.git_commit is None
+    assert identity.code_version == f"m3-source-v1-{identity.source_tree_sha256}"
