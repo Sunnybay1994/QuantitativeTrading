@@ -171,7 +171,7 @@ def simulate_a_share_scenario(
             open_states=open_states,
             pre_trade_equity=pre_trade_equity,
         )
-        period = _cost_period(date, cost_periods)
+        period = _scaled_cost_period(_cost_period(date, cost_periods), multiplier)
         sells = tuple(intent for intent in intents if intent.side.value == "SELL")
         buys = tuple(intent for intent in intents if intent.side.value == "BUY")
         sold = execute_sell_intents(
@@ -402,6 +402,21 @@ def _cost_period(
     if len(matches) != 1:
         raise ValueError("A-share cost period missing")
     return matches[0]
+
+
+def _scaled_cost_period(
+    period: AShareCostPeriod, multiplier: Decimal
+) -> AShareCostPeriod:
+    """Scale research frictions while preserving statutory taxes and fees."""
+    return AShareCostPeriod(
+        effective_from=period.effective_from,
+        effective_to=period.effective_to,
+        commission_rate=period.commission_rate * multiplier,
+        commission_min=period.commission_min * multiplier,
+        stamp_tax_sell=period.stamp_tax_sell,
+        transfer_fee=period.transfer_fee,
+        slippage=period.slippage * multiplier,
+    )
 
 
 def _complete_targets(frame: pl.DataFrame, positions: PositionBook) -> pl.DataFrame:

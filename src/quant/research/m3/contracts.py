@@ -1728,6 +1728,250 @@ class VerifiedTargetArtifact:
         _require_bare_hex64("target_receipt_sha256", self.target_receipt_sha256)
 
 
+ScenarioName = Literal["0p5x", "1p0x", "2p0x"]
+_SCENARIOS: tuple[ScenarioName, ...] = ("0p5x", "1p0x", "2p0x")
+
+
+@dataclass(frozen=True)
+class AShareScenarioMetricsV1:
+    schema_version: Literal["m3-a-share-scenario-metrics-v1"]
+    experiment_key: str
+    work_key: str
+    scenario: ScenarioName
+    multiplier: float
+    n_sessions: int
+    initial_cash: float
+    terminal_equity: float
+    portfolio_return: float
+    annualized_return: float
+    test_max_drawdown: float
+    benchmark_return: float
+    test_net_excess_return: float
+    relative_wealth: float
+    target_gross_turnover: float
+    target_one_way_turnover: float
+    realized_gross_turnover: float
+    test_turnover: float
+    commission_total: float
+    stamp_tax_total: float
+    transfer_fee_total: float
+    total_fees: float
+    slippage_cost_total: float
+    total_trading_cost: float
+    cash_rounding_delta_total: float
+    requested_order_count: int
+    rejection_count: int
+    rejection_rate: float | None
+    unfilled_notional: float
+    average_cash_ratio: float
+    corporate_action_posting_count: int
+    unexecutable_date_count: int
+    terminal_positions_market_value: float
+    terminal_pending_exit_value: float
+    terminal_estimated_exit_cost_1x: float
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "m3-a-share-scenario-metrics-v1":
+            raise ValueError("A-share scenario metrics schema invalid")
+        _require_bare_hex64("experiment_key", self.experiment_key)
+        _require_bare_hex64("work_key", self.work_key)
+        expected = {"0p5x": 0.5, "1p0x": 1.0, "2p0x": 2.0}
+        if self.scenario not in _SCENARIOS or self.multiplier != expected[self.scenario]:
+            raise ValueError("A-share scenario identity invalid")
+        if type(self.n_sessions) is not int or self.n_sessions <= 0:
+            raise ValueError("A-share scenario session count invalid")
+        for name in (
+            "requested_order_count", "rejection_count",
+            "corporate_action_posting_count", "unexecutable_date_count",
+        ):
+            if type(getattr(self, name)) is not int or getattr(self, name) < 0:
+                raise ValueError(f"A-share scenario {name} invalid")
+        float_names = tuple(
+            name for name in self.__dataclass_fields__
+            if name not in {
+                "schema_version", "experiment_key", "work_key", "scenario",
+                "n_sessions", "requested_order_count", "rejection_count",
+                "corporate_action_posting_count", "unexecutable_date_count",
+                "rejection_rate",
+            }
+        )
+        if any(
+            type(getattr(self, name)) is not float
+            or not math.isfinite(getattr(self, name))
+            for name in float_names
+        ):
+            raise ValueError("A-share scenario metric must be finite float")
+        if self.rejection_rate is not None and (
+            type(self.rejection_rate) is not float
+            or not math.isfinite(self.rejection_rate)
+            or not 0.0 <= self.rejection_rate <= 1.0
+        ):
+            raise ValueError("A-share scenario rejection rate invalid")
+        nonnegative = (
+            "initial_cash", "terminal_equity", "target_gross_turnover",
+            "target_one_way_turnover", "realized_gross_turnover", "test_turnover",
+            "commission_total", "stamp_tax_total", "transfer_fee_total",
+            "total_fees", "slippage_cost_total", "total_trading_cost",
+            "unfilled_notional", "average_cash_ratio",
+            "terminal_positions_market_value", "terminal_pending_exit_value",
+            "terminal_estimated_exit_cost_1x",
+        )
+        if self.initial_cash <= 0.0 or any(getattr(self, name) < 0.0 for name in nonnegative):
+            raise ValueError("A-share scenario nonnegative metric invalid")
+        if self.rejection_count > self.requested_order_count:
+            raise ValueError("A-share scenario rejection conservation invalid")
+
+
+@dataclass(frozen=True)
+class BacktestMetricsV1:
+    schema_version: Literal["m3-a-share-backtest-metrics-v1"]
+    experiment_key: str
+    work_key: str
+    scenarios: tuple[AShareScenarioMetricsV1, ...]
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "m3-a-share-backtest-metrics-v1":
+            raise ValueError("A-share backtest metrics schema invalid")
+        _require_bare_hex64("experiment_key", self.experiment_key)
+        _require_bare_hex64("work_key", self.work_key)
+        if (
+            type(self.scenarios) is not tuple
+            or tuple(item.scenario for item in self.scenarios) != _SCENARIOS
+            or any(type(item) is not AShareScenarioMetricsV1 for item in self.scenarios)
+            or any(
+                item.experiment_key != self.experiment_key or item.work_key != self.work_key
+                for item in self.scenarios
+            )
+        ):
+            raise ValueError("A-share backtest scenario closure invalid")
+
+
+@dataclass(frozen=True)
+class BacktestArtifactEntryV1:
+    path: str
+    sha256: str
+    size_bytes: int
+    row_count: int | None
+    schema_name: str
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.path) is not str or not self.path or "\\" in self.path
+            or self.path.startswith("/") or ".." in Path(self.path).parts
+        ):
+            raise ValueError("backtest artifact path invalid")
+        _require_bare_hex64("sha256", self.sha256)
+        if type(self.size_bytes) is not int or self.size_bytes < 0:
+            raise ValueError("backtest artifact size invalid")
+        if self.row_count is not None and (
+            type(self.row_count) is not int or self.row_count < 0
+        ):
+            raise ValueError("backtest artifact row count invalid")
+        if type(self.schema_name) is not str or not self.schema_name:
+            raise ValueError("backtest artifact schema name invalid")
+
+
+@dataclass(frozen=True)
+class BacktestScenarioManifestV1:
+    schema_version: Literal["m3-a-share-scenario-v1"]
+    experiment_key: str
+    experiment_manifest_sha256: str
+    work_key: str
+    scientific_config_sha256: str
+    target_manifest_sha256: str
+    backtest_plan_manifest_sha256: str
+    g1_release_id: str
+    g1_release_manifest_sha256: str
+    fold: str
+    horizon_sessions: int
+    scenario: ScenarioName
+    multiplier: float
+    cost_periods_sha256: str
+    order_quantity_rule_version: str
+    input_market_facts_sha256: str
+    output_files: tuple[BacktestArtifactEntryV1, ...]
+    metrics_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "m3-a-share-scenario-v1":
+            raise ValueError("backtest scenario manifest schema invalid")
+        for name in (
+            "experiment_key", "experiment_manifest_sha256", "work_key",
+            "scientific_config_sha256", "target_manifest_sha256",
+            "backtest_plan_manifest_sha256", "g1_release_id",
+            "g1_release_manifest_sha256", "cost_periods_sha256",
+            "input_market_facts_sha256", "metrics_sha256",
+        ):
+            _require_bare_hex64(name, getattr(self, name))
+        expected = {"0p5x": 0.5, "1p0x": 1.0, "2p0x": 2.0}
+        if (
+            self.scenario not in _SCENARIOS or self.multiplier != expected[self.scenario]
+            or type(self.fold) is not str or not self.fold
+            or type(self.horizon_sessions) is not int or self.horizon_sessions not in {5, 10}
+            or self.order_quantity_rule_version != "sse_szse_limit_order_quantity_v1"
+            or type(self.output_files) is not tuple or len(self.output_files) != 8
+            or any(type(item) is not BacktestArtifactEntryV1 for item in self.output_files)
+            or tuple(item.path for item in self.output_files)
+            != tuple(sorted(item.path for item in self.output_files))
+        ):
+            raise ValueError("backtest scenario manifest invalid")
+
+
+@dataclass(frozen=True)
+class BacktestBundleManifestV1:
+    schema_version: Literal["m3-a-share-backtest-bundle-v1"]
+    experiment_key: str
+    experiment_manifest_sha256: str
+    work_key: str
+    scientific_config_sha256: str
+    target_manifest_sha256: str
+    backtest_plan_manifest_sha256: str
+    g1_release_id: str
+    g1_release_manifest_sha256: str
+    order_quantity_rule_version: str
+    scenario_manifest_sha256s: tuple[tuple[str, str], ...]
+    common_target_manifest_sha256: str
+    common_market_facts_sha256: str
+    backtest_metrics_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "m3-a-share-backtest-bundle-v1":
+            raise ValueError("backtest bundle manifest schema invalid")
+        for name in (
+            "experiment_key", "experiment_manifest_sha256", "work_key",
+            "scientific_config_sha256", "target_manifest_sha256",
+            "backtest_plan_manifest_sha256", "g1_release_id",
+            "g1_release_manifest_sha256", "common_target_manifest_sha256",
+            "common_market_facts_sha256", "backtest_metrics_sha256",
+        ):
+            _require_bare_hex64(name, getattr(self, name))
+        if (
+            self.order_quantity_rule_version != "sse_szse_limit_order_quantity_v1"
+            or type(self.scenario_manifest_sha256s) is not tuple
+            or tuple(name for name, _ in self.scenario_manifest_sha256s) != _SCENARIOS
+        ):
+            raise ValueError("backtest bundle manifest invalid")
+        for _, digest in self.scenario_manifest_sha256s:
+            _require_bare_hex64("scenario_manifest_sha256", digest)
+
+
+@dataclass(frozen=True)
+class VerifiedBacktestArtifact:
+    root: Path
+    metrics: BacktestMetricsV1
+    manifest: BacktestBundleManifestV1
+    manifest_sha256: str
+    backtest_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.root, Path) or type(self.metrics) is not BacktestMetricsV1:
+            raise ValueError("verified backtest artifact invalid")
+        if type(self.manifest) is not BacktestBundleManifestV1:
+            raise ValueError("verified backtest manifest invalid")
+        _require_bare_hex64("manifest_sha256", self.manifest_sha256)
+        _require_bare_hex64("backtest_receipt_sha256", self.backtest_receipt_sha256)
+
+
 IcStatus = Literal[
     "NO_ELIGIBLE",
     "NO_LABELS",

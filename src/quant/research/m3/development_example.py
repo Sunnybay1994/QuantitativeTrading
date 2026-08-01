@@ -44,6 +44,8 @@ from quant.domain.schemas import (
 )
 from quant.research.m3.contracts import (
     AlignmentManifestV1,
+    BacktestBundleManifestV1,
+    BacktestMetricsV1,
     BacktestPlanManifestV1,
     EvaluationManifestV1,
     EvaluationMetricsV1,
@@ -667,6 +669,33 @@ class VerifiedDevelopmentExampleBacktestPlanArtifact:
             raise ValueError("verified development backtest plan artifact invalid")
         _require_hex64(self.manifest_sha256)
         _require_hex64(self.plan_receipt_sha256)
+        root = self.root.resolve(strict=True)
+        _require_development_root_name(root)
+        object.__setattr__(self, "root", root)
+
+
+@dataclass(frozen=True)
+class VerifiedDevelopmentExampleBacktestArtifact:
+    release_kind: Literal["development_example"]
+    formal_gate_eligible: Literal[False]
+    example_id: str
+    root: Path
+    metrics: BacktestMetricsV1
+    manifest: BacktestBundleManifestV1
+    manifest_sha256: str
+    backtest_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.release_kind != _KIND or self.formal_gate_eligible is not False:
+            raise ValueError("verified development backtest kind invalid")
+        _require_example_id(self.example_id)
+        if (
+            type(self.metrics) is not BacktestMetricsV1
+            or type(self.manifest) is not BacktestBundleManifestV1
+        ):
+            raise ValueError("verified development backtest artifact invalid")
+        _require_hex64(self.manifest_sha256)
+        _require_hex64(self.backtest_receipt_sha256)
         root = self.root.resolve(strict=True)
         _require_development_root_name(root)
         object.__setattr__(self, "root", root)

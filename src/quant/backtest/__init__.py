@@ -57,6 +57,13 @@ from quant.backtest.a_share_simulator import (
     AShareSimulationResult,
     simulate_a_share_scenario,
 )
+from quant.backtest.a_share_reporting import (
+    BacktestArtifactUpstreamPaths,
+    build_development_example_backtest_artifact,
+    read_backtest_bundle_manifest,
+    read_backtest_scenario_manifest,
+    verify_development_example_backtest_artifact,
+)
 
 __all__ = [
     "AccountPosition",
@@ -69,6 +76,7 @@ __all__ = [
     "BacktestPlanManifestV1",
     "BacktestPlanUpstreamPaths",
     "BacktestWindow",
+    "BacktestArtifactUpstreamPaths",
     "BuyAllocation",
     "ConnectRuleConfig",
     "ConnectRuleInputError",
@@ -86,6 +94,7 @@ __all__ = [
     "build_a_share_market_facts",
     "build_connect_rule_config",
     "build_development_example_backtest_plan_artifact",
+    "build_development_example_backtest_artifact",
     "build_open_execution_states",
     "build_target_order_intents",
     "capture_record_close_entitlements",
@@ -97,6 +106,8 @@ __all__ = [
     "largest_valid_buy_quantity",
     "largest_valid_sell_quantity",
     "read_backtest_plan_manifest",
+    "read_backtest_bundle_manifest",
+    "read_backtest_scenario_manifest",
     "recognize_ex_date_entitlements",
     "resolve_a_share_order_quantity_rule",
     "schedule_next_trading_day",
@@ -104,4 +115,5 @@ __all__ = [
     "simulate_a_share_scenario",
     "settle_due_entitlements",
     "verify_development_example_backtest_plan_artifact",
+    "verify_development_example_backtest_artifact",
 ]
