@@ -40,6 +40,22 @@ class CorporateActionType(str, Enum):
     RIGHTS = "RIGHTS"            # 配股/供股
 
 
+class EntitlementLegState(str, Enum):
+    ABSENT = "ABSENT"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+    CAPTURED = "CAPTURED"
+    RECOGNIZED = "RECOGNIZED"
+    SETTLED = "SETTLED"
+
+
+class EntitlementPostingType(str, Enum):
+    CAPTURE = "CAPTURE"
+    CASH_RECOGNIZE = "CASH_RECOGNIZE"
+    STOCK_RECOGNIZE = "STOCK_RECOGNIZE"
+    CASH_SETTLE = "CASH_SETTLE"
+    STOCK_SETTLE = "STOCK_SETTLE"
+
+
 class OrderSide(str, Enum):
     BUY = "BUY"
     SELL = "SELL"

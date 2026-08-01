@@ -16,6 +16,15 @@ from quant.backtest.a_share_plan import (
     verify_development_example_backtest_plan_artifact,
 )
 from quant.backtest.costs import AShareCostModel, EtfCostModel
+from quant.backtest.corporate_actions import (
+    EntitlementPosition,
+    EntitlementPosting,
+    EntitlementTransition,
+    capture_record_close_entitlements,
+    mark_full_day_event_from_factor,
+    recognize_ex_date_entitlements,
+    settle_due_entitlements,
+)
 from quant.backtest.connect_execution import (
     ConnectRuleConfig,
     ConnectRuleInputError,
@@ -35,13 +44,20 @@ __all__ = [
     "ConnectRuleInputError",
     "DailyMarketState",
     "EtfCostModel",
+    "EntitlementPosition",
+    "EntitlementPosting",
+    "EntitlementTransition",
     "SimulationResult",
     "build_connect_rule_config",
     "build_development_example_backtest_plan_artifact",
+    "capture_record_close_entitlements",
     "evaluate_connect_intent",
     "execution_reject_reason",
+    "mark_full_day_event_from_factor",
     "read_backtest_plan_manifest",
+    "recognize_ex_date_entitlements",
     "schedule_next_trading_day",
     "simulate_etf_targets",
+    "settle_due_entitlements",
     "verify_development_example_backtest_plan_artifact",
 ]
