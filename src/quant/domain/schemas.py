@@ -1149,6 +1149,67 @@ class TargetWeightSchema(pa.DataFrameModel):
         )
 
 
+class OpenExecutionStateSchema(pa.DataFrameModel):
+    """A-share opening facts projected without future intraday information."""
+
+    date: pl.Date
+    symbol: str = pa.Field(str_matches=r"^\d{6}\.(SH|SZ)$")
+    open: float = pa.Field(gt=0, nullable=True)
+    has_open: bool
+    full_day_suspended: bool
+    partial_open_status: str = pa.Field(
+        isin=[
+            "NOT_APPLICABLE",
+            "SUSPENDED_AT_OPEN",
+            "PROVEN_OPEN_TRADABLE",
+            "OPEN_UNKNOWN",
+        ]
+    )
+    has_price_limit: bool
+    up_limit: float = pa.Field(gt=0, nullable=True)
+    down_limit: float = pa.Field(gt=0, nullable=True)
+    buy_allowed: bool
+    sell_allowed: bool
+    reason: str = pa.Field(
+        nullable=True,
+        isin=["SUSPENDED", "OPEN_UNKNOWN", "MISSING_OPEN"],
+    )
+
+    class Config:
+        strict = True
+        coerce = True
+
+    @pa.dataframe_check
+    def state_fields_consistent(  # type: ignore[misc]
+        cls, data: pa.PolarsData
+    ) -> pl.LazyFrame:
+        frame = data.lazyframe
+        open_consistent = pl.col("has_open") == pl.col("open").is_not_null()
+        limits_consistent = pl.when(pl.col("has_price_limit")).then(
+            pl.col("up_limit").is_not_null()
+            & pl.col("down_limit").is_not_null()
+            & (pl.col("down_limit") < pl.col("up_limit"))
+        ).otherwise(
+            pl.col("up_limit").is_null() & pl.col("down_limit").is_null()
+        )
+        blocked_consistent = pl.when(pl.col("reason").is_not_null()).then(
+            ~pl.col("buy_allowed") & ~pl.col("sell_allowed")
+        ).otherwise(pl.lit(True))
+        full_day_consistent = pl.when(pl.col("full_day_suspended")).then(
+            (pl.col("partial_open_status") == "NOT_APPLICABLE")
+            & (pl.col("reason") == "SUSPENDED")
+        ).otherwise(pl.lit(True))
+        return frame.select(
+            (
+                open_consistent
+                & limits_consistent
+                & blocked_consistent
+                & full_day_consistent
+                & _unique_expr(["date", "symbol"])
+            ).all()
+        )
+
+
 class BacktestNavSchema(pa.DataFrameModel):
     """日频回测账户净值。"""
 

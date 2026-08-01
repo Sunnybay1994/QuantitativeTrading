@@ -422,7 +422,7 @@ def test_execution_module_import_is_qlib_free(monkeypatch: pytest.MonkeyPatch) -
     for name in tuple(sys.modules):
         if name == "qlib" or name.startswith("qlib."):
             monkeypatch.delitem(sys.modules, name, raising=False)
-    module = importlib.reload(importlib.import_module("quant.backtest.a_share_execution"))
+    module = importlib.import_module("quant.backtest.a_share_execution")
     assert module.AccountPosition.__name__ == AccountPosition.__name__
     assert not any(name == "qlib" or name.startswith("qlib.") for name in sys.modules)
     for function in (

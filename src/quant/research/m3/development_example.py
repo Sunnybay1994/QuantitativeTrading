@@ -14,7 +14,7 @@ import math
 import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Literal, Mapping, cast
+from typing import TYPE_CHECKING, Any, Literal, Mapping, cast
 
 import polars as pl
 
@@ -68,6 +68,9 @@ from quant.research.m3.config import (
     _validate_and_normalize,
 )
 from quant.research.m3.run_state import ArtifactDigest
+
+if TYPE_CHECKING:
+    from quant.backtest.a_share_execution import AShareMarketFactsIdentityV1
 
 _KIND: Literal["development_example"] = "development_example"
 _FIXTURE_VERSION = "m3-a-share-development-example-v2"
@@ -601,6 +604,45 @@ class VerifiedDevelopmentExampleTargetArtifact:
         root = self.root.resolve(strict=True)
         _require_development_root_name(root)
         object.__setattr__(self, "root", root)
+
+
+@dataclass(frozen=True)
+class VerifiedDevelopmentExampleAShareMarketFacts:
+    """Read-only G1 market facts carrying an unmistakable development identity."""
+
+    release_kind: Literal["development_example"]
+    formal_gate_eligible: Literal[False]
+    example_id: str
+    identity: AShareMarketFactsIdentityV1
+    instruments: pl.DataFrame
+    calendar: pl.DataFrame
+    bars: pl.DataFrame
+    limits: pl.DataFrame
+    suspensions: pl.DataFrame
+    corporate_actions: pl.DataFrame
+    corporate_action_reconciliation: pl.DataFrame
+    benchmark_bars: pl.DataFrame
+
+    def __post_init__(self) -> None:
+        from quant.backtest.a_share_execution import AShareMarketFactsIdentityV1
+
+        if self.release_kind != _KIND or self.formal_gate_eligible is not False:
+            raise ValueError("verified development market facts kind invalid")
+        _require_example_id(self.example_id)
+        frames = (
+            self.instruments,
+            self.calendar,
+            self.bars,
+            self.limits,
+            self.suspensions,
+            self.corporate_actions,
+            self.corporate_action_reconciliation,
+            self.benchmark_bars,
+        )
+        if type(self.identity) is not AShareMarketFactsIdentityV1 or any(
+            not isinstance(frame, pl.DataFrame) for frame in frames
+        ):
+            raise ValueError("verified development market facts invalid")
 
 
 @dataclass(frozen=True)
