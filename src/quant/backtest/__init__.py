@@ -53,12 +53,17 @@ from quant.backtest.connect_execution import (
 )
 from quant.backtest.rules import DailyMarketState, execution_reject_reason
 from quant.backtest.simulator import SimulationResult, simulate_etf_targets
+from quant.backtest.a_share_simulator import (
+    AShareSimulationResult,
+    simulate_a_share_scenario,
+)
 
 __all__ = [
     "AccountPosition",
     "AShareFeeComponents",
     "AShareMarketFactsIdentityV1",
     "AShareOrderQuantityRule",
+    "AShareSimulationResult",
     "AShareCostModel",
     "AShareCostPeriod",
     "BacktestPlanManifestV1",
@@ -96,6 +101,7 @@ __all__ = [
     "resolve_a_share_order_quantity_rule",
     "schedule_next_trading_day",
     "simulate_etf_targets",
+    "simulate_a_share_scenario",
     "settle_due_entitlements",
     "verify_development_example_backtest_plan_artifact",
 ]

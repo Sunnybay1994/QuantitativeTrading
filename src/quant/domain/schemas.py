@@ -12,6 +12,13 @@
 import pandera.polars as pa
 import polars as pl
 
+from quant.domain.enums import (
+    EntitlementLegState,
+    EntitlementPostingType,
+    ExecutionRejectReason,
+    OrderSide,
+)
+
 SYMBOL_PATTERN = r"^\d{5,6}\.(SH|SZ|HK)$"
 # Price-index-compatible tradeable codes plus CSI300 total-return index.
 BENCHMARK_PATTERN = rf"^({SYMBOL_PATTERN[1:-1]}|H00300\.CSI)$"
@@ -1208,6 +1215,185 @@ class OpenExecutionStateSchema(pa.DataFrameModel):
                 & _unique_expr(["date", "symbol"])
             ).all()
         )
+
+
+class AShareSimulationNavSchema(pa.DataFrameModel):
+    date: pl.Date = pa.Field(unique=True)
+    pre_trade_equity: float = pa.Field(ge=0)
+    cash: float = pa.Field(ge=0)
+    market_value: float = pa.Field(ge=0)
+    cash_receivable: float = pa.Field(ge=0)
+    stock_receivable_value: float = pa.Field(ge=0)
+    equity: float = pa.Field(ge=0)
+    unit_nav: float = pa.Field(ge=0)
+    daily_return: float
+    cumulative_commission: float = pa.Field(ge=0)
+    cumulative_stamp_tax: float = pa.Field(ge=0)
+    cumulative_transfer_fee: float = pa.Field(ge=0)
+    cumulative_slippage_cost: float = pa.Field(ge=0)
+
+    class Config:
+        strict = True
+        coerce = False
+
+    @pa.dataframe_check
+    def finite_and_balanced(cls, data: pa.PolarsData) -> pl.LazyFrame:  # type: ignore[misc]
+        numeric = [name for name in cls.to_schema().columns if name != "date"]
+        return data.lazyframe.select(
+            pl.all_horizontal(*(pl.col(name).is_finite() for name in numeric)).all()
+            & (
+                pl.col("equity")
+                == pl.col("cash")
+                + pl.col("market_value")
+                + pl.col("cash_receivable")
+                + pl.col("stock_receivable_value")
+            ).all()
+        )
+
+
+class AShareSimulationTradeSchema(pa.DataFrameModel):
+    date: pl.Date
+    symbol: str = pa.Field(str_matches=r"^\d{6}\.(SH|SZ)$")
+    side: str = pa.Field(isin=[item.value for item in OrderSide])
+    quantity: int = pa.Field(gt=0)
+    reference_open: float = pa.Field(gt=0)
+    execution_price: float = pa.Field(gt=0)
+    notional: float = pa.Field(gt=0)
+    commission: float = pa.Field(ge=0)
+    stamp_tax: float = pa.Field(ge=0)
+    transfer_fee: float = pa.Field(ge=0)
+    total_fee: float = pa.Field(ge=0)
+    slippage_cost: float = pa.Field(ge=0)
+
+    class Config:
+        strict = True
+        coerce = False
+
+    @pa.dataframe_check
+    def unique_and_balanced(cls, data: pa.PolarsData) -> pl.LazyFrame:  # type: ignore[misc]
+        return data.lazyframe.select(
+            _unique_expr(["date", "symbol", "side"])
+            & (pl.col("notional") == pl.col("quantity") * pl.col("execution_price")).all()
+            & (
+                pl.col("total_fee")
+                == pl.col("commission") + pl.col("stamp_tax") + pl.col("transfer_fee")
+            ).all()
+        )
+
+
+class AShareSimulationPositionSchema(pa.DataFrameModel):
+    date: pl.Date
+    symbol: str = pa.Field(str_matches=r"^\d{6}\.(SH|SZ)$")
+    quantity: int = pa.Field(gt=0)
+    sellable_quantity: int = pa.Field(ge=0)
+    unsettled_quantity: int = pa.Field(ge=0)
+    mark_price: float = pa.Field(gt=0)
+    market_value: float = pa.Field(gt=0)
+    target_weight: float = pa.Field(ge=0, le=1)
+    target_quantity: int = pa.Field(nullable=True, ge=0)
+    pending_exit: bool
+
+    class Config:
+        strict = True
+        coerce = False
+
+    @pa.dataframe_check
+    def unique_and_balanced(cls, data: pa.PolarsData) -> pl.LazyFrame:  # type: ignore[misc]
+        return data.lazyframe.select(
+            _unique_expr(["date", "symbol"])
+            & (
+                pl.col("quantity")
+                == pl.col("sellable_quantity") + pl.col("unsettled_quantity")
+            ).all()
+            & (
+                pl.col("market_value") == pl.col("quantity") * pl.col("mark_price")
+            ).all()
+        )
+
+
+class AShareSimulationRejectionSchema(pa.DataFrameModel):
+    date: pl.Date
+    symbol: str = pa.Field(str_matches=r"^\d{6}\.(SH|SZ)$")
+    side: str = pa.Field(isin=[item.value for item in OrderSide])
+    reason: str = pa.Field(isin=[item.value for item in ExecutionRejectReason])
+    requested_quantity: int = pa.Field(nullable=True, ge=0)
+    filled_quantity: int = pa.Field(ge=0)
+    rejected_quantity: int = pa.Field(nullable=True, ge=0)
+    rejected_notional: float = pa.Field(ge=0)
+
+    class Config:
+        strict = True
+        coerce = False
+
+    @pa.dataframe_check
+    def key_unique(cls, data: pa.PolarsData) -> pl.LazyFrame:  # type: ignore[misc]
+        return data.lazyframe.select(
+            _unique_expr(["date", "symbol", "side", "reason"])
+        )
+
+
+class AShareCorporateActionPostingSchema(pa.DataFrameModel):
+    date: pl.Date
+    event_id: str
+    symbol: str = pa.Field(str_matches=r"^\d{6}\.(SH|SZ)$")
+    posting_type: str = pa.Field(isin=[item.value for item in EntitlementPostingType])
+    cash_amount: float
+    stock_quantity: int = pa.Field(ge=0)
+    cash_rounding_delta: float
+    cash_state_before: str = pa.Field(isin=[item.value for item in EntitlementLegState])
+    cash_state_after: str = pa.Field(isin=[item.value for item in EntitlementLegState])
+    stock_state_before: str = pa.Field(isin=[item.value for item in EntitlementLegState])
+    stock_state_after: str = pa.Field(isin=[item.value for item in EntitlementLegState])
+
+    class Config:
+        strict = True
+        coerce = False
+
+    @pa.dataframe_check
+    def key_unique(cls, data: pa.PolarsData) -> pl.LazyFrame:  # type: ignore[misc]
+        return data.lazyframe.select(
+            _unique_expr(["date", "event_id", "posting_type"])
+        )
+
+
+class AShareDailyDiagnosticsSchema(pa.DataFrameModel):
+    date: pl.Date = pa.Field(unique=True)
+    n_target_symbols: int = pa.Field(ge=0)
+    n_position_symbols: int = pa.Field(ge=0)
+    n_order_intents: int = pa.Field(ge=0)
+    n_trades: int = pa.Field(ge=0)
+    n_rejections: int = pa.Field(ge=0)
+    pre_trade_equity: float = pa.Field(gt=0)
+    gross_turnover: float = pa.Field(ge=0)
+    one_way_turnover: float = pa.Field(ge=0)
+    buy_allocation_lambda: float = pa.Field(nullable=True, ge=0, le=1)
+    cash_after: float = pa.Field(ge=0)
+
+    class Config:
+        strict = True
+        coerce = False
+
+
+class AShareEntitlementSnapshotSchema(pa.DataFrameModel):
+    date: pl.Date
+    event_id: str
+    symbol: str = pa.Field(str_matches=r"^\d{6}\.(SH|SZ)$")
+    record_quantity: int = pa.Field(gt=0)
+    cash_entitlement_gross: float = pa.Field(ge=0)
+    stock_entitlement: int = pa.Field(ge=0)
+    cash_state: str = pa.Field(isin=[item.value for item in EntitlementLegState])
+    stock_state: str = pa.Field(isin=[item.value for item in EntitlementLegState])
+    cash_receivable: float = pa.Field(ge=0)
+    stock_receivable: int = pa.Field(ge=0)
+    stock_receivable_value: float = pa.Field(ge=0)
+
+    class Config:
+        strict = True
+        coerce = False
+
+    @pa.dataframe_check
+    def key_unique(cls, data: pa.PolarsData) -> pl.LazyFrame:  # type: ignore[misc]
+        return data.lazyframe.select(_unique_expr(["date", "event_id"]))
 
 
 class BacktestNavSchema(pa.DataFrameModel):
