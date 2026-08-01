@@ -100,8 +100,8 @@ env PYTHONPATH=src /home/mabw/miniforge3/bin/conda run --no-capture-output -n py
   --g1-release-root "/mnt/f/AI_Coding/QuantitativeTrading/data/clean/m3_g1/releases/$release_id" \
   --snapshot-artifact-root "$g2a" \
   --snapshot-root "$g2a/snapshot-temp" \
-  --snapshot-request-path "$g2a/snapshot-requests/$snapshot_key.json" \
-  --snapshot-receipt-path "$g2a/receipts/snapshot/$snapshot_key.json" \
+  --snapshot-request-path "$g2a/snapshot-request.json" \
+  --snapshot-receipt-path "$g2a/snapshot-receipt.json" \
   --provider-artifact-root "$g2b" \
   --provider-root "$g2b/provider-temp" \
   --provider-receipt-path "$g2b/receipts/provider/$provider_key.json" \
@@ -112,6 +112,14 @@ env PYTHONPATH=src /home/mabw/miniforge3/bin/conda run --no-capture-output -n py
   --external-qlib-root /mnt/f/AI_Coding/QuantitativeTrading/data/external/qlib/v0.9.7 \
   --stage-root "$g8"
 ```
+
+> 2026-08-02 执行更正：G2A 的兼容映射文件与根路径文件字节相同，但
+> `snapshot` receipt 的输出路径闭包绑定的是 `snapshot-request.json` 与
+> `snapshot-receipt.json`。首次正式运行误传 `snapshot-requests/<key>.json` 与
+> `receipts/snapshot/<key>.json`，在 fresh G1 校验后按设计以
+> `SNAPSHOT_IDENTITY_MISMATCH` fail-closed，未发布任何 G8 artifact。上述命令已改为
+> receipt 真实绑定的根路径；兼容映射仍供 G2B 输入闭包使用，不得与 G2A
+> 自身的输出路径身份混用。
 
 ## 5. 剩余风险
 
