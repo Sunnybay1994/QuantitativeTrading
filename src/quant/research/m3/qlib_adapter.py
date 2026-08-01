@@ -23,6 +23,15 @@ _REQUEST_KEYS = {
     "provider_key", "snapshot_id", "qlib_version", "provider_uri",
     "provider_uri_sha256", "fields", "selected_rows", "selected_gap_rows",
 }
+_LABEL_REQUEST_KEYS = {
+    "schema_version", "worker_protocol_version", "reconciliation_key",
+    "experiment_key", "provider_validation_receipt_sha256",
+    "label_manifest_sha256", "label_reconciliation_config_sha256",
+    "dependency_fingerprint_sha256", "code_version", "snapshot_id",
+    "provider_key", "qlib_version",
+    "provider_uri", "provider_uri_sha256", "horizon_sessions",
+    "qlib_expression", "label_rows", "row_key_sha256",
+}
 _RAW_SCHEMA = {
     "sample_kind": pl.Utf8,
     "symbol": pl.Utf8,
@@ -30,6 +39,17 @@ _RAW_SCHEMA = {
     "field": pl.Utf8,
     "api_row_present": pl.Boolean,
     "actual": pl.Float64,
+}
+_LABEL_RAW_SCHEMA = {
+    "as_of": pl.Date,
+    "symbol": pl.Utf8,
+    "benchmark": pl.Utf8,
+    "horizon_sessions": pl.Int64,
+    "label_version": pl.Utf8,
+    "return_start_date": pl.Date,
+    "return_end_date": pl.Date,
+    "qlib_expression_raw": pl.Float64,
+    "provider_direct_raw": pl.Float64,
 }
 
 
@@ -71,6 +91,14 @@ def _hash(value: object) -> str:
     return hashlib.sha256(_canonical_bytes(value)).hexdigest()
 
 
+def _is_bare_hex64(value: object) -> bool:
+    return (
+        type(value) is str
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
 def _parse_rows(value: object) -> tuple[tuple[str, dt.date], ...]:
     if type(value) is not list:
         raise ValueError("probe rows invalid")
@@ -83,6 +111,38 @@ def _parse_rows(value: object) -> tuple[tuple[str, dt.date], ...]:
     result = tuple(rows)
     if result != tuple(sorted(set(result))):
         raise ValueError("probe rows must be unique and sorted")
+    return result
+
+
+def _parse_label_rows(
+    value: object,
+) -> tuple[tuple[dt.date, str, str, int, str, dt.date, dt.date], ...]:
+    if type(value) is not list:
+        raise ValueError("label rows invalid")
+    rows: list[tuple[dt.date, str, str, int, str, dt.date, dt.date]] = []
+    for item in value:
+        if type(item) is not list or len(item) != 7:
+            raise ValueError("label row invalid")
+        as_of_text, symbol, benchmark, horizon, version, start_text, end_text = item
+        if (
+            any(type(part) is not str for part in (
+                as_of_text, symbol, benchmark, version, start_text, end_text
+            ))
+            or type(horizon) is not int
+            or horizon not in {5, 10}
+            or benchmark != "510300.SH"
+        ):
+            raise ValueError("label row invalid")
+        rows.append((
+            dt.date.fromisoformat(cast(str, as_of_text)), cast(str, symbol),
+            cast(str, benchmark), cast(int, horizon), cast(str, version),
+            dt.date.fromisoformat(cast(str, start_text)),
+            dt.date.fromisoformat(cast(str, end_text)),
+        ))
+    result = tuple(rows)
+    keys = tuple(row[:5] for row in result)
+    if keys != tuple(sorted(set(keys))) or any(row[6] < row[5] for row in result):
+        raise ValueError("label rows must be unique and sorted")
     return result
 
 
@@ -126,6 +186,8 @@ def _json_rows(rows: list[dict[str, object]]) -> tuple[dict[str, object], ...]:
         for key, value in row.items():
             if type(value) is dt.date:
                 clean[key] = value.isoformat()
+            elif type(value) is float and value == 0.0:
+                clean[key] = 0.0
             elif isinstance(value, float) and math.isnan(value):
                 clean[key] = {"__float__": "nan"}
             elif value == math.inf:
@@ -230,6 +292,146 @@ def validate_provider(request_path: Path, response_path: Path, details_path: Pat
     response_path.write_bytes(_canonical_bytes(response))
 
 
+def reconcile_labels(
+    request_path: Path, response_path: Path, details_path: Path
+) -> None:
+    """Read Qlib expression/direct prices; leave all comparisons to parent."""
+    request = _strict_json(request_path.read_bytes())
+    if set(request) != _LABEL_REQUEST_KEYS:
+        raise ValueError("label worker request schema invalid")
+    horizon = request["horizon_sessions"]
+    expression = request["qlib_expression"]
+    if (
+        request["schema_version"]
+        != "m3-label-reconciliation-worker-request-v1"
+        or request["worker_protocol_version"] != "m3-qlib-worker-v1"
+        or request["qlib_version"] != "0.9.7"
+        or type(horizon) is not int
+        or horizon not in {5, 10}
+        or expression != f"Ref($close,-{horizon})/Ref($open,-1)-1"
+    ):
+        raise ValueError("label worker protocol invalid")
+    rows = _parse_label_rows(request["label_rows"])
+    identity_names = (
+        "reconciliation_key", "experiment_key",
+        "provider_validation_receipt_sha256", "label_manifest_sha256",
+        "label_reconciliation_config_sha256", "dependency_fingerprint_sha256",
+        "snapshot_id", "provider_key", "provider_uri_sha256", "row_key_sha256",
+    )
+    key_rows = [
+        [
+            row[0].isoformat(), row[1], row[2], row[3], row[4],
+        ]
+        for row in rows
+    ]
+    if (
+        not rows
+        or {row[3] for row in rows} != {horizon}
+        or any(not _is_bare_hex64(request[name]) for name in identity_names)
+        or type(request["code_version"]) is not str
+        or not cast(str, request["code_version"]).strip()
+        or request["row_key_sha256"] != _hash(key_rows)
+        or request["provider_uri_sha256"]
+        != _hash([request["provider_key"], "provider"])
+    ):
+        raise ValueError("label worker row closure invalid")
+    if importlib.metadata.version("pyqlib") != "0.9.7":
+        raise ValueError("label worker Qlib version invalid")
+    provider_uri = Path(cast(str, request["provider_uri"])).resolve(strict=True)
+
+    import qlib  # type: ignore[import-not-found]
+    from qlib.constant import REG_CN  # type: ignore[import-not-found]
+    from qlib.data import D  # type: ignore[import-not-found]
+
+    qlib.init(provider_uri=str(provider_uri), region=REG_CN)
+    by_symbol: dict[str, list[tuple[dt.date, str, str, int, str, dt.date, dt.date]]] = {}
+    for row in rows:
+        by_symbol.setdefault(row[1], []).append(row)
+    output_rows: list[dict[str, object]] = []
+    for symbol, symbol_rows in sorted(by_symbol.items()):
+        qlib_symbol = _qlib_symbol(symbol)
+        as_of_dates = tuple(row[0] for row in symbol_rows)
+        expression_frame = D.features(
+            [qlib_symbol], [cast(str, expression)],
+            start_time=min(as_of_dates), end_time=max(as_of_dates),
+            freq="day", disk_cache=0,
+        )
+        _require_feature_frame_contract(expression_frame, [cast(str, expression)])
+        expression_values: dict[dt.date, list[float | None]] = {}
+        for (instrument, timestamp), values in expression_frame.iterrows():
+            if type(instrument) is not str or instrument.upper() != qlib_symbol:
+                raise ValueError("Qlib expression instrument invalid")
+            value = values[cast(str, expression)]
+            pandas = __import__("pandas")
+            actual = None if value is None or value is pandas.NA else float(value)
+            expression_values.setdefault(_date_only(timestamp), []).append(actual)
+        direct_dates = tuple(
+            day for row in symbol_rows for day in (row[5], row[6])
+        )
+        direct_frame = D.features(
+            [qlib_symbol], ["$open", "$close"],
+            start_time=min(direct_dates), end_time=max(direct_dates),
+            freq="day", disk_cache=0,
+        )
+        _require_feature_frame_contract(direct_frame, ["$open", "$close"])
+        direct_values: dict[dt.date, list[tuple[float | None, float | None]]] = {}
+        for (instrument, timestamp), values in direct_frame.iterrows():
+            if type(instrument) is not str or instrument.upper() != qlib_symbol:
+                raise ValueError("Qlib direct instrument invalid")
+            pandas = __import__("pandas")
+            opened = values["$open"]
+            closed = values["$close"]
+            direct_values.setdefault(_date_only(timestamp), []).append((
+                None if opened is None or opened is pandas.NA else float(opened),
+                None if closed is None or closed is pandas.NA else float(closed),
+            ))
+        for row in symbol_rows:
+            as_of, row_symbol, benchmark, row_horizon, version, start, end = row
+            expression_matches = expression_values.get(as_of, [])
+            start_matches = direct_values.get(start, [])
+            end_matches = direct_values.get(end, [])
+            if (
+                len(expression_matches) > 1
+                or len(start_matches) > 1
+                or len(end_matches) > 1
+            ):
+                raise ValueError("Qlib label lookup duplicate")
+            expression_raw = expression_matches[0] if expression_matches else None
+            entry_open = start_matches[0][0] if start_matches else None
+            exit_close = end_matches[0][1] if end_matches else None
+            direct_raw = (
+                exit_close / entry_open - 1.0
+                if entry_open is not None and exit_close is not None
+                and entry_open != 0.0 else None
+            )
+            output_rows.append({
+                "as_of": as_of, "symbol": row_symbol, "benchmark": benchmark,
+                "horizon_sessions": row_horizon, "label_version": version,
+                "return_start_date": start, "return_end_date": end,
+                "qlib_expression_raw": expression_raw,
+                "provider_direct_raw": direct_raw,
+            })
+    output_rows.sort(key=lambda row: (
+        cast(dt.date, row["as_of"]), cast(str, row["symbol"]),
+        cast(str, row["benchmark"]), cast(int, row["horizon_sessions"]),
+        cast(str, row["label_version"]),
+    ))
+    details = pl.DataFrame(output_rows, schema=_LABEL_RAW_SCHEMA).select(
+        *_LABEL_RAW_SCHEMA
+    )
+    details.write_parquet(
+        details_path, compression="zstd", compression_level=3, statistics=True,
+        row_group_size=65536, use_pyarrow=False,
+    )
+    echo_keys = tuple(sorted(_LABEL_REQUEST_KEYS - {"provider_uri", "label_rows"}))
+    response = {
+        **{key: request[key] for key in echo_keys},
+        "response_schema_version": "m3-label-reconciliation-worker-response-v1",
+        "response_rows_sha256": _hash(_json_rows(output_rows)),
+    }
+    response_path.write_bytes(_canonical_bytes(response))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -237,10 +439,17 @@ def main(argv: list[str] | None = None) -> int:
     validate.add_argument("--request", type=Path, required=True)
     validate.add_argument("--response", type=Path, required=True)
     validate.add_argument("--details", type=Path, required=True)
+    reconcile = subparsers.add_parser("reconcile-labels")
+    reconcile.add_argument("--request", type=Path, required=True)
+    reconcile.add_argument("--response", type=Path, required=True)
+    reconcile.add_argument("--details", type=Path, required=True)
     args = parser.parse_args(argv)
-    if args.command != "validate-provider":
+    if args.command == "validate-provider":
+        validate_provider(args.request, args.response, args.details)
+    elif args.command == "reconcile-labels":
+        reconcile_labels(args.request, args.response, args.details)
+    else:
         raise ValueError("unknown worker command")
-    validate_provider(args.request, args.response, args.details)
     return 0
 
 

@@ -436,7 +436,7 @@ provider/model。
   请求源不存在时返回 `DATA_SOURCE_MISSING`；
 - 股票 bars 与 benchmark bars 是两种契约。基准精确使用 `BenchmarkBar1dSchema`，不得要求
   `symbol/volume/amount/adj_factor` 或调用股票 factor helper；M3 v1 benchmark 只允许
-  `H00300.CSI`，重复键为 `(benchmark,trade_date,source)`；
+  `510300.SH`，重复键为 `(benchmark,trade_date,source)`；
 - 每个开市日都对当日生效的 PIT 成员做稠密计数，有效证券数低于
   `minimum_cross_section_symbols` 的任意日期都产生 `CROSS_SECTION_TOO_SMALL`；不得以最大日
   截面代替逐日检查；
@@ -1075,6 +1075,14 @@ class LabelReconciliationSpec:
     benchmark_return_atol: float
     label_return_atol: float
 
+@dataclass(frozen=True)
+class LabelReconciliationReceiptPaths:
+    snapshot_receipt_path: Path
+    provider_receipt_path: Path
+    provider_validation_receipt_path: Path
+    experiment_receipt_path: Path
+    label_receipt_path: Path
+
 def read_label_reconciliation_summary(path: Path) -> LabelReconciliationSummaryV1: ...
 
 def verify_label_reconciliation_artifact(
@@ -1084,7 +1092,9 @@ def verify_label_reconciliation_artifact(
     provider: VerifiedProviderArtifact,
     provider_validation: VerifiedProviderValidationArtifact,
     labels: VerifiedLabelArtifact,
-    config: LoadedM3Config, artifact_roots: Mapping[str, Path],
+    config: LoadedM3Config, spec: LabelReconciliationSpec,
+    receipt_paths: LabelReconciliationReceiptPaths,
+    artifact_roots: Mapping[str, Path],
 ) -> VerifiedLabelReconciliationArtifact: ...
 
 def reconcile_labels_with_qlib(
@@ -1094,10 +1104,28 @@ def reconcile_labels_with_qlib(
     provider_validation: VerifiedProviderValidationArtifact,
     labels: VerifiedLabelArtifact, config: LoadedM3Config,
     spec: LabelReconciliationSpec,
+    receipt_paths: LabelReconciliationReceiptPaths,
+    artifact_roots: Mapping[str, Path],
     python_executable: Path, output_root: Path,
     timeout_seconds: float,
 ) -> LabelReconciliationResult: ...
 ```
+
+G3B 不从目录扫描或按 hash 猜上游 receipt。formal/development reconcile 与 verifier 都显式接收五条
+`LabelReconciliationReceiptPaths` 和完整 `artifact_roots`，并在启动 worker 前通过共享
+`verify_stage_receipt_with_bytes` 核对 receipt bytes、stage/scope/scope_key、nominal SHA 与 root registry。
+reconciliation receipt 的输入闭包精确为：experiment receipt+manifest；G1 manifest+benchmark；snapshot
+receipt+manifest+session calendar；provider receipt+manifest+严格完整 provider tree；provider-validation
+receipt+summary+details；label receipt+manifest+labels+diagnostics。输出严格只有
+`reconciliation.parquet,reconciliation.json`。
+
+development 路径必须使用独立 development nominal/key/API/stage，key 绑定 development domain tag 与
+`example_id`，输出根名同时含 development/example，且 `formal_gate_eligible=False`；formal exact-type
+入口拒绝 development nominal。worker 的 request/echo 完整绑定 config、dependency、code version，并在
+import Qlib 前重算 row-key 与逻辑 provider URI hash。summary 的 `row_count` 是实际 details 行数；与
+missing/extra/duplicate 三个计数及 verified label manifest 的 success count 共同证明期望/匹配行数闭包，
+不再另设含义重叠的 expected/matched 字段。`non_finite_count` 固定为六个数值输入槽位的非 finite/缺失
+cell 数；`-0.0` 的逻辑摘要规范化为 `0.0`。
 
 返回值必须通过 `ForwardReturnLabelSchema`。不得用自然日位移；所有偏移基于对应市场开市日序号。
 `calendars` 必须先通过 `TradeCalendarSchema`；过滤 SH 后日期仍须唯一、严格递增，重复 session 不能被 sort/
@@ -2260,7 +2288,7 @@ digest 输入。稳定产物与最小 required-input 闭包如下；receipt 必�
 | provider/provider_validation | provider receipt/manifest/全部 provider tree；snapshot manifest/calendar/全部 staging | `provider-validation/key=<provider_validation_key>/{provider_validation.parquet,provider_validation.json}` |
 | experiment/experiment_identity | snapshot/provider receipts 与 manifests；scientific/dependency identities；provider-validation PASS 仅作编排前置、不列内容 input | `experiment_manifest.json` |
 | experiment/labels[h] | experiment manifest；`G1_RELEASE:{manifest,bars,benchmark,eligible_keys}`；snapshot calendar | `labels/horizon=<h>/{labels.parquet,diagnostics.parquet,label_manifest.json}` |
-| experiment/label_reconciliation[h] | provider validation receipt、provider receipt/manifest/tree；label receipt/三产物；snapshot calendar；`G1_RELEASE:{manifest,benchmark}` | `labels/horizon=<h>/reconciliation/key=<reconciliation_key>/{reconciliation.parquet,reconciliation.json}` |
+| experiment/label_reconciliation[h] | experiment receipt/manifest；`G1_RELEASE:{manifest,benchmark}`；snapshot receipt/manifest/session calendar；provider receipt/manifest/严格完整 tree；provider-validation receipt/summary/details；label receipt/manifest/labels/diagnostics | `labels/horizon=<h>/reconciliation/key=<reconciliation_key>/{reconciliation.parquet,reconciliation.json}` |
 | experiment/folds | verified experiment；verified snapshot calendar；walk-forward config identity | strict `folds.json` |
 | experiment/features[fold] | verified provider/folds/G1 eligible keys；feature config identity；provider-validation PASS 仅作编排前置、不列内容 input | `features/fold=<fold>/{train,validation,test}.parquet`, `feature_manifest.json`, `coverage.parquet` |
 | work/alignment | verified feature；对应 horizon verified label；verified fold | `alignment/{train,validation}.parquet`, `alignment_manifest.json`, `diagnostics.parquet` |
@@ -2565,7 +2593,13 @@ def map_g1_daily_response(*, response: VerifiedRawResponse) -> pl.DataFrame: ...
 def map_g1_adjustment_factor_response(
     *, response: VerifiedRawResponse
 ) -> pl.DataFrame: ...
-def map_g1_benchmark_response(*, response: VerifiedRawResponse) -> pl.DataFrame: ...
+def map_g1_benchmark_response(
+    *,
+    fund_daily: VerifiedRawResponse,
+    fund_adj_segments: Sequence[VerifiedRawResponse],
+    fund_div: VerifiedRawResponse,
+    factor_ratio_rtol: float,
+) -> pl.DataFrame: ...
 def map_g1_suspension_response(*, response: VerifiedRawResponse) -> pl.DataFrame: ...
 
 @dataclass(frozen=True)
@@ -3065,7 +3099,7 @@ DataFrame、调用方自报 symbol/source/snapshot 或配置路径。四个函�
 |---|---|---|
 | `map_g1_daily_response` | `daily` | `symbol,trade_date,open,high,low,close,volume,amount,source` |
 | `map_g1_adjustment_factor_response` | `adj_factor` | `symbol,effective_date,adj_factor,source` |
-| `map_g1_benchmark_response` | `index_daily` | `benchmark,trade_date,open,high,low,close,source,source_snapshot_id` |
+| `map_g1_benchmark_response` | `fund_daily` + 分段 `fund_adj` + `fund_div` | `benchmark,trade_date,open,high,low,close,source,source_snapshot_id` |
 | `map_g1_suspension_response` | `suspend_d` | `symbol,trade_date,suspension_scope,suspension_detail,source,source_snapshot_id` |
 
 `daily` 输出是尚未拼接 factor 的 G1 内部表，不得伪造 `adj_factor=1.0`；B4 的
@@ -3081,7 +3115,7 @@ request identity、receipt 与 spec 的 endpoint/parameters/fields/columns/row c
 hash，以及 frame 的 columns/row count/content digest。`frozen=True` 和对象曾经构造成功不能代替消费时
 identity 闭包；重验失败统一脱敏为 `G1_MAPPER_RESPONSE_INVALID`。闭包通过后再核对 endpoint、请求参数与
 响应范围。逐证券 endpoint 的每个 `ts_code` 必须等于 spec 的 `ts_code`；基准首版只允许
-`H00300.CSI`；A 股代码只允许六位数字加 `.SH/.SZ`。日期严格解析 `YYYYMMDD`，数值 strict cast，拒绝
+`510300.SH`；A 股代码只允许六位数字加 `.SH/.SZ`。日期严格解析 `YYYYMMDD`，数值 strict cast，拒绝
 null/NaN/Infinity、非法 OHLC、负 volume/amount、非正 factor、响应越过请求日期范围和不可规范化代码。
 Tushare `vol` 从手换算为股（`*100`），`amount` 从千元换算为元（`*1000`）。
 
@@ -3103,7 +3137,7 @@ factor-ratio 对账，不属于核心机械映射。首版由 G1-P3/B2C 专用�
 `null -> unlimited`、`keep="last"` 或简化 dividend mapper。
 
 观察唯一键为 `(universe,observation_date,symbol,source)`；同一来源同一观察日必须恰好形成一个完整
-CSI300 状态，不得把同月多次观察合并成一个月末状态。基准不是可交易证券，`H00300.CSI` 只通过
+CSI300 状态，不得把同月多次观察合并成一个月末状态。研究基准固定为可交易 ETF `510300.SH`，只通过
 `BenchmarkBar1dSchema` 校验；不得为通过 A 股代码正则而伪装成 SH/SZ symbol。
 
 请求与发布语义：
@@ -3574,7 +3608,7 @@ backtest scientific config。无 open 且正目标时 desired quantity 不可知
 成本按日期选择唯一闭区间 period；重叠、缺口或交易早于首个 period 均失败。`cost_multiplier` 只缩放
 可协商/模拟摩擦 `commission_rate,commission_min,slippage`，法定印花税和过户费保持历史期值不变；
 报告名称必须写“摩擦压力 0.5×/1×/2×”，不得误称税费也被缩放。基准收益独立读取
-`H00300.CSI`，成本后超额不得用训练标签拼接计算。
+`510300.SH`，成本后超额不得用训练标签拼接计算。
 
 每个 fold×horizon 从同一初始现金独立开始，只允许 test 日期产生信号；第一个估值收益时点是首个目标
 执行日 open，最后一个 test 信号必须在下一 SH session open 执行并在该日 close 终值估值。因此 G1 tail
@@ -3761,7 +3795,7 @@ Qlib 即使偶然成功也不满足可复现验收，不作为方案。
 2. 由 observation 构建保守 PIT：状态从 observation 的下一 SH 开市日起可用，直到下一 observation
    生效前一开市日；不得向前回填。每月检查唯一成分、权重和及月间增删，然后确定历史成分并集。
 3. 依据 clean SH 日历把 signal window 向前扩 60 sessions、向后扩 10 sessions。对成分并集逐证券
-   抓 `daily`、`adj_factor`、`stk_limit` 与全历史 `dividend`，抓 `H00300.CSI index_daily`，并按月抓
+   抓 `daily`、`adj_factor`、`stk_limit` 与全历史 `dividend`，抓 `510300.SH` ETF 日线、复权因子与分红，并按月抓
    `suspend_d`。严格串行限频、endpoint 显式字段、响应原样入 raw；停牌缺 bar 不补价。
 4. 全部 receipt 完整后统一映射和审计，发布 immutable G1 release。除标准契约外，每个生效成员开市日
    必须有唯一 bar 或全日停牌证据；证券收益使用两端 adj_factor。再随机抽取至少 30 只证券、20 个
@@ -3774,7 +3808,7 @@ Tushare 官方说明 `index_weight` 为月度数据且 2000 积分可用；`dail
 2026-07-13 使用当前账户做过脱敏只读探针：`000300.SH` 与 `399300.SZ` 在 2026-01 均返回 300
 成分、同一 observation `2026-01-30`，证券集合和权重逐项一致，权重和为 `99.994`；两价格指数代码的
 `index_daily` 均返回 20 行。成分接口继续固定 `000300.SH`，不在运行时自动切换别名；标签基准则固定
-为探针确认可用的全收益指数 `H00300.CSI`，两者职责不得混淆。2016-Q1
+为已冻结的 ETF 基准 `510300.SH`，两者职责不得混淆。2016-Q1
 探针每月均为 300 唯一成分，权重和分别为 `100.002/99.992/100.004`，支持 `[99,101]` 门禁；这些
 探针只证明当前权限和样例语义，不代替 2015-12 至 2026-06 的完整 G1 审计。
 

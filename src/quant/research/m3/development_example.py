@@ -45,6 +45,7 @@ from quant.domain.schemas import (
 from quant.research.m3.contracts import (
     ExperimentIdentityManifestV1,
     LabelArtifactManifest,
+    LabelReconciliationSummaryV1,
     ProviderManifestV1,
     ProviderValidationSummaryV1,
     SnapshotManifestV1,
@@ -471,6 +472,32 @@ class VerifiedDevelopmentExampleLabelArtifact:
         object.__setattr__(self, "root", root)
 
 
+@dataclass(frozen=True)
+class VerifiedDevelopmentExampleLabelReconciliationArtifact:
+    release_kind: Literal["development_example"]
+    formal_gate_eligible: Literal[False]
+    example_id: str
+    root: Path
+    details: pl.DataFrame
+    summary: LabelReconciliationSummaryV1
+    summary_sha256: str
+    reconciliation_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.release_kind != _KIND or self.formal_gate_eligible is not False:
+            raise ValueError("verified development reconciliation kind 非法")
+        _require_example_id(self.example_id)
+        if not isinstance(self.details, pl.DataFrame):
+            raise ValueError("verified development reconciliation details 非法")
+        if type(self.summary) is not LabelReconciliationSummaryV1:
+            raise ValueError("verified development reconciliation summary 非法")
+        _require_hex64(self.summary_sha256)
+        _require_hex64(self.reconciliation_receipt_sha256)
+        root = self.root.resolve(strict=True)
+        _require_development_root_name(root)
+        object.__setattr__(self, "root", root)
+
+
 def build_development_example_g1_release(
     *, output_root: Path,
 ) -> VerifiedDevelopmentExampleG1Release:
@@ -753,6 +780,35 @@ def compute_development_experiment_key(
         "m3-development-example-experiment-key-v1", example_id, snapshot_id,
         provider_receipt_sha256, scientific_config_sha256, code_version,
         dependency_fingerprint_sha256,
+    ])
+
+
+def compute_development_label_reconciliation_key(
+    *, example_id: str, experiment_key: str, horizon: int,
+    provider_validation_receipt_sha256: str,
+    label_manifest_sha256: str,
+    label_reconciliation_config_sha256: str,
+    dependency_fingerprint_sha256: str, code_version: str,
+) -> str:
+    """Domain-separated identity for development-only label reconciliation."""
+    _require_example_id(example_id)
+    for value in (
+        experiment_key, provider_validation_receipt_sha256,
+        label_manifest_sha256, label_reconciliation_config_sha256,
+        dependency_fingerprint_sha256,
+    ):
+        _require_hex64(value)
+    if type(horizon) is not int or horizon not in {5, 10}:
+        raise ValueError("development reconciliation horizon 非法")
+    if type(code_version) is not str or not code_version.startswith(
+        "development-example/"
+    ):
+        raise ValueError("development reconciliation code version 非法")
+    return _sha256_json([
+        "m3-development-example-label-reconciliation-key-v1", example_id,
+        experiment_key, horizon, provider_validation_receipt_sha256,
+        label_manifest_sha256, label_reconciliation_config_sha256,
+        dependency_fingerprint_sha256, code_version,
     ])
 
 

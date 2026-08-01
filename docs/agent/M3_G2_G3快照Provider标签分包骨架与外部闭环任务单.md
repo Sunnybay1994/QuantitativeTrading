@@ -677,8 +677,9 @@ parent 在 subprocess 前后断言自身 `sys.modules` 无 `qlib` 前缀；持�
 ### 6.1 文件范围
 
 ```text
-src/quant/research/m3/labels.py
 src/quant/research/m3/contracts.py
+src/quant/research/m3/development_example.py
+src/quant/research/m3/labels.py
 src/quant/research/m3/__init__.py
 tests/unit/test_m3_labels.py
 tests/unit/test_m3_label_artifact.py
@@ -837,6 +838,8 @@ extra/dtype、eligible 非成员污染、reason 优先级、守恒、diagnostics
 ### 7.1 文件范围
 
 ```text
+src/quant/research/m3/contracts.py
+src/quant/research/m3/development_example.py
 src/quant/research/m3/labels.py
 src/quant/research/m3/qlib_adapter.py
 src/quant/research/m3/__init__.py             # 只导出 labels parent API，禁止 import qlib_adapter
@@ -912,6 +915,14 @@ class VerifiedLabelReconciliationArtifact:
     summary_sha256: str
     reconciliation_receipt_sha256: str
 
+@dataclass(frozen=True)
+class LabelReconciliationReceiptPaths:
+    snapshot_receipt_path: Path
+    provider_receipt_path: Path
+    provider_validation_receipt_path: Path
+    experiment_receipt_path: Path
+    label_receipt_path: Path
+
 def reconcile_labels_with_qlib(
     *, release: VerifiedG1Release, snapshot: VerifiedSnapshotArtifact,
     experiment: VerifiedExperimentIdentity,
@@ -919,6 +930,8 @@ def reconcile_labels_with_qlib(
     provider_validation: VerifiedProviderValidationArtifact,
     labels: VerifiedLabelArtifact, config: LoadedM3Config,
     spec: LabelReconciliationSpec,
+    receipt_paths: LabelReconciliationReceiptPaths,
+    artifact_roots: Mapping[str, Path],
     python_executable: Path, output_root: Path, timeout_seconds: float,
 ) -> LabelReconciliationResult: ...
 
@@ -931,9 +944,25 @@ def verify_label_reconciliation_artifact(
     provider: VerifiedProviderArtifact,
     provider_validation: VerifiedProviderValidationArtifact,
     labels: VerifiedLabelArtifact,
-    config: LoadedM3Config, artifact_roots: Mapping[str, Path],
+    config: LoadedM3Config, spec: LabelReconciliationSpec,
+    receipt_paths: LabelReconciliationReceiptPaths,
+    artifact_roots: Mapping[str, Path],
 ) -> VerifiedLabelReconciliationArtifact: ...
 ```
+
+formal/development 入口均显式接收上述五条 receipt path；禁止扫描目录、按 hash 猜路径或依赖 horizon
+文件名约定。worker 启动前必须用共享 `verify_stage_receipt_with_bytes` 验证每条 receipt 的 bytes、stage、
+scope、scope_key、nominal SHA 及完整 root registry。reconciliation receipt 的输入闭包精确为：experiment
+receipt+manifest；G1 manifest+benchmark；snapshot receipt+manifest+session calendar；provider
+receipt+manifest+严格完整 provider tree；provider-validation receipt+summary+details；label
+receipt+manifest+labels+diagnostics。输出严格只有 `reconciliation.parquet,reconciliation.json`。
+
+development 路径使用独立 `VerifiedDevelopmentExampleLabelReconciliationArtifact`、
+`compute_development_label_reconciliation_key`、`reconcile_development_example_labels_with_qlib`、
+`verify_development_example_label_reconciliation_artifact` 和 stage
+`development-label-reconciliation`。其 key 固定包含 development domain tag 与 `example_id`，输出根名必须
+同时标记 development/example，且 `formal_gate_eligible=False`；formal 入口 exact-type 拒绝 development
+nominal。
 
 入口从 verified bundle（含 `VerifiedExperimentIdentity`）重算唯一 `compute_label_reconciliation_key`；horizon/experiment/provider-validation/
 label manifest 必须互相一致。任何混配在启动 worker 前失败。
@@ -950,7 +979,9 @@ Parquet bytes 冒充。
 2. 另读取原始 `$open/$close` 覆盖所有 return start/end dates；
 3. 按命名 MultiIndex level 解析，只返回 label keys 的 expression 值和由原始 lookup 直接计算的
    `provider_raw_return`；
-4. echo 全部 identity 和 row-key digest，不计算 benchmark、label diff 或最终 PASS。
+4. echo 全部 identity 和 row-key digest，不计算 benchmark、label diff 或最终 PASS。完整 key preimage
+   还包括 `label_reconciliation_config_sha256`、`dependency_fingerprint_sha256` 与 `code_version`；worker
+   必须在 import Qlib 前重算 `row_key_sha256` 并核对逻辑 `provider_uri_sha256`。
 
 parent 使用 snapshot session calendar 独立推导每行 start/end；用 verified G1 原始 `510300.SH` open/close
 独立计算 `audit_benchmark_return`，不得调用 label builder或复制 label benchmark。然后形成四个误差序列：

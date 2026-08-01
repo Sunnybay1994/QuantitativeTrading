@@ -3,6 +3,7 @@
 import datetime as dt
 import hashlib
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -815,6 +816,185 @@ class VerifiedLabelArtifact:
             raise ValueError("verified label manifest 非法")
         _require_bare_hex64("manifest_sha256", self.manifest_sha256)
         _require_bare_hex64("label_receipt_sha256", self.label_receipt_sha256)
+
+
+@dataclass(frozen=True)
+class LabelReconciliationSpec:
+    reconciliation_key: str
+    experiment_key: str
+    horizon_sessions: Literal[5, 10]
+    provider_validation_receipt_sha256: str
+    label_manifest_sha256: str
+    label_reconciliation_config_sha256: str
+    dependency_fingerprint_sha256: str
+    code_version: str
+    worker_protocol_version: Literal["m3-qlib-worker-v1"]
+    qlib_version: Literal["0.9.7"]
+    qlib_expression_atol: float
+    benchmark_return_atol: float
+    label_return_atol: float
+
+    def __post_init__(self) -> None:
+        for name in (
+            "reconciliation_key", "experiment_key",
+            "provider_validation_receipt_sha256", "label_manifest_sha256",
+            "label_reconciliation_config_sha256",
+            "dependency_fingerprint_sha256",
+        ):
+            _require_bare_hex64(name, getattr(self, name))
+        if type(self.horizon_sessions) is not int or self.horizon_sessions not in {5, 10}:
+            raise ValueError("label reconciliation horizon 非法")
+        if type(self.code_version) is not str or not self.code_version.strip():
+            raise ValueError("label reconciliation code_version 非法")
+        if (
+            self.worker_protocol_version != "m3-qlib-worker-v1"
+            or self.qlib_version != "0.9.7"
+        ):
+            raise ValueError("label reconciliation protocol 非法")
+        tolerances = (
+            self.qlib_expression_atol,
+            self.benchmark_return_atol,
+            self.label_return_atol,
+        )
+        if any(
+            type(value) is not float or not math.isfinite(value) or value < 0.0
+            for value in tolerances
+        ):
+            raise ValueError("label reconciliation tolerance 非法")
+        if (
+            self.qlib_expression_atol > self.label_return_atol
+            or self.benchmark_return_atol > self.label_return_atol
+        ):
+            raise ValueError("label reconciliation tolerance 层级非法")
+
+
+@dataclass(frozen=True)
+class LabelReconciliationReceiptPaths:
+    """Explicit upstream receipts; reconciliation never scans or guesses them."""
+
+    snapshot_receipt_path: Path
+    provider_receipt_path: Path
+    provider_validation_receipt_path: Path
+    experiment_receipt_path: Path
+    label_receipt_path: Path
+
+    def __post_init__(self) -> None:
+        for name in self.__dataclass_fields__:
+            if not isinstance(getattr(self, name), Path):
+                raise ValueError(f"label reconciliation {name} 非法")
+
+
+@dataclass(frozen=True)
+class LabelReconciliationSummaryV1:
+    schema_version: Literal["m3-label-reconciliation-v1"]
+    reconciliation_key: str
+    experiment_key: str
+    horizon_sessions: int
+    provider_validation_receipt_sha256: str
+    label_manifest_sha256: str
+    label_reconciliation_config_sha256: str
+    dependency_fingerprint_sha256: str
+    code_version: str
+    worker_protocol_version: str
+    qlib_version: str
+    qlib_expression: str
+    details_sha256: str
+    row_count: int
+    row_key_sha256: str
+    missing_key_count: int
+    extra_key_count: int
+    duplicate_key_count: int
+    non_finite_count: int
+    expression_direct_max_abs_error: float
+    expression_direct_p99_abs_error: float
+    benchmark_max_abs_error: float
+    benchmark_p99_abs_error: float
+    raw_label_max_abs_error: float
+    raw_label_p99_abs_error: float
+    relative_label_max_abs_error: float
+    relative_label_p99_abs_error: float
+    qlib_expression_atol: float
+    benchmark_return_atol: float
+    label_return_atol: float
+    passed: bool
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "m3-label-reconciliation-v1":
+            raise ValueError("label reconciliation summary schema 非法")
+        for name in (
+            "reconciliation_key", "experiment_key",
+            "provider_validation_receipt_sha256", "label_manifest_sha256",
+            "label_reconciliation_config_sha256",
+            "dependency_fingerprint_sha256", "details_sha256",
+            "row_key_sha256",
+        ):
+            _require_bare_hex64(name, getattr(self, name))
+        if type(self.horizon_sessions) is not int or self.horizon_sessions not in {5, 10}:
+            raise ValueError("label reconciliation summary horizon 非法")
+        if (
+            type(self.code_version) is not str or not self.code_version.strip()
+            or self.worker_protocol_version != "m3-qlib-worker-v1"
+            or self.qlib_version != "0.9.7"
+            or self.qlib_expression
+            != f"Ref($close,-{self.horizon_sessions})/Ref($open,-1)-1"
+        ):
+            raise ValueError("label reconciliation summary identity 非法")
+        for name in (
+            "row_count", "missing_key_count", "extra_key_count",
+            "duplicate_key_count", "non_finite_count",
+        ):
+            value = getattr(self, name)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"label reconciliation {name} 非法")
+        float_names = (
+            "expression_direct_max_abs_error",
+            "expression_direct_p99_abs_error", "benchmark_max_abs_error",
+            "benchmark_p99_abs_error", "raw_label_max_abs_error",
+            "raw_label_p99_abs_error", "relative_label_max_abs_error",
+            "relative_label_p99_abs_error", "qlib_expression_atol",
+            "benchmark_return_atol", "label_return_atol",
+        )
+        if any(
+            type(getattr(self, name)) is not float
+            or not math.isfinite(getattr(self, name))
+            or getattr(self, name) < 0.0
+            for name in float_names
+        ):
+            raise ValueError("label reconciliation summary float 非法")
+        if type(self.passed) is not bool:
+            raise ValueError("label reconciliation summary passed 非法")
+
+
+@dataclass(frozen=True)
+class LabelReconciliationResult:
+    details: pl.DataFrame
+    summary: LabelReconciliationSummaryV1
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.details, pl.DataFrame):
+            raise ValueError("label reconciliation details 非法")
+        if type(self.summary) is not LabelReconciliationSummaryV1:
+            raise ValueError("label reconciliation summary 非法")
+
+
+@dataclass(frozen=True)
+class VerifiedLabelReconciliationArtifact:
+    root: Path
+    details: pl.DataFrame
+    summary: LabelReconciliationSummaryV1
+    summary_sha256: str
+    reconciliation_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.root, Path) or not isinstance(self.details, pl.DataFrame):
+            raise ValueError("verified label reconciliation artifact 非法")
+        if type(self.summary) is not LabelReconciliationSummaryV1:
+            raise ValueError("verified label reconciliation summary 非法")
+        _require_bare_hex64("summary_sha256", self.summary_sha256)
+        _require_bare_hex64(
+            "reconciliation_receipt_sha256",
+            self.reconciliation_receipt_sha256,
+        )
 
 
 def _validate_snapshot_dates(value: object) -> None:
