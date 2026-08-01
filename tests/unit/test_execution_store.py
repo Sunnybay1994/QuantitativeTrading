@@ -24,6 +24,7 @@ from quant.execution.store import (
     UnknownSchemaVersionError,
 )
 from quant.execution.migrations.v001_initial import upgrade as upgrade_v001
+from quant.execution.migrations.v002_outbox_delivery import upgrade as upgrade_v002
 
 
 def _hex(tag: str) -> str:
@@ -1218,6 +1219,37 @@ def test_h1_post_connect_recheck_closes_connection(
         injected=leak,
     )
     assert closed["n"] == 1
+
+
+def test_v2_to_current_adds_empty_daily_risk_counters_without_data_loss(
+    cwd_tmp: Path,
+) -> None:
+    db = cwd_tmp / "legacy-v2.db"
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE schema_version (singleton INTEGER PRIMARY KEY "
+            "CHECK (singleton = 1), version INTEGER NOT NULL, status TEXT NOT NULL, "
+            "applied_at TEXT NOT NULL)"
+        )
+        upgrade_v001(conn)
+        upgrade_v002(conn)
+        conn.execute(
+            "INSERT INTO schema_version VALUES (1, 2, 'ready', '2026-07-18T00:00:00Z')"
+        )
+        conn.execute("INSERT INTO commands VALUES ('cmd-v2', ?, ?)", (ID_A, b"c"))
+        conn.commit()
+    finally:
+        conn.close()
+
+    store = _open("legacy-v2.db", cwd_tmp)
+    try:
+        assert store.schema_version() == CURRENT_SCHEMA_VERSION
+        with store.transaction() as repo:
+            assert repo.get_command("cmd-v2") is not None
+            assert repo.get_daily_risk_counters(dt.date(2026, 7, 18)) is None
+    finally:
+        store.close()
 
 
 def test_v1_to_current_preserves_legacy_outbox_but_does_not_make_it_sendable(
