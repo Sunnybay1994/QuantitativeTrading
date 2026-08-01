@@ -882,6 +882,188 @@ class VerifiedFoldPlanArtifact:
 
 
 @dataclass(frozen=True)
+class FeatureBuildSpec:
+    experiment_key: str
+    experiment_manifest_sha256: str
+    fold: str
+    planned_fold_sha256: str
+    provider_key: str
+    provider_manifest_sha256: str
+    provider_receipt_sha256: str
+    feature_version: str
+    expected_qlib_version: Literal["0.9.7"]
+    worker_protocol_version: Literal["m3-qlib-worker-v1"]
+
+    def __post_init__(self) -> None:
+        for name in (
+            "experiment_key", "experiment_manifest_sha256", "planned_fold_sha256",
+            "provider_key", "provider_manifest_sha256", "provider_receipt_sha256",
+        ):
+            _require_bare_hex64(name, getattr(self, name))
+        if (
+            type(self.fold) is not str
+            or len(self.fold) != 8
+            or not self.fold.startswith("fold_")
+            or not self.fold[5:].isdigit()
+            or type(self.feature_version) is not str
+            or not self.feature_version.strip()
+            or self.expected_qlib_version != "0.9.7"
+            or self.worker_protocol_version != "m3-qlib-worker-v1"
+        ):
+            raise ValueError("feature build spec 非法")
+
+
+@dataclass(frozen=True)
+class FeatureUpstreamPaths:
+    """Explicit feature inputs; physical paths are never inferred from aliases."""
+
+    fold_receipt_path: Path
+    fold_upstream_paths: FoldPlanUpstreamPaths
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.fold_receipt_path, Path)
+            or type(self.fold_upstream_paths) is not FoldPlanUpstreamPaths
+        ):
+            raise ValueError("feature upstream path 非法")
+
+
+@dataclass(frozen=True)
+class FeatureSchemaManifestV1:
+    feature_version: str
+    qlib_version: str
+    input_names: tuple[str, ...]
+    expressions: tuple[str, ...]
+    input_schema_sha256: str
+    selected_names: tuple[str, ...]
+    selected_dtypes: tuple[str, ...]
+    dropped_all_nan_train: tuple[str, ...]
+    selected_schema_sha256: str
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.feature_version) is not str
+            or not self.feature_version.strip()
+            or self.qlib_version != "0.9.7"
+            or type(self.input_names) is not tuple
+            or len(self.input_names) != 158
+            or len(set(self.input_names)) != 158
+            or type(self.expressions) is not tuple
+            or len(self.expressions) != 158
+            or len(set(self.expressions)) != 158
+            or any(type(value) is not str or not value for value in (*self.input_names, *self.expressions))
+            or type(self.selected_names) is not tuple
+            or not self.selected_names
+            or len(set(self.selected_names)) != len(self.selected_names)
+            or any(name not in self.input_names for name in self.selected_names)
+            or self.selected_dtypes != ("Float64",) * len(self.selected_names)
+            or type(self.dropped_all_nan_train) is not tuple
+            or tuple(name for name in self.input_names if name not in self.selected_names)
+            != self.dropped_all_nan_train
+        ):
+            raise ValueError("feature schema manifest 非法")
+        _require_bare_hex64("input_schema_sha256", self.input_schema_sha256)
+        _require_bare_hex64("selected_schema_sha256", self.selected_schema_sha256)
+
+
+@dataclass(frozen=True)
+class FeatureSegmentManifestV1:
+    name: Literal["train", "validation", "test"]
+    path: str
+    bytes_sha256: str
+    content_sha256: str
+    eligible_keys_sha256: str
+    feature_row_keys_sha256: str
+    feature_matrix_sha256: str
+    scorable_keys_sha256: str
+    n_eligible: int
+    n_feature_rows: int
+    n_scorable: int
+
+    def __post_init__(self) -> None:
+        if (
+            self.name not in {"train", "validation", "test"}
+            or self.path != f"{self.name}.parquet"
+            or type(self.n_eligible) is not int
+            or type(self.n_feature_rows) is not int
+            or type(self.n_scorable) is not int
+            or not (0 <= self.n_scorable <= self.n_feature_rows <= self.n_eligible)
+        ):
+            raise ValueError("feature segment manifest 非法")
+        for name in (
+            "bytes_sha256", "content_sha256", "eligible_keys_sha256",
+            "feature_row_keys_sha256", "feature_matrix_sha256",
+            "scorable_keys_sha256",
+        ):
+            _require_bare_hex64(name, getattr(self, name))
+
+
+@dataclass(frozen=True)
+class FeatureManifestV1:
+    schema_version: Literal["m3-feature-artifact-v1"]
+    experiment_key: str
+    experiment_manifest_sha256: str
+    g1_release_id: str
+    g1_release_manifest_sha256: str
+    snapshot_id: str
+    snapshot_manifest_sha256: str
+    provider_key: str
+    provider_manifest_sha256: str
+    provider_receipt_sha256: str
+    fold: str
+    planned_fold_sha256: str
+    scientific_config_sha256: str
+    eligible_keys_sha256: str
+    worker_protocol_version: str
+    schema: FeatureSchemaManifestV1
+    segments: tuple[FeatureSegmentManifestV1, ...]
+    coverage_path: str
+    coverage_sha256: str
+    coverage_row_count: int
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "m3-feature-artifact-v1":
+            raise ValueError("feature manifest schema 非法")
+        for name in (
+            "experiment_key", "experiment_manifest_sha256", "g1_release_id",
+            "g1_release_manifest_sha256", "snapshot_id", "snapshot_manifest_sha256",
+            "provider_key", "provider_manifest_sha256", "provider_receipt_sha256",
+            "planned_fold_sha256", "scientific_config_sha256", "eligible_keys_sha256",
+            "coverage_sha256",
+        ):
+            _require_bare_hex64(name, getattr(self, name))
+        if (
+            type(self.fold) is not str
+            or len(self.fold) != 8
+            or not self.fold.startswith("fold_")
+            or self.worker_protocol_version != "m3-qlib-worker-v1"
+            or type(self.schema) is not FeatureSchemaManifestV1
+            or type(self.segments) is not tuple
+            or tuple(segment.name for segment in self.segments)
+            != ("train", "validation", "test")
+            or any(type(segment) is not FeatureSegmentManifestV1 for segment in self.segments)
+            or self.coverage_path != "coverage.parquet"
+            or type(self.coverage_row_count) is not int
+            or self.coverage_row_count <= 0
+        ):
+            raise ValueError("feature manifest 非法")
+
+
+@dataclass(frozen=True)
+class VerifiedFeatureArtifact:
+    root: Path
+    manifest: FeatureManifestV1
+    manifest_sha256: str
+    feature_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.root, Path) or type(self.manifest) is not FeatureManifestV1:
+            raise ValueError("verified feature artifact 非法")
+        _require_bare_hex64("manifest_sha256", self.manifest_sha256)
+        _require_bare_hex64("feature_receipt_sha256", self.feature_receipt_sha256)
+
+
+@dataclass(frozen=True)
 class LabelBuildSpec:
     experiment_key: str
     experiment_manifest_sha256: str

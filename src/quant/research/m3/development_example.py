@@ -44,6 +44,7 @@ from quant.domain.schemas import (
 )
 from quant.research.m3.contracts import (
     ExperimentIdentityManifestV1,
+    FeatureManifestV1,
     FoldPlanManifestV1,
     LabelArtifactManifest,
     LabelReconciliationSummaryV1,
@@ -463,6 +464,29 @@ class VerifiedDevelopmentExampleFoldPlanArtifact:
             raise ValueError("verified development fold plan manifest 非法")
         _require_hex64(self.manifest_sha256)
         _require_hex64(self.folds_receipt_sha256)
+        root = self.root.resolve(strict=True)
+        _require_development_root_name(root)
+        object.__setattr__(self, "root", root)
+
+
+@dataclass(frozen=True)
+class VerifiedDevelopmentExampleFeatureArtifact:
+    release_kind: Literal["development_example"]
+    formal_gate_eligible: Literal[False]
+    example_id: str
+    root: Path
+    manifest: FeatureManifestV1
+    manifest_sha256: str
+    feature_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.release_kind != _KIND or self.formal_gate_eligible is not False:
+            raise ValueError("verified development feature kind 非法")
+        _require_example_id(self.example_id)
+        if type(self.manifest) is not FeatureManifestV1:
+            raise ValueError("verified development feature manifest 非法")
+        _require_hex64(self.manifest_sha256)
+        _require_hex64(self.feature_receipt_sha256)
         root = self.root.resolve(strict=True)
         _require_development_root_name(root)
         object.__setattr__(self, "root", root)

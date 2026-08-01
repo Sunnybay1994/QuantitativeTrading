@@ -1459,6 +1459,9 @@ feature 内容 receipt。H1 只读取已验真的 snapshot `session_calendar.par
 不能接受调用者临时传入另一份 calendar。`FeatureBuildSpec` 在启动 worker 前重算并核对 provider/fold/config
 identities，worker 回包必须 echo 相同 identity。feature 配置只由 scientific selector 验真；C0 不存在独立
 `feature_config_sha256`。inference 只能按 `fold_name` 从 verified folds bundle 取 test 日期，不接受裸 fold。
+这里的“已验真”是本次调用沿显式 upstream paths/spec fresh 重验 G4A 及其上游，不接受仅凭可构造 dataclass
+跳过磁盘验真。稳定 worker request/response 只保存 provider URI 身份摘要；绝对 URI 仅经 fresh subprocess
+临时环境传递，不进入 manifest、receipt、stdout 或其他稳定产物。
 
 `features.py` 是安全 parent API；`qlib_adapter.py` 是唯一 Qlib worker。handler 构造与 DatasetH prepare 必须在
 同一个 fresh Python 子进程中连续执行，Qlib 对象不能跨进程返回；父进程只通过规范 JSON/Parquet 接收普通
@@ -1489,6 +1492,8 @@ identities，worker 回包必须 echo 相同 identity。feature 配置只由 sci
    Qlib 历史行，再以 **train eligible rows** 拟合 feature schema：inf 转 NaN，只删除 train 全 NaN 列，
    validation/test 复用同一有序列和 float64 dtype。选定列后整行全 NaN 是 unscorable，三段均剔除并按日
    输出 `n_eligible/n_feature_rows/n_scorable/reason`；不做均值填充、不删普通含 NaN 行、不按 test 改列。
+   “剔除”是指从 G4C/inference 的 scorable 消费域剔除；G4B segment parquet 仍保留该 feature row，保证
+   `feature_row_keys_sha256` 与 `scorable_keys_sha256` 均可由稳定产物独立重建，不依赖 worker summary。
 6. `build_alignment_artifact` 只允许 train/validation。它消费对应 `VerifiedLabelArtifact` 并使用 PlannedFold
    对应 `available_by`，一对一连接 scorable feature keys；X/y 使用同一
    唯一 `(as_of,symbol)` pandas MultiIndex、稳定排序且行数/顺序完全一致。缺标签进入 alignment diagnostics，

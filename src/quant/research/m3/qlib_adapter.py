@@ -32,6 +32,15 @@ _LABEL_REQUEST_KEYS = {
     "provider_uri", "provider_uri_sha256", "horizon_sessions",
     "qlib_expression", "label_rows", "row_key_sha256",
 }
+_EXAMPLE_FEATURE_REQUEST_KEYS = {
+    "schema_version", "worker_protocol_version", "release_kind",
+    "formal_gate_eligible", "example_id", "experiment_key",
+    "experiment_manifest_sha256", "g1_release_id",
+    "g1_release_manifest_sha256", "snapshot_id", "snapshot_manifest_sha256",
+    "provider_key", "provider_manifest_sha256", "provider_receipt_sha256",
+    "fold", "planned_fold_sha256", "scientific_config_sha256",
+    "feature_version", "qlib_version", "segments", "eligible_rows",
+}
 _RAW_SCHEMA = {
     "sample_kind": pl.Utf8,
     "symbol": pl.Utf8,
@@ -432,6 +441,104 @@ def reconcile_labels(
     response_path.write_bytes(_canonical_bytes(response))
 
 
+def build_development_example_alpha158(request_path: Path, output_root: Path) -> None:
+    """Emit deterministic Alpha158-shaped raw frames without importing Qlib."""
+    request = _strict_json(request_path.read_bytes())
+    if set(request) != _EXAMPLE_FEATURE_REQUEST_KEYS:
+        raise ValueError("development feature worker request schema invalid")
+    identity_names = (
+        "experiment_key", "experiment_manifest_sha256", "g1_release_id",
+        "g1_release_manifest_sha256", "snapshot_id", "snapshot_manifest_sha256",
+        "provider_key", "provider_manifest_sha256", "provider_receipt_sha256",
+        "planned_fold_sha256", "scientific_config_sha256",
+    )
+    if (
+        request["schema_version"] != "m3-feature-worker-request-v1"
+        or request["worker_protocol_version"] != "m3-qlib-worker-v1"
+        or request["release_kind"] != "development_example"
+        or request["formal_gate_eligible"] is not False
+        or request["qlib_version"] != "0.9.7"
+        or request["feature_version"] != "alpha158_v1"
+        or any(not _is_bare_hex64(request[name]) for name in identity_names)
+        or type(request["example_id"]) is not str
+        or not cast(str, request["example_id"]).startswith("development-example-")
+        or type(request["fold"]) is not str
+    ):
+        raise ValueError("development feature worker identity invalid")
+    segments = request["segments"]
+    eligible_rows = request["eligible_rows"]
+    if type(segments) is not dict or set(cast(dict[object, object], segments)) != {
+        "train", "validation", "test"
+    } or type(eligible_rows) is not list:
+        raise ValueError("development feature worker rows invalid")
+    parsed_rows: list[tuple[str, str, str]] = []
+    for row in cast(list[object], eligible_rows):
+        if (
+            type(row) is not list
+            or len(cast(list[object], row)) != 3
+            or any(type(value) is not str for value in cast(list[object], row))
+        ):
+            raise ValueError("development feature eligible row invalid")
+        segment, date_text, symbol = cast(list[str], row)
+        if segment not in {"train", "validation", "test"}:
+            raise ValueError("development feature segment invalid")
+        dt.date.fromisoformat(date_text)
+        parsed_rows.append((segment, date_text, symbol))
+    if tuple(parsed_rows) != tuple(sorted(set(parsed_rows))):
+        raise ValueError("development feature rows must be unique and sorted")
+    for name, values in cast(dict[str, object], segments).items():
+        if (
+            type(values) is not list
+            or any(type(value) is not str for value in cast(list[object], values))
+            or tuple(cast(list[str], values))
+            != tuple(sorted(set(cast(list[str], values))))
+            or any(dt.date.fromisoformat(value) is None for value in cast(list[str], values))
+            or any(row[1] not in cast(list[str], values) for row in parsed_rows if row[0] == name)
+        ):
+            raise ValueError("development feature segment dates invalid")
+    if not output_root.is_dir() or any(output_root.iterdir()):
+        raise ValueError("development feature worker output root must be empty")
+
+    names = tuple(f"ALPHA{index:03d}" for index in range(1, 159))
+    expressions = tuple(
+        f"DEVELOPMENT_EXAMPLE_ALPHA158_{index:03d}" for index in range(1, 159)
+    )
+    for segment in ("train", "validation", "test"):
+        records: list[dict[str, object]] = []
+        for row_index, (_, date_text, symbol) in enumerate(
+            row for row in parsed_rows if row[0] == segment
+        ):
+            record: dict[str, object] = {
+                "as_of": dt.date.fromisoformat(date_text), "symbol": symbol,
+            }
+            symbol_seed = sum(ord(character) for character in symbol)
+            for feature_index, name in enumerate(names, start=1):
+                value: float | None = float(
+                    (dt.date.fromisoformat(date_text).toordinal() % 997)
+                    + symbol_seed / 1000.0 + feature_index / 10000.0
+                )
+                if feature_index == 158 and segment == "train":
+                    value = None
+                elif feature_index == 157 and row_index == 0:
+                    value = math.nan
+                record[name] = value
+            records.append(record)
+        schema = {"as_of": pl.Date, "symbol": pl.Utf8, **{name: pl.Float64 for name in names}}
+        pl.DataFrame(records, schema=schema).select(*schema).write_parquet(
+            output_root / f"raw_{segment}.parquet",
+            compression="zstd", compression_level=3, statistics=True,
+            row_group_size=65536, use_pyarrow=False,
+        )
+    echo_keys = tuple(sorted(_EXAMPLE_FEATURE_REQUEST_KEYS - {"eligible_rows"}))
+    response = {
+        **{key: request[key] for key in echo_keys},
+        "response_schema_version": "m3-feature-worker-response-v1",
+        "input_names": list(names),
+        "expressions": list(expressions),
+    }
+    (output_root / "worker-response.json").write_bytes(_canonical_bytes(response))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -443,11 +550,16 @@ def main(argv: list[str] | None = None) -> int:
     reconcile.add_argument("--request", type=Path, required=True)
     reconcile.add_argument("--response", type=Path, required=True)
     reconcile.add_argument("--details", type=Path, required=True)
+    feature_example = subparsers.add_parser("build-alpha158-example")
+    feature_example.add_argument("--request", type=Path, required=True)
+    feature_example.add_argument("--output-root", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == "validate-provider":
         validate_provider(args.request, args.response, args.details)
     elif args.command == "reconcile-labels":
         reconcile_labels(args.request, args.response, args.details)
+    elif args.command == "build-alpha158-example":
+        build_development_example_alpha158(args.request, args.output_root)
     else:
         raise ValueError("unknown worker command")
     return 0
