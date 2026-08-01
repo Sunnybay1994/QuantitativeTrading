@@ -510,6 +510,13 @@ def test_order_plan_unique_intent_keys_and_identity() -> None:
 
 
 def test_order_plan_decision_closes_quantities_identity_and_intent() -> None:
+    from quant.execution import (
+        OrderPlanDecision as PublicOrderPlanDecision,
+        build_order_plan_decision as public_build_order_plan_decision,
+    )
+
+    assert PublicOrderPlanDecision is OrderPlanDecision
+    assert public_build_order_plan_decision is build_order_plan_decision
     accepted = build_rule_decision(
         accepted=True,
         code="ACCEPTED",
