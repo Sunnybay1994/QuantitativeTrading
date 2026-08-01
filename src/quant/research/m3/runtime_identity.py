@@ -157,8 +157,15 @@ class M3RuntimeIdentityV1:
                     "pyproject_sha256": self.pyproject_sha256,
                 }
             )
+            expected_clean = _hash_json(
+                {
+                    "schema_version": "m3-git-clean-content-v1",
+                    "source_tree_sha256": self.source_tree_sha256,
+                    "pyproject_sha256": self.pyproject_sha256,
+                }
+            )
             expected_code = (
-                f"m3-git-v1-{self.git_commit}-clean"
+                f"m3-git-v1-{self.git_commit}-clean-{expected_clean}"
                 if self.git_dirty_content_sha256 is None
                 else f"m3-git-v1-{self.git_commit}-dirty-{expected_dirty}"
             )
@@ -255,7 +262,14 @@ def compute_m3_runtime_identity(
                 )
                 code_version = f"m3-git-v1-{first.git.commit}-dirty-{dirty_sha}"
             else:
-                code_version = f"m3-git-v1-{first.git.commit}-clean"
+                clean_sha = _hash_json(
+                    {
+                        "schema_version": "m3-git-clean-content-v1",
+                        "source_tree_sha256": first.source_tree_sha256,
+                        "pyproject_sha256": first.pyproject_sha256,
+                    }
+                )
+                code_version = f"m3-git-v1-{first.git.commit}-clean-{clean_sha}"
             git_commit = first.git.commit
         else:
             code_source = "source-tree-fallback"
@@ -326,7 +340,7 @@ def _validate_project_root(path: Path) -> Path:
     root = path.resolve(strict=True)
     for required in (root / "src" / "quant", root / "configs", root / "pyproject.toml"):
         st = os.lstat(required)
-        if stat.S_ISLNK(st.st_mode):
+        if stat.S_ISLNK(st.st_mode) or _is_reparse(st):
             raise M3RuntimeIdentityError("M3_RUNTIME_IDENTITY_SOURCE_INVALID")
     return root
 
@@ -359,7 +373,7 @@ def _collect_source_files(
         for path in src_root.rglob("*"):
             relative = path.relative_to(root).as_posix()
             st = os.lstat(path)
-            if stat.S_ISLNK(st.st_mode):
+            if stat.S_ISLNK(st.st_mode) or _is_reparse(st):
                 raise M3RuntimeIdentityError("M3_RUNTIME_IDENTITY_SOURCE_INVALID")
             if stat.S_ISDIR(st.st_mode):
                 continue
@@ -385,12 +399,17 @@ def _collect_source_files(
 def _read_hash(path: Path) -> str:
     try:
         before = os.lstat(path)
-        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        if (
+            stat.S_ISLNK(before.st_mode)
+            or _is_reparse(before)
+            or not stat.S_ISREG(before.st_mode)
+        ):
             raise OSError
         payload = path.read_bytes()
         after = os.lstat(path)
         if (
             not stat.S_ISREG(after.st_mode)
+            or _is_reparse(after)
             or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
             != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
             or len(payload) != before.st_size
@@ -407,7 +426,7 @@ def _probe_git(root: Path, configs: tuple[PurePosixPath, ...]) -> _GitProbe:
         marker_state = os.lstat(marker)
     except FileNotFoundError:
         return _GitProbe(False, None, None, False)
-    if stat.S_ISLNK(marker_state.st_mode):
+    if stat.S_ISLNK(marker_state.st_mode) or _is_reparse(marker_state):
         raise M3RuntimeIdentityError("M3_RUNTIME_IDENTITY_GIT_INVALID")
     try:
         commit_result = subprocess.run(
@@ -470,6 +489,13 @@ def _platform_values() -> tuple[str, ...]:
     if any(type(value) is not str or not value or _CONTROL.search(value) for value in values):
         raise M3RuntimeIdentityError("M3_RUNTIME_IDENTITY_DEPENDENCY_INVALID")
     return values
+
+
+def _is_reparse(status: os.stat_result) -> bool:
+    return bool(
+        getattr(status, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    )
 
 
 def _dependency_versions() -> tuple[M3DependencyVersionV1, ...]:

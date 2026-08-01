@@ -13,7 +13,8 @@ M3 Gate 或 Linux/ext4 Gate 已关闭。
 ## 2. 变更
 
 - `runtime_identity.py`
-  - 首选 Git commit 加受控 source/config/pyproject dirty-content identity；
+  - 首选 Git commit 加受控 source/config/pyproject content identity；clean 与 dirty 均绑定实际源码树，
+    `assume-unchanged` 或 ignored Python 文件不能隐藏内容变化；
   - Git metadata 不存在或 Git executable 不存在时才使用 canonical source/config tree fallback；
   - 完整 dependency fingerprint 包含 Python/platform、`pyproject.toml` 和 15 个研究/回测 distribution，
     缺包稳定记录 `NOT_INSTALLED`；
@@ -64,7 +65,12 @@ mypy：PASS（5 source files）
 pytest 新增 identity/experiment/CLI + orchestration + strict label consumer：34 passed, 1 skipped
 ```
 
-对抗覆盖包括：Git clean/dirty 内容变化、fallback、`NOT_INSTALLED`、首尾漂移、Git metadata 损坏不得
+主 Agent 独立对抗审查修复后，Windows、WSL `base`、WSL `py312` 分别复跑 runtime / experiment /
+CLI 定向测试，三平台均为 `12 passed`；Ruff 与 mypy 均通过。修复关闭了 Git
+`assume-unchanged` 隐藏源码改动以及 Windows reparse/junction 未显式拒绝的问题。
+
+对抗覆盖包括：Git clean/dirty 内容变化、`assume-unchanged`、ignored Python 文件、fallback、
+`NOT_INSTALLED`、首尾漂移、Git metadata 损坏不得
 静默 fallback、validation FAIL、validation 不进入内容 receipt、精确四输入一输出、首次发布、resume 不重跑
 handler、输出目录篡改、CLI 单 JSON 与错误脱敏。既有 label consumer 回归证明新增 manifest/receipt 形态仍由
 当前 strict consumer 约束；本任务未伪造正式验证结论。

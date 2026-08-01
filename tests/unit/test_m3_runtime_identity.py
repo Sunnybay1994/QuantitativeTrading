@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.metadata
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -55,7 +56,7 @@ def test_git_clean_and_dirty_content_identity(
     )
     clean = compute_m3_runtime_identity(project_root=root)
     assert clean.code_source == "git"
-    assert clean.code_version.endswith("-clean")
+    assert f"-{clean.git_commit}-clean-" in clean.code_version
     assert clean.git_dirty_content_sha256 is None
 
     source = root / "src" / "quant" / "module.py"
@@ -66,6 +67,79 @@ def test_git_clean_and_dirty_content_identity(
     first_dirty = dirty.code_version
     source.write_text("VALUE = 3\n", encoding="utf-8")
     assert compute_m3_runtime_identity(project_root=root).code_version != first_dirty
+
+
+def test_git_assume_unchanged_cannot_hide_source_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path)
+    _versions(monkeypatch)
+    _git("init", cwd=root)
+    _git("add", ".", cwd=root)
+    _git(
+        "-c", "user.name=M3 Test", "-c", "user.email=m3@example.invalid",
+        "commit", "-m", "fixture", cwd=root,
+    )
+    source = root / "src" / "quant" / "module.py"
+    first = compute_m3_runtime_identity(project_root=root)
+    _git("update-index", "--assume-unchanged", "src/quant/module.py", cwd=root)
+    source.write_text("VALUE = 999\n", encoding="utf-8")
+
+    hidden = compute_m3_runtime_identity(project_root=root)
+
+    assert hidden.git_status_sha256 == first.git_status_sha256
+    assert hidden.source_tree_sha256 != first.source_tree_sha256
+    assert hidden.code_version != first.code_version
+
+
+def test_git_ignored_python_source_is_still_identity_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path)
+    _versions(monkeypatch)
+    (root / ".gitignore").write_text("src/quant/generated.py\n", encoding="utf-8")
+    _git("init", cwd=root)
+    _git("add", ".", cwd=root)
+    _git(
+        "-c", "user.name=M3 Test", "-c", "user.email=m3@example.invalid",
+        "commit", "-m", "fixture", cwd=root,
+    )
+    first = compute_m3_runtime_identity(project_root=root)
+    ignored = root / "src" / "quant" / "generated.py"
+    ignored.write_text("VALUE = 1\n", encoding="utf-8")
+
+    second = compute_m3_runtime_identity(project_root=root)
+
+    assert second.git_status_sha256 == first.git_status_sha256
+    assert second.source_tree_sha256 != first.source_tree_sha256
+    assert second.code_version != first.code_version
+
+
+def test_nested_source_reparse_point_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path)
+    _versions(monkeypatch)
+    nested = root / "src" / "quant" / "nested"
+    nested.mkdir()
+    real_lstat = identity_module.os.lstat
+
+    def marked_lstat(path: object):
+        status = real_lstat(path)
+        if Path(path) == nested:
+            values = {
+                name: getattr(status, name)
+                for name in dir(status)
+                if name.startswith("st_")
+            }
+            values["st_file_attributes"] = 0x400
+            return SimpleNamespace(**values)
+        return status
+
+    monkeypatch.setattr(identity_module.os, "lstat", marked_lstat)
+    with pytest.raises(M3RuntimeIdentityError) as exc:
+        compute_m3_runtime_identity(project_root=root)
+    assert exc.value.code == "M3_RUNTIME_IDENTITY_SOURCE_INVALID"
 
 
 def test_source_fallback_and_not_installed_are_stable(
