@@ -28,6 +28,18 @@
 
 真实 handler 未实现不阻止 fake 合同落地，但报告必须写明真实 G8 Gate 未关闭。
 
+### 1.1 Identity-resolved waves 修订（2026-08-02）
+
+五种用户可见 continuation 模式保持不变，但 `PROVIDER` 与 `EXPERIMENT` 各自由多个串行、可恢复、每次身份完全解析的 `RunPlan` wave 组成。禁止用 orchestration plan hash 代理 provider、provider-validation、experiment 或 label-reconciliation 的业务 identity。
+
+- provider materialization 只有在 snapshot、dump tool、provider runtime fingerprint 与 code identity 均已验证后才能规划；provider-validation 必须等待 `VerifiedProviderArtifact` 及其 receipt。
+- experiment identity 必须等待 verified provider、code/dependency identity；provider-validation PASS 是 dependency gate，不进入 experiment identity 内容输入。
+- labels/folds 等待 `VerifiedExperimentIdentity`；label-reconciliation 等待对应 `VerifiedLabelArtifact`，不得预填未知 manifest hash。
+- WORK 可在 verified experiment/folds/labels/reconciliation 闭包后一次性规划；features 按 fold 共享，work key 只使用规范 `compute_work_key`。
+- verified continuation 的 receipt/path/digest 引用须由 verifier 产生的窄合同承载，调用方不得裸报 path/hash。
+
+因此，G8A 首包只关闭 registry、SNAPSHOT、WORK 与 SUMMARY 计划合同；PROVIDER/EXPERIMENT waves 随正式 ExperimentIdentity/通用 static runner 合同补齐后关闭。该阶段状态不等于完整 G8A 或 G8 Gate。
+
 ## 2. G8A：registry 与 continuation plans
 
 文件：新增 `src/quant/research/m3/orchestration.py`、计划单测与两份报告。

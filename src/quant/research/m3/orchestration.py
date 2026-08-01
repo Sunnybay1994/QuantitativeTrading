@@ -1,4 +1,9 @@
-"""G8 stage contracts and crash-safe snapshot publication prerequisite."""
+"""G8 stage contracts and crash-safe snapshot publication prerequisite.
+
+Provider and experiment continuation builders are intentionally deferred: their
+static identities depend on receipts produced by earlier stages.  They must be
+implemented as separately verified waves, never with surrogate plan hashes.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +16,7 @@ import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from types import MappingProxyType
 from typing import Literal, TypeAlias, cast
 
 from quant.data._journal_lock import hold_journal_writer_lock
@@ -19,16 +25,27 @@ from quant.research.m3.config import LoadedM3Config
 from quant.research.m3.contracts import (
     SnapshotBuildResult,
     SnapshotRequestRecordV1,
+    VerifiedEvaluationArtifact,
+    VerifiedExperimentIdentity,
+    VerifiedFoldPlanArtifact,
+    VerifiedLabelArtifact,
+    VerifiedLabelReconciliationArtifact,
 )
 from quant.research.m3.run_state import (
     ArtifactDigest,
     Scope,
     StageReceipt,
+    compute_work_key,
     publish_stage_receipt,
     verify_stage_receipt,
 )
 from quant.research.m3.development_example import (
+    VerifiedDevelopmentExampleEvaluationArtifact,
+    VerifiedDevelopmentExampleExperimentIdentity,
+    VerifiedDevelopmentExampleFoldPlanArtifact,
     VerifiedDevelopmentExampleG1Release,
+    VerifiedDevelopmentExampleLabelArtifact,
+    VerifiedDevelopmentExampleLabelReconciliationArtifact,
     verify_development_example_g1_release,
 )
 from quant.research.m3.snapshot import (
@@ -218,8 +235,37 @@ class RunPlan:
         if len(set(receipts)) != len(receipts):
             raise ValueError("run plan receipt path 冲突")
         for index, node in enumerate(self.nodes):
+            spec = STAGE_SPEC_REGISTRY.get(node.spec_name)
+            if spec is None or node.scope != spec.scope or node.output_specs != spec.outputs:
+                raise ValueError("run plan stage spec drift")
+            for item in node.inputs:
+                if type(item) is StageOutputInput:
+                    if item.producer_node_id not in positions:
+                        continue
+                    producer = self.nodes[positions[item.producer_node_id]]
+                    if not _output_path_is_covered(
+                        item.relative_path, producer.output_specs
+                    ):
+                        raise ValueError("stage output input is not producer-covered")
             if any(dep not in positions or positions[dep] >= index for dep in node.dependencies):
                 raise ValueError("run plan DAG 非法或排序不稳定")
+        static = tuple(
+            (node.node_id, node.publication.final_directory)
+            for node in self.nodes
+            if type(node.publication) is StaticDirectoryPublication
+        )
+        for left_index, (left_id, left) in enumerate(static):
+            left_path = PurePosixPath(left)
+            for right_id, right in static[left_index + 1:]:
+                right_path = PurePosixPath(right)
+                if (
+                    left_path == right_path
+                    or left_path in right_path.parents
+                    or right_path in left_path.parents
+                ):
+                    raise ValueError(
+                        f"static publication conflict: {left_id}/{right_id}"
+                    )
 
 
 @dataclass(frozen=True)
@@ -635,6 +681,18 @@ def _validate_outputs(values: object) -> None:
         raise ValueError("outputs path 必须唯一排序")
 
 
+def _output_path_is_covered(path: str, outputs: tuple[OutputSpec, ...]) -> bool:
+    candidate = PurePosixPath(path)
+    return any(
+        candidate == PurePosixPath(output.relative_path)
+        or (
+            output.kind == "TREE"
+            and PurePosixPath(output.relative_path) in candidate.parents
+        )
+        for output in outputs
+    )
+
+
 def _validate_roots(roots: Mapping[str, Path]) -> dict[str, Path]:
     if not isinstance(roots, Mapping) or not roots:
         raise ValueError("artifact roots 非法")
@@ -837,6 +895,364 @@ DEVELOPMENT_SNAPSHOT_STAGE_SPEC = StageSpec(
     dependencies=(),
     outputs=SNAPSHOT_STAGE_SPEC.outputs,
 )
+
+PROVIDER_STAGE_SPEC = StageSpec(
+    "provider", "PROVIDER", ("snapshot",),
+    (
+        OutputSpec("provider", "TREE", "provider_manifest.json"),
+        OutputSpec("provider_manifest.json", "FILE", None),
+    ),
+)
+PROVIDER_VALIDATION_STAGE_SPEC = StageSpec(
+    "provider-validation", "PROVIDER", ("provider",),
+    (
+        OutputSpec("provider_validation.json", "FILE", None),
+        OutputSpec("provider_validation.parquet", "FILE", None),
+    ),
+)
+EXPERIMENT_STAGE_SPEC = StageSpec(
+    "experiment", "EXPERIMENT", ("provider-validation",),
+    (OutputSpec("experiment_manifest.json", "FILE", None),),
+)
+LABEL_STAGE_SPEC = StageSpec(
+    "labels", "EXPERIMENT", ("experiment",),
+    (
+        OutputSpec("diagnostics.parquet", "FILE", None),
+        OutputSpec("label_manifest.json", "FILE", None),
+        OutputSpec("labels.parquet", "FILE", None),
+    ),
+)
+LABEL_RECONCILIATION_STAGE_SPEC = StageSpec(
+    "label-reconciliation", "EXPERIMENT", ("labels", "provider-validation"),
+    (
+        OutputSpec("reconciliation.json", "FILE", None),
+        OutputSpec("reconciliation.parquet", "FILE", None),
+    ),
+)
+FOLDS_STAGE_SPEC = StageSpec(
+    "folds", "EXPERIMENT", ("label-reconciliation",),
+    (OutputSpec("folds.json", "FILE", None),),
+)
+FEATURES_STAGE_SPEC = StageSpec(
+    "features", "EXPERIMENT", ("folds", "provider-validation"),
+    (
+        OutputSpec("coverage.parquet", "FILE", None),
+        OutputSpec("feature_manifest.json", "FILE", None),
+        OutputSpec("request.json", "FILE", None),
+        OutputSpec("test.parquet", "FILE", None),
+        OutputSpec("train.parquet", "FILE", None),
+        OutputSpec("validation.parquet", "FILE", None),
+        OutputSpec("worker-response.json", "FILE", None),
+    ),
+)
+ALIGNMENT_STAGE_SPEC = StageSpec(
+    "alignment", "WORK", ("features",),
+    (
+        OutputSpec("alignment_manifest.json", "FILE", None),
+        OutputSpec("diagnostics.parquet", "FILE", None),
+        OutputSpec("train.parquet", "FILE", None),
+        OutputSpec("validation.parquet", "FILE", None),
+    ),
+)
+TRAIN_STAGE_SPEC = StageSpec(
+    "train", "WORK", ("alignment",),
+    (
+        OutputSpec("model.metadata.json", "FILE", None),
+        OutputSpec("model.txt", "FILE", None),
+        OutputSpec("validation_curve.parquet", "FILE", None),
+    ),
+)
+PREDICTIONS_STAGE_SPEC = StageSpec(
+    "predictions", "WORK", ("train",),
+    (
+        OutputSpec("prediction_manifest.json", "FILE", None),
+        OutputSpec("predictions.parquet", "FILE", None),
+    ),
+)
+EVALUATION_STAGE_SPEC = StageSpec(
+    "evaluation", "WORK", ("predictions",),
+    (
+        OutputSpec("daily_ic.parquet", "FILE", None),
+        OutputSpec("evaluation_manifest.json", "FILE", None),
+        OutputSpec("metrics.json", "FILE", None),
+    ),
+)
+TARGETS_STAGE_SPEC = StageSpec(
+    "targets", "WORK", ("evaluation",),
+    (
+        OutputSpec("target_daily.parquet", "FILE", None),
+        OutputSpec("target_manifest.json", "FILE", None),
+        OutputSpec("target_weights.parquet", "FILE", None),
+    ),
+)
+BACKTEST_PLAN_STAGE_SPEC = StageSpec(
+    "backtest_plan", "WORK", ("targets",),
+    (
+        OutputSpec("cost_schedule.json", "FILE", None),
+        OutputSpec("manifest.json", "FILE", None),
+        OutputSpec("schedule_diagnostics.parquet", "FILE", None),
+        OutputSpec("scheduled_targets.parquet", "FILE", None),
+    ),
+)
+BACKTEST_STAGE_SPEC = StageSpec(
+    "backtest", "WORK", ("backtest_plan",),
+    (
+        OutputSpec("0p5x", "TREE", "backtest_manifest.json"),
+        OutputSpec("1p0x", "TREE", "backtest_manifest.json"),
+        OutputSpec("2p0x", "TREE", "backtest_manifest.json"),
+        OutputSpec("backtest_manifest.json", "FILE", None),
+        OutputSpec("backtest_metrics.json", "FILE", None),
+    ),
+)
+TRACKING_STAGE_SPEC = StageSpec(
+    "tracking", "WORK", ("backtest", "evaluation"),
+    (
+        OutputSpec("tracking_marker.json", "FILE", None),
+        OutputSpec("tracking_request.json", "FILE", None),
+    ),
+)
+SUMMARY_STAGE_SPEC = StageSpec(
+    "summary", "EXPERIMENT", ("evaluation",),
+    (
+        OutputSpec("daily_ic.parquet", "FILE", None),
+        OutputSpec("fold_metrics.parquet", "FILE", None),
+        OutputSpec("manifest.json", "FILE", None),
+        OutputSpec("metrics.json", "FILE", None),
+    ),
+)
+
+STAGE_SPEC_REGISTRY: Mapping[str, StageSpec] = MappingProxyType({
+    spec.name: spec for spec in (
+        SNAPSHOT_STAGE_SPEC, DEVELOPMENT_SNAPSHOT_STAGE_SPEC,
+        PROVIDER_STAGE_SPEC, PROVIDER_VALIDATION_STAGE_SPEC,
+        EXPERIMENT_STAGE_SPEC, LABEL_STAGE_SPEC,
+        LABEL_RECONCILIATION_STAGE_SPEC, FOLDS_STAGE_SPEC,
+        FEATURES_STAGE_SPEC, ALIGNMENT_STAGE_SPEC, TRAIN_STAGE_SPEC,
+        PREDICTIONS_STAGE_SPEC, EVALUATION_STAGE_SPEC, TARGETS_STAGE_SPEC,
+        BACKTEST_PLAN_STAGE_SPEC, BACKTEST_STAGE_SPEC, TRACKING_STAGE_SPEC,
+        SUMMARY_STAGE_SPEC,
+    )
+})
+STAGE_REGISTRY = STAGE_SPEC_REGISTRY
+
+ExperimentArtifact = (
+    VerifiedExperimentIdentity | VerifiedDevelopmentExampleExperimentIdentity
+)
+FoldArtifact = VerifiedFoldPlanArtifact | VerifiedDevelopmentExampleFoldPlanArtifact
+LabelArtifact = VerifiedLabelArtifact | VerifiedDevelopmentExampleLabelArtifact
+ReconciliationArtifact = (
+    VerifiedLabelReconciliationArtifact
+    | VerifiedDevelopmentExampleLabelReconciliationArtifact
+)
+EvaluationArtifact = (
+    VerifiedEvaluationArtifact | VerifiedDevelopmentExampleEvaluationArtifact
+)
+
+
+def _require_config(config: LoadedM3Config) -> None:
+    if type(config) is not LoadedM3Config:
+        raise ValueError("plan config must be LoadedM3Config")
+
+
+def _verified_digest(path: Path, *, root: Path, alias: str) -> ArtifactDigest:
+    resolved_root = root.resolve(strict=True)
+    resolved = path.resolve(strict=True)
+    if not resolved.is_relative_to(resolved_root):
+        raise ValueError("verified artifact path escaped its root")
+    raw = _read_plain_file(resolved)
+    return ArtifactDigest(
+        root_alias=alias,
+        relative_path=resolved.relative_to(resolved_root).as_posix(),
+        size_bytes=len(raw),
+        sha256=hashlib.sha256(raw).hexdigest(),
+    )
+
+
+def _external_files(
+    *, root: Path, alias: str, relative_paths: Sequence[str],
+) -> tuple[ExternalInput, ...]:
+    return tuple(
+        ExternalInput(_verified_digest(root / relative, root=root, alias=alias))
+        for relative in sorted(set(relative_paths))
+    )
+
+
+def _static_node(
+    *, node_id: str, spec: StageSpec, scope_key: str,
+    final_directory: str, receipt_path: str,
+    dependencies: Sequence[str] = (), inputs: Sequence[InputSpec] = (),
+    fold: str | None = None, horizon: int | None = None,
+) -> StageNode:
+    return StageNode(
+        node_id=node_id,
+        spec_name=spec.name,
+        scope=spec.scope,
+        scope_key=scope_key,
+        fold=fold,
+        horizon=horizon,
+        dependencies=tuple(sorted(set(dependencies))),
+        inputs=tuple(inputs),
+        publication=StaticDirectoryPublication(final_directory),
+        output_specs=spec.outputs,
+        receipt_path=receipt_path,
+    )
+
+
+def make_work_run_plan(
+    *, config: LoadedM3Config, experiment: ExperimentArtifact,
+    folds: FoldArtifact, labels: Sequence[LabelArtifact],
+    reconciliations: Sequence[ReconciliationArtifact],
+) -> RunPlan:
+    """Build fold-shared features and each ordered fold/horizon work chain."""
+    _require_config(config)
+    if type(experiment) not in {
+        VerifiedExperimentIdentity, VerifiedDevelopmentExampleExperimentIdentity,
+    } or type(folds) not in {
+        VerifiedFoldPlanArtifact, VerifiedDevelopmentExampleFoldPlanArtifact,
+    }:
+        raise ValueError("work continuation requires verified experiment and folds")
+    development = type(experiment) is VerifiedDevelopmentExampleExperimentIdentity
+    allowed_label = (
+        VerifiedDevelopmentExampleLabelArtifact if development else VerifiedLabelArtifact
+    )
+    allowed_reconciliation = (
+        VerifiedDevelopmentExampleLabelReconciliationArtifact
+        if development else VerifiedLabelReconciliationArtifact
+    )
+    if any(type(item) is not allowed_label for item in labels) or any(
+        type(item) is not allowed_reconciliation for item in reconciliations
+    ):
+        raise ValueError("work continuation verified identity mismatch")
+    experiment_key = experiment.manifest.experiment_key
+    folds_inputs = _external_files(
+        root=folds.root, alias="verified-folds", relative_paths=("folds.json",),
+    )
+    experiment_inputs = _external_files(
+        root=experiment.root, alias="verified-experiment",
+        relative_paths=("experiment_manifest.json",),
+    )
+    label_by_horizon = {item.manifest.horizon_sessions: item for item in labels}
+    reconciliation_by_horizon = {
+        item.summary.horizon_sessions: item for item in reconciliations
+    }
+    horizons = tuple(sorted(cast(Sequence[int], config.section("labels")["horizons_sessions"])))
+    if set(label_by_horizon) != set(horizons) or set(reconciliation_by_horizon) != set(horizons):
+        raise ValueError("work continuation label horizon closure invalid")
+    nodes: list[StageNode] = []
+    for planned_fold in sorted(folds.manifest.folds, key=lambda item: item.name):
+        fold = planned_fold.name
+        feature = _static_node(
+            node_id=f"features.{fold}", spec=FEATURES_STAGE_SPEC,
+            scope_key=experiment_key, fold=fold,
+            final_directory=f"features/{experiment_key}/{fold}",
+            receipt_path=f"receipts/features/{experiment_key}.{fold}.json",
+            inputs=(*folds_inputs, *experiment_inputs),
+        )
+        nodes.append(feature)
+        for horizon in horizons:
+            work_key = compute_work_key(
+                experiment_key=experiment_key, fold=fold, horizon=horizon,
+            )
+            prefix = f"{fold}.h{horizon}"
+            label = label_by_horizon[horizon]
+            reconciliation = reconciliation_by_horizon[horizon]
+            boundary_inputs = (
+                *_external_files(
+                    root=label.root, alias=f"verified-label-h{horizon}",
+                    relative_paths=("label_manifest.json", "labels.parquet"),
+                ),
+                *_external_files(
+                    root=reconciliation.root,
+                    alias=f"verified-reconciliation-h{horizon}",
+                    relative_paths=(
+                        "reconciliation.json", "reconciliation.parquet",
+                    ),
+                ),
+                *folds_inputs, *experiment_inputs,
+            )
+            chain: list[StageNode] = []
+            previous = feature.node_id
+            stage_defs = (
+                ("alignment", ALIGNMENT_STAGE_SPEC),
+                ("train", TRAIN_STAGE_SPEC),
+                ("predictions", PREDICTIONS_STAGE_SPEC),
+                ("evaluation", EVALUATION_STAGE_SPEC),
+                ("targets", TARGETS_STAGE_SPEC),
+                ("backtest_plan", BACKTEST_PLAN_STAGE_SPEC),
+                ("backtest", BACKTEST_STAGE_SPEC),
+                ("tracking", TRACKING_STAGE_SPEC),
+            )
+            for stage_name, spec in stage_defs:
+                node_id = f"{stage_name}.{prefix}"
+                dependencies = [previous]
+                inputs: list[InputSpec] = list(boundary_inputs)
+                if previous == feature.node_id:
+                    inputs.append(StageOutputInput(previous, "stage", "feature_manifest.json"))
+                else:
+                    previous_spec = STAGE_SPEC_REGISTRY[chain[-1].spec_name]
+                    inputs.extend(
+                        StageOutputInput(previous, "stage", output.relative_path)
+                        for output in previous_spec.outputs
+                    )
+                if stage_name == "tracking":
+                    evaluation_id = f"evaluation.{prefix}"
+                    dependencies.append(evaluation_id)
+                    inputs.append(StageOutputInput(evaluation_id, "stage", "metrics.json"))
+                node = _static_node(
+                    node_id=node_id, spec=spec, scope_key=work_key,
+                    fold=fold, horizon=horizon,
+                    final_directory=f"work/{work_key}/{stage_name}",
+                    receipt_path=f"receipts/work/{work_key}.{stage_name}.json",
+                    dependencies=dependencies, inputs=inputs,
+                )
+                chain.append(node)
+                previous = node.node_id
+            nodes.extend(chain)
+    return RunPlan("WORK", tuple(nodes))
+
+
+def make_summary_run_plan(
+    *, config: LoadedM3Config, experiment: ExperimentArtifact,
+    evaluations: Sequence[EvaluationArtifact],
+) -> RunPlan:
+    """Build one experiment summary from a strict verified evaluation closure."""
+    _require_config(config)
+    if type(experiment) not in {
+        VerifiedExperimentIdentity, VerifiedDevelopmentExampleExperimentIdentity,
+    } or not evaluations:
+        raise ValueError("summary continuation requires verified inputs")
+    development = type(experiment) is VerifiedDevelopmentExampleExperimentIdentity
+    expected = (
+        VerifiedDevelopmentExampleEvaluationArtifact
+        if development else VerifiedEvaluationArtifact
+    )
+    if any(type(item) is not expected for item in evaluations):
+        raise ValueError("summary continuation verified identity mismatch")
+    experiment_key = experiment.manifest.experiment_key
+    ordered = tuple(sorted(
+        evaluations,
+        key=lambda item: (item.manifest.fold, item.manifest.horizon_sessions),
+    ))
+    if len({
+        (item.manifest.fold, item.manifest.horizon_sessions) for item in ordered
+    }) != len(ordered):
+        raise ValueError("summary evaluation fold/horizon duplicate")
+    inputs: list[InputSpec] = list(_external_files(
+        root=experiment.root, alias="verified-experiment",
+        relative_paths=("experiment_manifest.json",),
+    ))
+    for index, item in enumerate(ordered):
+        inputs.extend(_external_files(
+            root=item.root, alias=f"verified-evaluation-{index:03d}",
+            relative_paths=("daily_ic.parquet", "evaluation_manifest.json", "metrics.json"),
+        ))
+    summary = _static_node(
+        node_id="summary", spec=SUMMARY_STAGE_SPEC, scope_key=experiment_key,
+        final_directory=f"summaries/{experiment_key}",
+        receipt_path=f"receipts/summary/{experiment_key}.json",
+        inputs=inputs,
+    )
+    return RunPlan("SUMMARY", (summary,))
 
 
 def make_snapshot_run_plan(

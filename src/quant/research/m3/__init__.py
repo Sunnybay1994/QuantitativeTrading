@@ -230,6 +230,7 @@ from quant.research.m3.orchestration import (
     RunPlan,
     SnapshotContentPublication,
     SnapshotStageResult,
+    STAGE_SPEC_REGISTRY,
     StageBuildReport,
     StageContext,
     StageNode,
@@ -239,6 +240,8 @@ from quant.research.m3.orchestration import (
     StaticDirectoryPublication,
     make_development_snapshot_run_plan,
     make_snapshot_run_plan,
+    make_summary_run_plan,
+    make_work_run_plan,
 )
 from quant.research.m3.readiness import ReadinessIssue, audit_m3_readiness
 from quant.research.m3.provider import (
@@ -438,9 +441,12 @@ __all__ = [
     "StageContext",
     "StageBuildReport",
     "SnapshotStageResult",
+    "STAGE_SPEC_REGISTRY",
     "StageRunner",
     "make_snapshot_run_plan",
     "make_development_snapshot_run_plan",
+    "make_summary_run_plan",
+    "make_work_run_plan",
     "ConfigIssue",
     "LoadedM3Config",
     "M3ConfigError",
