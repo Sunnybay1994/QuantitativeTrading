@@ -1,6 +1,7 @@
 """领域模型:数据契约与枚举。所有下游模块只依赖这里的定义。"""
 
 from quant.domain.enums import (
+    AShareBoard,
     ConnectRoute,
     CorporateActionType,
     Currency,
@@ -47,6 +48,7 @@ from quant.domain.schemas import (
 )
 
 __all__ = [
+    "AShareBoard",
     "Market",
     "ConnectRoute",
     "Currency",
