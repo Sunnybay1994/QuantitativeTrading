@@ -2,6 +2,8 @@
 
 ### 2026-08-02 G6A 续写摘要（覆盖下文旧停止点）
 
+- G7P0 已完成：四个回测舍入/年化字段进入 scientific identity；当前严格闭包为 148 shapes / 161 leaves，
+  Windows 与 WSL base 配置集合均 `89 passed`。早期任务单的 138→142 已被后续 C0 增量超越，不得回退。
 - development example G6B 也已完成：同 horizon 跨折 summary、严格 fold metrics、跨日重算和 experiment
   receipt 闭包在 Windows/WSL base 均为 `8 passed`；开发研究链 G4A→G6B 的工程合同至此闭合，但正式
   production G4–G6 与真实绩效 Gate 仍保持开放。详见
