@@ -7,6 +7,8 @@ Does not implement LIVE, OMS, store, or gateway submit.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
@@ -68,6 +70,7 @@ class DailyRiskCounters:
 
     def to_persistable_dict(self) -> dict[str, object]:
         """Serialize for durable store round-trip (cancel/order counts survive restart)."""
+        self.__post_init__()
         return {
             "session_date": self.session_date.isoformat(),
             "order_count": self.order_count,
@@ -77,19 +80,97 @@ class DailyRiskCounters:
 
     @classmethod
     def from_persistable_dict(cls, payload: Mapping[str, object]) -> DailyRiskCounters:
-        """Restore counters after process restart; missing keys fail closed."""
+        """Restore counters after process restart; malformed payloads fail closed."""
+        expected_keys = {
+            "session_date",
+            "order_count",
+            "cancel_count",
+            "buy_notional",
+        }
+        if type(payload) is not dict or set(payload) != expected_keys:
+            raise ValueError("daily risk counters payload keys invalid")
+        session_raw = payload["session_date"]
         order_raw = payload["order_count"]
         cancel_raw = payload["cancel_count"]
+        notional_raw = payload["buy_notional"]
+        if type(session_raw) is not str:
+            raise TypeError("session_date must be str")
         if type(order_raw) is not int or isinstance(order_raw, bool):
             raise TypeError("order_count must be int")
         if type(cancel_raw) is not int or isinstance(cancel_raw, bool):
             raise TypeError("cancel_count must be int")
+        if type(notional_raw) is not str:
+            raise TypeError("buy_notional must be str")
         return cls(
-            session_date=dt.date.fromisoformat(str(payload["session_date"])),
+            session_date=dt.date.fromisoformat(session_raw),
             order_count=order_raw,
             cancel_count=cancel_raw,
-            buy_notional=Decimal(str(payload["buy_notional"])),
+            buy_notional=Decimal(notional_raw),
         )
+
+
+_DAILY_RISK_COUNTERS_HASH_VERSION = "daily-risk-counters-hash-v1"
+
+
+def _validated_daily_risk_counters_payload(
+    counters: DailyRiskCounters,
+) -> dict[str, object]:
+    if type(counters) is not DailyRiskCounters:
+        raise TypeError("counters must be DailyRiskCounters")
+    payload = counters.to_persistable_dict()
+    restored = DailyRiskCounters.from_persistable_dict(payload)
+    if restored != counters:
+        raise ValueError("daily risk counters object is not canonical")
+    return payload
+
+
+def serialize_daily_risk_counters(counters: DailyRiskCounters) -> bytes:
+    """Return the sole canonical durable payload for daily counters."""
+    encoded = json.dumps(
+        _validated_daily_risk_counters_payload(counters),
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return encoded.encode("utf-8")
+
+
+def deserialize_daily_risk_counters(payload: bytes) -> DailyRiskCounters:
+    """Restore and authenticate the canonical wire shape before identity checks."""
+    if type(payload) is not bytes:
+        raise TypeError("payload must be bytes")
+    decoded: object = None
+    invalid_json = False
+    try:
+        decoded = json.loads(payload.decode("utf-8"))
+    except (RecursionError, UnicodeDecodeError, json.JSONDecodeError):
+        invalid_json = True
+    if invalid_json:
+        raise ValueError("daily risk counters payload invalid") from None
+    if type(decoded) is not dict:
+        raise ValueError("daily risk counters payload must be an object")
+    counters = DailyRiskCounters.from_persistable_dict(decoded)
+    if serialize_daily_risk_counters(counters) != payload:
+        raise ValueError("daily risk counters payload must be canonical")
+    return counters
+
+
+def build_daily_risk_counters_identity(counters: DailyRiskCounters) -> str:
+    """Build the versioned canonical identity used by durable CAS writes."""
+    payload = {
+        "hash_version": _DAILY_RISK_COUNTERS_HASH_VERSION,
+        "type": "DailyRiskCounters",
+        "payload": _validated_daily_risk_counters_payload(counters),
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -996,5 +1077,8 @@ __all__ = [
     "RiskDecision",
     "RiskInputError",
     "RiskRuleResult",
+    "build_daily_risk_counters_identity",
+    "deserialize_daily_risk_counters",
     "evaluate_pretrade",
+    "serialize_daily_risk_counters",
 ]

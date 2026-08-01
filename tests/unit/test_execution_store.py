@@ -1220,7 +1220,7 @@ def test_h1_post_connect_recheck_closes_connection(
     assert closed["n"] == 1
 
 
-def test_v1_to_v2_preserves_legacy_outbox_but_does_not_make_it_sendable(
+def test_v1_to_current_preserves_legacy_outbox_but_does_not_make_it_sendable(
     cwd_tmp: Path,
 ) -> None:
     db = cwd_tmp / "legacy-v1.db"
@@ -1243,7 +1243,7 @@ def test_v1_to_v2_preserves_legacy_outbox_but_does_not_make_it_sendable(
 
     store = _open("legacy-v1.db", cwd_tmp)
     try:
-        assert store.schema_version() == 2
+        assert store.schema_version() == CURRENT_SCHEMA_VERSION
         with store.transaction() as repo:
             assert repo.get_outbox("obx-old") is not None
             assert repo.get_outbox_delivery("obx-old") is None

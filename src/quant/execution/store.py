@@ -20,8 +20,14 @@ from pathlib import Path
 from typing import Final
 
 from quant.execution.migrations import MIGRATIONS
+from quant.execution.risk import (
+    DailyRiskCounters,
+    build_daily_risk_counters_identity,
+    deserialize_daily_risk_counters,
+    serialize_daily_risk_counters,
+)
 
-CURRENT_SCHEMA_VERSION: Final[int] = 2
+CURRENT_SCHEMA_VERSION: Final[int] = 3
 
 _URI_PREFIX = "sqlite:///"
 _HEX_OR_KEY = re.compile(r"^[A-Za-z0-9_.:\-]+$")
@@ -66,6 +72,15 @@ class StoredRecord:
     key: str
     identity: str
     payload: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class StoredDailyRiskCounters:
+    """Authenticated daily counters with their durable CAS identity."""
+
+    counters: DailyRiskCounters
+    identity: str
+    updated_at: dt.datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +133,12 @@ def _require_utc_datetime(name: str, value: object) -> dt.datetime:
     return value
 
 
+def _require_session_date(value: object) -> dt.date:
+    if type(value) is not dt.date or isinstance(value, dt.datetime):
+        raise StoreError("session_date must be date")
+    return value
+
+
 def _datetime_to_text(value: dt.datetime) -> str:
     return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
 
@@ -165,6 +186,39 @@ def _row_to_stored(key: object, identity: object, payload: object) -> StoredReco
     if type(payload) is not bytes:
         raise StoreError("ROW_CORRUPT")
     return StoredRecord(key=key, identity=identity, payload=payload)
+
+
+def _row_to_daily_risk_counters(
+    session_date: object,
+    identity: object,
+    payload: object,
+    updated_at: object,
+) -> StoredDailyRiskCounters:
+    parsed: tuple[DailyRiskCounters, str, dt.datetime] | None = None
+    try:
+        if type(session_date) is not str:
+            raise StoreError("ROW_CORRUPT")
+        parsed_date = dt.date.fromisoformat(session_date)
+        if parsed_date.isoformat() != session_date:
+            raise StoreError("ROW_CORRUPT")
+        parsed_identity = _require_identity(identity)
+        parsed_payload = _require_payload(payload)
+        counters = deserialize_daily_risk_counters(parsed_payload)
+        parsed_updated_at = _datetime_from_text(updated_at)
+        if counters.session_date != parsed_date:
+            raise StoreError("ROW_CORRUPT")
+        if build_daily_risk_counters_identity(counters) != parsed_identity:
+            raise StoreError("ROW_CORRUPT")
+        parsed = (counters, parsed_identity, parsed_updated_at)
+    except (ArithmeticError, RecursionError, StoreError, TypeError, ValueError):
+        pass
+    if parsed is None:
+        raise StoreError("ROW_CORRUPT")
+    return StoredDailyRiskCounters(
+        counters=parsed[0],
+        identity=parsed[1],
+        updated_at=parsed[2],
+    )
 
 
 def _row_to_outbox_delivery(row: tuple[object, ...]) -> OutboxDelivery:
@@ -676,6 +730,79 @@ class ExecutionRepository:
         if row is None:
             return None
         return _row_to_stored(row[0], row[1], row[2])
+
+    def get_daily_risk_counters(
+        self, session_date: dt.date
+    ) -> StoredDailyRiskCounters | None:
+        """Load one authenticated session row; missing means not initialized."""
+        key = _require_session_date(session_date).isoformat()
+        row = self._conn.execute(
+            "SELECT session_date, identity, payload, updated_at "
+            "FROM daily_risk_counters WHERE session_date = ?",
+            (key,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _row_to_daily_risk_counters(row[0], row[1], row[2], row[3])
+
+    def compare_and_set_daily_risk_counters(
+        self,
+        *,
+        expected_identity: str | None,
+        counters: DailyRiskCounters,
+        updated_at: dt.datetime,
+    ) -> bool:
+        """Initialize or CAS one session; an exact committed retry is a no-op."""
+        expected = (
+            None if expected_identity is None else _require_identity(expected_identity)
+        )
+        if type(counters) is not DailyRiskCounters:
+            raise StoreError("COUNTERS_INVALID")
+        invalid_counters = False
+        try:
+            new_identity = build_daily_risk_counters_identity(counters)
+            payload = serialize_daily_risk_counters(counters)
+        except (ArithmeticError, AttributeError, RecursionError, TypeError, ValueError):
+            invalid_counters = True
+        if invalid_counters:
+            raise StoreError("COUNTERS_INVALID") from None
+        key = counters.session_date.isoformat()
+        updated_text = _datetime_to_text(
+            _require_utc_datetime("updated_at", updated_at)
+        )
+        current = self.get_daily_risk_counters(counters.session_date)
+        if current is not None:
+            if current.identity == new_identity:
+                if current.counters != counters:
+                    raise StoreError("ROW_CORRUPT")
+                return False
+            if expected is None or current.identity != expected:
+                raise StoreError("RISK_COUNTERS_STALE")
+            try:
+                cursor = self._conn.execute(
+                    "UPDATE daily_risk_counters "
+                    "SET identity = ?, payload = ?, updated_at = ? "
+                    "WHERE session_date = ? AND identity = ?",
+                    (new_identity, payload, updated_text, key, expected),
+                )
+            except sqlite3.Error:
+                raise StoreError("RISK_COUNTERS_WRITE_FAILED") from None
+            if cursor.rowcount != 1:
+                raise StoreError("RISK_COUNTERS_STALE")
+            return True
+        if expected is not None:
+            raise StoreError("RISK_COUNTERS_STALE")
+        try:
+            self._conn.execute(
+                "INSERT INTO daily_risk_counters "
+                "(session_date, identity, payload, updated_at) VALUES (?, ?, ?, ?)",
+                (key, new_identity, payload, updated_text),
+            )
+        except sqlite3.IntegrityError:
+            raise StoreError("RISK_COUNTERS_STALE") from None
+        except sqlite3.Error:
+            raise StoreError("RISK_COUNTERS_WRITE_FAILED") from None
+        return True
 
     @staticmethod
     def _delivery_columns() -> str:
@@ -1201,6 +1328,7 @@ __all__ = [
     "OutboxDeliveryState",
     "StoreError",
     "StoreUriError",
+    "StoredDailyRiskCounters",
     "StoredRecord",
     "UnknownSchemaVersionError",
 ]
