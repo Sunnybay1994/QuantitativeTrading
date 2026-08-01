@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
@@ -1592,6 +1593,118 @@ class TargetManifestV1:
             or self.n_selected > self.n_predicted
         ):
             raise ValueError("target manifest 非法")
+
+
+@dataclass(frozen=True)
+class AShareCostPeriod:
+    effective_from: dt.date
+    effective_to: dt.date | None
+    commission_rate: Decimal
+    commission_min: Decimal
+    stamp_tax_sell: Decimal
+    transfer_fee: Decimal
+    slippage: Decimal
+
+    def __post_init__(self) -> None:
+        amounts = (
+            self.commission_rate,
+            self.commission_min,
+            self.stamp_tax_sell,
+            self.transfer_fee,
+            self.slippage,
+        )
+        if (
+            type(self.effective_from) is not dt.date
+            or (self.effective_to is not None and type(self.effective_to) is not dt.date)
+            or (self.effective_to is not None and self.effective_to < self.effective_from)
+            or any(
+                type(value) is not Decimal or not value.is_finite() or value < 0
+                for value in amounts
+            )
+        ):
+            raise ValueError("A-share cost period invalid")
+
+
+@dataclass(frozen=True)
+class BacktestWindow:
+    signal_dates: tuple[dt.date, ...]
+    execution_dates: tuple[dt.date, ...]
+    first_execution_date: dt.date
+    terminal_valuation_date: dt.date
+    force_liquidation: Literal[False]
+
+    def __post_init__(self) -> None:
+        if (
+            not self.signal_dates
+            or len(self.signal_dates) != len(self.execution_dates)
+            or tuple(sorted(set(self.signal_dates))) != self.signal_dates
+            or tuple(sorted(set(self.execution_dates))) != self.execution_dates
+            or any(
+                execution <= signal
+                for signal, execution in zip(
+                    self.signal_dates, self.execution_dates, strict=True
+                )
+            )
+            or self.first_execution_date != self.execution_dates[0]
+            or self.terminal_valuation_date != self.execution_dates[-1]
+            or self.force_liquidation is not False
+        ):
+            raise ValueError("backtest window invalid")
+
+
+@dataclass(frozen=True)
+class BacktestPlanManifestV1:
+    schema_version: Literal["m3-a-share-backtest-plan-v1"]
+    experiment_key: str
+    experiment_manifest_sha256: str
+    work_key: str
+    target_manifest_sha256: str
+    target_receipt_sha256: str
+    g1_release_id: str
+    g1_release_manifest_sha256: str
+    scientific_config_sha256: str
+    fold_plan_manifest_sha256: str
+    fold: str
+    horizon_sessions: int
+    window: BacktestWindow
+    session_calendar_sha256: str
+    cost_schedule_sha256: str
+    cost_schedule_version: str
+    order_quantity_rule_version: str
+    scheduled_targets_sha256: str
+    schedule_diagnostics_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "m3-a-share-backtest-plan-v1":
+            raise ValueError("backtest plan schema invalid")
+        for name in (
+            "experiment_key",
+            "experiment_manifest_sha256",
+            "work_key",
+            "target_manifest_sha256",
+            "target_receipt_sha256",
+            "g1_release_id",
+            "g1_release_manifest_sha256",
+            "scientific_config_sha256",
+            "fold_plan_manifest_sha256",
+            "session_calendar_sha256",
+            "cost_schedule_sha256",
+            "scheduled_targets_sha256",
+            "schedule_diagnostics_sha256",
+        ):
+            _require_bare_hex64(name, getattr(self, name))
+        if (
+            type(self.fold) is not str
+            or not self.fold
+            or type(self.horizon_sessions) is not int
+            or self.horizon_sessions not in {5, 10}
+            or type(self.window) is not BacktestWindow
+            or type(self.cost_schedule_version) is not str
+            or not self.cost_schedule_version
+            or self.order_quantity_rule_version
+            != "sse_szse_limit_order_quantity_v1"
+        ):
+            raise ValueError("backtest plan manifest invalid")
 
 
 @dataclass(frozen=True)

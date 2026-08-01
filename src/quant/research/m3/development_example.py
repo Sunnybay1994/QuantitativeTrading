@@ -44,6 +44,7 @@ from quant.domain.schemas import (
 )
 from quant.research.m3.contracts import (
     AlignmentManifestV1,
+    BacktestPlanManifestV1,
     EvaluationManifestV1,
     EvaluationMetricsV1,
     ExperimentIdentityManifestV1,
@@ -597,6 +598,33 @@ class VerifiedDevelopmentExampleTargetArtifact:
             raise ValueError("verified development target artifact 非法")
         _require_hex64(self.manifest_sha256)
         _require_hex64(self.target_receipt_sha256)
+        root = self.root.resolve(strict=True)
+        _require_development_root_name(root)
+        object.__setattr__(self, "root", root)
+
+
+@dataclass(frozen=True)
+class VerifiedDevelopmentExampleBacktestPlanArtifact:
+    release_kind: Literal["development_example"]
+    formal_gate_eligible: Literal[False]
+    example_id: str
+    root: Path
+    scheduled_targets: pl.DataFrame
+    manifest: BacktestPlanManifestV1
+    manifest_sha256: str
+    plan_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.release_kind != _KIND or self.formal_gate_eligible is not False:
+            raise ValueError("verified development backtest plan kind invalid")
+        _require_example_id(self.example_id)
+        if (
+            not isinstance(self.scheduled_targets, pl.DataFrame)
+            or type(self.manifest) is not BacktestPlanManifestV1
+        ):
+            raise ValueError("verified development backtest plan artifact invalid")
+        _require_hex64(self.manifest_sha256)
+        _require_hex64(self.plan_receipt_sha256)
         root = self.root.resolve(strict=True)
         _require_development_root_name(root)
         object.__setattr__(self, "root", root)

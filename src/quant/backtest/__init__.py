@@ -6,6 +6,15 @@ A 股:T+1、涨跌停不可成交、停牌、整手、佣金/印花税/过户费
 """
 
 from quant.backtest.timing import schedule_next_trading_day
+from quant.backtest.a_share_plan import (
+    AShareCostPeriod,
+    BacktestPlanManifestV1,
+    BacktestPlanUpstreamPaths,
+    BacktestWindow,
+    build_development_example_backtest_plan_artifact,
+    read_backtest_plan_manifest,
+    verify_development_example_backtest_plan_artifact,
+)
 from quant.backtest.costs import AShareCostModel, EtfCostModel
 from quant.backtest.connect_execution import (
     ConnectRuleConfig,
@@ -18,14 +27,21 @@ from quant.backtest.simulator import SimulationResult, simulate_etf_targets
 
 __all__ = [
     "AShareCostModel",
+    "AShareCostPeriod",
+    "BacktestPlanManifestV1",
+    "BacktestPlanUpstreamPaths",
+    "BacktestWindow",
     "ConnectRuleConfig",
     "ConnectRuleInputError",
     "DailyMarketState",
     "EtfCostModel",
     "SimulationResult",
     "build_connect_rule_config",
+    "build_development_example_backtest_plan_artifact",
     "evaluate_connect_intent",
     "execution_reject_reason",
+    "read_backtest_plan_manifest",
     "schedule_next_trading_day",
     "simulate_etf_targets",
+    "verify_development_example_backtest_plan_artifact",
 ]
