@@ -44,6 +44,7 @@ from quant.domain.schemas import (
 )
 from quant.research.m3.contracts import (
     ProviderManifestV1,
+    ProviderValidationSummaryV1,
     SnapshotManifestV1,
     SnapshotRequestRecordV1,
 )
@@ -65,7 +66,12 @@ _HEX_B = "b" * 64
 _HEX_C = "c" * 64
 _D1 = dt.date(2026, 1, 5)
 _D2 = dt.date(2026, 1, 6)
-_D3 = dt.date(2026, 1, 7)
+_SESSIONS = tuple(
+    _D1 + dt.timedelta(days=offset)
+    for offset in range(29)
+    if (_D1 + dt.timedelta(days=offset)).weekday() < 5
+)
+_D3 = _SESSIONS[-1]
 _PARQUET_WRITE_KWARGS: Mapping[str, object] = {
     "compression": "zstd",
     "compression_level": 3,
@@ -385,6 +391,32 @@ class VerifiedDevelopmentExampleProviderArtifact:
         object.__setattr__(self, "qlib_dir", qlib_dir)
 
 
+@dataclass(frozen=True)
+class VerifiedDevelopmentExampleProviderValidationArtifact:
+    release_kind: Literal["development_example"]
+    formal_gate_eligible: Literal[False]
+    example_id: str
+    root: Path
+    details: pl.DataFrame
+    summary: ProviderValidationSummaryV1
+    summary_sha256: str
+    validation_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.release_kind != _KIND or self.formal_gate_eligible is not False:
+            raise ValueError("verified development provider validation kind 非法")
+        _require_example_id(self.example_id)
+        if not isinstance(self.details, pl.DataFrame):
+            raise ValueError("verified development provider validation details 非法")
+        if type(self.summary) is not ProviderValidationSummaryV1:
+            raise ValueError("verified development provider validation summary 非法")
+        _require_hex64(self.summary_sha256)
+        _require_hex64(self.validation_receipt_sha256)
+        root = self.root.resolve(strict=True)
+        _require_development_root_name(root)
+        object.__setattr__(self, "root", root)
+
+
 def build_development_example_g1_release(
     *, output_root: Path,
 ) -> VerifiedDevelopmentExampleG1Release:
@@ -618,6 +650,35 @@ def compute_development_provider_key(
     ])
 
 
+def compute_development_provider_validation_key(
+    *, example_id: str, provider_key: str, provider_receipt_sha256: str,
+    provider_validation_config_sha256: str,
+    provider_runtime_fingerprint_sha256: str, code_version: str,
+) -> str:
+    """Domain-separated identity for development-only Provider validation."""
+    _require_example_id(example_id)
+    for value in (
+        provider_key,
+        provider_receipt_sha256,
+        provider_validation_config_sha256,
+        provider_runtime_fingerprint_sha256,
+    ):
+        _require_hex64(value)
+    if type(code_version) is not str or not code_version.startswith(
+        "development-example/"
+    ):
+        raise ValueError("development provider validation code version 非法")
+    return _sha256_json([
+        "m3-development-example-provider-validation-key-v1",
+        example_id,
+        provider_key,
+        provider_receipt_sha256,
+        provider_validation_config_sha256,
+        provider_runtime_fingerprint_sha256,
+        code_version,
+    ])
+
+
 def verify_development_example_g1_release(
     *, root: Path,
 ) -> VerifiedDevelopmentExampleG1Release:
@@ -759,7 +820,7 @@ def _fixture_spec() -> dict[str, object]:
         "formal_gate_eligible": False,
         "fixture_version": _FIXTURE_VERSION,
         "symbols": ["000001.SZ", "000002.SZ", "600000.SH"],
-        "sessions": [_D1.isoformat(), _D2.isoformat(), _D3.isoformat()],
+        "sessions": [day.isoformat() for day in _SESSIONS],
         "boundaries": [
             "adjustment_and_cash_dividend_on_2026-01-06",
             "full_day_suspension_on_2026-01-06",
@@ -789,7 +850,7 @@ def _summary_payload() -> dict[str, object]:
         "release_kind": _KIND,
         "formal_gate_eligible": False,
         "symbol_count": 3,
-        "session_count": 3,
+        "session_count": len(_SESSIONS),
         "comparison_count": 15,
         "boundaries": _fixture_spec()["boundaries"],
     }
@@ -800,12 +861,12 @@ def _fixture_frames() -> dict[str, pl.DataFrame]:
     symbols = ("000001.SZ", "000002.SZ", "600000.SH")
     membership = _validated(UniverseMembershipSchema, [
         {"universe": _UNIVERSE, "symbol": "000001.SZ", "effective_from": _D1, "effective_to": None},
-        {"universe": _UNIVERSE, "symbol": "000002.SZ", "effective_from": _D2, "effective_to": _D3},
+        {"universe": _UNIVERSE, "symbol": "000002.SZ", "effective_from": _D1, "effective_to": _D3},
         {"universe": _UNIVERSE, "symbol": "600000.SH", "effective_from": _D1, "effective_to": None},
     ], ["universe", "symbol", "effective_from"])
     eligible_rows = [
         {"as_of": day, "symbol": symbol}
-        for day in (_D1, _D2, _D3)
+        for day in _SESSIONS
         for symbol in symbols
         if not (day == _D2 and symbol == "000001.SZ")
     ]
@@ -814,7 +875,7 @@ def _fixture_frames() -> dict[str, pl.DataFrame]:
     ).sort(["as_of", "symbol"])
     bar_rows: list[dict[str, object]] = []
     for symbol in symbols:
-        for day in (_D1, _D2, _D3):
+        for day in _SESSIONS:
             if symbol == "000001.SZ" and day == _D2:
                 continue
             base = 8.0 if symbol == "000001.SZ" else (6.0 if symbol == "000002.SZ" else 10.0)
@@ -850,7 +911,7 @@ def _fixture_frames() -> dict[str, pl.DataFrame]:
             "high": 4.1, "low": 3.9, "close": 4.0,
             "source": _SOURCE, "source_snapshot_id": _HEX_A,
         }
-        for day in (_D1, _D2, _D3)
+        for day in _SESSIONS
     ], ["benchmark", "trade_date", "source"])
     suspensions = _validated(Suspension1dSchema, [{
         "symbol": "000001.SZ", "trade_date": _D2,
@@ -862,7 +923,7 @@ def _fixture_frames() -> dict[str, pl.DataFrame]:
             "market": market, "date": day, "is_open": True,
             "is_connect_open": False, "is_half_day": False,
         }
-        for day in (_D1, _D2, _D3) for market in ("SH", "SZ")
+        for day in _SESSIONS for market in ("SH", "SZ")
     ], ["market", "date"])
     instruments = _validated(InstrumentSchema, [
         {
@@ -1009,8 +1070,11 @@ def _verify_fixture_semantics(frames: Mapping[str, pl.DataFrame]) -> None:
     sessions = calendars.filter(
         (pl.col("market") == "SH") & pl.col("is_open")
     ).get_column("date").to_list()
-    if sessions != [_D1, _D2, _D3]:
+    if sessions != list(_SESSIONS):
         raise ValueError("development SH sessions 非法")
+    emitted_counts = bars.group_by("symbol").len().sort("symbol")
+    if emitted_counts.filter(pl.col("len") < 20).height:
+        raise ValueError("development emitted session count 非法")
     if set(instruments.get_column("symbol")) != {
         "000001.SZ", "000002.SZ", "600000.SH"
     }:

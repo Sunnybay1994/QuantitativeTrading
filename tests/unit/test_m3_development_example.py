@@ -21,6 +21,7 @@ from quant.research.m3.development_example import (
     VerifiedDevelopmentExampleG1Release,
     VerifiedDevelopmentExampleSnapshotArtifact,
     build_development_example_g1_release,
+    compute_development_provider_validation_key,
     compute_development_snapshot_request_key,
     derive_development_example_m3_config,
     verify_development_example_g1_release,
@@ -107,14 +108,23 @@ def test_development_g1_build_verify_and_boundary_rows(tmp_path: Path) -> None:
     suspension = pl.read_parquet(paths["suspension_1d.parquet"])
     factors = pl.read_parquet(paths["adjustment_factor.parquet"])
     instruments = pl.read_parquet(paths["instrument.parquet"])
-    assert bars.height == 8
+    assert bars.height == 62
+    emitted_counts = bars.group_by("symbol").len().sort("symbol")
+    assert emitted_counts.to_dicts() == [
+        {"symbol": "000001.SZ", "len": 20},
+        {"symbol": "000002.SZ", "len": 21},
+        {"symbol": "600000.SH", "len": 21},
+    ]
     assert suspension.row(0, named=True)["suspension_scope"] == "FULL_DAY"
+    suspended_key = suspension.select("symbol", "trade_date").row(0)
+    assert suspended_key not in set(bars.select("symbol", "trade_date").iter_rows())
     sh_factors = factors.filter(pl.col("symbol") == "600000.SH").sort(
         "effective_date"
     )
     assert sh_factors.item(1, "adj_factor") > sh_factors.item(0, "adj_factor")
     lifecycle = instruments.filter(pl.col("symbol") == "000002.SZ")
     assert lifecycle.item(0, "status") == "DELISTED"
+    assert lifecycle.item(0, "delist_date") == bars.get_column("trade_date").max()
 
 
 def test_development_g1_is_deterministic_and_formal_reader_rejects(
@@ -127,6 +137,24 @@ def test_development_g1_is_deterministic_and_formal_reader_rejects(
     assert left.receipt == right.receipt
     assert not hasattr(left.release, "release_id")
     assert not hasattr(left.release, "quality_path")
+
+
+def test_development_provider_validation_key_is_domain_separated() -> None:
+    values = {
+        "example_id": f"development-example-{'a' * 64}",
+        "provider_key": "b" * 64,
+        "provider_receipt_sha256": "c" * 64,
+        "provider_validation_config_sha256": "d" * 64,
+        "provider_runtime_fingerprint_sha256": "e" * 64,
+        "code_version": "development-example/g2c-v1",
+    }
+    key = compute_development_provider_validation_key(**values)
+    assert len(key) == 64
+    assert key == compute_development_provider_validation_key(**values)
+    with pytest.raises(ValueError):
+        compute_development_provider_validation_key(
+            **(values | {"code_version": "formal/g2c-v1"})
+        )
 
 
 def test_development_g1_detects_artifact_and_tree_drift(tmp_path: Path) -> None:
