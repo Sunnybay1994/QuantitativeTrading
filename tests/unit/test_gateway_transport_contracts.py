@@ -18,7 +18,9 @@ from quant.domain.enums import (
     OrderSide,
 )
 from quant.execution.contracts import (
+    CancelCommand,
     OrderCommand,
+    build_cancel_command,
     build_execution_event,
     build_order_command,
     build_order_intent,
@@ -26,11 +28,16 @@ from quant.execution.contracts import (
 from quant.execution.gateways import (
     DispatchCertainty,
     GatewayContractError,
+    GatewayCancelResult,
+    GatewayCancelTransport,
     GatewayDispatchResult,
     GatewayTransport,
+    validate_gateway_cancel,
     validate_gateway_submit,
+    verify_gateway_cancel_result,
     verify_gateway_dispatch_result,
 )
+from quant.execution.oms import new_order_aggregate, reduce_order
 
 UTC = dt.timezone.utc
 
@@ -77,6 +84,45 @@ def _accepted(command: OrderCommand, *, minute: int = 1):
     )
 
 
+def _cancel_fixture(
+    command: OrderCommand | None = None,
+) -> tuple[OrderCommand, CancelCommand, Any]:
+    source = command or _command()
+    aggregate = reduce_order(new_order_aggregate(source), source, _accepted(source))
+    cancel = build_cancel_command(
+        command=source,
+        aggregate=aggregate,
+        as_of=_time(3),
+    )
+    return source, cancel, aggregate
+
+
+def _cancel_command(command: OrderCommand | None = None) -> CancelCommand:
+    return _cancel_fixture(command)[1]
+
+
+def _cancel_event(
+    command: OrderCommand,
+    event_type: ExecutionEventType,
+    *,
+    minute: int,
+    cumulative: int,
+    last: int = 0,
+    broker_order_id: str | None = "PAPER-1",
+):
+    return build_execution_event(
+        command=command,
+        broker_order_id=broker_order_id,
+        event_type=event_type,
+        occurred_at=_time(minute),
+        cumulative_quantity=cumulative,
+        last_quantity=last,
+        last_price=Decimal("10.50") if last else None,
+        fees=(),
+        reject_code=None,
+    )
+
+
 class _Transport:
     def __init__(self) -> None:
         self.calls = 0
@@ -88,6 +134,19 @@ class _Transport:
         self.calls += 1
         return GatewayDispatchResult(
             command_id=command.command_id,
+            dispatch_attempt=dispatch_attempt,
+            certainty=DispatchCertainty.SENT,
+            callbacks=(),
+        )
+
+
+class _CancelTransport:
+    def cancel(
+        self, *, command: CancelCommand, dispatch_attempt: int, now: dt.datetime
+    ) -> GatewayCancelResult:
+        del now
+        return GatewayCancelResult(
+            cancel_id=command.cancel_id,
             dispatch_attempt=dispatch_attempt,
             certainty=DispatchCertainty.SENT,
             callbacks=(),
@@ -251,3 +310,308 @@ def test_post_verifier_rejects_mutated_frozen_result(
     object.__setattr__(result, field, value)
     with pytest.raises(GatewayContractError, match=code):
         verify_gateway_dispatch_result(command, 2, _time(5), result)
+
+
+def test_cancel_transport_protocol_and_fenced_sent_result() -> None:
+    source, command, aggregate = _cancel_fixture()
+    transport = _CancelTransport()
+    assert isinstance(transport, GatewayCancelTransport)
+    validate_gateway_cancel(command, 1, _time(5))
+    result = transport.cancel(command=command, dispatch_attempt=1, now=_time(5))
+    assert (
+        verify_gateway_cancel_result(source, command, aggregate, 1, _time(5), result)
+        is result
+    )
+
+
+def test_cancel_unknown_is_callback_free_and_identity_stable_for_manual_query() -> None:
+    source, command, aggregate = _cancel_fixture()
+    unknown = GatewayCancelResult(
+        cancel_id=command.cancel_id,
+        dispatch_attempt=1,
+        certainty=DispatchCertainty.UNKNOWN,
+        callbacks=(),
+    )
+    assert (
+        verify_gateway_cancel_result(source, command, aggregate, 1, _time(5), unknown)
+        is unknown
+    )
+    assert unknown.certainty is DispatchCertainty.UNKNOWN
+    assert unknown.cancel_id == command.cancel_id
+    with pytest.raises(GatewayContractError, match="CALLBACKS_FORBIDDEN"):
+        GatewayCancelResult(
+            cancel_id=command.cancel_id,
+            dispatch_attempt=1,
+            certainty=DispatchCertainty.UNKNOWN,
+            callbacks=(_accepted(_command()),),
+        )
+
+
+def test_cancel_result_attempt_id_and_callback_sources_are_fenced() -> None:
+    source, command, aggregate = _cancel_fixture()
+    callback = build_execution_event(
+        command=source,
+        broker_order_id=command.broker_order_id,
+        event_type=ExecutionEventType.CANCEL_ACCEPTED,
+        occurred_at=_time(4),
+        cumulative_quantity=0,
+        last_quantity=0,
+        last_price=None,
+        fees=(),
+        reject_code=None,
+    )
+    valid = GatewayCancelResult(
+        cancel_id=command.cancel_id,
+        dispatch_attempt=2,
+        certainty=DispatchCertainty.SENT,
+        callbacks=(callback,),
+    )
+    assert (
+        verify_gateway_cancel_result(source, command, aggregate, 2, _time(5), valid)
+        is valid
+    )
+
+    wrong_id = copy.copy(valid)
+    object.__setattr__(wrong_id, "cancel_id", _hex64("other-cancel"))
+    with pytest.raises(GatewayContractError, match="COMMAND_MISMATCH"):
+        verify_gateway_cancel_result(source, command, aggregate, 2, _time(5), wrong_id)
+    with pytest.raises(GatewayContractError, match="ATTEMPT_MISMATCH"):
+        verify_gateway_cancel_result(source, command, aggregate, 1, _time(5), valid)
+
+    wrong_broker = build_execution_event(
+        command=source,
+        broker_order_id="PAPER-OTHER",
+        event_type=ExecutionEventType.CANCEL_ACCEPTED,
+        occurred_at=_time(4),
+        cumulative_quantity=0,
+        last_quantity=0,
+        last_price=None,
+        fees=(),
+        reject_code=None,
+    )
+    wrong_broker_result = GatewayCancelResult(
+        cancel_id=command.cancel_id,
+        dispatch_attempt=2,
+        certainty=DispatchCertainty.SENT,
+        callbacks=(wrong_broker,),
+    )
+    with pytest.raises(GatewayContractError, match="BROKER_MISMATCH"):
+        verify_gateway_cancel_result(
+            source, command, aggregate, 2, _time(5), wrong_broker_result
+        )
+
+
+def test_cancel_gateway_rejects_forged_time_and_attempt_before_adapter() -> None:
+    command = _cancel_command()
+    with pytest.raises(GatewayContractError, match="ATTEMPT_INVALID"):
+        validate_gateway_cancel(command, True, _time(5))
+    with pytest.raises(GatewayContractError, match="TIME_INVALID"):
+        validate_gateway_cancel(command, 1, _time(2))
+    forged = copy.copy(command)
+    object.__setattr__(forged, "observed_filled_quantity", 1)
+    with pytest.raises(GatewayContractError, match="COMMAND_INVALID") as exc_info:
+        validate_gateway_cancel(forged, 1, _time(5))
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+
+
+def test_cancel_callback_cannot_predate_cancel_snapshot() -> None:
+    source, command, aggregate = _cancel_fixture()
+    stale = build_execution_event(
+        command=source,
+        broker_order_id=command.broker_order_id,
+        event_type=ExecutionEventType.CANCEL_ACCEPTED,
+        occurred_at=_time(2),
+        cumulative_quantity=0,
+        last_quantity=0,
+        last_price=None,
+        fees=(),
+        reject_code=None,
+    )
+    result = GatewayCancelResult(
+        cancel_id=command.cancel_id,
+        dispatch_attempt=1,
+        certainty=DispatchCertainty.SENT,
+        callbacks=(stale,),
+    )
+    with pytest.raises(GatewayContractError, match="CALLBACK_TIME_INVALID"):
+        verify_gateway_cancel_result(source, command, aggregate, 1, _time(5), result)
+
+
+def test_cancel_callback_sequence_proves_late_partial_then_cancelled() -> None:
+    source, command, aggregate = _cancel_fixture()
+    callbacks = (
+        _cancel_event(source, ExecutionEventType.CANCEL_ACCEPTED, minute=4, cumulative=0),
+        _cancel_event(
+            source, ExecutionEventType.PARTIAL_FILL, minute=5, cumulative=20, last=20
+        ),
+        _cancel_event(source, ExecutionEventType.CANCELLED, minute=6, cumulative=20),
+    )
+    result = GatewayCancelResult(
+        cancel_id=command.cancel_id,
+        dispatch_attempt=1,
+        certainty=DispatchCertainty.SENT,
+        callbacks=callbacks,
+    )
+    assert (
+        verify_gateway_cancel_result(source, command, aggregate, 1, _time(7), result)
+        is result
+    )
+
+
+def test_cancel_callback_sequence_allows_full_fill_race() -> None:
+    source, command, aggregate = _cancel_fixture()
+    callbacks = (
+        _cancel_event(source, ExecutionEventType.CANCEL_ACCEPTED, minute=4, cumulative=0),
+        _cancel_event(source, ExecutionEventType.FILL, minute=5, cumulative=100, last=100),
+    )
+    result = GatewayCancelResult(
+        cancel_id=command.cancel_id,
+        dispatch_attempt=1,
+        certainty=DispatchCertainty.SENT,
+        callbacks=callbacks,
+    )
+    assert (
+        verify_gateway_cancel_result(source, command, aggregate, 1, _time(6), result)
+        is result
+    )
+
+
+def test_cancel_callbacks_reject_non_cancel_ack_and_none_broker() -> None:
+    source, command, aggregate = _cancel_fixture()
+    cases = (
+        (
+            (_accepted(source, minute=4),),
+            "CALLBACK_TYPE_INVALID",
+        ),
+        (
+            (
+                _cancel_event(
+                    source,
+                    ExecutionEventType.CANCEL_ACCEPTED,
+                    minute=4,
+                    cumulative=0,
+                    broker_order_id=None,
+                ),
+            ),
+            "CALLBACK_BROKER_MISMATCH",
+        ),
+    )
+    for callbacks, code in cases:
+        result = GatewayCancelResult(
+            cancel_id=command.cancel_id,
+            dispatch_attempt=1,
+            certainty=DispatchCertainty.SENT,
+            callbacks=callbacks,
+        )
+        with pytest.raises(GatewayContractError, match=code):
+            verify_gateway_cancel_result(source, command, aggregate, 1, _time(5), result)
+
+
+
+def test_cancel_callbacks_preserve_exact_duplicates_for_oms_idempotency() -> None:
+    source, command, aggregate = _cancel_fixture()
+    ack = _cancel_event(source, ExecutionEventType.CANCEL_ACCEPTED, minute=4, cumulative=0)
+    partial = _cancel_event(
+        source, ExecutionEventType.PARTIAL_FILL, minute=5, cumulative=20, last=20
+    )
+    result = GatewayCancelResult(
+        cancel_id=command.cancel_id,
+        dispatch_attempt=1,
+        certainty=DispatchCertainty.SENT,
+        callbacks=(ack, ack, partial, partial),
+    )
+    assert (
+        verify_gateway_cancel_result(source, command, aggregate, 1, _time(6), result)
+        is result
+    )
+
+
+def test_cancel_callbacks_same_id_different_payload_fail_closed() -> None:
+    source, command, aggregate = _cancel_fixture()
+    ack = _cancel_event(source, ExecutionEventType.CANCEL_ACCEPTED, minute=4, cumulative=0)
+    forged = copy.copy(ack)
+    sentinel = "TOKEN_DIFFERENT_PAYLOAD"
+    object.__setattr__(forged, "broker_order_id", sentinel)
+    result = GatewayCancelResult(
+        cancel_id=command.cancel_id,
+        dispatch_attempt=1,
+        certainty=DispatchCertainty.SENT,
+        callbacks=(ack, forged),
+    )
+    with pytest.raises(GatewayContractError, match="CALLBACK_INVALID") as exc_info:
+        verify_gateway_cancel_result(source, command, aggregate, 1, _time(5), result)
+    assert sentinel not in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+
+
+@pytest.mark.parametrize(
+    "callbacks",
+    [
+        lambda source: (
+            _cancel_event(
+                source, ExecutionEventType.CANCEL_ACCEPTED, minute=4, cumulative=0
+            ),
+            _cancel_event(
+                source, ExecutionEventType.PARTIAL_FILL, minute=5, cumulative=40, last=20
+            ),
+        ),
+        lambda source: (
+            _cancel_event(
+                source, ExecutionEventType.PARTIAL_FILL, minute=4, cumulative=40, last=40
+            ),
+            _cancel_event(
+                source, ExecutionEventType.PARTIAL_FILL, minute=5, cumulative=20, last=20
+            ),
+        ),
+    ],
+)
+def test_cancel_callbacks_reject_cumulative_jump_or_rollback(callbacks) -> None:
+    source, command, aggregate = _cancel_fixture()
+    result = GatewayCancelResult(
+        cancel_id=command.cancel_id,
+        dispatch_attempt=1,
+        certainty=DispatchCertainty.SENT,
+        callbacks=callbacks(source),
+    )
+    with pytest.raises(GatewayContractError, match="SEQUENCE_INVALID") as exc_info:
+        verify_gateway_cancel_result(source, command, aggregate, 1, _time(6), result)
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+
+
+def test_cancel_verifier_rejects_snapshot_drift_and_sanitizes_event_forgery() -> None:
+    source, command, aggregate = _cancel_fixture()
+    drifted = reduce_order(
+        aggregate,
+        source,
+        _cancel_event(
+            source, ExecutionEventType.PARTIAL_FILL, minute=2, cumulative=20, last=20
+        ),
+    )
+    empty = GatewayCancelResult(
+        cancel_id=command.cancel_id,
+        dispatch_attempt=1,
+        certainty=DispatchCertainty.SENT,
+        callbacks=(),
+    )
+    with pytest.raises(GatewayContractError, match="SNAPSHOT_MISMATCH"):
+        verify_gateway_cancel_result(source, command, drifted, 1, _time(5), empty)
+
+    forged = _cancel_event(
+        source, ExecutionEventType.CANCEL_ACCEPTED, minute=4, cumulative=0
+    )
+    sentinel = "TOKEN_SECRET_CANCEL_CALLBACK"
+    object.__setattr__(forged, "broker_order_id", sentinel)
+    result = GatewayCancelResult(
+        cancel_id=command.cancel_id,
+        dispatch_attempt=1,
+        certainty=DispatchCertainty.SENT,
+        callbacks=(forged,),
+    )
+    with pytest.raises(GatewayContractError, match="CALLBACK_INVALID") as exc_info:
+        verify_gateway_cancel_result(source, command, aggregate, 1, _time(5), result)
+    assert sentinel not in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None

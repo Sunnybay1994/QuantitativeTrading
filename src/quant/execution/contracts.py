@@ -22,6 +22,7 @@ from quant.domain.enums import (
     ExecutionMode,
     Market,
     OrderSide,
+    OrderStatus,
     OrderType,
     TimeInForce,
 )
@@ -63,6 +64,19 @@ def _require_utc_datetime(name: str, value: object) -> dt.datetime:
     if value.utcoffset() != dt.timedelta(0):
         raise ContractError(f"{name} must be timezone-aware UTC")
     return value
+
+
+def _require_cancel_utc_datetime(name: str, value: object) -> dt.datetime:
+    """Cancel-boundary UTC validator that hides hostile tzinfo failures."""
+    invalid = False
+    checked: dt.datetime | None = None
+    try:
+        checked = _require_utc_datetime(name, value)
+    except Exception:
+        invalid = True
+    if invalid or checked is None:
+        raise ContractError(f"{name} must be timezone-aware UTC")
+    return checked
 
 
 def _require_date(name: str, value: object) -> dt.date:
@@ -547,6 +561,32 @@ def _order_command_digest(
     )
 
 
+def _cancel_command_digest(
+    *,
+    command_id: str,
+    broker_order_id: str,
+    mode: ExecutionMode,
+    aggregate_status: OrderStatus,
+    observed_filled_quantity: int,
+    observed_event_ids: tuple[str, ...],
+    observed_last_event_at: dt.datetime,
+    as_of: dt.datetime,
+) -> str:
+    return _sha256_envelope(
+        type_name="CancelCommand",
+        payload={
+            "command_id": command_id,
+            "broker_order_id": broker_order_id,
+            "mode": mode,
+            "aggregate_status": aggregate_status,
+            "observed_filled_quantity": observed_filled_quantity,
+            "observed_event_ids": observed_event_ids,
+            "observed_last_event_at": observed_last_event_at,
+            "as_of": as_of,
+        },
+    )
+
+
 def _execution_event_digest(
     *,
     command_id: str,
@@ -1021,6 +1061,59 @@ class OrderCommand:
             time_in_force=self.time_in_force,
         )
         _reject_forged_identity("command_id", self.command_id, expected)
+
+
+@dataclass(frozen=True, slots=True)
+class CancelCommand:
+    """Durable, content-addressed request to cancel one PAPER order."""
+
+    cancel_id: str
+    command_id: str
+    broker_order_id: str
+    mode: ExecutionMode
+    aggregate_status: OrderStatus
+    observed_filled_quantity: int
+    observed_event_ids: tuple[str, ...]
+    observed_last_event_at: dt.datetime
+    as_of: dt.datetime
+
+    def __post_init__(self) -> None:
+        _require_hex64("cancel_id", self.cancel_id)
+        _require_hex64("command_id", self.command_id)
+        _require_non_empty_str("broker_order_id", self.broker_order_id)
+        mode = _require_enum("mode", self.mode, ExecutionMode)
+        if mode is not ExecutionMode.PAPER:
+            raise ContractError("cancel mode must be PAPER")
+        status = _require_enum("aggregate_status", self.aggregate_status, OrderStatus)
+        if status not in (OrderStatus.SUBMITTED, OrderStatus.PARTIAL_FILLED):
+            raise ContractError("cancel aggregate_status must be SUBMITTED or PARTIAL_FILLED")
+        filled = _require_int("observed_filled_quantity", self.observed_filled_quantity, minimum=0)
+        if status is OrderStatus.SUBMITTED and filled != 0:
+            raise ContractError("SUBMITTED cancel snapshot requires zero filled quantity")
+        if status is OrderStatus.PARTIAL_FILLED and filled <= 0:
+            raise ContractError("PARTIAL_FILLED cancel snapshot requires positive filled quantity")
+        if type(self.observed_event_ids) is not tuple or not self.observed_event_ids:
+            raise ContractError("observed_event_ids must be a non-empty tuple")
+        for event_id in self.observed_event_ids:
+            _require_hex64("observed_event_id", event_id)
+        _ensure_unique_keys(self.observed_event_ids, label="observed event")
+        observed_at = _require_cancel_utc_datetime(
+            "observed_last_event_at", self.observed_last_event_at
+        )
+        as_of = _require_cancel_utc_datetime("as_of", self.as_of)
+        if as_of < observed_at:
+            raise ContractError("cancel as_of must not precede observed_last_event_at")
+        expected = _cancel_command_digest(
+            command_id=self.command_id,
+            broker_order_id=self.broker_order_id,
+            mode=self.mode,
+            aggregate_status=self.aggregate_status,
+            observed_filled_quantity=self.observed_filled_quantity,
+            observed_event_ids=self.observed_event_ids,
+            observed_last_event_at=self.observed_last_event_at,
+            as_of=self.as_of,
+        )
+        _reject_forged_identity("cancel_id", self.cancel_id, expected)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1753,6 +1846,139 @@ def build_order_command_identity(command: OrderCommand) -> str:
     return digest
 
 
+def build_cancel_command(
+    *,
+    command: OrderCommand,
+    aggregate: object,
+    as_of: dt.datetime,
+    replay: CancelCommand | None = None,
+) -> CancelCommand:
+    """Build a first cancel, or prove and return the same command while cancelling."""
+    if not isinstance(command, OrderCommand):
+        raise ContractError("command must be OrderCommand")
+    source_invalid = False
+    try:
+        build_order_intent_identity(command.intent)
+        build_order_command_identity(command)
+    except Exception:
+        source_invalid = True
+    if source_invalid:
+        raise ContractError("CANCEL_SOURCE_COMMAND_INVALID")
+    if command.mode is not ExecutionMode.PAPER:
+        raise ContractError("cancel command requires PAPER OrderCommand")
+
+    # Local import avoids making the foundational value-object module depend on OMS.
+    from quant.execution.oms import OrderAggregate
+
+    if not isinstance(aggregate, OrderAggregate):
+        raise ContractError("aggregate must be OrderAggregate")
+    # Reconstruct to re-run all invariants even if a frozen instance was mutated.
+    aggregate_invalid = False
+    verified: OrderAggregate | None = None
+    try:
+        verified = OrderAggregate(
+            command_id=aggregate.command_id,
+            status=aggregate.status,
+            filled_quantity=aggregate.filled_quantity,
+            broker_order_id=aggregate.broker_order_id,
+            reject_code=aggregate.reject_code,
+            applied_event_ids=aggregate.applied_event_ids,
+            command_quantity=aggregate.command_quantity,
+            last_event_at=aggregate.last_event_at,
+        )
+    except (TypeError, ValueError):
+        aggregate_invalid = True
+    if aggregate_invalid or verified is None:
+        raise ContractError("CANCEL_SOURCE_AGGREGATE_INVALID")
+    if verified.command_id != command.command_id:
+        raise ContractError("aggregate command_id must match command")
+    if verified.command_quantity != command.intent.quantity:
+        raise ContractError("aggregate command_quantity must match command")
+    if verified.broker_order_id is None:
+        raise ContractError("cancel requires a bound broker_order_id")
+    requested_at = _require_cancel_utc_datetime("as_of", as_of)
+    if requested_at < command.intent.generated_at:
+        raise ContractError("cancel as_of must not precede command generated_at")
+
+    if replay is not None:
+        if verified.status not in (
+            OrderStatus.CANCELLING,
+            OrderStatus.CANCELLED,
+            OrderStatus.FILLED,
+        ):
+            raise ContractError("replay requires CANCELLING, CANCELLED or FILLED aggregate")
+        build_cancel_command_identity(replay)
+        if replay.command_id != verified.command_id:
+            raise ContractError("replayed cancel command_id mismatch")
+        if replay.broker_order_id != verified.broker_order_id:
+            raise ContractError("replayed cancel broker_order_id mismatch")
+        if replay.mode is not command.mode:
+            raise ContractError("replayed cancel mode mismatch")
+        if replay.observed_filled_quantity > verified.filled_quantity:
+            raise ContractError("replayed cancel observes impossible filled quantity")
+        observed_ids = replay.observed_event_ids
+        if verified.applied_event_ids[: len(observed_ids)] != observed_ids:
+            raise ContractError("replayed cancel event closure mismatch")
+        if verified.last_event_at is None or verified.last_event_at < replay.observed_last_event_at:
+            raise ContractError("replayed cancel last event time mismatch")
+        if requested_at < verified.last_event_at:
+            raise ContractError("replay as_of must not precede aggregate last_event_at")
+        return replay
+
+    if verified.status is OrderStatus.CANCELLING:
+        raise ContractError("CANCELLING requires replay of the existing cancel_id")
+    if verified.status not in (OrderStatus.SUBMITTED, OrderStatus.PARTIAL_FILLED):
+        raise ContractError("first cancel requires SUBMITTED or PARTIAL_FILLED aggregate")
+    if verified.last_event_at is None or requested_at < verified.last_event_at:
+        raise ContractError("cancel as_of must not precede aggregate last_event_at")
+    cancel_id = _cancel_command_digest(
+        command_id=verified.command_id,
+        broker_order_id=verified.broker_order_id,
+        mode=command.mode,
+        aggregate_status=verified.status,
+        observed_filled_quantity=verified.filled_quantity,
+        observed_event_ids=verified.applied_event_ids,
+        observed_last_event_at=verified.last_event_at,
+        as_of=requested_at,
+    )
+    return CancelCommand(
+        cancel_id=cancel_id,
+        command_id=verified.command_id,
+        broker_order_id=verified.broker_order_id,
+        mode=command.mode,
+        aggregate_status=verified.status,
+        observed_filled_quantity=verified.filled_quantity,
+        observed_event_ids=verified.applied_event_ids,
+        observed_last_event_at=verified.last_event_at,
+        as_of=requested_at,
+    )
+
+
+def build_cancel_command_identity(command: CancelCommand) -> str:
+    """Strictly reconstruct, then return the durable cancel-command identity."""
+    if not isinstance(command, CancelCommand):
+        raise TypeError("build_cancel_command_identity requires CancelCommand")
+    invalid = False
+    verified: CancelCommand | None = None
+    try:
+        verified = CancelCommand(
+            cancel_id=command.cancel_id,
+            command_id=command.command_id,
+            broker_order_id=command.broker_order_id,
+            mode=command.mode,
+            aggregate_status=command.aggregate_status,
+            observed_filled_quantity=command.observed_filled_quantity,
+            observed_event_ids=command.observed_event_ids,
+            observed_last_event_at=command.observed_last_event_at,
+            as_of=command.as_of,
+        )
+    except Exception:
+        invalid = True
+    if invalid or verified is None:
+        raise ContractError("CANCEL_COMMAND_INVALID")
+    return verified.cancel_id
+
+
 def build_execution_event(
     *,
     command: OrderCommand,
@@ -2042,6 +2268,7 @@ def build_order_plan_identity(plan: OrderPlan) -> str:
 __all__ = [
     "AccountSnapshot",
     "CashBalance",
+    "CancelCommand",
     "ContractError",
     "ExecutionEvent",
     "FeeComponent",
@@ -2061,6 +2288,8 @@ __all__ = [
     "build_account_snapshot_identity",
     "build_cash_balance",
     "build_cash_balance_identity",
+    "build_cancel_command",
+    "build_cancel_command_identity",
     "build_execution_event",
     "build_execution_event_identity",
     "build_fee_component",
