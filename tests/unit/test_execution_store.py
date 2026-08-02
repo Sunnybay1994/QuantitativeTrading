@@ -2049,3 +2049,175 @@ def test_put_event_foreign_key_failure_keeps_referential_integrity_code(
             assert repo.get_event("event-without-command") is None
     finally:
         store.close()
+
+
+def test_recovery_rows_empty_store_is_valid(cwd_tmp: Path) -> None:
+    store = _open("recovery-empty.db", cwd_tmp)
+    try:
+        with store.transaction() as repo:
+            rows = repo.read_recovery_rows()
+        assert rows.commands == ()
+        assert rows.events == ()
+        assert rows.order_aggregates == ()
+        assert rows.outbox_deliveries == ()
+        assert rows.ledger_entries == ()
+    finally:
+        store.close()
+
+
+def test_recovery_rows_are_strict_and_sorted_by_primary_key(cwd_tmp: Path) -> None:
+    store = _open("recovery-sorted.db", cwd_tmp)
+    now = dt.datetime(2026, 8, 3, 1, tzinfo=UTC)
+    try:
+        with store.transaction() as repo:
+            for suffix in ("b", "a"):
+                command_id = f"cmd-{suffix}"
+                repo.put_command(
+                    command_id=command_id,
+                    identity=_hex(f"command-{suffix}"),
+                    payload=f"command-{suffix}".encode(),
+                )
+                repo.put_order_aggregate(
+                    command_id=command_id,
+                    identity=_hex(f"aggregate-{suffix}"),
+                    payload=f"aggregate-{suffix}".encode(),
+                )
+                repo.put_event(
+                    event_id=f"evt-{suffix}",
+                    command_id=command_id,
+                    identity=_hex(f"event-{suffix}"),
+                    payload=f"event-{suffix}".encode(),
+                )
+                repo.put_outbox(
+                    outbox_key=f"obx-{suffix}",
+                    identity=_hex(f"outbox-{suffix}"),
+                    payload=f"outbox-{suffix}".encode(),
+                )
+                repo.put_outbox_delivery(
+                    outbox_key=f"obx-{suffix}",
+                    command_id=command_id,
+                    available_at=now,
+                )
+                repo.put_ledger_entry(
+                    entry_id=f"led-{suffix}",
+                    identity=_hex(f"ledger-{suffix}"),
+                    payload=f"ledger-{suffix}".encode(),
+                )
+            rows = repo.read_recovery_rows()
+
+        assert tuple(item.key for item in rows.commands) == ("cmd-a", "cmd-b")
+        assert tuple(item.event_id for item in rows.events) == ("evt-a", "evt-b")
+        assert tuple(item.command_id for item in rows.events) == ("cmd-a", "cmd-b")
+        assert tuple(item.key for item in rows.order_aggregates) == ("cmd-a", "cmd-b")
+        assert tuple(item.outbox_key for item in rows.outbox_deliveries) == (
+            "obx-a",
+            "obx-b",
+        )
+        assert tuple(item.key for item in rows.ledger_entries) == ("led-a", "led-b")
+    finally:
+        store.close()
+
+
+def test_recovery_rows_hold_one_transaction_snapshot(cwd_tmp: Path) -> None:
+    first = _open("recovery-atomic.db", cwd_tmp)
+    second = _open("recovery-atomic.db", cwd_tmp)
+    try:
+        with first.transaction() as repo:
+            repo.put_command(command_id="cmd-a", identity=ID_A, payload=b"a")
+            before = repo.read_recovery_rows()
+            with pytest.raises(StoreError, match="^TX_BUSY$"):
+                with second.transaction() as other:
+                    other.put_command(command_id="cmd-b", identity=ID_B, payload=b"b")
+            after = repo.read_recovery_rows()
+            assert before == after
+
+        with second.transaction() as repo:
+            repo.put_command(command_id="cmd-b", identity=ID_B, payload=b"b")
+        with first.transaction() as repo:
+            latest = repo.read_recovery_rows()
+        assert tuple(item.key for item in latest.commands) == ("cmd-a", "cmd-b")
+    finally:
+        first.close()
+        second.close()
+
+
+@pytest.mark.parametrize("subject", ["event", "aggregate", "delivery"])
+def test_recovery_rows_fail_closed_on_broken_join(
+    cwd_tmp: Path, subject: str
+) -> None:
+    name = f"recovery-broken-{subject}.db"
+    db = cwd_tmp / name
+    store = _open(name, cwd_tmp)
+    now = dt.datetime(2026, 8, 3, 1, tzinfo=UTC)
+    with store.transaction() as repo:
+        repo.put_command(command_id="cmd-a", identity=ID_A, payload=b"command")
+        repo.put_order_aggregate(
+            command_id="cmd-a", identity=ID_AGG, payload=b"aggregate"
+        )
+        if subject == "event":
+            repo.put_event(
+                event_id="evt-a",
+                command_id="cmd-a",
+                identity=ID_E,
+                payload=b"event",
+            )
+        else:
+            repo.put_outbox(outbox_key="obx-a", identity=ID_O_A, payload=b"outbox")
+            repo.put_outbox_delivery(
+                outbox_key="obx-a", command_id="cmd-a", available_at=now
+            )
+    store.close()
+
+    with sqlite3.connect(db) as conn:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        if subject in {"event", "aggregate"}:
+            conn.execute("DELETE FROM commands WHERE command_id = 'cmd-a'")
+        else:
+            conn.execute("DELETE FROM outbox WHERE outbox_key = 'obx-a'")
+        conn.commit()
+
+    store = _open(name, cwd_tmp)
+    try:
+        with store.transaction() as repo:
+            with pytest.raises(StoreError, match="^ROW_CORRUPT$") as exc_info:
+                repo.read_recovery_rows()
+        assert exc_info.value.__cause__ is None
+        assert exc_info.value.__context__ is None
+    finally:
+        store.close()
+
+
+def test_recovery_rows_sqlite_error_is_stable_scrubbed_and_detached(
+    cwd_tmp: Path,
+) -> None:
+    store = _open("recovery-hostile.db", cwd_tmp)
+    inner = store._conn  # noqa: SLF001 - fault injection at SQLite boundary
+    assert inner is not None
+    sentinel = str(cwd_tmp / "TOKEN-recovery-hostile")
+
+    class _FailRecoveryRead:
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            self._inner = conn
+
+        def execute(self, sql: str, parameters: object = ()) -> sqlite3.Cursor:
+            if sql.startswith("SELECT command_id, identity, payload FROM commands ORDER"):
+                raise sqlite3.OperationalError(f"failed near {sentinel}")
+            return self._inner.execute(sql, parameters)  # type: ignore[arg-type]
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+    store._conn = _FailRecoveryRead(inner)  # type: ignore[assignment]  # noqa: SLF001
+    try:
+        with store.transaction() as repo:
+            with pytest.raises(
+                StoreError, match="^RECOVERY_SNAPSHOT_READ_FAILED$"
+            ) as exc_info:
+                repo.read_recovery_rows()
+        _assert_scrubbed_store_error(
+            exc_info.value,
+            code="RECOVERY_SNAPSHOT_READ_FAILED",
+            injected=sentinel,
+        )
+    finally:
+        store.close()

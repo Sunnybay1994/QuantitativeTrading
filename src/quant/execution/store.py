@@ -69,6 +69,27 @@ class StoredRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class StoredEventRecord:
+    """Strict event row retaining its command foreign-key closure."""
+
+    event_id: str
+    command_id: str
+    identity: str
+    payload: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveryRows:
+    """One transaction-consistent, deterministically ordered recovery snapshot."""
+
+    commands: tuple[StoredRecord, ...]
+    events: tuple[StoredEventRecord, ...]
+    order_aggregates: tuple[StoredRecord, ...]
+    outbox_deliveries: tuple[OutboxDelivery, ...]
+    ledger_entries: tuple[StoredRecord, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class OutboxDelivery:
     """Strict delivery metadata joined with its opaque outbox record."""
 
@@ -165,6 +186,41 @@ def _row_to_stored(key: object, identity: object, payload: object) -> StoredReco
     if type(payload) is not bytes:
         raise StoreError("ROW_CORRUPT")
     return StoredRecord(key=key, identity=identity, payload=payload)
+
+
+def _row_to_stored_event(row: tuple[object, ...]) -> StoredEventRecord:
+    if len(row) != 5:
+        raise StoreError("ROW_CORRUPT")
+    event = _row_to_stored(row[0], row[2], row[3])
+    command_id: str | None = None
+    command_ref: str | None = None
+    try:
+        command_id = _require_key("command_id", row[1])
+        command_ref = _require_key("command_id", row[4])
+    except StoreError:
+        pass
+    if command_id is None or command_ref is None or command_id != command_ref:
+        raise StoreError("ROW_CORRUPT")
+    return StoredEventRecord(
+        event_id=event.key,
+        command_id=command_id,
+        identity=event.identity,
+        payload=event.payload,
+    )
+
+
+def _row_to_stored_aggregate(row: tuple[object, ...]) -> StoredRecord:
+    if len(row) != 4:
+        raise StoreError("ROW_CORRUPT")
+    aggregate = _row_to_stored(row[0], row[1], row[2])
+    command_ref: str | None = None
+    try:
+        command_ref = _require_key("command_id", row[3])
+    except StoreError:
+        pass
+    if command_ref is None or aggregate.key != command_ref:
+        raise StoreError("ROW_CORRUPT")
+    return aggregate
 
 
 def _row_to_outbox_delivery(row: tuple[object, ...]) -> OutboxDelivery:
@@ -1231,6 +1287,56 @@ class ExecutionRepository:
             return None
         return _row_to_stored(row[0], row[1], row[2])
 
+    def read_recovery_rows(self) -> RecoveryRows:
+        """Read all recovery inputs atomically inside the caller's transaction."""
+        query_error: StoreError | None = None
+        command_rows: list[tuple[object, ...]] = []
+        event_rows: list[tuple[object, ...]] = []
+        aggregate_rows: list[tuple[object, ...]] = []
+        delivery_rows: list[tuple[object, ...]] = []
+        ledger_rows: list[tuple[object, ...]] = []
+        try:
+            command_rows = self._conn.execute(
+                "SELECT command_id, identity, payload FROM commands ORDER BY command_id"
+            ).fetchall()
+            event_rows = self._conn.execute(
+                "SELECT e.event_id, e.command_id, e.identity, e.payload, c.command_id "
+                "FROM events AS e "
+                "LEFT JOIN commands AS c ON c.command_id = e.command_id "
+                "ORDER BY e.event_id"
+            ).fetchall()
+            aggregate_rows = self._conn.execute(
+                "SELECT a.command_id, a.identity, a.payload, c.command_id "
+                "FROM order_aggregates AS a "
+                "LEFT JOIN commands AS c ON c.command_id = a.command_id "
+                "ORDER BY a.command_id"
+            ).fetchall()
+            delivery_rows = self._conn.execute(
+                f"SELECT {self._delivery_columns()} "
+                "FROM outbox_deliveries AS d "
+                "LEFT JOIN outbox AS o ON o.outbox_key = d.outbox_key "
+                "LEFT JOIN commands AS c ON c.command_id = d.command_id "
+                "LEFT JOIN order_aggregates AS a ON a.command_id = d.command_id "
+                "ORDER BY d.outbox_key"
+            ).fetchall()
+            ledger_rows = self._conn.execute(
+                "SELECT entry_id, identity, payload FROM ledger_entries ORDER BY entry_id"
+            ).fetchall()
+        except sqlite3.Error:
+            query_error = StoreError("RECOVERY_SNAPSHOT_READ_FAILED")
+        if query_error is not None:
+            raise query_error from None
+
+        return RecoveryRows(
+            commands=tuple(_row_to_stored(*row) for row in command_rows),
+            events=tuple(_row_to_stored_event(row) for row in event_rows),
+            order_aggregates=tuple(_row_to_stored_aggregate(row) for row in aggregate_rows),
+            outbox_deliveries=tuple(
+                _row_to_outbox_delivery(row) for row in delivery_rows
+            ),
+            ledger_entries=tuple(_row_to_stored(*row) for row in ledger_rows),
+        )
+
     def put_reconciliation_run(
         self, *, run_id: str, identity: str, payload: bytes
     ) -> bool:
@@ -1407,8 +1513,10 @@ __all__ = [
     "MigrationInterruptedError",
     "OutboxDelivery",
     "OutboxDeliveryState",
+    "RecoveryRows",
     "StoreError",
     "StoreUriError",
+    "StoredEventRecord",
     "StoredRecord",
     "UnknownSchemaVersionError",
 ]
