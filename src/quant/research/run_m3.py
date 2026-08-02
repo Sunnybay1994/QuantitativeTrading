@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
 import math
@@ -14,8 +15,15 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Never, TypeAlias
 
-from quant.data.m3_release import G1Release, verify_g1_release
-from quant.research.m3.config import LoadedM3Config, load_m3_config
+import polars as pl
+
+from quant.data.m3_mappers import compute_benchmark_source_snapshot_id
+from quant.data.m3_release import (
+    G1Release,
+    VerifiedG1Release,
+    verify_g1_release,
+)
+from quant.research.m3.config import LoadedM3Config, M3ConfigError, load_m3_config
 from quant.research.m3.contracts import (
     ExperimentIdentitySpec,
     ProviderValidationSpec,
@@ -31,16 +39,31 @@ from quant.research.m3.experiment_identity import (
     verify_experiment_identity_output,
 )
 from quant.research.m3.labels import verify_experiment_identity
-from quant.research.m3.orchestration import StageRunner
+from quant.research.m3.orchestration import (
+    M3StageRunnerError,
+    SnapshotStageResult,
+    StageBuildReport,
+    StageContext,
+    StageRunner,
+    make_snapshot_run_plan,
+)
+from quant.research.m3.readiness import ReadinessIssue, audit_m3_readiness
 from quant.research.m3.provider import verify_provider_artifact
 from quant.research.m3.provider_validation import (
     read_provider_validation_summary,
     verify_provider_validation_artifact,
 )
-from quant.research.m3.runtime_identity import compute_m3_runtime_identity
+from quant.research.m3.runtime_identity import (
+    M3SourceDigestV1,
+    compute_m3_runtime_identity,
+)
+from quant.research.m3.run_state import ArtifactDigest, compute_snapshot_request_key
 from quant.research.m3.snapshot import (
+    build_snapshot_artifact,
+    build_snapshot_request_record,
     read_snapshot_manifest,
     read_snapshot_request_record,
+    verify_snapshot_build_result,
     verify_snapshot_artifact,
 )
 
@@ -300,7 +323,9 @@ def main(
         if args.command == "experiment-identity":
             payload, exit_code = _run_legacy(args, execute)
         else:
-            payload, exit_code = _run_public(args, dispatcher)
+            payload, exit_code = _run_public(
+                args, _dispatch_public if dispatcher is None else dispatcher
+            )
     sys.stdout.write(
         json.dumps(
             payload,
@@ -372,6 +397,272 @@ def _run_public(
             ),
         )
         return summary.payload(), 5
+
+
+def _dispatch_public(args: argparse.Namespace) -> CommandSummary:
+    command = str(args.command)
+    if command not in {"readiness", "snapshot"}:
+        return _failure_summary(
+            command, error_code="M3_COMMAND_HANDLER_UNAVAILABLE", exit_code=5
+        )
+    try:
+        project_root = Path.cwd().resolve(strict=True)
+        config_path = args.config.resolve(strict=True)
+        config_relative = PurePosixPath(
+            config_path.relative_to(project_root).as_posix()
+        )
+        config = load_m3_config(config_path)
+    except (M3ConfigError, OSError, TypeError, ValueError):
+        return _failure_summary(
+            command, error_code="M3_CONFIG_INVALID", exit_code=2
+        )
+
+    try:
+        release = _verify_requested_release(
+            project_root=project_root, release_id=args.g1_release_id
+        )
+    except Exception:
+        return _failure_summary(
+            command, error_code="G1_RELEASE_INVALID", exit_code=3
+        )
+
+    try:
+        issues = _audit_verified_release(release=release, config=config)
+    except Exception:
+        return _failure_summary(
+            command, error_code="M3_READINESS_FAILED", exit_code=3
+        )
+    errors = tuple(issue for issue in issues if issue.severity == "ERROR")
+    if errors:
+        return CommandSummary(
+            command=command,
+            failures=tuple(
+                CommandFailure(
+                    scope="snapshot",
+                    node_id="readiness",
+                    error_code=issue.code,
+                    exit_code=(
+                        4
+                        if issue.code in {"QLIB_NOT_IMPORTABLE", "PYTHON_UNSUPPORTED"}
+                        else 3
+                    ),
+                )
+                for issue in errors
+            ),
+            details={"issue_count": len(issues)},
+        )
+    if command == "readiness":
+        return CommandSummary(
+            command=command,
+            details={
+                "g1_release_id": release.release.release_id,
+                "issue_count": len(issues),
+                "stop_stage": "readiness",
+            },
+        )
+
+    try:
+        if config.raw_config_sha256 is None:
+            raise ValueError("missing frozen config digest")
+        runtime = compute_m3_runtime_identity(
+            project_root=project_root,
+            config_paths=(config_relative,),
+            frozen_config_digests=(
+                M3SourceDigestV1(
+                    config_relative.as_posix(), config.raw_config_sha256
+                ),
+            ),
+        )
+    except Exception:
+        return _failure_summary(
+            command, error_code="M3_RUNTIME_IDENTITY_INVALID", exit_code=2
+        )
+    try:
+        result = _run_snapshot_stage(
+            project_root=project_root,
+            release=release,
+            config=config,
+            code_version=runtime.code_version,
+        )
+    except M3StageRunnerError as exc:
+        return _failure_summary(command, error_code=exc.code, exit_code=5)
+    except Exception:
+        return _failure_summary(
+            command, error_code="M3_SNAPSHOT_FAILED", exit_code=5
+        )
+    return CommandSummary(
+        command=command,
+        details={
+            "g1_release_id": release.release.release_id,
+            "reused": result.reused,
+            "snapshot_id": result.build.manifest.snapshot_id,
+            "stop_stage": "snapshot",
+        },
+    )
+
+
+def _failure_summary(
+    command: str, *, error_code: str, exit_code: int
+) -> CommandSummary:
+    return CommandSummary(
+        command=command,
+        failures=(
+            CommandFailure(
+                scope="command",
+                node_id=command,
+                error_code=error_code,
+                exit_code=exit_code,
+            ),
+        ),
+    )
+
+
+def _verify_requested_release(
+    *, project_root: Path, release_id: str
+) -> VerifiedG1Release:
+    release_root = project_root / "data" / "clean" / "m3_g1" / "releases" / release_id
+    return verify_g1_release(
+        release=G1Release(
+            release_id=release_id,
+            root=release_root,
+            manifest_path=release_root / "manifest.json",
+            quality_path=release_root / "quality.json",
+        )
+    )
+
+
+def _audit_verified_release(
+    *, release: VerifiedG1Release, config: LoadedM3Config
+) -> tuple[ReadinessIssue, ...]:
+    paths = dict(release.artifact_paths)
+    benchmark_receipts = tuple(
+        (
+            item.endpoint,
+            item.request_id,
+            item.stable_response_sha256,
+        )
+        for item in release.manifest.input_receipts
+        if item.source == "tushare"
+        and item.endpoint in {"fund_daily", "fund_adj", "fund_div"}
+    )
+    expected_snapshot = compute_benchmark_source_snapshot_id(
+        identities=benchmark_receipts
+    )
+    issues = audit_m3_readiness(
+        bars=pl.read_parquet(paths["bar_1d.parquet"]),
+        instruments=pl.read_parquet(paths["instrument.parquet"]),
+        membership=pl.read_parquet(paths["universe_membership.parquet"]),
+        calendars=pl.read_parquet(paths["trade_calendar.parquet"]),
+        benchmark_bars=pl.read_parquet(paths["benchmark_bar_1d.parquet"]),
+        config=config.document,
+        expected_benchmark_source_snapshot_id=expected_snapshot,
+    )
+    return tuple(issues)
+
+
+def _run_snapshot_stage(
+    *, project_root: Path, release: VerifiedG1Release,
+    config: LoadedM3Config, code_version: str,
+) -> SnapshotStageResult:
+    spec = SnapshotBuildSpec(
+        snapshot_request_key=compute_snapshot_request_key(
+            g1_release_id=release.release.release_id,
+            g1_release_manifest_sha256=release.manifest_sha256,
+            snapshot_config_sha256=config.snapshot_config_sha256,
+            code_version=code_version,
+        ),
+        config_version=config.config_version,
+        snapshot_config_sha256=config.snapshot_config_sha256,
+        code_version=code_version,
+        history_start=release.manifest.history_start,
+        history_end=release.manifest.history_end,
+        staging_schema_version="m3-qlib-staging-v1",
+        adjustment_formula_version="qlib_yahoo_like_v1",
+    )
+    stage_root = _prepare_stage_root(project_root=project_root, config=config)
+    roots = {"G1_RELEASE": release.release.root, "G8": stage_root}
+    paths = dict(release.artifact_paths)
+    input_paths = (
+        release.release.manifest_path,
+        paths["bar_1d.parquet"],
+        paths["universe_membership.parquet"],
+        paths["trade_calendar.parquet"],
+    )
+    plan = make_snapshot_run_plan(
+        snapshot_request_key=spec.snapshot_request_key,
+        inputs=tuple(
+            _digest_release_file(path=path, release_root=release.release.root)
+            for path in input_paths
+        ),
+    )
+    runner = StageRunner(stage_root=stage_root, artifact_roots=roots, config=config)
+
+    def handler(context: StageContext) -> StageBuildReport:
+        build_snapshot_artifact(
+            release=release,
+            config=config,
+            spec=spec,
+            output_root=context.temp_output_root,
+        )
+        return StageBuildReport(
+            tuple(
+                sorted(
+                    path.relative_to(context.temp_output_root).as_posix()
+                    for path in context.temp_output_root.rglob("*")
+                    if path.is_file()
+                )
+            )
+        )
+
+    def closure(root: Path) -> tuple[Any, Any]:
+        build = verify_snapshot_build_result(
+            snapshot_root=root, release=release, config=config, spec=spec
+        )
+        request = build_snapshot_request_record(
+            release=release, config=config, spec=spec, result=build
+        )
+        return build, request
+
+    result = runner.run_snapshot(
+        node=plan.nodes[0], handler=handler, closure_verifier=closure
+    )
+    verify_snapshot_artifact(
+        snapshot_root=result.snapshot_root,
+        snapshot_request_path=result.request_record_path,
+        snapshot_receipt_path=result.receipt_path,
+        release=release,
+        config=config,
+        spec=spec,
+        artifact_roots=roots,
+    )
+    return result
+
+
+def _prepare_stage_root(*, project_root: Path, config: LoadedM3Config) -> Path:
+    logical = config.section("tracking")["artifact_root"]
+    if type(logical) is not str:
+        raise ValueError("invalid artifact root")
+    candidate = project_root.joinpath(*PurePosixPath(logical).parts)
+    ancestor = candidate
+    while not ancestor.exists():
+        ancestor = ancestor.parent
+    if not ancestor.resolve(strict=True).is_relative_to(project_root):
+        raise ValueError("artifact root outside project")
+    candidate.mkdir(parents=True, exist_ok=True)
+    resolved = candidate.resolve(strict=True)
+    if not resolved.is_relative_to(project_root):
+        raise ValueError("artifact root outside project")
+    return resolved
+
+
+def _digest_release_file(*, path: Path, release_root: Path) -> ArtifactDigest:
+    raw = path.read_bytes()
+    return ArtifactDigest(
+        root_alias="G1_RELEASE",
+        relative_path=path.relative_to(release_root).as_posix(),
+        size_bytes=len(raw),
+        sha256=hashlib.sha256(raw).hexdigest(),
+    )
 
 
 def _execute_experiment_identity(args: argparse.Namespace) -> Mapping[str, Any]:

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.metadata
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +11,7 @@ import pytest
 import quant.research.m3.runtime_identity as identity_module
 from quant.research.m3.runtime_identity import (
     M3RuntimeIdentityError,
+    M3SourceDigestV1,
     compute_m3_runtime_identity,
     runtime_identity_bytes,
 )
@@ -156,6 +158,44 @@ def test_source_fallback_and_not_installed_are_stable(
         "lightgbm"
     ] == "NOT_INSTALLED"
     assert b"NOT_INSTALLED" in runtime_identity_bytes(first)
+
+
+def test_frozen_config_digest_is_never_reopened_and_survives_atomic_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path)
+    _versions(monkeypatch)
+    relative = PurePosixPath("configs/research/m3_qlib_example.toml")
+    config_path = root.joinpath(*relative.parts)
+    frozen_sha256 = hashlib.sha256(config_path.read_bytes()).hexdigest()
+    frozen = (M3SourceDigestV1(relative.as_posix(), frozen_sha256),)
+    real_read_bytes = Path.read_bytes
+    config_reads = 0
+
+    def counted_read_bytes(path: Path) -> bytes:
+        nonlocal config_reads
+        if path == config_path:
+            config_reads += 1
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", counted_read_bytes)
+    first = compute_m3_runtime_identity(
+        project_root=root,
+        config_paths=(relative,),
+        frozen_config_digests=frozen,
+    )
+    replacement = config_path.with_suffix(".next")
+    replacement.write_text("version = 2\n", encoding="utf-8")
+    replacement.replace(config_path)
+    second = compute_m3_runtime_identity(
+        project_root=root,
+        config_paths=(relative,),
+        frozen_config_digests=frozen,
+    )
+
+    assert config_reads == 0
+    assert first == second
+    assert M3SourceDigestV1(relative.as_posix(), frozen_sha256) in first.source_files
 
 
 def test_probe_drift_fails_closed(

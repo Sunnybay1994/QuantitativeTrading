@@ -236,13 +236,20 @@ def compute_m3_runtime_identity(
     *,
     project_root: Path,
     config_paths: Sequence[PurePosixPath] = _DEFAULT_CONFIG_PATHS,
+    frozen_config_digests: Sequence[M3SourceDigestV1] | None = None,
 ) -> M3RuntimeIdentityV1:
-    """Measure M3 code/dependencies twice and reject any mid-probe drift."""
+    """Measure M3 code/dependencies twice and reject any mid-probe drift.
+
+    A caller that already loaded configuration may supply its frozen raw
+    digests.  In that mode the runtime probe never reopens configuration paths;
+    their content is represented only by the caller's validated snapshot.
+    """
     try:
         root = _validate_project_root(project_root)
         configs = _validate_config_paths(config_paths)
-        first = _probe(root, configs)
-        second = _probe(root, configs)
+        frozen = _validate_frozen_config_digests(configs, frozen_config_digests)
+        first = _probe(root, configs) if frozen is None else _probe(root, configs, frozen)
+        second = _probe(root, configs) if frozen is None else _probe(root, configs, frozen)
         if first != second:
             raise M3RuntimeIdentityError("M3_RUNTIME_IDENTITY_DRIFT")
         code_source: Literal["git", "source-tree-fallback"]
@@ -313,10 +320,14 @@ def runtime_identity_bytes(identity: M3RuntimeIdentityV1) -> bytes:
     return _canonical_json(asdict(identity))
 
 
-def _probe(root: Path, configs: tuple[PurePosixPath, ...]) -> _IdentityProbe:
-    files = _collect_source_files(root, configs)
+def _probe(
+    root: Path,
+    configs: tuple[PurePosixPath, ...],
+    frozen_config_digests: tuple[M3SourceDigestV1, ...] | None = None,
+) -> _IdentityProbe:
+    files = _collect_source_files(root, configs, frozen_config_digests)
     pyproject_sha = _read_hash(root / "pyproject.toml")
-    git = _probe_git(root, configs)
+    git = _probe_git(root, () if frozen_config_digests is not None else configs)
     platform_values = _platform_values()
     dependencies = _dependency_versions()
     return _IdentityProbe(
@@ -364,8 +375,32 @@ def _validate_config_paths(
     return ordered
 
 
+def _validate_frozen_config_digests(
+    configs: tuple[PurePosixPath, ...],
+    values: Sequence[M3SourceDigestV1] | None,
+) -> tuple[M3SourceDigestV1, ...] | None:
+    if values is None:
+        return None
+    if isinstance(values, (str, bytes)):
+        raise M3RuntimeIdentityError("M3_RUNTIME_IDENTITY_INPUT_INVALID")
+    frozen = tuple(values)
+    if any(type(item) is not M3SourceDigestV1 for item in frozen):
+        raise M3RuntimeIdentityError("M3_RUNTIME_IDENTITY_INPUT_INVALID")
+    ordered = tuple(sorted(frozen))
+    if (
+        frozen != ordered
+        or len({item.relative_path for item in frozen}) != len(frozen)
+        or tuple(item.relative_path for item in frozen)
+        != tuple(item.as_posix() for item in configs)
+    ):
+        raise M3RuntimeIdentityError("M3_RUNTIME_IDENTITY_INPUT_INVALID")
+    return frozen
+
+
 def _collect_source_files(
-    root: Path, configs: tuple[PurePosixPath, ...]
+    root: Path,
+    configs: tuple[PurePosixPath, ...],
+    frozen_config_digests: tuple[M3SourceDigestV1, ...] | None = None,
 ) -> tuple[M3SourceDigestV1, ...]:
     src_root = root / "src" / "quant"
     entries: list[M3SourceDigestV1] = []
@@ -381,11 +416,14 @@ def _collect_source_files(
                 raise M3RuntimeIdentityError("M3_RUNTIME_IDENTITY_SOURCE_INVALID")
             if path.suffix == ".py" or path.name == "py.typed":
                 entries.append(M3SourceDigestV1(relative, _read_hash(path)))
-        for config_relative in configs:
-            path = root.joinpath(*config_relative.parts)
-            entries.append(
-                M3SourceDigestV1(config_relative.as_posix(), _read_hash(path))
-            )
+        if frozen_config_digests is None:
+            for config_relative in configs:
+                path = root.joinpath(*config_relative.parts)
+                entries.append(
+                    M3SourceDigestV1(config_relative.as_posix(), _read_hash(path))
+                )
+        else:
+            entries.extend(frozen_config_digests)
     except M3RuntimeIdentityError:
         raise
     except OSError:

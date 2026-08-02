@@ -431,6 +431,7 @@ class LoadedM3Config:
     acceptance_config_sha256: str
     canonical_tracking_uri: str
     tracking_target_key: str
+    raw_config_sha256: str | None = None
 
     def section(self, name: str) -> Mapping[str, object]:
         """Return one required, read-only root section without implicit defaults."""
@@ -459,7 +460,9 @@ def load_m3_config(path: Path) -> LoadedM3Config:
         ),))
 
     normalized = _validate_and_normalize(parsed)
-    return _loaded_from_normalized(normalized)
+    return _loaded_from_normalized(
+        normalized, raw_config_sha256=hashlib.sha256(raw).hexdigest()
+    )
 
 
 def _read_config_bytes(path: Path) -> bytes | None:
@@ -521,7 +524,9 @@ def canonical_tracking_target_key(*, tracking_uri: str, experiment_name: str) ->
     return _sha256_json(envelope)
 
 
-def _loaded_from_normalized(document: dict[str, object]) -> LoadedM3Config:
+def _loaded_from_normalized(
+    document: dict[str, object], *, raw_config_sha256: str | None = None
+) -> LoadedM3Config:
     tracking = cast(dict[str, object], document["tracking"])
     uri = cast(str, tracking["tracking_uri"])
     experiment = cast(str, tracking["experiment_name"])
@@ -542,6 +547,7 @@ def _loaded_from_normalized(document: dict[str, object]) -> LoadedM3Config:
             tracking_uri=uri,
             experiment_name=experiment,
         ),
+        raw_config_sha256=raw_config_sha256,
     )
 
 

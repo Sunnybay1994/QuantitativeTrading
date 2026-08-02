@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+import quant.research.run_m3 as run_m3
+from quant.research.m3.readiness import ReadinessIssue
 from quant.research.run_m3 import CommandFailure, CommandSummary, main
 
 
@@ -293,19 +298,249 @@ def test_dispatcher_exception_cannot_forge_error_code(capsys) -> None:
     assert payload["failures"][0]["error_code"] == "M3_COMMAND_FAILED"
 
 
-def test_missing_public_handler_is_explicit_and_does_not_fake_artifacts(capsys) -> None:
-    code = main(["readiness", "--config", "m3.toml", "--g1-release-id", _ID])
+def test_unimplemented_public_handler_is_explicit_and_does_not_fake_artifacts(
+    capsys,
+) -> None:
+    code = main(
+        [
+            "train",
+            "--config",
+            "m3.toml",
+            "--snapshot-id",
+            _ID,
+            "--fold",
+            "fold_001",
+            "--horizon",
+            "5",
+        ]
+    )
     payload = json.loads(capsys.readouterr().out)
     assert code == 5
     assert payload == {
-        "command": "readiness",
+        "command": "train",
         "failures": [
             {
                 "error_code": "M3_COMMAND_HANDLER_UNAVAILABLE",
                 "exit_code": 5,
-                "node_id": "readiness",
+                "node_id": "train",
                 "scope": "command",
             }
         ],
         "ok": False,
     }
+
+
+def _public_config(tmp_path: Path) -> Path:
+    target = tmp_path / "configs" / "research" / "m3_qlib_example.toml"
+    target.parent.mkdir(parents=True)
+    source = Path(__file__).parents[2] / "configs" / "research" / "m3_qlib_example.toml"
+    shutil.copyfile(source, target)
+    return target
+
+
+def test_default_readiness_rejects_missing_verified_release_before_any_stage_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    config = _public_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    code = main(
+        ["readiness", "--config", str(config), "--g1-release-id", _ID]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 3
+    assert payload["failures"][0]["error_code"] == "G1_RELEASE_INVALID"
+    assert not (tmp_path / "artifacts").exists()
+
+
+def test_default_snapshot_dispatches_identity_readiness_then_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    config = _public_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    calls: list[str] = []
+    release = SimpleNamespace(release=SimpleNamespace(release_id=_ID))
+
+    def verify_requested_release(**_kwargs):
+        calls.append("identity")
+        return release
+
+    def audit_verified_release(**_kwargs):
+        calls.append("readiness")
+        return ()
+
+    def compute_runtime(**_kwargs):
+        calls.append("runtime")
+        return SimpleNamespace(code_version="m3-test-code-v1")
+
+    def run_snapshot_stage(**_kwargs):
+        calls.append("snapshot")
+        return SimpleNamespace(
+            reused=False,
+            build=SimpleNamespace(manifest=SimpleNamespace(snapshot_id="2" * 64)),
+        )
+
+    monkeypatch.setattr(run_m3, "_verify_requested_release", verify_requested_release)
+    monkeypatch.setattr(run_m3, "_audit_verified_release", audit_verified_release)
+    monkeypatch.setattr(run_m3, "compute_m3_runtime_identity", compute_runtime)
+    monkeypatch.setattr(run_m3, "_run_snapshot_stage", run_snapshot_stage)
+
+    code = main(["snapshot", "--config", str(config), "--g1-release-id", _ID])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert calls == ["identity", "readiness", "runtime", "snapshot"]
+    assert payload["snapshot_id"] == "2" * 64
+    assert payload["stop_stage"] == "snapshot"
+
+
+def test_default_snapshot_uses_one_frozen_config_across_readiness_and_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    config_path = _public_config(tmp_path).resolve()
+    (tmp_path / "src" / "quant").mkdir(parents=True)
+    (tmp_path / "src" / "quant" / "module.py").write_text(
+        "VALUE = 1\n", encoding="utf-8"
+    )
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='fixture'\n", encoding="utf-8"
+    )
+    original = config_path.read_bytes()
+    original_sha256 = hashlib.sha256(original).hexdigest()
+    replacement_bytes = original + b"\n# atomic replacement after readiness\n"
+    monkeypatch.chdir(tmp_path)
+    release = SimpleNamespace(release=SimpleNamespace(release_id=_ID))
+    monkeypatch.setattr(
+        run_m3, "_verify_requested_release", lambda **_kwargs: release
+    )
+    real_read_bytes = Path.read_bytes
+    config_reads = 0
+    observed: dict[str, object] = {}
+
+    def counted_read_bytes(path: Path) -> bytes:
+        nonlocal config_reads
+        if path == config_path:
+            config_reads += 1
+        return real_read_bytes(path)
+
+    def audit_verified_release(**kwargs):
+        observed["loaded"] = kwargs["config"]
+        replacement = config_path.with_suffix(".next")
+        replacement.write_bytes(replacement_bytes)
+        replacement.replace(config_path)
+        return ()
+
+    real_compute = run_m3.compute_m3_runtime_identity
+
+    def compute_runtime(**kwargs):
+        observed["frozen"] = kwargs["frozen_config_digests"]
+        result = real_compute(**kwargs)
+        observed["runtime"] = result
+        return result
+
+    def run_snapshot_stage(**kwargs):
+        observed["stage_config"] = kwargs["config"]
+        observed["stage_code_version"] = kwargs["code_version"]
+        return SimpleNamespace(
+            reused=False,
+            build=SimpleNamespace(manifest=SimpleNamespace(snapshot_id="2" * 64)),
+        )
+
+    monkeypatch.setattr(Path, "read_bytes", counted_read_bytes)
+    monkeypatch.setattr(run_m3, "_audit_verified_release", audit_verified_release)
+    monkeypatch.setattr(run_m3, "compute_m3_runtime_identity", compute_runtime)
+    monkeypatch.setattr(run_m3, "_run_snapshot_stage", run_snapshot_stage)
+
+    code = main(
+        ["snapshot", "--config", str(config_path), "--g1-release-id", _ID]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    loaded = observed["loaded"]
+    runtime = observed["runtime"]
+    frozen = observed["frozen"]
+    assert code == 0 and payload["ok"] is True
+    assert config_reads == 1
+    assert loaded is observed["stage_config"]
+    assert loaded.raw_config_sha256 == original_sha256
+    assert frozen == (
+        run_m3.M3SourceDigestV1(
+            "configs/research/m3_qlib_example.toml", original_sha256
+        ),
+    )
+    assert frozen[0] in runtime.source_files
+    assert observed["stage_code_version"] == runtime.code_version
+    assert hashlib.sha256(config_path.read_bytes()).hexdigest() != original_sha256
+    assert not (tmp_path / "artifacts").exists()
+
+
+def test_default_snapshot_readiness_error_blocks_runtime_and_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    config = _public_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    release = SimpleNamespace(release=SimpleNamespace(release_id=_ID))
+    monkeypatch.setattr(
+        run_m3, "_verify_requested_release", lambda **_kwargs: release
+    )
+    monkeypatch.setattr(
+        run_m3,
+        "_audit_verified_release",
+        lambda **_kwargs: (
+            ReadinessIssue("CROSS_SECTION_TOO_SMALL", "ERROR", "fixture"),
+        ),
+    )
+    monkeypatch.setattr(
+        run_m3,
+        "compute_m3_runtime_identity",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("must not run")),
+    )
+    monkeypatch.setattr(
+        run_m3,
+        "_run_snapshot_stage",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("must not run")),
+    )
+
+    code = main(["snapshot", "--config", str(config), "--g1-release-id", _ID])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 3
+    assert payload["failures"][0]["error_code"] == "CROSS_SECTION_TOO_SMALL"
+    assert not (tmp_path / "artifacts").exists()
+
+
+def test_default_snapshot_readiness_warning_does_not_block_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    config = _public_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    release = SimpleNamespace(release=SimpleNamespace(release_id=_ID))
+    monkeypatch.setattr(
+        run_m3, "_verify_requested_release", lambda **_kwargs: release
+    )
+    monkeypatch.setattr(
+        run_m3,
+        "_audit_verified_release",
+        lambda **_kwargs: (ReadinessIssue("FIXTURE_WARNING", "WARNING", "fixture"),),
+    )
+    monkeypatch.setattr(
+        run_m3,
+        "compute_m3_runtime_identity",
+        lambda **_kwargs: SimpleNamespace(code_version="m3-test-code-v1"),
+    )
+    monkeypatch.setattr(
+        run_m3,
+        "_run_snapshot_stage",
+        lambda **_kwargs: SimpleNamespace(
+            reused=True,
+            build=SimpleNamespace(manifest=SimpleNamespace(snapshot_id="2" * 64)),
+        ),
+    )
+
+    code = main(["snapshot", "--config", str(config), "--g1-release-id", _ID])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["reused"] is True
+    assert payload["snapshot_id"] == "2" * 64

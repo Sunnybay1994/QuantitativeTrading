@@ -217,8 +217,15 @@ def map_g1_benchmark_response(
             rtol=rtol,
         )
 
-        snapshot = _benchmark_source_snapshot_id(
-            responses=(daily, *adj_items, div)
+        snapshot = compute_benchmark_source_snapshot_id(
+            identities=tuple(
+                (
+                    item.spec.endpoint,
+                    item.spec.request_id,
+                    item.receipt.stable_response_sha256,
+                )
+                for item in (daily, *adj_items, div)
+            )
         )
         rows: list[dict[str, Any]] = []
         for day in sorted(daily_rows):
@@ -731,18 +738,33 @@ def _reconcile_dividend_factors(
             raise M3G1MappingError("G1_MAPPER_DIVIDEND_RECONCILIATION_FAILED")
 
 
-def _benchmark_source_snapshot_id(
-    *, responses: Sequence[VerifiedRawResponse]
+def compute_benchmark_source_snapshot_id(
+    *, identities: Sequence[tuple[str, str, str]]
 ) -> str:
-    identities = [
+    """Hash the verified response identities forming one benchmark clean snapshot."""
+    if type(identities) not in {tuple, list} or not identities:
+        raise M3G1MappingError("G1_MAPPER_BENCHMARK_CLOSURE_INVALID")
+    if any(type(item) is not tuple or len(item) != 3 for item in identities):
+        raise M3G1MappingError("G1_MAPPER_BENCHMARK_CLOSURE_INVALID")
+    normalized = [
         {
-            "endpoint": item.spec.endpoint,
-            "request_id": item.spec.request_id,
-            "stable_response_sha256": item.receipt.stable_response_sha256,
+            "endpoint": endpoint,
+            "request_id": request_id,
+            "stable_response_sha256": stable_response_sha256,
         }
-        for item in responses
+        for endpoint, request_id, stable_response_sha256 in identities
     ]
-    identities.sort(
+    if any(
+        type(row["endpoint"]) is not str
+        or not row["endpoint"]
+        or type(row["request_id"]) is not str
+        or re.fullmatch(r"[0-9a-f]{64}", row["request_id"]) is None
+        or type(row["stable_response_sha256"]) is not str
+        or re.fullmatch(r"[0-9a-f]{64}", row["stable_response_sha256"]) is None
+        for row in normalized
+    ):
+        raise M3G1MappingError("G1_MAPPER_BENCHMARK_CLOSURE_INVALID")
+    normalized.sort(
         key=lambda row: (
             row["endpoint"],
             row["request_id"],
@@ -750,7 +772,7 @@ def _benchmark_source_snapshot_id(
         )
     )
     payload = json.dumps(
-        identities,
+        normalized,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
