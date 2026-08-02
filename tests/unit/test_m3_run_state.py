@@ -35,8 +35,9 @@ def _hex(n: int = 0) -> str:
 
 @pytest.fixture
 def fs_tmp_path() -> Iterator[Path]:
-    """Native Linux FS temp dir so symlink/hardlink tests actually run."""
-    root = Path(tempfile.mkdtemp(dir="/tmp", prefix="m3-e3-"))
+    """Native host filesystem temp dir for symlink/hardlink tests."""
+    temp_parent = None if os.name == "nt" else "/tmp"
+    root = Path(tempfile.mkdtemp(dir=temp_parent, prefix="m3-e3-"))
     try:
         yield root
     finally:
@@ -769,7 +770,7 @@ def test_rejects_noncanonical_json_bom_crlf_reorder_trailing(
 
     # field reordering / indentation via pretty print
     payload = json.loads(canonical)
-    receipt_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    receipt_path.write_bytes(json.dumps(payload, indent=2).encode("utf-8"))
     with pytest.raises(ValueError, match="规范|字节"):
         verify_stage_receipt(receipt_path=receipt_path, artifact_roots=roots)
 
@@ -1185,7 +1186,10 @@ def test_symlink_cases_rejected(fs_tmp_path: Path) -> None:
 
     # root itself symlink
     linked_root = fs_tmp_path / "linked_root"
-    os.symlink(root, linked_root)
+    try:
+        os.symlink(root, linked_root)
+    except OSError:
+        pytest.skip("host does not permit symlink creation")
     with pytest.raises(ValueError, match="symlink"):
         publish_stage_receipt(
             receipt_path=linked_root / "receipt.json",

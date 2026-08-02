@@ -231,6 +231,121 @@ def test_development_label_artifact_closed_loop(
     }
 
 
+def test_label_consumer_resolves_experiment_receipt_from_distinct_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    common, release, snapshot, provider, config, identity_spec, original = (
+        _experiment(tmp_path, monkeypatch)
+    )
+    experiment_artifacts = tmp_path / "development-example-experiment-artifacts"
+    experiment_root = experiment_artifacts / "development-example-experiment"
+    experiment_root.mkdir(parents=True)
+    (experiment_root / "experiment_manifest.json").write_bytes(
+        (original.root / "experiment_manifest.json").read_bytes()
+    )
+    experiment_receipt = (
+        experiment_artifacts
+        / "receipts"
+        / "development-experiment-identity"
+        / f"{original.manifest.experiment_key}.json"
+    )
+    experiment_receipt.parent.mkdir(parents=True)
+    roots = {
+        "root": common,
+        "experiment": experiment_artifacts,
+        "EXTERNAL_QLIB": common.parent / "external_qlib",
+    }
+    publish_stage_receipt(
+        receipt_path=experiment_receipt,
+        stage="development-experiment-identity",
+        scope="EXPERIMENT",
+        scope_key=original.manifest.experiment_key,
+        artifact_roots=roots,
+        inputs=[
+            (
+                "root",
+                common / "receipts" / "development-snapshot"
+                / f"{snapshot.request.snapshot_request_key}.json",
+            ),
+            ("root", snapshot.root / "manifest.json"),
+            (
+                "root",
+                common / "receipts" / "development-provider"
+                / f"{provider.manifest.provider_key}.json",
+            ),
+            ("root", provider.root / "provider_manifest.json"),
+        ],
+        outputs=[("experiment", experiment_root / "experiment_manifest.json")],
+    )
+    experiment = verify_development_example_experiment_identity(
+        experiment_root=experiment_root,
+        experiment_receipt_path=experiment_receipt,
+        snapshot=snapshot,
+        provider=provider,
+        config=config,
+        spec=identity_spec,
+        artifact_roots=roots,
+    )
+
+    spec = _label_spec(config, experiment)
+    label_root = common / "development-example-label-split-experiment"
+    label_root.mkdir()
+    build_development_example_label_artifact(
+        release=release,
+        snapshot=snapshot,
+        experiment=experiment,
+        config=config,
+        experiment_spec=identity_spec,
+        spec=spec,
+        output_root=label_root,
+    )
+    label_receipt = (
+        common / "receipts" / "development-labels"
+        / f"{experiment.manifest.experiment_key}-split.json"
+    )
+    label_receipt.parent.mkdir(parents=True, exist_ok=True)
+    paths = dict(release.artifact_paths)
+    snapshot_receipt = (
+        common / "receipts" / "development-snapshot"
+        / f"{snapshot.request.snapshot_request_key}.json"
+    )
+    publish_stage_receipt(
+        receipt_path=label_receipt,
+        stage="development-labels",
+        scope="EXPERIMENT",
+        scope_key=experiment.manifest.experiment_key,
+        artifact_roots=roots,
+        inputs=[
+            ("experiment", experiment_receipt),
+            ("experiment", experiment.root / "experiment_manifest.json"),
+            ("root", release.release.manifest_path),
+            ("root", paths["bar_1d.parquet"]),
+            ("root", paths["benchmark_bar_1d.parquet"]),
+            ("root", paths["eligible_keys.parquet"]),
+            ("root", snapshot_receipt),
+            ("root", snapshot.root / "manifest.json"),
+            ("root", snapshot.session_calendar_path),
+        ],
+        outputs=[
+            ("root", label_root / "labels.parquet"),
+            ("root", label_root / "diagnostics.parquet"),
+            ("root", label_root / "label_manifest.json"),
+        ],
+    )
+    verified = verify_development_example_label_artifact(
+        label_root=label_root,
+        label_receipt_path=label_receipt,
+        release=release,
+        snapshot=snapshot,
+        experiment=experiment,
+        config=config,
+        experiment_spec=identity_spec,
+        spec=spec,
+        artifact_roots=roots,
+    )
+    assert verified.manifest.experiment_key == experiment.manifest.experiment_key
+
+
 def test_artifact_root_inference_accepts_non_root_alias(tmp_path: Path) -> None:
     common = tmp_path / "common"
     nested = common / "snapshots" / "manifest.json"

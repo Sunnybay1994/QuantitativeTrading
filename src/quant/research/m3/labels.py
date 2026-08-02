@@ -471,8 +471,14 @@ def _verify_snapshot_receipt_closure(
         ),
         artifact_roots,
     )
-    root = _artifact_root_for(snapshot.root, artifact_roots=artifact_roots)
-    request_path = root / "snapshot-requests" / f"{key}.json"
+    request_candidates = tuple(
+        item for item in receipt.outputs if item.sha256 == snapshot.request_sha256
+    )
+    if len(request_candidates) != 1:
+        raise ValueError("snapshot request output drift")
+    request_path = path_for_artifact_digest(
+        request_candidates[0], artifact_roots=artifact_roots
+    )
     request_raw = _read_regular(request_path)
     if (
         request_raw != _canonical_contract_bytes(asdict(snapshot.request))
@@ -996,34 +1002,32 @@ def _verify_labels(
     if manifest != expected:
         raise ValueError("label manifest drift")
     manifest_sha = hashlib.sha256(manifest_raw).hexdigest()
-    root = _artifact_root_for(
-        source.snapshot_manifest_path, artifact_roots=artifact_roots
+    receipt, receipt_sha = _verify_stage_receipt_secure(
+        receipt_path=label_receipt_path, artifact_roots=artifact_roots
     )
-    snapshot_stage = (
-        "snapshot" if source.example_id is None else "development-snapshot"
+    snapshot_receipts = tuple(
+        item
+        for item in receipt.inputs
+        if item.sha256 == source.snapshot_receipt_sha256
     )
-    experiment_stage = (
-        "experiment-identity"
-        if source.example_id is None
-        else "development-experiment-identity"
+    experiment_receipts = tuple(
+        item
+        for item in receipt.inputs
+        if item.sha256 == source.experiment_receipt_sha256
     )
-    snapshot_receipt_path = (
-        root / "receipts" / snapshot_stage / f"{source.snapshot_request_key}.json"
+    if len(snapshot_receipts) != 1 or len(experiment_receipts) != 1:
+        raise ValueError("label upstream receipt drift")
+    snapshot_receipt_path = path_for_artifact_digest(
+        snapshot_receipts[0], artifact_roots=artifact_roots
     )
-    experiment_receipt_path = (
-        root
-        / "receipts"
-        / experiment_stage
-        / f"{source.experiment.experiment_key}.json"
+    experiment_receipt_path = path_for_artifact_digest(
+        experiment_receipts[0], artifact_roots=artifact_roots
     )
     _verify_experiment_receipt_from_source(
         source=source,
         experiment_receipt_path=experiment_receipt_path,
         snapshot_receipt_path=snapshot_receipt_path,
         artifact_roots=artifact_roots,
-    )
-    receipt, receipt_sha = _verify_stage_receipt_secure(
-        receipt_path=label_receipt_path, artifact_roots=artifact_roots
     )
     input_paths = (
         experiment_receipt_path,

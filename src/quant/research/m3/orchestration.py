@@ -72,6 +72,7 @@ from quant.research.m3.snapshot import (
 )
 
 _NODE_PATTERN = re.compile(r"^[a-z0-9._-]+$")
+_ROOT_ALIAS_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 _HEX64 = frozenset("0123456789abcdef")
 
 
@@ -332,6 +333,10 @@ SnapshotClosureVerifier: TypeAlias = Callable[
     [Path], tuple[SnapshotBuildResult, SnapshotRequestRecordV1]
 ]
 StaticClosureVerifier: TypeAlias = Callable[[Path], None]
+ExperimentOutputVerifier: TypeAlias = Callable[[Path], object]
+ExperimentFinalVerifier: TypeAlias = Callable[
+    [Path, Path], VerifiedExperimentIdentity
+]
 
 
 @dataclass(frozen=True)
@@ -360,6 +365,25 @@ class StaticStageResult:
             or type(self.reused) is not bool
         ):
             raise ValueError("static stage result invalid")
+
+
+@dataclass(frozen=True)
+class ExperimentIdentityStageResult:
+    experiment_root: Path
+    receipt_path: Path
+    verified: VerifiedExperimentIdentity
+    receipt: StageReceipt
+    reused: bool
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.experiment_root, Path)
+            or not isinstance(self.receipt_path, Path)
+            or type(self.verified) is not VerifiedExperimentIdentity
+            or type(self.receipt) is not StageReceipt
+            or type(self.reused) is not bool
+        ):
+            raise ValueError("experiment identity stage result invalid")
 
 
 class StageRunner:
@@ -428,6 +452,47 @@ class StageRunner:
             raise
         except Exception:
             raise M3StageRunnerError("STAGE_LOCK_FAILED") from None
+
+    def run_experiment_identity(
+        self,
+        *,
+        node: StageNode,
+        handler: StageHandler,
+        output_verifier: ExperimentOutputVerifier,
+        final_verifier: ExperimentFinalVerifier,
+        resume: bool = True,
+    ) -> ExperimentIdentityStageResult:
+        """Run the formal ExperimentIdentity through the shared static runner."""
+        def verify_output(root: Path) -> None:
+            output_verifier(root)
+
+        static = self.run_static(
+            node=node,
+            handler=handler,
+            closure_verifier=verify_output,
+            resume=resume,
+        )
+        invalid = False
+        verified: VerifiedExperimentIdentity | None = None
+        try:
+            candidate = final_verifier(static.final_root, static.receipt_path)
+            if (
+                type(candidate) is not VerifiedExperimentIdentity
+                or candidate.manifest.experiment_key != node.scope_key
+            ):
+                raise ValueError
+            verified = candidate
+        except Exception:
+            invalid = True
+        if invalid or verified is None:
+            raise M3StageRunnerError("STAGE_RECOVERY_CONFLICT") from None
+        return ExperimentIdentityStageResult(
+            experiment_root=static.final_root,
+            receipt_path=static.receipt_path,
+            verified=verified,
+            receipt=static.receipt,
+            reused=static.reused,
+        )
 
     def run_static(
         self, *, node: StageNode, handler: StageHandler,
@@ -1069,7 +1134,7 @@ def _validate_roots(roots: Mapping[str, Path]) -> dict[str, Path]:
         raise ValueError("artifact roots 非法")
     result: dict[str, Path] = {}
     for alias, root in roots.items():
-        if type(alias) is not str or _NODE_PATTERN.fullmatch(alias) is None:
+        if type(alias) is not str or _ROOT_ALIAS_PATTERN.fullmatch(alias) is None:
             raise ValueError("artifact root alias 非法")
         _require_real_directory(root, label="artifact root")
         resolved = root.resolve(strict=True)
@@ -2825,7 +2890,7 @@ def make_development_snapshot_run_plan(
     verified = verify_development_example_g1_release(root=release.release.root)
     _require_hex64(snapshot_request_key)
     _require_real_directory(artifact_root, label="artifact root")
-    if type(root_alias) is not str or _NODE_PATTERN.fullmatch(root_alias) is None:
+    if type(root_alias) is not str or _ROOT_ALIAS_PATTERN.fullmatch(root_alias) is None:
         raise ValueError("artifact root alias 非法")
     root = artifact_root.resolve(strict=True)
     paths = (

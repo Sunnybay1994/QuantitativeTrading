@@ -26,6 +26,15 @@ def test_build_dump_script_spec_from_loaded_m3_config() -> None:
     assert spec.url.endswith("/scripts/dump_bin.py")
 
 
+def test_checked_in_dump_tool_matches_frozen_config() -> None:
+    """The local offline tool must not drift from its narrow config identity."""
+    config = load_m3_config(Path("configs/research/m3_qlib_example.toml"))
+    spec = build_qlib_dump_tool_spec(config)
+    payload = Path("data/external/qlib/v0.9.7/dump_bin.py").read_bytes()
+    assert len(payload) == spec.size_bytes
+    assert hashlib.sha256(payload).hexdigest() == spec.sha256
+
+
 def test_download_validates_and_atomically_moves(tmp_path: Path) -> None:
     payload = b"qlib-dump-bin-fixture-content"
     digest = hashlib.sha256(payload).hexdigest()
