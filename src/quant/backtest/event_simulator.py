@@ -6,7 +6,7 @@ import datetime as dt
 import hashlib
 import json
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass, replace
 from decimal import Decimal
 from enum import Enum
 from typing import NoReturn, TypeVar, cast
@@ -43,9 +43,13 @@ from quant.execution.contracts import (
     RuleDecision,
     VerifiedMarketSnapshot,
     build_account_snapshot_identity,
+    build_execution_event_identity,
     build_execution_event,
+    build_order_command_identity,
     build_order_command,
+    build_order_intent_identity,
     build_order_plan_identity,
+    build_rule_decision_identity,
     build_verified_market_snapshot_identity,
 )
 from quant.portfolio.order_planner import OrderPlannerConfig
@@ -476,6 +480,198 @@ def _result_payload(result: VerifiedScenarioResult) -> dict[str, object]:
     }
 
 
+def _prove_ledger_state(state: LedgerState) -> LedgerState:
+    """Re-enter every nested public ledger constructor before trusting state_id."""
+    return replace(
+        state,
+        positions=tuple(replace(item, avg_cost=replace(item.avg_cost)) for item in state.positions),
+        cash=tuple(replace(item) for item in state.cash),
+        pending=tuple(replace(item) for item in state.pending),
+        trading_credits=tuple(replace(item) for item in state.trading_credits),
+        entitlements=tuple(replace(item) for item in state.entitlements),
+        applied_actions=tuple(replace(item) for item in state.applied_actions),
+        command_projections=tuple(replace(item) for item in state.command_projections),
+    )
+
+
+def _prove_scenario_result(
+    scenario: VerifiedScenarioResult,
+    *,
+    market_snapshot_ids: tuple[str, ...],
+    initial_account_snapshot_id: str,
+) -> VerifiedScenarioResult:
+    if (
+        type(scenario) is not VerifiedScenarioResult
+        or not _hex64(scenario.scenario_result_id)
+        or type(scenario.scenario_id) is not str
+        or not scenario.scenario_id
+        or scenario.scenario_id != scenario.scenario_id.strip()
+        or any(char in "/\\:%" or ord(char) < 32 for char in scenario.scenario_id)
+        or not _hex64(scenario.input_identity)
+        or not _hex64(scenario.initial_ledger_state_id)
+        or type(scenario.commands) is not tuple
+        or type(scenario.events) is not tuple
+        or type(scenario.rule_decisions) is not tuple
+        or type(scenario.transitions) is not tuple
+        or not scenario.transitions
+        or type(scenario.checkpoints) is not tuple
+        or not scenario.checkpoints
+    ):
+        _fail("EVENT_SIM_RESULT_IDENTITY_INVALID")
+
+    commands: list[OrderCommand] = []
+    for command in scenario.commands:
+        if type(command) is not OrderCommand:
+            _fail("EVENT_SIM_RESULT_IDENTITY_INVALID")
+        build_order_intent_identity(command.intent)
+        build_order_command_identity(command)
+        commands.append(replace(command, intent=replace(command.intent)))
+    command_ids = tuple(item.command_id for item in commands)
+    if len(set(command_ids)) != len(command_ids):
+        _fail("EVENT_SIM_RESULT_IDENTITY_INVALID")
+
+    events: list[ExecutionEvent] = []
+    for event in scenario.events:
+        if type(event) is not ExecutionEvent:
+            _fail("EVENT_SIM_RESULT_IDENTITY_INVALID")
+        fees = tuple(
+            replace(fee, amount=replace(fee.amount)) for fee in event.fees
+        )
+        proven_event = replace(event, fees=fees)
+        build_execution_event_identity(proven_event)
+        if proven_event.command_id not in command_ids:
+            _fail("EVENT_SIM_RESULT_IDENTITY_INVALID")
+        events.append(proven_event)
+    event_ids = tuple(item.event_id for item in events)
+    if (
+        len(set(event_ids)) != len(event_ids)
+        or {item.command_id for item in events} != set(command_ids)
+    ):
+        _fail("EVENT_SIM_RESULT_IDENTITY_INVALID")
+
+    decisions: list[RuleDecision] = []
+    for decision in scenario.rule_decisions:
+        if type(decision) is not RuleDecision:
+            _fail("EVENT_SIM_RESULT_IDENTITY_INVALID")
+        proven_decision = replace(decision)
+        build_rule_decision_identity(proven_decision)
+        decisions.append(proven_decision)
+
+    transitions: list[LedgerTransition] = []
+    previous_state_id = scenario.initial_ledger_state_id
+    state_by_id: dict[str, LedgerState] = {}
+    for transition in scenario.transitions:
+        if type(transition) is not LedgerTransition:
+            _fail("EVENT_SIM_RESULT_IDENTITY_INVALID")
+        entries = tuple(replace(entry) for entry in transition.entries)
+        state = _prove_ledger_state(transition.state)
+        proven_transition = replace(transition, state=state, entries=entries)
+        if proven_transition.previous_state_id != previous_state_id:
+            _fail("EVENT_SIM_RESULT_IDENTITY_INVALID")
+        previous_state_id = proven_transition.state.state_id
+        state_by_id[proven_transition.state.state_id] = proven_transition.state
+        transitions.append(proven_transition)
+    final_state = _prove_ledger_state(scenario.final_state)
+    if (
+        previous_state_id != final_state.state_id
+        or final_state.origin_account_snapshot_id != initial_account_snapshot_id
+        or set(final_state.applied_event_ids) != set(event_ids)
+    ):
+        _fail("EVENT_SIM_RESULT_IDENTITY_INVALID")
+
+    checkpoints: list[SimulationCheckpoint] = []
+    for checkpoint in scenario.checkpoints:
+        if (
+            type(checkpoint) is not SimulationCheckpoint
+            or type(checkpoint.session_date) is not dt.date
+            or not _hex64(checkpoint.market_snapshot_id)
+            or checkpoint.market_snapshot_id not in market_snapshot_ids
+            or not _hex64(checkpoint.ledger_state_id)
+            or checkpoint.ledger_state_id not in state_by_id
+            or state_by_id[checkpoint.ledger_state_id].as_of_date != checkpoint.session_date
+        ):
+            _fail("EVENT_SIM_RESULT_IDENTITY_INVALID")
+        checkpoints.append(replace(checkpoint))
+    if (
+        tuple(item.session_date for item in checkpoints)
+        != tuple(sorted({item.session_date for item in checkpoints}))
+        or tuple(item.market_snapshot_id for item in checkpoints) != market_snapshot_ids
+        or len({item.market_snapshot_id for item in checkpoints}) != len(checkpoints)
+    ):
+        _fail("EVENT_SIM_RESULT_IDENTITY_INVALID")
+
+    proven_scenario = replace(
+        scenario,
+        final_state=final_state,
+        commands=tuple(commands),
+        events=tuple(events),
+        rule_decisions=tuple(decisions),
+        transitions=tuple(transitions),
+        checkpoints=tuple(checkpoints),
+    )
+    if proven_scenario.scenario_result_id != _identity(
+        "VerifiedScenarioResult", _result_payload(proven_scenario)
+    ):
+        _fail("EVENT_SIM_RESULT_IDENTITY_INVALID")
+    return proven_scenario
+
+
+def _prove_simulation_result_identity(
+    result: VerifiedSimulationResult,
+) -> VerifiedSimulationResult:
+    if (
+        type(result) is not VerifiedSimulationResult
+        or not _hex64(result.result_id)
+        or not _hex64(result.config_id)
+        or not _hex64(result.initial_account_snapshot_id)
+        or type(result.market_snapshot_ids) is not tuple
+        or not result.market_snapshot_ids
+        or any(not _hex64(item) for item in result.market_snapshot_ids)
+        or len(set(result.market_snapshot_ids)) != len(result.market_snapshot_ids)
+        or type(result.scenarios) is not tuple
+        or not result.scenarios
+        or any(type(item) is not VerifiedScenarioResult for item in result.scenarios)
+        or tuple(item.scenario_id for item in result.scenarios)
+        != tuple(sorted(item.scenario_id for item in result.scenarios))
+        or len({item.scenario_id for item in result.scenarios}) != len(result.scenarios)
+    ):
+        _fail("EVENT_SIM_RESULT_IDENTITY_INVALID")
+    scenarios = tuple(
+        _prove_scenario_result(
+            item,
+            market_snapshot_ids=result.market_snapshot_ids,
+            initial_account_snapshot_id=result.initial_account_snapshot_id,
+        )
+        for item in result.scenarios
+    )
+    if len({item.initial_ledger_state_id for item in scenarios}) != 1:
+        _fail("EVENT_SIM_RESULT_IDENTITY_INVALID")
+    root_payload = {
+        "config_id": result.config_id,
+        "initial_account_snapshot_id": result.initial_account_snapshot_id,
+        "market_snapshot_ids": result.market_snapshot_ids,
+        "scenario_result_ids": tuple(item.scenario_result_id for item in scenarios),
+    }
+    if result.result_id != _identity("VerifiedSimulationResult", root_payload):
+        _fail("EVENT_SIM_RESULT_IDENTITY_INVALID")
+    return replace(result, scenarios=scenarios)
+
+
+def verify_simulation_result_identity(
+    result: VerifiedSimulationResult,
+) -> VerifiedSimulationResult:
+    """Verify B6 result self-consistency without replay inputs or private consumers."""
+    failed = False
+    proven: VerifiedSimulationResult | None = None
+    try:
+        proven = _prove_simulation_result_identity(result)
+    except Exception:
+        failed = True
+    if failed or proven is None:
+        _fail("EVENT_SIM_RESULT_IDENTITY_INVALID")
+    return proven
+
+
 def _rule_for(config: EventSimulationConfig, intent: OrderIntent) -> SettlementRule:
     matches = tuple(
         item
@@ -862,4 +1058,5 @@ __all__ = [
     "build_simulation_scenario_plans",
     "simulate_order_plans",
     "verify_simulation_result",
+    "verify_simulation_result_identity",
 ]

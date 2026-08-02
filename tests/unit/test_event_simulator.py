@@ -11,6 +11,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from quant.backtest import verify_simulation_result_identity as public_identity_verifier
 from quant.backtest.a_share_execution import build_a_share_rule_config
 from quant.backtest.connect_execution import build_connect_rule_config
 from quant.backtest.costs import ExecutionCostPeriod, build_execution_cost_schedule
@@ -22,6 +23,7 @@ from quant.backtest.event_simulator import (
     build_simulation_scenario_plans,
     simulate_order_plans,
     verify_simulation_result,
+    verify_simulation_result_identity,
 )
 from quant.backtest.fx import FxRate, build_fx_snapshot
 from quant.backtest.ledger import build_settlement_rule
@@ -357,6 +359,35 @@ def test_result_verifier_rejects_tampering() -> None:
     result = simulate_order_plans(*args)
     with pytest.raises(EventSimulationError, match="^EVENT_SIM_RESULT_MISMATCH$"):
         verify_simulation_result(replace(result, result_id="0" * 64), *args)
+
+
+def test_result_identity_verifier_rejects_root_scenario_and_collection_forgery() -> None:
+    args = _fixture(partial=True)
+    result = simulate_order_plans(*args)
+    assert verify_simulation_result_identity(result) == result
+    assert public_identity_verifier is verify_simulation_result_identity
+    error = "^EVENT_SIM_RESULT_IDENTITY_INVALID$"
+
+    with pytest.raises(EventSimulationError, match=error) as caught:
+        verify_simulation_result_identity(replace(result, result_id="0" * 64))
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+    renamed = replace(result.scenarios[0], scenario_id="renamed")
+    with pytest.raises(EventSimulationError, match=error):
+        verify_simulation_result_identity(replace(result, scenarios=(renamed,)))
+    with pytest.raises(EventSimulationError, match=error):
+        verify_simulation_result_identity(
+            replace(result, scenarios=(result.scenarios[0], result.scenarios[0]))
+        )
+
+    stress = build_simulation_scenario_plans(
+        scenario_id="stress", scheduled_plans=args[0][0].scheduled_plans
+    )
+    combined = simulate_order_plans((args[0][0], stress), args[1], args[2], args[3])
+    assert verify_simulation_result_identity(combined) == combined
+    with pytest.raises(EventSimulationError, match=error):
+        verify_simulation_result_identity(replace(combined, scenarios=combined.scenarios[:1]))
+    with pytest.raises(EventSimulationError, match=error):
+        verify_simulation_result_identity(replace(result, scenarios=combined.scenarios))
 
 
 def test_nested_frozen_plan_mutation_is_reproved_without_sentinel_leak() -> None:
