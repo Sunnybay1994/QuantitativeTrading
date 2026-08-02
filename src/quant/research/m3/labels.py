@@ -537,15 +537,6 @@ def _verify_experiment_receipt_from_source(
     provider_stage = (
         "provider" if source.example_id is None else "development-provider"
     )
-    root = _artifact_root_for(
-        source.snapshot_manifest_path, artifact_roots=artifact_roots
-    )
-    provider_receipt_path = (
-        root
-        / "receipts"
-        / provider_stage
-        / f"{source.experiment.provider_key}.json"
-    )
     provider_manifest_candidates = tuple(
         item
         for item in (() if receipt is None else receipt.inputs)
@@ -556,6 +547,15 @@ def _verify_experiment_receipt_from_source(
         raise ValueError("experiment provider manifest input drift")
     provider_manifest_path = path_for_artifact_digest(
         provider_manifest_candidates[0], artifact_roots=artifact_roots
+    )
+    provider_artifact_root = _artifact_root_for(
+        provider_manifest_path, artifact_roots=artifact_roots
+    )
+    provider_receipt_path = (
+        provider_artifact_root
+        / "receipts"
+        / provider_stage
+        / f"{source.experiment.provider_key}.json"
     )
     expected_inputs = _digests(
         (
@@ -735,11 +735,26 @@ def _verify_experiment(
         != provider.manifest_sha256
     ):
         raise ValueError("provider manifest drift")
-    root = _artifact_root_for(snapshot.root, artifact_roots=artifact_roots)
+    snapshot_artifact_root = _artifact_root_for(
+        snapshot.root, artifact_roots=artifact_roots
+    )
+    provider_artifact_root = _artifact_root_for(
+        provider.root, artifact_roots=artifact_roots
+    )
     snapshot_stage = "snapshot" if example_id is None else "development-snapshot"
     provider_stage = "provider" if example_id is None else "development-provider"
-    snapshot_receipt = root / "receipts" / snapshot_stage / f"{snapshot.request.snapshot_request_key}.json"
-    provider_receipt = root / "receipts" / provider_stage / f"{provider.manifest.provider_key}.json"
+    snapshot_receipt = (
+        snapshot_artifact_root
+        / "receipts"
+        / snapshot_stage
+        / f"{snapshot.request.snapshot_request_key}.json"
+    )
+    provider_receipt = (
+        provider_artifact_root
+        / "receipts"
+        / provider_stage
+        / f"{provider.manifest.provider_key}.json"
+    )
     upstream_snapshot, snapshot_receipt_sha = _verify_stage_receipt_secure(
         receipt_path=snapshot_receipt, artifact_roots=artifact_roots
     )
