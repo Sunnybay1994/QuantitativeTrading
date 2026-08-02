@@ -1787,7 +1787,13 @@ def _validate_reconciliation_inputs(
         or provider_validation.summary.provider_key != provider.manifest.provider_key
         or provider_validation.summary.provider_receipt_sha256
         != provider.provider_receipt_sha256
+        or provider_validation.summary.provider_manifest_sha256
+        != provider.manifest_sha256
         or provider_validation.summary.snapshot_id != snapshot.manifest.snapshot_id
+        or provider_validation.summary.provider_validation_config_sha256
+        != config.provider_validation_config_sha256
+        or provider_validation.summary.provider_runtime_fingerprint_sha256
+        != provider.manifest.provider_runtime_fingerprint_sha256
         or not provider_validation.summary.passed
     ):
         raise ValueError("reconciliation identity drift")

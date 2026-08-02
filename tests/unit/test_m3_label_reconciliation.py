@@ -402,6 +402,25 @@ def test_development_reconciliation_closed_loop(
                 timeout_seconds=30.0,
             )
         assert mixed.value.code == "LABEL_RECONCILIATION_INPUT_INVALID"
+    for field in (
+        "provider_manifest_sha256",
+        "provider_validation_config_sha256",
+        "provider_runtime_fingerprint_sha256",
+    ):
+        drifted_validation = replace(
+            provider_validation,
+            summary=replace(provider_validation.summary, **{field: "0" * 64}),
+        )
+        with pytest.raises(M3LabelReconciliationError) as drifted:
+            reconcile_development_example_labels_with_qlib(
+                release=release, snapshot=snapshot, experiment=experiment,
+                provider=provider, provider_validation=drifted_validation,
+                labels=labels, config=config, spec=spec,
+                receipt_paths=receipts, artifact_roots=artifact_roots,
+                python_executable=Path(sys.executable), output_root=rejected,
+                timeout_seconds=30.0,
+            )
+        assert drifted.value.code == "LABEL_RECONCILIATION_INPUT_INVALID"
     sys.modules["qlib.preloaded"] = types.ModuleType("qlib.preloaded")
     try:
         with pytest.raises(M3LabelReconciliationError) as preloaded:
