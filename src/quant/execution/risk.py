@@ -425,14 +425,14 @@ def evaluate_pretrade(
         )
     )
 
-    if plan.config_identity != cfg_id:
+    if plan.trading_config_identity != cfg_id:
         audit.append(
             _result(
                 "MASTER_SWITCH",
                 accepted=False,
                 code="CONFIG_IDENTITY_MISMATCH",
                 subject=plan.plan_id,
-                detail="plan.config_identity does not match loaded config",
+                detail="plan.trading_config_identity does not match loaded config",
             )
         )
         return _reject_all(plan, audit, daily_counters, manual_approval=False)

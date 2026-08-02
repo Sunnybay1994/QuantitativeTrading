@@ -621,6 +621,7 @@ def _order_plan_digest(
     market_snapshot_id: str,
     account_snapshot_id: str,
     config_identity: str,
+    trading_config_identity: str,
     intent_bodies: list[dict[str, object]],
     rejections: tuple["RuleDecision", ...],
     residual_cash: tuple[MoneyAmount, ...],
@@ -633,6 +634,7 @@ def _order_plan_digest(
             "market_snapshot_id": market_snapshot_id,
             "account_snapshot_id": account_snapshot_id,
             "config_identity": config_identity,
+            "trading_config_identity": trading_config_identity,
             "intents": intent_bodies,
             "rejections": [_rule_decision_payload(item) for item in rejections],
             "residual_cash": [_money_payload(item) for item in residual_cash],
@@ -1316,6 +1318,7 @@ class OrderPlan:
     market_snapshot_id: str
     account_snapshot_id: str
     config_identity: str
+    trading_config_identity: str
     intents: tuple[OrderIntent, ...]
     rejections: tuple[RuleDecision, ...]
     residual_cash: tuple[MoneyAmount, ...]
@@ -1327,6 +1330,7 @@ class OrderPlan:
         _require_hex64("market_snapshot_id", self.market_snapshot_id)
         _require_hex64("account_snapshot_id", self.account_snapshot_id)
         _require_hex64("config_identity", self.config_identity)
+        _require_hex64("trading_config_identity", self.trading_config_identity)
         if type(self.intents) is not tuple or any(
             not isinstance(item, OrderIntent) for item in self.intents
         ):
@@ -1405,6 +1409,7 @@ class OrderPlan:
             market_snapshot_id=self.market_snapshot_id,
             account_snapshot_id=self.account_snapshot_id,
             config_identity=self.config_identity,
+            trading_config_identity=self.trading_config_identity,
             intent_bodies=[
                 _intent_body_payload(
                     symbol=item.symbol,
@@ -2139,6 +2144,7 @@ def build_order_plan(
     market_snapshot_id: str,
     account_snapshot_id: str,
     config_identity: str,
+    trading_config_identity: str,
     intent_specs: Sequence[OrderIntentSpec],
     rejections: Sequence[RuleDecision],
     residual_cash: Sequence[MoneyAmount],
@@ -2149,6 +2155,9 @@ def build_order_plan(
     market_id = _require_hex64("market_snapshot_id", market_snapshot_id)
     account_id = _require_hex64("account_snapshot_id", account_snapshot_id)
     config_id = _require_hex64("config_identity", config_identity)
+    trading_config_id = _require_hex64(
+        "trading_config_identity", trading_config_identity
+    )
     spec_items = _require_sequence_of("intent_specs", intent_specs, OrderIntentSpec)
     rejection_items = _require_sequence_of("rejections", rejections, RuleDecision)
     cash_items = _require_sequence_of("residual_cash", residual_cash, MoneyAmount)
@@ -2193,6 +2202,7 @@ def build_order_plan(
         market_snapshot_id=market_id,
         account_snapshot_id=account_id,
         config_identity=config_id,
+        trading_config_identity=trading_config_id,
         intent_bodies=bodies,
         rejections=ordered_rejections,
         residual_cash=ordered_cash,
@@ -2223,6 +2233,7 @@ def build_order_plan(
         market_snapshot_id=market_id,
         account_snapshot_id=account_id,
         config_identity=config_id,
+        trading_config_identity=trading_config_id,
         intents=intents,
         rejections=ordered_rejections,
         residual_cash=ordered_cash,
@@ -2239,6 +2250,7 @@ def build_order_plan_identity(plan: OrderPlan) -> str:
         market_snapshot_id=plan.market_snapshot_id,
         account_snapshot_id=plan.account_snapshot_id,
         config_identity=plan.config_identity,
+        trading_config_identity=plan.trading_config_identity,
         intent_bodies=[
             _intent_body_payload(
                 symbol=item.symbol,

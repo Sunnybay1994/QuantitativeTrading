@@ -520,6 +520,7 @@ def test_order_plan_unique_intent_keys_and_identity() -> None:
         market_snapshot_id=_hex64("mkt"),
         account_snapshot_id=_hex64("acct"),
         config_identity=_hex64("cfg"),
+        trading_config_identity=_hex64("trading-cfg"),
         intent_specs=(spec_buy, spec_sell),
         rejections=(rejection,),
         residual_cash=(build_money_amount(Currency.CNY, Decimal("5")),),
@@ -549,6 +550,7 @@ def test_order_plan_unique_intent_keys_and_identity() -> None:
             market_snapshot_id=_hex64("mkt"),
             account_snapshot_id=_hex64("acct"),
             config_identity=_hex64("cfg"),
+            trading_config_identity=_hex64("trading-cfg"),
             intent_specs=(spec_buy, dup_spec),
             rejections=(),
             residual_cash=(),
@@ -602,6 +604,7 @@ def test_order_plan_decision_closes_quantities_identity_and_intent() -> None:
         market_snapshot_id=spec.market_snapshot_id,
         account_snapshot_id=spec.account_snapshot_id,
         config_identity=spec.config_identity,
+        trading_config_identity=_hex64("trading-cfg"),
         intent_specs=(spec,),
         rejections=(),
         residual_cash=(),
@@ -630,6 +633,7 @@ def test_order_plan_decision_closes_quantities_identity_and_intent() -> None:
             market_snapshot_id=spec.market_snapshot_id,
             account_snapshot_id=spec.account_snapshot_id,
             config_identity=spec.config_identity,
+            trading_config_identity=_hex64("trading-cfg"),
             intent_specs=(),
             rejections=(),
             residual_cash=(),
@@ -676,6 +680,7 @@ def test_order_plan_decision_route_and_rejection_are_identity_bound() -> None:
             market_snapshot_id=_hex64("rejected-market"),
             account_snapshot_id=_hex64("rejected-account"),
             config_identity=_hex64("rejected-config"),
+            trading_config_identity=_hex64("trading-cfg"),
             intent_specs=(),
             rejections=(),
             residual_cash=(),
@@ -808,6 +813,7 @@ def test_order_plan_forged_plan_id_rejected() -> None:
         market_snapshot_id=_hex64("mkt"),
         account_snapshot_id=_hex64("acct"),
         config_identity=_hex64("cfg"),
+        trading_config_identity=_hex64("trading-cfg"),
         intent_specs=(spec,),
         rejections=(),
         residual_cash=(),
@@ -819,6 +825,7 @@ def test_order_plan_forged_plan_id_rejected() -> None:
             market_snapshot_id=plan.market_snapshot_id,
             account_snapshot_id=plan.account_snapshot_id,
             config_identity=plan.config_identity,
+            trading_config_identity=plan.trading_config_identity,
             intents=plan.intents,
             rejections=plan.rejections,
             residual_cash=plan.residual_cash,
@@ -853,6 +860,7 @@ def test_order_plan_rejects_nested_identity_mismatch_and_replace() -> None:
         "market_snapshot_id": _hex64("mkt"),
         "account_snapshot_id": _hex64("acct"),
         "config_identity": _hex64("cfg"),
+        "trading_config_identity": _hex64("trading-cfg"),
     }
     mismatch_fields = (
         ("target_identity", _hex64("target-other")),
@@ -879,6 +887,8 @@ def test_order_plan_rejects_nested_identity_mismatch_and_replace() -> None:
     )
     with pytest.raises(ContractError):
         replace(plan, target_identity=_hex64("target-replaced"))
+    with pytest.raises(ContractError):
+        replace(plan, trading_config_identity=_hex64("trading-config-replaced"))
 
     foreign_intent = build_order_intent(
         plan_id=plan.plan_id,
@@ -1122,6 +1132,7 @@ def test_builders_reject_wrong_sequence_elements_as_contract_error() -> None:
             market_snapshot_id=_hex64("mkt"),
             account_snapshot_id=_hex64("acct"),
             config_identity=_hex64("cfg"),
+            trading_config_identity=_hex64("trading-cfg"),
             intent_specs=(good_spec,),
             rejections=("bad-rejection",),  # type: ignore[arg-type]
             residual_cash=(),
@@ -1132,6 +1143,7 @@ def test_builders_reject_wrong_sequence_elements_as_contract_error() -> None:
             market_snapshot_id=_hex64("mkt"),
             account_snapshot_id=_hex64("acct"),
             config_identity=_hex64("cfg"),
+            trading_config_identity=_hex64("trading-cfg"),
             intent_specs=(good_spec,),
             rejections=(),
             residual_cash=("bad-cash",),  # type: ignore[arg-type]

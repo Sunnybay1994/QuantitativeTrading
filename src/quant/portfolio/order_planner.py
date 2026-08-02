@@ -403,6 +403,7 @@ def build_order_plan(
         market_snapshot_id=market.snapshot_id,
         account_snapshot_id=account.snapshot_id,
         config_identity=config.config_identity,
+        trading_config_identity=trading_config_identity(config.trading_config),
         intent_specs=specs,
         rejections=rejections,
         residual_cash=residual,

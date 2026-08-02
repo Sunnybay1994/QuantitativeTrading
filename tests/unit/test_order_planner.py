@@ -14,7 +14,7 @@ from quant.backtest.connect_execution import build_connect_rule_config
 from quant.backtest.costs import ExecutionCostPeriod, build_execution_cost_schedule
 from quant.backtest.fx import FxRate, build_fx_snapshot
 from quant.domain.enums import ConnectRoute, Currency, Market, OrderSide
-from quant.execution.config import load_trading_config
+from quant.execution.config import load_trading_config, trading_config_identity
 from quant.execution.contracts import (
     build_account_snapshot,
     build_cash_balance,
@@ -24,6 +24,7 @@ from quant.execution.contracts import (
     build_verified_connect_market_context,
     build_verified_market_snapshot,
 )
+from quant.execution.risk import DailyRiskCounters, evaluate_pretrade
 from quant.portfolio.order_planner import (
     OrderPlannerError,
     OrderPlanTarget,
@@ -244,6 +245,37 @@ def test_target_input_order_does_not_change_plan_identity() -> None:
     )
     assert left == right
     assert left.plan_id == right.plan_id
+
+
+def test_b4_plan_proves_c0_identity_to_pretrade_without_conflating_composite() -> None:
+    planner = _config()
+    state = _state("600000.SH")
+    market = _market(state)
+    account = _account(cash="2000")
+    plan = build_order_plan(
+        targets=(_target(state.symbol, "1"),),
+        target_identity=_hex("b4-p3-closure"),
+        market=market,
+        account=account,
+        config=planner,
+    )
+
+    assert plan.config_identity == planner.config_identity
+    assert plan.trading_config_identity == trading_config_identity(
+        planner.trading_config
+    )
+    assert plan.config_identity != plan.trading_config_identity
+    decision = evaluate_pretrade(
+        plan,
+        account,
+        market,
+        planner.trading_config,
+        DailyRiskCounters(DAY, 0, 0, Decimal("0")),
+        now=NOW,
+    )
+    assert "CONFIG_IDENTITY_MISMATCH" not in {
+        item.code for item in decision.rule_results
+    }
 
 
 def test_direct_config_constructor_rejects_forged_identity() -> None:
