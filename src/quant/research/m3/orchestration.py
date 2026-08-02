@@ -20,9 +20,13 @@ from types import MappingProxyType
 from typing import Literal, TypeAlias, cast
 
 from quant.data._journal_lock import hold_journal_writer_lock
-from quant.data.m3_release import commit_directory_noreplace
+from quant.data.m3_release import VerifiedG1Release, commit_directory_noreplace
 from quant.research.m3.config import LoadedM3Config
 from quant.research.m3.contracts import (
+    ExperimentIdentitySpec,
+    LabelReconciliationSpec,
+    ProviderBuildSpec,
+    ProviderValidationSpec,
     SnapshotBuildResult,
     SnapshotRequestRecordV1,
     VerifiedEvaluationArtifact,
@@ -30,11 +34,18 @@ from quant.research.m3.contracts import (
     VerifiedFoldPlanArtifact,
     VerifiedLabelArtifact,
     VerifiedLabelReconciliationArtifact,
+    VerifiedProviderArtifact,
+    VerifiedProviderValidationArtifact,
+    VerifiedSnapshotArtifact,
 )
 from quant.research.m3.run_state import (
     ArtifactDigest,
     Scope,
     StageReceipt,
+    compute_provider_key,
+    compute_provider_validation_key,
+    compute_label_reconciliation_key,
+    compute_experiment_key,
     compute_work_key,
     publish_stage_receipt,
     verify_stage_receipt,
@@ -46,6 +57,13 @@ from quant.research.m3.development_example import (
     VerifiedDevelopmentExampleG1Release,
     VerifiedDevelopmentExampleLabelArtifact,
     VerifiedDevelopmentExampleLabelReconciliationArtifact,
+    VerifiedDevelopmentExampleProviderArtifact,
+    VerifiedDevelopmentExampleProviderValidationArtifact,
+    VerifiedDevelopmentExampleSnapshotArtifact,
+    compute_development_provider_key,
+    compute_development_provider_validation_key,
+    compute_development_label_reconciliation_key,
+    compute_development_experiment_key,
     verify_development_example_g1_release,
 )
 from quant.research.m3.snapshot import (
@@ -1327,6 +1345,10 @@ PROVIDER_STAGE_SPEC = StageSpec(
         OutputSpec("provider_manifest.json", "FILE", None),
     ),
 )
+DEVELOPMENT_PROVIDER_STAGE_SPEC = StageSpec(
+    "development-provider", "PROVIDER", ("development-snapshot",),
+    PROVIDER_STAGE_SPEC.outputs,
+)
 PROVIDER_VALIDATION_STAGE_SPEC = StageSpec(
     "provider-validation", "PROVIDER", ("provider",),
     (
@@ -1334,17 +1356,29 @@ PROVIDER_VALIDATION_STAGE_SPEC = StageSpec(
         OutputSpec("provider_validation.parquet", "FILE", None),
     ),
 )
-EXPERIMENT_STAGE_SPEC = StageSpec(
-    "experiment", "EXPERIMENT", ("provider-validation",),
+DEVELOPMENT_PROVIDER_VALIDATION_STAGE_SPEC = StageSpec(
+    "development-provider-validation", "PROVIDER", ("development-provider",),
+    PROVIDER_VALIDATION_STAGE_SPEC.outputs,
+)
+EXPERIMENT_IDENTITY_STAGE_SPEC = StageSpec(
+    "experiment-identity", "EXPERIMENT", ("provider-validation",),
     (OutputSpec("experiment_manifest.json", "FILE", None),),
 )
+DEVELOPMENT_EXPERIMENT_IDENTITY_STAGE_SPEC = StageSpec(
+    "development-experiment-identity", "EXPERIMENT",
+    ("development-provider-validation",), EXPERIMENT_IDENTITY_STAGE_SPEC.outputs,
+)
 LABEL_STAGE_SPEC = StageSpec(
-    "labels", "EXPERIMENT", ("experiment",),
+    "labels", "EXPERIMENT", ("experiment-identity",),
     (
         OutputSpec("diagnostics.parquet", "FILE", None),
         OutputSpec("label_manifest.json", "FILE", None),
         OutputSpec("labels.parquet", "FILE", None),
     ),
+)
+DEVELOPMENT_LABEL_STAGE_SPEC = StageSpec(
+    "development-labels", "EXPERIMENT", ("development-experiment-identity",),
+    LABEL_STAGE_SPEC.outputs,
 )
 LABEL_RECONCILIATION_STAGE_SPEC = StageSpec(
     "label-reconciliation", "EXPERIMENT", ("labels", "provider-validation"),
@@ -1353,9 +1387,18 @@ LABEL_RECONCILIATION_STAGE_SPEC = StageSpec(
         OutputSpec("reconciliation.parquet", "FILE", None),
     ),
 )
+DEVELOPMENT_LABEL_RECONCILIATION_STAGE_SPEC = StageSpec(
+    "development-label-reconciliation", "EXPERIMENT",
+    ("development-labels", "development-provider-validation"),
+    LABEL_RECONCILIATION_STAGE_SPEC.outputs,
+)
 FOLDS_STAGE_SPEC = StageSpec(
-    "folds", "EXPERIMENT", ("label-reconciliation",),
+    "folds", "EXPERIMENT", ("experiment-identity",),
     (OutputSpec("folds.json", "FILE", None),),
+)
+DEVELOPMENT_FOLDS_STAGE_SPEC = StageSpec(
+    "development-folds", "EXPERIMENT", ("development-experiment-identity",),
+    FOLDS_STAGE_SPEC.outputs,
 )
 FEATURES_STAGE_SPEC = StageSpec(
     "features", "EXPERIMENT", ("folds", "provider-validation"),
@@ -1369,6 +1412,11 @@ FEATURES_STAGE_SPEC = StageSpec(
         OutputSpec("worker-response.json", "FILE", None),
     ),
 )
+DEVELOPMENT_FEATURES_STAGE_SPEC = StageSpec(
+    "development-features", "EXPERIMENT",
+    ("development-folds", "development-provider-validation"),
+    FEATURES_STAGE_SPEC.outputs,
+)
 ALIGNMENT_STAGE_SPEC = StageSpec(
     "alignment", "WORK", ("features",),
     (
@@ -1378,6 +1426,10 @@ ALIGNMENT_STAGE_SPEC = StageSpec(
         OutputSpec("validation.parquet", "FILE", None),
     ),
 )
+DEVELOPMENT_ALIGNMENT_STAGE_SPEC = StageSpec(
+    "development-alignment", "WORK", ("development-features",),
+    ALIGNMENT_STAGE_SPEC.outputs,
+)
 TRAIN_STAGE_SPEC = StageSpec(
     "train", "WORK", ("alignment",),
     (
@@ -1386,12 +1438,20 @@ TRAIN_STAGE_SPEC = StageSpec(
         OutputSpec("validation_curve.parquet", "FILE", None),
     ),
 )
+DEVELOPMENT_MODEL_STAGE_SPEC = StageSpec(
+    "development-model", "WORK", ("development-alignment",),
+    TRAIN_STAGE_SPEC.outputs,
+)
 PREDICTIONS_STAGE_SPEC = StageSpec(
     "predictions", "WORK", ("train",),
     (
         OutputSpec("prediction_manifest.json", "FILE", None),
         OutputSpec("predictions.parquet", "FILE", None),
     ),
+)
+DEVELOPMENT_PREDICTIONS_STAGE_SPEC = StageSpec(
+    "development-predictions", "WORK", ("development-model",),
+    PREDICTIONS_STAGE_SPEC.outputs,
 )
 EVALUATION_STAGE_SPEC = StageSpec(
     "evaluation", "WORK", ("predictions",),
@@ -1401,6 +1461,10 @@ EVALUATION_STAGE_SPEC = StageSpec(
         OutputSpec("metrics.json", "FILE", None),
     ),
 )
+DEVELOPMENT_EVALUATION_STAGE_SPEC = StageSpec(
+    "development-evaluation", "WORK", ("development-predictions",),
+    EVALUATION_STAGE_SPEC.outputs,
+)
 TARGETS_STAGE_SPEC = StageSpec(
     "targets", "WORK", ("evaluation",),
     (
@@ -1408,6 +1472,10 @@ TARGETS_STAGE_SPEC = StageSpec(
         OutputSpec("target_manifest.json", "FILE", None),
         OutputSpec("target_weights.parquet", "FILE", None),
     ),
+)
+DEVELOPMENT_TARGETS_STAGE_SPEC = StageSpec(
+    "development-targets", "WORK", ("development-evaluation",),
+    TARGETS_STAGE_SPEC.outputs,
 )
 BACKTEST_PLAN_STAGE_SPEC = StageSpec(
     "backtest_plan", "WORK", ("targets",),
@@ -1417,6 +1485,10 @@ BACKTEST_PLAN_STAGE_SPEC = StageSpec(
         OutputSpec("schedule_diagnostics.parquet", "FILE", None),
         OutputSpec("scheduled_targets.parquet", "FILE", None),
     ),
+)
+DEVELOPMENT_BACKTEST_PLAN_STAGE_SPEC = StageSpec(
+    "development-backtest-plan", "WORK", ("development-targets",),
+    BACKTEST_PLAN_STAGE_SPEC.outputs,
 )
 BACKTEST_STAGE_SPEC = StageSpec(
     "backtest", "WORK", ("backtest_plan",),
@@ -1428,12 +1500,21 @@ BACKTEST_STAGE_SPEC = StageSpec(
         OutputSpec("backtest_metrics.json", "FILE", None),
     ),
 )
+DEVELOPMENT_BACKTEST_STAGE_SPEC = StageSpec(
+    "development-backtest", "WORK", ("development-backtest-plan",),
+    BACKTEST_STAGE_SPEC.outputs,
+)
 TRACKING_STAGE_SPEC = StageSpec(
     "tracking", "WORK", ("backtest", "evaluation"),
     (
         OutputSpec("tracking_marker.json", "FILE", None),
         OutputSpec("tracking_request.json", "FILE", None),
     ),
+)
+DEVELOPMENT_TRACKING_STAGE_SPEC = StageSpec(
+    "development-tracking", "WORK",
+    ("development-backtest", "development-evaluation"),
+    TRACKING_STAGE_SPEC.outputs,
 )
 SUMMARY_STAGE_SPEC = StageSpec(
     "summary", "EXPERIMENT", ("evaluation",),
@@ -1444,17 +1525,33 @@ SUMMARY_STAGE_SPEC = StageSpec(
         OutputSpec("metrics.json", "FILE", None),
     ),
 )
+DEVELOPMENT_SUMMARY_STAGE_SPEC = StageSpec(
+    "development-research-summary", "EXPERIMENT",
+    ("development-evaluation",), SUMMARY_STAGE_SPEC.outputs,
+)
 
 STAGE_SPEC_REGISTRY: Mapping[str, StageSpec] = MappingProxyType({
     spec.name: spec for spec in (
         SNAPSHOT_STAGE_SPEC, DEVELOPMENT_SNAPSHOT_STAGE_SPEC,
-        PROVIDER_STAGE_SPEC, PROVIDER_VALIDATION_STAGE_SPEC,
-        EXPERIMENT_STAGE_SPEC, LABEL_STAGE_SPEC,
-        LABEL_RECONCILIATION_STAGE_SPEC, FOLDS_STAGE_SPEC,
-        FEATURES_STAGE_SPEC, ALIGNMENT_STAGE_SPEC, TRAIN_STAGE_SPEC,
-        PREDICTIONS_STAGE_SPEC, EVALUATION_STAGE_SPEC, TARGETS_STAGE_SPEC,
-        BACKTEST_PLAN_STAGE_SPEC, BACKTEST_STAGE_SPEC, TRACKING_STAGE_SPEC,
-        SUMMARY_STAGE_SPEC,
+        PROVIDER_STAGE_SPEC, DEVELOPMENT_PROVIDER_STAGE_SPEC,
+        PROVIDER_VALIDATION_STAGE_SPEC,
+        DEVELOPMENT_PROVIDER_VALIDATION_STAGE_SPEC,
+        EXPERIMENT_IDENTITY_STAGE_SPEC,
+        DEVELOPMENT_EXPERIMENT_IDENTITY_STAGE_SPEC,
+        LABEL_STAGE_SPEC, DEVELOPMENT_LABEL_STAGE_SPEC,
+        LABEL_RECONCILIATION_STAGE_SPEC,
+        DEVELOPMENT_LABEL_RECONCILIATION_STAGE_SPEC,
+        FOLDS_STAGE_SPEC, DEVELOPMENT_FOLDS_STAGE_SPEC,
+        FEATURES_STAGE_SPEC, DEVELOPMENT_FEATURES_STAGE_SPEC,
+        ALIGNMENT_STAGE_SPEC, DEVELOPMENT_ALIGNMENT_STAGE_SPEC,
+        TRAIN_STAGE_SPEC, DEVELOPMENT_MODEL_STAGE_SPEC,
+        PREDICTIONS_STAGE_SPEC, DEVELOPMENT_PREDICTIONS_STAGE_SPEC,
+        EVALUATION_STAGE_SPEC, DEVELOPMENT_EVALUATION_STAGE_SPEC,
+        TARGETS_STAGE_SPEC, DEVELOPMENT_TARGETS_STAGE_SPEC,
+        BACKTEST_PLAN_STAGE_SPEC, DEVELOPMENT_BACKTEST_PLAN_STAGE_SPEC,
+        BACKTEST_STAGE_SPEC, DEVELOPMENT_BACKTEST_STAGE_SPEC,
+        TRACKING_STAGE_SPEC, DEVELOPMENT_TRACKING_STAGE_SPEC,
+        SUMMARY_STAGE_SPEC, DEVELOPMENT_SUMMARY_STAGE_SPEC,
     )
 })
 STAGE_REGISTRY = STAGE_SPEC_REGISTRY
@@ -1470,6 +1567,12 @@ ReconciliationArtifact = (
 )
 EvaluationArtifact = (
     VerifiedEvaluationArtifact | VerifiedDevelopmentExampleEvaluationArtifact
+)
+SnapshotArtifact = VerifiedSnapshotArtifact | VerifiedDevelopmentExampleSnapshotArtifact
+ProviderArtifact = VerifiedProviderArtifact | VerifiedDevelopmentExampleProviderArtifact
+ProviderValidationArtifact = (
+    VerifiedProviderValidationArtifact
+    | VerifiedDevelopmentExampleProviderValidationArtifact
 )
 
 
@@ -1522,6 +1625,902 @@ def _static_node(
     )
 
 
+def _development_example_id(*bundles: object) -> str | None:
+    """Require one nominal track and return its development example identity."""
+    development_types = {
+        VerifiedDevelopmentExampleSnapshotArtifact,
+        VerifiedDevelopmentExampleProviderArtifact,
+        VerifiedDevelopmentExampleProviderValidationArtifact,
+        VerifiedDevelopmentExampleExperimentIdentity,
+        VerifiedDevelopmentExampleG1Release,
+        VerifiedDevelopmentExampleLabelArtifact,
+        VerifiedDevelopmentExampleFoldPlanArtifact,
+        VerifiedDevelopmentExampleLabelReconciliationArtifact,
+        VerifiedDevelopmentExampleEvaluationArtifact,
+    }
+    formal_types = {
+        VerifiedSnapshotArtifact,
+        VerifiedProviderArtifact,
+        VerifiedProviderValidationArtifact,
+        VerifiedExperimentIdentity,
+        VerifiedG1Release,
+        VerifiedLabelArtifact,
+        VerifiedFoldPlanArtifact,
+        VerifiedLabelReconciliationArtifact,
+        VerifiedEvaluationArtifact,
+    }
+    types = {type(item) for item in bundles}
+    if types <= formal_types:
+        return None
+    if not types <= development_types:
+        raise ValueError("continuation verified identity mismatch")
+    example_ids = {
+        cast(
+            str,
+            getattr(item, "example_id")
+            if hasattr(item, "example_id")
+            else getattr(item, "manifest").example_id,
+        )
+        for item in bundles
+    }
+    if len(example_ids) != 1:
+        raise ValueError("development continuation example identity mismatch")
+    return next(iter(example_ids))
+
+
+def _stage_root_for(root: Path, *, container: str) -> Path:
+    resolved = root.resolve(strict=True)
+    if resolved.parent.name != container:
+        raise ValueError("verified artifact publication path drift")
+    return resolved.parent.parent
+
+
+def _stage_root_containing(root: Path, *, container: str) -> Path:
+    resolved = root.resolve(strict=True)
+    for parent in resolved.parents:
+        if parent.name == container:
+            return parent.parent
+    raise ValueError("verified artifact publication path drift")
+
+
+def _receipt_external(
+    *, stage_root: Path, stage: str, key: str, expected_sha256: str,
+) -> ExternalInput:
+    digest = _verified_digest(
+        stage_root / "receipts" / stage / f"{key}.json",
+        root=stage_root,
+        alias="stage",
+    )
+    if digest.sha256 != expected_sha256:
+        raise ValueError("verified receipt bytes drift")
+    return ExternalInput(digest)
+
+
+def _snapshot_boundary_inputs(
+    snapshot: SnapshotArtifact, *, include_request: bool = True,
+    include_staging: bool = True,
+) -> tuple[ExternalInput, ...]:
+    stage = (
+        "development-snapshot"
+        if type(snapshot) is VerifiedDevelopmentExampleSnapshotArtifact
+        else "snapshot"
+    )
+    stage_root = _stage_root_for(snapshot.root, container="snapshots")
+    relative_paths = [
+        f"snapshots/{snapshot.manifest.snapshot_id}/manifest.json",
+        f"snapshots/{snapshot.manifest.snapshot_id}/session_calendar.parquet",
+    ]
+    if include_request:
+        relative_paths.append(
+            f"snapshot-requests/{snapshot.request.snapshot_request_key}.json"
+        )
+    if include_staging:
+        relative_paths.extend(
+            path.relative_to(stage_root).as_posix()
+            for path in snapshot.staging_paths
+        )
+    direct = _external_files(
+        root=stage_root,
+        alias="stage",
+        relative_paths=relative_paths,
+    )
+    if include_request:
+        request = next(
+            item for item in direct
+            if item.artifact.relative_path.startswith("snapshot-requests/")
+        )
+        if request.artifact.sha256 != snapshot.request_sha256:
+            raise ValueError("verified snapshot request bytes drift")
+    return (
+        *direct,
+        _receipt_external(
+            stage_root=stage_root,
+            stage=stage,
+            key=snapshot.request.snapshot_request_key,
+            expected_sha256=snapshot.snapshot_receipt_sha256,
+        ),
+    )
+
+
+def _provider_boundary_inputs(provider: ProviderArtifact) -> tuple[ExternalInput, ...]:
+    stage = (
+        "development-provider"
+        if type(provider) is VerifiedDevelopmentExampleProviderArtifact
+        else "provider"
+    )
+    stage_root = _stage_root_for(provider.root, container="providers")
+    direct = _external_files(
+        root=stage_root,
+        alias="stage",
+        relative_paths=(
+            f"providers/{provider.manifest.provider_key}/provider_manifest.json",
+            *(
+                (provider.root / item.relative_path)
+                .relative_to(stage_root)
+                .as_posix()
+                for item in provider.manifest.files
+            ),
+        ),
+    )
+    manifest = next(
+        item for item in direct
+        if item.artifact.relative_path.endswith("/provider_manifest.json")
+    )
+    if manifest.artifact.sha256 != provider.manifest_sha256:
+        raise ValueError("verified provider manifest bytes drift")
+    return (
+        *direct,
+        _receipt_external(
+            stage_root=stage_root,
+            stage=stage,
+            key=provider.manifest.provider_key,
+            expected_sha256=provider.provider_receipt_sha256,
+        ),
+    )
+
+
+def _snapshot_identity_inputs(snapshot: SnapshotArtifact) -> tuple[ExternalInput, ...]:
+    stage = (
+        "development-snapshot"
+        if type(snapshot) is VerifiedDevelopmentExampleSnapshotArtifact
+        else "snapshot"
+    )
+    stage_root = _stage_root_for(snapshot.root, container="snapshots")
+    manifest = _external_files(
+        root=stage_root,
+        alias="stage",
+        relative_paths=(
+            f"snapshots/{snapshot.manifest.snapshot_id}/manifest.json",
+        ),
+    )[0]
+    if manifest.artifact.sha256 != snapshot.manifest_sha256:
+        raise ValueError("verified snapshot manifest bytes drift")
+    return (
+        manifest,
+        _receipt_external(
+            stage_root=stage_root,
+            stage=stage,
+            key=snapshot.request.snapshot_request_key,
+            expected_sha256=snapshot.snapshot_receipt_sha256,
+        ),
+    )
+
+
+def _provider_identity_inputs(provider: ProviderArtifact) -> tuple[ExternalInput, ...]:
+    stage = (
+        "development-provider"
+        if type(provider) is VerifiedDevelopmentExampleProviderArtifact
+        else "provider"
+    )
+    stage_root = _stage_root_for(provider.root, container="providers")
+    manifest = _external_files(
+        root=stage_root,
+        alias="stage",
+        relative_paths=(
+            f"providers/{provider.manifest.provider_key}/provider_manifest.json",
+        ),
+    )[0]
+    if manifest.artifact.sha256 != provider.manifest_sha256:
+        raise ValueError("verified provider manifest bytes drift")
+    return (
+        manifest,
+        _receipt_external(
+            stage_root=stage_root,
+            stage=stage,
+            key=provider.manifest.provider_key,
+            expected_sha256=provider.provider_receipt_sha256,
+        ),
+    )
+
+
+def _experiment_boundary_inputs(
+    experiment: ExperimentArtifact,
+) -> tuple[ExternalInput, ...]:
+    stage = (
+        "development-experiment-identity"
+        if type(experiment) is VerifiedDevelopmentExampleExperimentIdentity
+        else "experiment-identity"
+    )
+    stage_root = _stage_root_for(experiment.root, container="runs")
+    direct = _external_files(
+        root=stage_root,
+        alias="stage",
+        relative_paths=(
+            f"runs/{experiment.manifest.experiment_key}/experiment_manifest.json",
+        ),
+    )
+    if direct[0].artifact.sha256 != experiment.manifest_sha256:
+        raise ValueError("verified experiment manifest bytes drift")
+    return (
+        *direct,
+        _receipt_external(
+            stage_root=stage_root,
+            stage=stage,
+            key=experiment.manifest.experiment_key,
+            expected_sha256=experiment.experiment_receipt_sha256,
+        ),
+    )
+
+
+def _provider_validation_boundary_inputs(
+    validation: ProviderValidationArtifact,
+) -> tuple[ExternalInput, ...]:
+    stage = (
+        "development-provider-validation"
+        if type(validation) is VerifiedDevelopmentExampleProviderValidationArtifact
+        else "provider-validation"
+    )
+    key = validation.summary.provider_validation_key
+    stage_root = _stage_root_for(
+        validation.root, container="provider-validations"
+    )
+    direct = _external_files(
+        root=stage_root,
+        alias="stage",
+        relative_paths=(
+            f"provider-validations/{key}/provider_validation.json",
+            f"provider-validations/{key}/provider_validation.parquet",
+        ),
+    )
+    summary = next(
+        item for item in direct
+        if item.artifact.relative_path.endswith("/provider_validation.json")
+    )
+    if summary.artifact.sha256 != validation.summary_sha256:
+        raise ValueError("verified provider validation bytes drift")
+    return (
+        *direct,
+        _receipt_external(
+            stage_root=stage_root,
+            stage=stage,
+            key=key,
+            expected_sha256=validation.validation_receipt_sha256,
+        ),
+    )
+
+
+def _label_boundary_inputs(label: LabelArtifact) -> tuple[ExternalInput, ...]:
+    stage = (
+        "development-labels"
+        if type(label) is VerifiedDevelopmentExampleLabelArtifact
+        else "labels"
+    )
+    experiment_key = label.manifest.experiment_key
+    horizon = label.manifest.horizon_sessions
+    stage_root = _stage_root_containing(label.root, container="labels")
+    direct = _external_files(
+        root=stage_root,
+        alias="stage",
+        relative_paths=tuple(
+            (label.root / name).relative_to(stage_root).as_posix()
+            for name in ("diagnostics.parquet", "label_manifest.json", "labels.parquet")
+        ),
+    )
+    manifest = next(
+        item for item in direct
+        if item.artifact.relative_path.endswith("/label_manifest.json")
+    )
+    if manifest.artifact.sha256 != label.manifest_sha256:
+        raise ValueError("verified label manifest bytes drift")
+    return (
+        *direct,
+        _receipt_external(
+            stage_root=stage_root,
+            stage=stage,
+            key=f"{experiment_key}-h{horizon}",
+            expected_sha256=label.label_receipt_sha256,
+        ),
+    )
+
+
+def _fold_boundary_inputs(folds: FoldArtifact) -> tuple[ExternalInput, ...]:
+    stage = (
+        "development-folds"
+        if type(folds) is VerifiedDevelopmentExampleFoldPlanArtifact
+        else "folds"
+    )
+    stage_root = _stage_root_for(folds.root, container="folds")
+    direct = _external_files(
+        root=stage_root,
+        alias="stage",
+        relative_paths=(f"folds/{folds.manifest.experiment_key}/folds.json",),
+    )
+    if direct[0].artifact.sha256 != folds.manifest_sha256:
+        raise ValueError("verified fold manifest bytes drift")
+    return (
+        *direct,
+        _receipt_external(
+            stage_root=stage_root,
+            stage=stage,
+            key=folds.manifest.experiment_key,
+            expected_sha256=folds.folds_receipt_sha256,
+        ),
+    )
+
+
+def _reconciliation_boundary_inputs(
+    reconciliation: ReconciliationArtifact,
+) -> tuple[ExternalInput, ...]:
+    stage = (
+        "development-label-reconciliation"
+        if type(reconciliation)
+        is VerifiedDevelopmentExampleLabelReconciliationArtifact
+        else "label-reconciliation"
+    )
+    key = reconciliation.summary.reconciliation_key
+    stage_root = _stage_root_for(
+        reconciliation.root, container="label-reconciliations"
+    )
+    direct = _external_files(
+        root=stage_root,
+        alias="stage",
+        relative_paths=(
+            f"label-reconciliations/{key}/reconciliation.json",
+            f"label-reconciliations/{key}/reconciliation.parquet",
+        ),
+    )
+    summary = next(
+        item for item in direct
+        if item.artifact.relative_path.endswith("/reconciliation.json")
+    )
+    if summary.artifact.sha256 != reconciliation.summary_sha256:
+        raise ValueError("verified reconciliation summary bytes drift")
+    return (
+        *direct,
+        _receipt_external(
+            stage_root=stage_root,
+            stage=stage,
+            key=key,
+            expected_sha256=reconciliation.reconciliation_receipt_sha256,
+        ),
+    )
+
+
+def _evaluation_boundary_inputs(
+    evaluation: EvaluationArtifact,
+) -> tuple[ExternalInput, ...]:
+    stage = (
+        "development-evaluation"
+        if type(evaluation) is VerifiedDevelopmentExampleEvaluationArtifact
+        else "evaluation"
+    )
+    stage_root = _stage_root_containing(evaluation.root, container="work")
+    direct = _external_files(
+        root=stage_root,
+        alias="stage",
+        relative_paths=tuple(
+            (evaluation.root / name).relative_to(stage_root).as_posix()
+            for name in ("daily_ic.parquet", "evaluation_manifest.json", "metrics.json")
+        ),
+    )
+    manifest = next(
+        item for item in direct
+        if item.artifact.relative_path.endswith("/evaluation_manifest.json")
+    )
+    if manifest.artifact.sha256 != evaluation.manifest_sha256:
+        raise ValueError("verified evaluation manifest bytes drift")
+    return (
+        *direct,
+        _receipt_external(
+            stage_root=stage_root,
+            stage=stage,
+            key=evaluation.manifest.work_key,
+            expected_sha256=evaluation.evaluation_receipt_sha256,
+        ),
+    )
+
+
+def _release_label_inputs(
+    release: VerifiedG1Release | VerifiedDevelopmentExampleG1Release,
+) -> tuple[ExternalInput, ...]:
+    root = release.release.root.resolve(strict=True)
+    selected = (
+        release.release.manifest_path,
+        *(dict(release.artifact_paths)[name] for name in (
+            "bar_1d.parquet", "benchmark_bar_1d.parquet", "eligible_keys.parquet",
+        )),
+    )
+    inputs = tuple(
+        ExternalInput(_verified_digest(path, root=root, alias="g1-release"))
+        for path in selected
+    )
+    manifest = next(
+        item for item in inputs
+        if item.artifact.relative_path == release.release.manifest_path.relative_to(root).as_posix()
+    )
+    if manifest.artifact.sha256 != release.manifest_sha256:
+        raise ValueError("verified release manifest bytes drift")
+    entries = {item.path: item for item in release.manifest.files}
+    for item in inputs:
+        name = Path(item.artifact.relative_path).name
+        if name in entries and item.artifact.sha256 != entries[name].sha256:
+            raise ValueError("verified release artifact bytes drift")
+    return tuple(sorted(inputs, key=lambda item: (
+        item.artifact.root_alias, item.artifact.relative_path,
+    )))
+
+
+def _release_reconciliation_inputs(
+    release: VerifiedG1Release | VerifiedDevelopmentExampleG1Release,
+) -> tuple[ExternalInput, ...]:
+    root = release.release.root.resolve(strict=True)
+    paths = (
+        release.release.manifest_path,
+        dict(release.artifact_paths)["benchmark_bar_1d.parquet"],
+    )
+    inputs = tuple(
+        ExternalInput(_verified_digest(path, root=root, alias="g1-release"))
+        for path in paths
+    )
+    if inputs[0].artifact.sha256 != release.manifest_sha256:
+        raise ValueError("verified release manifest bytes drift")
+    benchmark_entry = next(
+        item for item in release.manifest.files
+        if item.path == "benchmark_bar_1d.parquet"
+    )
+    if inputs[1].artifact.sha256 != benchmark_entry.sha256:
+        raise ValueError("verified benchmark bytes drift")
+    return tuple(sorted(inputs, key=lambda item: (
+        item.artifact.root_alias, item.artifact.relative_path,
+    )))
+
+
+def _assert_release_snapshot_identity(
+    release: VerifiedG1Release | VerifiedDevelopmentExampleG1Release,
+    snapshot: SnapshotArtifact,
+) -> None:
+    release_id = (
+        release.manifest.contract_release_id
+        if type(release) is VerifiedDevelopmentExampleG1Release
+        else release.manifest.release_id
+    )
+    if (
+        snapshot.manifest.g1_release_id != release_id
+        or snapshot.manifest.g1_release_manifest_sha256 != release.manifest_sha256
+        or snapshot.request.g1_release_id != release_id
+        or snapshot.request.g1_release_manifest_sha256 != release.manifest_sha256
+    ):
+        raise ValueError("release/snapshot identity drift")
+
+
+def make_provider_materialization_run_plan(
+    *, config: LoadedM3Config, snapshot: SnapshotArtifact,
+    spec: ProviderBuildSpec, dump_tool_path: Path,
+) -> RunPlan:
+    """Build the identity-resolved provider materialization wave."""
+    _require_config(config)
+    if type(snapshot) not in {
+        VerifiedSnapshotArtifact, VerifiedDevelopmentExampleSnapshotArtifact,
+    } or type(spec) is not ProviderBuildSpec or not isinstance(dump_tool_path, Path):
+        raise ValueError("provider continuation requires verified inputs")
+    example_id = _development_example_id(snapshot)
+    expected_key = (
+        compute_provider_key(
+            snapshot_id=snapshot.manifest.snapshot_id,
+            provider_config_hash=config.provider_config_sha256,
+            dump_tool_sha256=spec.dump_tool.sha256,
+            qlib_version=spec.qlib_version,
+            provider_runtime_fingerprint_sha256=spec.runtime_fingerprint.sha256,
+            code_version=spec.code_version,
+        )
+        if example_id is None
+        else compute_development_provider_key(
+            example_id=example_id,
+            snapshot_id=snapshot.manifest.snapshot_id,
+            snapshot_manifest_sha256=snapshot.manifest_sha256,
+            provider_config_sha256=config.provider_config_sha256,
+            dump_tool_sha256=spec.dump_tool.sha256,
+            qlib_version=spec.qlib_version,
+            provider_runtime_fingerprint_sha256=spec.runtime_fingerprint.sha256,
+            code_version=spec.code_version,
+        )
+    )
+    if (
+        spec.snapshot_id != snapshot.manifest.snapshot_id
+        or spec.snapshot_manifest_sha256 != snapshot.manifest_sha256
+        or spec.provider_config_sha256 != config.provider_config_sha256
+        or spec.provider_key != expected_key
+        or (
+            example_id is None
+            and spec.code_version.startswith("development-example/")
+        )
+        or (
+            example_id is not None
+            and not spec.code_version.startswith("development-example/")
+        )
+    ):
+        raise ValueError("provider continuation identity drift")
+    dump_digest = _verified_digest(
+        dump_tool_path, root=dump_tool_path.parent, alias="qlib-dump-tool",
+    )
+    if (
+        dump_digest.sha256 != spec.dump_tool.sha256
+        or dump_digest.size_bytes != spec.dump_tool.size_bytes
+    ):
+        raise ValueError("provider dump tool identity drift")
+    stage_spec = (
+        PROVIDER_STAGE_SPEC
+        if example_id is None
+        else DEVELOPMENT_PROVIDER_STAGE_SPEC
+    )
+    node = _static_node(
+        node_id=stage_spec.name,
+        spec=stage_spec,
+        scope_key=expected_key,
+        final_directory=f"providers/{expected_key}",
+        receipt_path=f"receipts/{stage_spec.name}/{expected_key}.json",
+        inputs=(*_snapshot_boundary_inputs(snapshot), ExternalInput(dump_digest)),
+    )
+    return RunPlan("PROVIDER", (node,))
+
+
+def make_provider_validation_run_plan(
+    *, config: LoadedM3Config, snapshot: SnapshotArtifact,
+    provider: ProviderArtifact, spec: ProviderValidationSpec,
+) -> RunPlan:
+    """Build validation only after provider bytes and receipt are verified."""
+    _require_config(config)
+    if type(spec) is not ProviderValidationSpec:
+        raise ValueError("provider validation continuation requires verified inputs")
+    example_id = _development_example_id(snapshot, provider)
+    if (
+        provider.manifest.snapshot_id != snapshot.manifest.snapshot_id
+        or provider.manifest.snapshot_manifest_sha256 != snapshot.manifest_sha256
+        or spec.provider_validation_config_sha256
+        != config.provider_validation_config_sha256
+        or spec.qlib_version != provider.manifest.qlib_version
+    ):
+        raise ValueError("provider validation continuation identity drift")
+    expected_key = (
+        compute_provider_validation_key(
+            provider_key=provider.manifest.provider_key,
+            provider_receipt_sha256=provider.provider_receipt_sha256,
+            provider_validation_config_sha256=(
+                config.provider_validation_config_sha256
+            ),
+            provider_runtime_fingerprint_sha256=(
+                provider.manifest.provider_runtime_fingerprint_sha256
+            ),
+            code_version=spec.code_version,
+        )
+        if example_id is None
+        else compute_development_provider_validation_key(
+            example_id=example_id,
+            provider_key=provider.manifest.provider_key,
+            provider_receipt_sha256=provider.provider_receipt_sha256,
+            provider_validation_config_sha256=(
+                config.provider_validation_config_sha256
+            ),
+            provider_runtime_fingerprint_sha256=(
+                provider.manifest.provider_runtime_fingerprint_sha256
+            ),
+            code_version=spec.code_version,
+        )
+    )
+    if spec.provider_validation_key != expected_key:
+        raise ValueError("provider validation key drift")
+    stage_spec = (
+        PROVIDER_VALIDATION_STAGE_SPEC
+        if example_id is None
+        else DEVELOPMENT_PROVIDER_VALIDATION_STAGE_SPEC
+    )
+    node = _static_node(
+        node_id=stage_spec.name,
+        spec=stage_spec,
+        scope_key=expected_key,
+        final_directory=f"provider-validations/{expected_key}",
+        receipt_path=f"receipts/{stage_spec.name}/{expected_key}.json",
+        inputs=(
+            *_snapshot_boundary_inputs(snapshot),
+            *_provider_boundary_inputs(provider),
+        ),
+    )
+    return RunPlan("PROVIDER", (node,))
+
+
+def make_experiment_identity_wave_plan(
+    *, config: LoadedM3Config, snapshot: SnapshotArtifact,
+    provider: ProviderArtifact,
+    provider_validation: ProviderValidationArtifact,
+    spec: ExperimentIdentitySpec,
+) -> RunPlan:
+    """Build ExperimentIdentity from four content inputs after a PASS-only gate."""
+    _require_config(config)
+    if type(spec) is not ExperimentIdentitySpec:
+        raise ValueError("experiment identity continuation requires verified inputs")
+    example_id = _development_example_id(snapshot, provider, provider_validation)
+    summary = provider_validation.summary
+    if (
+        not summary.passed
+        or provider.manifest.snapshot_id != snapshot.manifest.snapshot_id
+        or provider.manifest.snapshot_manifest_sha256 != snapshot.manifest_sha256
+        or summary.snapshot_id != snapshot.manifest.snapshot_id
+        or summary.provider_key != provider.manifest.provider_key
+        or summary.provider_manifest_sha256 != provider.manifest_sha256
+        or summary.provider_receipt_sha256 != provider.provider_receipt_sha256
+        or summary.provider_validation_config_sha256
+        != config.provider_validation_config_sha256
+        or summary.provider_runtime_fingerprint_sha256
+        != provider.manifest.provider_runtime_fingerprint_sha256
+        or spec.scientific_config_sha256 != config.scientific_config_sha256
+    ):
+        raise ValueError("experiment identity dependency gate drift")
+    experiment_key = (
+        compute_experiment_key(
+            snapshot_id=snapshot.manifest.snapshot_id,
+            provider_receipt_sha256=provider.provider_receipt_sha256,
+            scientific_config_hash=config.scientific_config_sha256,
+            code_version=spec.code_version,
+            dependency_fingerprint_sha256=spec.dependency_fingerprint_sha256,
+        )
+        if example_id is None
+        else compute_development_experiment_key(
+            example_id=example_id,
+            snapshot_id=snapshot.manifest.snapshot_id,
+            provider_receipt_sha256=provider.provider_receipt_sha256,
+            scientific_config_sha256=config.scientific_config_sha256,
+            code_version=spec.code_version,
+            dependency_fingerprint_sha256=spec.dependency_fingerprint_sha256,
+        )
+    )
+    if (
+        (example_id is None and spec.code_version.startswith("development-example/"))
+        or (
+            example_id is not None
+            and not spec.code_version.startswith("development-example/")
+        )
+    ):
+        raise ValueError("experiment identity code domain drift")
+    stage_spec = (
+        EXPERIMENT_IDENTITY_STAGE_SPEC
+        if example_id is None
+        else DEVELOPMENT_EXPERIMENT_IDENTITY_STAGE_SPEC
+    )
+    inputs = tuple(sorted(
+        (*_snapshot_identity_inputs(snapshot), *_provider_identity_inputs(provider)),
+        key=lambda item: (
+            item.artifact.root_alias, item.artifact.relative_path,
+        ),
+    ))
+    if len(inputs) != 4:
+        raise ValueError("experiment identity content input closure drift")
+    node = _static_node(
+        node_id=stage_spec.name,
+        spec=stage_spec,
+        scope_key=experiment_key,
+        final_directory=f"runs/{experiment_key}",
+        receipt_path=f"receipts/{stage_spec.name}/{experiment_key}.json",
+        inputs=inputs,
+    )
+    return RunPlan("EXPERIMENT", (node,))
+
+
+def make_experiment_artifact_run_plan(
+    *, config: LoadedM3Config,
+    release: VerifiedG1Release | VerifiedDevelopmentExampleG1Release,
+    snapshot: SnapshotArtifact, experiment: ExperimentArtifact,
+) -> RunPlan:
+    """Build the labels/folds wave after ExperimentIdentity is verified."""
+    _require_config(config)
+    example_id = _development_example_id(release, snapshot, experiment)
+    _assert_release_snapshot_identity(release, snapshot)
+    if (
+        experiment.manifest.snapshot_id != snapshot.manifest.snapshot_id
+        or experiment.manifest.snapshot_manifest_sha256 != snapshot.manifest_sha256
+        or experiment.manifest.scientific_config_sha256
+        != config.scientific_config_sha256
+        or snapshot.request.signal_start != snapshot.manifest.signal_start
+        or snapshot.request.signal_end != snapshot.manifest.signal_end
+    ):
+        raise ValueError("experiment continuation identity drift")
+    horizons_value = config.section("labels")["horizons_sessions"]
+    if type(horizons_value) is not tuple:
+        raise ValueError("experiment continuation horizons invalid")
+    horizons = tuple(sorted(cast(tuple[int, ...], horizons_value)))
+    if not horizons or len(set(horizons)) != len(horizons):
+        raise ValueError("experiment continuation horizons invalid")
+    experiment_key = experiment.manifest.experiment_key
+    label_spec = (
+        LABEL_STAGE_SPEC if example_id is None else DEVELOPMENT_LABEL_STAGE_SPEC
+    )
+    folds_spec = (
+        FOLDS_STAGE_SPEC if example_id is None else DEVELOPMENT_FOLDS_STAGE_SPEC
+    )
+    label_inputs = (
+        *_release_label_inputs(release),
+        *_snapshot_boundary_inputs(
+            snapshot, include_request=False, include_staging=False,
+        ),
+        *_experiment_boundary_inputs(experiment),
+    )
+    nodes = [
+        _static_node(
+            node_id=f"labels.h{horizon}",
+            spec=label_spec,
+            scope_key=experiment_key,
+            horizon=horizon,
+            final_directory=f"labels/{experiment_key}/h{horizon}",
+            receipt_path=(
+                f"receipts/{label_spec.name}/{experiment_key}-h{horizon}.json"
+            ),
+            inputs=label_inputs,
+        )
+        for horizon in horizons
+    ]
+    nodes.append(_static_node(
+        node_id="folds",
+        spec=folds_spec,
+        scope_key=experiment_key,
+        final_directory=f"folds/{experiment_key}",
+        receipt_path=f"receipts/{folds_spec.name}/{experiment_key}.json",
+        inputs=(
+            *_snapshot_boundary_inputs(
+                snapshot, include_request=True, include_staging=False,
+            ),
+            *_experiment_boundary_inputs(experiment),
+        ),
+    ))
+    return RunPlan("EXPERIMENT", tuple(nodes))
+
+
+def make_label_reconciliation_run_plan(
+    *, config: LoadedM3Config,
+    release: VerifiedG1Release | VerifiedDevelopmentExampleG1Release,
+    snapshot: SnapshotArtifact, provider: ProviderArtifact,
+    provider_validation: ProviderValidationArtifact,
+    experiment: ExperimentArtifact, labels: Sequence[LabelArtifact],
+    specs: Sequence[LabelReconciliationSpec],
+) -> RunPlan:
+    """Build reconciliation only from verified labels with known manifest hashes."""
+    _require_config(config)
+    example_id = _development_example_id(
+        release, snapshot, provider, provider_validation, experiment, *labels,
+    )
+    _assert_release_snapshot_identity(release, snapshot)
+    if not labels or len(labels) != len(specs):
+        raise ValueError("label reconciliation verified closure invalid")
+    if (
+        not provider_validation.summary.passed
+        or provider.manifest.snapshot_id != snapshot.manifest.snapshot_id
+        or provider_validation.summary.snapshot_id != snapshot.manifest.snapshot_id
+        or provider_validation.summary.provider_key != provider.manifest.provider_key
+        or provider_validation.summary.provider_receipt_sha256
+        != provider.provider_receipt_sha256
+        or provider_validation.summary.provider_manifest_sha256
+        != provider.manifest_sha256
+        or provider_validation.summary.provider_validation_config_sha256
+        != config.provider_validation_config_sha256
+        or provider_validation.summary.provider_runtime_fingerprint_sha256
+        != provider.manifest.provider_runtime_fingerprint_sha256
+        or experiment.manifest.provider_key != provider.manifest.provider_key
+        or experiment.manifest.provider_receipt_sha256
+        != provider.provider_receipt_sha256
+        or experiment.manifest.snapshot_id != snapshot.manifest.snapshot_id
+        or experiment.manifest.snapshot_manifest_sha256 != snapshot.manifest_sha256
+    ):
+        raise ValueError("label reconciliation upstream identity drift")
+    label_by_horizon = {item.manifest.horizon_sessions: item for item in labels}
+    spec_by_horizon: dict[int, LabelReconciliationSpec] = {
+        item.horizon_sessions: item for item in specs
+    }
+    horizons_value = config.section("labels")["horizons_sessions"]
+    if type(horizons_value) is not tuple:
+        raise ValueError("label reconciliation horizons invalid")
+    horizons = tuple(sorted(cast(tuple[int, ...], horizons_value)))
+    if (
+        set(label_by_horizon) != set(horizons)
+        or set(spec_by_horizon) != set(horizons)
+        or len(label_by_horizon) != len(labels)
+        or len(spec_by_horizon) != len(specs)
+    ):
+        raise ValueError("label reconciliation horizon closure invalid")
+    stage_spec = (
+        LABEL_RECONCILIATION_STAGE_SPEC
+        if example_id is None
+        else DEVELOPMENT_LABEL_RECONCILIATION_STAGE_SPEC
+    )
+    common_inputs = (
+        *_release_reconciliation_inputs(release),
+        *_snapshot_boundary_inputs(
+            snapshot, include_request=False, include_staging=False,
+        ),
+        *_provider_boundary_inputs(provider),
+        *_provider_validation_boundary_inputs(provider_validation),
+        *_experiment_boundary_inputs(experiment),
+    )
+    nodes: list[StageNode] = []
+    for horizon in horizons:
+        label = label_by_horizon[horizon]
+        spec = spec_by_horizon[horizon]
+        if (
+            label.manifest.experiment_key != experiment.manifest.experiment_key
+            or label.manifest.experiment_manifest_sha256
+            != experiment.manifest_sha256
+            or label.manifest.snapshot_id != snapshot.manifest.snapshot_id
+            or label.manifest.snapshot_manifest_sha256 != snapshot.manifest_sha256
+            or label.manifest.g1_release_id != snapshot.manifest.g1_release_id
+            or label.manifest.g1_release_manifest_sha256
+            != snapshot.manifest.g1_release_manifest_sha256
+        ):
+            raise ValueError("label reconciliation upstream identity drift")
+        expected_key = (
+            compute_label_reconciliation_key(
+                experiment_key=experiment.manifest.experiment_key,
+                horizon=horizon,
+                provider_validation_receipt_sha256=(
+                    provider_validation.validation_receipt_sha256
+                ),
+                label_manifest_sha256=label.manifest_sha256,
+                label_reconciliation_config_sha256=(
+                    config.label_reconciliation_config_sha256
+                ),
+                dependency_fingerprint_sha256=(
+                    experiment.manifest.dependency_fingerprint_sha256
+                ),
+                code_version=spec.code_version,
+            )
+            if example_id is None
+            else compute_development_label_reconciliation_key(
+                example_id=example_id,
+                experiment_key=experiment.manifest.experiment_key,
+                horizon=horizon,
+                provider_validation_receipt_sha256=(
+                    provider_validation.validation_receipt_sha256
+                ),
+                label_manifest_sha256=label.manifest_sha256,
+                label_reconciliation_config_sha256=(
+                    config.label_reconciliation_config_sha256
+                ),
+                dependency_fingerprint_sha256=(
+                    experiment.manifest.dependency_fingerprint_sha256
+                ),
+                code_version=spec.code_version,
+            )
+        )
+        if (
+            spec.reconciliation_key != expected_key
+            or spec.experiment_key != experiment.manifest.experiment_key
+            or spec.provider_validation_receipt_sha256
+            != provider_validation.validation_receipt_sha256
+            or spec.label_manifest_sha256 != label.manifest_sha256
+            or spec.label_reconciliation_config_sha256
+            != config.label_reconciliation_config_sha256
+            or spec.dependency_fingerprint_sha256
+            != experiment.manifest.dependency_fingerprint_sha256
+        ):
+            raise ValueError("label reconciliation identity drift")
+        nodes.append(_static_node(
+            node_id=f"label-reconciliation.h{horizon}",
+            spec=stage_spec,
+            scope_key=expected_key,
+            horizon=horizon,
+            final_directory=f"label-reconciliations/{expected_key}",
+            receipt_path=f"receipts/{stage_spec.name}/{expected_key}.json",
+            inputs=(*common_inputs, *_label_boundary_inputs(label)),
+        ))
+    return RunPlan("EXPERIMENT", tuple(nodes))
+
+
 def make_work_run_plan(
     *, config: LoadedM3Config, experiment: ExperimentArtifact,
     folds: FoldArtifact, labels: Sequence[LabelArtifact],
@@ -1547,14 +2546,22 @@ def make_work_run_plan(
         type(item) is not allowed_reconciliation for item in reconciliations
     ):
         raise ValueError("work continuation verified identity mismatch")
+    _development_example_id(experiment, folds, *labels, *reconciliations)
     experiment_key = experiment.manifest.experiment_key
-    folds_inputs = _external_files(
-        root=folds.root, alias="verified-folds", relative_paths=("folds.json",),
-    )
-    experiment_inputs = _external_files(
-        root=experiment.root, alias="verified-experiment",
-        relative_paths=("experiment_manifest.json",),
-    )
+    if (
+        folds.manifest.experiment_key != experiment_key
+        or folds.manifest.experiment_manifest_sha256 != experiment.manifest_sha256
+        or folds.manifest.snapshot_id != experiment.manifest.snapshot_id
+        or folds.manifest.snapshot_manifest_sha256
+        != experiment.manifest.snapshot_manifest_sha256
+        or folds.manifest.scientific_config_sha256
+        != config.scientific_config_sha256
+        or experiment.manifest.scientific_config_sha256
+        != config.scientific_config_sha256
+    ):
+        raise ValueError("work fold/experiment identity drift")
+    folds_inputs = _fold_boundary_inputs(folds)
+    experiment_inputs = _experiment_boundary_inputs(experiment)
     label_by_horizon = {item.manifest.horizon_sessions: item for item in labels}
     reconciliation_by_horizon = {
         item.summary.horizon_sessions: item for item in reconciliations
@@ -1562,14 +2569,85 @@ def make_work_run_plan(
     horizons = tuple(sorted(cast(Sequence[int], config.section("labels")["horizons_sessions"])))
     if set(label_by_horizon) != set(horizons) or set(reconciliation_by_horizon) != set(horizons):
         raise ValueError("work continuation label horizon closure invalid")
+    if len(label_by_horizon) != len(labels) or len(reconciliation_by_horizon) != len(
+        reconciliations
+    ):
+        raise ValueError("work continuation label horizon duplicate")
+    g1_identities: set[tuple[str, str]] = set()
+    validation_receipts: set[str] = set()
+    for horizon in horizons:
+        label = label_by_horizon[horizon]
+        reconciliation = reconciliation_by_horizon[horizon]
+        if (
+            label.manifest.experiment_key != experiment_key
+            or label.manifest.experiment_manifest_sha256
+            != experiment.manifest_sha256
+            or label.manifest.snapshot_id != experiment.manifest.snapshot_id
+            or label.manifest.snapshot_manifest_sha256
+            != experiment.manifest.snapshot_manifest_sha256
+            or reconciliation.summary.experiment_key != experiment_key
+            or reconciliation.summary.horizon_sessions != horizon
+            or reconciliation.summary.label_manifest_sha256
+            != label.manifest_sha256
+            or not reconciliation.summary.passed
+        ):
+            raise ValueError("work label/reconciliation identity drift")
+        g1_identities.add((
+            label.manifest.g1_release_id,
+            label.manifest.g1_release_manifest_sha256,
+        ))
+        validation_receipts.add(
+            reconciliation.summary.provider_validation_receipt_sha256
+        )
+    if len(g1_identities) != 1 or len(validation_receipts) != 1:
+        raise ValueError("work shared upstream identity drift")
     nodes: list[StageNode] = []
+    feature_spec = (
+        DEVELOPMENT_FEATURES_STAGE_SPEC if development else FEATURES_STAGE_SPEC
+    )
+    stage_defs = (
+        (
+            "alignment",
+            DEVELOPMENT_ALIGNMENT_STAGE_SPEC if development else ALIGNMENT_STAGE_SPEC,
+        ),
+        ("train", DEVELOPMENT_MODEL_STAGE_SPEC if development else TRAIN_STAGE_SPEC),
+        (
+            "predictions",
+            DEVELOPMENT_PREDICTIONS_STAGE_SPEC
+            if development else PREDICTIONS_STAGE_SPEC,
+        ),
+        (
+            "evaluation",
+            DEVELOPMENT_EVALUATION_STAGE_SPEC
+            if development else EVALUATION_STAGE_SPEC,
+        ),
+        (
+            "targets",
+            DEVELOPMENT_TARGETS_STAGE_SPEC if development else TARGETS_STAGE_SPEC,
+        ),
+        (
+            "backtest_plan",
+            DEVELOPMENT_BACKTEST_PLAN_STAGE_SPEC
+            if development else BACKTEST_PLAN_STAGE_SPEC,
+        ),
+        (
+            "backtest",
+            DEVELOPMENT_BACKTEST_STAGE_SPEC if development else BACKTEST_STAGE_SPEC,
+        ),
+        (
+            "tracking",
+            DEVELOPMENT_TRACKING_STAGE_SPEC if development else TRACKING_STAGE_SPEC,
+        ),
+    )
     for planned_fold in sorted(folds.manifest.folds, key=lambda item: item.name):
         fold = planned_fold.name
         feature = _static_node(
-            node_id=f"features.{fold}", spec=FEATURES_STAGE_SPEC,
+            node_id=f"features.{fold}", spec=feature_spec,
             scope_key=experiment_key, fold=fold,
             final_directory=f"features/{experiment_key}/{fold}",
-            receipt_path=f"receipts/features/{experiment_key}.{fold}.json",
+            receipt_path=(
+                f"receipts/{feature_spec.name}/{experiment_key}.{fold}.json"
+            ),
             inputs=(*folds_inputs, *experiment_inputs),
         )
         nodes.append(feature)
@@ -1581,31 +2659,12 @@ def make_work_run_plan(
             label = label_by_horizon[horizon]
             reconciliation = reconciliation_by_horizon[horizon]
             boundary_inputs = (
-                *_external_files(
-                    root=label.root, alias=f"verified-label-h{horizon}",
-                    relative_paths=("label_manifest.json", "labels.parquet"),
-                ),
-                *_external_files(
-                    root=reconciliation.root,
-                    alias=f"verified-reconciliation-h{horizon}",
-                    relative_paths=(
-                        "reconciliation.json", "reconciliation.parquet",
-                    ),
-                ),
+                *_label_boundary_inputs(label),
+                *_reconciliation_boundary_inputs(reconciliation),
                 *folds_inputs, *experiment_inputs,
             )
             chain: list[StageNode] = []
             previous = feature.node_id
-            stage_defs = (
-                ("alignment", ALIGNMENT_STAGE_SPEC),
-                ("train", TRAIN_STAGE_SPEC),
-                ("predictions", PREDICTIONS_STAGE_SPEC),
-                ("evaluation", EVALUATION_STAGE_SPEC),
-                ("targets", TARGETS_STAGE_SPEC),
-                ("backtest_plan", BACKTEST_PLAN_STAGE_SPEC),
-                ("backtest", BACKTEST_STAGE_SPEC),
-                ("tracking", TRACKING_STAGE_SPEC),
-            )
             for stage_name, spec in stage_defs:
                 node_id = f"{stage_name}.{prefix}"
                 dependencies = [previous]
@@ -1626,7 +2685,9 @@ def make_work_run_plan(
                     node_id=node_id, spec=spec, scope_key=work_key,
                     fold=fold, horizon=horizon,
                     final_directory=f"work/{work_key}/{stage_name}",
-                    receipt_path=f"receipts/work/{work_key}.{stage_name}.json",
+                    receipt_path=(
+                        f"receipts/{spec.name}/{work_key}.json"
+                    ),
                     dependencies=dependencies, inputs=inputs,
                 )
                 chain.append(node)
@@ -1639,7 +2700,7 @@ def make_summary_run_plan(
     *, config: LoadedM3Config, experiment: ExperimentArtifact,
     evaluations: Sequence[EvaluationArtifact],
 ) -> RunPlan:
-    """Build one experiment summary from a strict verified evaluation closure."""
+    """Build one summary per horizon/model/version from exact fold closures."""
     _require_config(config)
     if type(experiment) not in {
         VerifiedExperimentIdentity, VerifiedDevelopmentExampleExperimentIdentity,
@@ -1652,31 +2713,73 @@ def make_summary_run_plan(
     )
     if any(type(item) is not expected for item in evaluations):
         raise ValueError("summary continuation verified identity mismatch")
+    _development_example_id(experiment, *evaluations)
     experiment_key = experiment.manifest.experiment_key
-    ordered = tuple(sorted(
-        evaluations,
-        key=lambda item: (item.manifest.fold, item.manifest.horizon_sessions),
-    ))
-    if len({
-        (item.manifest.fold, item.manifest.horizon_sessions) for item in ordered
-    }) != len(ordered):
-        raise ValueError("summary evaluation fold/horizon duplicate")
-    inputs: list[InputSpec] = list(_external_files(
-        root=experiment.root, alias="verified-experiment",
-        relative_paths=("experiment_manifest.json",),
-    ))
-    for index, item in enumerate(ordered):
-        inputs.extend(_external_files(
-            root=item.root, alias=f"verified-evaluation-{index:03d}",
-            relative_paths=("daily_ic.parquet", "evaluation_manifest.json", "metrics.json"),
-        ))
-    summary = _static_node(
-        node_id="summary", spec=SUMMARY_STAGE_SPEC, scope_key=experiment_key,
-        final_directory=f"summaries/{experiment_key}",
-        receipt_path=f"receipts/summary/{experiment_key}.json",
-        inputs=inputs,
+    if experiment.manifest.scientific_config_sha256 != config.scientific_config_sha256:
+        raise ValueError("summary experiment/config identity drift")
+    groups: dict[tuple[int, str, str], list[EvaluationArtifact]] = {}
+    for item in evaluations:
+        manifest = item.manifest
+        if (
+            manifest.experiment_key != experiment_key
+            or manifest.scientific_config_sha256
+            != config.scientific_config_sha256
+            or manifest.work_key
+            != compute_work_key(
+                experiment_key=experiment_key,
+                fold=manifest.fold,
+                horizon=manifest.horizon_sessions,
+            )
+        ):
+            raise ValueError("summary evaluation identity drift")
+        groups.setdefault(
+            (manifest.horizon_sessions, manifest.model, manifest.model_version), []
+        ).append(item)
+    configured_horizons = set(
+        cast(Sequence[int], config.section("labels")["horizons_sessions"])
     )
-    return RunPlan("SUMMARY", (summary,))
+    if {key[0] for key in groups} != configured_horizons:
+        raise ValueError("summary horizon closure drift")
+    fold_closures = {
+        tuple(sorted(item.manifest.fold for item in group))
+        for group in groups.values()
+    }
+    if (
+        any(len(group) < 2 for group in groups.values())
+        or any(len({item.manifest.fold for item in group}) != len(group) for group in groups.values())
+        or any(
+            len({item.manifest.fold_plan_manifest_sha256 for item in group}) != 1
+            or len({item.manifest.label_manifest_sha256 for item in group}) != 1
+            for group in groups.values()
+        )
+        or len(fold_closures) != 1
+    ):
+        raise ValueError("summary exact fold closure drift")
+    summary_spec = (
+        DEVELOPMENT_SUMMARY_STAGE_SPEC if development else SUMMARY_STAGE_SPEC
+    )
+    nodes: list[StageNode] = []
+    for horizon, model, model_version in sorted(groups):
+        if (
+            _NODE_PATTERN.fullmatch(model) is None
+            or _NODE_PATTERN.fullmatch(model_version) is None
+        ):
+            raise ValueError("summary model path identity invalid")
+        group = tuple(sorted(groups[(horizon, model, model_version)], key=lambda item: item.manifest.fold))
+        inputs: list[InputSpec] = list(_experiment_boundary_inputs(experiment))
+        for item in group:
+            inputs.extend(_evaluation_boundary_inputs(item))
+        identity = f"h{horizon}.{model}.{model_version}"
+        nodes.append(_static_node(
+            node_id=f"summary.{identity}", spec=summary_spec,
+            scope_key=experiment_key, horizon=horizon,
+            final_directory=f"summaries/{experiment_key}/h{horizon}/{model}/{model_version}",
+            receipt_path=(
+                f"receipts/{summary_spec.name}/{experiment_key}.{identity}.json"
+            ),
+            inputs=inputs,
+        ))
+    return RunPlan("SUMMARY", tuple(nodes))
 
 
 def make_snapshot_run_plan(
