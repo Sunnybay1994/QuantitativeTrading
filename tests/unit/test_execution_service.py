@@ -40,6 +40,7 @@ from quant.execution.store import (
     ExecutionStore,
     OutboxDeliveryState,
 )
+from quant.execution.wire import decode_order_command, encode_execution_event
 from quant.portfolio.order_planner import (
     OrderPlanTarget,
     build_order_planner_config,
@@ -311,6 +312,29 @@ def test_plan_stage_is_atomic_and_replay_does_not_double_count(tmp_path: Path) -
         delivery = repo.get_outbox_delivery(first.staged_command_ids[0])
     assert counter is not None and b'"order_count":1' in counter.payload
     assert delivery is not None and delivery.state is OutboxDeliveryState.PENDING
+    store.close()
+
+
+def test_p4_service_fixture_wire_bytes_remain_frozen(tmp_path: Path) -> None:
+    store = _open(tmp_path)
+    gateway = FakeGateway()
+    staged = _stage(_service(store, gateway, MutableClock()), tmp_path)
+    command_id = staged.staged_command_ids[0]
+    with store.transaction() as repo:
+        delivery = repo.get_outbox_delivery(command_id)
+        aggregate = repo.get_order_aggregate(command_id)
+    assert delivery is not None and aggregate is not None
+    command = decode_order_command(delivery.payload)
+    event = gateway.submit(command=command, dispatch_attempt=1, now=NOW).callbacks[0]
+    assert (
+        hashlib.sha256(delivery.payload).hexdigest(),
+        hashlib.sha256(aggregate.payload).hexdigest(),
+        hashlib.sha256(encode_execution_event(event)).hexdigest(),
+    ) == (
+        "7a8a797d89c8736c35846bda6f2636a6fa2795892646389cf8ae12c956d103e5",
+        "c6e6c8b39119092d3fd7fafd3e11ec3d303f24e70e1f472701c4884804ad08a7",
+        "98c52676f5e9165f9d59cfcb11f578df88bb59ab621f4955254926586c7fddac",
+    )
     store.close()
 
 

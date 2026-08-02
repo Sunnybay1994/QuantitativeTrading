@@ -16,27 +16,12 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Protocol
 
-from quant.domain.enums import (
-    ConnectRoute,
-    Currency,
-    ExecutionMode,
-    Market,
-    OrderSide,
-    OrderStatus,
-    OrderType,
-    TimeInForce,
-)
+from quant.domain.enums import ExecutionMode
 from quant.execution.contracts import (
     AccountSnapshot,
-    ExecutionEvent,
     OrderCommand,
-    OrderIntent,
     OrderPlan,
     VerifiedMarketSnapshot,
-    build_execution_event_identity,
-    build_order_command,
-    build_order_command_identity,
-    build_order_intent,
 )
 from quant.execution.gateways.contracts import (
     DispatchCertainty,
@@ -58,6 +43,14 @@ from quant.execution.store import (
     OutboxDeliveryState,
     StoredRecord,
 )
+from quant.execution.wire import (
+    WireError,
+    decode_order_aggregate,
+    decode_order_command,
+    encode_execution_event,
+    encode_order_aggregate,
+    encode_order_command,
+)
 from quant.portfolio.order_planner import (
     OrderPlannerConfig,
     OrderPlanTarget,
@@ -68,9 +61,6 @@ _SCOPE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 _HEX64 = frozenset("0123456789abcdef")
 _STAGE_SCHEMA = "m4-execution-stage-v1"
 _COUNTER_SCHEMA = "m4-daily-risk-counters-v1"
-_COMMAND_SCHEMA = "m4-order-command-v1"
-_AGGREGATE_SCHEMA = "m4-order-aggregate-v1"
-_EVENT_SCHEMA = "m4-execution-event-v1"
 
 __all__ = [
     "DispatchItemResult",
@@ -233,9 +223,9 @@ class ExecutionService:
                     )
 
                 for command in risk.commands:
-                    command_payload = _encode_command(command)
+                    command_payload = encode_order_command(command)
                     aggregate = new_order_aggregate(command)
-                    aggregate_payload = _encode_aggregate(aggregate)
+                    aggregate_payload = encode_order_aggregate(aggregate)
                     repo.put_command(
                         command_id=command.command_id,
                         identity=command.command_id,
@@ -366,7 +356,7 @@ class ExecutionService:
                     aggregate = _decode_aggregate(aggregate_row, current_command)
                     updated = aggregate
                     for event in result.callbacks:
-                        event_payload = _encode_event(event)
+                        event_payload = encode_execution_event(event)
                         repo.put_event(
                             event_id=event.event_id,
                             command_id=event.command_id,
@@ -375,7 +365,7 @@ class ExecutionService:
                         )
                         updated = reduce_order(updated, current_command, event)
                     if updated != aggregate:
-                        payload = _encode_aggregate(updated)
+                        payload = encode_order_aggregate(updated)
                         repo.replace_order_aggregate(
                             command_id=current_command.command_id,
                             expected_identity=aggregate_row.identity,
@@ -617,89 +607,10 @@ def _enum(cls: type[object], value: object) -> object:
         raise ExecutionServiceError("SERVICE_PAYLOAD_INVALID") from None
 
 
-def _intent_payload(intent: OrderIntent) -> dict[str, object]:
-    return {
-        "account_snapshot_id": intent.account_snapshot_id,
-        "config_identity": intent.config_identity,
-        "connect_route": None if intent.connect_route is None else intent.connect_route.value,
-        "generated_at": _datetime_text(intent.generated_at),
-        "intent_id": intent.intent_id,
-        "limit_price": format(intent.limit_price, "f"),
-        "market": intent.market.value,
-        "market_snapshot_id": intent.market_snapshot_id,
-        "plan_id": intent.plan_id,
-        "quantity": intent.quantity,
-        "quote_currency": intent.quote_currency.value,
-        "session_date": intent.session_date.isoformat(),
-        "side": intent.side.value,
-        "symbol": intent.symbol,
-        "target_identity": intent.target_identity,
-    }
-
-
-def _encode_command(command: OrderCommand) -> bytes:
-    build_order_command_identity(command)
-    return _canonical(
-        {
-            "command_id": command.command_id,
-            "intent": _intent_payload(command.intent),
-            "mode": command.mode.value,
-            "order_type": command.order_type.value,
-            "schema_version": _COMMAND_SCHEMA,
-            "time_in_force": command.time_in_force.value,
-        }
-    )
-
-
 def _decode_command(payload: bytes) -> OrderCommand:
-    root = _exact_keys(
-        _parse(payload),
-        {"schema_version", "command_id", "intent", "mode", "order_type", "time_in_force"},
-    )
-    if root["schema_version"] != _COMMAND_SCHEMA:
-        raise ExecutionServiceError("SERVICE_PAYLOAD_INVALID")
-    raw = _exact_keys(
-        root["intent"],
-        {
-            "intent_id", "plan_id", "symbol", "market", "side", "quantity",
-            "limit_price", "quote_currency", "session_date", "generated_at",
-            "target_identity", "market_snapshot_id", "account_snapshot_id",
-            "config_identity", "connect_route",
-        },
-    )
-    route_raw = raw["connect_route"]
-    route = None if route_raw is None else _enum(ConnectRoute, route_raw)
     try:
-        intent = build_order_intent(
-            plan_id=_str(raw["plan_id"]),
-            symbol=_str(raw["symbol"]),
-            market=_enum(Market, raw["market"]),  # type: ignore[arg-type]
-            side=_enum(OrderSide, raw["side"]),  # type: ignore[arg-type]
-            quantity=_int(raw["quantity"], minimum=1),
-            limit_price=_decimal(raw["limit_price"]),  # type: ignore[arg-type]
-            quote_currency=_enum(Currency, raw["quote_currency"]),  # type: ignore[arg-type]
-            session_date=_date(raw["session_date"]),
-            generated_at=_datetime(raw["generated_at"]),
-            target_identity=_str(raw["target_identity"]),
-            market_snapshot_id=_str(raw["market_snapshot_id"]),
-            account_snapshot_id=_str(raw["account_snapshot_id"]),
-            config_identity=_str(raw["config_identity"]),
-            connect_route=route,  # type: ignore[arg-type]
-        )
-        if intent.intent_id != _str(raw["intent_id"]):
-            raise ValueError
-        command = build_order_command(
-            intent=intent,
-            mode=_enum(ExecutionMode, root["mode"]),  # type: ignore[arg-type]
-            order_type=_enum(OrderType, root["order_type"]),  # type: ignore[arg-type]
-            time_in_force=_enum(TimeInForce, root["time_in_force"]),  # type: ignore[arg-type]
-        )
-        if command.command_id != _str(root["command_id"]) or _encode_command(command) != payload:
-            raise ValueError
-        return command
-    except ExecutionServiceError:
-        raise
-    except Exception:
+        return decode_order_command(payload)
+    except WireError:
         raise ExecutionServiceError("SERVICE_PAYLOAD_INVALID") from None
 
 
@@ -846,85 +757,10 @@ def _decode_stage(
     return risk
 
 
-def _encode_aggregate(aggregate: OrderAggregate) -> bytes:
-    return _canonical(
-        {
-            "applied_event_ids": list(aggregate.applied_event_ids),
-            "broker_order_id": aggregate.broker_order_id,
-            "command_id": aggregate.command_id,
-            "command_quantity": aggregate.command_quantity,
-            "filled_quantity": aggregate.filled_quantity,
-            "last_event_at": (
-                None if aggregate.last_event_at is None else _datetime_text(aggregate.last_event_at)
-            ),
-            "reject_code": aggregate.reject_code,
-            "schema_version": _AGGREGATE_SCHEMA,
-            "status": aggregate.status.value,
-        }
-    )
-
-
 def _decode_aggregate(record: StoredRecord, command: OrderCommand) -> OrderAggregate:
-    root = _exact_keys(
-        _parse(record.payload),
-        {
-            "schema_version", "command_id", "status", "filled_quantity",
-            "broker_order_id", "reject_code", "applied_event_ids",
-            "command_quantity", "last_event_at",
-        },
-    )
-    if root["schema_version"] != _AGGREGATE_SCHEMA or record.identity != _digest(record.payload):
-        raise ExecutionServiceError("SERVICE_AGGREGATE_INVALID")
-    event_ids_raw = root["applied_event_ids"]
-    if type(event_ids_raw) is not list:
+    if record.identity != _digest(record.payload):
         raise ExecutionServiceError("SERVICE_AGGREGATE_INVALID")
     try:
-        aggregate = OrderAggregate(
-            command_id=_str(root["command_id"]),
-            status=_enum(OrderStatus, root["status"]),  # type: ignore[arg-type]
-            filled_quantity=_int(root["filled_quantity"]),
-            broker_order_id=None if root["broker_order_id"] is None else _str(root["broker_order_id"]),
-            reject_code=None if root["reject_code"] is None else _str(root["reject_code"]),
-            applied_event_ids=tuple(_str(item) for item in event_ids_raw),
-            command_quantity=_int(root["command_quantity"], minimum=1),
-            last_event_at=None if root["last_event_at"] is None else _datetime(root["last_event_at"]),
-        )
-    except Exception:
+        return decode_order_aggregate(record.payload, command=command)
+    except WireError:
         raise ExecutionServiceError("SERVICE_AGGREGATE_INVALID") from None
-    if (
-        aggregate.command_id != command.command_id
-        or aggregate.command_quantity != command.intent.quantity
-        or _encode_aggregate(aggregate) != record.payload
-    ):
-        raise ExecutionServiceError("SERVICE_AGGREGATE_INVALID")
-    return aggregate
-
-
-def _encode_event(event: ExecutionEvent) -> bytes:
-    build_execution_event_identity(event)
-    return _canonical(
-        {
-            "broker_order_id": event.broker_order_id,
-            "command_id": event.command_id,
-            "cumulative_quantity": event.cumulative_quantity,
-            "event_id": event.event_id,
-            "event_type": event.event_type.value,
-            "fees": [
-                {
-                    "amount": {
-                        "amount": format(fee.amount.amount, "f"),
-                        "currency": fee.amount.currency.value,
-                    },
-                    "code": fee.code,
-                    "rule_version": fee.rule_version,
-                    "statutory": fee.statutory,
-                }
-                for fee in event.fees
-            ],
-            "last_price": None if event.last_price is None else format(event.last_price, "f"),
-            "last_quantity": event.last_quantity,
-            "occurred_at": _datetime_text(event.occurred_at),
-            "reject_code": event.reject_code,
-            "schema_version": _EVENT_SCHEMA,
-        }
-    )
