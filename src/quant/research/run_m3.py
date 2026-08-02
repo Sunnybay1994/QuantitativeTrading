@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
+import math
+import re
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import redirect_stdout
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Never
+from typing import Any, Never, TypeAlias
 
 from quant.data.m3_release import G1Release, verify_g1_release
 from quant.research.m3.config import LoadedM3Config, load_m3_config
@@ -40,6 +45,93 @@ from quant.research.m3.snapshot import (
 )
 
 _Execute = Callable[[argparse.Namespace], Mapping[str, Any]]
+_PUBLIC_COMMANDS = (
+    "readiness",
+    "snapshot",
+    "train",
+    "evaluate",
+    "backtest",
+    "run-all",
+    "verify-reproducibility",
+    "acceptance-audit",
+)
+_HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_FOLD = re.compile(r"^fold_[0-9]{3}$")
+_ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
+_SECRET = re.compile(
+    r"(?:token|password|secret|api[_-]?key|bearer)", re.IGNORECASE
+)
+_ABSOLUTE_PATH = re.compile(
+    r"(?:^|[\s='\"])(?:[A-Za-z]:[\\/]|/{1,2}[^/\s]|\\\\[^\\\s]+[\\/])"
+)
+
+JsonValue: TypeAlias = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
+
+
+@dataclass(frozen=True, slots=True)
+class CommandFailure:
+    """One sanitized CLI failure with a process-exit classification."""
+
+    scope: str
+    node_id: str
+    error_code: str
+    exit_code: int
+
+    def __post_init__(self) -> None:
+        if (
+            not _safe_label(self.scope)
+            or not _safe_label(self.node_id)
+            or _ERROR_CODE.fullmatch(self.error_code) is None
+            or type(self.exit_code) is not int
+            or not 2 <= self.exit_code <= 8
+        ):
+            raise ValueError("invalid command failure")
+
+
+@dataclass(frozen=True, slots=True)
+class CommandSummary:
+    """Canonical aggregate returned by an injected public-command dispatcher."""
+
+    command: str
+    failures: tuple[CommandFailure, ...] = ()
+    details: Mapping[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        if self.command not in _PUBLIC_COMMANDS:
+            raise ValueError("invalid command summary")
+        if type(self.failures) is not tuple or any(
+            type(item) is not CommandFailure for item in self.failures
+        ):
+            raise ValueError("invalid command summary")
+        _safe_json(self.details or {})
+
+    @property
+    def exit_code(self) -> int:
+        return min((item.exit_code for item in self.failures), default=0)
+
+    def payload(self) -> dict[str, JsonValue]:
+        failures = sorted(
+            self.failures,
+            key=lambda item: (item.scope, item.node_id, item.error_code),
+        )
+        payload: dict[str, JsonValue] = {
+            "command": self.command,
+            "failures": [
+                {
+                    "error_code": item.error_code,
+                    "exit_code": item.exit_code,
+                    "node_id": item.node_id,
+                    "scope": item.scope,
+                }
+                for item in failures
+            ],
+            "ok": not failures,
+        }
+        for key, value in sorted((self.details or {}).items()):
+            if key in payload:
+                raise ValueError("reserved command summary detail")
+            payload[key] = _safe_json(value)
+        return payload
 
 
 class M3CliUsageError(ValueError):
@@ -50,6 +142,65 @@ class _ArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> Never:
         del message
         raise M3CliUsageError("M3_CLI_USAGE_INVALID")
+
+
+def _safe_label(value: object) -> bool:
+    return (
+        type(value) is str
+        and 0 < len(value) <= 128
+        and not _SECRET.search(value)
+        and not value.startswith(("/", "\\\\"))
+        and _ABSOLUTE_PATH.search(value) is None
+        and all(character.isalnum() or character in "_.:-" for character in value)
+    )
+
+
+def _safe_json(value: Any) -> JsonValue:
+    if value is None or type(value) in (bool, int):
+        return value
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise ValueError("unsafe command summary")
+        return value
+    if type(value) is str:
+        if (
+            _SECRET.search(value)
+            or _ABSOLUTE_PATH.search(value) is not None
+        ):
+            raise ValueError("unsafe command summary")
+        return value
+    if isinstance(value, Mapping):
+        output: dict[str, JsonValue] = {}
+        for key, item in value.items():
+            if type(key) is not str or not _safe_label(key):
+                raise ValueError("unsafe command summary")
+            output[key] = _safe_json(item)
+        return output
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_safe_json(item) for item in value]
+    raise ValueError("unsafe command summary")
+
+
+def _identity(value: str) -> str:
+    if _HEX64.fullmatch(value) is None:
+        raise argparse.ArgumentTypeError("invalid identity")
+    return value
+
+
+def _fold(value: str) -> str:
+    if _FOLD.fullmatch(value) is None:
+        raise argparse.ArgumentTypeError("invalid fold")
+    return value
+
+
+def _add_config(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--config", type=Path, required=True)
+
+
+def _add_snapshot_work(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--snapshot-id", type=_identity, required=True)
+    parser.add_argument("--fold", type=_fold, required=True)
+    parser.add_argument("--horizon", type=int, choices=(5, 10), required=True)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -78,6 +229,39 @@ def build_parser() -> argparse.ArgumentParser:
         experiment.add_argument(f"--{name}", type=Path, required=True)
     experiment.add_argument("--provider-validation-code-version", required=True)
     experiment.add_argument("--no-resume", action="store_true")
+
+    readiness = subparsers.add_parser("readiness")
+    _add_config(readiness)
+    readiness.add_argument("--g1-release-id", type=_identity, required=True)
+    readiness.set_defaults(stop_stage="readiness")
+
+    snapshot = subparsers.add_parser("snapshot")
+    _add_config(snapshot)
+    snapshot.add_argument("--g1-release-id", type=_identity, required=True)
+    snapshot.set_defaults(stop_stage="snapshot")
+
+    for name, stop_stage in (
+        ("train", "train"),
+        ("evaluate", "evaluation"),
+        ("backtest", "backtest"),
+        ("verify-reproducibility", "comparison"),
+    ):
+        command = subparsers.add_parser(name)
+        _add_config(command)
+        _add_snapshot_work(command)
+        command.set_defaults(stop_stage=stop_stage)
+
+    run_all = subparsers.add_parser("run-all")
+    _add_config(run_all)
+    source = run_all.add_mutually_exclusive_group(required=True)
+    source.add_argument("--g1-release-id", type=_identity)
+    source.add_argument("--snapshot-id", type=_identity)
+    run_all.set_defaults(stop_stage="tracking")
+
+    acceptance = subparsers.add_parser("acceptance-audit")
+    _add_config(acceptance)
+    acceptance.add_argument("--snapshot-id", type=_identity, required=True)
+    acceptance.set_defaults(stop_stage="acceptance")
     return parser
 
 
@@ -85,17 +269,38 @@ def main(
     argv: Sequence[str] | None = None,
     *,
     execute: _Execute | None = None,
+    dispatcher: Callable[[argparse.Namespace], CommandSummary | Mapping[str, Any]]
+    | None = None,
 ) -> int:
     """Parse once, execute an injected command, and emit exactly one JSON value."""
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
     try:
-        args = build_parser().parse_args(argv)
-        result = (execute or _execute_experiment_identity)(args)
-        payload: Mapping[str, Any] = {"ok": True, **dict(result)}
-        exit_code = 0
-    except Exception as exc:
-        code = getattr(exc, "code", "M3_COMMAND_FAILED")
-        payload = {"ok": False, "error_code": str(code)}
-        exit_code = 2 if isinstance(exc, M3CliUsageError) else 5
+        args = build_parser().parse_args(raw_argv)
+    except M3CliUsageError:
+        command = raw_argv[0] if raw_argv and raw_argv[0] in _PUBLIC_COMMANDS else None
+        if command is None:
+            payload: Mapping[str, Any] = {
+                "ok": False,
+                "error_code": "M3_CLI_USAGE_INVALID",
+            }
+        else:
+            payload = CommandSummary(
+                command=command,
+                failures=(
+                    CommandFailure(
+                        scope="command",
+                        node_id=command,
+                        error_code="M3_CLI_USAGE_INVALID",
+                        exit_code=2,
+                    ),
+                ),
+            ).payload()
+        exit_code = 2
+    else:
+        if args.command == "experiment-identity":
+            payload, exit_code = _run_legacy(args, execute)
+        else:
+            payload, exit_code = _run_public(args, dispatcher)
     sys.stdout.write(
         json.dumps(
             payload,
@@ -107,6 +312,66 @@ def main(
         + "\n"
     )
     return exit_code
+
+
+def _run_legacy(
+    args: argparse.Namespace, execute: _Execute | None
+) -> tuple[Mapping[str, Any], int]:
+    try:
+        result = (execute or _execute_experiment_identity)(args)
+        return {"ok": True, **dict(result)}, 0
+    except Exception as exc:
+        code = getattr(exc, "code", "M3_COMMAND_FAILED")
+        safe_code = code if type(code) is str and _ERROR_CODE.fullmatch(code) else "M3_COMMAND_FAILED"
+        return {"ok": False, "error_code": safe_code}, 5
+
+
+def _run_public(
+    args: argparse.Namespace,
+    dispatcher: Callable[[argparse.Namespace], CommandSummary | Mapping[str, Any]]
+    | None,
+) -> tuple[Mapping[str, Any], int]:
+    command = str(args.command)
+    try:
+        if dispatcher is None:
+            summary = CommandSummary(
+                command=command,
+                failures=(
+                    CommandFailure(
+                        scope="command",
+                        node_id=command,
+                        error_code="M3_COMMAND_HANDLER_UNAVAILABLE",
+                        exit_code=5,
+                    ),
+                ),
+            )
+        else:
+            # Dispatcher stdout is untrusted and discarded. Structured,
+            # sanitized failures belong in the command summary.
+            with redirect_stdout(io.StringIO()):
+                dispatched = dispatcher(args)
+            if type(dispatched) is CommandSummary:
+                summary = dispatched
+                if summary.command != command:
+                    raise ValueError("command summary mismatch")
+            elif isinstance(dispatched, Mapping):
+                summary = CommandSummary(command=command, details=dispatched)
+            else:
+                raise ValueError("invalid command dispatcher result")
+        return summary.payload(), summary.exit_code
+    except Exception:
+        summary = CommandSummary(
+            command=command,
+            failures=(
+                CommandFailure(
+                    scope="command",
+                    node_id=command,
+                    error_code="M3_COMMAND_FAILED",
+                    exit_code=5,
+                ),
+            ),
+        )
+        return summary.payload(), 5
 
 
 def _execute_experiment_identity(args: argparse.Namespace) -> Mapping[str, Any]:
