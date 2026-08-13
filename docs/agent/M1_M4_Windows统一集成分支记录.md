@@ -60,9 +60,11 @@ M2 合流暴露两个只在组合分支可见的问题，并已形成最小修�
   provenance 与 `01065.HK` 权威无交易事实仍等待外部合规材料。
 - M2：投研框架 MVP 与研究快线已完成并合入；策略开发已拆到独立 `codex/m2-strategy-research`
   worktree，当前仍无 `PAPER_CANDIDATE`。
-- M3：G9A–G9G Windows fake 工程闭包已完成。honest 300 首轮业务 CLI 成功后，集成测试误计持久
-  advisory lock；修正和快速回归已完成，最终版本首发与 completed resume 正按 `UA-M3-001` 的资源上限
-  后台运行，终态前不能关闭 G8/G9 honest Gate。
+- M3：G9A–G9G Windows fake 工程闭包已完成。honest 300 的 R1/R2 首发业务 CLI 均成功；R1 误计持久
+  advisory lock，R2 又把 Windows 反斜杠相对路径误当成非 canonical 产物。两项都只属于验收 helper，未改
+  StageRunner、receipt 或经济计算。R3 已把相对路径统一为 POSIX `/`，快速回归、Ruff 和 diff-check 通过，
+  固定 revision `706ab2c`；2026-08-14 00:27:43 起按 `UA-M3-001` 的资源上限重新执行完整首发与
+  completed resume。终态前不能关闭 G8/G9 honest Gate，也不能拼接 R1/R2 局部成功。
 - M4：formal gateway dispatch 语义等待 `UA-M4-003`；service/runner/28 日 soak 尚未完成。
 - Linux/ext4 当前按用户指示不纳入本阶段实施或完成判定。
 
