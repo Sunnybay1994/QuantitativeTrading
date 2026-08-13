@@ -318,17 +318,71 @@ def _comparison_key(
     metric_atol: float,
     python_executable_sha256: str,
 ) -> str:
+    return compute_formal_reproducibility_comparison_key(
+        work_key=resolution.work_key,
+        feature_receipt_sha256=resolution.feature.feature_receipt_sha256,
+        label_receipt_sha256=resolution.label.label_receipt_sha256,
+        alignment_receipt_sha256=resolution.alignment.alignment_receipt_sha256,
+        params_sha256=params_sha256,
+        code_version=resolution.runtime.code_version,
+        dependency_fingerprint_sha256=(
+            resolution.runtime.dependency_fingerprint_sha256
+        ),
+        python_executable_sha256=python_executable_sha256,
+        acceptance_config_sha256=resolution.config.acceptance_config_sha256,
+        score_atol=score_atol,
+        metric_atol=metric_atol,
+    )
+
+
+def compute_formal_reproducibility_comparison_key(
+    *,
+    work_key: str,
+    feature_receipt_sha256: str,
+    label_receipt_sha256: str,
+    alignment_receipt_sha256: str,
+    params_sha256: str,
+    code_version: str,
+    dependency_fingerprint_sha256: str,
+    python_executable_sha256: str,
+    acceptance_config_sha256: str,
+    score_atol: float,
+    metric_atol: float,
+) -> str:
+    """Return the single public G8E comparison identity formula."""
+    hashes = (
+        work_key,
+        feature_receipt_sha256,
+        label_receipt_sha256,
+        alignment_receipt_sha256,
+        params_sha256,
+        dependency_fingerprint_sha256,
+        python_executable_sha256,
+        acceptance_config_sha256,
+    )
+    if (
+        any(not _is_hex64(value) for value in hashes)
+        or type(code_version) is not str
+        or not code_version
+        or type(score_atol) is not float
+        or not math.isfinite(score_atol)
+        or score_atol < 0.0
+        or type(metric_atol) is not float
+        or not math.isfinite(metric_atol)
+        or metric_atol < 0.0
+    ):
+        _fail(_CODE)
     payload = [
         "m3-reproducibility-comparison-v1",
-        resolution.work_key,
-        resolution.feature.feature_receipt_sha256,
-        resolution.label.label_receipt_sha256,
-        resolution.alignment.alignment_receipt_sha256,
+        work_key,
+        feature_receipt_sha256,
+        label_receipt_sha256,
+        alignment_receipt_sha256,
         params_sha256,
-        resolution.runtime.code_version,
-        resolution.runtime.dependency_fingerprint_sha256,
+        code_version,
+        dependency_fingerprint_sha256,
         python_executable_sha256,
-        resolution.config.acceptance_config_sha256,
+        acceptance_config_sha256,
         _canonical_float(score_atol),
         _canonical_float(metric_atol),
     ]

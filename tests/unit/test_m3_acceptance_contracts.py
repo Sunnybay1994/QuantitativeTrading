@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
 from quant.research.m3.acceptance import (
     AcceptanceDecisionV1,
+    AcceptanceEvidencePlanV1,
     AcceptanceIssueV1,
     EvidenceLocatorV1,
     GateResultV1,
+    M3AcceptancePlanError,
     RemoteTrackingObservationV1,
+    VerifiedComparisonIdentityV1,
     VerifiedRuntimeIdentity,
+    resolve_acceptance_subject,
 )
 from quant.research.m3.run_state import ArtifactDigest
 from quant.research.m3.orchestration import STAGE_SPEC_REGISTRY, get_m3_stage_registry
@@ -91,3 +96,57 @@ def test_issue_and_evidence_order_are_exact_and_fail_status_is_derived() -> None
 def test_common_contracts_reject_noncanonical_or_unverified_values(factory: object) -> None:
     with pytest.raises(ValueError):
         factory()  # type: ignore[operator]
+
+
+def test_g9b_comparison_identity_and_evidence_plan_are_canonical() -> None:
+    comparison = VerifiedComparisonIdentityV1(
+        fold="fold_001",
+        horizon=5,
+        work_key="1" * 64,
+        comparison_key="2" * 64,
+        feature_receipt_sha256="3" * 64,
+        label_manifest_sha256="4" * 64,
+        label_receipt_sha256="5" * 64,
+        alignment_receipt_sha256="6" * 64,
+        label_reconciliation_key="7" * 64,
+        python_executable_sha256="8" * 64,
+        reproducibility_receipt_sha256="9" * 64,
+    )
+    first = EvidenceLocatorV1(
+        "G0", "readiness-evidence", "readiness-evidence", "ACCEPTANCE",
+        "a" * 64, "G8", "receipts/readiness-evidence/a.json",
+    )
+    second = EvidenceLocatorV1(
+        "G9", "quality", "quality", "ACCEPTANCE",
+        "b" * 64, "G8", "receipts/quality/b.json",
+    )
+    plan = AcceptanceEvidencePlanV1(
+        "m3-acceptance-evidence-plan-v1",
+        "c" * 64,
+        "d" * 64,
+        "e" * 64,
+        (comparison.work_key,),
+        (comparison.comparison_key,),
+        (first, second),
+    )
+
+    assert plan.expected_work_keys == ("1" * 64,)
+    with pytest.raises(ValueError):
+        replace(plan, evidence=(second, first))
+    with pytest.raises(ValueError):
+        replace(comparison, fold="fold_1")
+
+
+def test_g9b_resolver_translates_invalid_input_without_exception_context(tmp_path: Path) -> None:
+    with pytest.raises(M3AcceptancePlanError) as caught:
+        resolve_acceptance_subject(
+            project_root=tmp_path,
+            config=object(),  # type: ignore[arg-type]
+            config_relative=object(),  # type: ignore[arg-type]
+            snapshot_id="not-a-snapshot",
+            readiness=object(),  # type: ignore[arg-type]
+            python_executable=tmp_path,
+        )
+    assert str(caught.value) == "M3_ACCEPTANCE_PLAN_INVALID"
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None

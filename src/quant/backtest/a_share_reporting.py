@@ -34,7 +34,7 @@ from quant.backtest.a_share_simulator import (
     AShareSimulationFreshVerificationContext,
     AShareSimulationResult,
     simulate_a_share_scenario,
-    simulate_formal_a_share_scenario,
+    simulate_formal_a_share_scenarios,
 )
 from quant.data.m3_release import (
     G1ManifestV5,
@@ -667,6 +667,23 @@ def read_backtest_bundle_manifest(path: Path) -> BacktestBundleManifestV1:
     return manifest
 
 
+def read_backtest_metrics(path: Path) -> BacktestMetricsV1:
+    """Read one canonical formal backtest metrics value."""
+    payload, raw = _strict_object(path)
+    if set(payload) != {field.name for field in fields(BacktestMetricsV1)}:
+        raise ValueError("backtest metrics fields drift")
+    scenarios = payload.get("scenarios")
+    if type(scenarios) is not list or any(type(item) is not dict for item in scenarios):
+        raise ValueError("backtest metrics scenarios invalid")
+    payload["scenarios"] = tuple(
+        AShareScenarioMetricsV1(**cast(Any, item)) for item in scenarios
+    )
+    metrics = BacktestMetricsV1(**cast(Any, payload))
+    if raw != _canonical_bytes(asdict(metrics)):
+        raise ValueError("backtest metrics non-canonical")
+    return metrics
+
+
 def _validate_inputs(
     target: object, plan: object, release: object, experiment: object, config: object
 ) -> None:
@@ -1136,17 +1153,17 @@ def _formal_bundle(
     )
     results: list[tuple[ScenarioName, AShareSimulationResult]] = []
     scenario_metrics: list[AShareScenarioMetricsV1] = []
-    for scenario, multiplier in _SCENARIOS:
-        result = simulate_formal_a_share_scenario(
-            target=target,
-            plan=fresh_plan,
-            facts=facts,
-            cost_periods=base_periods,
-            multiplier=multiplier,
-            initial_cash=initial_cash,
-            fresh_context=simulation_context,
-            artifact_roots=artifact_roots,
-        )
+    replayed = simulate_formal_a_share_scenarios(
+        target=target,
+        plan=fresh_plan,
+        facts=facts,
+        cost_periods=base_periods,
+        multipliers=tuple(multiplier for _, multiplier in _SCENARIOS),
+        initial_cash=initial_cash,
+        fresh_context=simulation_context,
+        artifact_roots=artifact_roots,
+    )
+    for (scenario, multiplier), result in zip(_SCENARIOS, replayed, strict=True):
         if result.multiplier != multiplier:
             raise ValueError
         results.append((scenario, result))
@@ -2165,6 +2182,7 @@ __all__ = [
     "build_backtest_artifact",
     "build_development_example_backtest_artifact",
     "read_backtest_bundle_manifest",
+    "read_backtest_metrics",
     "read_backtest_scenario_manifest",
     "verify_backtest_artifact",
     "verify_backtest_build_output",

@@ -491,7 +491,7 @@ def test_r2_quality_or_market_inode_replace_windows_fail_before_receipt(
     targets = (quality, market)
     import quant.research.m3.backtest_stage as stage_module
 
-    actual_pre = stage_module.verify_backtest_build_output
+    actual_pre = stage_module._verify_built_output_proof
     pre_calls = {"n": 0}
     mut_calls = {"n": 0}
     entity_guard_calls = {"n": 0}
@@ -503,13 +503,13 @@ def test_r2_quality_or_market_inode_replace_windows_fail_before_receipt(
             pytest.skip("same-path rewrite did not drift G1 entity snapshot")
         mut_calls["n"] += 1
 
-    def guarded_pre(**values: Any) -> Any:
+    def guarded_pre(root: Path, proof: Any) -> Any:
         pre_calls["n"] += 1
         if window == "after_handler_before_temp" and pre_calls["n"] == 1:
             _mutate()
         if window == "after_temp_before_final" and pre_calls["n"] == 2:
             _mutate()
-        result = actual_pre(**values)
+        result = actual_pre(root, proof)
         if window == "after_final_before_receipt" and pre_calls["n"] == 2:
             _mutate()
         return result
@@ -526,7 +526,7 @@ def test_r2_quality_or_market_inode_replace_windows_fail_before_receipt(
         base_publish_calls["n"] += 1
         return actual_base_publish(self, **values)
 
-    monkeypatch.setattr(stage_module, "verify_backtest_build_output", guarded_pre)
+    monkeypatch.setattr(stage_module, "_verify_built_output_proof", guarded_pre)
     monkeypatch.setattr(guarded_cls, "_publish_static_receipt", counted_entity_publish)
     monkeypatch.setattr(StageRunner, "_publish_static_receipt", counted_base_publish)
 
@@ -543,7 +543,7 @@ def test_r2_quality_or_market_inode_replace_windows_fail_before_receipt(
         )
     assert mut_calls["n"] >= 1
     if window == "after_final_before_receipt":
-        assert entity_guard_calls["n"] >= 1
+        assert entity_guard_calls["n"] == 0
         assert base_publish_calls["n"] == 0
     _assert_stage_fail_clean(
         stage_root=case["stage_root"],
@@ -593,17 +593,17 @@ def test_r2_new_context_is_new_request_bound_context_drift_fails(
     )
     import quant.research.m3.backtest_stage as stage_module
 
-    actual_pre = stage_module.verify_backtest_build_output
+    actual_pre = stage_module._verify_built_output_proof
     pre_calls = {"n": 0}
 
-    def mutate_bound_context(**values: Any) -> Any:
+    def mutate_bound_context(root: Path, proof: Any) -> Any:
         pre_calls["n"] += 1
         if pre_calls["n"] == 1:
             object.__setattr__(kwargs["fresh_context"], "release", drifted)
-        return actual_pre(**values)
+        return actual_pre(root, proof)
 
     monkeypatch.setattr(
-        stage_module, "verify_backtest_build_output", mutate_bound_context
+        stage_module, "_verify_built_output_proof", mutate_bound_context
     )
     with pytest.raises(M3StageRunnerError) as caught:
         run_formal_backtest_stage(

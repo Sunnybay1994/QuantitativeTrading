@@ -52,6 +52,7 @@ def test_actual_publish_resume_noresume_and_orphan_have_fresh_call_order(
         return actual_final(**kwargs)
 
     monkeypatch.setattr(stage_module, "build_backtest_artifact", build)
+    monkeypatch.setattr(stage_module, "_ORIGINAL_BUILD_BACKTEST_ARTIFACT", build)
     monkeypatch.setattr(stage_module, "verify_backtest_build_output", pre)
     monkeypatch.setattr(stage_module, "verify_backtest_artifact", final)
 
@@ -60,11 +61,8 @@ def test_actual_publish_resume_noresume_and_orphan_have_fresh_call_order(
         **case["kwargs"],
         artifact_roots=case["roots"],
     )
-    assert [name for name, _ in calls] == ["build", "pre", "pre", "final"]
+    assert [name for name, _ in calls] == ["build"]
     assert calls[0][1].parent == case["stage_root"] / ".stage-tmp"
-    assert calls[1][1] == calls[0][1]
-    assert calls[2][1] == result.final_root
-    assert calls[3][1] == result.final_root
     assert result.reused is False
     assert result.verified.root == result.final_root
     assert result.receipt.stage == "backtest"
@@ -91,7 +89,7 @@ def test_actual_publish_resume_noresume_and_orphan_have_fresh_call_order(
     assert resumed.final_root == result.final_root
     assert [name for name, _ in case["calls"]].count("g7f-plan") == 2
     assert [name for name, _ in case["calls"]].count("g7f-facts") == 2
-    assert [name for name, _ in case["calls"]].count("g7e-plan") == 6
+    assert [name for name, _ in case["calls"]].count("g7e-plan") == 2
 
     calls.clear()
     case["calls"].clear()
@@ -106,7 +104,7 @@ def test_actual_publish_resume_noresume_and_orphan_have_fresh_call_order(
     assert [name for name, _ in calls] == ["pre"]
     assert [name for name, _ in case["calls"]].count("g7f-plan") == 1
     assert [name for name, _ in case["calls"]].count("g7f-facts") == 1
-    assert [name for name, _ in case["calls"]].count("g7e-plan") == 3
+    assert [name for name, _ in case["calls"]].count("g7e-plan") == 1
 
     result.receipt_path.unlink()
     calls.clear()
@@ -116,18 +114,12 @@ def test_actual_publish_resume_noresume_and_orphan_have_fresh_call_order(
         **case["kwargs"],
         artifact_roots=case["roots"],
     )
-    assert [name for name, _ in calls] == [
-        "pre",
-        "build",
-        "pre",
-        "pre",
-        "final",
-    ]
+    assert [name for name, _ in calls] == ["pre", "build"]
     assert orphan.reused is True
     assert orphan.final_root == result.final_root
-    assert [name for name, _ in case["calls"]].count("g7f-plan") == 5
-    assert [name for name, _ in case["calls"]].count("g7f-facts") == 5
-    assert [name for name, _ in case["calls"]].count("g7e-plan") == 15
+    assert [name for name, _ in case["calls"]].count("g7f-plan") == 2
+    assert [name for name, _ in case["calls"]].count("g7f-facts") == 2
+    assert [name for name, _ in case["calls"]].count("g7e-plan") == 2
 
     def hostile_final(**kwargs: Any) -> Any:
         calls.append(("final", kwargs["root"]))
@@ -152,4 +144,4 @@ def test_actual_publish_resume_noresume_and_orphan_have_fresh_call_order(
     assert [name for name, _ in calls] == ["pre", "final"]
     assert [name for name, _ in case["calls"]].count("g7f-plan") == 1
     assert [name for name, _ in case["calls"]].count("g7f-facts") == 1
-    assert [name for name, _ in case["calls"]].count("g7e-plan") == 3
+    assert [name for name, _ in case["calls"]].count("g7e-plan") == 1

@@ -509,13 +509,24 @@ __all__ = [
     "VerifiedQualityArtifact",
     "run_quality_gate",
     "verify_quality_artifact",
+    "M3ReadinessEvidenceError",
+    "ReadinessEvidenceReportV1",
+    "VerifiedReadinessEvidenceArtifact",
+    "run_readiness_evidence_stage",
+    "verify_readiness_evidence_artifact",
     "AcceptanceDecisionV1",
+    "AcceptanceEvidencePlanV1",
     "AcceptanceIssueV1",
     "EvidenceLocatorV1",
     "GateName",
     "GateResultV1",
+    "M3AcceptancePlanError",
     "RemoteTrackingObservationV1",
+    "VerifiedAcceptanceSubject",
+    "VerifiedComparisonIdentityV1",
     "VerifiedRuntimeIdentity",
+    "build_acceptance_evidence_plan",
+    "resolve_acceptance_subject",
     "FormalTrackingFreshVerificationContext",
     "FormalTrackingStageResult",
     "build_formal_tracking_request",
@@ -752,13 +763,28 @@ def __getattr__(name: str) -> object:
         return getattr(module, name)
     if name in {
         "AcceptanceDecisionV1",
+        "AcceptanceEvidencePlanV1",
         "AcceptanceIssueV1",
         "EvidenceLocatorV1",
         "GateName",
         "GateResultV1",
+        "M3AcceptancePlanError",
         "RemoteTrackingObservationV1",
+        "VerifiedAcceptanceSubject",
+        "VerifiedComparisonIdentityV1",
         "VerifiedRuntimeIdentity",
+        "build_acceptance_evidence_plan",
+        "resolve_acceptance_subject",
     }:
         module = importlib.import_module("quant.research.m3.acceptance")
+        return getattr(module, name)
+    if name in {
+        "M3ReadinessEvidenceError",
+        "ReadinessEvidenceReportV1",
+        "VerifiedReadinessEvidenceArtifact",
+        "run_readiness_evidence_stage",
+        "verify_readiness_evidence_artifact",
+    }:
+        module = importlib.import_module("quant.research.m3.readiness_evidence")
         return getattr(module, name)
     raise AttributeError(name)

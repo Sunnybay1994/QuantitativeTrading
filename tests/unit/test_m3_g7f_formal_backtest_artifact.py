@@ -29,6 +29,10 @@ from quant.backtest.a_share_reporting import (
     verify_backtest_artifact,
     verify_backtest_build_output,
 )
+from quant.backtest.a_share_simulator import (
+    AShareSimulationFreshVerificationContext,
+    simulate_formal_a_share_scenario,
+)
 from quant.data.m3_release import G1Release, VerifiedG1Release
 from quant.research.m3.contracts import VerifiedBacktestArtifact
 from quant.research.m3.run_state import (
@@ -229,14 +233,14 @@ def test_formal_build_verify_actual_chain_exact_three_and_21_29(
 ) -> None:
     case = _formal_case(tmp_path, monkeypatch)
     simulation_calls: list[Decimal] = []
-    real_simulation = reporting_module.simulate_formal_a_share_scenario
+    real_simulation = reporting_module.simulate_formal_a_share_scenarios
 
     def counted_simulation(**kwargs: Any) -> Any:
-        simulation_calls.append(kwargs["multiplier"])
+        simulation_calls.extend(kwargs["multipliers"])
         return real_simulation(**kwargs)
 
     monkeypatch.setattr(
-        reporting_module, "simulate_formal_a_share_scenario", counted_simulation
+        reporting_module, "simulate_formal_a_share_scenarios", counted_simulation
     )
     inputs = reporting_module.backtest_artifact_input_paths(
         target=case["kwargs"]["target"],
@@ -257,7 +261,7 @@ def test_formal_build_verify_actual_chain_exact_three_and_21_29(
         **case["kwargs"], output_root=case["root"]
     )
     assert [name for name, _ in case["calls"]] == [
-        "g7f-plan", "g7f-facts", "g7e-plan", "g7e-plan", "g7e-plan"
+        "g7f-plan", "g7f-facts", "g7e-plan"
     ]
     assert simulation_calls == [
         Decimal("0.5"), Decimal("1"), Decimal("2")
@@ -289,13 +293,50 @@ def test_formal_build_verify_actual_chain_exact_three_and_21_29(
     assert type(verified) is VerifiedBacktestArtifact
     assert verified.manifest == manifest
     assert [name for name, _ in case["calls"]] == [
-        "g7f-plan", "g7f-facts", "g7e-plan", "g7e-plan", "g7e-plan",
-        "g7f-plan", "g7f-facts", "g7e-plan", "g7e-plan", "g7e-plan",
+        "g7f-plan", "g7f-facts", "g7e-plan",
+        "g7f-plan", "g7f-facts", "g7e-plan",
     ]
     assert simulation_calls == [
         Decimal("0.5"), Decimal("1"), Decimal("2"),
         Decimal("0.5"), Decimal("1"), Decimal("2"),
     ]
+
+
+def test_batched_bundle_results_equal_independent_serial_replays(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _formal_case(tmp_path, monkeypatch)
+    kwargs = case["kwargs"]
+    bundle = reporting_module._formal_bundle(**kwargs)
+    periods, initial_cash, _ = reporting_module._formal_config_values(
+        kwargs["config"], kwargs["plan"]
+    )
+    simulation_context = AShareSimulationFreshVerificationContext(
+        release=kwargs["release"],
+        facts_fresh_context=kwargs["fresh_context"].facts_fresh_context,
+    )
+    facts = case["g7e"]["facts"]
+    for (_, batched), multiplier in zip(
+        bundle.results,
+        (Decimal("0.5"), Decimal("1"), Decimal("2")),
+        strict=True,
+    ):
+        serial = simulate_formal_a_share_scenario(
+            target=kwargs["target"],
+            plan=kwargs["plan"],
+            facts=facts,
+            cost_periods=periods,
+            multiplier=multiplier,
+            initial_cash=initial_cash,
+            fresh_context=simulation_context,
+            artifact_roots=kwargs["artifact_roots"],
+        )
+        for name in (
+            "nav", "trades", "positions", "rejections",
+            "corporate_action_postings", "daily_diagnostics", "entitlements",
+        ):
+            assert getattr(batched, name).equals(getattr(serial, name))
 
 
 def test_formal_surface_has_no_caller_result_or_execution_state() -> None:

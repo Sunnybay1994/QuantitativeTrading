@@ -38,15 +38,15 @@ def test_five_session_three_scenario_golden_matches_actual_g7e_and_metrics(
 ) -> None:
     case = _UNIT._formal_case(tmp_path, monkeypatch)
     results: list[Any] = []
-    actual_g7e = reporting_module.simulate_formal_a_share_scenario
+    actual_g7e = reporting_module.simulate_formal_a_share_scenarios
 
     def captured(**kwargs: Any) -> Any:
-        result = actual_g7e(**kwargs)
-        results.append(result)
-        return result
+        replayed = actual_g7e(**kwargs)
+        results.extend(replayed)
+        return replayed
 
     monkeypatch.setattr(
-        reporting_module, "simulate_formal_a_share_scenario", captured
+        reporting_module, "simulate_formal_a_share_scenarios", captured
     )
     manifest = build_backtest_artifact(
         **case["kwargs"], output_root=case["root"]
@@ -55,7 +55,7 @@ def test_five_session_three_scenario_golden_matches_actual_g7e_and_metrics(
         Decimal("0.5"), Decimal("1"), Decimal("2")
     ]
     assert [name for name, _ in case["calls"]] == [
-        "g7f-plan", "g7f-facts", "g7e-plan", "g7e-plan", "g7e-plan"
+        "g7f-plan", "g7f-facts", "g7e-plan"
     ]
     assert len(reporting_module._FORMAL_EXPECTED_NAMES) == 29
 

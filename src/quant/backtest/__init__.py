@@ -103,6 +103,7 @@ from quant.backtest.a_share_simulator import (
     AShareSimulationResult,
     simulate_a_share_scenario,
     simulate_formal_a_share_scenario,
+    simulate_formal_a_share_scenarios,
 )
 from quant.backtest.a_share_reporting import (
     AShareBacktestArtifactError,
@@ -114,6 +115,7 @@ from quant.backtest.a_share_reporting import (
     build_backtest_artifact,
     build_development_example_backtest_artifact,
     read_backtest_bundle_manifest,
+    read_backtest_metrics,
     read_backtest_scenario_manifest,
     verify_backtest_artifact,
     verify_backtest_build_output,
@@ -202,6 +204,7 @@ __all__ = [
     "load_verified_a_share_market_facts",
     "read_backtest_plan_manifest",
     "read_backtest_bundle_manifest",
+    "read_backtest_metrics",
     "read_backtest_scenario_manifest",
     "recognize_ex_date_entitlements",
     "resolve_a_share_order_quantity_rule",
@@ -211,6 +214,7 @@ __all__ = [
     "simulate_etf_targets",
     "simulate_a_share_scenario",
     "simulate_formal_a_share_scenario",
+    "simulate_formal_a_share_scenarios",
     "simulate_daily_targets",
     "settle_due_entitlements",
     "verify_development_example_backtest_plan_artifact",
