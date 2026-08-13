@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 from collections.abc import Mapping
 from dataclasses import replace
@@ -107,20 +108,35 @@ def _publish_work_receipts(bundle: Any) -> Any:
 
 
 def _horizon(path: Path) -> int:
-    text = path.as_posix()
-    return 10 if ".h10" in text else 5
+    matched = re.search(r"\.h(\d+)(?:/|\.|$)", path.as_posix())
+    if matched is None:
+        raise AssertionError(f"missing horizon in {path.name}")
+    return int(matched.group(1))
+
+
+def _fold(path: Path) -> str:
+    matched = re.search(r"fold_\d+", path.as_posix())
+    if matched is None:
+        raise AssertionError(f"missing fold in {path.name}")
+    return matched.group(0)
 
 
 def _comparison(bundle: Any, path: Path) -> Any:
+    fold = _fold(path)
     horizon = _horizon(path)
-    return next(item for item in bundle.subject.comparisons if item.horizon == horizon)
+    return next(
+        item
+        for item in bundle.subject.comparisons
+        if item.fold == fold and item.horizon == horizon
+    )
 
 
 def _install_readers(
     monkeypatch: pytest.MonkeyPatch,
     bundle: Any,
     *,
-    evaluation_coverage: float = 1.0,
+    evaluation_coverage: float | Mapping[tuple[str, int], float] = 1.0,
+    rank_ic_mean: float = 0.01,
 ) -> None:
     experiment = bundle.subject.experiment
     snapshot = bundle.subject.snapshot
@@ -134,7 +150,7 @@ def _install_readers(
     def feature(path: Path) -> Any:
         return SimpleNamespace(
             experiment_key=experiment.manifest.experiment_key,
-            fold="fold_001",
+            fold=_fold(path),
             snapshot_id=snapshot.manifest.snapshot_id,
             provider_key=provider.manifest.provider_key,
             scientific_config_sha256=config.scientific_config_sha256,
@@ -148,7 +164,8 @@ def _install_readers(
             fold=comparison.fold,
             horizon_sessions=comparison.horizon,
             feature_manifest_sha256=_sha(
-                bundle.root / "fake/G5/features.fold_001/feature_manifest.json"
+                bundle.root
+                / f"fake/G5/features.{comparison.fold}/feature_manifest.json"
             ),
             label_manifest_sha256=comparison.label_manifest_sha256,
         )
@@ -165,7 +182,7 @@ def _install_readers(
                 base / f"alignment.{comparison.fold}.h{comparison.horizon}/alignment_manifest.json"
             ),
             feature_manifest_sha256=_sha(
-                base / "features.fold_001/feature_manifest.json"
+                base / f"features.{comparison.fold}/feature_manifest.json"
             ),
             label_manifest_sha256=comparison.label_manifest_sha256,
             model_sha256="a" * 64,
@@ -185,7 +202,7 @@ def _install_readers(
             ),
             model_sha256="a" * 64,
             feature_manifest_sha256=_sha(
-                base / "features.fold_001/feature_manifest.json"
+                base / f"features.{comparison.fold}/feature_manifest.json"
             ),
             selected_feature_schema_sha256="b" * 64,
             snapshot_id=snapshot.manifest.snapshot_id,
@@ -211,7 +228,10 @@ def _install_readers(
             ),
             label_manifest_sha256=comparison.label_manifest_sha256,
             feature_manifest_sha256=_sha(
-                base / "G5/features.fold_001/feature_manifest.json"
+                base
+                / "G5"
+                / f"features.{comparison.fold}"
+                / "feature_manifest.json"
             ),
             fold_plan_manifest_sha256=folds.manifest_sha256,
             scientific_config_sha256=config.scientific_config_sha256,
@@ -222,6 +242,11 @@ def _install_readers(
 
     def evaluation_metrics(path: Path) -> Any:
         comparison = _comparison(bundle, path)
+        coverage = (
+            evaluation_coverage[(comparison.fold, comparison.horizon)]
+            if isinstance(evaluation_coverage, Mapping)
+            else evaluation_coverage
+        )
         return SimpleNamespace(
             experiment_key=experiment.manifest.experiment_key,
             work_key=comparison.work_key,
@@ -232,40 +257,62 @@ def _install_readers(
             feature_coverage=1.0,
             prediction_coverage=1.0,
             label_coverage=1.0,
-            evaluation_coverage=evaluation_coverage,
+            evaluation_coverage=coverage,
             n_dates=10,
             n_computable_dates=10,
-            rank_ic_mean=0.01,
+            rank_ic_mean=rank_ic_mean,
             rank_icir=-0.1,
         )
 
     def summary_manifest(path: Path) -> Any:
         horizon = _horizon(path)
-        comparison = next(item for item in bundle.subject.comparisons if item.horizon == horizon)
-        evaluation_path = (
+        comparisons = tuple(
+            sorted(
+                (
+                    item
+                    for item in bundle.subject.comparisons
+                    if item.horizon == horizon
+                ),
+                key=lambda item: item.fold,
+            )
+        )
+        evaluation_paths = tuple(
             bundle.root
             / "fake/G6"
             / f"evaluation.{comparison.fold}.h{horizon}"
             / "evaluation_manifest.json"
+            for comparison in comparisons
         )
-        evaluation_receipt = bundle.root / f"receipts/evaluation/{comparison.work_key}.json"
+        evaluation_receipts = tuple(
+            bundle.root / f"receipts/evaluation/{comparison.work_key}.json"
+            for comparison in comparisons
+        )
         return SimpleNamespace(
             experiment_key=experiment.manifest.experiment_key,
             horizon_sessions=horizon,
             model="lightgbm",
             model_version=model_version,
             scientific_config_sha256=config.scientific_config_sha256,
-            folds=("fold_001",),
-            evaluation_manifest_sha256s=(_sha(evaluation_path),),
-            evaluation_receipt_sha256s=(_sha(evaluation_receipt),),
+            folds=tuple(item.fold for item in comparisons),
+            evaluation_manifest_sha256s=tuple(
+                _sha(item) for item in evaluation_paths
+            ),
+            evaluation_receipt_sha256s=tuple(
+                _sha(item) for item in evaluation_receipts
+            ),
             metrics_sha256=_sha(path.parent / "metrics.json"),
         )
 
     def summary_metrics(path: Path) -> Any:
+        horizon = _horizon(path)
         return SimpleNamespace(
             experiment_key=experiment.manifest.experiment_key,
-            horizon_sessions=_horizon(path),
-            folds=("fold_001",),
+            horizon_sessions=horizon,
+            folds=tuple(
+                item.fold
+                for item in bundle.subject.comparisons
+                if item.horizon == horizon
+            ),
         )
 
     def target(path: Path) -> Any:
@@ -285,7 +332,8 @@ def _install_readers(
             scientific_config_sha256=config.scientific_config_sha256,
             prediction_manifest_sha256=_sha(prediction_path),
             feature_manifest_sha256=_sha(
-                bundle.root / "fake/G5/features.fold_001/feature_manifest.json"
+                bundle.root
+                / f"fake/G5/features.{comparison.fold}/feature_manifest.json"
             ),
             fold_plan_manifest_sha256=folds.manifest_sha256,
             snapshot_id=snapshot.manifest.snapshot_id,
@@ -333,6 +381,75 @@ def _install_readers(
             scenarios=scenarios,
         )
 
+    def backtest_bundle(path: Path) -> Any:
+        comparison = _comparison(bundle, path)
+        base = path.parent
+        target_path = (
+            bundle.root
+            / "fake/G7"
+            / f"targets.{comparison.fold}.h{comparison.horizon}"
+            / "target_manifest.json"
+        )
+        plan_path = (
+            bundle.root
+            / "fake/G7"
+            / f"backtest-plan.{comparison.fold}.h{comparison.horizon}"
+            / "manifest.json"
+        )
+        return SimpleNamespace(
+            experiment_key=experiment.manifest.experiment_key,
+            experiment_manifest_sha256=experiment.manifest_sha256,
+            work_key=comparison.work_key,
+            scientific_config_sha256=config.scientific_config_sha256,
+            target_manifest_sha256=_sha(target_path),
+            backtest_plan_manifest_sha256=_sha(plan_path),
+            g1_release_id=bundle.subject.readiness.report.g1_release_id,
+            g1_release_manifest_sha256=(
+                bundle.subject.readiness.report.g1_release_manifest_sha256
+            ),
+            order_quantity_rule_version=G7_A_SHARE_ORDER_QUANTITY_RULE_VERSION,
+            common_target_manifest_sha256=_sha(target_path),
+            backtest_metrics_sha256=_sha(base / "backtest_metrics.json"),
+            scenario_manifest_sha256s=tuple(
+                (name, _sha(base / name / "manifest.json"))
+                for name in ("0p5x", "1p0x", "2p0x")
+            ),
+            common_market_facts_sha256="c" * 64,
+        )
+
+    def backtest_scenario(path: Path) -> Any:
+        comparison = _comparison(bundle, path)
+        name = path.parent.name
+        target_path = (
+            bundle.root
+            / "fake/G7"
+            / f"targets.{comparison.fold}.h{comparison.horizon}"
+            / "target_manifest.json"
+        )
+        plan_path = (
+            bundle.root
+            / "fake/G7"
+            / f"backtest-plan.{comparison.fold}.h{comparison.horizon}"
+            / "manifest.json"
+        )
+        return SimpleNamespace(
+            scenario=name,
+            experiment_key=experiment.manifest.experiment_key,
+            work_key=comparison.work_key,
+            scientific_config_sha256=config.scientific_config_sha256,
+            target_manifest_sha256=_sha(target_path),
+            backtest_plan_manifest_sha256=_sha(plan_path),
+            g1_release_id=bundle.subject.readiness.report.g1_release_id,
+            g1_release_manifest_sha256=(
+                bundle.subject.readiness.report.g1_release_manifest_sha256
+            ),
+            fold=comparison.fold,
+            horizon_sessions=comparison.horizon,
+            order_quantity_rule_version=G7_A_SHARE_ORDER_QUANTITY_RULE_VERSION,
+            input_market_facts_sha256="c" * 64,
+            metrics_sha256=_sha(path.parent / "metrics.json"),
+        )
+
     monkeypatch.setattr(work_module, "read_feature_manifest", feature)
     monkeypatch.setattr(work_module, "read_alignment_manifest", alignment)
     monkeypatch.setattr(work_module, "read_model_manifest", model)
@@ -343,10 +460,9 @@ def _install_readers(
     monkeypatch.setattr(work_module, "read_research_summary_metrics", summary_metrics)
     monkeypatch.setattr(work_module, "read_target_manifest", target)
     monkeypatch.setattr(work_module, "read_backtest_plan_manifest", plan)
-    monkeypatch.setattr(work_module, "read_backtest_bundle_manifest", lambda path: SimpleNamespace())
+    monkeypatch.setattr(work_module, "read_backtest_bundle_manifest", backtest_bundle)
     monkeypatch.setattr(work_module, "read_backtest_metrics", backtest_metrics)
-    monkeypatch.setattr(work_module, "read_backtest_scenario_manifest", lambda path: SimpleNamespace())
-    monkeypatch.setattr(work_module, "_check_backtest_identity", lambda **kwargs: None)
+    monkeypatch.setattr(work_module, "read_backtest_scenario_manifest", backtest_scenario)
     monkeypatch.setattr(work_module, "_fresh_verify_backtest", lambda **kwargs: None)
     monkeypatch.setattr(
         work_module,

@@ -160,6 +160,7 @@ def test_remote_verifier_is_read_only_and_fails_closed(tmp_path: Path, mode: str
     target = "a" * 64
     request, marker = _request_marker(tmp_path, target_key=target, work_key="b" * 64)
     run = _remote_run(request, marker, status="RUNNING" if mode == "running" else "FINISHED")
+    runs: tuple[RemoteTrackingRunV1, ...]
     if mode == "none":
         runs = ()
     elif mode == "multiple":
@@ -235,13 +236,20 @@ def _quality(bundle: Any, locator: Any) -> VerifiedQualityArtifact:
     return VerifiedQualityArtifact(report, receipt.outputs[0], receipt, _sha(receipt_path))
 
 
-def _complete_bundle(tmp_path: Path, *, unsafe: bool = False) -> tuple[Any, VerifiedQualityArtifact]:
-    bundle = _bundle(tmp_path)
+def _complete_bundle(
+    tmp_path: Path,
+    *,
+    unsafe: bool = False,
+    bundle: Any | None = None,
+) -> tuple[Any, VerifiedQualityArtifact]:
+    if bundle is None:
+        bundle = _bundle(tmp_path)
     quality: VerifiedQualityArtifact | None = None
     for locator in bundle.plan.evidence:
         receipt_path = bundle.root.joinpath(*locator.receipt_relative_path.split("/"))
         if receipt_path.exists():
             continue
+        outputs: tuple[tuple[str, Path], ...]
         if locator.gate == "G8":
             request, marker = _request_marker(
                 bundle.root,
