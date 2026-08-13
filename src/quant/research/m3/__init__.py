@@ -507,6 +507,13 @@ __all__ = [
     "VerifiedQualityArtifact",
     "run_quality_gate",
     "verify_quality_artifact",
+    "AcceptanceDecisionV1",
+    "AcceptanceIssueV1",
+    "EvidenceLocatorV1",
+    "GateName",
+    "GateResultV1",
+    "RemoteTrackingObservationV1",
+    "VerifiedRuntimeIdentity",
     "FormalTrackingFreshVerificationContext",
     "FormalTrackingStageResult",
     "build_formal_tracking_request",
@@ -740,5 +747,16 @@ def __getattr__(name: str) -> object:
         "verify_quality_artifact",
     }:
         module = importlib.import_module("quant.research.m3.quality_gate")
+        return getattr(module, name)
+    if name in {
+        "AcceptanceDecisionV1",
+        "AcceptanceIssueV1",
+        "EvidenceLocatorV1",
+        "GateName",
+        "GateResultV1",
+        "RemoteTrackingObservationV1",
+        "VerifiedRuntimeIdentity",
+    }:
+        module = importlib.import_module("quant.research.m3.acceptance")
         return getattr(module, name)
     raise AttributeError(name)
