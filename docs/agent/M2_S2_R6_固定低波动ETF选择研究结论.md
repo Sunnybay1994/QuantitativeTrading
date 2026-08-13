@@ -26,9 +26,16 @@ SHA-256 为 `c6674ebac47b5d9b027945a2a204bb6bedb7db24928be6761eb2f8a7d9013181`�
 
 ## 2. 不可覆盖运行证据
 
-首次运行 ID 为 `279e5411ca0aec53c8eb66aa1b1e8cd67a4815c7f2be6fd066fb48861e7f1840`，产物目录为
-`artifacts/research/runs/279e5411ca0aec53c8eb66aa1b1e8cd67a4815c7f2be6fd066fb48861e7f1840/`。
-其中 `run.json` 绑定配置、代码、四类输入内容、随机种子和五项输出；原始产物保持不可覆盖，不为加入结论而修改。
+首次运行 ID 为 `279e5411ca0aec53c8eb66aa1b1e8cd67a4815c7f2be6fd066fb48861e7f1840`。后续来源审查发现
+轻量运行的代码摘要清单遗漏了本策略实际调用的 `src/quant/factors/risk.py`，因此该目录保持不可覆盖，
+但只作为发现缺口的历史记录，不再承担本结论的来源证据。
+
+补齐代码摘要清单后，以完全相同的冻结配置受控重跑，得到来源闭合的 run ID
+`ec701e4eb740b75a701694928ae7dc60aa97e1a2f4ab12e1804c146d5fca8c8c`，产物目录为
+`artifacts/research/runs/ec701e4eb740b75a701694928ae7dc60aa97e1a2f4ab12e1804c146d5fca8c8c/`。
+该次运行 `reused=false`；四个经济输出 Parquet 的 SHA-256 与首次运行逐文件完全相同，说明修订只改变
+代码来源闭包与 run identity，没有改变目标、成交、目标缺口或 NAV 结果。新 `run.json` 绑定配置、实际
+代码、四类输入内容、随机种子和五项输出；两次原始产物均未被修改。
 
 | 指标 | 折 1 | 折 2 | 冻结比较器折 1 / 折 2 |
 |---|---:|---:|---:|
@@ -54,9 +61,9 @@ SHA-256 为 `c6674ebac47b5d9b027945a2a204bb6bedb7db24928be6761eb2f8a7d9013181`�
 
 ## 4. 验证
 
-- 因子、策略和 walk-forward 定向测试：`23 passed`；
+- 因子、策略、轻量运行和 walk-forward 定向测试：`27 passed`；
 - Ruff：通过；
 - mypy（3 个生产文件）：通过；
-- 首次经济运行自然完成，`reused=false`。
+- 来源闭包修复后的受控经济重跑自然完成，`reused=false`。
 
 本报告是对不可覆盖运行应用预注册判定条件后的研究结论，不赋予 PAPER 或实盘权限。

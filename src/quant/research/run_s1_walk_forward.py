@@ -51,6 +51,7 @@ _CODE_PATHS = (
     "src/quant/backtest/costs.py",
     "src/quant/backtest/simulator.py",
     "src/quant/backtest/timing.py",
+    "src/quant/factors/risk.py",
     "src/quant/factors/trend.py",
     "src/quant/portfolio/selection.py",
     "src/quant/research/lightweight_run.py",

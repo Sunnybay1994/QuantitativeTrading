@@ -3,12 +3,18 @@ import datetime as dt
 import polars as pl
 
 from quant.research.run_s1_walk_forward import (
+    _CODE_PATHS,
     _monthly_signal_dates,
     _research_spec,
     _volatility_target_spec,
     make_folds,
     metrics,
 )
+
+
+def test_research_code_digest_covers_every_factor_implementation() -> None:
+    assert "src/quant/factors/trend.py" in _CODE_PATHS
+    assert "src/quant/factors/risk.py" in _CODE_PATHS
 
 
 def test_walk_forward_builds_only_complete_folds() -> None:
