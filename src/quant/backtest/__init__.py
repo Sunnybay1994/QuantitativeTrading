@@ -18,7 +18,12 @@ from quant.backtest.daily_simulator import (
     DailySimulationResult,
     simulate_daily_targets,
 )
-from quant.backtest.simulator import SimulationResult, simulate_etf_targets
+from quant.backtest.simulator import (
+    EtfDiagnosticSimulationResult,
+    SimulationResult,
+    simulate_etf_targets,
+    simulate_etf_targets_with_diagnostics,
+)
 
 __all__ = [
     "AShareCostModel",
@@ -26,6 +31,7 @@ __all__ = [
     "ConnectRuleInputError",
     "DailyMarketState",
     "DailySimulationResult",
+    "EtfDiagnosticSimulationResult",
     "EtfCostModel",
     "SimulationResult",
     "build_connect_rule_config",
@@ -33,5 +39,6 @@ __all__ = [
     "execution_reject_reason",
     "schedule_next_trading_day",
     "simulate_etf_targets",
+    "simulate_etf_targets_with_diagnostics",
     "simulate_daily_targets",
 ]

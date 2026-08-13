@@ -60,27 +60,15 @@ class EtfTrendStrategy(Strategy):
 
     def target_weights(self, as_of: dt.date, data: pl.DataFrame) -> pl.DataFrame:
         """消费长表 FactorValueSchema，绝对趋势不通过时保留现金。"""
-        factors = FactorValueSchema.validate(data).filter(
-            (pl.col("as_of") == as_of)
-            & (pl.col("factor_version") == self.factor_version)
+        by_symbol = _factor_values(
+            data, as_of=as_of, factor_version=self.factor_version
         )
-        by_symbol: dict[str, dict[str, float | None]] = {}
-        for row in factors.iter_rows(named=True):
-            by_symbol.setdefault(row["symbol"], {})[row["factor"]] = row["value"]
-        momentum_names = [f"momentum_{window}" for window in self.momentum_windows]
-        score_name = f"regression_slope_r2_{self.regression_window}"
-        ranked: list[tuple[str, float]] = []
-        for symbol in self.candidates:
-            values = by_symbol.get(symbol, {})
-            momenta = [values.get(name) for name in momentum_names]
-            score = values.get(score_name)
-            if (
-                score is not None
-                and score > 0
-                and all(value is not None and value > 0 for value in momenta)
-            ):
-                ranked.append((symbol, score))
-        ranked.sort(key=lambda item: (-item[1], item[0]))
+        ranked = _rank_positive_trends(
+            by_symbol=by_symbol,
+            candidates=self.candidates,
+            momentum_windows=self.momentum_windows,
+            regression_window=self.regression_window,
+        )
         selected = [symbol for symbol, _ in ranked[: self.top_k]]
         return _weights_frame(
             as_of=as_of,
@@ -90,6 +78,96 @@ class EtfTrendStrategy(Strategy):
             invested_weight=1.0 - self.cash_buffer,
             zero_symbols=list(self.candidates),
         )
+
+
+@dataclass(frozen=True)
+class RegimeFilteredEtfTrendStrategy(Strategy):
+    """仅在宽基准处于绝对正趋势时承担 ETF 趋势组合风险。"""
+
+    candidates: tuple[str, ...]
+    regime_symbol: str
+    top_k: int = 1
+    cash_buffer: float = 0.0
+    factor_version: str = "trend_v1"
+    momentum_windows: tuple[int, ...] = (20, 60, 120)
+    regression_window: int = 60
+    name: str = "etf_regime_trend"
+    version: str = "1.0.0"
+
+    def __post_init__(self) -> None:
+        _validate_parameters(self.candidates, self.cash_buffer)
+        if self.regime_symbol not in self.candidates:
+            raise ValueError("regime_symbol 必须属于冻结候选池")
+        if self.top_k <= 0:
+            raise ValueError("top_k 必须大于 0")
+
+    def target_weights(self, as_of: dt.date, data: pl.DataFrame) -> pl.DataFrame:
+        """市场状态不满足时输出全候选零权重，显式回到现金。"""
+        by_symbol = _factor_values(
+            data, as_of=as_of, factor_version=self.factor_version
+        )
+        regime = _rank_positive_trends(
+            by_symbol=by_symbol,
+            candidates=(self.regime_symbol,),
+            momentum_windows=self.momentum_windows,
+            regression_window=self.regression_window,
+        )
+        ranked = (
+            _rank_positive_trends(
+                by_symbol=by_symbol,
+                candidates=self.candidates,
+                momentum_windows=self.momentum_windows,
+                regression_window=self.regression_window,
+            )
+            if regime
+            else []
+        )
+        selected = [symbol for symbol, _ in ranked[: self.top_k]]
+        return _weights_frame(
+            as_of=as_of,
+            strategy=self.name,
+            version=self.version,
+            symbols=selected,
+            invested_weight=1.0 - self.cash_buffer,
+            zero_symbols=list(self.candidates),
+        )
+
+
+def _factor_values(
+    data: pl.DataFrame, *, as_of: dt.date, factor_version: str
+) -> dict[str, dict[str, float | None]]:
+    factors = FactorValueSchema.validate(data).filter(
+        (pl.col("as_of") == as_of)
+        & (pl.col("factor_version") == factor_version)
+    )
+    by_symbol: dict[str, dict[str, float | None]] = {}
+    for row in factors.iter_rows(named=True):
+        by_symbol.setdefault(row["symbol"], {})[row["factor"]] = row["value"]
+    return by_symbol
+
+
+def _rank_positive_trends(
+    *,
+    by_symbol: dict[str, dict[str, float | None]],
+    candidates: tuple[str, ...],
+    momentum_windows: tuple[int, ...],
+    regression_window: int,
+) -> list[tuple[str, float]]:
+    momentum_names = [f"momentum_{window}" for window in momentum_windows]
+    score_name = f"regression_slope_r2_{regression_window}"
+    ranked: list[tuple[str, float]] = []
+    for symbol in candidates:
+        values = by_symbol.get(symbol, {})
+        momenta = [values.get(name) for name in momentum_names]
+        score = values.get(score_name)
+        if (
+            score is not None
+            and score > 0
+            and all(value is not None and value > 0 for value in momenta)
+        ):
+            ranked.append((symbol, score))
+    ranked.sort(key=lambda item: (-item[1], item[0]))
+    return ranked
 
 
 def _validate_parameters(candidates: tuple[str, ...], cash_buffer: float) -> None:

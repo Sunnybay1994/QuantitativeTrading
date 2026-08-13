@@ -2,3 +2,10 @@
 
 输入:各策略 target_weight + 当前持仓;输出:合并后的目标仓位快照与差量订单建议。
 """
+
+from quant.portfolio.selection import (
+    retain_ranked_target_selection,
+    scale_target_weights_to_volatility,
+)
+
+__all__ = ["retain_ranked_target_selection", "scale_target_weights_to_volatility"]

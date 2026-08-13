@@ -1,6 +1,14 @@
 import datetime as dt
 
-from quant.research.run_s1_walk_forward import make_folds
+import polars as pl
+
+from quant.research.run_s1_walk_forward import (
+    _monthly_signal_dates,
+    _research_spec,
+    _volatility_target_spec,
+    make_folds,
+    metrics,
+)
 
 
 def test_walk_forward_builds_only_complete_folds() -> None:
@@ -17,3 +25,91 @@ def test_walk_forward_builds_only_complete_folds() -> None:
     assert folds[0].test_end == dt.date(2025, 12, 31)
     assert folds[1].train_start == dt.date(2023, 7, 1)
     assert folds[1].test_end == dt.date(2026, 6, 30)
+
+
+def test_metrics_include_unresolved_target_gap_diagnostics() -> None:
+    dates = [dt.date(2026, 1, 5), dt.date(2026, 1, 6)]
+    nav = pl.DataFrame({
+        "strategy": ["s2", "s2"],
+        "date": dates,
+        "equity": [10000.0, 10100.0],
+        "unit_nav": [1.0, 1.01],
+        "cash": [100.0, 100.0],
+        "market_value": [9900.0, 10000.0],
+        "cumulative_fees": [5.0, 5.0],
+    })
+    trades = pl.DataFrame({
+        "strategy": ["s2"],
+        "date": [dates[0]],
+        "symbol": ["510300.SH"],
+        "side": ["BUY"],
+        "quantity": [900],
+        "price": [11.0],
+        "notional": [9900.0],
+        "fee": [5.0],
+        "slippage_cost": [0.0],
+    })
+    target_gaps = pl.DataFrame({
+        "gap_reason": ["CASH_CONSTRAINT", "NONE"],
+        "absolute_notional_gap": [100.0, 0.0],
+    })
+
+    result = metrics(
+        nav,
+        trades,
+        initial_cash=10000.0,
+        target_gaps=target_gaps,
+    )
+
+    assert result["target_gap_count"] == 1.0
+    assert result["absolute_target_gap_notional"] == 100.0
+
+
+def test_signal_dates_support_bimonthly_single_variable_comparison() -> None:
+    prices = pl.DataFrame({
+        "trade_date": [
+            dt.date(2025, 12, 31),
+            dt.date(2026, 1, 30),
+            dt.date(2026, 2, 27),
+            dt.date(2026, 3, 31),
+            dt.date(2026, 4, 30),
+        ]
+    })
+
+    result = _monthly_signal_dates(
+        prices,
+        start=dt.date(2026, 1, 1),
+        end=dt.date(2026, 4, 30),
+        every_months=2,
+    )
+
+    assert result == [
+        dt.date(2025, 12, 31),
+        dt.date(2026, 1, 30),
+        dt.date(2026, 3, 31),
+    ]
+
+
+def test_failed_hypothesis_can_be_recorded_as_rejected() -> None:
+    spec = _research_spec({
+        "research": {
+            "hypothesis_id": "s2-bimonthly-regime-filter-v1",
+            "hypothesis": "A frozen hypothesis that failed its acceptance criterion.",
+            "strategy_kind": "etf_regime_trend",
+            "strategy_version": "1.1.0",
+            "conclusion": "REJECTED",
+            "random_seed": 0,
+        }
+    })
+
+    assert spec.conclusion == "REJECTED"
+
+
+def test_volatility_target_config_is_explicit_and_unlevered() -> None:
+    assert _volatility_target_spec({
+        "volatility_target": {
+            "lookback_observations": 60,
+            "annualized_volatility": 0.12,
+            "annualization_sessions": 252,
+        }
+    }) == (60, 0.12, 252)
