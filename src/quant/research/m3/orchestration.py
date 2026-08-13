@@ -1594,6 +1594,14 @@ DEVELOPMENT_SUMMARY_STAGE_SPEC = StageSpec(
     "development-research-summary", "EXPERIMENT",
     ("development-evaluation",), SUMMARY_STAGE_SPEC.outputs,
 )
+REPRODUCIBILITY_STAGE_SPEC = StageSpec(
+    "reproducibility", "REPRO", (),
+    (
+        OutputSpec("attempt=1", "TREE", "attempt=1/read_audit.json"),
+        OutputSpec("attempt=2", "TREE", "attempt=2/read_audit.json"),
+        OutputSpec("reproducibility.json", "FILE", None),
+    ),
+)
 
 STAGE_SPEC_REGISTRY: Mapping[str, StageSpec] = MappingProxyType({
     spec.name: spec for spec in (
@@ -1617,6 +1625,7 @@ STAGE_SPEC_REGISTRY: Mapping[str, StageSpec] = MappingProxyType({
         BACKTEST_STAGE_SPEC, DEVELOPMENT_BACKTEST_STAGE_SPEC,
         TRACKING_STAGE_SPEC, DEVELOPMENT_TRACKING_STAGE_SPEC,
         SUMMARY_STAGE_SPEC, DEVELOPMENT_SUMMARY_STAGE_SPEC,
+        REPRODUCIBILITY_STAGE_SPEC,
     )
 })
 STAGE_REGISTRY = STAGE_SPEC_REGISTRY

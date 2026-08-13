@@ -492,7 +492,13 @@ __all__ = [
     "run_formal_backtest_stage",
     "FormalCliResolveError",
     "FormalBacktestCliResolution",
+    "FormalReproducibilityCliResolution",
     "resolve_formal_backtest_cli_inputs",
+    "resolve_formal_reproducibility_cli_inputs",
+    "FormalReproducibilityResult",
+    "M3ReproducibilityError",
+    "run_formal_reproducibility_stage",
+    "verify_formal_reproducibility_artifact",
     "FormalTrackingFreshVerificationContext",
     "FormalTrackingStageResult",
     "build_formal_tracking_request",
@@ -701,8 +707,18 @@ def __getattr__(name: str) -> object:
     if name in {
         "FormalCliResolveError",
         "FormalBacktestCliResolution",
+        "FormalReproducibilityCliResolution",
         "resolve_formal_backtest_cli_inputs",
+        "resolve_formal_reproducibility_cli_inputs",
     }:
         module = importlib.import_module("quant.research.m3.formal_cli_resolve")
+        return getattr(module, name)
+    if name in {
+        "FormalReproducibilityResult",
+        "M3ReproducibilityError",
+        "run_formal_reproducibility_stage",
+        "verify_formal_reproducibility_artifact",
+    }:
+        module = importlib.import_module("quant.research.m3.reproducibility")
         return getattr(module, name)
     raise AttributeError(name)

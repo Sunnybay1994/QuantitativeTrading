@@ -41,8 +41,14 @@ from quant.research.m3.contracts import (
     SnapshotBuildSpec,
     TargetBuildSpec,
     TargetUpstreamPaths,
+    VerifiedAlignmentArtifact,
     VerifiedBacktestPlanArtifact,
     VerifiedExperimentIdentity,
+    VerifiedFeatureArtifact,
+    VerifiedFoldPlanArtifact,
+    VerifiedLabelArtifact,
+    VerifiedProviderArtifact,
+    VerifiedSnapshotArtifact,
     VerifiedTargetArtifact,
 )
 from quant.research.m3.features import verify_feature_artifact
@@ -65,6 +71,7 @@ from quant.research.m3.run_state import (
 )
 from quant.research.m3.runtime_identity import (
     M3RuntimeIdentityError,
+    M3RuntimeIdentityV1,
     M3SourceDigestV1,
     compute_m3_runtime_identity,
 )
@@ -135,6 +142,81 @@ class FormalBacktestCliResolution:
         raise TypeError(_CODE_INPUT)
 
 
+@dataclass(frozen=True)
+class FormalReproducibilityCliResolution:
+    """Fresh formal inputs through alignment, without reading normal work outputs."""
+
+    stage_root: Path
+    artifact_roots: Mapping[str, Path]
+    config: LoadedM3Config
+    runtime: M3RuntimeIdentityV1
+    release: VerifiedG1Release
+    snapshot: VerifiedSnapshotArtifact
+    snapshot_spec: SnapshotBuildSpec
+    provider: VerifiedProviderArtifact
+    provider_spec: ProviderBuildSpec
+    experiment: VerifiedExperimentIdentity
+    experiment_spec: ExperimentIdentitySpec
+    folds: VerifiedFoldPlanArtifact
+    fold_spec: FoldPlanBuildSpec
+    fold_upstream_paths: FoldPlanUpstreamPaths
+    fold_receipt_path: Path
+    feature: VerifiedFeatureArtifact
+    feature_spec: FeatureBuildSpec
+    feature_upstream_paths: FeatureUpstreamPaths
+    feature_receipt_path: Path
+    label: VerifiedLabelArtifact
+    label_spec: LabelBuildSpec
+    label_receipt_path: Path
+    alignment: VerifiedAlignmentArtifact
+    alignment_spec: AlignmentBuildSpec
+    alignment_upstream_paths: AlignmentUpstreamPaths
+    alignment_receipt_path: Path
+    work_key: str
+
+    def __post_init__(self) -> None:
+        exact = (
+            (self.config, LoadedM3Config),
+            (self.runtime, M3RuntimeIdentityV1),
+            (self.release, VerifiedG1Release),
+            (self.snapshot, VerifiedSnapshotArtifact),
+            (self.snapshot_spec, SnapshotBuildSpec),
+            (self.provider, VerifiedProviderArtifact),
+            (self.provider_spec, ProviderBuildSpec),
+            (self.experiment, VerifiedExperimentIdentity),
+            (self.experiment_spec, ExperimentIdentitySpec),
+            (self.folds, VerifiedFoldPlanArtifact),
+            (self.fold_spec, FoldPlanBuildSpec),
+            (self.fold_upstream_paths, FoldPlanUpstreamPaths),
+            (self.feature, VerifiedFeatureArtifact),
+            (self.feature_spec, FeatureBuildSpec),
+            (self.feature_upstream_paths, FeatureUpstreamPaths),
+            (self.label, VerifiedLabelArtifact),
+            (self.label_spec, LabelBuildSpec),
+            (self.alignment, VerifiedAlignmentArtifact),
+            (self.alignment_spec, AlignmentBuildSpec),
+            (self.alignment_upstream_paths, AlignmentUpstreamPaths),
+        )
+        paths = (
+            self.stage_root,
+            self.fold_receipt_path,
+            self.feature_receipt_path,
+            self.label_receipt_path,
+            self.alignment_receipt_path,
+        )
+        if (
+            not isinstance(self.artifact_roots, Mapping)
+            or any(type(value) is not expected for value, expected in exact)
+            or any(not isinstance(path, Path) for path in paths)
+            or type(self.work_key) is not str
+            or not _HEX64.fullmatch(self.work_key)
+        ):
+            raise FormalCliResolveError(_CODE_INPUT, 2)
+
+    def __reduce__(self) -> Any:
+        raise TypeError(_CODE_INPUT)
+
+
 def resolve_formal_backtest_cli_inputs(
     *,
     project_root: Path,
@@ -146,13 +228,52 @@ def resolve_formal_backtest_cli_inputs(
 ) -> FormalBacktestCliResolution:
     """Resolve and freshly verify the formal backtest CLI input closure."""
     try:
-        return _resolve(
-            project_root=project_root,
-            config=config,
-            config_relative=config_relative,
-            snapshot_id=snapshot_id,
-            fold=fold,
-            horizon=horizon,
+        return cast(
+            FormalBacktestCliResolution,
+            _resolve(
+                project_root=project_root,
+                config=config,
+                config_relative=config_relative,
+                snapshot_id=snapshot_id,
+                fold=fold,
+                horizon=horizon,
+                reproducibility_only=False,
+            ),
+        )
+    except FormalCliResolveError:
+        raise
+    except M3RuntimeIdentityError:
+        _fail(_CODE_RUNTIME, 2)
+    except (ImportError, ModuleNotFoundError):
+        _fail(_CODE_DEPENDENCY, 4)
+    except (OSError, TypeError, ValueError, AttributeError, KeyError):
+        _fail(_CODE_CLOSURE, 5)
+    except Exception:
+        _fail(_CODE_CLOSURE, 5)
+
+
+def resolve_formal_reproducibility_cli_inputs(
+    *,
+    project_root: Path,
+    config: LoadedM3Config,
+    config_relative: PurePosixPath,
+    snapshot_id: str,
+    fold: str,
+    horizon: int,
+) -> FormalReproducibilityCliResolution:
+    """Resolve only verified reusable inputs required by a fresh G8E worker."""
+    try:
+        return cast(
+            FormalReproducibilityCliResolution,
+            _resolve(
+                project_root=project_root,
+                config=config,
+                config_relative=config_relative,
+                snapshot_id=snapshot_id,
+                fold=fold,
+                horizon=horizon,
+                reproducibility_only=True,
+            ),
         )
     except FormalCliResolveError:
         raise
@@ -174,7 +295,8 @@ def _resolve(
     snapshot_id: str,
     fold: str,
     horizon: int,
-) -> FormalBacktestCliResolution:
+    reproducibility_only: bool,
+) -> FormalBacktestCliResolution | FormalReproducibilityCliResolution:
     root = _validate_project_root(project_root)
     loaded = _validate_config(config)
     relative = _validate_config_relative(config_relative)
@@ -216,12 +338,8 @@ def _resolve(
         snapshot_config_sha256=loaded.snapshot_config_sha256,
         code_version=runtime.code_version,
     )
-    request_path = (
-        stage_root / "snapshot-requests" / f"{snapshot_request_key}.json"
-    )
-    receipt_snapshot = (
-        stage_root / "receipts" / "snapshot" / f"{snapshot_request_key}.json"
-    )
+    request_path = stage_root / "snapshot-requests" / f"{snapshot_request_key}.json"
+    receipt_snapshot = stage_root / "receipts" / "snapshot" / f"{snapshot_request_key}.json"
     bootstrap_request = _read_bootstrap_request(request_path)
     if (
         bootstrap_request.snapshot_request_key != snapshot_request_key
@@ -325,9 +443,7 @@ def _resolve(
         code_version=runtime.code_version,
     )
     validation_root = stage_root / "provider-validations" / validation_key
-    validation_receipt = (
-        stage_root / "receipts" / "provider-validation" / f"{validation_key}.json"
-    )
+    validation_receipt = stage_root / "receipts" / "provider-validation" / f"{validation_key}.json"
     validation_spec = ProviderValidationSpec(
         provider_validation_key=validation_key,
         provider_validation_config_sha256=loaded.provider_validation_config_sha256,
@@ -359,9 +475,7 @@ def _resolve(
         dependency_fingerprint_sha256=runtime.dependency_fingerprint_sha256,
     )
     experiment_root = stage_root / "runs" / experiment_key
-    experiment_receipt = (
-        stage_root / "receipts" / "experiment-identity" / f"{experiment_key}.json"
-    )
+    experiment_receipt = stage_root / "receipts" / "experiment-identity" / f"{experiment_key}.json"
     experiment = verify_experiment_identity(
         experiment_root=experiment_root,
         experiment_receipt_path=experiment_receipt,
@@ -384,10 +498,7 @@ def _resolve(
     )
     label_root = stage_root / "labels" / experiment_key / f"h{horizon_sessions}"
     label_receipt = (
-        stage_root
-        / "receipts"
-        / "labels"
-        / f"{experiment_key}-h{horizon_sessions}.json"
+        stage_root / "receipts" / "labels" / f"{experiment_key}-h{horizon_sessions}.json"
     )
     label = verify_label_artifact(
         label_root=label_root,
@@ -463,9 +574,7 @@ def _resolve(
         fold_upstream_paths=fold_upstream,
     )
     feature_root = stage_root / "features" / experiment_key / fold_name
-    feature_receipt = (
-        stage_root / "receipts" / "features" / f"{experiment_key}.{fold_name}.json"
-    )
+    feature_receipt = stage_root / "receipts" / "features" / f"{experiment_key}.{fold_name}.json"
     feature = verify_feature_artifact(
         root=feature_root,
         receipt_path=feature_receipt,
@@ -526,6 +635,37 @@ def _resolve(
         upstream_paths=alignment_upstream,
         artifact_roots=artifact_roots,
     )
+
+    if reproducibility_only:
+        return FormalReproducibilityCliResolution(
+            stage_root=stage_root,
+            artifact_roots=artifact_roots,
+            config=loaded,
+            runtime=runtime,
+            release=release,
+            snapshot=snapshot,
+            snapshot_spec=snapshot_spec,
+            provider=provider,
+            provider_spec=provider_spec,
+            experiment=experiment,
+            experiment_spec=experiment_spec,
+            folds=folds,
+            fold_spec=fold_spec,
+            fold_upstream_paths=fold_upstream,
+            fold_receipt_path=folds_receipt,
+            feature=feature,
+            feature_spec=feature_spec,
+            feature_upstream_paths=feature_upstream,
+            feature_receipt_path=feature_receipt,
+            label=label,
+            label_spec=label_spec,
+            label_receipt_path=label_receipt,
+            alignment=alignment,
+            alignment_spec=alignment_spec,
+            alignment_upstream_paths=alignment_upstream,
+            alignment_receipt_path=alignment_receipt,
+            work_key=work_key,
+        )
 
     model_spec = build_lightgbm_training_spec(loaded)
     model_upstream = ModelUpstreamPaths(
@@ -613,9 +753,7 @@ def _resolve(
         top_k=cast(int, portfolio["top_k"]),
         cash_buffer=cast(float, portfolio["cash_buffer"]),
         max_weight=cast(float, portfolio["max_weight"]),
-        minimum_scorable_coverage=cast(
-            float, features_cfg["minimum_scorable_coverage"]
-        ),
+        minimum_scorable_coverage=cast(float, features_cfg["minimum_scorable_coverage"]),
     )
     target_upstream = TargetUpstreamPaths(
         feature_receipt_path=feature_receipt,
@@ -764,13 +902,7 @@ def _validate_config_relative(value: PurePosixPath) -> PurePosixPath:
     if type(value) is not PurePosixPath:
         _fail(_CODE_INPUT, 2)
     text = value.as_posix()
-    if (
-        not text
-        or text.startswith("/")
-        or "\\" in text
-        or value.is_absolute()
-        or value.drive
-    ):
+    if not text or text.startswith("/") or "\\" in text or value.is_absolute() or value.drive:
         _fail(_CODE_INPUT, 2)
     parts = value.parts
     if (
@@ -924,9 +1056,7 @@ def _require_real_file(path: Path, *, code: str, exit_code: int) -> Path:
     return resolved
 
 
-def _require_regular_file_stat(
-    path: Path, *, code: str, exit_code: int
-) -> os.stat_result:
+def _require_regular_file_stat(path: Path, *, code: str, exit_code: int) -> os.stat_result:
     try:
         st = os.lstat(path)
     except OSError:
@@ -953,19 +1083,12 @@ def _reject_symlink_ancestors(path: Path, *, code: str, exit_code: int) -> None:
 
 
 def _is_link_or_reparse(info: os.stat_result) -> bool:
-    return bool(
-        stat.S_ISLNK(info.st_mode)
-        or (getattr(info, "st_file_attributes", 0) & _REPARSE)
-    )
+    return bool(stat.S_ISLNK(info.st_mode) or (getattr(info, "st_file_attributes", 0) & _REPARSE))
 
 
 def _hash_stable_regular_file(path: Path, *, expected: os.stat_result) -> str:
     """Read leaf bytes bound to open-before/after entity identity."""
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_BINARY", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(path, flags)
     except OSError:
