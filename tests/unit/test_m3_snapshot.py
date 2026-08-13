@@ -3,20 +3,36 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
+from dataclasses import asdict
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import polars as pl
 import pytest
 
+import quant.research.m3.snapshot as snapshot_mod
 from quant.research.m3.contracts import DatasetSnapshot
+from quant.research.m3.config import load_m3_config
+from quant.research.m3.contracts import SnapshotBuildSpec
+from quant.research.m3.run_state import (
+    compute_snapshot_request_key,
+    publish_stage_receipt,
+)
 from quant.research.m3.snapshot import (
+    M3SnapshotError,
     STAGING_COLUMNS,
+    build_snapshot_artifact,
     build_snapshot_manifest,
+    build_snapshot_request_record,
     from_qlib_symbol,
     prepare_qlib_staging,
     snapshot_id_from_manifest,
     to_qlib_symbol,
     validate_provider,
+    verify_snapshot_artifact,
     write_staging_by_symbol,
 )
 
@@ -498,3 +514,294 @@ def test_empty_universe_rejected() -> None:
             source="fixture",
             universe="NOPE",
         )
+
+
+def _canonical_bytes(value: object) -> bytes:
+    return json.dumps(
+        value,
+        default=lambda item: item.isoformat() if type(item) is dt.date else None,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def _g2a_fixture(
+    root: Path, monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Any, object, SnapshotBuildSpec, Path]:
+    config = load_m3_config(Path("configs/research/m3_qlib_example.toml"))
+    signal_start = config.section("data")["start_date"]
+    signal_end = config.section("data")["end_date"]
+    assert type(signal_start) is dt.date and type(signal_end) is dt.date
+    g1_root = root / "g1"
+    g1_root.mkdir(parents=True)
+    manifest_path = g1_root / "manifest.json"
+    manifest_path.write_bytes(b"g1-manifest")
+    manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    bars = pl.DataFrame({
+        "symbol": ["600000.SH", "600000.SH", "000001.SZ"],
+        "trade_date": [signal_start, signal_end, signal_end],
+        "open": [10.0, 11.0, 8.0],
+        "high": [10.5, 11.5, 8.5],
+        "low": [9.5, 10.5, 7.5],
+        "close": [10.0, 11.0, 8.0],
+        "volume": [100.0, 110.0, 90.0],
+        "amount": [1000.0, 1210.0, 720.0],
+        "adj_factor": [1.0, 1.1, 1.0],
+        "source": ["tushare", "tushare", "tushare"],
+    })
+    membership = pl.DataFrame({
+        "universe": [
+            "CSI300_TUSHARE_MONTHLY_OBSERVED_PIT_V1",
+            "CSI300_TUSHARE_MONTHLY_OBSERVED_PIT_V1",
+        ],
+        "symbol": ["600000.SH", "000001.SZ"],
+        "effective_from": [signal_end, signal_end],
+        "effective_to": [None, None],
+    })
+    calendar = pl.DataFrame({
+        "market": ["SH", "SZ", "SH"],
+        "date": [signal_start, signal_start, signal_end],
+        "is_open": [True, True, True],
+        "is_connect_open": [False, False, False],
+        "is_half_day": [False, False, False],
+    })
+    artifact_paths: list[tuple[str, Path]] = []
+    artifact_entries: list[SimpleNamespace] = []
+    for name, frame in (
+        ("bar_1d.parquet", bars),
+        ("universe_membership.parquet", membership),
+        ("trade_calendar.parquet", calendar),
+    ):
+        path = g1_root / name
+        frame.write_parquet(path)
+        artifact_paths.append((name, path))
+        raw = path.read_bytes()
+        artifact_entries.append(SimpleNamespace(
+            path=name, size_bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest()
+        ))
+    release_id = "1" * 64
+    manifest = SimpleNamespace(
+        release_id=release_id,
+        history_start=signal_start,
+        history_end=signal_end,
+        signal_start=signal_start,
+        signal_end=signal_end,
+        files=tuple(artifact_entries),
+    )
+    release_handle = SimpleNamespace(manifest_path=manifest_path)
+    verified = SimpleNamespace(
+        manifest=manifest,
+        manifest_sha256=manifest_sha,
+        artifact_paths=tuple(sorted(artifact_paths)),
+        release=release_handle,
+    )
+    monkeypatch.setattr(snapshot_mod, "_reverify_release", lambda _: verified)
+    code_version = "g2a-test-code-v1"
+    request_key = compute_snapshot_request_key(
+        g1_release_id=release_id,
+        g1_release_manifest_sha256=manifest_sha,
+        snapshot_config_sha256=config.snapshot_config_sha256,
+        code_version=code_version,
+    )
+    spec = SnapshotBuildSpec(
+        snapshot_request_key=request_key,
+        config_version=config.config_version,
+        snapshot_config_sha256=config.snapshot_config_sha256,
+        code_version=code_version,
+        history_start=signal_start,
+        history_end=signal_end,
+        staging_schema_version="m3-qlib-staging-v1",
+        adjustment_formula_version="qlib_yahoo_like_v1",
+    )
+    return verified, config, spec, root
+
+
+def test_g2a_build_request_receipt_and_verify_closed_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    common = tmp_path / "artifacts"
+    common.mkdir()
+    release, config, spec, _ = _g2a_fixture(common, monkeypatch)
+    snapshot_root = common / "snapshot-temp"
+    snapshot_root.mkdir()
+    result = build_snapshot_artifact(
+        release=release, config=config, spec=spec, output_root=snapshot_root
+    )
+    request = build_snapshot_request_record(
+        release=release, config=config, spec=spec, result=result
+    )
+    request_path = common / "snapshot-request.json"
+    request_path.write_bytes(_canonical_bytes(asdict(request)))
+    receipt_path = common / "snapshot-receipt.json"
+    staging_paths = tuple(sorted((snapshot_root / "staging").glob("*.parquet")))
+    publish_stage_receipt(
+        receipt_path=receipt_path,
+        stage="snapshot",
+        scope="SNAPSHOT",
+        scope_key=spec.snapshot_request_key,
+        artifact_roots={"root": common},
+        inputs=[
+            ("root", release.release.manifest_path),
+            *(('root', path) for _, path in release.artifact_paths),
+        ],
+        outputs=[
+            ("root", request_path),
+            ("root", snapshot_root / "manifest.json"),
+            ("root", snapshot_root / "session_calendar.parquet"),
+            *(('root', path) for path in staging_paths),
+        ],
+    )
+    verified = verify_snapshot_artifact(
+        snapshot_root=snapshot_root,
+        snapshot_request_path=request_path,
+        snapshot_receipt_path=receipt_path,
+        release=release,
+        config=config,
+        spec=spec,
+        artifact_roots={"root": common},
+    )
+    assert verified.manifest.snapshot_id == result.manifest.snapshot_id
+    assert verified.request.snapshot_request_key == spec.snapshot_request_key
+    assert [path.name for path in verified.staging_paths] == [
+        "sh600000.parquet", "sz000001.parquet"
+    ]
+
+
+def test_g2a_rejects_nonempty_output_before_writing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    common = tmp_path / "artifacts"
+    common.mkdir()
+    release, config, spec, _ = _g2a_fixture(common, monkeypatch)
+    output = common / "snapshot-temp"
+    output.mkdir()
+    marker = output / "keep.txt"
+    marker.write_text("user", encoding="utf-8")
+    with pytest.raises(M3SnapshotError) as exc:
+        build_snapshot_artifact(
+            release=release, config=config, spec=spec, output_root=output
+        )
+    assert exc.value.code == "SNAPSHOT_OUTPUT_INVALID"
+    assert marker.read_text(encoding="utf-8") == "user"
+
+
+def test_g2a_rejects_request_key_from_other_code_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    common = tmp_path / "artifacts"
+    common.mkdir()
+    release, config, spec, _ = _g2a_fixture(common, monkeypatch)
+    bad = SnapshotBuildSpec(
+        snapshot_request_key="f" * 64,
+        config_version=spec.config_version,
+        snapshot_config_sha256=spec.snapshot_config_sha256,
+        code_version=spec.code_version,
+        history_start=spec.history_start,
+        history_end=spec.history_end,
+        staging_schema_version=spec.staging_schema_version,
+        adjustment_formula_version="qlib_yahoo_like_v1",
+    )
+    output = common / "snapshot-temp"
+    output.mkdir()
+    with pytest.raises(M3SnapshotError) as exc:
+        build_snapshot_artifact(
+            release=release, config=config, spec=bad, output_root=output
+        )
+    assert exc.value.code == "SNAPSHOT_INPUT_INVALID"
+    assert not any(output.iterdir())
+
+
+def test_g2a_strict_manifest_rejects_duplicate_key(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "manifest.json"
+    path.write_bytes(b'{"schema_version":"m3-snapshot-manifest-v1","schema_version":"x"}')
+    with pytest.raises(M3SnapshotError) as exc:
+        snapshot_mod.read_snapshot_manifest(path)
+    assert exc.value.code == "SNAPSHOT_OUTPUT_INVALID"
+    assert str(exc.value) == "SNAPSHOT_OUTPUT_INVALID"
+    assert repr(exc.value) == "M3SnapshotError('SNAPSHOT_OUTPUT_INVALID')"
+    assert exc.value.__cause__ is None
+    assert exc.value.__suppress_context__ is True
+
+
+def test_g2a_parent_source_has_no_qlib_import() -> None:
+    source = Path(snapshot_mod.__file__).read_text(encoding="utf-8")
+    assert "import qlib" not in source
+
+
+def test_g2a_rejects_authoritative_session_missing_from_all_symbols(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    common = tmp_path / "artifacts"
+    common.mkdir()
+    release, config, spec, _ = _g2a_fixture(common, monkeypatch)
+    bar_path = dict(release.artifact_paths)["bar_1d.parquet"]
+    bars = pl.read_parquet(bar_path).filter(
+        pl.col("trade_date") != spec.history_start
+    )
+    bars.write_parquet(bar_path)
+    raw = bar_path.read_bytes()
+    entry = next(item for item in release.manifest.files if item.path == bar_path.name)
+    entry.size_bytes = len(raw)
+    entry.sha256 = hashlib.sha256(raw).hexdigest()
+    output = common / "snapshot-temp"
+    output.mkdir()
+    with pytest.raises(M3SnapshotError) as exc:
+        build_snapshot_artifact(
+            release=release, config=config, spec=spec, output_root=output
+        )
+    assert exc.value.code == "SNAPSHOT_OUTPUT_INVALID"
+
+
+def test_g2a_rejects_receipt_with_extra_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    common = tmp_path / "artifacts"
+    common.mkdir()
+    release, config, spec, _ = _g2a_fixture(common, monkeypatch)
+    snapshot_root = common / "snapshot-temp"
+    snapshot_root.mkdir()
+    result = build_snapshot_artifact(
+        release=release, config=config, spec=spec, output_root=snapshot_root
+    )
+    request = build_snapshot_request_record(
+        release=release, config=config, spec=spec, result=result
+    )
+    request_path = common / "snapshot-request.json"
+    request_path.write_bytes(_canonical_bytes(asdict(request)))
+    extra = common / "extra.bin"
+    extra.write_bytes(b"extra")
+    receipt_path = common / "snapshot-receipt.json"
+    staging_paths = tuple(sorted((snapshot_root / "staging").glob("*.parquet")))
+    publish_stage_receipt(
+        receipt_path=receipt_path,
+        stage="snapshot",
+        scope="SNAPSHOT",
+        scope_key=spec.snapshot_request_key,
+        artifact_roots={"root": common},
+        inputs=[
+            ("root", release.release.manifest_path),
+            *(("root", path) for _, path in release.artifact_paths),
+        ],
+        outputs=[
+            ("root", request_path),
+            ("root", snapshot_root / "manifest.json"),
+            ("root", snapshot_root / "session_calendar.parquet"),
+            *(("root", path) for path in staging_paths),
+            ("root", extra),
+        ],
+    )
+    with pytest.raises(M3SnapshotError) as exc:
+        verify_snapshot_artifact(
+            snapshot_root=snapshot_root,
+            snapshot_request_path=request_path,
+            snapshot_receipt_path=receipt_path,
+            release=release,
+            config=config,
+            spec=spec,
+            artifact_roots={"root": common},
+        )
+    assert exc.value.code == "SNAPSHOT_IDENTITY_MISMATCH"

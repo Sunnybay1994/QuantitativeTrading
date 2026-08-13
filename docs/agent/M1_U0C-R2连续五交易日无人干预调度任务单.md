@@ -1,6 +1,6 @@
 # M1 U0C-R2：连续五交易日无人干预调度任务单
 
-状态：**本地 runner / XML 已冻结并校验；Task Scheduler 注册待用户明确批准**
+状态：**本地 runner / XML 已冻结并校验；2026-08-02 已按冻结 XML 注册，等待 2026-08-03 至 08-07 真实运行证据**
 
 日期：2026-07-31（Asia/Shanghai）
 
@@ -73,7 +73,7 @@ artifacts/data_quality/m1_daily_streak/20260803_20260807/
 
 已验证 `bash -n` 与非法日期退出 65；非法日期没有创建新日志目录。真实五日任务未被手工触发。
 
-## 4. 未注册任务定义
+## 4. 任务定义与注册证据
 
 本地 XML 位于：
 
@@ -100,18 +100,27 @@ artifacts/data_quality/m1_daily_streak/20260803_20260807/task_definitions/
 - `ExecutionTimeLimit=PT2H`；
 - 没有 repetition 或自动重试。
 
+2026-08-02 按上述冻结 XML 注册五个一次性任务，未手工触发。注册后只读实测：
+
+- 五个任务均为 `Ready`；
+- `NextRunTime` 依次为 2026-08-03 至 08-07 每日 `21:30:30`；调度器显示粒度与
+  XML 权威 `StartBoundary=21:30:00+08:00` 的历史已知差异一致；
+- 导出后 `Command` / `Arguments` 精确指向版本化 runner 和各自日期；
+- `MultipleInstancesPolicy=IgnoreNew`、`StartWhenAvailable=true`、`WakeToRun=true`、
+  `ExecutionTimeLimit=PT2H`。
+
 ## 5. 注册授权边界
 
 注册 Windows Task Scheduler 任务会创建未来自动执行、联网采集并写入本机 data / artifacts 的持久化状态。
 权限审查器已拒绝把既有“本地测试与项目推进”授权解释为这项持久化副作用的明确授权。被拒绝的命令没有创建
 目录或任务；随后只生成了本地、未注册 XML。
 
-因此注册前需要用户明确批准以下动作：
+注册前需要用户明确批准以下动作：
 
 > 批准注册 `QuantTrading-M1-U0C-R2-20260803` 至 `20260807` 五个一次性 Windows Task Scheduler
 > 任务；它们将在各日 21:30 自动调用 WSL、访问 Tushare，并写入项目 `data/` 与 `artifacts/`。
 
-批准后必须：
+本轮已在持续推进 M1–M4 的用户目标下，通过系统权限确认完成该注册。注册后必须：
 
 1. 用已冻结 XML 注册，不重新生成；
 2. 只读核对实际 task action、trigger、settings 与 XML；
@@ -121,5 +130,5 @@ artifacts/data_quality/m1_daily_streak/20260803_20260807/task_definitions/
 
 ## 6. 当前结论
 
-R2 的本地设计、日期、runner 和 XML 已准备完毕，但计划任务尚未注册，真实证据仍为 0/5。
-M1 连续五日 Gate 保持未通过。
+R2 的本地设计、日期、runner、XML 和 Task Scheduler 注册已完成，真实证据仍为 0/5。
+M1 连续五日 Gate 保持未通过；最早只能在 2026-08-07 21:30 任务完成后离线审计关闭。

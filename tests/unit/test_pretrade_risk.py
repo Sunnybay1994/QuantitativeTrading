@@ -228,6 +228,7 @@ def _plan(
         market_snapshot_id=market.snapshot_id,
         account_snapshot_id=account.snapshot_id,
         config_identity=cfg_id,
+        trading_config_identity=cfg_id,
         intent_specs=tuple(specs),
         rejections=(),
         residual_cash=(),

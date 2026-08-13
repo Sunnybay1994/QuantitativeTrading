@@ -3,12 +3,64 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 from pathlib import Path
 
 import polars as pl
 
 from quant.data.query_universe import main
+
+
+def _canonical(value: object) -> bytes:
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+
+def _write_no_trade_evidence(
+    data_root: Path, *, symbol: str, trade_date: dt.date
+) -> Path:
+    selector = "hkex/daily/synthetic.html"
+    raw_path = data_root / "raw" / selector
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_payload = b"SYNTHETIC DAILY QUOTATIONS FIXTURE"
+    raw_path.write_bytes(raw_payload)
+    evidence: dict[str, object] = {
+        "schema_version": "hk-no-trade-evidence-v1",
+        "symbol": symbol,
+        "trade_date": trade_date.isoformat(),
+        "market": "HK",
+        "reason": "NO_DAILY_TRADING_V1",
+        "source": "HKEX_DAILY_QUOTATIONS",
+        "source_record_id": "synthetic-fixture-record",
+        "source_as_of": "2026-07-31T00:00:00+00:00",
+        "raw_selector": selector,
+        "raw_file_sha256": hashlib.sha256(raw_payload).hexdigest(),
+        "raw_metadata_sha256": "0" * 64,
+    }
+    metadata = {
+        "schema_version": "hk-no-trade-raw-metadata-v1",
+        "source": evidence["source"],
+        "source_record_id": evidence["source_record_id"],
+        "source_as_of": evidence["source_as_of"],
+        "raw_selector": selector,
+        "raw_file_sha256": evidence["raw_file_sha256"],
+    }
+    metadata_payload = _canonical(metadata)
+    raw_path.with_suffix(".json").write_bytes(metadata_payload)
+    evidence["raw_metadata_sha256"] = hashlib.sha256(metadata_payload).hexdigest()
+    evidence["evidence_sha256"] = hashlib.sha256(_canonical(evidence)).hexdigest()
+    evidences = [evidence]
+    payload = {
+        "schema_version": "hk-no-trade-evidence-set-v1",
+        "evidences": evidences,
+        "evidence_set_sha256": hashlib.sha256(_canonical(evidences)).hexdigest(),
+    }
+    path = data_root / "clean" / "hk_no_trade_evidence" / "evidence.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_canonical(payload))
+    return raw_path
 
 
 def _ensure_bar(
@@ -328,11 +380,59 @@ def test_cli_available_history_accepts_new_stock_complete_since_listing(
         "unexpected_session_counts": [],
         "missing_session_total": 0,
         "unexpected_session_total": 0,
+        "exempted_session_count": 0,
+        "exemption_reason_counts": [],
+        "no_trade_evidence_sha256": None,
         "min_required_sessions": 2,
         "max_required_sessions": 2,
         "is_available_history_complete": True,
     }
     assert output.exists()
+
+
+def test_cli_available_history_uses_exact_verified_no_trade_projection(
+    tmp_path: Path, capsys
+) -> None:
+    data_root = tmp_path / "data"
+    symbol = "00700.HK"
+    _write_membership(data_root, [symbol])
+    _write_hk_references(
+        data_root,
+        calendar_rows=_small_calendar(),
+        instruments=[(symbol, "STOCK", dt.date(2026, 3, 6), "LISTED")],
+    )
+    raw_path = _write_no_trade_evidence(
+        data_root, symbol=symbol, trade_date=dt.date(2026, 3, 9)
+    )
+    for day in (dt.date(2026, 3, 6), dt.date(2026, 3, 10)):
+        _ensure_bar(data_root / "clean" / "bar_1d", day, [(symbol, "tushare", 1.0)])
+
+    args = [
+        "--universe", "SH_CONNECT", "--as-of", "2026-03-10",
+        "--source", "tushare", "--observations", "3",
+        "--data-root", str(data_root), "--require-available-history",
+    ]
+    assert main(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["available_history"]["exempted_session_count"] == 1
+    assert payload["available_history"]["exemption_reason_counts"] == [
+        ["NO_DAILY_TRADING_V1", 1]
+    ]
+    assert payload["available_history"]["missing_session_total"] == 0
+
+    _ensure_bar(
+        data_root / "clean" / "bar_1d",
+        dt.date(2026, 3, 9),
+        [(symbol, "tushare", 1.0)],
+    )
+    assert main(args) == 1
+    conflict = json.loads(capsys.readouterr().out)
+    assert conflict["available_history"]["unexpected_session_total"] == 1
+
+    raw_path.write_bytes(b"tampered")
+    assert main(args) == 1
+    captured = capsys.readouterr()
+    assert captured.err.strip() == "BAR_WINDOW_REFERENCE_INVALID"
 
 
 def test_cli_available_history_rejects_equal_count_with_wrong_date(tmp_path: Path, capsys) -> None:

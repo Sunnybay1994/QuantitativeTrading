@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import json
 import os
 import sqlite3
 import traceback
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
 
@@ -25,10 +27,31 @@ from quant.execution.store import (
 )
 from quant.execution.migrations.v001_initial import upgrade as upgrade_v001
 from quant.execution.migrations.v002_outbox_delivery import upgrade as upgrade_v002
+from quant.execution.migrations.v003_daily_risk_counters import (
+    upgrade as upgrade_typed_v003,
+)
+from quant.execution.migrations.v003_execution_state import (
+    upgrade as upgrade_scoped_v003,
+)
+from quant.execution.risk import (
+    DailyRiskCounters,
+    build_daily_risk_counters_identity,
+    serialize_daily_risk_counters,
+)
 
 
 def _hex(tag: str) -> str:
     return hashlib.sha256(tag.encode("utf-8")).hexdigest()
+
+
+def _canonical_bytes(payload: object) -> bytes:
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
 
 
 ID_A = _hex("id-a")
@@ -336,6 +359,172 @@ def test_aggregates_ledger_reconciliation_idempotent(cwd_tmp: Path) -> None:
         store.close()
 
 
+def test_v3_execution_stage_is_immutable_and_preserves_canonical_bytes(
+    cwd_tmp: Path,
+) -> None:
+    payload = _canonical_bytes(
+        {"schema_version": "m4-execution-stage-v1", "symbols": ["600000.SH", "腾讯"]}
+    )
+    store = _open("stage-v3.db", cwd_tmp)
+    try:
+        with store.transaction() as repo:
+            assert repo.put_execution_stage(
+                plan_id="plan-1", identity=ID_A, payload=payload
+            )
+            assert not repo.put_execution_stage(
+                plan_id="plan-1", identity=ID_A, payload=payload
+            )
+            with pytest.raises(IdempotencyConflict, match="execution_stage"):
+                repo.put_execution_stage(
+                    plan_id="plan-1", identity=ID_A, payload=b"different"
+                )
+            got = repo.get_execution_stage("plan-1")
+            assert got is not None
+            assert got.identity == ID_A
+            assert got.payload == payload
+            with pytest.raises(IdempotencyConflict, match="execution_stage"):
+                repo.put_execution_stage(
+                    plan_id="plan-1", identity=ID_B, payload=b"different"
+                )
+    finally:
+        store.close()
+
+
+def test_v3_order_aggregate_strict_cas_and_exact_replay(cwd_tmp: Path) -> None:
+    store = _open("aggregate-cas-v3.db", cwd_tmp)
+    try:
+        with store.transaction() as repo:
+            repo.put_order_aggregate(
+                command_id="cmd-cas", identity=ID_A, payload=b"created"
+            )
+            assert repo.replace_order_aggregate(
+                command_id="cmd-cas",
+                expected_identity=ID_A,
+                identity=ID_B,
+                payload=b"submitted",
+            )
+            assert not repo.replace_order_aggregate(
+                command_id="cmd-cas",
+                expected_identity=ID_A,
+                identity=ID_B,
+                payload=b"submitted",
+            )
+            with pytest.raises(IdempotencyConflict, match="IDEMPOTENCY_CONFLICT"):
+                repo.replace_order_aggregate(
+                    command_id="cmd-cas",
+                    expected_identity=ID_B,
+                    identity=ID_B,
+                    payload=b"same-identity-different-payload",
+                )
+            with pytest.raises(IdempotencyConflict, match="CAS_MISMATCH"):
+                repo.replace_order_aggregate(
+                    command_id="cmd-cas",
+                    expected_identity=ID_A,
+                    identity=ID_X,
+                    payload=b"filled",
+                )
+            got = repo.get_order_aggregate("cmd-cas")
+            assert got is not None
+            assert (got.identity, got.payload) == (ID_B, b"submitted")
+    finally:
+        store.close()
+
+
+def test_v4_scoped_daily_risk_counters_insert_read_and_cas(cwd_tmp: Path) -> None:
+    initial = _canonical_bytes(
+        {"buy_notional": "0", "cancel_count": 0, "order_count": 0}
+    )
+    projected = _canonical_bytes(
+        {"buy_notional": "1000.00", "cancel_count": 0, "order_count": 1}
+    )
+    store = _open("counters-cas-v3.db", cwd_tmp)
+    try:
+        with store.transaction() as repo:
+            assert repo.put_scoped_daily_risk_counters(
+                counter_key="paper:2026-08-03", identity=ID_A, payload=initial
+            )
+            assert not repo.put_scoped_daily_risk_counters(
+                counter_key="paper:2026-08-03", identity=ID_A, payload=initial
+            )
+            with pytest.raises(IdempotencyConflict, match="daily_risk_counters"):
+                repo.put_scoped_daily_risk_counters(
+                    counter_key="paper:2026-08-03",
+                    identity=ID_B,
+                    payload=projected,
+                )
+            assert repo.compare_and_set_scoped_daily_risk_counters(
+                counter_key="paper:2026-08-03",
+                expected_identity=ID_A,
+                identity=ID_B,
+                payload=projected,
+            )
+            assert not repo.compare_and_set_scoped_daily_risk_counters(
+                counter_key="paper:2026-08-03",
+                expected_identity=ID_A,
+                identity=ID_B,
+                payload=projected,
+            )
+            with pytest.raises(IdempotencyConflict, match="IDEMPOTENCY_CONFLICT"):
+                repo.compare_and_set_scoped_daily_risk_counters(
+                    counter_key="paper:2026-08-03",
+                    expected_identity=ID_B,
+                    identity=ID_B,
+                    payload=b"same-identity-different-payload",
+                )
+            with pytest.raises(IdempotencyConflict, match="CAS_MISMATCH"):
+                repo.compare_and_set_scoped_daily_risk_counters(
+                    counter_key="paper:2026-08-03",
+                    expected_identity=ID_A,
+                    identity=ID_X,
+                    payload=b"forbidden",
+                )
+            got = repo.get_scoped_daily_risk_counters("paper:2026-08-03")
+            assert got is not None
+            assert (got.identity, got.payload) == (ID_B, projected)
+    finally:
+        store.close()
+
+
+def test_v4_execution_state_outer_transaction_rolls_back_together(
+    cwd_tmp: Path,
+) -> None:
+    store = _open("state-atomic-v3.db", cwd_tmp)
+    try:
+        with store.transaction() as repo:
+            repo.put_order_aggregate(
+                command_id="cmd-atomic", identity=ID_A, payload=b"created"
+            )
+            repo.put_scoped_daily_risk_counters(
+                counter_key="paper:2026-08-03", identity=ID_A, payload=b"zero"
+            )
+        with pytest.raises(RuntimeError, match="crash"):
+            with store.transaction() as repo:
+                repo.replace_order_aggregate(
+                    command_id="cmd-atomic",
+                    expected_identity=ID_A,
+                    identity=ID_B,
+                    payload=b"submitted",
+                )
+                repo.compare_and_set_scoped_daily_risk_counters(
+                    counter_key="paper:2026-08-03",
+                    expected_identity=ID_A,
+                    identity=ID_B,
+                    payload=b"one",
+                )
+                repo.put_execution_stage(
+                    plan_id="plan-atomic", identity=ID_X, payload=b"receipt"
+                )
+                raise RuntimeError("crash")
+        with store.transaction() as repo:
+            aggregate = repo.get_order_aggregate("cmd-atomic")
+            counters = repo.get_scoped_daily_risk_counters("paper:2026-08-03")
+            assert aggregate is not None and aggregate.identity == ID_A
+            assert counters is not None and counters.identity == ID_A
+            assert repo.get_execution_stage("plan-atomic") is None
+    finally:
+        store.close()
+
+
 # --- F1: SQLite URI defensive alignment with C0 ---
 
 
@@ -439,6 +628,18 @@ def _putters() -> list[tuple[str, Callable[[ExecutionRepository, Any], bool]]]:
             "reconciliation_run",
             lambda repo, ident: repo.put_reconciliation_run(
                 run_id="rec-k", identity=ident, payload=b"p"
+            ),
+        ),
+        (
+            "execution_stage",
+            lambda repo, ident: repo.put_execution_stage(
+                plan_id="plan-k", identity=ident, payload=b"p"
+            ),
+        ),
+        (
+            "daily_risk_counters",
+            lambda repo, ident: repo.put_scoped_daily_risk_counters(
+                counter_key="paper:2026-08-03", identity=ident, payload=b"p"
             ),
         ),
     ]
@@ -1289,6 +1490,137 @@ def test_v1_to_current_preserves_legacy_outbox_but_does_not_make_it_sendable(
         store.close()
 
 
+def test_v2_to_current_preserves_delivery_rows_and_adds_execution_state(
+    cwd_tmp: Path,
+) -> None:
+    db = cwd_tmp / "legacy-v2.db"
+    now_text = "2026-08-03T00:00:00.000000Z"
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE schema_version (singleton INTEGER PRIMARY KEY "
+            "CHECK (singleton = 1), version INTEGER NOT NULL, status TEXT NOT NULL, "
+            "applied_at TEXT NOT NULL)"
+        )
+        upgrade_v001(conn)
+        upgrade_v002(conn)
+        conn.execute(
+            "INSERT INTO schema_version VALUES (1, 2, 'ready', ?)", (now_text,)
+        )
+        conn.execute("INSERT INTO commands VALUES ('cmd-old', ?, ?)", (ID_A, b"c"))
+        conn.execute(
+            "INSERT INTO order_aggregates VALUES ('cmd-old', ?, ?)",
+            (ID_AGG, b"created"),
+        )
+        conn.execute("INSERT INTO outbox VALUES ('obx-old', ?, ?)", (ID_O_A, b"o"))
+        conn.execute(
+            "INSERT INTO outbox_deliveries VALUES "
+            "('obx-old', 'cmd-old', 'PENDING', 0, ?, NULL, NULL, NULL, NULL)",
+            (now_text,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    store = _open("legacy-v2.db", cwd_tmp)
+    try:
+        assert store.schema_version() == CURRENT_SCHEMA_VERSION
+        with store.transaction() as repo:
+            delivery = repo.get_outbox_delivery("obx-old")
+            assert delivery is not None
+            assert delivery.state is OutboxDeliveryState.PENDING
+            assert repo.get_execution_stage("plan-new") is None
+            assert repo.get_scoped_daily_risk_counters("paper:2026-08-03") is None
+    finally:
+        store.close()
+
+
+def test_scoped_v3_to_v4_preserves_rows_and_adds_typed_counters(
+    cwd_tmp: Path,
+) -> None:
+    db = cwd_tmp / "legacy-scoped-v3.db"
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE schema_version (singleton INTEGER PRIMARY KEY "
+            "CHECK (singleton = 1), version INTEGER NOT NULL, status TEXT NOT NULL, "
+            "applied_at TEXT NOT NULL)"
+        )
+        upgrade_v001(conn)
+        upgrade_v002(conn)
+        upgrade_scoped_v003(conn)
+        conn.execute(
+            "INSERT INTO schema_version VALUES (1, 3, 'ready', "
+            "'2026-08-03T00:00:00Z')"
+        )
+        conn.execute(
+            "INSERT INTO daily_risk_counters VALUES (?, ?, ?)",
+            ("paper:2026-08-03", ID_A, b"legacy-scoped"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    store = _open("legacy-scoped-v3.db", cwd_tmp)
+    try:
+        assert store.schema_version() == CURRENT_SCHEMA_VERSION
+        with store.transaction() as repo:
+            scoped = repo.get_scoped_daily_risk_counters("paper:2026-08-03")
+            assert scoped is not None
+            assert (scoped.identity, scoped.payload) == (ID_A, b"legacy-scoped")
+            assert repo.get_daily_risk_counters(dt.date(2026, 8, 3)) is None
+    finally:
+        store.close()
+
+
+def test_typed_v3_to_v4_preserves_rows_and_adds_scoped_counters(
+    cwd_tmp: Path,
+) -> None:
+    db = cwd_tmp / "legacy-typed-v3.db"
+    counters = DailyRiskCounters(
+        session_date=dt.date(2026, 8, 3),
+        order_count=2,
+        cancel_count=1,
+        buy_notional=Decimal("123.45"),
+    )
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE schema_version (singleton INTEGER PRIMARY KEY "
+            "CHECK (singleton = 1), version INTEGER NOT NULL, status TEXT NOT NULL, "
+            "applied_at TEXT NOT NULL)"
+        )
+        upgrade_v001(conn)
+        upgrade_v002(conn)
+        upgrade_typed_v003(conn)
+        conn.execute(
+            "INSERT INTO schema_version VALUES (1, 3, 'ready', "
+            "'2026-08-03T00:00:00Z')"
+        )
+        conn.execute(
+            "INSERT INTO daily_risk_counters VALUES (?, ?, ?, ?)",
+            (
+                counters.session_date.isoformat(),
+                build_daily_risk_counters_identity(counters),
+                serialize_daily_risk_counters(counters),
+                "2026-08-03T00:00:00.000000Z",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    store = _open("legacy-typed-v3.db", cwd_tmp)
+    try:
+        assert store.schema_version() == CURRENT_SCHEMA_VERSION
+        with store.transaction() as repo:
+            typed = repo.get_daily_risk_counters(dt.date(2026, 8, 3))
+            assert typed is not None and typed.counters == counters
+            assert repo.get_scoped_daily_risk_counters("paper:2026-08-03") is None
+    finally:
+        store.close()
+
+
 def test_delivery_requires_command_aggregate_and_outbox_in_atomic_transaction(
     cwd_tmp: Path,
 ) -> None:
@@ -1677,5 +2009,172 @@ def test_batch_claim_sql_failure_rolls_back_savepoint_when_caller_catches(
                 assert got is not None
                 assert got.state is OutboxDeliveryState.PENDING
                 assert got.attempt_count == 0
+    finally:
+        store.close()
+
+
+def test_v3_cas_post_update_failure_rolls_back_savepoint_when_caller_catches(
+    cwd_tmp: Path,
+) -> None:
+    store = _open("state-cas-savepoint.db", cwd_tmp)
+    with store.transaction() as repo:
+        repo.put_order_aggregate(
+            command_id="cmd-savepoint", identity=ID_A, payload=b"created"
+        )
+    inner = store._conn  # noqa: SLF001 - fault injection at SQLite boundary
+    assert inner is not None
+    leak = str(cwd_tmp / "private-state")
+
+    class _FailPostUpdateRead:
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            self._inner = conn
+            self._aggregate_selects = 0
+
+        def execute(self, sql: str, parameters: object = ()) -> sqlite3.Cursor:
+            if sql.lstrip().startswith(
+                "SELECT command_id, identity, payload FROM order_aggregates"
+            ):
+                self._aggregate_selects += 1
+                if self._aggregate_selects == 2:
+                    raise sqlite3.OperationalError(f"injected failure near {leak}")
+            return self._inner.execute(sql, parameters)  # type: ignore[arg-type]
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+    store._conn = _FailPostUpdateRead(inner)  # type: ignore[assignment]  # noqa: SLF001
+    try:
+        with store.transaction() as repo:
+            with pytest.raises(StoreError, match="ORDER_AGGREGATE_CAS_FAILED") as exc_info:
+                repo.replace_order_aggregate(
+                    command_id="cmd-savepoint",
+                    expected_identity=ID_A,
+                    identity=ID_B,
+                    payload=b"submitted",
+                )
+            assert leak not in str(exc_info.value)
+            assert exc_info.value.__cause__ is None
+            assert exc_info.value.__context__ is None
+            got = repo.get_order_aggregate("cmd-savepoint")
+            assert got is not None
+            assert (got.identity, got.payload) == (ID_A, b"created")
+    finally:
+        store.close()
+
+
+def test_v3_cas_missing_rows_fail_without_creating_state(cwd_tmp: Path) -> None:
+    store = _open("state-cas-missing.db", cwd_tmp)
+    try:
+        with store.transaction() as repo:
+            with pytest.raises(StoreError, match="ORDER_AGGREGATE_NOT_FOUND"):
+                repo.replace_order_aggregate(
+                    command_id="missing-command",
+                    expected_identity=ID_A,
+                    identity=ID_B,
+                    payload=b"x",
+                )
+            with pytest.raises(StoreError, match="DAILY_RISK_COUNTERS_NOT_FOUND"):
+                repo.compare_and_set_scoped_daily_risk_counters(
+                    counter_key="paper:2026-08-03",
+                    expected_identity=ID_A,
+                    identity=ID_B,
+                    payload=b"x",
+                )
+            assert repo.get_order_aggregate("missing-command") is None
+            assert repo.get_scoped_daily_risk_counters("paper:2026-08-03") is None
+    finally:
+        store.close()
+
+
+def test_v3_stage_select_operational_error_is_sanitized_and_atomic(
+    cwd_tmp: Path,
+) -> None:
+    store = _open("stage-select-failure.db", cwd_tmp)
+    inner = store._conn  # noqa: SLF001 - fault injection at SQLite boundary
+    assert inner is not None
+    sentinel = str(cwd_tmp / "stage-select-sentinel")
+
+    class _FailStageSelect:
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            self._inner = conn
+
+        def execute(self, sql: str, parameters: object = ()) -> sqlite3.Cursor:
+            if sql.lstrip().startswith(
+                "SELECT identity, payload FROM execution_stages"
+            ):
+                raise sqlite3.OperationalError(f"select failed near {sentinel}")
+            return self._inner.execute(sql, parameters)  # type: ignore[arg-type]
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+    store._conn = _FailStageSelect(inner)  # type: ignore[assignment]  # noqa: SLF001
+    try:
+        with store.transaction() as repo:
+            with pytest.raises(StoreError, match="EXECUTION_STAGE_QUERY_FAILED") as info:
+                repo.put_execution_stage(
+                    plan_id="plan-select-failure", identity=ID_A, payload=b"receipt"
+                )
+            assert sentinel not in str(info.value)
+            assert info.value.__cause__ is None
+            assert info.value.__context__ is None
+            assert repo.get_execution_stage("plan-select-failure") is None
+    finally:
+        store.close()
+
+
+def test_v4_scoped_counter_insert_operational_error_is_sanitized_and_atomic(
+    cwd_tmp: Path,
+) -> None:
+    store = _open("counter-insert-failure.db", cwd_tmp)
+    inner = store._conn  # noqa: SLF001 - fault injection at SQLite boundary
+    assert inner is not None
+    sentinel = str(cwd_tmp / "counter-insert-sentinel")
+
+    class _FailCounterInsert:
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            self._inner = conn
+
+        def execute(self, sql: str, parameters: object = ()) -> sqlite3.Cursor:
+            if sql.lstrip().startswith("INSERT INTO scoped_daily_risk_counters"):
+                raise sqlite3.OperationalError(f"insert failed near {sentinel}")
+            return self._inner.execute(sql, parameters)  # type: ignore[arg-type]
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+    store._conn = _FailCounterInsert(inner)  # type: ignore[assignment]  # noqa: SLF001
+    try:
+        with store.transaction() as repo:
+            with pytest.raises(
+                StoreError, match="DAILY_RISK_COUNTERS_WRITE_FAILED"
+            ) as info:
+                repo.put_scoped_daily_risk_counters(
+                    counter_key="paper:2026-08-03", identity=ID_A, payload=b"zero"
+                )
+            assert sentinel not in str(info.value)
+            assert info.value.__cause__ is None
+            assert info.value.__context__ is None
+            assert repo.get_scoped_daily_risk_counters("paper:2026-08-03") is None
+    finally:
+        store.close()
+
+
+def test_put_event_foreign_key_failure_keeps_referential_integrity_code(
+    cwd_tmp: Path,
+) -> None:
+    store = _open("event-fk-regression.db", cwd_tmp)
+    try:
+        with store.transaction() as repo:
+            with pytest.raises(StoreError, match="REFERENTIAL_INTEGRITY") as info:
+                repo.put_event(
+                    event_id="event-without-command",
+                    command_id="missing-command",
+                    identity=ID_E,
+                    payload=b"event",
+                )
+            assert info.value.__cause__ is None
+            assert info.value.__context__ is None
+            assert repo.get_event("event-without-command") is None
     finally:
         store.close()

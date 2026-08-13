@@ -310,6 +310,25 @@ def _field_specs() -> dict[str, FieldSpec]:
         add(f"backtest.a_share.{name}", "string", "scientific", literal=value)
     add("backtest.a_share.force_liquidation", "bool", "scientific", literal=False)
     add("backtest.a_share.friction_multipliers", "float_array", "scientific", literal=(0.5, 1.0, 2.0))
+    add(
+        "backtest.a_share.execution_price_rounding",
+        "string",
+        "scientific",
+        literal="BUY_CEIL_SELL_FLOOR_TICK_V1",
+    )
+    add(
+        "backtest.a_share.fee_rounding",
+        "string",
+        "scientific",
+        literal="EACH_COMPONENT_HALF_UP_CENT_V1",
+    )
+    add(
+        "backtest.a_share.cash_settlement_rounding",
+        "string",
+        "scientific",
+        literal="HALF_UP_CENT_V1",
+    )
+    add("backtest.a_share.annualization_sessions", "int", "scientific", literal=252)
     add("evaluation.minimum_ic_symbols", "int", "scientific", minimum=2)
 
     # independent validation identities
@@ -388,8 +407,8 @@ def _field_specs() -> dict[str, FieldSpec]:
     ):
         add(f"acceptance.{name}", "float", "acceptance", minimum=0.0, maximum=1.0)
 
-    if len(specs) != 144:
-        raise AssertionError(f"M3 field spec closure must contain 144 shapes, got {len(specs)}")
+    if len(specs) != 148:
+        raise AssertionError(f"M3 field spec closure must contain 148 shapes, got {len(specs)}")
     return specs
 
 

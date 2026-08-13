@@ -182,8 +182,10 @@ Tushare 港股的开盘竞价价可能落在供应商所报日内 high/low 之�
 批量历史回填只能通过逐批精确覆盖、5000 行截断、重复键和目标集合 Gate 的可恢复 manifest 使用；任何
 行为漂移均 fail closed，不在同一运行中静默追加单代码或逐日请求。
 
-当前冻结计划位于 `artifacts/data_quality/hk_history/hk60_2026-07-10/plan.json`。每次执行最多发出一个新
-请求，并从 P1 seed 或最近 attempt 起强制冷却至少 3,600 秒；同一 plan 只能由 WSL writer 执行：
+历史 R1 冻结计划位于 `artifacts/data_quality/hk_history/hk60_2026-07-10/plan.json`。该计划已因
+`01065.HK@2026-05-05` 缺少权威无交易证据而 fail closed，现只作为审计输入保留，不得继续执行或补写。
+取得许可允许的 HKEX Daily Quotations（或同等级官方历史产品）raw 后，必须生成独立 v2 plan 与全新 journal；
+每次网络执行仍最多发出一个新请求，并从 seed 或最近 attempt 起强制冷却至少 3,600 秒。历史命令形态为：
 
 ```bash
 python -m quant.data.backfill_hk_history \
@@ -196,6 +198,10 @@ python -m quant.data.backfill_hk_history \
 API 异常留下的 attempt 在冷却后仍需显式 `--confirm-uncertain-retry`；完整 request raw/receipt 会直接复验，
 不会再次联网。8 批全部 PASS 前禁止 `--finalize`；finalize 只发布 Tushare 已闭合的 612 只股票，
 `02983.HK` 仍保持显式未解决，不能据此宣称全量 HK60 Gate 通过。
+
+v2 plan 可用 `--recover-existing-only` 在全新 journal 中离线复验并恢复既有 COMPLETE raw；该模式在
+connector 构造前分流，严格零网络、零 intent/attempt/failure/clean/finalize 写入，遇首个 ABSENT raw 返回
+`HK_HISTORY_INCOMPLETE`。权威 evidence 尚未形成前不得创建或运行正式 v2 plan。
 
 Tushare `hk_basic` 只覆盖港股股票。HKEX 公共网站现行条款禁止未经书面许可的程序化/脚本化访问、
 系统性抓取和建库，因此 `hkex-etp` 公共网页连接器已 fail closed：

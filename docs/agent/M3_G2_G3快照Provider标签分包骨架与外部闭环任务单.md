@@ -1,8 +1,8 @@
 # M3 G2–G3 Snapshot、Provider 与标签对账分包骨架及外部闭环任务单
 
 日期：2026-07-14  
-状态：**设计冻结；等待 G1 真实全量 release 在支持 `RENAME_NOREPLACE` 的目标文件系统正式发布并经主 Agent 验真后，从 G2A 开始实施**  
-运行环境：WSL Miniforge `base`；不兼容 Windows 原生 Python  
+状态：**设计冻结；G2A 合同实现中；正式数据运行仍等待当前 G1 Windows release 发布并经主 Agent 验真**
+运行环境：G2A parent 为 Windows/WSL 双平台；Qlib worker 仍使用 WSL `py312`，Linux Gate 单独验收
 设计 SSOT：[`M3实施与Agent交接.md`](../M3实施与Agent交接.md) §4.2、§4.3、§4.5、§4.9  
 历史设计与审查：[`M3_G2-G3Provider与标签对账实现初验任务单.md`](../archive/M3_G2-G3Provider与标签对账实现初验任务单.md)、
 [`M3_G2-G3设计审查与修订记录.md`](M3_G2-G3设计审查与修订记录.md)、
@@ -11,17 +11,23 @@
 > 本文取代旧任务书“一次交付 P0–P4”的执行颗粒度，但保留其中已冻结的业务口径。本文只完成困难边界、
 > 类型、函数、身份和验收设计，不宣称 G2A/G2B/G2C/G3A/G3B、G2、G3、M3 或任何 Gate 已实现或通过。
 
+> **开发并行轨边界（2026-07-31）：** 正式 G2A 的前置仍是经主验的 `VerifiedG1Release`。正式 G1 长时 I/O
+> 期间，可按 [`M3_DevelopmentExampleRelease开发并行轨任务单.md`](M3_DevelopmentExampleRelease开发并行轨任务单.md)
+> 使用独立的 `VerifiedDevelopmentExampleG1Release` 验证 snapshot/staging 与后续接口；该对象、其
+> `development-snapshot` receipt 和所有结果均不是正式 G2A 或 Gate 证据。
+
 ## 1. 当前事实与拆包结论
 
 当前工作区的真实状态：
 
-- `snapshot.py` 已有初版 staging 变换，但 manifest 仍为松散 dict、没有严格 session-calendar artifact，writer
-  会创建/复用目录并可能覆盖；
-- `contracts.py` 只有早期 `DatasetSnapshot/QlibDumpToolSpec`；字段与当前 SSOT 不一致；
-- `provider.py`、fresh Qlib worker、provider manifest/validation 尚不存在；
+- `snapshot.py` 的 strict manifest/session-calendar/request/receipt 与开发 nominal G2A 已实现；正式 G2A 仍等待
+  `VerifiedG1Release`；
+- `contracts.py` 已包含现行 G2A/G2B/G2C 冻结 value objects；
+- 开发轨已实现 provider manifest/static inspector 与 G2C fresh Qlib worker/validation；正式轨仍等待
+  `VerifiedG1Release` 后执行并主验，开发证据不得用于关闭正式 G2B/G2C 或 Gate；
 - `labels.py` 已有独立标签公式和守恒，但没有 label artifact manifest、verified bundle 或 G3 对账；
-- WSL base 当前为 Python 3.13，配置明确要求 `<3.13`，且没有可用 `pyqlib 0.9.7`；fake 契约可实现，真实
-  G2/G3 Gate 仍需后续兼容环境证据。
+- WSL base 当前为 Python 3.13 且不承载 `pyqlib 0.9.7`；已验收的 WSL `py312` 用于无网络真实 Qlib
+  development smoke。该证据仍不代替正式 G2/G3 Gate。
 
 旧任务书合并了 snapshot 文件系统、dump subprocess、Qlib 全局状态和标签语义四种风险。现拆为五包：
 
@@ -315,6 +321,10 @@ def verify_snapshot_artifact(
 - `session_calendar_sha256` 是对严格日期序列的逻辑 canonical digest，不是 Parquet bytes；
   `adjustment_spec_sha256` 是对项目 `ADJUSTMENT_SPEC` 完整具名对象的 canonical digest。每个 file entry 的
   `sha256` 才是物理 bytes hash。
+- snapshot request 期望在冻结 writer/runtime 下产生确定物理 bytes；若同一 request key 在另一平台或依赖
+  版本产生不同 Parquet bytes，request mapping 必须冲突并 fail-closed，禁止静默重指向。当前受控 Windows/WSL
+  探针均为 Python 3.13.13、Polars 1.42.1，固定 writer 的 calendar/staging bytes SHA-256 已逐文件一致；依赖
+  版本变化后必须重跑该探针，探针证据不替代正式 full snapshot 验真。
 - snapshot temp 根精确只有 `manifest.json`、`session_calendar.parquet` 和 `staging/`；staging 文件名集合必须
   与 manifest 精确相等。Parquet 写参数固定为 `compression="zstd"`、`compression_level=3`、
   `statistics=True`、`row_group_size=65536`、`use_pyarrow=False`，不得依赖 Polars 默认值。
@@ -595,9 +605,13 @@ def read_provider_validation_summary(path: Path) -> ProviderValidationSummaryV1:
 def verify_provider_validation_artifact(
     *, validation_root: Path, validation_receipt_path: Path,
     snapshot: VerifiedSnapshotArtifact, provider: VerifiedProviderArtifact,
-    config: LoadedM3Config, artifact_roots: Mapping[str, Path],
+    config: LoadedM3Config, spec: ProviderValidationSpec,
+    artifact_roots: Mapping[str, Path],
 ) -> VerifiedProviderValidationArtifact: ...
 ```
+
+`spec` 是重算 `provider_validation_key` 与确定性 probe 的可信输入；若 verifier 不接收它，summary key、receipt
+scope 和 plan hash 可被整套自洽替换，因此旧无 `spec` 签名废止。
 
 ### 5.4 确定性 sample
 
@@ -663,8 +677,9 @@ parent 在 subprocess 前后断言自身 `sys.modules` 无 `qlib` 前缀；持�
 ### 6.1 文件范围
 
 ```text
-src/quant/research/m3/labels.py
 src/quant/research/m3/contracts.py
+src/quant/research/m3/development_example.py
+src/quant/research/m3/labels.py
 src/quant/research/m3/__init__.py
 tests/unit/test_m3_labels.py
 tests/unit/test_m3_label_artifact.py
@@ -691,6 +706,12 @@ class ExperimentIdentityManifestV1:
     code_version: str
 
 @dataclass(frozen=True)
+class ExperimentIdentitySpec:
+    scientific_config_sha256: str
+    dependency_fingerprint_sha256: str
+    code_version: str
+
+@dataclass(frozen=True)
 class VerifiedExperimentIdentity:
     root: Path
     manifest: ExperimentIdentityManifestV1
@@ -702,7 +723,8 @@ def read_experiment_identity_manifest(path: Path) -> ExperimentIdentityManifestV
 def verify_experiment_identity(
     *, experiment_root: Path, experiment_receipt_path: Path,
     snapshot: VerifiedSnapshotArtifact, provider: VerifiedProviderArtifact,
-    config: LoadedM3Config, artifact_roots: Mapping[str, Path],
+    config: LoadedM3Config, spec: ExperimentIdentitySpec,
+    artifact_roots: Mapping[str, Path],
 ) -> VerifiedExperimentIdentity: ...
 
 @dataclass(frozen=True)
@@ -710,7 +732,7 @@ class LabelBuildSpec:
     experiment_key: str
     experiment_manifest_sha256: str
     horizon_sessions: Literal[5, 10]
-    benchmark: Literal["H00300.CSI"]
+    benchmark: Literal["510300.SH"]
     label_version: str
     label_build_code_version: str
 
@@ -757,7 +779,8 @@ class VerifiedLabelArtifact:
 def build_label_artifact(
     *, release: VerifiedG1Release, snapshot: VerifiedSnapshotArtifact,
     experiment: VerifiedExperimentIdentity,
-    config: LoadedM3Config, spec: LabelBuildSpec, output_root: Path,
+    config: LoadedM3Config, experiment_spec: ExperimentIdentitySpec,
+    spec: LabelBuildSpec, output_root: Path,
 ) -> LabelArtifactManifest: ...
 
 def read_label_artifact_manifest(path: Path) -> LabelArtifactManifest: ...
@@ -766,13 +789,27 @@ def verify_label_artifact(
     *, label_root: Path, label_receipt_path: Path,
     release: VerifiedG1Release, snapshot: VerifiedSnapshotArtifact,
     experiment: VerifiedExperimentIdentity,
-    config: LoadedM3Config, artifact_roots: Mapping[str, Path],
+    config: LoadedM3Config, experiment_spec: ExperimentIdentitySpec,
+    spec: LabelBuildSpec,
+    artifact_roots: Mapping[str, Path],
 ) -> VerifiedLabelArtifact: ...
 ```
 
 `ExperimentIdentityManifestV1` 的生产和 receipt 发布仍属于 G8；G3A 实现 strict reader/consumer verifier，
 不能为了提前实现 G3A 而临时生成 experiment key。manifest 必须调用唯一 `compute_experiment_key` 重算，
 且 verified bundle 必须由 experiment stage receipt 证明。G8 后续只编排/发布这一合同，不得另定义字段。
+consumer verifier 必须接收可信 `ExperimentIdentitySpec`/`LabelBuildSpec`，防止 manifest、key 与重签 receipt
+整体替换后仍凭内部自洽通过；scientific identity 必须同时与 `LoadedM3Config` 精确一致。
+
+G3A 不得复制一套弱化的 receipt verifier。需要 receipt 原始字节或 hash 时，必须复用
+`run_state.verify_stage_receipt_with_bytes`：它从同一打开文件身份完成 parse/hash，在读取任一 digest
+前验真完整 root registry，并保留 E3 对嵌套 roots、symlink/reparse、重复物理 alias 和自引用的
+全部失败语义。嵌套 root 下从路径推导 alias 时固定选择最具体的子 root；显式 receipt digest
+仍以其 `root_alias` 为准。
+
+用户已批准正式 G1 的 B 路径，现行配置和正式候选基准均为 `510300.SH` ETF HFQ 总回报代理；本节旧版
+`H00300.CSI` Literal 已同步替换。开发示例与正式入口均从已验真配置和 G1 benchmark artifact 取得该值，
+不得在标签实现中另写第二套基准。
 
 生产 stage 每次只构建一个 horizon；内部可调用既有 `compute_forward_relative_labels(horizons=[h])`。入口从
 verified G1 release 读取 bars/benchmark/eligible keys，从 verified snapshot 读取唯一 session calendar；所有
@@ -801,6 +838,8 @@ extra/dtype、eligible 非成员污染、reason 优先级、守恒、diagnostics
 ### 7.1 文件范围
 
 ```text
+src/quant/research/m3/contracts.py
+src/quant/research/m3/development_example.py
 src/quant/research/m3/labels.py
 src/quant/research/m3/qlib_adapter.py
 src/quant/research/m3/__init__.py             # 只导出 labels parent API，禁止 import qlib_adapter
@@ -876,6 +915,14 @@ class VerifiedLabelReconciliationArtifact:
     summary_sha256: str
     reconciliation_receipt_sha256: str
 
+@dataclass(frozen=True)
+class LabelReconciliationReceiptPaths:
+    snapshot_receipt_path: Path
+    provider_receipt_path: Path
+    provider_validation_receipt_path: Path
+    experiment_receipt_path: Path
+    label_receipt_path: Path
+
 def reconcile_labels_with_qlib(
     *, release: VerifiedG1Release, snapshot: VerifiedSnapshotArtifact,
     experiment: VerifiedExperimentIdentity,
@@ -883,6 +930,8 @@ def reconcile_labels_with_qlib(
     provider_validation: VerifiedProviderValidationArtifact,
     labels: VerifiedLabelArtifact, config: LoadedM3Config,
     spec: LabelReconciliationSpec,
+    receipt_paths: LabelReconciliationReceiptPaths,
+    artifact_roots: Mapping[str, Path],
     python_executable: Path, output_root: Path, timeout_seconds: float,
 ) -> LabelReconciliationResult: ...
 
@@ -895,9 +944,25 @@ def verify_label_reconciliation_artifact(
     provider: VerifiedProviderArtifact,
     provider_validation: VerifiedProviderValidationArtifact,
     labels: VerifiedLabelArtifact,
-    config: LoadedM3Config, artifact_roots: Mapping[str, Path],
+    config: LoadedM3Config, spec: LabelReconciliationSpec,
+    receipt_paths: LabelReconciliationReceiptPaths,
+    artifact_roots: Mapping[str, Path],
 ) -> VerifiedLabelReconciliationArtifact: ...
 ```
+
+formal/development 入口均显式接收上述五条 receipt path；禁止扫描目录、按 hash 猜路径或依赖 horizon
+文件名约定。worker 启动前必须用共享 `verify_stage_receipt_with_bytes` 验证每条 receipt 的 bytes、stage、
+scope、scope_key、nominal SHA 及完整 root registry。reconciliation receipt 的输入闭包精确为：experiment
+receipt+manifest；G1 manifest+benchmark；snapshot receipt+manifest+session calendar；provider
+receipt+manifest+严格完整 provider tree；provider-validation receipt+summary+details；label
+receipt+manifest+labels+diagnostics。输出严格只有 `reconciliation.parquet,reconciliation.json`。
+
+development 路径使用独立 `VerifiedDevelopmentExampleLabelReconciliationArtifact`、
+`compute_development_label_reconciliation_key`、`reconcile_development_example_labels_with_qlib`、
+`verify_development_example_label_reconciliation_artifact` 和 stage
+`development-label-reconciliation`。其 key 固定包含 development domain tag 与 `example_id`，输出根名必须
+同时标记 development/example，且 `formal_gate_eligible=False`；formal 入口 exact-type 拒绝 development
+nominal。
 
 入口从 verified bundle（含 `VerifiedExperimentIdentity`）重算唯一 `compute_label_reconciliation_key`；horizon/experiment/provider-validation/
 label manifest 必须互相一致。任何混配在启动 worker 前失败。
@@ -914,9 +979,11 @@ Parquet bytes 冒充。
 2. 另读取原始 `$open/$close` 覆盖所有 return start/end dates；
 3. 按命名 MultiIndex level 解析，只返回 label keys 的 expression 值和由原始 lookup 直接计算的
    `provider_raw_return`；
-4. echo 全部 identity 和 row-key digest，不计算 benchmark、label diff 或最终 PASS。
+4. echo 全部 identity 和 row-key digest，不计算 benchmark、label diff 或最终 PASS。完整 key preimage
+   还包括 `label_reconciliation_config_sha256`、`dependency_fingerprint_sha256` 与 `code_version`；worker
+   必须在 import Qlib 前重算 `row_key_sha256` 并核对逻辑 `provider_uri_sha256`。
 
-parent 使用 snapshot session calendar 独立推导每行 start/end；用 verified G1 原始 `H00300.CSI` open/close
+parent 使用 snapshot session calendar 独立推导每行 start/end；用 verified G1 原始 `510300.SH` open/close
 独立计算 `audit_benchmark_return`，不得调用 label builder或复制 label benchmark。然后形成四个误差序列：
 
 ```text
@@ -1005,11 +1072,14 @@ docs/M3_G3B标签全量对账独立初验报告.md
 不得参与实现，至少增加两个不同 dtype/identity/故障点反例。失败按“现象—根因—规则—最小复现—新增
 测试—通过条件”退回循环。外部通过只可表述“可交主 Agent 终验”，不得勾选 G2/G3/Gate。
 
-实施顺序固定：
+原顺序把 snapshot receipt 的唯一 publisher 放在 G8B，却又要求 G2B 先消费 `VerifiedSnapshotArtifact`，形成
+执行依赖循环。修订后的实现/正式运行顺序为：
 
 ```text
 G1-P4C 主验
-  -> G2A 外部闭环 + 主验
+  -> G2A temp builder/strict verifier 合同实现 + 双平台定向主验
+  -> G8A/G8B 最小 publication/StageRunner 前置
+  -> 正式 G2A publish + receipt + VerifiedSnapshotArtifact 主验
   -> G2B 外部闭环 + 主验
   -> G2C 外部闭环 + 主验
   -> G3A 外部闭环 + 主验

@@ -1,6 +1,12 @@
 # M3 Qlib/LightGBM 实施与 Agent 交接
 
-状态：G0 Python 子项、C0、E3 严格 Receipt R1–R4、G1-B2A、G1-P1、G1-P2-0、G1-P2/B3、G1-P3/B2C、G1-P4A、G1-P4B、G1-P4C、G1-R0、G1-R1A 与 G1-R1L 子包已通过主 Agent 最终验收；R0 已确认 SH/SZ 权威日历及 Tushare/BaoStock 真实源可用，R1A/R1L 已关闭运行身份、分阶段计划和崩溃安全 journal 写锁前置；下一包为 R1B。当前目标环境不支持 `RENAME_NOREPLACE`，正式 G0 Gate、B4/G1 发布 Gate 及 G2–G9 的实现、独立初验和真实环境 Gate 尚未关闭。
+状态（2026-08-02）：正式 Windows G1 已完成 INDEX→HISTORY→REFERENCE→PREPARE→PUBLISH，发布
+`release_id=08eb9b31…`、manifest `d3923fa1…`；独立磁盘 `verify_g1_release` 正在后台执行，通过前仍不把
+Windows G1 Gate 标记为最终关闭，且 Windows 结果不替代 Linux/ext4 Gate。隔离 development/example 路径已完成
+G2B、G2C、G3A、G3B、G4A，并通过 G4B parent/fresh-worker/receipt 与 G4C 监督对齐/无标签 inference
+阶段验收；development 结果不升级为 formal verified artifact，也不关闭真实 Qlib、正式 G2–G9 或性能
+Gate。正式 G1 Windows 发布物已通过磁盘验收；正式 G2A 与 development G5A 为两条互不阻塞的推进线，
+Linux/ext4 Gate 仍单独保留。
 当前验收与返工顺序见 [`M3当前验收与返工总览.md`](M3当前验收与返工总览.md)。
 本文是 **M3 实现契约的 SSOT**；技术选型理由仍以
 [`../A股港股通个人量化投研交易系统调研.md`](../A股港股通个人量化投研交易系统调研.md)
@@ -65,9 +71,9 @@ Qlib 内部类的自定义 Parquet Provider。
   `(close(t+h) * adj_factor(t+h)) / (open(t+1) * adj_factor(t+1)) - 1`；因子比例消除任意归一化
   基准并修正分红送转。Schema 中历史字段名 `raw_return` 表示“减基准之前的证券收益”，不是
   “未复权价格收益”。
-- excess 标签：上述证券总回报减去沪深300**全收益指数 `H00300.CSI`** 同一
-  `open(t+1) -> close(t+h)` 区间收益；基准不套用个股复权因子。不得改用价格指数 `000300.SH`
-  后仍称同口径 excess return。
+- excess 标签：上述证券总回报减去已批准的 `510300.SH` ETF HFQ 总回报代理同一
+  `open(t+1) -> close(t+h)` 区间收益；基准不套用个股复权因子，也不得与价格指数
+  `000300.SH` 或旧设计的 `H00300.CSI` 序列混用。
 - daily open 是理论收益代理：部分时段停牌或一字涨停时未必可成交。训练标签不读取执行状态、不宣称
   能按该价格成交；最终统一回测必须用真实停牌/涨跌停规则检验可实现收益。
 - 首轮分别训练 `h=5` 与 `h=10` 两个模型，不把两个 horizon 混成同一个训练样本。
@@ -77,8 +83,8 @@ Qlib 内部类的自定义 Parquet Provider。
 
 基准行情由 `BenchmarkBar1dSchema` 定义，固定字段为
 `benchmark,trade_date,open,high,low,close,source,source_snapshot_id`；它不是可交易证券，不得伪装成
-`Bar1dSchema` 的 SH/SZ instrument。`ForwardReturnLabelSchema.benchmark` 允许价格指数兼容值和
-`H00300.CSI`，首个 M3 配置只允许后者。
+`Bar1dSchema` 的普通证券行情。`ForwardReturnLabelSchema.benchmark` 允许受控基准代码；当前首个 M3
+配置和正式 G1 只允许用户批准的 `510300.SH`。
 
 标准表由 `ForwardReturnLabelSchema` 和 `PredictionScoreSchema` 定义。任何 Qlib 特有 MultiIndex
 或列名必须在适配器出口转换，不能泄漏到 `quant.strategies`。
@@ -436,7 +442,7 @@ provider/model。
   请求源不存在时返回 `DATA_SOURCE_MISSING`；
 - 股票 bars 与 benchmark bars 是两种契约。基准精确使用 `BenchmarkBar1dSchema`，不得要求
   `symbol/volume/amount/adj_factor` 或调用股票 factor helper；M3 v1 benchmark 只允许
-  `H00300.CSI`，重复键为 `(benchmark,trade_date,source)`；
+  `510300.SH`，重复键为 `(benchmark,trade_date,source)`；
 - 每个开市日都对当日生效的 PIT 成员做稠密计数，有效证券数低于
   `minimum_cross_section_symbols` 的任意日期都产生 `CROSS_SECTION_TOO_SMALL`；不得以最大日
   截面代替逐日检查；
@@ -645,8 +651,8 @@ class ProviderManifestV1:
 class ProviderBuildResult:
     root: Path
     qlib_dir: Path
-    provider_manifest: ProviderManifestV1
-    provider_manifest_sha256: str
+    manifest: ProviderManifestV1
+    manifest_sha256: str
 
 @dataclass(frozen=True)
 class VerifiedProviderArtifact:
@@ -770,9 +776,14 @@ def verify_provider_validation_artifact(
     *, validation_root: Path, validation_receipt_path: Path,
     snapshot: VerifiedSnapshotArtifact,
     provider: VerifiedProviderArtifact,
-    config: LoadedM3Config, artifact_roots: Mapping[str, Path],
+    config: LoadedM3Config, spec: ProviderValidationSpec,
+    artifact_roots: Mapping[str, Path],
 ) -> VerifiedProviderValidationArtifact: ...
 ```
+
+validation verifier 必须接收已经冻结的 `ProviderValidationSpec`，用它独立重算 formal/development key 和
+完整 deterministic probe；不得从 details 自报 keys 反构造“期望计划”。无 `spec` 的旧签名不能证明
+`provider_validation_key`，已经废止。
 
 输出 staging 列固定为 `symbol,date,open,high,low,close,vwap,volume,factor`，每证券一个 Parquet，日期
 升序。必须先按 `source` 过滤 bars，按 `universe` 过滤 membership 并取得历史 symbol 并集，再用该
@@ -848,6 +859,23 @@ tool/code/runtime identities、逻辑 argv、calendar/instrument 摘要及所有
 `<field>.day.bin`，无额外 symbol/field；bin 首 float32 是正确 calendar offset，字节数等于该证券全局
 calendar 起止跨度的 `4*(1+n)`，实际 staging 日期有限值、缺口位置 NaN。所有 symlink 和未声明文件失败。
 
+正式 G1 长时 I/O 期间允许使用 development example 轨做工程反馈，但必须保持独立信任域：开发 Provider
+materializer 只接受 `VerifiedDevelopmentExampleSnapshotArtifact` 并返回与正式路径同形的未发布
+`ProviderBuildResult`；只有开发最终 verifier 返回
+`VerifiedDevelopmentExampleProviderArtifact(release_kind="development_example",
+formal_gate_eligible=False, example_id=...)`；identity 使用带固定 domain tag 和 `example_id` 的
+`compute_development_provider_key`，receipt stage 固定为 `development-provider`，输出根名必须同时显式包含
+`development` 与 `example`。正式 `materialize_qlib_provider/verify_provider_artifact` 只接受精确
+`VerifiedSnapshotArtifact`，不得用 union、包装或重命名把开发对象提升为 `VerifiedProviderArtifact`。开发轨
+复用同一个 `ProviderManifestV1`、七字段 bin 格式和静态 inspector，仅证明开发契约、跨平台兼容和编排恢复；
+不证明正式 G2B/G2C、真实数据覆盖/性能或任何 Gate。开发 fixture 固定为 21 个连续 SH session；
+`000001.SZ` 因一个全日停牌输出 20 行，另两证券各输出 21 行，同时保留公司行动/复权和退市生命周期边界。
+因此开发轨可原样运行下述 G2C `3×20×7` sampling policy，不放宽正式规则。开发 G2C 另用
+`compute_development_provider_validation_key` 的固定 domain tag/`example_id`、
+`development-provider-validation` receipt stage 和开发专用 nominal verified 类型闭合；正式入口仍精确拒绝
+开发类型。该结果只证明 development example 的 fresh-process 公共 API、确定性抽样和跨平台工程契约，
+不提升为正式 `VerifiedProviderValidationArtifact`。
+
 probe 不是随机数调用：策略固定为 `provider_market_stratified_hash_first_last_v1`，先按
 规范 JSON 数组 `["provider-symbol-v1",snapshot_id,provider_key,symbol]` 的 SHA-256 各选 1 个 SH/SZ，再选
 剩余最低 hash 证券；每证券必须至少 20 个 staging 行，日期包含首尾并以
@@ -895,6 +923,12 @@ class ExperimentIdentityManifestV1:
     code_version: str
 
 @dataclass(frozen=True)
+class ExperimentIdentitySpec:
+    scientific_config_sha256: str
+    dependency_fingerprint_sha256: str
+    code_version: str
+
+@dataclass(frozen=True)
 class VerifiedExperimentIdentity:
     root: Path
     manifest: ExperimentIdentityManifestV1
@@ -906,7 +940,8 @@ def read_experiment_identity_manifest(path: Path) -> ExperimentIdentityManifestV
 def verify_experiment_identity(
     *, experiment_root: Path, experiment_receipt_path: Path,
     snapshot: VerifiedSnapshotArtifact, provider: VerifiedProviderArtifact,
-    config: LoadedM3Config, artifact_roots: Mapping[str, Path],
+    config: LoadedM3Config, spec: ExperimentIdentitySpec,
+    artifact_roots: Mapping[str, Path],
 ) -> VerifiedExperimentIdentity: ...
 
 @dataclass(frozen=True)
@@ -914,7 +949,7 @@ class LabelBuildSpec:
     experiment_key: str
     experiment_manifest_sha256: str
     horizon_sessions: Literal[5, 10]
-    benchmark: Literal["H00300.CSI"]
+    benchmark: Literal["510300.SH"]
     label_version: str
     label_build_code_version: str
 
@@ -957,7 +992,8 @@ class VerifiedLabelArtifact:
 def build_label_artifact(
     *, release: VerifiedG1Release, snapshot: VerifiedSnapshotArtifact,
     experiment: VerifiedExperimentIdentity,
-    config: LoadedM3Config, spec: LabelBuildSpec, output_root: Path,
+    config: LoadedM3Config, experiment_spec: ExperimentIdentitySpec,
+    spec: LabelBuildSpec, output_root: Path,
 ) -> LabelArtifactManifest: ...
 
 def read_label_artifact_manifest(path: Path) -> LabelArtifactManifest: ...
@@ -966,7 +1002,9 @@ def verify_label_artifact(
     *, label_root: Path, label_receipt_path: Path,
     release: VerifiedG1Release, snapshot: VerifiedSnapshotArtifact,
     experiment: VerifiedExperimentIdentity,
-    config: LoadedM3Config, artifact_roots: Mapping[str, Path],
+    config: LoadedM3Config, experiment_spec: ExperimentIdentitySpec,
+    spec: LabelBuildSpec,
+    artifact_roots: Mapping[str, Path],
 ) -> VerifiedLabelArtifact: ...
 
 def compute_forward_relative_labels(
@@ -1043,6 +1081,14 @@ class LabelReconciliationSpec:
     benchmark_return_atol: float
     label_return_atol: float
 
+@dataclass(frozen=True)
+class LabelReconciliationReceiptPaths:
+    snapshot_receipt_path: Path
+    provider_receipt_path: Path
+    provider_validation_receipt_path: Path
+    experiment_receipt_path: Path
+    label_receipt_path: Path
+
 def read_label_reconciliation_summary(path: Path) -> LabelReconciliationSummaryV1: ...
 
 def verify_label_reconciliation_artifact(
@@ -1052,7 +1098,9 @@ def verify_label_reconciliation_artifact(
     provider: VerifiedProviderArtifact,
     provider_validation: VerifiedProviderValidationArtifact,
     labels: VerifiedLabelArtifact,
-    config: LoadedM3Config, artifact_roots: Mapping[str, Path],
+    config: LoadedM3Config, spec: LabelReconciliationSpec,
+    receipt_paths: LabelReconciliationReceiptPaths,
+    artifact_roots: Mapping[str, Path],
 ) -> VerifiedLabelReconciliationArtifact: ...
 
 def reconcile_labels_with_qlib(
@@ -1062,10 +1110,28 @@ def reconcile_labels_with_qlib(
     provider_validation: VerifiedProviderValidationArtifact,
     labels: VerifiedLabelArtifact, config: LoadedM3Config,
     spec: LabelReconciliationSpec,
+    receipt_paths: LabelReconciliationReceiptPaths,
+    artifact_roots: Mapping[str, Path],
     python_executable: Path, output_root: Path,
     timeout_seconds: float,
 ) -> LabelReconciliationResult: ...
 ```
+
+G3B 不从目录扫描或按 hash 猜上游 receipt。formal/development reconcile 与 verifier 都显式接收五条
+`LabelReconciliationReceiptPaths` 和完整 `artifact_roots`，并在启动 worker 前通过共享
+`verify_stage_receipt_with_bytes` 核对 receipt bytes、stage/scope/scope_key、nominal SHA 与 root registry。
+reconciliation receipt 的输入闭包精确为：experiment receipt+manifest；G1 manifest+benchmark；snapshot
+receipt+manifest+session calendar；provider receipt+manifest+严格完整 provider tree；provider-validation
+receipt+summary+details；label receipt+manifest+labels+diagnostics。输出严格只有
+`reconciliation.parquet,reconciliation.json`。
+
+development 路径必须使用独立 development nominal/key/API/stage，key 绑定 development domain tag 与
+`example_id`，输出根名同时含 development/example，且 `formal_gate_eligible=False`；formal exact-type
+入口拒绝 development nominal。worker 的 request/echo 完整绑定 config、dependency、code version，并在
+import Qlib 前重算 row-key 与逻辑 provider URI hash。summary 的 `row_count` 是实际 details 行数；与
+missing/extra/duplicate 三个计数及 verified label manifest 的 success count 共同证明期望/匹配行数闭包，
+不再另设含义重叠的 expected/matched 字段。`non_finite_count` 固定为六个数值输入槽位的非 finite/缺失
+cell 数；`-0.0` 的逻辑摘要规范化为 `0.0`。
 
 返回值必须通过 `ForwardReturnLabelSchema`。不得用自然日位移；所有偏移基于对应市场开市日序号。
 `calendars` 必须先通过 `TradeCalendarSchema`；过滤 SH 后日期仍须唯一、严格递增，重复 session 不能被 sort/
@@ -1091,7 +1157,7 @@ diagnostics row-count/sample-count 区分和唯一 label/diagnostic key hash；`
 
 reason 优先级按上段列举顺序固定：tail → benchmark entry → benchmark exit → asset entry bar → asset
 exit bar → entry factor → exit factor。`benchmark_bars` 必须通过实际代码 SSOT 的
-`BenchmarkBar1dSchema`，且只含显式 `benchmark` 参数对应切片；首版配置验证只接受 `H00300.CSI`。
+`BenchmarkBar1dSchema`，且只含显式 `benchmark` 参数对应切片；现行配置验证只接受 `510300.SH`。
 `ForwardReturnLabelSchema` 对三列收益要求 finite，benchmark 使用独立 benchmark pattern，绝不放宽可交易
 证券 `SYMBOL_PATTERN`。当前 Schema/label builder 已有初次实现和测试；readiness 虽已移除个股必需列，
 但消费边界必须执行 exact `BenchmarkBar1dSchema`，required-column subset 不得代替 strict Schema。extra
@@ -1153,6 +1219,14 @@ class FoldPlanManifestV1:
     folds: tuple[PlannedFold, ...]
 
 @dataclass(frozen=True)
+class FoldPlanUpstreamPaths:
+    snapshot_request_path: Path
+    snapshot_receipt_path: Path
+    provider_dump_tool_path: Path
+    provider_receipt_path: Path
+    experiment_receipt_path: Path
+
+@dataclass(frozen=True)
 class VerifiedFoldPlanArtifact:
     root: Path
     manifest: FoldPlanManifestV1
@@ -1165,14 +1239,36 @@ def build_temporal_fold_plan(
     spec: FoldPlanBuildSpec, output_root: Path,
 ) -> FoldPlanManifestV1: ...
 
-def verify_fold_plan_artifact(...) -> VerifiedFoldPlanArtifact: ...
+def verify_fold_plan_artifact(
+    *, root: Path, receipt_path: Path, release: VerifiedG1Release,
+    snapshot: VerifiedSnapshotArtifact, snapshot_spec: SnapshotBuildSpec,
+    provider: VerifiedProviderArtifact, provider_spec: ProviderBuildSpec,
+    experiment: VerifiedExperimentIdentity,
+    experiment_spec: ExperimentIdentitySpec, config: LoadedM3Config,
+    spec: FoldPlanBuildSpec, upstream_paths: FoldPlanUpstreamPaths,
+    artifact_roots: Mapping[str, Path],
+) -> VerifiedFoldPlanArtifact: ...
 
 def select_supervised_labels(
     *, label: VerifiedLabelArtifact, folds: VerifiedFoldPlanArtifact,
-    fold_name: str,
+    release: VerifiedG1Release, snapshot: VerifiedSnapshotArtifact,
+    snapshot_spec: SnapshotBuildSpec, provider: VerifiedProviderArtifact,
+    provider_spec: ProviderBuildSpec, experiment: VerifiedExperimentIdentity,
+    experiment_spec: ExperimentIdentitySpec, config: LoadedM3Config,
+    label_spec: LabelBuildSpec, fold_spec: FoldPlanBuildSpec,
+    label_receipt_path: Path, folds_receipt_path: Path,
+    upstream_paths: FoldPlanUpstreamPaths,
+    artifact_roots: Mapping[str, Path], fold_name: str,
     segment: Literal["train", "validation"],
 ) -> pl.DataFrame: ...
 ```
+
+development example 复用完全相同的 manifest、schema、hash 与 receipt 形态，但使用精确平行 API 和
+`VerifiedDevelopmentExampleFoldPlanArtifact(release_kind="development_example", formal_gate_eligible=False,
+example_id=...)`。formal API 在写入前拒绝 development nominal；development 产物只允许位于显式
+development/example 路径，不能进入正式 G1/G4 发布根、journal 或候选映射。当前最小 fixture 含 38 个
+history sessions：前 28 个 signal sessions 加 10 个 label-tail sessions；development walk-forward 为
+`2/2/2/2/10`，恰好两折。该链通过只表示开发契约通过，不关闭正式 G4 Gate。
 
 M3 使用固定长度 rolling window，不使用 expanding train。`open_dates` 必须唯一、严格递增且全部是冻结
 SH session；函数先取 `[signal_start,signal_end]`，provider 的 60-session warmup 和 10-session label tail
@@ -1190,6 +1286,14 @@ validation 标签允许使用到 `embargo_2` 最后一个 session 已知的数�
 每折日期 hash；只存
 首尾日期不足以证明 session 数、embargo 或日历未漂移。fold name 由规范日期计划稳定生成。跨折 train
 可以重叠，test 日期不得重叠；任何 test 指标不得用于参数、iteration 或 feature schema 选择。
+
+FoldPlan 必须非空。fold receipt 固定为 `EXPERIMENT` scope，formal/development stage 分别为
+`folds`/`development-folds`；直接输入精确为 snapshot request、snapshot manifest/receipt/calendar、
+experiment manifest/receipt，输出只允许 `folds.json`。标签选择器每次消费都用完整上游 nominal、配置、
+spec、receipt 和 artifact roots 重新验真 label 与 FoldPlan，拒绝漏项、增项、decoy 或仅信已构造 dataclass。
+`FoldPlanUpstreamPaths` 是上游 request/receipt/tool 的唯一物理路径来源；不得从 snapshot 的最具体 alias
+反推公共 artifacts base。Fold verifier 必须 fresh 验真 snapshot、provider、experiment 各自的完整 receipt
+闭包，并按 digest 解析出的精确物理路径处理重叠 root alias；禁止 basename 搜索或同 bytes decoy 替换。
 spec 的 signal window 必须等于 snapshot request/manifest 从 G1 继承的窗口，walk-forward 数值必须等于
 `LoadedM3Config` scientific selector；C0 不存在独立 `walk_forward_config_sha256`，不得新增伪 selector。
 
@@ -1361,6 +1465,9 @@ feature 内容 receipt。H1 只读取已验真的 snapshot `session_calendar.par
 不能接受调用者临时传入另一份 calendar。`FeatureBuildSpec` 在启动 worker 前重算并核对 provider/fold/config
 identities，worker 回包必须 echo 相同 identity。feature 配置只由 scientific selector 验真；C0 不存在独立
 `feature_config_sha256`。inference 只能按 `fold_name` 从 verified folds bundle 取 test 日期，不接受裸 fold。
+这里的“已验真”是本次调用沿显式 upstream paths/spec fresh 重验 G4A 及其上游，不接受仅凭可构造 dataclass
+跳过磁盘验真。稳定 worker request/response 只保存 provider URI 身份摘要；绝对 URI 仅经 fresh subprocess
+临时环境传递，不进入 manifest、receipt、stdout 或其他稳定产物。
 
 `features.py` 是安全 parent API；`qlib_adapter.py` 是唯一 Qlib worker。handler 构造与 DatasetH prepare 必须在
 同一个 fresh Python 子进程中连续执行，Qlib 对象不能跨进程返回；父进程只通过规范 JSON/Parquet 接收普通
@@ -1391,6 +1498,8 @@ identities，worker 回包必须 echo 相同 identity。feature 配置只由 sci
    Qlib 历史行，再以 **train eligible rows** 拟合 feature schema：inf 转 NaN，只删除 train 全 NaN 列，
    validation/test 复用同一有序列和 float64 dtype。选定列后整行全 NaN 是 unscorable，三段均剔除并按日
    输出 `n_eligible/n_feature_rows/n_scorable/reason`；不做均值填充、不删普通含 NaN 行、不按 test 改列。
+   “剔除”是指从 G4C/inference 的 scorable 消费域剔除；G4B segment parquet 仍保留该 feature row，保证
+   `feature_row_keys_sha256` 与 `scorable_keys_sha256` 均可由稳定产物独立重建，不依赖 worker summary。
 6. `build_alignment_artifact` 只允许 train/validation。它消费对应 `VerifiedLabelArtifact` 并使用 PlannedFold
    对应 `available_by`，一对一连接 scorable feature keys；X/y 使用同一
    唯一 `(as_of,symbol)` pandas MultiIndex、稳定排序且行数/顺序完全一致。缺标签进入 alignment diagnostics，
@@ -1409,7 +1518,7 @@ provider history domain 与 model sample domain 必须分离：前者为历史�
 `eligible_keys`。禁止通过删 provider 历史来表达样本资格，也禁止保留历史后省略资格 join。
 
 G3 的 Qlib 对账只是语义审计：在日期 `t` 计算
-`Ref($close, -h) / Ref($open, -1) - 1` 的证券调整后收益，并减去独立 `H00300.CSI` 全收益指数
+`Ref($close, -h) / Ref($open, -1) - 1` 的证券调整后收益，并减去独立 `510300.SH` ETF HFQ 总回报代理
 区间收益，与独立标签的
 `raw_return/benchmark_return/relative_return` 三列逐行比较。对账表达式不得反向成为训练标签 SSOT。
 
@@ -1428,7 +1537,7 @@ G3 的 Qlib 对账只是语义审计：在日期 `t` 计算
 
 1. 对每个 label key，另外通过 Qlib 直接读取 return start 的 `$open` 和 return end 的 `$close`，手算
    `provider_raw_return`；与 Qlib `Ref` expression 的误差使用 `validation.labels.qlib_expression_atol`。
-2. benchmark audit 不调用 `compute_forward_relative_labels`，而以 SH session 和原始 `H00300.CSI`
+2. benchmark audit 不调用 `compute_forward_relative_labels`，而以 SH session 和原始 `510300.SH`
    open/close 独立向量化查表；与 label `benchmark_return` 使用 `benchmark_return_atol`。
 3. `provider_raw_return` 与权威 Float64 label `raw_return`、以及
    `provider_raw_return-audit_benchmark_return` 与 label `relative_return` 使用 `label_return_atol`，明确容纳
@@ -2057,6 +2166,12 @@ root、文件存在性、物理身份与内容 hash 由 publish/verify 的上下
 `resolve()` 或内容 hash 冒充 hard-link 身份，无法可靠取得时 fail-closed。verify 必须先验证 root registry、
 receipt containment、parent 与 leaf 的 lstat；只有 leaf 真正 ENOENT 才返回 `None`，dangling symlink 不是缺失。
 
+消费者同时需要 parsed receipt 与 receipt hash 时，必须使用共享
+`verify_stage_receipt_with_bytes`，不得在下游复制第二套 verifier。该入口对 receipt 使用同一
+打开文件描述符完成读取、parse 和 hash，并复用本节完整 root registry 和 digest 物理身份契约。
+嵌套 roots 从路径反推 alias 时选择包含该路径的最具体子 root；同一物理 root 的重复 alias
+仍在任何 digest 读取前失败。
+
 发布端不得以 `os.replace` 覆盖并发进程刚发布的 immutable receipt。固定流程为：同目录临时普通文件写入
 并 `fsync`，再次验真声明 artifact，以 Linux/WSL 的原子 no-clobber 创建（例如同文件系统 `os.link`），
 并发目标已存在时只允许“规范字节相同且现有 receipt 全量验真通过”复用，否则冲突失败；最后清理临时文件
@@ -2222,7 +2337,7 @@ digest 输入。稳定产物与最小 required-input 闭包如下；receipt 必�
 | provider/provider_validation | provider receipt/manifest/全部 provider tree；snapshot manifest/calendar/全部 staging | `provider-validation/key=<provider_validation_key>/{provider_validation.parquet,provider_validation.json}` |
 | experiment/experiment_identity | snapshot/provider receipts 与 manifests；scientific/dependency identities；provider-validation PASS 仅作编排前置、不列内容 input | `experiment_manifest.json` |
 | experiment/labels[h] | experiment manifest；`G1_RELEASE:{manifest,bars,benchmark,eligible_keys}`；snapshot calendar | `labels/horizon=<h>/{labels.parquet,diagnostics.parquet,label_manifest.json}` |
-| experiment/label_reconciliation[h] | provider validation receipt、provider receipt/manifest/tree；label receipt/三产物；snapshot calendar；`G1_RELEASE:{manifest,benchmark}` | `labels/horizon=<h>/reconciliation/key=<reconciliation_key>/{reconciliation.parquet,reconciliation.json}` |
+| experiment/label_reconciliation[h] | experiment receipt/manifest；`G1_RELEASE:{manifest,benchmark}`；snapshot receipt/manifest/session calendar；provider receipt/manifest/严格完整 tree；provider-validation receipt/summary/details；label receipt/manifest/labels/diagnostics | `labels/horizon=<h>/reconciliation/key=<reconciliation_key>/{reconciliation.parquet,reconciliation.json}` |
 | experiment/folds | verified experiment；verified snapshot calendar；walk-forward config identity | strict `folds.json` |
 | experiment/features[fold] | verified provider/folds/G1 eligible keys；feature config identity；provider-validation PASS 仅作编排前置、不列内容 input | `features/fold=<fold>/{train,validation,test}.parquet`, `feature_manifest.json`, `coverage.parquet` |
 | work/alignment | verified feature；对应 horizon verified label；verified fold | `alignment/{train,validation}.parquet`, `alignment_manifest.json`, `diagnostics.parquet` |
@@ -2527,7 +2642,13 @@ def map_g1_daily_response(*, response: VerifiedRawResponse) -> pl.DataFrame: ...
 def map_g1_adjustment_factor_response(
     *, response: VerifiedRawResponse
 ) -> pl.DataFrame: ...
-def map_g1_benchmark_response(*, response: VerifiedRawResponse) -> pl.DataFrame: ...
+def map_g1_benchmark_response(
+    *,
+    fund_daily: VerifiedRawResponse,
+    fund_adj_segments: Sequence[VerifiedRawResponse],
+    fund_div: VerifiedRawResponse,
+    factor_ratio_rtol: float,
+) -> pl.DataFrame: ...
 def map_g1_suspension_response(*, response: VerifiedRawResponse) -> pl.DataFrame: ...
 
 @dataclass(frozen=True)
@@ -3027,7 +3148,7 @@ DataFrame、调用方自报 symbol/source/snapshot 或配置路径。四个函�
 |---|---|---|
 | `map_g1_daily_response` | `daily` | `symbol,trade_date,open,high,low,close,volume,amount,source` |
 | `map_g1_adjustment_factor_response` | `adj_factor` | `symbol,effective_date,adj_factor,source` |
-| `map_g1_benchmark_response` | `index_daily` | `benchmark,trade_date,open,high,low,close,source,source_snapshot_id` |
+| `map_g1_benchmark_response` | `fund_daily` + 分段 `fund_adj` + `fund_div` | `benchmark,trade_date,open,high,low,close,source,source_snapshot_id` |
 | `map_g1_suspension_response` | `suspend_d` | `symbol,trade_date,suspension_scope,suspension_detail,source,source_snapshot_id` |
 
 `daily` 输出是尚未拼接 factor 的 G1 内部表，不得伪造 `adj_factor=1.0`；B4 的
@@ -3043,7 +3164,7 @@ request identity、receipt 与 spec 的 endpoint/parameters/fields/columns/row c
 hash，以及 frame 的 columns/row count/content digest。`frozen=True` 和对象曾经构造成功不能代替消费时
 identity 闭包；重验失败统一脱敏为 `G1_MAPPER_RESPONSE_INVALID`。闭包通过后再核对 endpoint、请求参数与
 响应范围。逐证券 endpoint 的每个 `ts_code` 必须等于 spec 的 `ts_code`；基准首版只允许
-`H00300.CSI`；A 股代码只允许六位数字加 `.SH/.SZ`。日期严格解析 `YYYYMMDD`，数值 strict cast，拒绝
+`510300.SH`；A 股代码只允许六位数字加 `.SH/.SZ`。日期严格解析 `YYYYMMDD`，数值 strict cast，拒绝
 null/NaN/Infinity、非法 OHLC、负 volume/amount、非正 factor、响应越过请求日期范围和不可规范化代码。
 Tushare `vol` 从手换算为股（`*100`），`amount` 从千元换算为元（`*1000`）。
 
@@ -3065,7 +3186,7 @@ factor-ratio 对账，不属于核心机械映射。首版由 G1-P3/B2C 专用�
 `null -> unlimited`、`keep="last"` 或简化 dividend mapper。
 
 观察唯一键为 `(universe,observation_date,symbol,source)`；同一来源同一观察日必须恰好形成一个完整
-CSI300 状态，不得把同月多次观察合并成一个月末状态。基准不是可交易证券，`H00300.CSI` 只通过
+CSI300 状态，不得把同月多次观察合并成一个月末状态。研究基准固定为可交易 ETF `510300.SH`，只通过
 `BenchmarkBar1dSchema` 校验；不得为通过 A 股代码正则而伪装成 SH/SZ symbol。
 
 请求与发布语义：
@@ -3536,7 +3657,7 @@ backtest scientific config。无 open 且正目标时 desired quantity 不可知
 成本按日期选择唯一闭区间 period；重叠、缺口或交易早于首个 period 均失败。`cost_multiplier` 只缩放
 可协商/模拟摩擦 `commission_rate,commission_min,slippage`，法定印花税和过户费保持历史期值不变；
 报告名称必须写“摩擦压力 0.5×/1×/2×”，不得误称税费也被缩放。基准收益独立读取
-`H00300.CSI`，成本后超额不得用训练标签拼接计算。
+`510300.SH`，成本后超额不得用训练标签拼接计算。
 
 每个 fold×horizon 从同一初始现金独立开始，只允许 test 日期产生信号；第一个估值收益时点是首个目标
 执行日 open，最后一个 test 信号必须在下一 SH session open 执行并在该日 close 终值估值。因此 G1 tail
@@ -3723,7 +3844,7 @@ Qlib 即使偶然成功也不满足可复现验收，不作为方案。
 2. 由 observation 构建保守 PIT：状态从 observation 的下一 SH 开市日起可用，直到下一 observation
    生效前一开市日；不得向前回填。每月检查唯一成分、权重和及月间增删，然后确定历史成分并集。
 3. 依据 clean SH 日历把 signal window 向前扩 60 sessions、向后扩 10 sessions。对成分并集逐证券
-   抓 `daily`、`adj_factor`、`stk_limit` 与全历史 `dividend`，抓 `H00300.CSI index_daily`，并按月抓
+   抓 `daily`、`adj_factor`、`stk_limit` 与全历史 `dividend`，抓 `510300.SH` ETF 日线、复权因子与分红，并按月抓
    `suspend_d`。严格串行限频、endpoint 显式字段、响应原样入 raw；停牌缺 bar 不补价。
 4. 全部 receipt 完整后统一映射和审计，发布 immutable G1 release。除标准契约外，每个生效成员开市日
    必须有唯一 bar 或全日停牌证据；证券收益使用两端 adj_factor。再随机抽取至少 30 只证券、20 个
@@ -3736,7 +3857,7 @@ Tushare 官方说明 `index_weight` 为月度数据且 2000 积分可用；`dail
 2026-07-13 使用当前账户做过脱敏只读探针：`000300.SH` 与 `399300.SZ` 在 2026-01 均返回 300
 成分、同一 observation `2026-01-30`，证券集合和权重逐项一致，权重和为 `99.994`；两价格指数代码的
 `index_daily` 均返回 20 行。成分接口继续固定 `000300.SH`，不在运行时自动切换别名；标签基准则固定
-为探针确认可用的全收益指数 `H00300.CSI`，两者职责不得混淆。2016-Q1
+为已冻结的 ETF 基准 `510300.SH`，两者职责不得混淆。2016-Q1
 探针每月均为 300 唯一成分，权重和分别为 `100.002/99.992/100.004`，支持 `[99,101]` 门禁；这些
 探针只证明当前权限和样例语义，不代替 2015-12 至 2026-06 的完整 G1 审计。
 

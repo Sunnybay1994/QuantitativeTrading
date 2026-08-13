@@ -9,8 +9,17 @@
 - 金额单位:人民币/港币元;成交量单位:股(不是手)。
 """
 
+from typing import Annotated
+
 import pandera.polars as pa
 import polars as pl
+
+from quant.domain.enums import (
+    EntitlementLegState,
+    EntitlementPostingType,
+    ExecutionRejectReason,
+    OrderSide,
+)
 
 SYMBOL_PATTERN = r"^\d{5,6}\.(SH|SZ|HK)$"
 # Price-index-compatible tradeable codes plus CSI300 total-return index.
@@ -71,6 +80,27 @@ class TradeCalendarSchema(pa.DataFrameModel):
         return _rows_are_unique(data, ["market", "date"])
 
 
+class SnapshotSessionCalendarSchema(pa.DataFrameModel):
+    """G2A 使用的唯一、严格递增 SH session 日期序列。"""
+
+    date: pl.Date = pa.Field(unique=True)
+
+    class Config:
+        strict = True
+        coerce = False
+
+    @pa.dataframe_check
+    def non_empty_and_strictly_increasing(  # type: ignore[misc]
+        cls, data: pa.PolarsData
+    ) -> pl.LazyFrame:
+        frame = data.lazyframe
+        return frame.select(
+            (pl.len() > 0)
+            & pl.col("date").is_not_null().all()
+            & (pl.col("date") == pl.col("date").sort()).all()
+        )
+
+
 class Bar1dSchema(pa.DataFrameModel):
     """日线行情 bar_1d（不复权价 + 累计后复权因子）。
 
@@ -111,6 +141,88 @@ class Bar1dSchema(pa.DataFrameModel):
     ) -> pl.LazyFrame:
         """同一来源的证券日线只能有一条。"""
         return _rows_are_unique(data, ["symbol", "trade_date", "source"])
+
+
+class HKNoTradeEvidenceSchema(pa.DataFrameModel):
+    """Verified one-key HK no-daily-trading evidence projection.
+
+    The projection is deliberately narrower than an HKEX source parser.  It
+    binds an authoritative source record to retained raw bytes; source-format
+    interpretation remains a separately frozen/licensed ingestion concern.
+    """
+
+    schema_version: str = pa.Field(isin=["hk-no-trade-evidence-v1"])
+    evidence_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$", unique=True)
+    symbol: str = pa.Field(str_matches=r"^[0-9]{5}\.HK$")
+    trade_date: pl.Date
+    market: str = pa.Field(isin=["HK"])
+    reason: str = pa.Field(isin=["NO_DAILY_TRADING_V1"])
+    source: str = pa.Field(isin=["HKEX_DAILY_QUOTATIONS"])
+    source_record_id: str
+    source_as_of: pl.Datetime
+    raw_selector: str
+    raw_file_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+    raw_metadata_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+
+    class Config:
+        strict = True
+        coerce = True
+
+    @pa.dataframe_check
+    def evidence_key_unique(cls, data: pa.PolarsData) -> pl.LazyFrame:  # type: ignore[misc]
+        return _rows_are_unique(data, ["symbol", "trade_date"])
+
+
+class HkBarAvailabilityEvidenceSchema(pa.DataFrameModel):
+    """Exact retained-source availability evidence for one HK daily bar."""
+
+    symbol: str = pa.Field(str_matches=r"^[0-9]{5}\.HK$")
+    trade_date: pl.Date
+    source: str
+    availability_source_kind: str = pa.Field(
+        isin=["SEED_RAW", "REQUEST_RAW", "HKEX_SUPPLEMENT"]
+    )
+    bar_available_at: Annotated[pl.Datetime, "us", "UTC"]
+    source_record_id: str
+    request_id: str = pa.Field(
+        nullable=True, str_matches=r"^[0-9a-f]{64}$"
+    )
+    raw_file_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+    raw_metadata_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+    request_receipt_sha256: str = pa.Field(
+        nullable=True, str_matches=r"^[0-9a-f]{64}$"
+    )
+    plan_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+    availability_evidence_sha256: str = pa.Field(
+        str_matches=r"^[0-9a-f]{64}$", unique=True
+    )
+
+    class Config:
+        strict = True
+        coerce = False
+
+    @pa.dataframe_check
+    def availability_fields_consistent(  # type: ignore[misc]
+        cls, data: pa.PolarsData
+    ) -> pl.LazyFrame:
+        request = pl.col("availability_source_kind") == "REQUEST_RAW"
+        return data.lazyframe.select(
+            _unique_expr(["symbol", "trade_date"])
+            & pl.col("source").str.len_chars().gt(0).all()
+            & pl.col("source_record_id").str.len_chars().gt(0).all()
+            & (
+                (
+                    request
+                    & pl.col("request_id").is_not_null()
+                    & pl.col("request_receipt_sha256").is_not_null()
+                )
+                | (
+                    ~request
+                    & pl.col("request_id").is_null()
+                    & pl.col("request_receipt_sha256").is_null()
+                )
+            ).all()
+        )
 
 
 class AdjustmentFactorSchema(pa.DataFrameModel):
@@ -162,7 +274,12 @@ class ResearchPrice1dSchema(pa.DataFrameModel):
     trade_date: pl.Date
     adjusted_close: float = pa.Field(gt=0)
     adjustment_method: str = pa.Field(
-        isin=["HFQ", "TOTAL_RETURN_DIVIDEND", "CUMULATIVE_FACTOR"]
+        isin=[
+            "HFQ",
+            "TOTAL_RETURN_DIVIDEND",
+            "CUMULATIVE_FACTOR",
+            "HK_GROSS_TOTAL_RETURN_V1",
+        ]
     )
     source: str
 
@@ -176,19 +293,362 @@ class ResearchPrice1dSchema(pa.DataFrameModel):
 
 
 class CorporateActionSchema(pa.DataFrameModel):
-    """公司行动 corporate_action。"""
+    """港股 PIT 公司行动 canonical 表（研究事实，不是账户账本）。"""
 
-    symbol: str = pa.Field(str_matches=SYMBOL_PATTERN)
-    ex_date: pl.Date
+    event_id: str = pa.Field(str_matches=r"^[0-9a-f]{64}$", unique=True)
+    symbol: str = pa.Field(str_matches=r"^[0-9]{5}\.HK$")
     action_type: str = pa.Field(isin=["DIVIDEND", "BONUS", "SPLIT", "RIGHTS"])
-    cash_per_share: float = pa.Field(ge=0, nullable=True)
-    share_ratio: float = pa.Field(ge=0, nullable=True)
-    announce_time: pl.Datetime  # PIT:真实披露时间
+    record_date: pl.Date
+    ex_date: pl.Date
+    pay_date: pl.Date = pa.Field(nullable=True)
+    stock_list_date: pl.Date = pa.Field(nullable=True)
+    declared_currency: str = pa.Field(isin=["CNY", "HKD"], nullable=True)
+    cash_per_share_gross: float = pa.Field(gt=0, nullable=True)
+    stock_ratio: float = pa.Field(gt=0, nullable=True)
+    share_multiplier: float = pa.Field(gt=0, nullable=True)
+    rights_ratio: float = pa.Field(gt=0, nullable=True)
+    rights_subscription_price: float = pa.Field(gt=0, nullable=True)
+    rights_subscription_start: pl.Date = pa.Field(nullable=True)
+    rights_subscription_end: pl.Date = pa.Field(nullable=True)
+    announce_time: pl.Datetime
     source: str
+    source_event_id: str
+    source_revision_id: str
+    source_snapshot_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
 
     class Config:
         strict = True
         coerce = True
+
+    @pa.dataframe_check
+    def action_fields_consistent(cls, data: pa.PolarsData) -> pl.LazyFrame:  # type: ignore[misc]
+        """日期、有限数值和四类行动的互斥经济字段必须闭包。"""
+        action = pl.col("action_type")
+        cash = pl.col("cash_per_share_gross")
+        stock = pl.col("stock_ratio")
+        multiplier = pl.col("share_multiplier")
+        rights_ratio = pl.col("rights_ratio")
+        rights_price = pl.col("rights_subscription_price")
+        rights_start = pl.col("rights_subscription_start")
+        rights_end = pl.col("rights_subscription_end")
+        currency = pl.col("declared_currency")
+        pay = pl.col("pay_date")
+        list_date = pl.col("stock_list_date")
+        common = (
+            (pl.col("record_date") <= pl.col("ex_date"))
+            & (cash.is_null() | cash.is_finite())
+            & (stock.is_null() | stock.is_finite())
+            & (multiplier.is_null() | multiplier.is_finite())
+            & (rights_ratio.is_null() | rights_ratio.is_finite())
+            & (rights_price.is_null() | rights_price.is_finite())
+        )
+        dividend = (
+            (action == "DIVIDEND")
+            & currency.is_not_null()
+            & cash.is_not_null()
+            & pay.is_not_null()
+            & (pay >= pl.col("ex_date"))
+            & stock.is_null()
+            & multiplier.is_null()
+            & rights_ratio.is_null()
+            & rights_price.is_null()
+            & rights_start.is_null()
+            & rights_end.is_null()
+            & list_date.is_null()
+        )
+        bonus = (
+            (action == "BONUS")
+            & currency.is_null()
+            & cash.is_null()
+            & stock.is_not_null()
+            & multiplier.is_null()
+            & rights_ratio.is_null()
+            & rights_price.is_null()
+            & rights_start.is_null()
+            & rights_end.is_null()
+            & pay.is_null()
+            & list_date.is_not_null()
+            & (list_date >= pl.col("ex_date"))
+        )
+        split = (
+            (action == "SPLIT")
+            & currency.is_null()
+            & cash.is_null()
+            & stock.is_null()
+            & multiplier.is_not_null()
+            & (multiplier != 1.0)
+            & rights_ratio.is_null()
+            & rights_price.is_null()
+            & rights_start.is_null()
+            & rights_end.is_null()
+            & pay.is_null()
+            & list_date.is_not_null()
+            & (list_date >= pl.col("ex_date"))
+        )
+        rights = (
+            (action == "RIGHTS")
+            & currency.is_not_null()
+            & cash.is_null()
+            & stock.is_null()
+            & multiplier.is_null()
+            & rights_ratio.is_not_null()
+            & rights_price.is_not_null()
+            & rights_start.is_not_null()
+            & rights_end.is_not_null()
+            & pay.is_null()
+            & list_date.is_not_null()
+            & (pl.col("ex_date") <= rights_start)
+            & (rights_start <= rights_end)
+            & (rights_end <= list_date)
+        )
+        return data.lazyframe.select((common & (dividend | bonus | split | rights)).all())
+
+
+class HkCorporateActionRevisionEvidenceSchema(pa.DataFrameModel):
+    """港股同一经济事件的完整修订、撤回与 PIT 选择证据。"""
+
+    economic_event_key_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+    candidate_id: str = pa.Field(str_matches=r"^[0-9a-f]{64}$", unique=True)
+    symbol: str = pa.Field(str_matches=r"^[0-9]{5}\.HK$")
+    action_type: str = pa.Field(isin=["DIVIDEND", "BONUS", "SPLIT", "RIGHTS"])
+    source: str
+    source_event_id: str
+    source_revision_id: str
+    revision_sequence: int = pa.Field(gt=0)
+    predecessor_candidate_id: str = pa.Field(
+        str_matches=r"^[0-9a-f]{64}$", nullable=True
+    )
+    revision_status: str = pa.Field(isin=["ACTIVE", "WITHDRAWN"])
+    published_at: pl.Datetime
+    source_observed_at: pl.Datetime
+    record_date: pl.Date
+    ex_date: pl.Date
+    pay_date: pl.Date = pa.Field(nullable=True)
+    stock_list_date: pl.Date = pa.Field(nullable=True)
+    declared_currency: str = pa.Field(isin=["CNY", "HKD"], nullable=True)
+    cash_per_share_gross: float = pa.Field(gt=0, nullable=True)
+    stock_ratio: float = pa.Field(gt=0, nullable=True)
+    share_multiplier: float = pa.Field(gt=0, nullable=True)
+    rights_ratio: float = pa.Field(gt=0, nullable=True)
+    rights_subscription_price: float = pa.Field(gt=0, nullable=True)
+    rights_subscription_start: pl.Date = pa.Field(nullable=True)
+    rights_subscription_end: pl.Date = pa.Field(nullable=True)
+    raw_bundle_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+    raw_file_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+    raw_metadata_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+    raw_selector: str
+    selected: bool
+    selection_reason: str = pa.Field(
+        isin=[
+            "SELECTED_AS_OF",
+            "SUPERSEDED_AS_OF",
+            "FUTURE_AS_OF",
+            "WITHDRAWN_AS_OF",
+        ]
+    )
+    query_as_of: pl.Datetime
+
+    class Config:
+        strict = True
+        coerce = True
+
+    @pa.dataframe_check
+    def evidence_keys_and_reasons_valid(  # type: ignore[misc]
+        cls, data: pa.PolarsData
+    ) -> pl.LazyFrame:
+        frame = data.lazyframe
+        reason = pl.col("selection_reason")
+        selected = pl.col("selected")
+        status = pl.col("revision_status")
+        return frame.select(
+            _unique_expr(["source", "source_revision_id"])
+            & (pl.col("source_observed_at") >= pl.col("published_at")).all()
+            & (
+                ((reason == "FUTURE_AS_OF") == (pl.col("published_at") > pl.col("query_as_of")))
+                & ((reason != "FUTURE_AS_OF") | ~selected)
+                & ((reason == "SELECTED_AS_OF") == (selected & (status == "ACTIVE")))
+                & ((reason == "WITHDRAWN_AS_OF") == (selected & (status == "WITHDRAWN")))
+                & ((reason != "SUPERSEDED_AS_OF") | (~selected & (pl.col("published_at") <= pl.col("query_as_of"))))
+            ).all()
+        )
+
+    @pa.dataframe_check
+    def evidence_action_fields_consistent(  # type: ignore[misc]
+        cls, data: pa.PolarsData
+    ) -> pl.LazyFrame:
+        """Evidence rows use exactly the canonical action economic branches."""
+        return data.lazyframe.select(_hk_action_fields_consistent_expr().all())
+
+    @pa.dataframe_check
+    def at_most_one_selected_revision_per_event(  # type: ignore[misc]
+        cls, data: pa.PolarsData
+    ) -> pl.LazyFrame:
+        selected = data.lazyframe.filter(pl.col("selected"))
+        return selected.select(
+            _unique_expr(["source", "source_event_id"]).alias("selected_event_unique")
+        )
+
+
+class HkCorporateActionImplementationEvidenceSchema(pa.DataFrameModel):
+    """来源明确确认的港股公司行动实施事实。"""
+
+    event_id: str = pa.Field(str_matches=r"^[0-9a-f]{64}$", unique=True)
+    symbol: str = pa.Field(str_matches=r"^[0-9]{5}\.HK$")
+    action_type: str = pa.Field(isin=["DIVIDEND", "BONUS", "SPLIT", "RIGHTS"])
+    source: str
+    source_event_id: str
+    source_revision_id: str
+    implementation_status: str = pa.Field(isin=["IMPLEMENTED"])
+    implementation_effective_date: pl.Date
+    implementation_confirmed_at: pl.Datetime
+    source_observed_at: pl.Datetime
+    source_record_id: str
+    raw_selector: str
+    raw_file_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+    raw_metadata_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+    raw_bundle_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+    p0_actions_content_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+    p0_evidence_content_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+    p0_query_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+    implementation_evidence_sha256: str = pa.Field(
+        str_matches=r"^[0-9a-f]{64}$", unique=True
+    )
+
+    class Config:
+        strict = True
+        coerce = True
+
+    @pa.dataframe_check
+    def implementation_times_valid(  # type: ignore[misc]
+        cls, data: pa.PolarsData
+    ) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            (pl.col("source_observed_at") >= pl.col("implementation_confirmed_at")).all()
+            & _unique_expr(["source", "source_event_id"])
+            & _unique_expr(["source", "source_revision_id"])
+        )
+
+
+class HkTotalReturnApplicationScheduleSchema(pa.DataFrameModel):
+    """Source-neutral HK gross-total-return action application schedule."""
+
+    event_id: str = pa.Field(str_matches=r"^[0-9a-f]{64}$", unique=True)
+    symbol: str = pa.Field(str_matches=r"^[0-9]{5}\.HK$")
+    action_type: str = pa.Field(isin=["DIVIDEND", "BONUS", "SPLIT", "RIGHTS"])
+    source: str
+    source_event_id: str
+    source_revision_id: str
+    ex_date: pl.Date
+    pay_date: pl.Date = pa.Field(nullable=True)
+    stock_list_date: pl.Date = pa.Field(nullable=True)
+    declared_currency: str = pa.Field(isin=["CNY", "HKD"], nullable=True)
+    implementation_effective_date: pl.Date
+    implementation_confirmed_at: Annotated[pl.Datetime, "us", "UTC"]
+    source_observed_at: Annotated[pl.Datetime, "us", "UTC"]
+    window_disposition: str = pa.Field(
+        isin=[
+            "BASELINE_PREWINDOW",
+            "APPLY_IN_WINDOW",
+            "OUTSIDE_FUTURE_WINDOW",
+        ]
+    )
+    application_trade_date: pl.Date = pa.Field(nullable=True)
+    application_bar_available_at: Annotated[pl.Datetime, "us", "UTC"] = pa.Field(
+        nullable=True
+    )
+    application_availability_evidence_sha256: str = pa.Field(
+        nullable=True, str_matches=r"^[0-9a-f]{64}$"
+    )
+    cash_per_share_gross_hkd: float = pa.Field(gt=0, nullable=True)
+    stock_ratio: float = pa.Field(gt=0, nullable=True)
+    share_multiplier: float = pa.Field(gt=0, nullable=True)
+    policy_version: str = pa.Field(isin=["HK_GROSS_TOTAL_RETURN_SCHEDULE_V1"])
+    p0_query_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+    p0_actions_content_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+    p0_evidence_content_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+    implementation_evidence_content_sha256: str = pa.Field(
+        str_matches=r"^[0-9a-f]{64}$"
+    )
+    implementation_projection_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+    bar_plan_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+    bar_publication_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+    bars_content_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+    bar_availability_content_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+    row_identity_sha256: str = pa.Field(str_matches=r"^[0-9a-f]{64}$", unique=True)
+
+    class Config:
+        strict = True
+        coerce = False
+
+    @pa.dataframe_check
+    def schedule_fields_consistent(  # type: ignore[misc]
+        cls, data: pa.PolarsData
+    ) -> pl.LazyFrame:
+        action = pl.col("action_type")
+        applied = pl.col("window_disposition") == "APPLY_IN_WINDOW"
+        application_complete = (
+            pl.col("application_trade_date").is_not_null()
+            & pl.col("application_bar_available_at").is_not_null()
+            & pl.col("application_availability_evidence_sha256").is_not_null()
+        )
+        dividend = (
+            (action == "DIVIDEND")
+            & (pl.col("declared_currency") == "HKD")
+            & pl.col("pay_date").is_not_null()
+            & pl.col("stock_list_date").is_null()
+            & pl.col("cash_per_share_gross_hkd").is_not_null()
+            & pl.col("stock_ratio").is_null()
+            & pl.col("share_multiplier").is_null()
+        )
+        bonus = (
+            (action == "BONUS")
+            & pl.col("declared_currency").is_null()
+            & pl.col("pay_date").is_null()
+            & pl.col("stock_list_date").is_not_null()
+            & pl.col("cash_per_share_gross_hkd").is_null()
+            & pl.col("stock_ratio").is_not_null()
+            & pl.col("share_multiplier").is_not_null()
+            & (pl.col("share_multiplier") == 1.0 + pl.col("stock_ratio"))
+        )
+        split = (
+            (action == "SPLIT")
+            & pl.col("declared_currency").is_null()
+            & pl.col("pay_date").is_null()
+            & pl.col("stock_list_date").is_not_null()
+            & pl.col("cash_per_share_gross_hkd").is_null()
+            & pl.col("stock_ratio").is_null()
+            & pl.col("share_multiplier").is_not_null()
+            & (pl.col("share_multiplier") != 1.0)
+        )
+        unsupported_outside = (
+            ~applied
+            & (
+                (action == "RIGHTS")
+                | ((action == "DIVIDEND") & (pl.col("declared_currency") == "CNY"))
+            )
+            & pl.col("cash_per_share_gross_hkd").is_null()
+            & pl.col("stock_ratio").is_null()
+            & pl.col("share_multiplier").is_null()
+            & (
+                (
+                    (action == "RIGHTS")
+                    & pl.col("pay_date").is_null()
+                    & pl.col("stock_list_date").is_not_null()
+                )
+                | (
+                    (action == "DIVIDEND")
+                    & pl.col("pay_date").is_not_null()
+                    & pl.col("stock_list_date").is_null()
+                )
+            )
+        )
+        return data.lazyframe.select(
+            _unique_expr(["symbol", "source", "source_event_id", "source_revision_id"])
+            & (pl.col("source_observed_at") >= pl.col("implementation_confirmed_at")).all()
+            & ((applied & application_complete) | (~applied & ~application_complete)).all()
+            & (pl.col("application_trade_date").is_null() | (pl.col("application_trade_date") >= pl.col("ex_date"))).all()
+            & (dividend | bonus | split | unsupported_outside).all()
+        )
 
 
 class CorporateActionLedgerSchema(pa.DataFrameModel):
@@ -1054,6 +1514,12 @@ class PredictionScoreSchema(pa.DataFrameModel):
         coerce = True
 
     @pa.dataframe_check
+    def scores_finite(  # type: ignore[misc]
+        cls, data: pa.PolarsData
+    ) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("score").is_finite().all())
+
+    @pa.dataframe_check
     def prediction_key_unique(  # type: ignore[misc]
         cls, data: pa.PolarsData
     ) -> pl.LazyFrame:
@@ -1062,6 +1528,7 @@ class PredictionScoreSchema(pa.DataFrameModel):
             [
                 "as_of",
                 "symbol",
+                "model",
                 "model_version",
                 "dataset_snapshot_id",
                 "fold",
@@ -1076,6 +1543,7 @@ class PredictionScoreSchema(pa.DataFrameModel):
         return (
             data.lazyframe.group_by(
                 "as_of",
+                "model",
                 "model_version",
                 "dataset_snapshot_id",
                 "fold",
@@ -1118,6 +1586,246 @@ class TargetWeightSchema(pa.DataFrameModel):
         return _rows_are_unique(
             data, ["as_of", "strategy", "strategy_version", "symbol"]
         )
+
+
+class OpenExecutionStateSchema(pa.DataFrameModel):
+    """A-share opening facts projected without future intraday information."""
+
+    date: pl.Date
+    symbol: str = pa.Field(str_matches=r"^\d{6}\.(SH|SZ)$")
+    open: float = pa.Field(gt=0, nullable=True)
+    has_open: bool
+    full_day_suspended: bool
+    partial_open_status: str = pa.Field(
+        isin=[
+            "NOT_APPLICABLE",
+            "SUSPENDED_AT_OPEN",
+            "PROVEN_OPEN_TRADABLE",
+            "OPEN_UNKNOWN",
+        ]
+    )
+    has_price_limit: bool
+    up_limit: float = pa.Field(gt=0, nullable=True)
+    down_limit: float = pa.Field(gt=0, nullable=True)
+    buy_allowed: bool
+    sell_allowed: bool
+    reason: str = pa.Field(
+        nullable=True,
+        isin=["SUSPENDED", "OPEN_UNKNOWN", "MISSING_OPEN"],
+    )
+
+    class Config:
+        strict = True
+        coerce = True
+
+    @pa.dataframe_check
+    def state_fields_consistent(  # type: ignore[misc]
+        cls, data: pa.PolarsData
+    ) -> pl.LazyFrame:
+        frame = data.lazyframe
+        open_consistent = pl.col("has_open") == pl.col("open").is_not_null()
+        limits_consistent = pl.when(pl.col("has_price_limit")).then(
+            pl.col("up_limit").is_not_null()
+            & pl.col("down_limit").is_not_null()
+            & (pl.col("down_limit") < pl.col("up_limit"))
+        ).otherwise(
+            pl.col("up_limit").is_null() & pl.col("down_limit").is_null()
+        )
+        blocked_consistent = pl.when(pl.col("reason").is_not_null()).then(
+            ~pl.col("buy_allowed") & ~pl.col("sell_allowed")
+        ).otherwise(pl.lit(True))
+        full_day_consistent = pl.when(pl.col("full_day_suspended")).then(
+            (pl.col("partial_open_status") == "NOT_APPLICABLE")
+            & (pl.col("reason") == "SUSPENDED")
+        ).otherwise(pl.lit(True))
+        return frame.select(
+            (
+                open_consistent
+                & limits_consistent
+                & blocked_consistent
+                & full_day_consistent
+                & _unique_expr(["date", "symbol"])
+            ).all()
+        )
+
+
+class AShareSimulationNavSchema(pa.DataFrameModel):
+    date: pl.Date = pa.Field(unique=True)
+    pre_trade_equity: float = pa.Field(ge=0)
+    cash: float = pa.Field(ge=0)
+    market_value: float = pa.Field(ge=0)
+    cash_receivable: float = pa.Field(ge=0)
+    stock_receivable_value: float = pa.Field(ge=0)
+    equity: float = pa.Field(ge=0)
+    unit_nav: float = pa.Field(ge=0)
+    daily_return: float
+    cumulative_commission: float = pa.Field(ge=0)
+    cumulative_stamp_tax: float = pa.Field(ge=0)
+    cumulative_transfer_fee: float = pa.Field(ge=0)
+    cumulative_slippage_cost: float = pa.Field(ge=0)
+
+    class Config:
+        strict = True
+        coerce = False
+
+    @pa.dataframe_check
+    def finite_and_balanced(cls, data: pa.PolarsData) -> pl.LazyFrame:  # type: ignore[misc]
+        numeric = [name for name in cls.to_schema().columns if name != "date"]
+        return data.lazyframe.select(
+            pl.all_horizontal(*(pl.col(name).is_finite() for name in numeric)).all()
+            & (
+                pl.col("equity")
+                == pl.col("cash")
+                + pl.col("market_value")
+                + pl.col("cash_receivable")
+                + pl.col("stock_receivable_value")
+            ).all()
+        )
+
+
+class AShareSimulationTradeSchema(pa.DataFrameModel):
+    date: pl.Date
+    symbol: str = pa.Field(str_matches=r"^\d{6}\.(SH|SZ)$")
+    side: str = pa.Field(isin=[item.value for item in OrderSide])
+    quantity: int = pa.Field(gt=0)
+    reference_open: float = pa.Field(gt=0)
+    execution_price: float = pa.Field(gt=0)
+    notional: float = pa.Field(gt=0)
+    commission: float = pa.Field(ge=0)
+    stamp_tax: float = pa.Field(ge=0)
+    transfer_fee: float = pa.Field(ge=0)
+    total_fee: float = pa.Field(ge=0)
+    slippage_cost: float = pa.Field(ge=0)
+
+    class Config:
+        strict = True
+        coerce = False
+
+    @pa.dataframe_check
+    def unique_and_balanced(cls, data: pa.PolarsData) -> pl.LazyFrame:  # type: ignore[misc]
+        return data.lazyframe.select(
+            _unique_expr(["date", "symbol", "side"])
+            & (pl.col("notional") == pl.col("quantity") * pl.col("execution_price")).all()
+            & (
+                pl.col("total_fee")
+                == pl.col("commission") + pl.col("stamp_tax") + pl.col("transfer_fee")
+            ).all()
+        )
+
+
+class AShareSimulationPositionSchema(pa.DataFrameModel):
+    date: pl.Date
+    symbol: str = pa.Field(str_matches=r"^\d{6}\.(SH|SZ)$")
+    quantity: int = pa.Field(gt=0)
+    sellable_quantity: int = pa.Field(ge=0)
+    unsettled_quantity: int = pa.Field(ge=0)
+    mark_price: float = pa.Field(gt=0)
+    market_value: float = pa.Field(gt=0)
+    target_weight: float = pa.Field(ge=0, le=1)
+    target_quantity: int = pa.Field(nullable=True, ge=0)
+    pending_exit: bool
+
+    class Config:
+        strict = True
+        coerce = False
+
+    @pa.dataframe_check
+    def unique_and_balanced(cls, data: pa.PolarsData) -> pl.LazyFrame:  # type: ignore[misc]
+        return data.lazyframe.select(
+            _unique_expr(["date", "symbol"])
+            & (
+                pl.col("quantity")
+                == pl.col("sellable_quantity") + pl.col("unsettled_quantity")
+            ).all()
+            & (
+                pl.col("market_value") == pl.col("quantity") * pl.col("mark_price")
+            ).all()
+        )
+
+
+class AShareSimulationRejectionSchema(pa.DataFrameModel):
+    date: pl.Date
+    symbol: str = pa.Field(str_matches=r"^\d{6}\.(SH|SZ)$")
+    side: str = pa.Field(isin=[item.value for item in OrderSide])
+    reason: str = pa.Field(isin=[item.value for item in ExecutionRejectReason])
+    requested_quantity: int = pa.Field(nullable=True, ge=0)
+    filled_quantity: int = pa.Field(ge=0)
+    rejected_quantity: int = pa.Field(nullable=True, ge=0)
+    rejected_notional: float = pa.Field(ge=0)
+
+    class Config:
+        strict = True
+        coerce = False
+
+    @pa.dataframe_check
+    def key_unique(cls, data: pa.PolarsData) -> pl.LazyFrame:  # type: ignore[misc]
+        return data.lazyframe.select(
+            _unique_expr(["date", "symbol", "side", "reason"])
+        )
+
+
+class AShareCorporateActionPostingSchema(pa.DataFrameModel):
+    date: pl.Date
+    event_id: str
+    symbol: str = pa.Field(str_matches=r"^\d{6}\.(SH|SZ)$")
+    posting_type: str = pa.Field(isin=[item.value for item in EntitlementPostingType])
+    cash_amount: float
+    stock_quantity: int = pa.Field(ge=0)
+    cash_rounding_delta: float
+    cash_state_before: str = pa.Field(isin=[item.value for item in EntitlementLegState])
+    cash_state_after: str = pa.Field(isin=[item.value for item in EntitlementLegState])
+    stock_state_before: str = pa.Field(isin=[item.value for item in EntitlementLegState])
+    stock_state_after: str = pa.Field(isin=[item.value for item in EntitlementLegState])
+
+    class Config:
+        strict = True
+        coerce = False
+
+    @pa.dataframe_check
+    def key_unique(cls, data: pa.PolarsData) -> pl.LazyFrame:  # type: ignore[misc]
+        return data.lazyframe.select(
+            _unique_expr(["date", "event_id", "posting_type"])
+        )
+
+
+class AShareDailyDiagnosticsSchema(pa.DataFrameModel):
+    date: pl.Date = pa.Field(unique=True)
+    n_target_symbols: int = pa.Field(ge=0)
+    n_position_symbols: int = pa.Field(ge=0)
+    n_order_intents: int = pa.Field(ge=0)
+    n_trades: int = pa.Field(ge=0)
+    n_rejections: int = pa.Field(ge=0)
+    pre_trade_equity: float = pa.Field(gt=0)
+    gross_turnover: float = pa.Field(ge=0)
+    one_way_turnover: float = pa.Field(ge=0)
+    buy_allocation_lambda: float = pa.Field(nullable=True, ge=0, le=1)
+    cash_after: float = pa.Field(ge=0)
+
+    class Config:
+        strict = True
+        coerce = False
+
+
+class AShareEntitlementSnapshotSchema(pa.DataFrameModel):
+    date: pl.Date
+    event_id: str
+    symbol: str = pa.Field(str_matches=r"^\d{6}\.(SH|SZ)$")
+    record_quantity: int = pa.Field(gt=0)
+    cash_entitlement_gross: float = pa.Field(ge=0)
+    stock_entitlement: int = pa.Field(ge=0)
+    cash_state: str = pa.Field(isin=[item.value for item in EntitlementLegState])
+    stock_state: str = pa.Field(isin=[item.value for item in EntitlementLegState])
+    cash_receivable: float = pa.Field(ge=0)
+    stock_receivable: int = pa.Field(ge=0)
+    stock_receivable_value: float = pa.Field(ge=0)
+
+    class Config:
+        strict = True
+        coerce = False
+
+    @pa.dataframe_check
+    def key_unique(cls, data: pa.PolarsData) -> pl.LazyFrame:  # type: ignore[misc]
+        return data.lazyframe.select(_unique_expr(["date", "event_id"]))
 
 
 class BacktestNavSchema(pa.DataFrameModel):
@@ -1388,6 +2096,89 @@ class CashSchema(pa.DataFrameModel):
 def _rows_are_unique(data: pa.PolarsData, columns: list[str]) -> pl.LazyFrame:
     """返回单值检查结果：指定复合键没有重复行。"""
     return data.lazyframe.select(_unique_expr(columns).alias("is_unique"))
+
+
+def _hk_action_fields_consistent_expr() -> pl.Expr:
+    """Shared four-branch economic-field invariant for HK canonical/evidence rows."""
+    action = pl.col("action_type")
+    cash = pl.col("cash_per_share_gross")
+    stock = pl.col("stock_ratio")
+    multiplier = pl.col("share_multiplier")
+    rights_ratio = pl.col("rights_ratio")
+    rights_price = pl.col("rights_subscription_price")
+    rights_start = pl.col("rights_subscription_start")
+    rights_end = pl.col("rights_subscription_end")
+    currency = pl.col("declared_currency")
+    pay = pl.col("pay_date")
+    list_date = pl.col("stock_list_date")
+    common = (
+        (pl.col("record_date") <= pl.col("ex_date"))
+        & (cash.is_null() | cash.is_finite())
+        & (stock.is_null() | stock.is_finite())
+        & (multiplier.is_null() | multiplier.is_finite())
+        & (rights_ratio.is_null() | rights_ratio.is_finite())
+        & (rights_price.is_null() | rights_price.is_finite())
+    )
+    dividend = (
+        (action == "DIVIDEND")
+        & currency.is_not_null()
+        & cash.is_not_null()
+        & pay.is_not_null()
+        & (pay >= pl.col("ex_date"))
+        & stock.is_null()
+        & multiplier.is_null()
+        & rights_ratio.is_null()
+        & rights_price.is_null()
+        & rights_start.is_null()
+        & rights_end.is_null()
+        & list_date.is_null()
+    )
+    bonus = (
+        (action == "BONUS")
+        & currency.is_null()
+        & cash.is_null()
+        & stock.is_not_null()
+        & multiplier.is_null()
+        & rights_ratio.is_null()
+        & rights_price.is_null()
+        & rights_start.is_null()
+        & rights_end.is_null()
+        & pay.is_null()
+        & list_date.is_not_null()
+        & (list_date >= pl.col("ex_date"))
+    )
+    split = (
+        (action == "SPLIT")
+        & currency.is_null()
+        & cash.is_null()
+        & stock.is_null()
+        & multiplier.is_not_null()
+        & (multiplier != 1.0)
+        & rights_ratio.is_null()
+        & rights_price.is_null()
+        & rights_start.is_null()
+        & rights_end.is_null()
+        & pay.is_null()
+        & list_date.is_not_null()
+        & (list_date >= pl.col("ex_date"))
+    )
+    rights = (
+        (action == "RIGHTS")
+        & currency.is_not_null()
+        & cash.is_null()
+        & stock.is_null()
+        & multiplier.is_null()
+        & rights_ratio.is_not_null()
+        & rights_price.is_not_null()
+        & rights_start.is_not_null()
+        & rights_end.is_not_null()
+        & pay.is_null()
+        & list_date.is_not_null()
+        & (pl.col("ex_date") <= rights_start)
+        & (rights_start <= rights_end)
+        & (rights_end <= list_date)
+    )
+    return common & (dividend | bonus | split | rights)
 
 
 def _unique_expr(columns: list[str]) -> pl.Expr:

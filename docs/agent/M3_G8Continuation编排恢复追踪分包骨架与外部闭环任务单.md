@@ -10,6 +10,11 @@
 > 本文取代旧 O1–O5 的执行颗粒度，补齐 verified continuation 输入、stage-owned 原子目录、handler 能力边界和
 > G7 `backtest_plan`。本文不宣称 G8、G9、M3 或任何 Gate 已实现或通过。
 
+> **开发并行轨边界（2026-07-31）：** G8A/G8B 可按
+> [`M3_DevelopmentExampleRelease开发并行轨任务单.md`](M3_DevelopmentExampleRelease开发并行轨任务单.md)
+> 使用 development example 验证 snapshot plan、首次发布、恢复和幂等执行。其节点名/receipt stage 与正式
+> `snapshot` 分离，正式 runner 拒绝该节点；这些结果不代表真实 handlers、正式 G8 或任何 Gate 通过。
+
 ## 1. 六包拆分
 
 | 包 | 唯一职责 | 前置 |
@@ -22,6 +27,18 @@
 | **G8F** | 2 folds×2 horizons fake 全 DAG 集成 | G8A–G8E |
 
 真实 handler 未实现不阻止 fake 合同落地，但报告必须写明真实 G8 Gate 未关闭。
+
+### 1.1 Identity-resolved waves 修订（2026-08-02）
+
+五种用户可见 continuation 模式保持不变，但 `PROVIDER` 与 `EXPERIMENT` 各自由多个串行、可恢复、每次身份完全解析的 `RunPlan` wave 组成。禁止用 orchestration plan hash 代理 provider、provider-validation、experiment 或 label-reconciliation 的业务 identity。
+
+- provider materialization 只有在 snapshot、dump tool、provider runtime fingerprint 与 code identity 均已验证后才能规划；provider-validation 必须等待 `VerifiedProviderArtifact` 及其 receipt。
+- experiment identity 必须等待 verified provider、code/dependency identity；provider-validation PASS 是 dependency gate，不进入 experiment identity 内容输入。
+- labels/folds 等待 `VerifiedExperimentIdentity`；label-reconciliation 等待对应 `VerifiedLabelArtifact`，不得预填未知 manifest hash。
+- WORK 可在 verified experiment/folds/labels/reconciliation 闭包后一次性规划；features 按 fold 共享，work key 只使用规范 `compute_work_key`。
+- verified continuation 的 receipt/path/digest 引用须由 verifier 产生的窄合同承载，调用方不得裸报 path/hash。
+
+因此，G8A 首包只关闭 registry、SNAPSHOT、WORK 与 SUMMARY 计划合同；PROVIDER/EXPERIMENT waves 随正式 ExperimentIdentity/通用 static runner 合同补齐后关闭。该阶段状态不等于完整 G8A 或 G8 Gate。
 
 ## 2. G8A：registry 与 continuation plans
 

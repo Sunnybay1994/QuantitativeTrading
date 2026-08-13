@@ -144,6 +144,10 @@ dividend_tax_policy = "GROSS_IGNORE_PERSONAL_HOLDING_PERIOD_TAX"
 rights_policy = "ERROR_IF_RELEVANT"
 force_liquidation = false
 friction_multipliers = [0.5, 1.0, 2.0]
+execution_price_rounding = "BUY_CEIL_SELL_FLOOR_TICK_V1"
+fee_rounding = "EACH_COMPONENT_HALF_UP_CENT_V1"
+cash_settlement_rounding = "HALF_UP_CENT_V1"
+annualization_sessions = 252
 
 [evaluation]
 minimum_ic_symbols = 30

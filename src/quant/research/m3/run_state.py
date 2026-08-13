@@ -101,6 +101,15 @@ class StageReceipt:
             raise ValueError(f"inputs/outputs 交叉重复 (alias,path): {alias},{relative}")
 
 
+@dataclass(frozen=True)
+class VerifiedStageReceipt:
+    """A receipt parsed and rehashed from one stable file read."""
+
+    receipt: StageReceipt
+    raw: bytes
+    sha256: str
+
+
 def compute_snapshot_request_key(
     *,
     g1_release_id: str,
@@ -243,33 +252,70 @@ def verify_stage_receipt(
     artifact_roots: Mapping[str, Path],
 ) -> StageReceipt | None:
     """缺文件返回 None；损坏/不一致抛错；验真通过返回 StageReceipt。"""
+    verified = verify_stage_receipt_with_bytes(
+        receipt_path=receipt_path, artifact_roots=artifact_roots
+    )
+    return None if verified is None else verified.receipt
+
+
+def verify_stage_receipt_with_bytes(
+    *,
+    receipt_path: Path,
+    artifact_roots: Mapping[str, Path],
+) -> VerifiedStageReceipt | None:
+    """Verify a receipt and return the exact bytes used for parsing and hashing."""
     roots = _validate_artifact_roots(artifact_roots)
     _assert_receipt_contained(receipt_path, roots)
     parent = receipt_path.parent
     _assert_existing_dir_no_symlink_chain(parent, label="receipt_parent")
 
     try:
-        leaf_st = os.lstat(receipt_path)
+        raw = _read_stable_regular_bytes(
+            receipt_path, label="receipt", require_single_link=False
+        )
     except FileNotFoundError:
         return None
-    except OSError:
-        raise ValueError("receipt 不可读") from None
-
-    if stat.S_ISLNK(leaf_st.st_mode):
-        raise ValueError("receipt 为 symlink")
-    if not stat.S_ISREG(leaf_st.st_mode):
-        raise ValueError("receipt 非普通文件")
-
-    try:
-        raw = Path(receipt_path).read_bytes()
-    except OSError:
-        raise ValueError("receipt 不可读") from None
 
     receipt = _parse_receipt_bytes(raw)
     _assert_context_consistency(receipt, roots, receipt_path=receipt_path)
     for digest in (*receipt.inputs, *receipt.outputs):
         _verify_digest_bytes(digest, roots)
-    return receipt
+    return VerifiedStageReceipt(
+        receipt=receipt,
+        raw=raw,
+        sha256=hashlib.sha256(raw).hexdigest(),
+    )
+
+
+def select_artifact_root(
+    path: Path, *, artifact_roots: Mapping[str, Path]
+) -> tuple[str, Path]:
+    """Return the most-specific validated root containing ``path``."""
+    roots = _validate_artifact_roots(artifact_roots)
+    absolute = Path(os.path.abspath(path))
+    matches: list[tuple[str, Path]] = []
+    for alias, root in roots.items():
+        try:
+            absolute.relative_to(root)
+        except ValueError:
+            continue
+        matches.append((alias, root))
+    if not matches:
+        raise ValueError("artifact 不在任一 root 内")
+    return max(matches, key=lambda item: len(item[1].parts))
+
+
+def path_for_artifact_digest(
+    digest: ArtifactDigest, *, artifact_roots: Mapping[str, Path]
+) -> Path:
+    """Resolve a receipt digest through the validated root registry."""
+    roots = _validate_artifact_roots(artifact_roots)
+    root = roots.get(digest.root_alias)
+    if root is None:
+        raise ValueError(f"未知 root alias: {digest.root_alias}")
+    return _resolve_leaf_under_root(
+        root, digest.relative_path, alias=digest.root_alias
+    )
 
 
 def publish_stage_receipt(
@@ -643,8 +689,8 @@ def _dir_identity(path: Path) -> tuple[int, int]:
         st = os.lstat(path)
     except OSError:
         raise ValueError("root 不可读") from None
-    if stat.S_ISLNK(st.st_mode):
-        raise ValueError("root 为 symlink")
+    if _is_link_or_reparse(st):
+        raise ValueError("root 为 symlink/reparse point")
     if not stat.S_ISDIR(st.st_mode):
         raise ValueError("root 不是目录")
     return (st.st_dev, st.st_ino)
@@ -658,8 +704,8 @@ def _assert_existing_dir_no_symlink_chain(path: Path, *, label: str) -> None:
         raise ValueError(f"{label} 不存在") from None
     except OSError:
         raise ValueError(f"{label} 不可读") from None
-    if stat.S_ISLNK(st.st_mode):
-        raise ValueError(f"{label} 为 symlink")
+    if _is_link_or_reparse(st):
+        raise ValueError(f"{label} 为 symlink/reparse point")
     if not stat.S_ISDIR(st.st_mode):
         raise ValueError(f"{label} 不是目录")
     _assert_ancestor_components_no_symlink(abs_path)
@@ -674,8 +720,8 @@ def _assert_ancestor_components_no_symlink(path: Path) -> None:
             break
         except OSError:
             raise ValueError("路径组件不可读") from None
-        if stat.S_ISLNK(st.st_mode):
-            raise ValueError("路径组件为 symlink")
+        if _is_link_or_reparse(st):
+            raise ValueError("路径组件为 symlink/reparse point")
         parent = current.parent
         if parent == current:
             break
@@ -711,7 +757,7 @@ def _receipt_leaf_state(receipt_path: Path) -> str:
         return "missing"
     except OSError:
         raise ValueError("receipt 不可读") from None
-    if stat.S_ISLNK(st.st_mode):
+    if _is_link_or_reparse(st):
         return "symlink"
     if stat.S_ISREG(st.st_mode):
         return "file"
@@ -841,8 +887,10 @@ def _resolve_leaf_under_root(root: Path, relative: str, *, alias: str) -> Path:
             raise ValueError(f"artifact 缺失: {alias}:{relative}") from None
         except OSError:
             raise ValueError(f"artifact 不可读: {alias}:{relative}") from None
-        if stat.S_ISLNK(st.st_mode):
-            raise ValueError(f"路径组件为 symlink: {alias}:{relative}")
+        if _is_link_or_reparse(st):
+            raise ValueError(
+                f"路径组件为 symlink/reparse point: {alias}:{relative}"
+            )
         is_leaf = index == len(parts) - 1
         if is_leaf:
             if not stat.S_ISREG(st.st_mode):
@@ -863,8 +911,10 @@ def _regular_file_identity(
         st = os.lstat(path)
     except OSError:
         raise ValueError(f"artifact 不可读: {alias}:{relative}") from None
-    if stat.S_ISLNK(st.st_mode):
-        raise ValueError(f"路径组件为 symlink: {alias}:{relative}")
+    if _is_link_or_reparse(st):
+        raise ValueError(
+            f"路径组件为 symlink/reparse point: {alias}:{relative}"
+        )
     if not stat.S_ISREG(st.st_mode):
         raise ValueError(f"artifact 非普通文件: {alias}:{relative}")
     return (st.st_dev, st.st_ino)
@@ -879,12 +929,9 @@ def _verify_digest_bytes(
         digest.relative_path,
         alias=digest.root_alias,
     )
-    try:
-        payload = path.read_bytes()
-    except OSError:
-        raise ValueError(
-            f"artifact 不可读: {digest.root_alias}:{digest.relative_path}"
-        ) from None
+    payload = _read_stable_regular_bytes(
+        path, label=f"artifact:{digest.root_alias}:{digest.relative_path}"
+    )
     if len(payload) != digest.size_bytes:
         raise ValueError(
             f"artifact 大小不符: {digest.root_alias}:{digest.relative_path}"
@@ -896,7 +943,100 @@ def _verify_digest_bytes(
         )
 
 
+def _read_stable_regular_bytes(
+    path: Path, *, label: str, require_single_link: bool = True
+) -> bytes:
+    """Read a non-linked regular file and bind bytes to the opened identity."""
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError:
+        try:
+            leaf = os.lstat(path)
+        except FileNotFoundError:
+            raise
+        except OSError:
+            raise ValueError(f"{label} 不可读") from None
+        if _is_link_or_reparse(leaf):
+            raise ValueError(f"{label} 为 symlink/reparse point") from None
+        raise
+    except OSError:
+        try:
+            if _is_link_or_reparse(os.lstat(path)):
+                raise ValueError(f"{label} 为 symlink/reparse point") from None
+        except FileNotFoundError:
+            raise
+        except ValueError:
+            raise
+        except OSError:
+            pass
+        raise ValueError(f"{label} 不可读") from None
+    try:
+        before = os.fstat(descriptor)
+        _assert_stable_regular_stat(
+            before, label=label, require_single_link=require_single_link
+        )
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            raw = stream.read()
+        after = os.fstat(descriptor)
+        _assert_stable_regular_stat(
+            after, label=label, require_single_link=require_single_link
+        )
+        before_identity = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            getattr(before, "st_mtime_ns", None),
+        )
+        after_identity = (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            getattr(after, "st_mtime_ns", None),
+        )
+        if before_identity != after_identity or len(raw) != after.st_size:
+            raise ValueError(f"{label} 读取期间发生变化")
+        _assert_ancestor_components_no_symlink(path.parent)
+        try:
+            current = os.lstat(path)
+        except OSError:
+            raise ValueError(f"{label} 路径身份发生变化") from None
+        if (current.st_dev, current.st_ino) != (after.st_dev, after.st_ino):
+            raise ValueError(f"{label} 路径身份发生变化")
+        return raw
+    finally:
+        os.close(descriptor)
+
+
+def _assert_stable_regular_stat(
+    info: os.stat_result, *, label: str, require_single_link: bool
+) -> None:
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError(f"{label} 非普通文件")
+    if require_single_link and getattr(info, "st_nlink", 1) != 1:
+        raise ValueError(f"{label} 链接计数非法")
+    if getattr(info, "st_file_attributes", 0) & getattr(
+        stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0
+    ):
+        raise ValueError(f"{label} 为 reparse point")
+
+
+def _is_link_or_reparse(info: os.stat_result) -> bool:
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    )
+
+
 def _fsync_parent_dir(parent: Path) -> None:
+    if not _directory_fsync_supported():
+        # Windows has no reliable directory-fd fsync. Receipt file bytes are
+        # flushed above; this matches the accepted Windows native publish rail.
+        return
     try:
         fd = os.open(str(parent), os.O_RDONLY)
     except OSError as exc:
@@ -919,4 +1059,8 @@ def _fsync_parent_dir(parent: Path) -> None:
         except OSError:
             if primary_error is None:
                 raise ValueError("父目录 fsync 失败") from None
+
+
+def _directory_fsync_supported() -> bool:
+    return os.name != "nt"
 

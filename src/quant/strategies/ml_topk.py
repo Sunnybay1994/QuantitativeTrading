@@ -9,7 +9,8 @@ import datetime as dt
 
 import polars as pl
 
-from quant.domain import PredictionScoreSchema, TargetWeightSchema
+from quant.domain import TargetWeightSchema
+from quant.research.m3.predictions import normalize_prediction_scores
 from quant.strategies.base import Strategy
 
 _IDENTITY_COLS = (
@@ -19,42 +20,6 @@ _IDENTITY_COLS = (
     "fold",
     "horizon_sessions",
 )
-
-
-def normalize_prediction_scores(frame: pl.DataFrame) -> pl.DataFrame:
-    """标准化预测表：按固定排序重算 rank，并通过 PredictionScoreSchema。"""
-    required = {
-        "as_of",
-        "symbol",
-        "score",
-        "model",
-        "model_version",
-        "dataset_snapshot_id",
-        "fold",
-        "horizon_sessions",
-    }
-    missing = sorted(required - set(frame.columns))
-    if missing:
-        raise ValueError(f"predictions 缺少字段: {missing}")
-
-    ranked = frame.sort(
-        ["as_of", "score", "symbol"], descending=[False, True, False]
-    ).with_columns(
-        (
-            pl.col("symbol")
-            .cum_count()
-            .over(
-                [
-                    "as_of",
-                    "model_version",
-                    "dataset_snapshot_id",
-                    "fold",
-                    "horizon_sessions",
-                ]
-            )
-        ).alias("rank")
-    )
-    return PredictionScoreSchema.validate(ranked)
 
 
 class MlTopkStrategy(Strategy):
@@ -92,7 +57,8 @@ class MlTopkStrategy(Strategy):
 
         eligibility = _resolve_eligibility(day)
         pred_cols = [col for col in day.columns if col != "eligible"]
-        predictions = normalize_prediction_scores(day.select(pred_cols))
+        prediction_rows = day.filter(pl.col("score").is_not_null())
+        predictions = normalize_prediction_scores(prediction_rows.select(pred_cols))
         _assert_single_slice(predictions)
 
         cross = predictions.join(eligibility, on="symbol", how="left").with_columns(
@@ -103,7 +69,10 @@ class MlTopkStrategy(Strategy):
         )
         selected = eligible.head(self.top_k)
         investable = 1.0 - self.cash_buffer
-        weights = {row["symbol"]: 0.0 for row in cross.iter_rows(named=True)}
+        weights = {
+            row["symbol"]: 0.0
+            for row in eligibility.iter_rows(named=True)
+        }
         if not selected.is_empty():
             raw = investable / selected.height
             if self.max_weight is not None:

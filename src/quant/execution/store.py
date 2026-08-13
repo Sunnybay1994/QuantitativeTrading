@@ -27,7 +27,7 @@ from quant.execution.risk import (
     serialize_daily_risk_counters,
 )
 
-CURRENT_SCHEMA_VERSION: Final[int] = 3
+CURRENT_SCHEMA_VERSION: Final[int] = 4
 
 _URI_PREFIX = "sqlite:///"
 _HEX_OR_KEY = re.compile(r"^[A-Za-z0-9_.:\-]+$")
@@ -610,15 +610,22 @@ class ExecutionRepository:
         select_cols = "identity, payload"
         if extra_names:
             select_cols = f"{select_cols}, {', '.join(extra_names)}"
-        existing = self._conn.execute(
-            f"SELECT {select_cols} FROM {table} WHERE {key_column} = ?",
-            (key,),
-        ).fetchone()
+        query_error: StoreError | None = None
+        existing: tuple[object, ...] | None = None
+        try:
+            existing = self._conn.execute(
+                f"SELECT {select_cols} FROM {table} WHERE {key_column} = ?",
+                (key,),
+            ).fetchone()
+        except sqlite3.Error:
+            query_error = StoreError(f"{subject.upper()}_QUERY_FAILED")
+        if query_error is not None:
+            raise query_error from None
         if existing is not None:
-            same_identity = str(existing[0]) == identity
-            same_payload = bytes(existing[1]) == payload
+            same_identity = type(existing[0]) is str and existing[0] == identity
+            same_payload = type(existing[1]) is bytes and existing[1] == payload
             same_extras = all(
-                str(existing[2 + i]) == value
+                type(existing[2 + i]) is str and existing[2 + i] == value
                 for i, (_, value) in enumerate(extra_columns)
             )
             if same_identity and same_payload and same_extras:
@@ -632,8 +639,107 @@ class ExecutionRepository:
             )
         except sqlite3.IntegrityError:
             mapped = StoreError("REFERENTIAL_INTEGRITY")
+        except sqlite3.Error:
+            mapped = StoreError(f"{subject.upper()}_WRITE_FAILED")
         if mapped is not None:
             raise mapped from None
+        return True
+
+    def _replace_row_cas(
+        self,
+        *,
+        table: str,
+        key_column: str,
+        key: str,
+        expected_identity: str,
+        identity: str,
+        payload: bytes,
+        subject: str,
+    ) -> bool:
+        """Replace one opaque row under an identity fence and local savepoint."""
+        expected = _require_identity(expected_identity)
+        replacement_identity = _require_identity(identity)
+        replacement_payload = _require_payload(payload)
+        query_error: StoreError | None = None
+        row: tuple[object, ...] | None = None
+        try:
+            row = self._conn.execute(
+                f"SELECT {key_column}, identity, payload FROM {table} "
+                f"WHERE {key_column} = ?",
+                (key,),
+            ).fetchone()
+        except sqlite3.Error:
+            query_error = StoreError(f"{subject}_QUERY_FAILED")
+        if query_error is not None:
+            raise query_error from None
+        if row is None:
+            raise StoreError(f"{subject}_NOT_FOUND")
+        current = _row_to_stored(row[0], row[1], row[2])
+        if current.identity == replacement_identity:
+            if current.payload == replacement_payload:
+                return False
+            raise IdempotencyConflict(f"IDEMPOTENCY_CONFLICT:{subject}")
+        if current.identity != expected:
+            raise IdempotencyConflict(f"{subject}_CAS_MISMATCH")
+
+        savepoint_error: StoreError | None = None
+        try:
+            self._conn.execute("SAVEPOINT execution_state_cas")
+        except sqlite3.Error:
+            savepoint_error = StoreError(f"{subject}_CAS_FAILED")
+        if savepoint_error is not None:
+            raise savepoint_error from None
+
+        operation_error: StoreError | None = None
+        changed = 0
+        verified: tuple[object, ...] | None = None
+        try:
+            cursor = self._conn.execute(
+                f"UPDATE {table} SET identity = ?, payload = ? "
+                f"WHERE {key_column} = ? AND identity = ?",
+                (replacement_identity, replacement_payload, key, expected),
+            )
+            changed = cursor.rowcount
+            verified = self._conn.execute(
+                f"SELECT {key_column}, identity, payload FROM {table} "
+                f"WHERE {key_column} = ?",
+                (key,),
+            ).fetchone()
+        except sqlite3.Error:
+            operation_error = StoreError(f"{subject}_CAS_FAILED")
+        if changed != 1 or verified is None:
+            operation_error = operation_error or StoreError(f"{subject}_CAS_CONFLICT")
+        if operation_error is None:
+            assert verified is not None
+            proven: StoredRecord | None = None
+            try:
+                proven = _row_to_stored(verified[0], verified[1], verified[2])
+            except StoreError:
+                operation_error = StoreError(f"{subject}_CAS_CONFLICT")
+            if operation_error is None:
+                assert proven is not None
+                if (
+                    proven.identity != replacement_identity
+                    or proven.payload != replacement_payload
+                ):
+                    operation_error = StoreError(f"{subject}_CAS_CONFLICT")
+
+        if operation_error is None:
+            try:
+                self._conn.execute("RELEASE SAVEPOINT execution_state_cas")
+            except sqlite3.Error:
+                operation_error = StoreError(f"{subject}_CAS_FAILED")
+
+        if operation_error is not None:
+            rollback_failed = False
+            try:
+                self._conn.execute("ROLLBACK TO SAVEPOINT execution_state_cas")
+                self._conn.execute("RELEASE SAVEPOINT execution_state_cas")
+            except sqlite3.Error:
+                rollback_failed = True
+            if rollback_failed:
+                raise StoreError(f"{subject}_CAS_ROLLBACK_FAILED") from None
+            raise operation_error from None
         return True
 
     def put_command(self, *, command_id: str, identity: str, payload: bytes) -> bool:
@@ -709,6 +815,108 @@ class ExecutionRepository:
         if row is None:
             return None
         return _row_to_stored(row[0], row[1], row[2])
+
+    def replace_order_aggregate(
+        self,
+        *,
+        command_id: str,
+        expected_identity: str,
+        identity: str,
+        payload: bytes,
+    ) -> bool:
+        """CAS-replace an OMS projection; exact desired content is a no-op."""
+        return self._replace_row_cas(
+            table="order_aggregates",
+            key_column="command_id",
+            key=_require_key("command_id", command_id),
+            expected_identity=expected_identity,
+            identity=identity,
+            payload=payload,
+            subject="ORDER_AGGREGATE",
+        )
+
+    def put_execution_stage(
+        self, *, plan_id: str, identity: str, payload: bytes
+    ) -> bool:
+        """Persist one immutable plan-stage receipt."""
+        return self._put_row(
+            table="execution_stages",
+            key_column="plan_id",
+            key=_require_key("plan_id", plan_id),
+            identity=_require_identity(identity),
+            payload=_require_payload(payload),
+            subject="execution_stage",
+        )
+
+    def get_execution_stage(self, plan_id: str) -> StoredRecord | None:
+        """Return one immutable plan-stage receipt."""
+        key = _require_key("plan_id", plan_id)
+        mapped: StoreError | None = None
+        row: tuple[object, ...] | None = None
+        try:
+            row = self._conn.execute(
+                "SELECT plan_id, identity, payload FROM execution_stages "
+                "WHERE plan_id = ?",
+                (key,),
+            ).fetchone()
+        except sqlite3.Error:
+            mapped = StoreError("EXECUTION_STAGE_QUERY_FAILED")
+        if mapped is not None:
+            raise mapped from None
+        if row is None:
+            return None
+        return _row_to_stored(row[0], row[1], row[2])
+
+    def put_scoped_daily_risk_counters(
+        self, *, counter_key: str, identity: str, payload: bytes
+    ) -> bool:
+        """Insert the first durable counter snapshot for one explicit scope."""
+        return self._put_row(
+            table="scoped_daily_risk_counters",
+            key_column="counter_key",
+            key=_require_key("counter_key", counter_key),
+            identity=_require_identity(identity),
+            payload=_require_payload(payload),
+            subject="daily_risk_counters",
+        )
+
+    def get_scoped_daily_risk_counters(self, counter_key: str) -> StoredRecord | None:
+        """Return the current opaque daily counter snapshot."""
+        key = _require_key("counter_key", counter_key)
+        mapped: StoreError | None = None
+        row: tuple[object, ...] | None = None
+        try:
+            row = self._conn.execute(
+                "SELECT counter_key, identity, payload FROM scoped_daily_risk_counters "
+                "WHERE counter_key = ?",
+                (key,),
+            ).fetchone()
+        except sqlite3.Error:
+            mapped = StoreError("DAILY_RISK_COUNTERS_QUERY_FAILED")
+        if mapped is not None:
+            raise mapped from None
+        if row is None:
+            return None
+        return _row_to_stored(row[0], row[1], row[2])
+
+    def compare_and_set_scoped_daily_risk_counters(
+        self,
+        *,
+        counter_key: str,
+        expected_identity: str,
+        identity: str,
+        payload: bytes,
+    ) -> bool:
+        """CAS-replace a counter snapshot; exact desired content is a no-op."""
+        return self._replace_row_cas(
+            table="scoped_daily_risk_counters",
+            key_column="counter_key",
+            key=_require_key("counter_key", counter_key),
+            expected_identity=expected_identity,
+            identity=identity,
+            payload=payload,
+            subject="DAILY_RISK_COUNTERS",
+        )
 
     def put_outbox(self, *, outbox_key: str, identity: str, payload: bytes) -> bool:
         """Persist an outbox message; same key+payload is a no-op."""

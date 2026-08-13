@@ -9,7 +9,6 @@
 2026-08-02 合流证据：main 由 `6b64973` fast-forward 至 `e487581`；合流后 Windows Miniforge 与 WSL
 Miniforge `base` 分别重跑同一组 `118 passed`，Ruff 与 5 个生产源码 mypy 均通过。WSL 工作区位于
 DrvFS，该结果证明 Linux 解释器兼容性，不宣称 ext4 平台 Gate。
-
 ## 1. 交付内容
 
 - 新增以权威交易日历驱动的股票 / ETF 共用日频账户循环；
