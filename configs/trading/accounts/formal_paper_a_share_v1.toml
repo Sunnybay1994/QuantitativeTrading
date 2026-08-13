@@ -1,0 +1,17 @@
+[meta]
+schema_version = "formal-paper-account-v1"
+account_version = "formal_paper_a_share_v1"
+classification = "formal-paper-simulation"
+assumption_notice = "FORMAL PAPER SIMULATION ONLY; NOT A LIVE BROKER ACCOUNT"
+
+[account]
+account_label = "FORMAL_PAPER_A_SHARE"
+base_currency = "CNY"
+
+[initial_state]
+as_of = "2026-08-10T00:00:00Z"
+settled_cny = "500000.00"
+available_cny = "500000.00"
+receivable_cny = "0.00"
+payable_cny = "0.00"
+positions = []

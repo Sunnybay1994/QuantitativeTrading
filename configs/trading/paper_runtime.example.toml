@@ -1,0 +1,23 @@
+[meta]
+schema_version = "paper-runtime-config-v2"
+runtime_version = "paper_runtime_v2"
+mode = "development-example"
+
+[paths]
+runtime_root = "/absolute/development-paper-parent/runtime"
+broker_root = "/absolute/development-paper-parent/broker"
+evidence_root = "/absolute/development-paper-parent/evidence"
+anchor_root = "/absolute/development-paper-parent/anchor"
+log_root = "/absolute/development-paper-parent/log"
+# Must be replaced with paper_runtime.py's actual resolved checkout root.
+project_root = "/absolute/resolved-project-root"
+
+[store]
+oms_sqlite_filename = "oms.sqlite3"
+broker_sqlite_filename = "paper-broker.sqlite3"
+
+[selectors]
+account_selector = "development_account_v1"
+source_selector = "development_source_v1"
+policy_selector = "development_policy_v1"
+expected_schedule_selector = "development_schedule_v1"

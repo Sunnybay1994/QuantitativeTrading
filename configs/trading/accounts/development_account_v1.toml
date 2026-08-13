@@ -1,0 +1,17 @@
+[meta]
+schema_version = "formal-paper-account-v1"
+account_version = "development_account_v1"
+classification = "development"
+assumption_notice = "DEVELOPMENT EXAMPLE ONLY; NOT FOR FORMAL PAPER"
+
+[account]
+account_label = "DEVELOPMENT_EXAMPLE"
+base_currency = "CNY"
+
+[initial_state]
+as_of = "2026-01-01T00:00:00Z"
+settled_cny = "1000000.00"
+available_cny = "1000000.00"
+receivable_cny = "0.00"
+payable_cny = "0.00"
+positions = []

@@ -27,7 +27,8 @@ from quant.execution.risk import (
     serialize_daily_risk_counters,
 )
 
-CURRENT_SCHEMA_VERSION: Final[int] = 4
+CURRENT_SCHEMA_VERSION: Final[int] = 7
+LEDGER_CHECKPOINT_KEY: Final[str] = "paper-shadow-primary-v1"
 
 _URI_PREFIX = "sqlite:///"
 _HEX_OR_KEY = re.compile(r"^[A-Za-z0-9_.:\-]+$")
@@ -84,10 +85,101 @@ class StoredDailyRiskCounters:
 
 
 @dataclass(frozen=True, slots=True)
+class StoredEventRecord:
+    """Strict event row retaining its command foreign-key closure."""
+
+    event_id: str
+    command_id: str
+    identity: str
+    payload: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class StoredRiskTransitionReceipt:
+    """Opaque risk receipt retaining every indexed chain field."""
+
+    sequence: int
+    transition_kind: str
+    subject_id: str
+    receipt_id: str
+    previous_receipt_id: str
+    risk_counter_key: str
+    predecessor_counter_identity: str
+    projected_counter_identity: str
+    payload: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveryRows:
+    """One transaction-consistent, deterministically ordered recovery snapshot."""
+
+    commands: tuple[StoredRecord, ...]
+    events: tuple[StoredEventRecord, ...]
+    order_aggregates: tuple[StoredRecord, ...]
+    outbox_deliveries: tuple[OutboxDelivery, ...]
+    ledger_entries: tuple[StoredRecord, ...]
+    ledger_contexts: tuple[StoredRecord, ...]
+    ledger_checkpoints: tuple[StoredLedgerCheckpoint, ...]
+    cancel_commands: tuple[StoredCancelCommand, ...]
+    cancel_deliveries: tuple[CancelOutboxDelivery, ...]
+    cancel_event_links: tuple[StoredCancelEventLink, ...]
+    risk_transition_receipts: tuple[StoredRiskTransitionReceipt, ...]
+    risk_counter_rows: tuple[StoredRecord, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class StoredLedgerCheckpoint:
+    """Opaque checkpoint row retaining its append-only tail closure."""
+
+    checkpoint_key: str
+    identity: str
+    payload: bytes
+    last_entry_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class StoredCancelCommand:
+    """Opaque canonical cancel row retaining its target and risk closure."""
+
+    cancel_id: str
+    command_id: str
+    identity: str
+    payload: bytes
+    risk_counter_key: str
+    risk_policy_identity: str
+
+
+@dataclass(frozen=True, slots=True)
+class StoredCancelEventLink:
+    """Durable proof that one order callback was observed for one cancel."""
+
+    cancel_id: str
+    event_id: str
+    command_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class OutboxDelivery:
     """Strict delivery metadata joined with its opaque outbox record."""
 
     outbox_key: str
+    command_id: str
+    state: OutboxDeliveryState
+    attempt_count: int
+    available_at: dt.datetime
+    lease_owner: str | None
+    lease_until: dt.datetime | None
+    terminal_at: dt.datetime | None
+    last_error_code: str | None
+    identity: str
+    payload: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class CancelOutboxDelivery:
+    """Strict cancel delivery metadata joined with its immutable cancel bytes."""
+
+    cancel_id: str
     command_id: str
     state: OutboxDeliveryState
     attempt_count: int
@@ -116,6 +208,18 @@ def _require_identity(value: object) -> str:
     ):
         raise StoreError("IDENTITY_INVALID")
     return value
+
+
+def _require_transition_kind(value: object) -> str:
+    if type(value) is not str or value not in {"ORDER", "CANCEL"}:
+        raise StoreError("RISK_RECEIPT_KIND_INVALID")
+    return value
+
+
+def _require_checkpoint_key(value: object) -> str:
+    if value != LEDGER_CHECKPOINT_KEY:
+        raise StoreError("LEDGER_CHECKPOINT_KEY_INVALID")
+    return LEDGER_CHECKPOINT_KEY
 
 
 def _require_payload(value: object) -> bytes:
@@ -218,6 +322,114 @@ def _row_to_daily_risk_counters(
         counters=parsed[0],
         identity=parsed[1],
         updated_at=parsed[2],
+    )
+
+
+def _row_to_stored_event(row: tuple[object, ...]) -> StoredEventRecord:
+    if len(row) != 5:
+        raise StoreError("ROW_CORRUPT")
+    event = _row_to_stored(row[0], row[2], row[3])
+    command_id: str | None = None
+    command_ref: str | None = None
+    try:
+        command_id = _require_key("command_id", row[1])
+        command_ref = _require_key("command_id", row[4])
+    except StoreError:
+        pass
+    if command_id is None or command_ref is None or command_id != command_ref:
+        raise StoreError("ROW_CORRUPT")
+    return StoredEventRecord(
+        event_id=event.key,
+        command_id=command_id,
+        identity=event.identity,
+        payload=event.payload,
+    )
+
+
+def _row_to_risk_receipt(
+    row: tuple[object, ...],
+) -> StoredRiskTransitionReceipt:
+    if len(row) != 9:
+        raise StoreError("ROW_CORRUPT")
+    try:
+        sequence = _require_positive_int("sequence", row[0])
+        kind = _require_transition_kind(row[1])
+        subject = _require_identity(row[2])
+        receipt = _require_identity(row[3])
+        previous = _require_identity(row[4])
+        counter_key = _require_key("risk_counter_key", row[5])
+        predecessor = _require_identity(row[6])
+        projected = _require_identity(row[7])
+        payload = _require_payload(row[8])
+    except StoreError:
+        raise StoreError("ROW_CORRUPT") from None
+    return StoredRiskTransitionReceipt(
+        sequence=sequence,
+        transition_kind=kind,
+        subject_id=subject,
+        receipt_id=receipt,
+        previous_receipt_id=previous,
+        risk_counter_key=counter_key,
+        predecessor_counter_identity=predecessor,
+        projected_counter_identity=projected,
+        payload=payload,
+    )
+
+
+def _row_to_stored_aggregate(row: tuple[object, ...]) -> StoredRecord:
+    if len(row) != 4:
+        raise StoreError("ROW_CORRUPT")
+    aggregate = _row_to_stored(row[0], row[1], row[2])
+    command_ref: str | None = None
+    try:
+        command_ref = _require_key("command_id", row[3])
+    except StoreError:
+        pass
+    if command_ref is None or aggregate.key != command_ref:
+        raise StoreError("ROW_CORRUPT")
+    return aggregate
+
+
+def _row_to_ledger_context(row: tuple[object, ...]) -> StoredRecord:
+    if len(row) != 4:
+        raise StoreError("ROW_CORRUPT")
+    context = _row_to_stored(row[0], row[1], row[2])
+    command_ref: str | None = None
+    try:
+        command_ref = _require_key("command_id", row[3])
+    except StoreError:
+        pass
+    if command_ref is None or context.key != command_ref:
+        raise StoreError("ROW_CORRUPT")
+    return context
+
+
+def _row_to_ledger_checkpoint(row: tuple[object, ...]) -> StoredLedgerCheckpoint:
+    if len(row) != 5:
+        raise StoreError("ROW_CORRUPT")
+    stored = _row_to_stored(row[0], row[1], row[2])
+    if stored.key != LEDGER_CHECKPOINT_KEY:
+        raise StoreError("ROW_CORRUPT")
+    last_entry_id = row[3]
+    if last_entry_id is not None:
+        valid_tail: str | None = None
+        try:
+            valid_tail = _require_key("last_entry_id", last_entry_id)
+        except StoreError:
+            pass
+        if valid_tail is None:
+            raise StoreError("ROW_CORRUPT")
+        last_entry_id = valid_tail
+    tail_ref = row[4]
+    if (last_entry_id is None and tail_ref is not None) or (
+        last_entry_id is not None and tail_ref != last_entry_id
+    ):
+        raise StoreError("ROW_CORRUPT")
+    return StoredLedgerCheckpoint(
+        checkpoint_key=stored.key,
+        identity=stored.identity,
+        payload=stored.payload,
+        last_entry_id=last_entry_id,
     )
 
 
@@ -340,6 +552,141 @@ def _row_to_outbox_delivery(row: tuple[object, ...]) -> OutboxDelivery:
         last_error_code=last_error_code,
         identity=identity,
         payload=payload,
+    )
+
+
+def _row_to_cancel_command(row: tuple[object, ...]) -> StoredCancelCommand:
+    if len(row) != 8:
+        raise StoreError("ROW_CORRUPT")
+    try:
+        cancel_id = _require_identity(row[0])
+        command_id = _require_identity(row[1])
+        identity = _require_identity(row[2])
+        payload = _require_payload(row[3])
+        counter_key = _require_delivery_token("risk_counter_key", row[4])
+        policy_id = _require_identity(row[5])
+        cancel_ref = _require_identity(row[6])
+        command_ref = _require_identity(row[7])
+    except StoreError:
+        raise StoreError("ROW_CORRUPT") from None
+    if (
+        cancel_id != identity
+        or cancel_ref != cancel_id
+        or command_ref != command_id
+    ):
+        raise StoreError("ROW_CORRUPT")
+    return StoredCancelCommand(
+        cancel_id=cancel_id,
+        command_id=command_id,
+        identity=identity,
+        payload=payload,
+        risk_counter_key=counter_key,
+        risk_policy_identity=policy_id,
+    )
+
+
+def _row_to_cancel_delivery(row: tuple[object, ...]) -> CancelOutboxDelivery:
+    if len(row) != 14:
+        raise StoreError("ROW_CORRUPT")
+    try:
+        cancel_id = _require_identity(row[0])
+        command_id = _require_identity(row[1])
+        if type(row[2]) is not str:
+            raise StoreError("ROW_CORRUPT")
+        state = OutboxDeliveryState(row[2])
+        if type(row[3]) is not int or row[3] < 0:
+            raise StoreError("ROW_CORRUPT")
+        attempt_count = row[3]
+        available_at = _datetime_from_text(row[4])
+        lease_owner = (
+            None if row[5] is None else _require_delivery_token("lease_owner", row[5])
+        )
+        lease_until = None if row[6] is None else _datetime_from_text(row[6])
+        terminal_at = None if row[7] is None else _datetime_from_text(row[7])
+        last_error_code = (
+            None
+            if row[8] is None
+            else _require_delivery_token("last_error_code", row[8])
+        )
+        identity = _require_identity(row[9])
+        payload = _require_payload(row[10])
+        cancel_ref = _require_identity(row[11])
+        cancel_command_ref = _require_identity(row[12])
+        command_ref = _require_identity(row[13])
+    except (StoreError, ValueError):
+        raise StoreError("ROW_CORRUPT") from None
+    valid_state = (
+        state is OutboxDeliveryState.PENDING
+        and attempt_count >= 0
+        and lease_owner is None
+        and lease_until is None
+        and terminal_at is None
+        and last_error_code in {None, "CANCEL_GATEWAY_NOT_SENT"}
+    ) or (
+        state is OutboxDeliveryState.LEASED
+        and attempt_count >= 1
+        and lease_owner is not None
+        and lease_until is not None
+        and lease_until > available_at
+        and terminal_at is None
+        and last_error_code in {None, "CANCEL_GATEWAY_STARTED"}
+    ) or (
+        state is OutboxDeliveryState.SENT
+        and attempt_count >= 1
+        and lease_owner is not None
+        and lease_until is not None
+        and terminal_at is not None
+        and available_at <= terminal_at
+        and last_error_code is None
+    ) or (
+        state is OutboxDeliveryState.UNKNOWN
+        and attempt_count >= 1
+        and lease_owner is not None
+        and lease_until is not None
+        and terminal_at is not None
+        and available_at <= terminal_at
+        and last_error_code is not None
+    )
+    if (
+        not valid_state
+        or cancel_id != identity
+        or cancel_ref != cancel_id
+        or cancel_command_ref != command_id
+        or command_ref != command_id
+    ):
+        raise StoreError("ROW_CORRUPT")
+    return CancelOutboxDelivery(
+        cancel_id=cancel_id,
+        command_id=command_id,
+        state=state,
+        attempt_count=attempt_count,
+        available_at=available_at,
+        lease_owner=lease_owner,
+        lease_until=lease_until,
+        terminal_at=terminal_at,
+        last_error_code=last_error_code,
+        identity=identity,
+        payload=payload,
+    )
+
+
+def _row_to_cancel_event_link(row: tuple[object, ...]) -> StoredCancelEventLink:
+    if len(row) != 5:
+        raise StoreError("ROW_CORRUPT")
+    try:
+        cancel_id = _require_identity(row[0])
+        event_id = _require_identity(row[1])
+        cancel_ref = _require_identity(row[2])
+        event_ref = _require_identity(row[3])
+        event_command_id = _require_identity(row[4])
+    except StoreError:
+        raise StoreError("ROW_CORRUPT") from None
+    if cancel_ref != cancel_id or event_ref != event_id:
+        raise StoreError("ROW_CORRUPT")
+    return StoredCancelEventLink(
+        cancel_id=cancel_id,
+        event_id=event_id,
+        command_id=event_command_id,
     )
 
 
@@ -867,6 +1214,110 @@ class ExecutionRepository:
             return None
         return _row_to_stored(row[0], row[1], row[2])
 
+    def get_risk_transition_receipt(
+        self, *, transition_kind: str, subject_id: str
+    ) -> StoredRiskTransitionReceipt | None:
+        """Return one immutable ORDER/CANCEL transition by exact subject."""
+        kind = _require_transition_kind(transition_kind)
+        subject = _require_identity(subject_id)
+        mapped: StoreError | None = None
+        row: tuple[object, ...] | None = None
+        try:
+            row = self._conn.execute(
+                "SELECT sequence, transition_kind, subject_id, receipt_id, "
+                "previous_receipt_id, risk_counter_key, predecessor_counter_identity, "
+                "projected_counter_identity, payload FROM risk_transition_receipts "
+                "WHERE transition_kind = ? AND subject_id = ?",
+                (kind, subject),
+            ).fetchone()
+        except sqlite3.Error:
+            mapped = StoreError("RISK_RECEIPT_QUERY_FAILED")
+        if mapped is not None:
+            raise mapped from None
+        return None if row is None else _row_to_risk_receipt(row)
+
+    def get_risk_transition_tail(self) -> StoredRiskTransitionReceipt | None:
+        """Read the global journal tail inside this transaction."""
+        mapped: StoreError | None = None
+        row: tuple[object, ...] | None = None
+        try:
+            row = self._conn.execute(
+                "SELECT sequence, transition_kind, subject_id, receipt_id, "
+                "previous_receipt_id, risk_counter_key, predecessor_counter_identity, "
+                "projected_counter_identity, payload FROM risk_transition_receipts "
+                "ORDER BY sequence DESC LIMIT 1"
+            ).fetchone()
+        except sqlite3.Error:
+            mapped = StoreError("RISK_RECEIPT_QUERY_FAILED")
+        if mapped is not None:
+            raise mapped from None
+        return None if row is None else _row_to_risk_receipt(row)
+
+    def put_risk_transition_receipt(
+        self,
+        *,
+        sequence: int,
+        transition_kind: str,
+        subject_id: str,
+        receipt_id: str,
+        previous_receipt_id: str,
+        risk_counter_key: str,
+        predecessor_counter_identity: str,
+        projected_counter_identity: str,
+        payload: bytes,
+    ) -> bool:
+        """Insert one exact next transition; exact replay is a no-op."""
+        if type(sequence) is not int or isinstance(sequence, bool) or sequence < 1:
+            raise StoreError("RISK_RECEIPT_INVALID")
+        candidate = StoredRiskTransitionReceipt(
+            sequence=sequence,
+            transition_kind=_require_transition_kind(transition_kind),
+            subject_id=_require_identity(subject_id),
+            receipt_id=_require_identity(receipt_id),
+            previous_receipt_id=_require_identity(previous_receipt_id),
+            risk_counter_key=_require_key("risk_counter_key", risk_counter_key),
+            predecessor_counter_identity=_require_identity(predecessor_counter_identity),
+            projected_counter_identity=_require_identity(projected_counter_identity),
+            payload=_require_payload(payload),
+        )
+        existing = self.get_risk_transition_receipt(
+            transition_kind=candidate.transition_kind,
+            subject_id=candidate.subject_id,
+        )
+        if existing is not None:
+            if existing == candidate:
+                return False
+            raise IdempotencyConflict("IDEMPOTENCY_CONFLICT:RISK_RECEIPT")
+        tail = self.get_risk_transition_tail()
+        expected_sequence = 1 if tail is None else tail.sequence + 1
+        expected_previous = "0" * 64 if tail is None else tail.receipt_id
+        if (
+            candidate.sequence != expected_sequence
+            or candidate.previous_receipt_id != expected_previous
+        ):
+            raise IdempotencyConflict("RISK_RECEIPT_CHAIN_CONFLICT")
+        mapped: StoreError | None = None
+        try:
+            self._conn.execute(
+                "INSERT INTO risk_transition_receipts "
+                "(sequence, transition_kind, subject_id, receipt_id, "
+                "previous_receipt_id, risk_counter_key, predecessor_counter_identity, "
+                "projected_counter_identity, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    candidate.sequence, candidate.transition_kind, candidate.subject_id,
+                    candidate.receipt_id, candidate.previous_receipt_id,
+                    candidate.risk_counter_key, candidate.predecessor_counter_identity,
+                    candidate.projected_counter_identity, candidate.payload,
+                ),
+            )
+        except sqlite3.IntegrityError:
+            mapped = IdempotencyConflict("RISK_RECEIPT_CHAIN_CONFLICT")
+        except sqlite3.Error:
+            mapped = StoreError("RISK_RECEIPT_WRITE_FAILED")
+        if mapped is not None:
+            raise mapped from None
+        return True
+
     def put_scoped_daily_risk_counters(
         self, *, counter_key: str, identity: str, payload: bytes
     ) -> bool:
@@ -1218,6 +1669,216 @@ class ExecutionRepository:
             raise claim_error
         return tuple(claimed)
 
+    def claim_selected_outbox_deliveries(
+        self,
+        *,
+        command_ids: tuple[str, ...],
+        worker_id: str,
+        now: dt.datetime,
+        lease_until: dt.datetime,
+    ) -> tuple[OutboxDelivery, ...]:
+        """Atomically claim exactly the canonical commands selected by the caller."""
+        if type(command_ids) is not tuple or not command_ids:
+            raise StoreError("OUTBOX_DELIVERY_SELECTION_INVALID")
+        try:
+            selected = tuple(_require_identity(item) for item in command_ids)
+        except StoreError:
+            raise StoreError("OUTBOX_DELIVERY_SELECTION_INVALID") from None
+        if selected != tuple(sorted(selected)) or len(set(selected)) != len(selected):
+            raise StoreError("OUTBOX_DELIVERY_SELECTION_INVALID")
+
+        worker = _require_delivery_token("worker_id", worker_id)
+        current = _require_utc_datetime("now", now)
+        lease_end = _require_utc_datetime("lease_until", lease_until)
+        if lease_end <= current:
+            raise StoreError("lease_until must be after now")
+        now_text = _datetime_to_text(current)
+        lease_text = _datetime_to_text(lease_end)
+
+        # Validate every member before the first write.  Besides preventing a
+        # partial claim, these explicit equality checks close the command ->
+        # outbox -> delivery identity/payload chain used by PAPER dispatch.
+        candidates: list[OutboxDelivery] = []
+        try:
+            for command_id in selected:
+                row = self._conn.execute(
+                    f"SELECT {self._delivery_columns()} "
+                    "FROM outbox_deliveries AS d "
+                    "LEFT JOIN outbox AS o ON o.outbox_key = d.outbox_key "
+                    "LEFT JOIN commands AS c ON c.command_id = d.command_id "
+                    "LEFT JOIN order_aggregates AS a ON a.command_id = d.command_id "
+                    "WHERE d.command_id = ?",
+                    (command_id,),
+                ).fetchone()
+                if row is None:
+                    raise StoreError("OUTBOX_DELIVERY_SELECTED_UNCLAIMABLE")
+                try:
+                    candidate = _row_to_outbox_delivery(row)
+                except StoreError:
+                    raise StoreError(
+                        "OUTBOX_DELIVERY_SELECTED_UNCLAIMABLE"
+                    ) from None
+                command = self.get_command(command_id)
+                outbox = self.get_outbox(candidate.outbox_key)
+                if (
+                    candidate.command_id != command_id
+                    or candidate.outbox_key != command_id
+                    or candidate.identity != command_id
+                    or command is None
+                    or command.key != command_id
+                    or command.identity != command_id
+                    or command.payload != candidate.payload
+                    or outbox is None
+                    or outbox.key != command_id
+                    or outbox.identity != command_id
+                    or outbox.payload != candidate.payload
+                ):
+                    raise StoreError("OUTBOX_DELIVERY_SELECTED_UNCLAIMABLE")
+                eligible = (
+                    candidate.state is OutboxDeliveryState.PENDING
+                    and candidate.available_at <= current
+                ) or (
+                    candidate.state is OutboxDeliveryState.LEASED
+                    and candidate.lease_until is not None
+                    and candidate.lease_until < current
+                )
+                if not eligible:
+                    raise StoreError("OUTBOX_DELIVERY_SELECTED_UNCLAIMABLE")
+                if candidate.attempt_count >= _SQLITE_MAX_INT:
+                    raise StoreError("OUTBOX_DELIVERY_ATTEMPT_EXHAUSTED")
+                candidates.append(candidate)
+        except sqlite3.Error:
+            raise StoreError("OUTBOX_DELIVERY_QUERY_FAILED") from None
+
+        try:
+            self._conn.execute("SAVEPOINT selected_outbox_delivery_claim")
+        except sqlite3.Error:
+            raise StoreError("OUTBOX_DELIVERY_CLAIM_FAILED") from None
+
+        claim_error: Exception | None = None
+        claimed: list[OutboxDelivery] = []
+        try:
+            for candidate in candidates:
+                cursor = self._conn.execute(
+                    """
+                    UPDATE outbox_deliveries
+                    SET state = 'LEASED', attempt_count = attempt_count + 1,
+                        lease_owner = ?, lease_until = ?, terminal_at = NULL,
+                        last_error_code = NULL
+                    WHERE outbox_key = ? AND command_id = ? AND (
+                        (state = 'PENDING' AND available_at <= ?)
+                        OR (state = 'LEASED' AND lease_until < ?)
+                    )
+                    """,
+                    (
+                        worker,
+                        lease_text,
+                        candidate.outbox_key,
+                        candidate.command_id,
+                        now_text,
+                        now_text,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise StoreError("OUTBOX_DELIVERY_CLAIM_CONFLICT")
+            for candidate in candidates:
+                refreshed = self._select_outbox_delivery(candidate.outbox_key)
+                if refreshed is None:
+                    raise StoreError("ROW_CORRUPT")
+                claimed.append(refreshed)
+            self._conn.execute("RELEASE SAVEPOINT selected_outbox_delivery_claim")
+        except sqlite3.Error:
+            claim_error = StoreError("OUTBOX_DELIVERY_CLAIM_FAILED")
+        except Exception as exc:
+            claim_error = exc
+
+        if claim_error is not None:
+            try:
+                self._conn.execute("ROLLBACK TO SAVEPOINT selected_outbox_delivery_claim")
+                self._conn.execute("RELEASE SAVEPOINT selected_outbox_delivery_claim")
+            except sqlite3.Error:
+                raise StoreError("OUTBOX_DELIVERY_ROLLBACK_FAILED") from None
+            raise claim_error
+        return tuple(claimed)
+
+    def claim_exact_pending_outbox_deliveries(
+        self,
+        *,
+        command_ids: tuple[str, ...],
+        worker_id: str,
+        now: dt.datetime,
+        lease_until: dt.datetime,
+    ) -> tuple[OutboxDelivery, ...]:
+        """Claim only when the caller selection is the complete pending set."""
+        if type(command_ids) is not tuple or not command_ids:
+            raise StoreError("OUTBOX_DELIVERY_SELECTION_INVALID")
+        try:
+            selected = tuple(_require_identity(item) for item in command_ids)
+            current = _require_utc_datetime("now", now)
+        except StoreError:
+            raise StoreError("OUTBOX_DELIVERY_SELECTION_INVALID") from None
+        if selected != tuple(sorted(selected)) or len(set(selected)) != len(selected):
+            raise StoreError("OUTBOX_DELIVERY_SELECTION_INVALID")
+
+        query_failure_code: str | None = None
+        deliveries: tuple[OutboxDelivery, ...] = ()
+        try:
+            rows = self._conn.execute(
+                f"SELECT {self._delivery_columns()} "
+                "FROM outbox_deliveries AS d "
+                "LEFT JOIN outbox AS o ON o.outbox_key = d.outbox_key "
+                "LEFT JOIN commands AS c ON c.command_id = d.command_id "
+                "LEFT JOIN order_aggregates AS a ON a.command_id = d.command_id "
+                "ORDER BY d.command_id"
+            ).fetchall()
+            deliveries = tuple(_row_to_outbox_delivery(row) for row in rows)
+        except sqlite3.Error:
+            query_failure_code = "OUTBOX_DELIVERY_EXACT_QUERY_FAILED"
+        except StoreError:
+            query_failure_code = "OUTBOX_DELIVERY_EXACT_SET_DRIFT"
+        if query_failure_code is not None:
+            raise StoreError(query_failure_code)
+
+        if any(
+            item.state in {OutboxDeliveryState.LEASED, OutboxDeliveryState.UNKNOWN}
+            for item in deliveries
+        ):
+            raise StoreError("OUTBOX_DELIVERY_EXACT_SET_DRIFT")
+        pending = tuple(
+            item.command_id
+            for item in deliveries
+            if item.state is OutboxDeliveryState.PENDING
+        )
+        if (
+            pending != selected
+            or any(
+                item.state is OutboxDeliveryState.PENDING
+                and item.available_at > current
+                for item in deliveries
+            )
+        ):
+            raise StoreError("OUTBOX_DELIVERY_EXACT_SET_DRIFT")
+        claim_failure_code: str | None = None
+        try:
+            return self.claim_selected_outbox_deliveries(
+                command_ids=selected,
+                worker_id=worker_id,
+                now=current,
+                lease_until=lease_until,
+            )
+        except StoreError as exc:
+            if exc.args in {
+                ("OUTBOX_DELIVERY_SELECTED_UNCLAIMABLE",),
+                ("OUTBOX_DELIVERY_CLAIM_CONFLICT",),
+            }:
+                claim_failure_code = "OUTBOX_DELIVERY_EXACT_SET_DRIFT"
+            else:
+                claim_failure_code = "OUTBOX_DELIVERY_EXACT_CLAIM_FAILED"
+        except Exception:
+            claim_failure_code = "OUTBOX_DELIVERY_EXACT_CLAIM_FAILED"
+        assert claim_failure_code is not None
+        raise StoreError(claim_failure_code)
+
     def mark_outbox_sent(
         self,
         *,
@@ -1357,6 +2018,599 @@ class ExecutionRepository:
         if row is None:
             return None
         return _row_to_stored(row[0], row[1], row[2])
+
+    def put_ledger_context(
+        self, *, command_id: str, identity: str, payload: bytes
+    ) -> bool:
+        """Persist the immutable B5 inputs selected before dispatch."""
+        return self._put_row(
+            table="ledger_contexts",
+            key_column="command_id",
+            key=_require_key("command_id", command_id),
+            identity=_require_identity(identity),
+            payload=_require_payload(payload),
+            subject="ledger_context",
+        )
+
+    def get_ledger_context(self, command_id: str) -> StoredRecord | None:
+        key = _require_key("command_id", command_id)
+        try:
+            row = self._conn.execute(
+                "SELECT command_id, identity, payload FROM ledger_contexts "
+                "WHERE command_id = ?",
+                (key,),
+            ).fetchone()
+        except sqlite3.Error:
+            raise StoreError("LEDGER_CONTEXT_QUERY_FAILED") from None
+        return None if row is None else _row_to_stored(*row)
+
+    def put_ledger_checkpoint(
+        self,
+        *,
+        checkpoint_key: str,
+        identity: str,
+        payload: bytes,
+        last_entry_id: str | None,
+    ) -> bool:
+        """Insert the genesis checkpoint; exact content is idempotent."""
+        key = _require_checkpoint_key(checkpoint_key)
+        ident = _require_identity(identity)
+        data = _require_payload(payload)
+        tail = None if last_entry_id is None else _require_key("last_entry_id", last_entry_id)
+        existing = self.get_ledger_checkpoint(key)
+        if existing is not None:
+            if (existing.identity, existing.payload, existing.last_entry_id) == (
+                ident, data, tail
+            ):
+                return False
+            raise IdempotencyConflict("IDEMPOTENCY_CONFLICT:ledger_checkpoint")
+        try:
+            self._conn.execute(
+                "INSERT INTO ledger_checkpoints "
+                "(checkpoint_key, identity, payload, last_entry_id) VALUES (?, ?, ?, ?)",
+                (key, ident, data, tail),
+            )
+        except sqlite3.Error:
+            raise StoreError("LEDGER_CHECKPOINT_WRITE_FAILED") from None
+        return True
+
+    def get_ledger_checkpoint(
+        self, checkpoint_key: str
+    ) -> StoredLedgerCheckpoint | None:
+        key = _require_checkpoint_key(checkpoint_key)
+        try:
+            row = self._conn.execute(
+                "SELECT c.checkpoint_key, c.identity, c.payload, c.last_entry_id, "
+                "e.entry_id FROM ledger_checkpoints AS c "
+                "LEFT JOIN ledger_entries AS e ON e.entry_id = c.last_entry_id "
+                "WHERE c.checkpoint_key = ?",
+                (key,),
+            ).fetchone()
+        except sqlite3.Error:
+            raise StoreError("LEDGER_CHECKPOINT_QUERY_FAILED") from None
+        return None if row is None else _row_to_ledger_checkpoint(row)
+
+    def replace_ledger_checkpoint(
+        self,
+        *,
+        checkpoint_key: str,
+        expected_identity: str,
+        identity: str,
+        payload: bytes,
+        last_entry_id: str | None,
+    ) -> bool:
+        """CAS-replace the checkpoint and its append-only tail."""
+        key = _require_checkpoint_key(checkpoint_key)
+        expected = _require_identity(expected_identity)
+        ident = _require_identity(identity)
+        data = _require_payload(payload)
+        tail = None if last_entry_id is None else _require_key("last_entry_id", last_entry_id)
+        existing = self.get_ledger_checkpoint(key)
+        if existing is None:
+            raise StoreError("LEDGER_CHECKPOINT_NOT_FOUND")
+        if (existing.identity, existing.payload, existing.last_entry_id) == (
+            ident, data, tail
+        ):
+            return False
+        if existing.identity != expected:
+            raise StoreError("LEDGER_CHECKPOINT_CAS_CONFLICT")
+        try:
+            cursor = self._conn.execute(
+                "UPDATE ledger_checkpoints SET identity = ?, payload = ?, last_entry_id = ? "
+                "WHERE checkpoint_key = ? AND identity = ?",
+                (ident, data, tail, key, expected),
+            )
+        except sqlite3.Error:
+            raise StoreError("LEDGER_CHECKPOINT_WRITE_FAILED") from None
+        if cursor.rowcount != 1:
+            raise StoreError("LEDGER_CHECKPOINT_CAS_CONFLICT")
+        return True
+
+    def put_cancel_command(
+        self,
+        *,
+        cancel_id: str,
+        command_id: str,
+        identity: str,
+        payload: bytes,
+        risk_counter_key: str,
+        risk_policy_identity: str,
+    ) -> bool:
+        """Insert one immutable cancel request and its risk-source closure."""
+        cancel = _require_identity(cancel_id)
+        command = _require_identity(command_id)
+        ident = _require_identity(identity)
+        data = _require_payload(payload)
+        counter_key = _require_delivery_token("risk_counter_key", risk_counter_key)
+        policy_id = _require_identity(risk_policy_identity)
+        if cancel != ident:
+            raise StoreError("CANCEL_IDENTITY_INVALID")
+        existing = self.get_cancel_command(cancel)
+        by_command = self.get_cancel_command_for_order(command)
+        expected = StoredCancelCommand(
+            cancel_id=cancel,
+            command_id=command,
+            identity=ident,
+            payload=data,
+            risk_counter_key=counter_key,
+            risk_policy_identity=policy_id,
+        )
+        if existing is not None or by_command is not None:
+            if existing == expected and by_command == expected:
+                return False
+            raise IdempotencyConflict("CANCEL_IDENTITY_CONFLICT")
+        try:
+            self._conn.execute(
+                "INSERT INTO cancel_commands "
+                "(cancel_id, command_id, identity, payload, risk_counter_key, "
+                "risk_policy_identity) VALUES (?, ?, ?, ?, ?, ?)",
+                (cancel, command, ident, data, counter_key, policy_id),
+            )
+        except sqlite3.IntegrityError:
+            raise IdempotencyConflict("CANCEL_IDENTITY_CONFLICT") from None
+        except sqlite3.Error:
+            raise StoreError("CANCEL_COMMAND_WRITE_FAILED") from None
+        return True
+
+    def get_cancel_command(self, cancel_id: str) -> StoredCancelCommand | None:
+        cancel = _require_identity(cancel_id)
+        row = self._conn.execute(
+            "SELECT cc.cancel_id, cc.command_id, cc.identity, cc.payload, "
+            "cc.risk_counter_key, cc.risk_policy_identity, cc.cancel_id, "
+            "c.command_id FROM cancel_commands AS cc "
+            "LEFT JOIN commands AS c ON c.command_id = cc.command_id "
+            "WHERE cc.cancel_id = ?",
+            (cancel,),
+        ).fetchone()
+        return None if row is None else _row_to_cancel_command(row)
+
+    def get_cancel_command_for_order(
+        self, command_id: str
+    ) -> StoredCancelCommand | None:
+        command = _require_identity(command_id)
+        row = self._conn.execute(
+            "SELECT cc.cancel_id, cc.command_id, cc.identity, cc.payload, "
+            "cc.risk_counter_key, cc.risk_policy_identity, cc.cancel_id, "
+            "c.command_id FROM cancel_commands AS cc "
+            "LEFT JOIN commands AS c ON c.command_id = cc.command_id "
+            "WHERE cc.command_id = ?",
+            (command,),
+        ).fetchone()
+        return None if row is None else _row_to_cancel_command(row)
+
+    @staticmethod
+    def _cancel_delivery_columns() -> str:
+        return (
+            "d.cancel_id, d.command_id, d.state, d.attempt_count, d.available_at, "
+            "d.lease_owner, d.lease_until, d.terminal_at, d.last_error_code, "
+            "cc.identity, cc.payload, cc.cancel_id, cc.command_id, c.command_id"
+        )
+
+    def _select_cancel_delivery(
+        self, cancel_id: str
+    ) -> CancelOutboxDelivery | None:
+        row = self._conn.execute(
+            f"SELECT {self._cancel_delivery_columns()} "
+            "FROM cancel_deliveries AS d "
+            "LEFT JOIN cancel_commands AS cc ON cc.cancel_id = d.cancel_id "
+            "LEFT JOIN commands AS c ON c.command_id = d.command_id "
+            "WHERE d.cancel_id = ?",
+            (cancel_id,),
+        ).fetchone()
+        return None if row is None else _row_to_cancel_delivery(row)
+
+    def put_cancel_delivery(
+        self, *, cancel_id: str, command_id: str, available_at: dt.datetime
+    ) -> bool:
+        """Insert the unique initial PENDING delivery for one cancel."""
+        cancel = _require_identity(cancel_id)
+        command = _require_identity(command_id)
+        available = _require_utc_datetime("available_at", available_at)
+        existing = self._select_cancel_delivery(cancel)
+        if existing is not None:
+            if (
+                existing.command_id == command
+                and existing.state is OutboxDeliveryState.PENDING
+                and existing.attempt_count == 0
+                and existing.available_at == available
+            ):
+                return False
+            raise IdempotencyConflict("CANCEL_DELIVERY_CONFLICT")
+        try:
+            self._conn.execute(
+                "INSERT INTO cancel_deliveries "
+                "(cancel_id, command_id, state, attempt_count, available_at) "
+                "VALUES (?, ?, 'PENDING', 0, ?)",
+                (cancel, command, _datetime_to_text(available)),
+            )
+        except sqlite3.IntegrityError:
+            raise IdempotencyConflict("CANCEL_DELIVERY_CONFLICT") from None
+        except sqlite3.Error:
+            raise StoreError("CANCEL_DELIVERY_WRITE_FAILED") from None
+        return True
+
+    def get_cancel_delivery(self, cancel_id: str) -> CancelOutboxDelivery | None:
+        return self._select_cancel_delivery(_require_identity(cancel_id))
+
+    def claim_cancel_delivery(
+        self,
+        *,
+        cancel_id: str,
+        worker_id: str,
+        now: dt.datetime,
+        lease_until: dt.datetime,
+    ) -> CancelOutboxDelivery:
+        """Lease exactly one canonical cancel delivery, never a global queue row."""
+        cancel = _require_identity(cancel_id)
+        worker = _require_delivery_token("worker_id", worker_id)
+        current = _require_utc_datetime("now", now)
+        lease_end = _require_utc_datetime("lease_until", lease_until)
+        if lease_end <= current:
+            raise StoreError("CANCEL_DELIVERY_LEASE_INVALID")
+        candidate = self._select_cancel_delivery(cancel)
+        if candidate is None:
+            raise StoreError("CANCEL_DELIVERY_NOT_CLAIMABLE")
+        eligible = (
+            candidate.state is OutboxDeliveryState.PENDING
+            and candidate.available_at <= current
+        ) or (
+            candidate.state is OutboxDeliveryState.LEASED
+            and candidate.lease_until is not None
+            and candidate.lease_until < current
+            and candidate.last_error_code is None
+        )
+        if not eligible or candidate.attempt_count >= _SQLITE_MAX_INT:
+            raise StoreError("CANCEL_DELIVERY_NOT_CLAIMABLE")
+        try:
+            cursor = self._conn.execute(
+                "UPDATE cancel_deliveries SET state='LEASED', "
+                "attempt_count=attempt_count+1, lease_owner=?, lease_until=?, "
+                "terminal_at=NULL, last_error_code=NULL WHERE cancel_id=? AND "
+                "((state='PENDING' AND available_at<=?) OR "
+                "(state='LEASED' AND lease_until<? AND last_error_code IS NULL))",
+                (
+                    worker,
+                    _datetime_to_text(lease_end),
+                    cancel,
+                    _datetime_to_text(current),
+                    _datetime_to_text(current),
+                ),
+            )
+        except sqlite3.Error:
+            raise StoreError("CANCEL_DELIVERY_CLAIM_FAILED") from None
+        if cursor.rowcount != 1:
+            raise StoreError("CANCEL_DELIVERY_NOT_CLAIMABLE")
+        claimed = self._select_cancel_delivery(cancel)
+        if claimed is None:
+            raise StoreError("ROW_CORRUPT")
+        return claimed
+
+    def mark_cancel_gateway_started(
+        self,
+        *,
+        cancel_id: str,
+        lease_owner: str,
+        expected_attempt: int,
+    ) -> bool:
+        """Durably fence a cancel attempt before it may cross the adapter."""
+        cancel = _require_identity(cancel_id)
+        owner = _require_delivery_token("lease_owner", lease_owner)
+        attempt = _require_positive_int("expected_attempt", expected_attempt)
+        current = self._select_cancel_delivery(cancel)
+        if (
+            current is None
+            or current.state is not OutboxDeliveryState.LEASED
+            or current.lease_owner != owner
+            or current.attempt_count != attempt
+            or current.lease_until is None
+            or current.last_error_code is not None
+        ):
+            raise StoreError("CANCEL_DELIVERY_FENCE_MISMATCH")
+        try:
+            cursor = self._conn.execute(
+                "UPDATE cancel_deliveries SET last_error_code="
+                "'CANCEL_GATEWAY_STARTED' WHERE cancel_id=? AND state='LEASED' "
+                "AND lease_owner=? AND attempt_count=? AND last_error_code IS NULL",
+                (cancel, owner, attempt),
+            )
+        except sqlite3.Error:
+            raise StoreError("CANCEL_DELIVERY_FINALIZE_FAILED") from None
+        if cursor.rowcount != 1:
+            raise StoreError("CANCEL_DELIVERY_FENCE_MISMATCH")
+        return True
+
+    def mark_cancel_sent(
+        self,
+        *,
+        cancel_id: str,
+        lease_owner: str,
+        expected_attempt: int,
+        sent_at: dt.datetime,
+    ) -> bool:
+        return self._mark_cancel_terminal(
+            cancel_id=cancel_id,
+            lease_owner=lease_owner,
+            expected_attempt=expected_attempt,
+            terminal_at=sent_at,
+            state=OutboxDeliveryState.SENT,
+            error_code=None,
+        )
+
+    def mark_cancel_unknown(
+        self,
+        *,
+        cancel_id: str,
+        lease_owner: str,
+        expected_attempt: int,
+        unknown_at: dt.datetime,
+        error_code: str,
+    ) -> bool:
+        return self._mark_cancel_terminal(
+            cancel_id=cancel_id,
+            lease_owner=lease_owner,
+            expected_attempt=expected_attempt,
+            terminal_at=unknown_at,
+            state=OutboxDeliveryState.UNKNOWN,
+            error_code=_require_delivery_token("error_code", error_code),
+        )
+
+    def _mark_cancel_terminal(
+        self,
+        *,
+        cancel_id: str,
+        lease_owner: str,
+        expected_attempt: int,
+        terminal_at: dt.datetime,
+        state: OutboxDeliveryState,
+        error_code: str | None,
+    ) -> bool:
+        cancel = _require_identity(cancel_id)
+        owner = _require_delivery_token("lease_owner", lease_owner)
+        attempt = _require_positive_int("expected_attempt", expected_attempt)
+        terminal = _require_utc_datetime("terminal_at", terminal_at)
+        if state not in {OutboxDeliveryState.SENT, OutboxDeliveryState.UNKNOWN}:
+            raise StoreError("CANCEL_DELIVERY_STATE_INVALID")
+        current = self._select_cancel_delivery(cancel)
+        if current is None:
+            raise StoreError("CANCEL_DELIVERY_NOT_FOUND")
+        if current.state is state:
+            if (
+                current.lease_owner == owner
+                and current.attempt_count == attempt
+                and current.terminal_at == terminal
+                and current.last_error_code == error_code
+            ):
+                return False
+            raise StoreError("CANCEL_DELIVERY_FENCE_MISMATCH")
+        if (
+            current.state is not OutboxDeliveryState.LEASED
+            or current.lease_owner != owner
+            or current.attempt_count != attempt
+            or current.lease_until is None
+            or terminal < current.available_at
+        ):
+            raise StoreError("CANCEL_DELIVERY_FENCE_MISMATCH")
+        try:
+            cursor = self._conn.execute(
+                "UPDATE cancel_deliveries SET state=?, terminal_at=?, "
+                "last_error_code=? WHERE cancel_id=? AND state='LEASED' AND "
+                "lease_owner=? AND attempt_count=?",
+                (
+                    state.value,
+                    _datetime_to_text(terminal),
+                    error_code,
+                    cancel,
+                    owner,
+                    attempt,
+                ),
+            )
+        except sqlite3.Error:
+            raise StoreError("CANCEL_DELIVERY_FINALIZE_FAILED") from None
+        if cursor.rowcount != 1:
+            raise StoreError("CANCEL_DELIVERY_FENCE_MISMATCH")
+        return True
+
+    def mark_cancel_not_sent(
+        self,
+        *,
+        cancel_id: str,
+        lease_owner: str,
+        expected_attempt: int,
+        retry_at: dt.datetime,
+    ) -> bool:
+        """Return a proven NOT_SENT cancel to explicit-retry PENDING state."""
+        cancel = _require_identity(cancel_id)
+        owner = _require_delivery_token("lease_owner", lease_owner)
+        attempt = _require_positive_int("expected_attempt", expected_attempt)
+        retry = _require_utc_datetime("retry_at", retry_at)
+        current = self._select_cancel_delivery(cancel)
+        if (
+            current is None
+            or current.state is not OutboxDeliveryState.LEASED
+            or current.lease_owner != owner
+            or current.attempt_count != attempt
+            or current.lease_until is None
+            or retry < current.available_at
+        ):
+            raise StoreError("CANCEL_DELIVERY_FENCE_MISMATCH")
+        try:
+            cursor = self._conn.execute(
+                "UPDATE cancel_deliveries SET state='PENDING', available_at=?, "
+                "lease_owner=NULL, lease_until=NULL, terminal_at=NULL, "
+                "last_error_code='CANCEL_GATEWAY_NOT_SENT' "
+                "WHERE cancel_id=? AND state='LEASED' AND "
+                "lease_owner=? AND attempt_count=?",
+                (_datetime_to_text(retry), cancel, owner, attempt),
+            )
+        except sqlite3.Error:
+            raise StoreError("CANCEL_DELIVERY_FINALIZE_FAILED") from None
+        if cursor.rowcount != 1:
+            raise StoreError("CANCEL_DELIVERY_FENCE_MISMATCH")
+        return True
+
+    def put_cancel_event_link(self, *, cancel_id: str, event_id: str) -> bool:
+        cancel = _require_identity(cancel_id)
+        event = _require_identity(event_id)
+        row = self._conn.execute(
+            "SELECT cancel_id, event_id FROM cancel_event_links "
+            "WHERE cancel_id=? AND event_id=?",
+            (cancel, event),
+        ).fetchone()
+        if row is not None:
+            if row == (cancel, event):
+                return False
+            raise IdempotencyConflict("CANCEL_CALLBACK_CONFLICT")
+        try:
+            self._conn.execute(
+                "INSERT INTO cancel_event_links (cancel_id, event_id) VALUES (?, ?)",
+                (cancel, event),
+            )
+        except sqlite3.IntegrityError:
+            raise IdempotencyConflict("CANCEL_CALLBACK_CONFLICT") from None
+        except sqlite3.Error:
+            raise StoreError("CANCEL_CALLBACK_LINK_FAILED") from None
+        return True
+
+    def read_recovery_rows(self) -> RecoveryRows:
+        """Read all recovery inputs atomically inside the caller's transaction."""
+        query_error: StoreError | None = None
+        command_rows: list[tuple[object, ...]] = []
+        event_rows: list[tuple[object, ...]] = []
+        aggregate_rows: list[tuple[object, ...]] = []
+        delivery_rows: list[tuple[object, ...]] = []
+        ledger_rows: list[tuple[object, ...]] = []
+        context_rows: list[tuple[object, ...]] = []
+        checkpoint_rows: list[tuple[object, ...]] = []
+        cancel_rows: list[tuple[object, ...]] = []
+        cancel_delivery_rows: list[tuple[object, ...]] = []
+        cancel_link_rows: list[tuple[object, ...]] = []
+        risk_receipt_rows: list[tuple[object, ...]] = []
+        risk_counter_rows: list[tuple[object, ...]] = []
+        try:
+            command_rows = self._conn.execute(
+                "SELECT command_id, identity, payload FROM commands ORDER BY command_id"
+            ).fetchall()
+            event_rows = self._conn.execute(
+                "SELECT e.event_id, e.command_id, e.identity, e.payload, c.command_id "
+                "FROM events AS e "
+                "LEFT JOIN commands AS c ON c.command_id = e.command_id "
+                "ORDER BY e.event_id"
+            ).fetchall()
+            aggregate_rows = self._conn.execute(
+                "SELECT a.command_id, a.identity, a.payload, c.command_id "
+                "FROM order_aggregates AS a "
+                "LEFT JOIN commands AS c ON c.command_id = a.command_id "
+                "ORDER BY a.command_id"
+            ).fetchall()
+            delivery_rows = self._conn.execute(
+                f"SELECT {self._delivery_columns()} "
+                "FROM outbox_deliveries AS d "
+                "LEFT JOIN outbox AS o ON o.outbox_key = d.outbox_key "
+                "LEFT JOIN commands AS c ON c.command_id = d.command_id "
+                "LEFT JOIN order_aggregates AS a ON a.command_id = d.command_id "
+                "ORDER BY d.outbox_key"
+            ).fetchall()
+            ledger_rows = self._conn.execute(
+                "SELECT entry_id, identity, payload FROM ledger_entries ORDER BY entry_id"
+            ).fetchall()
+            context_rows = self._conn.execute(
+                "SELECT lc.command_id, lc.identity, lc.payload, c.command_id "
+                "FROM ledger_contexts AS lc "
+                "LEFT JOIN commands AS c ON c.command_id = lc.command_id "
+                "ORDER BY lc.command_id"
+            ).fetchall()
+            checkpoint_rows = self._conn.execute(
+                "SELECT c.checkpoint_key, c.identity, c.payload, c.last_entry_id, "
+                "e.entry_id FROM ledger_checkpoints AS c "
+                "LEFT JOIN ledger_entries AS e ON e.entry_id = c.last_entry_id "
+                "ORDER BY c.checkpoint_key"
+            ).fetchall()
+            cancel_rows = self._conn.execute(
+                "SELECT cc.cancel_id, cc.command_id, cc.identity, cc.payload, "
+                "cc.risk_counter_key, cc.risk_policy_identity, cc.cancel_id, "
+                "c.command_id FROM cancel_commands AS cc "
+                "LEFT JOIN commands AS c ON c.command_id = cc.command_id "
+                "ORDER BY cc.cancel_id"
+            ).fetchall()
+            cancel_delivery_rows = self._conn.execute(
+                "SELECT d.cancel_id, d.command_id, d.state, d.attempt_count, "
+                "d.available_at, d.lease_owner, d.lease_until, d.terminal_at, "
+                "d.last_error_code, cc.identity, cc.payload, cc.cancel_id, "
+                "cc.command_id, c.command_id FROM cancel_deliveries AS d "
+                "LEFT JOIN cancel_commands AS cc ON cc.cancel_id = d.cancel_id "
+                "LEFT JOIN commands AS c ON c.command_id = d.command_id "
+                "ORDER BY d.cancel_id"
+            ).fetchall()
+            cancel_link_rows = self._conn.execute(
+                "SELECT l.cancel_id, l.event_id, cc.cancel_id, e.event_id, "
+                "e.command_id FROM cancel_event_links AS l "
+                "LEFT JOIN cancel_commands AS cc ON cc.cancel_id = l.cancel_id "
+                "LEFT JOIN events AS e ON e.event_id = l.event_id "
+                "ORDER BY l.cancel_id, l.event_id"
+            ).fetchall()
+            risk_receipt_rows = self._conn.execute(
+                "SELECT sequence, transition_kind, subject_id, receipt_id, "
+                "previous_receipt_id, risk_counter_key, predecessor_counter_identity, "
+                "projected_counter_identity, payload FROM risk_transition_receipts "
+                "ORDER BY sequence"
+            ).fetchall()
+            risk_counter_rows = self._conn.execute(
+                "SELECT counter_key, identity, payload FROM scoped_daily_risk_counters "
+                "ORDER BY counter_key"
+            ).fetchall()
+        except sqlite3.Error:
+            query_error = StoreError("RECOVERY_SNAPSHOT_READ_FAILED")
+        if query_error is not None:
+            raise query_error from None
+
+        return RecoveryRows(
+            commands=tuple(_row_to_stored(*row) for row in command_rows),
+            events=tuple(_row_to_stored_event(row) for row in event_rows),
+            order_aggregates=tuple(_row_to_stored_aggregate(row) for row in aggregate_rows),
+            outbox_deliveries=tuple(
+                _row_to_outbox_delivery(row) for row in delivery_rows
+            ),
+            ledger_entries=tuple(_row_to_stored(*row) for row in ledger_rows),
+            ledger_contexts=tuple(_row_to_ledger_context(row) for row in context_rows),
+            ledger_checkpoints=tuple(
+                _row_to_ledger_checkpoint(row) for row in checkpoint_rows
+            ),
+            cancel_commands=tuple(
+                _row_to_cancel_command(row) for row in cancel_rows
+            ),
+            cancel_deliveries=tuple(
+                _row_to_cancel_delivery(row) for row in cancel_delivery_rows
+            ),
+            cancel_event_links=tuple(
+                _row_to_cancel_event_link(row) for row in cancel_link_rows
+            ),
+            risk_transition_receipts=tuple(
+                _row_to_risk_receipt(row) for row in risk_receipt_rows
+            ),
+            risk_counter_rows=tuple(
+                _row_to_stored(*row) for row in risk_counter_rows
+            ),
+        )
 
     def put_reconciliation_run(
         self, *, run_id: str, identity: str, payload: bytes
@@ -1527,16 +2781,24 @@ class ExecutionStore:
 
 
 __all__ = [
+    "CancelOutboxDelivery",
     "CURRENT_SCHEMA_VERSION",
+    "LEDGER_CHECKPOINT_KEY",
     "ExecutionRepository",
     "ExecutionStore",
     "IdempotencyConflict",
     "MigrationInterruptedError",
     "OutboxDelivery",
     "OutboxDeliveryState",
+    "RecoveryRows",
     "StoreError",
     "StoreUriError",
     "StoredDailyRiskCounters",
+    "StoredEventRecord",
+    "StoredCancelCommand",
+    "StoredCancelEventLink",
+    "StoredLedgerCheckpoint",
     "StoredRecord",
+    "StoredRiskTransitionReceipt",
     "UnknownSchemaVersionError",
 ]

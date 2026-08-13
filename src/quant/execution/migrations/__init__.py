@@ -8,11 +8,12 @@ import sqlite3
 
 from quant.execution.migrations.v001_initial import upgrade as upgrade_v001
 from quant.execution.migrations.v002_outbox_delivery import upgrade as upgrade_v002
-from quant.execution.migrations.v003_daily_risk_counters import (
-    upgrade as upgrade_v003,
-)
-from quant.execution.migrations.v004_unified_execution_state import (
-    upgrade as upgrade_v004,
+from quant.execution.migrations.v003_execution_state import upgrade as upgrade_v003
+from quant.execution.migrations.v004_ledger_persistence import upgrade as upgrade_v004
+from quant.execution.migrations.v005_cancel_delivery import upgrade as upgrade_v005
+from quant.execution.migrations.v006_risk_receipt import upgrade as upgrade_v006
+from quant.execution.migrations.v007_unified_risk_counters import (
+    upgrade as upgrade_v007,
 )
 
 # Ordered list of (target_version, upgrade_callable).
@@ -21,6 +22,9 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (2, upgrade_v002),
     (3, upgrade_v003),
     (4, upgrade_v004),
+    (5, upgrade_v005),
+    (6, upgrade_v006),
+    (7, upgrade_v007),
 ]
 
 __all__ = ["MIGRATIONS"]

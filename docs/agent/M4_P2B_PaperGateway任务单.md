@@ -1,6 +1,6 @@
 # M4-P2B PaperGateway 任务单
 
-状态：冻结合同已实现并完成双平台开发验证；等待独立初验与主验，不宣布 M4 Gate。
+状态：**外部独立初验与主 Agent 最终验收 PASS；仅关闭 P2B PaperGateway 工程合同，不宣布 P2/M4 Gate。**
 
 ## 目标
 

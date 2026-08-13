@@ -1,4 +1,4 @@
-"""Converge the two historical version-3 execution schemas."""
+"""Converge the two historical risk-counter schemas after M4 version 6."""
 
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ def _create_scoped_counters(conn: sqlite3.Connection) -> None:
 
 
 def upgrade(conn: sqlite3.Connection) -> None:
-    """Preserve either legacy v3 and add the schema from the other branch."""
+    """Preserve either legacy shape and expose both non-overlapping stores."""
     counter_columns = _columns(conn, "daily_risk_counters")
     scoped_columns = _columns(conn, "scoped_daily_risk_counters")
 
@@ -90,4 +90,3 @@ def upgrade(conn: sqlite3.Connection) -> None:
         )
         """
     )
-
