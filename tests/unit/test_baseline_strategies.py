@@ -8,6 +8,7 @@ from quant.strategies import (
     BreadthFilteredEtfTrendStrategy,
     EqualWeightStrategy,
     EtfTrendStrategy,
+    RegimeFilteredEtfLowVolatilityStrategy,
     RegimeFilteredEtfTrendStrategy,
 )
 from quant.portfolio import (
@@ -137,6 +138,41 @@ def test_breadth_filter_fails_closed_on_tie_or_missing_candidate_input() -> None
     )
     assert tied.get_column("weight").to_list() == [0.0] * 4
     assert missing.get_column("weight").to_list() == [0.0] * 4
+
+
+def test_low_volatility_strategy_uses_independent_risk_ranking() -> None:
+    factors = _trend_factors({
+        "510300.SH": [0.01, 0.03, 0.05, 0.4],
+        "512880.SH": [-0.03, -0.02, -0.01, -0.2],
+        "513060.SH": [0.04, 0.07, 0.10, 0.8],
+    })
+    factors = pl.concat([
+        factors,
+        pl.DataFrame([
+            {
+                "as_of": AS_OF,
+                "symbol": symbol,
+                "factor": "annualized_realized_volatility_60",
+                "value": value,
+                "factor_version": "risk_v1",
+            }
+            for symbol, value in {
+                "510300.SH": 0.20,
+                "512880.SH": 0.10,
+                "513060.SH": 0.30,
+            }.items()
+        ]),
+    ])
+
+    result = RegimeFilteredEtfLowVolatilityStrategy(
+        candidates=("510300.SH", "512880.SH", "513060.SH"),
+        regime_symbol="510300.SH",
+        top_k=2,
+        cash_buffer=0.1,
+    ).target_weights(AS_OF, factors)
+
+    assert result.get_column("symbol").to_list() == ["512880.SH", "510300.SH"]
+    assert result.get_column("weight").to_list() == [0.45, 0.45]
 
 
 def test_rank_retention_keeps_prior_symbol_inside_explicit_buffer() -> None:

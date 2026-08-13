@@ -1,6 +1,7 @@
 """M2 买入持有/等权与 ETF 趋势轮动基线策略。"""
 
 import datetime as dt
+import math
 from dataclasses import dataclass
 
 import polars as pl
@@ -179,6 +180,64 @@ class BreadthFilteredEtfTrendStrategy(Strategy):
             if risk_on
             else []
         )
+        selected = [symbol for symbol, _ in ranked[: self.top_k]]
+        return _weights_frame(
+            as_of=as_of,
+            strategy=self.name,
+            version=self.version,
+            symbols=selected,
+            invested_weight=1.0 - self.cash_buffer,
+            zero_symbols=list(self.candidates),
+        )
+
+
+@dataclass(frozen=True)
+class RegimeFilteredEtfLowVolatilityStrategy(Strategy):
+    """Select the lowest-volatility ETFs while the broad market trend is positive."""
+
+    candidates: tuple[str, ...]
+    regime_symbol: str
+    top_k: int = 2
+    cash_buffer: float = 0.0
+    trend_factor_version: str = "trend_v1"
+    risk_factor_version: str = "risk_v1"
+    momentum_windows: tuple[int, ...] = (20, 60, 120)
+    regression_window: int = 60
+    volatility_window: int = 60
+    name: str = "etf_regime_low_volatility"
+    version: str = "1.0.0"
+
+    def __post_init__(self) -> None:
+        _validate_parameters(self.candidates, self.cash_buffer)
+        if self.regime_symbol not in self.candidates:
+            raise ValueError("regime_symbol 必须属于冻结候选池")
+        if self.top_k <= 0:
+            raise ValueError("top_k 必须大于 0")
+        if self.volatility_window < 2:
+            raise ValueError("volatility_window 至少为 2")
+
+    def target_weights(self, as_of: dt.date, data: pl.DataFrame) -> pl.DataFrame:
+        """Fail closed on a negative regime or incomplete volatility input."""
+        trends = _factor_values(
+            data, as_of=as_of, factor_version=self.trend_factor_version
+        )
+        regime = _rank_positive_trends(
+            by_symbol=trends,
+            candidates=(self.regime_symbol,),
+            momentum_windows=self.momentum_windows,
+            regression_window=self.regression_window,
+        )
+        risks = _factor_values(
+            data, as_of=as_of, factor_version=self.risk_factor_version
+        )
+        factor_name = f"annualized_realized_volatility_{self.volatility_window}"
+        ranked = []
+        if regime:
+            for symbol in self.candidates:
+                value = risks.get(symbol, {}).get(factor_name)
+                if value is not None and math.isfinite(value) and value > 0:
+                    ranked.append((symbol, value))
+            ranked.sort(key=lambda item: (item[1], item[0]))
         selected = [symbol for symbol, _ in ranked[: self.top_k]]
         return _weights_frame(
             as_of=as_of,

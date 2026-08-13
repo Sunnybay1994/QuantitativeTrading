@@ -36,8 +36,10 @@ from quant.strategies import (
     BreadthFilteredEtfTrendStrategy,
     EqualWeightStrategy,
     EtfTrendStrategy,
+    RegimeFilteredEtfLowVolatilityStrategy,
     RegimeFilteredEtfTrendStrategy,
 )
+from quant.factors import compute_realized_volatility_factors_from_prices
 
 _HYPOTHESIS_ID = "s1-trend-v1"
 _HYPOTHESIS = (
@@ -79,7 +81,10 @@ class ResearchSpec:
     hypothesis_id: str
     hypothesis: str
     strategy_kind: Literal[
-        "etf_trend", "etf_regime_trend", "etf_breadth_regime_trend"
+        "etf_trend",
+        "etf_regime_trend",
+        "etf_breadth_regime_trend",
+        "etf_regime_low_volatility",
     ]
     strategy_version: str
     conclusion: Literal["REJECTED", "RESEARCH_ONLY"]
@@ -643,6 +648,16 @@ def build_window_targets(
             regression_window=params.regression_window,
             factor_version=strategy_config["factor_version"],
         )
+        if strategy_kind == "etf_regime_low_volatility":
+            risk_factors = compute_realized_volatility_factors_from_prices(
+                prices,
+                as_of=as_of,
+                source=None,
+                windows=(strategy_config["volatility_window"],),
+                annualization_sessions=strategy_config["annualization_sessions"],
+                factor_version=strategy_config["risk_factor_version"],
+            )
+            factors = pl.concat([factors, risk_factors])
         common = {
             "candidates": tuple(candidates),
             "top_k": params.top_k,
@@ -657,6 +672,7 @@ def build_window_targets(
             EtfTrendStrategy
             | RegimeFilteredEtfTrendStrategy
             | BreadthFilteredEtfTrendStrategy
+            | RegimeFilteredEtfLowVolatilityStrategy
         )
         if strategy_kind == "etf_trend":
             strategy = EtfTrendStrategy(**common)
@@ -667,6 +683,20 @@ def build_window_targets(
         elif strategy_kind == "etf_breadth_regime_trend":
             strategy = BreadthFilteredEtfTrendStrategy(
                 **common, breadth_window=strategy_config["breadth_window"]
+            )
+        elif strategy_kind == "etf_regime_low_volatility":
+            strategy = RegimeFilteredEtfLowVolatilityStrategy(
+                candidates=tuple(candidates),
+                regime_symbol=strategy_config["regime_symbol"],
+                top_k=params.top_k,
+                cash_buffer=strategy_config["cash_buffer"],
+                trend_factor_version=strategy_config["factor_version"],
+                risk_factor_version=strategy_config["risk_factor_version"],
+                momentum_windows=tuple(strategy_config["momentum_windows"]),
+                regression_window=params.regression_window,
+                volatility_window=strategy_config["volatility_window"],
+                name=strategy_name,
+                version=strategy_version,
             )
         else:
             raise ValueError(f"不支持的研究策略: {strategy_kind}")
@@ -679,6 +709,7 @@ def build_window_targets(
                     EtfTrendStrategy
                     | RegimeFilteredEtfTrendStrategy
                     | BreadthFilteredEtfTrendStrategy
+                    | RegimeFilteredEtfLowVolatilityStrategy
                 )
                 retention_strategy = EtfTrendStrategy(**retention_common)
             elif strategy_kind == "etf_regime_trend":
@@ -686,10 +717,24 @@ def build_window_targets(
                     **retention_common,
                     regime_symbol=strategy_config["regime_symbol"],
                 )
-            else:
+            elif strategy_kind == "etf_breadth_regime_trend":
                 retention_strategy = BreadthFilteredEtfTrendStrategy(
                     **retention_common,
                     breadth_window=strategy_config["breadth_window"],
+                )
+            else:
+                retention_strategy = RegimeFilteredEtfLowVolatilityStrategy(
+                    candidates=tuple(candidates),
+                    regime_symbol=strategy_config["regime_symbol"],
+                    top_k=params.top_k + retention_buffer,
+                    cash_buffer=strategy_config["cash_buffer"],
+                    trend_factor_version=strategy_config["factor_version"],
+                    risk_factor_version=strategy_config["risk_factor_version"],
+                    momentum_windows=tuple(strategy_config["momentum_windows"]),
+                    regression_window=params.regression_window,
+                    volatility_window=strategy_config["volatility_window"],
+                    name=strategy_name,
+                    version=strategy_version,
                 )
             current_targets = retain_ranked_target_selection(
                 current_targets=current_targets,
@@ -960,6 +1005,7 @@ def _research_spec(config: dict[str, Any]) -> ResearchSpec:
         "etf_trend",
         "etf_regime_trend",
         "etf_breadth_regime_trend",
+        "etf_regime_low_volatility",
     }:
         raise ValueError("research.strategy_kind 不受支持")
     conclusion = section["conclusion"]
@@ -970,7 +1016,10 @@ def _research_spec(config: dict[str, Any]) -> ResearchSpec:
         hypothesis=section["hypothesis"],
         strategy_kind=cast(
             Literal[
-                "etf_trend", "etf_regime_trend", "etf_breadth_regime_trend"
+                "etf_trend",
+                "etf_regime_trend",
+                "etf_breadth_regime_trend",
+                "etf_regime_low_volatility",
             ],
             strategy_kind,
         ),

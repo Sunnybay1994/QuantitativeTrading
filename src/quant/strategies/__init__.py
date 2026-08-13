@@ -5,6 +5,7 @@ from quant.strategies.baselines import (
     BreadthFilteredEtfTrendStrategy,
     EqualWeightStrategy,
     EtfTrendStrategy,
+    RegimeFilteredEtfLowVolatilityStrategy,
     RegimeFilteredEtfTrendStrategy,
 )
 from quant.strategies.ml_topk import MlTopkStrategy, normalize_prediction_scores
@@ -14,6 +15,7 @@ __all__ = [
     "BreadthFilteredEtfTrendStrategy",
     "EqualWeightStrategy",
     "EtfTrendStrategy",
+    "RegimeFilteredEtfLowVolatilityStrategy",
     "RegimeFilteredEtfTrendStrategy",
     "MlTopkStrategy",
     "normalize_prediction_scores",

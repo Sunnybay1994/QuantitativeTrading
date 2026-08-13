@@ -366,7 +366,7 @@ N 个精确开市日；官方为 OTHER/缺失时才回退 Instrument 分类。�
 
 ## 当前状态
 
-M0 已通过验收；M1 已完成 A 股/ETF 数据、三地基础日历与股票主表、双路由港股通快照/事件/日历、基线后成员区间及“时点股票池 × 历史行情窗口”查询，HK licensed provenance 与五日自然窗口仍开放。M2 的数据契约、策略接口、统一日频回测、walk-forward、成本压力、轻量不可覆盖 `run.json` 和目标缺口诊断已经达到**投研框架 MVP 完成**；策略开发已经进入持续假设—证伪循环，M3/M4 工程稳线在后台推进。月度 S2 两个样本外测试折均为正；双月调仓和一位排名保留缓冲均未满足各自预注册条件，已记为 `REJECTED`；固定 60 观测、12% 年化、无杠杆的波动率目标与最小两只 ETF 分散化均通过各自预注册条件，但因没有真正前向样本、且分散化第一折的验证选择来自零交易并列，均保持 `RESEARCH_ONLY`。M3 已具备 Windows G1 正式发布物、G2–G7 formal artifact/fresh verifier、G8 StageRunner/tracking/reproducibility 与 fake full DAG；G9A/G9B 和资源受限性能闭包已完成。首轮 honest 300 业务 CLI 已完成，但集成验收在 stage root 新增文件集合处失败，completed resume 尚未执行；下一步用小型探针定位，不重复长链，也不阻塞 S2+。M4 formal runtime/policy/binding/account/store 与只读 broker snapshot port 已完成 Windows 工程闭环；第一波 A 股/ETF PAPER 与 formal 加固复用同一规则实现，但采用分层准入，gateway dispatch 仍等待 `UA-M4-003`，service/runner/28 日 soak 尚未开始。`py312` 已验收 Qlib 0.9.7 兼容性且 base 未变；Linux/ext4 当前按用户指示暂不实施。详见[路线图](项目实施路线图.md)、[方法论](正式产物身份、数据溯源与可复现性方法论.md)和[持续审批事项](docs/agent/用户待批示与参与事项.md)。研究阶段可使用本地 ignored Tushare token，启用实盘前必须轮换。
+M0 已通过验收；M1 已完成 A 股/ETF 数据、三地基础日历与股票主表、双路由港股通快照/事件/日历、基线后成员区间及“时点股票池 × 历史行情窗口”查询，HK licensed provenance 与五日自然窗口仍开放。M2 的数据契约、策略接口、统一日频回测、walk-forward、成本压力、轻量不可覆盖 `run.json` 和目标缺口诊断已经达到**投研框架 MVP 完成**；当前唯一前台关键路径是策略假设—证伪与前向观察，PAPER MVP 为第二优先级，M3/M4 formal 工程以单一在制包在后台推进，不再反向阻塞研究。研究、PAPER 和 formal 复用同一 Schema、市场规则、费用和账户计算；候选晋级时通过正式入口受控重跑，不能把轻量产物原地冒充正式产物。月度 S2 两个样本外测试折均为正；双月调仓和一位排名保留缓冲均未满足各自预注册条件，已记为 `REJECTED`；固定 60 观测、12% 年化、无杠杆的波动率目标与最小两只 ETF 分散化均通过各自预注册条件，但因没有真正前向样本、且分散化第一折的验证选择来自零交易并列，均保持 `RESEARCH_ONLY`。M3 已具备 Windows G1 正式发布物、G2–G7 formal artifact/fresh verifier、G8 StageRunner/tracking/reproducibility 与 fake full DAG；G9A/G9B 和资源受限性能闭包已完成。首轮 honest 300 业务 CLI 已完成，但集成验收在 stage root 新增文件集合处失败，completed resume 尚未执行；下一步用小型探针定位，不重复长链，也不阻塞 S2+。M4 formal runtime/policy/binding/account/store 与只读 broker snapshot port 已完成 Windows 工程闭环；第一波 A 股/ETF PAPER 只要求人工确认、订单幂等、资金/可卖量、持久账本和日终对账，完整来源证明留给 formal/影子/实盘候选，gateway dispatch 仍等待 `UA-M4-003`，service/runner/28 日 soak 尚未开始。`py312` 已验收 Qlib 0.9.7 兼容性且 base 未变；Linux/ext4 当前按用户指示暂不实施。详见[路线图](项目实施路线图.md)、[方法论](正式产物身份、数据溯源与可复现性方法论.md)和[持续审批事项](docs/agent/用户待批示与参与事项.md)。研究阶段可使用本地 ignored Tushare token，启用实盘前必须轮换。
 
 ## M2 基线策略（工程闭环完成，策略有效性继续观察）
 
@@ -479,6 +479,12 @@ run ID 为 `4ea4493f798ed5df8ac61d316f74e56fbfd87730bc6ff578bf979705acb5f1e6`，
 `+26.49% / +3.63%`，2×成本后仍为正，复合约 `+31.09%`；但相对最小两只基线，最差回撤几乎没有改善，
 且第一折单边换手由约 `2.52×` 增至 `3.25×`，未通过预注册的回撤和换手条件。因此最终以 `REJECTED`
 和 run ID `25ed53dfff8afbd35ec2141bd6fff0764a090b30ce1651f9b8a62dd3dd65d717` 留档。
+
+第六个实验把证券排名替换为固定 60 日已实现波动率，宽基准趋势过滤、Top-K=2、月度执行和成本均不变，
+且不搜索窗口。两折 1×收益约 `+10.58% / +2.89%`，最差回撤改善到约 `-5.55%`，单边换手降到
+约 `0.95× / 1.35×`；但两折复合收益只有 `+13.78%`，仅保留最小两只比较器约 64.92%，没有达到
+预注册的 80%。因此以 `REJECTED` 和 run ID
+`279e5411ca0aec53c8eb66aa1b1e8cd67a4815c7f2be6fd066fb48861e7f1840` 留档，不继续在相同两折上搜索波动率窗口。
 
 为避免继续在同一历史两折上调参，项目提供了只用于该冻结候选的前向观察入口。配置
 `configs/research/m2_s2_minimum_breadth_forward.toml` 绑定上述 run ID、来源配置 SHA、候选冻结日和

@@ -121,6 +121,21 @@ def test_market_breadth_strategy_kind_is_an_explicit_research_contract() -> None
     assert spec.conclusion == "REJECTED"
 
 
+def test_low_volatility_strategy_kind_is_an_explicit_research_contract() -> None:
+    spec = _research_spec({
+        "research": {
+            "hypothesis_id": "s2-fixed-low-volatility-selection-v1",
+            "hypothesis": "A fixed low-volatility selection hypothesis.",
+            "strategy_kind": "etf_regime_low_volatility",
+            "strategy_version": "1.0.0",
+            "conclusion": "RESEARCH_ONLY",
+            "random_seed": 0,
+        }
+    })
+
+    assert spec.strategy_kind == "etf_regime_low_volatility"
+
+
 def test_volatility_target_config_is_explicit_and_unlevered() -> None:
     assert _volatility_target_spec({
         "volatility_target": {
