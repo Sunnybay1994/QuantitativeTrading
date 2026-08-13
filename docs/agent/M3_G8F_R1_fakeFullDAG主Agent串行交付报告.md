@@ -1,6 +1,6 @@
 # M3 G8F R1 fake full-DAG 主 Agent 串行交付报告
 
-日期：2026-08-13  
+日期：2026-08-13
 状态：Windows 工程集成测试完成；不代表真实数据、Linux/ext4 或 M3 Gate
 
 ## 1. 交付结论
