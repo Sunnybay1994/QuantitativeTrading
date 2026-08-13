@@ -360,7 +360,9 @@ def _commands(project: Path) -> tuple[_Command, ...]:
         "import quant.domain,quant.strategies,quant.backtest\n"
         "heavy={'qlib','lightgbm','mlflow'}\n"
         "assert not heavy&set(sys.modules)\n"
-        "allowed={'qlib':'qlib_adapter.py','lightgbm':'model.py','mlflow':'tracking.py'}\n"
+        "allowed={'qlib':'src/quant/research/m3/qlib_adapter.py',"
+        "'lightgbm':'src/quant/research/m3/model.py',"
+        "'mlflow':'src/quant/research/m3/tracking.py'}\n"
         "bad=[]\n"
         "for p in sorted((root/'src'/'quant').rglob('*.py')):\n"
         " tree=ast.parse(p.read_text(encoding='utf-8'))\n"
@@ -369,7 +371,8 @@ def _commands(project: Path) -> tuple[_Command, ...]:
         "([n.module] if isinstance(n,ast.ImportFrom) and n.module else []))\n"
         "  for imported in names:\n"
         "   package=imported.split('.')[0]\n"
-        "   if package in heavy and p.name!=allowed[package]: bad.append([p.name,package])\n"
+        "   relative=p.relative_to(root).as_posix()\n"
+        "   if package in heavy and relative!=allowed[package]: bad.append([relative,package])\n"
         "assert not bad,bad\n"
         "print(json.dumps({'policy':'m3-import-isolation-v1','passed':True},"
         "sort_keys=True,separators=(',',':')))\n"
@@ -568,6 +571,8 @@ def _normalize_log(raw: bytes, *, project: Path) -> bytes:
     replacements = (
         (str(project.resolve()), "<WORKSPACE>"),
         (str(project.resolve()).replace("\\", "/"), "<WORKSPACE>"),
+        (str(Path(sys.prefix).resolve()), "<PYTHON>"),
+        (str(Path(sys.prefix).resolve()).replace("\\", "/"), "<PYTHON>"),
         (str(Path(sys.executable).resolve()), "<PYTHON>"),
         (str(Path(sys.executable).resolve()).replace("\\", "/"), "<PYTHON>"),
     )
@@ -584,6 +589,8 @@ def _validate_log(raw: bytes) -> None:
 
 def _quality_environment() -> Mapping[str, str]:
     env = dict(os.environ)
+    env.pop("PYTHONHOME", None)
+    env.pop("PYTHONPATH", None)
     env["PYTHONHASHSEED"] = "0"
     return MappingProxyType(env)
 

@@ -41,7 +41,10 @@ class _Executor:
         code = 1 if self.fail_at == len(self.calls) else 0
         return CommandExecution(
             code,
-            f"cwd={cwd}\npython={Path(sys.executable).resolve()}\n".encode(),
+            (
+                f"cwd={cwd}\npython={Path(sys.executable).resolve()}\n"
+                f"prefix={Path(sys.prefix).resolve()}\n"
+            ).encode(),
             b"",
         )
 
@@ -91,6 +94,7 @@ def test_quality_gate_uses_fixed_commands_publishes_and_resumes(tmp_path: Path) 
         assert "<WORKSPACE>" in value["stdout"]
         assert "<PYTHON>" in value["stdout"]
         assert str(project) not in value["stdout"]
+        assert str(Path(sys.prefix).resolve()) not in value["stdout"]
 
     resumed_executor = _Executor(fail_at=1)
     second = run_quality_gate(
@@ -144,3 +148,13 @@ def test_import_isolation_fixed_command_runs_in_fresh_process() -> None:
     )
     assert execution.exit_code == 0, execution.stderr.decode("utf-8", "replace")
     assert json.loads(execution.stdout)["passed"] is True
+
+
+def test_quality_environment_removes_external_python_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PYTHONPATH", "C:/hostile")
+    monkeypatch.setenv("PYTHONHOME", "C:/hostile")
+    environment = _quality_environment()
+    assert "PYTHONPATH" not in environment
+    assert "PYTHONHOME" not in environment
