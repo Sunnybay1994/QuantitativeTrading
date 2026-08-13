@@ -27,7 +27,8 @@ def _tree_signature(root: Path) -> dict[str, tuple[int, int]]:
         if path.name == ".writer.lock":
             continue
         st = os.lstat(path)
-        out[str(path.relative_to(root))] = (st.st_size, st.st_mtime_ns)
+        # Artifact paths are canonical POSIX relative paths on every host.
+        out[path.relative_to(root).as_posix()] = (st.st_size, st.st_mtime_ns)
     return out
 
 
@@ -50,7 +51,7 @@ def test_tree_signature_excludes_persistent_advisory_lock(tmp_path: Path) -> Non
     business.write_bytes(b"{}")
     lock.write_bytes(b"\x00")
 
-    assert set(_tree_signature(tmp_path)) == {str(Path("work") / "result.json")}
+    assert set(_tree_signature(tmp_path)) == {"work/result.json"}
 
 
 @pytest.fixture(scope="module")
