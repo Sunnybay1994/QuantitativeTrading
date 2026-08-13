@@ -474,6 +474,19 @@ ETF 集中持仓。第一折因此选中 Top-K=2，收益由约 `+7.99%` 提高�
 获胜参数仍来自零交易并列，尚不能证明稳定的参数选择能力，因此结果继续标记为 `RESEARCH_ONLY`，
 run ID 为 `4ea4493f798ed5df8ac61d316f74e56fbfd87730bc6ff578bf979705acb5f1e6`，不晋级 PAPER。
 
+为避免继续在同一历史两折上调参，项目提供了只用于该冻结候选的前向观察入口。配置
+`configs/research/m2_s2_minimum_breadth_forward.toml` 绑定上述 run ID、来源配置 SHA、候选冻结日和
+固定参数；入口只接受 `2026-08-31` 起的完整自然月最后一个 SH 开市日，并要求全部候选总回报价格覆盖
+信号日和最小历史。输出位于 `artifacts/research/forward_observations/<observation_id>/`，包含目标权重、
+下一交易日计划和不可覆盖的 `observation.json`。它始终是 `RESEARCH_ONLY` 且明确
+`deployment_authority=false`，不能送入 PAPER 或实盘：
+
+```bash
+python -m quant.research.run_s2_forward_observation --as-of YYYY-MM-DD
+```
+
+当前数据只到 `2026-07-10`，因此尚不存在合格的真实前向观察；不得用部分月份或回填旧日期冒充。
+
 S0 使用同一候选池运行买入持有和等权月调仓。成交与估值使用不复权
 `bar_1d`，总回报价格只用于反推出除息日现金分红；模拟器支持次日开盘、整手、
 最低佣金、比例佣金和滑点：
