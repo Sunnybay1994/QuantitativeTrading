@@ -497,9 +497,9 @@ def build_acceptance_evidence_plan(
 
         def add(
             gate: GateName, node_id: str, stage: str, scope: Scope,
-            scope_key: str, receipt: str,
+            scope_key: str, receipt: str, *, registry_stage: str | None = None,
         ) -> None:
-            spec = registry.get(stage)
+            spec = registry.get(stage if registry_stage is None else registry_stage)
             if spec is None or spec.scope != scope:
                 raise ValueError
             locators.append(EvidenceLocatorV1(
@@ -563,16 +563,21 @@ def build_acceptance_evidence_plan(
                 experiment_key,
                 f"receipts/features/{experiment_key}.{item.fold}.json",
             )
-            for gate, stage in (
-                ("G5", "alignment"), ("G5", "train"),
-                ("G5", "predictions"), ("G6", "evaluation"),
-                ("G7", "targets"), ("G7", "backtest-plan"),
-                ("G7", "backtest"), ("G8", "tracking"),
+            for gate, stage, registry_stage in (
+                ("G5", "alignment", "alignment"),
+                ("G5", "train", "train"),
+                ("G5", "predictions", "predictions"),
+                ("G6", "evaluation", "evaluation"),
+                ("G7", "targets", "targets"),
+                ("G7", "backtest-plan", "backtest_plan"),
+                ("G7", "backtest", "backtest"),
+                ("G8", "tracking", "tracking"),
             ):
                 add(
                     cast(GateName, gate), f"{stage}.{item.fold}.h{item.horizon}",
                     stage, "WORK", item.work_key,
                     f"receipts/{stage}/{item.work_key}.json",
+                    registry_stage=registry_stage,
                 )
             add(
                 "G5", f"reproducibility.{item.fold}.h{item.horizon}",

@@ -488,6 +488,27 @@ def _verify_tree_without_receipt(
     if {entry.name for entry in os.scandir(directory)} != {"readiness_report.json"}:
         raise ValueError
     raw = _real_file(directory / "readiness_report.json").read_bytes()
+    report = _parse_report(raw)
+    if report != expected:
+        raise ValueError
+    return report
+
+
+def read_readiness_evidence_report(path: Path) -> ReadinessEvidenceReportV1:
+    """Read one canonical readiness report without rebuilding its upstreams."""
+
+    result: ReadinessEvidenceReportV1 | None = None
+    failed = False
+    try:
+        result = _parse_report(_real_file(path).read_bytes())
+    except Exception:
+        failed = True
+    if failed or result is None:
+        _fail()
+    return result
+
+
+def _parse_report(raw: bytes) -> ReadinessEvidenceReportV1:
     value = _strict_json(raw)
     issues_raw = value.get("issues")
     if type(issues_raw) is not list:
@@ -523,7 +544,7 @@ def _verify_tree_without_receipt(
         ),
         issues=issues,
     )
-    if value != _report_payload(report) or report != expected:
+    if value != _report_payload(report):
         raise ValueError
     return report
 
@@ -661,6 +682,7 @@ __all__ = [
     "M3ReadinessEvidenceError",
     "ReadinessEvidenceReportV1",
     "VerifiedReadinessEvidenceArtifact",
+    "read_readiness_evidence_report",
     "run_readiness_evidence_stage",
     "verify_readiness_evidence_artifact",
 ]
