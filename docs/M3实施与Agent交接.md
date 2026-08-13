@@ -1914,6 +1914,11 @@ signal dates/target domain/target 文件 hash、三层覆盖计数和策略身�
 及逐日覆盖表共同作为 targets stage receipt 的输出；任何字段变化必须改变下游 backtest run identity。禁止把这些
 血缘压进 `strategy_version` 字符串，也禁止仅依赖上游目录名推断。
 
+正式 G1 release 不是 StageRunner stage，不存在也不得补造 `receipt.json`。G7A 及其后续正式回测链对 G1 的
+物理输入闭包固定使用 public `verify_g1_release` 已验真的 `manifest.json`、`quality.json` 与所需正式表；其中
+`quality.json` 的 bytes 必须绑定 `VerifiedG1Release.quality_sha256`。development example 若真实发布了自己的
+stage receipt，继续使用 development 专用 receipt，禁止把两条信任域互相代换。
+
 每个 test signal date 的 target domain 是当日全部 PIT eligible symbols；`n_scorable` 是其中确实存在
 Alpha158 feature row 的证券，`n_predicted` 必须等于 `n_scorable`。无预测、无 eligible、预测遗漏 scorable
 证券或 scorable/eligible 低于配置阈值都使 targets stage 失败，不能发布空 batch。Top-k 只在 scorable
@@ -1942,9 +1947,17 @@ domain 扩展。不得要求策略读取持仓或把 research lineage 加进全�
 ### 4.9 `tracking.py` 和 `run_m3.py`
 
 ```python
-def register_m3_work(
-    *, request: TrackingRequestV1, tracking_uri: str, experiment_name: str,
-    artifact_roots: Mapping[str, Path],
+def register_remote_tracking_run(
+    *, request: TrackingRequestV1, request_sha256: str,
+    tracking_uri: str, experiment_name: str,
+    artifact_roots: Mapping[str, Path], lock_root: Path,
+    client: TrackingClientProtocol | None = None,
+) -> TrackingMarkerV1: ...
+
+def register_tracking_request(
+    *, request: TrackingRequestV1, request_path: Path, marker_path: Path,
+    tracking_uri: str, experiment_name: str,
+    artifact_roots: Mapping[str, Path], client: TrackingClientProtocol | None = None,
 ) -> TrackingMarkerV1: ...
 
 def compute_tracking_key(*, work_key: str, request_sha256: str) -> str: ...
@@ -2037,10 +2050,20 @@ CLI 支持 `readiness`、`snapshot`、`train`、`evaluate`、`backtest`、`run-a
 | `snapshot` | `--g1-release-id` | snapshot；输出 snapshot ID，不生成 provider |
 | `train` | `--snapshot-id --fold --horizon` | 自动验真/生成 provider/shared/features，止于 train |
 | `evaluate` | `--snapshot-id --fold --horizon` | 止于 evaluation |
-| `backtest` | `--snapshot-id --fold --horizon` | 止于 backtest，不登记 MLflow |
+| `backtest` | `--snapshot-id --fold --horizon [--no-resume]` | 止于 backtest，不登记 MLflow |
 | `run-all` | `--g1-release-id` 或 `--snapshot-id` 二选一 | 所有 work 止于 tracking |
 | `verify-reproducibility` | `--snapshot-id --fold --horizon` | 两个冷启动 attempt 与 comparison receipt |
 | `acceptance-audit` | `--snapshot-id` | 重算 provider/experiment identity，执行固定质量命令与 G0–G9 审计；只在全通过时发布 acceptance receipt |
+
+当前 G8C CLI 按最小职责拆为串行 C0/C1/C2：C0 仅从 `project_root + loaded config + snapshot_id + fold + horizon`
+按具名 identity/path 调用 public verifier，重建 formal backtest wave 所需的 process-local verified values 与 fresh
+context；它零写入、禁止扫描目录、禁止生成任何缺失 stage。C1 把 public `backtest` 接到
+`load_m3_config` → `resolve_formal_backtest_cli_inputs` → `run_formal_backtest_stage`，仅新增
+`--no-resume`，成功输出一行 canonical JSON（`reused`/`work_key`/`stop_stage=backtest`），失败走
+`CommandSummary` 稳定码；C1 R2 长链 FAIL 后 R3 完成一次透明诊断并 **FAIL**（exact 边界为已主验 G8 `M3StageRunnerError`/`STAGE_BUILD_FAILED`，非 C1 seam；未启动 Phase B，不得进入独立初验或自行宣布 Gate）。`train`、`evaluate`、
+`run-all`、`verify-reproducibility`、`acceptance-audit` 与 tracking/真实 MLflow handler 继续
+`M3_COMMAND_HANDLER_UNAVAILABLE`。C2 才能另行设计 tracking CLI；不得用 offline/fake production client 把
+tracking 偷渡进 C0/C1。任何跨进程执行都必须在新进程内重新 resolve，禁止 pickle 或传递 verified capability。
 
 提供 snapshot ID 时只验真/复用已有 snapshot，不回退 G1 构建；提供 G1 release 时按分段计划生成或复用。
 stdout 只输出一份规范 JSON，所有 warning/log 写 stderr。退出码：0 成功或验真复用；2 参数/配置/契约；
@@ -2125,7 +2148,8 @@ session calendar 与全部 staging 文件。中间崩溃只允许在完整内容
   下游，但继续其他独立 work；`folds` 失败阻止全部 work，某个 `labels[h]` 失败只阻止该 horizon 的 work。
   命令返回非零并输出结构化失败清单，重跑只恢复未完成 work。
 - MLflow 是每个 work 的最后登记步骤。本地产物及 hash 全部验证后才打开 run；成功 run ID 写入本地
-  marker。tracking 文件位于 `work/tracking/target=<tracking_target_key>/`，其中
+  marker。每个 work 的 tracking 文件位于 `work/<work_key>/tracking/`，精确为
+  `tracking_request.json` 与 `tracking_marker.json`；receipt 位于 `receipts/tracking/<work_key>.json`。其中
   `tracking_target_key` 只能由 C0 `canonical_tracking_target_key` 计算；request 只记录 target key，不记录
   原始 URI 或凭据。这样切换 MLflow server 不改变科学 experiment/work identity，但也不会误复用旧 server
   的 marker。`request.json` 必须包含 work key、过滤后的 params/tags/metrics 与所有 artifact digest；
@@ -2134,7 +2158,8 @@ session calendar 与全部 staging 文件。中间崩溃只允许在完整内容
   且 request/artifact hash 完全匹配才恢复 marker；`RUNNING`、`FAILED`、`KILLED`、内容不符或多于 1 个
   都 fail-closed，禁止用同一 tracking key 创建第二条记录。创建 run 时必须通过 `start_run(tags=...)` 或
   等价 create API 在首个服务端写操作中附带 `quant_tracking_key`，不能先创建再 set_tag。个人单机版还需
-  对 `(tracking_target_key,tracking_key)` 使用 WSL `flock` 互斥，避免两个本地进程同时观察到 0 个匹配；
+  对 `(tracking_target_key,tracking_key)` 使用 WSL `flock` 互斥，锁目录位于 stage root 的
+  `.tracking-locks/`，不得进入上述两文件发布树，避免两个本地进程同时观察到 0 个匹配；
   跨主机并发不在 M3 保证范围并须在报告披露。只重试 tracking，不重新训练。
 
 `verify_stage_receipt` 只能返回两种成功状态：receipt 不存在返回 `None`；receipt 存在且每个输入输出
@@ -2347,7 +2372,7 @@ digest 输入。稳定产物与最小 required-input 闭包如下；receipt 必�
 | work/targets | verified prediction/feature/fold；G1 eligibility/domain；scientific config identity | `targets/{target_weights.parquet,target_daily.parquet,target_manifest.json}` |
 | work/backtest_plan | verified target/fold/G1 calendar；window/cost/backtest identities | `backtest_plan/{scheduled_targets,schedule_diagnostics}.parquet`, `cost_schedule.json`, `manifest.json` |
 | work/backtest | verified target/backtest plan；`G1_RELEASE` market facts/benchmark/manifest | `backtest/scenario={0p5x,1p0x,2p0x}/{nav,trades,positions,rejections,postings,diagnostics,entitlements}.parquet`、每场景 `metrics.json`/`manifest.json`、根 `backtest_metrics.json`/`backtest_manifest.json` |
-| work/tracking | 本 work 全部需登记的已验真 artifacts；tracking target identity | `tracking/target=<tracking_target_key>/{request.json,marker.json}` |
+| work/tracking | 本 work 全部需登记的已验真 artifacts；tracking target identity | `work/<work_key>/tracking/{tracking_request.json,tracking_marker.json}` |
 | experiment/research_summary[h] | 该 horizon 全部 verified evaluations，test dates 不重叠 | `summary/horizon=<h>/{daily_ic,fold_metrics}.parquet`, `metrics.json`, `manifest.json` |
 | repro/comparison | 已验真 provider/features/labels/alignment；work/config/code/dependency identities；禁止读取正常 work model | `repro/<comparison_key>/attempt={1,2}/{model.txt,model.metadata.json,predictions.parquet,prediction_manifest.json,daily_ic.parquet,metrics.json,read_audit.json}`、根 `reproducibility.json` |
 | acceptance/quality | source/test trees、版本化配置、code/dependency identities | `acceptance/quality/<quality_key>/{quality_report.json,pytest.log,ruff.log,mypy.log,import_isolation.json}` |
@@ -3945,8 +3970,12 @@ folds receipt 在各自发布前不可知的问题；每个 fold×horizon
 5. G7 已冻结 G7P0 与 G7A–G7F 七个 config/verified-artifact/纯状态边界，但当前仍只有 ETF 薄模拟器和
    早期成本/规则零件；四个新增 config 字段、target、backtest plan、双-leg entitlement、execution、账户
    循环和三场景 artifact 均未实现，仍需独立手算验收。
-6. G8 已按 G8A registry、G8B StageRunner、G8C CLI、G8D tracking、G8E fresh-process reproducibility、
-   G8F fake 全 DAG 六个边界冻结；全部尚未实现，真实 handlers 与 MLflow 也未验。
+6. G8A registry、G8B StageRunner、formal backtest 单 WORK wave与G8D-F1 formal tracking单WORK wave均已完成
+   工程实现、外部独立初验和主验；G8D-F1 R1 的FINISHED request-tag复用缺口已由R2闭合。G8C CLI须按
+   C0 identity resolver → C1 backtest命令 → C2 tracking命令串行推进；   C0 已于 2026-08-12 完成主验，C1
+   R3 外部实现 FAIL（根因属 G8 stage build，待主 Agent 冻结上游/R4），C2 尚未开始；现有除readiness/snapshot外的public handler继续 fail-closed。G8E
+   fresh-process reproducibility、G8F fake全DAG、真实MLflow
+   与Linux ext4 Gate也未验。
 7. G9 已按 G9A quality、G9B evidence plan、G9C G0–G4、G9D G5–G7、G9E G8–G9、G9F publish/CLI、
    G9G fake integration 七个边界冻结；全部尚未实现，尚无跨 Gate 或真实 tracking 运行证据，G8/G9 未关闭。
 

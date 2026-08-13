@@ -9,7 +9,9 @@ from types import SimpleNamespace
 import pytest
 
 import quant.research.run_m3 as run_m3
+from quant.research.m3.config import LoadedM3Config
 from quant.research.m3.readiness import ReadinessIssue
+from quant.research.m3.runtime_identity import M3RuntimeIdentityV1
 from quant.research.run_m3 import CommandFailure, CommandSummary, main
 
 
@@ -125,13 +127,15 @@ def test_public_commands_have_strict_identity_args_and_stop_points(
         observed.append((args.command, args.config, args.stop_stage))
         return {"reused": True}
 
+    config_arg = str(tmp_path / "m3.toml")
     code = main(
-        [command, "--config", str(tmp_path / "m3.toml"), *identity_args],
+        [command, "--config", config_arg, *identity_args],
         dispatcher=dispatch,
     )
     output = capsys.readouterr().out
     assert code == 0
-    assert observed == [(command, tmp_path / "m3.toml", stop_stage)]
+    expected_config: object = config_arg if command == "backtest" else tmp_path / "m3.toml"
+    assert observed == [(command, expected_config, stop_stage)]
     assert json.loads(output) == {
         "command": command,
         "failures": [],
@@ -298,14 +302,103 @@ def test_dispatcher_exception_cannot_forge_error_code(capsys) -> None:
     assert payload["failures"][0]["error_code"] == "M3_COMMAND_FAILED"
 
 
+@pytest.mark.parametrize(
+    ("command", "identity_args"),
+    [
+        (
+            "train",
+            ["--snapshot-id", _ID, "--fold", "fold_001", "--horizon", "5"],
+        ),
+        (
+            "evaluate",
+            ["--snapshot-id", _ID, "--fold", "fold_001", "--horizon", "10"],
+        ),
+        ("run-all", ["--snapshot-id", _ID]),
+        (
+            "verify-reproducibility",
+            ["--snapshot-id", _ID, "--fold", "fold_001", "--horizon", "10"],
+        ),
+        ("acceptance-audit", ["--snapshot-id", _ID]),
+    ],
+)
 def test_unimplemented_public_handler_is_explicit_and_does_not_fake_artifacts(
-    capsys,
+    command: str, identity_args: list[str], capsys
 ) -> None:
+    code = main([command, "--config", "m3.toml", *identity_args])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 5
+    assert payload == {
+        "command": command,
+        "failures": [
+            {
+                "error_code": "M3_COMMAND_HANDLER_UNAVAILABLE",
+                "exit_code": 5,
+                "node_id": command,
+                "scope": "command",
+            }
+        ],
+        "ok": False,
+    }
+
+
+def test_backtest_parser_defaults_resume_and_accepts_no_resume() -> None:
+    parser = run_m3.build_parser()
+    default = parser.parse_args(
+        [
+            "backtest",
+            "--config",
+            "configs/research/m3.toml",
+            "--snapshot-id",
+            _ID,
+            "--fold",
+            "fold_001",
+            "--horizon",
+            "5",
+        ]
+    )
+    assert default.no_resume is False
+    flagged = parser.parse_args(
+        [
+            "backtest",
+            "--config",
+            "configs/research/m3.toml",
+            "--snapshot-id",
+            _ID,
+            "--fold",
+            "fold_001",
+            "--horizon",
+            "5",
+            "--no-resume",
+        ]
+    )
+    assert flagged.no_resume is True
+
+
+@pytest.mark.parametrize("command", ["train", "evaluate", "verify-reproducibility"])
+def test_other_snapshot_work_commands_reject_no_resume(command: str, capsys) -> None:
     code = main(
         [
-            "train",
+            command,
             "--config",
             "m3.toml",
+            "--snapshot-id",
+            _ID,
+            "--fold",
+            "fold_001",
+            "--horizon",
+            "5",
+            "--no-resume",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert payload["failures"][0]["error_code"] == "M3_CLI_USAGE_INVALID"
+
+
+def test_backtest_missing_config_is_usage_not_unavailable(capsys) -> None:
+    code = main(
+        [
+            "backtest",
             "--snapshot-id",
             _ID,
             "--fold",
@@ -315,19 +408,8 @@ def test_unimplemented_public_handler_is_explicit_and_does_not_fake_artifacts(
         ]
     )
     payload = json.loads(capsys.readouterr().out)
-    assert code == 5
-    assert payload == {
-        "command": "train",
-        "failures": [
-            {
-                "error_code": "M3_COMMAND_HANDLER_UNAVAILABLE",
-                "exit_code": 5,
-                "node_id": "train",
-                "scope": "command",
-            }
-        ],
-        "ok": False,
-    }
+    assert code == 2
+    assert payload["failures"][0]["error_code"] == "M3_CLI_USAGE_INVALID"
 
 
 def _public_config(tmp_path: Path) -> Path:
@@ -460,6 +542,9 @@ def test_default_snapshot_uses_one_frozen_config_across_readiness_and_runtime(
     loaded = observed["loaded"]
     runtime = observed["runtime"]
     frozen = observed["frozen"]
+    assert isinstance(loaded, LoadedM3Config)
+    assert isinstance(runtime, M3RuntimeIdentityV1)
+    assert isinstance(frozen, tuple)
     assert code == 0 and payload["ok"] is True
     assert config_reads == 1
     assert loaded is observed["stage_config"]

@@ -21,6 +21,7 @@ from typing import Any, Callable, ParamSpec, TypeVar, cast
 
 import polars as pl
 
+from quant.data.m3_release import VerifiedG1Release
 from quant.research.m3.config import LoadedM3Config
 from quant.research.m3.contracts import (
     ExperimentIdentitySpec,
@@ -29,9 +30,17 @@ from quant.research.m3.contracts import (
     FeatureSchemaManifestV1,
     FeatureSegmentManifestV1,
     FeatureUpstreamPaths,
+    FEATURE_DEVELOPMENT_REQUEST_KEYS,
+    FEATURE_FORMAL_REQUEST_KEYS,
+    FEATURE_RESPONSE_EXTRA_KEYS,
     FoldPlanBuildSpec,
     ProviderBuildSpec,
     SnapshotBuildSpec,
+    VerifiedExperimentIdentity,
+    VerifiedFeatureArtifact,
+    VerifiedFoldPlanArtifact,
+    VerifiedProviderArtifact,
+    VerifiedSnapshotArtifact,
 )
 from quant.research.m3.development_example import (
     VerifiedDevelopmentExampleExperimentIdentity,
@@ -41,7 +50,10 @@ from quant.research.m3.development_example import (
     VerifiedDevelopmentExampleProviderArtifact,
     VerifiedDevelopmentExampleSnapshotArtifact,
 )
-from quant.research.m3.folds import verify_development_example_fold_plan_artifact
+from quant.research.m3.folds import (
+    verify_development_example_fold_plan_artifact,
+    verify_fold_plan_artifact,
+)
 from quant.research.m3.run_state import (
     ArtifactDigest,
     path_for_artifact_digest,
@@ -161,6 +173,14 @@ def build_development_example_feature_artifact(
     output_root: Path, timeout_seconds: float,
 ) -> FeatureManifestV1:
     """Build one development-only fold-shared feature bundle in a fresh worker."""
+    if any((
+        type(release) is not VerifiedDevelopmentExampleG1Release,
+        type(snapshot) is not VerifiedDevelopmentExampleSnapshotArtifact,
+        type(provider) is not VerifiedDevelopmentExampleProviderArtifact,
+        type(experiment) is not VerifiedDevelopmentExampleExperimentIdentity,
+        type(folds) is not VerifiedDevelopmentExampleFoldPlanArtifact,
+    )):
+        raise ValueError("development feature build requires development inputs")
     fresh = _fresh_development_inputs(
         release=release, snapshot=snapshot, snapshot_spec=snapshot_spec,
         provider=provider, provider_spec=provider_spec,
@@ -168,8 +188,62 @@ def build_development_example_feature_artifact(
         folds=folds, fold_spec=fold_spec, config=config, spec=spec,
         upstream_paths=upstream_paths, artifact_roots=artifact_roots,
     )
+    return _build_feature_artifact(
+        release=release, snapshot=snapshot, provider=provider,
+        experiment=experiment, folds=fresh, config=config, spec=spec,
+        release_kind="development_example", example_id=release.manifest.example_id,
+        python_executable=python_executable, output_root=output_root,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+@_feature_boundary
+def build_feature_artifact(
+    *, release: VerifiedG1Release, snapshot: VerifiedSnapshotArtifact,
+    snapshot_spec: SnapshotBuildSpec, provider: VerifiedProviderArtifact,
+    provider_spec: ProviderBuildSpec, experiment: VerifiedExperimentIdentity,
+    experiment_spec: ExperimentIdentitySpec, folds: VerifiedFoldPlanArtifact,
+    fold_spec: FoldPlanBuildSpec, config: LoadedM3Config, spec: FeatureBuildSpec,
+    upstream_paths: FeatureUpstreamPaths, artifact_roots: Mapping[str, Path],
+    python_executable: Path, output_root: Path, timeout_seconds: float,
+) -> FeatureManifestV1:
+    """Build one formal fold-shared Alpha158 feature bundle in a fresh worker."""
+    if any((
+        type(release) is not VerifiedG1Release,
+        type(snapshot) is not VerifiedSnapshotArtifact,
+        type(provider) is not VerifiedProviderArtifact,
+        type(experiment) is not VerifiedExperimentIdentity,
+        type(folds) is not VerifiedFoldPlanArtifact,
+    )):
+        raise ValueError("formal feature build requires formal inputs")
+    fresh = _fresh_formal_inputs(
+        release=release, snapshot=snapshot, snapshot_spec=snapshot_spec,
+        provider=provider, provider_spec=provider_spec,
+        experiment=experiment, experiment_spec=experiment_spec,
+        folds=folds, fold_spec=fold_spec, config=config, spec=spec,
+        upstream_paths=upstream_paths, artifact_roots=artifact_roots,
+    )
+    return _build_feature_artifact(
+        release=release, snapshot=snapshot, provider=provider,
+        experiment=experiment, folds=fresh, config=config, spec=spec,
+        release_kind="formal", example_id=None,
+        python_executable=python_executable, output_root=output_root,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def _build_feature_artifact(
+    *, release: VerifiedG1Release | VerifiedDevelopmentExampleG1Release,
+    snapshot: VerifiedSnapshotArtifact | VerifiedDevelopmentExampleSnapshotArtifact,
+    provider: VerifiedProviderArtifact | VerifiedDevelopmentExampleProviderArtifact,
+    experiment: VerifiedExperimentIdentity | VerifiedDevelopmentExampleExperimentIdentity,
+    folds: VerifiedFoldPlanArtifact | VerifiedDevelopmentExampleFoldPlanArtifact,
+    config: LoadedM3Config, spec: FeatureBuildSpec,
+    release_kind: str, example_id: str | None, python_executable: Path,
+    output_root: Path, timeout_seconds: float,
+) -> FeatureManifestV1:
     _require_empty_directory(output_root)
-    planned = next(item for item in fresh.manifest.folds if item.name == spec.fold)
+    planned = next(item for item in folds.manifest.folds if item.name == spec.fold)
     eligible_path = dict(release.artifact_paths)["eligible_keys.parquet"]
     eligible = pl.read_parquet(eligible_path).select("as_of", "symbol").sort(
         "as_of", "symbol"
@@ -185,30 +259,34 @@ def build_development_example_feature_artifact(
         for dates in (segment_dates[name],)
         for day, symbol in eligible.filter(pl.col("as_of").is_in(dates)).iter_rows()
     )
-    request = {
+    request: dict[str, object] = {
         "schema_version": "m3-feature-worker-request-v1",
         "worker_protocol_version": spec.worker_protocol_version,
-        "release_kind": "development_example", "formal_gate_eligible": False,
-        "example_id": release.manifest.example_id,
+        "release_kind": release_kind,
+        "formal_gate_eligible": release_kind == "formal",
         "experiment_key": experiment.manifest.experiment_key,
         "experiment_manifest_sha256": experiment.manifest_sha256,
-        "g1_release_id": release.manifest.contract_release_id,
+        "g1_release_id": _release_id(release),
         "g1_release_manifest_sha256": release.manifest_sha256,
         "snapshot_id": snapshot.manifest.snapshot_id,
         "snapshot_manifest_sha256": snapshot.manifest_sha256,
         "provider_key": provider.manifest.provider_key,
         "provider_manifest_sha256": provider.manifest_sha256,
         "provider_receipt_sha256": provider.provider_receipt_sha256,
+        "provider_uri_sha256": _provider_uri_sha256(provider.manifest.provider_key),
         "fold": spec.fold, "planned_fold_sha256": planned.planned_fold_sha256,
         "scientific_config_sha256": config.scientific_config_sha256,
         "feature_version": spec.feature_version,
         "qlib_version": spec.expected_qlib_version,
+        "history_start": snapshot.request.history_start.isoformat(),
         "segments": {
             name: [day.isoformat() for day in dates]
             for name, dates in segment_dates.items()
         },
         "eligible_rows": [list(row) for row in eligible_rows],
     }
+    if example_id is not None:
+        request["example_id"] = example_id
     request_path = output_root / "request.json"
     _write_exclusive(request_path, _canonical_bytes(request))
     worker_root = output_root / ".worker"
@@ -218,19 +296,25 @@ def build_development_example_feature_artifact(
     env["PYTHONPATH"] = os.pathsep.join(
         item for item in (source_root, env.get("PYTHONPATH", "")) if item
     )
+    command = "build-alpha158-example"
+    if release_kind == "formal":
+        command = "build-alpha158-formal"
+        env["M3_QLIB_PROVIDER_URI"] = str(provider.qlib_dir.resolve(strict=True))
     try:
         result = subprocess.run(
             [str(python_executable), "-m", "quant.research.m3.qlib_adapter",
-             "build-alpha158-example", "--request", str(request_path),
+             command, "--request", str(request_path),
              "--output-root", str(worker_root)],
             cwd=output_root, env=env, capture_output=True, check=False,
             timeout=timeout_seconds,
         )
         if result.returncode != 0 or result.stdout or result.stderr:
-            raise ValueError("development feature worker failed")
+            raise ValueError("feature worker failed")
         response_raw = (worker_root / "worker-response.json").read_bytes()
         response = _strict_object(response_raw)
-        _validate_worker_response(response, request)
+        _validate_worker_response(
+            response, request, release_kind=release_kind
+        )
         names = tuple(cast(list[str], response["input_names"]))
         expressions = tuple(cast(list[str], response["expressions"]))
         raw_frames = {
@@ -262,7 +346,7 @@ def build_development_example_feature_artifact(
             schema_version="m3-feature-artifact-v1",
             experiment_key=experiment.manifest.experiment_key,
             experiment_manifest_sha256=experiment.manifest_sha256,
-            g1_release_id=release.manifest.contract_release_id,
+            g1_release_id=_release_id(release),
             g1_release_manifest_sha256=release.manifest_sha256,
             snapshot_id=snapshot.manifest.snapshot_id,
             snapshot_manifest_sha256=snapshot.manifest_sha256,
@@ -328,12 +412,81 @@ def verify_development_example_feature_artifact(
     artifact_roots: Mapping[str, Path],
 ) -> VerifiedDevelopmentExampleFeatureArtifact:
     """Fresh-verify one development feature bundle and its exact receipt closure."""
-    fresh = _fresh_development_inputs(
+    if any((
+        type(release) is not VerifiedDevelopmentExampleG1Release,
+        type(snapshot) is not VerifiedDevelopmentExampleSnapshotArtifact,
+        type(provider) is not VerifiedDevelopmentExampleProviderArtifact,
+        type(experiment) is not VerifiedDevelopmentExampleExperimentIdentity,
+        type(folds) is not VerifiedDevelopmentExampleFoldPlanArtifact,
+    )):
+        raise ValueError("development feature verify requires development inputs")
+    verified = _verify_feature_artifact(
+        root=root, receipt_path=receipt_path, release=release, snapshot=snapshot,
+        snapshot_spec=snapshot_spec, provider=provider, provider_spec=provider_spec,
+        experiment=experiment, experiment_spec=experiment_spec, folds=folds,
+        fold_spec=fold_spec, config=config, spec=spec,
+        upstream_paths=upstream_paths, artifact_roots=artifact_roots,
+        release_kind="development_example", example_id=release.manifest.example_id,
+    )
+    if type(verified) is not VerifiedDevelopmentExampleFeatureArtifact:
+        raise ValueError("development feature result kind invalid")
+    return verified
+
+
+@_feature_boundary
+def verify_feature_artifact(
+    *, root: Path, receipt_path: Path, release: VerifiedG1Release,
+    snapshot: VerifiedSnapshotArtifact, snapshot_spec: SnapshotBuildSpec,
+    provider: VerifiedProviderArtifact, provider_spec: ProviderBuildSpec,
+    experiment: VerifiedExperimentIdentity,
+    experiment_spec: ExperimentIdentitySpec, folds: VerifiedFoldPlanArtifact,
+    fold_spec: FoldPlanBuildSpec, config: LoadedM3Config,
+    spec: FeatureBuildSpec, upstream_paths: FeatureUpstreamPaths,
+    artifact_roots: Mapping[str, Path],
+) -> VerifiedFeatureArtifact:
+    """Fresh-verify the formal G1 through G4A chain and FeatureArtifact receipt."""
+    if any((
+        type(release) is not VerifiedG1Release,
+        type(snapshot) is not VerifiedSnapshotArtifact,
+        type(provider) is not VerifiedProviderArtifact,
+        type(experiment) is not VerifiedExperimentIdentity,
+        type(folds) is not VerifiedFoldPlanArtifact,
+    )):
+        raise ValueError("formal feature verify requires formal inputs")
+    verified = _verify_feature_artifact(
+        root=root, receipt_path=receipt_path, release=release, snapshot=snapshot,
+        snapshot_spec=snapshot_spec, provider=provider, provider_spec=provider_spec,
+        experiment=experiment, experiment_spec=experiment_spec, folds=folds,
+        fold_spec=fold_spec, config=config, spec=spec,
+        upstream_paths=upstream_paths, artifact_roots=artifact_roots,
+        release_kind="formal", example_id=None,
+    )
+    if type(verified) is not VerifiedFeatureArtifact:
+        raise ValueError("formal feature result kind invalid")
+    return verified
+
+
+def _verify_feature_artifact(
+    *, root: Path, receipt_path: Path,
+    release: VerifiedG1Release | VerifiedDevelopmentExampleG1Release,
+    snapshot: VerifiedSnapshotArtifact | VerifiedDevelopmentExampleSnapshotArtifact,
+    snapshot_spec: SnapshotBuildSpec,
+    provider: VerifiedProviderArtifact | VerifiedDevelopmentExampleProviderArtifact,
+    provider_spec: ProviderBuildSpec,
+    experiment: VerifiedExperimentIdentity | VerifiedDevelopmentExampleExperimentIdentity,
+    experiment_spec: ExperimentIdentitySpec,
+    folds: VerifiedFoldPlanArtifact | VerifiedDevelopmentExampleFoldPlanArtifact,
+    fold_spec: FoldPlanBuildSpec, config: LoadedM3Config,
+    spec: FeatureBuildSpec, upstream_paths: FeatureUpstreamPaths,
+    artifact_roots: Mapping[str, Path], release_kind: str, example_id: str | None,
+) -> VerifiedFeatureArtifact | VerifiedDevelopmentExampleFeatureArtifact:
+    fresh = _fresh_feature_inputs(
         release=release, snapshot=snapshot, snapshot_spec=snapshot_spec,
         provider=provider, provider_spec=provider_spec,
         experiment=experiment, experiment_spec=experiment_spec,
         folds=folds, fold_spec=fold_spec, config=config, spec=spec,
         upstream_paths=upstream_paths, artifact_roots=artifact_roots,
+        release_kind=release_kind,
     )
     expected_names = {
         "request.json", "worker-response.json", "train.parquet",
@@ -348,26 +501,29 @@ def verify_development_example_feature_artifact(
     request_raw = (root / "request.json").read_bytes()
     request = _strict_object(request_raw)
     response = _strict_object((root / "worker-response.json").read_bytes())
-    _validate_worker_response(response, request)
+    _validate_worker_response(response, request, release_kind=release_kind)
     planned = next(item for item in fresh.manifest.folds if item.name == spec.fold)
-    identity = {
-        "release_kind": "development_example", "formal_gate_eligible": False,
-        "example_id": release.manifest.example_id,
+    identity: dict[str, object] = {
+        "release_kind": release_kind,
+        "formal_gate_eligible": release_kind == "formal",
         "experiment_key": experiment.manifest.experiment_key,
         "experiment_manifest_sha256": experiment.manifest_sha256,
-        "g1_release_id": release.manifest.contract_release_id,
+        "g1_release_id": _release_id(release),
         "g1_release_manifest_sha256": release.manifest_sha256,
         "snapshot_id": snapshot.manifest.snapshot_id,
         "snapshot_manifest_sha256": snapshot.manifest_sha256,
         "provider_key": provider.manifest.provider_key,
         "provider_manifest_sha256": provider.manifest_sha256,
         "provider_receipt_sha256": provider.provider_receipt_sha256,
+        "provider_uri_sha256": _provider_uri_sha256(provider.manifest.provider_key),
         "fold": spec.fold, "planned_fold_sha256": planned.planned_fold_sha256,
         "scientific_config_sha256": config.scientific_config_sha256,
         "feature_version": spec.feature_version,
         "qlib_version": spec.expected_qlib_version,
         "worker_protocol_version": spec.worker_protocol_version,
     }
+    if example_id is not None:
+        identity["example_id"] = example_id
     if any(request.get(key) != value for key, value in identity.items()):
         raise ValueError("development feature request identity drift")
     names = tuple(cast(list[str], response["input_names"]))
@@ -470,8 +626,12 @@ def verify_development_example_feature_artifact(
     if verified_receipt is None:
         raise ValueError("development feature receipt missing")
     receipt = verified_receipt.receipt
+    expected_stage = (
+        "development-features" if release_kind == "development_example"
+        else "features"
+    )
     if (
-        receipt.stage != "development-features" or receipt.scope != "EXPERIMENT"
+        receipt.stage != expected_stage or receipt.scope != "EXPERIMENT"
         or receipt.scope_key != experiment.manifest.experiment_key
         or not _digest_paths_equal(
             receipt.inputs, _feature_input_paths(
@@ -482,20 +642,28 @@ def verify_development_example_feature_artifact(
         or not _digest_paths_equal(receipt.outputs, tuple(root / name for name in sorted(expected_names)), artifact_roots)
     ):
         raise ValueError("development feature receipt closure invalid")
+    if release_kind == "formal":
+        return VerifiedFeatureArtifact(
+            root=root.resolve(strict=True), manifest=manifest,
+            manifest_sha256=manifest_sha,
+            feature_receipt_sha256=verified_receipt.sha256,
+        )
+    if example_id is None:
+        raise ValueError("development feature example identity missing")
     return VerifiedDevelopmentExampleFeatureArtifact(
         release_kind="development_example", formal_gate_eligible=False,
-        example_id=release.manifest.example_id, root=root.resolve(strict=True),
-        manifest=manifest, manifest_sha256=manifest_sha,
+        example_id=example_id, root=root.resolve(strict=True), manifest=manifest,
+        manifest_sha256=manifest_sha,
         feature_receipt_sha256=verified_receipt.sha256,
     )
 
 
 def _feature_input_paths(
-    *, release: VerifiedDevelopmentExampleG1Release,
-    snapshot: VerifiedDevelopmentExampleSnapshotArtifact,
-    provider: VerifiedDevelopmentExampleProviderArtifact,
-    experiment: VerifiedDevelopmentExampleExperimentIdentity,
-    folds: VerifiedDevelopmentExampleFoldPlanArtifact,
+    *, release: VerifiedG1Release | VerifiedDevelopmentExampleG1Release,
+    snapshot: VerifiedSnapshotArtifact | VerifiedDevelopmentExampleSnapshotArtifact,
+    provider: VerifiedProviderArtifact | VerifiedDevelopmentExampleProviderArtifact,
+    experiment: VerifiedExperimentIdentity | VerifiedDevelopmentExampleExperimentIdentity,
+    folds: VerifiedFoldPlanArtifact | VerifiedDevelopmentExampleFoldPlanArtifact,
     upstream_paths: FeatureUpstreamPaths,
 ) -> tuple[Path, ...]:
     return (
@@ -526,6 +694,71 @@ def _digest_paths_equal(
     return actual == expected and len(set(actual)) == len(actual)
 
 
+def _fresh_feature_inputs(
+    *, release: VerifiedG1Release | VerifiedDevelopmentExampleG1Release,
+    snapshot: VerifiedSnapshotArtifact | VerifiedDevelopmentExampleSnapshotArtifact,
+    snapshot_spec: SnapshotBuildSpec,
+    provider: VerifiedProviderArtifact | VerifiedDevelopmentExampleProviderArtifact,
+    provider_spec: ProviderBuildSpec,
+    experiment: VerifiedExperimentIdentity | VerifiedDevelopmentExampleExperimentIdentity,
+    experiment_spec: ExperimentIdentitySpec,
+    folds: VerifiedFoldPlanArtifact | VerifiedDevelopmentExampleFoldPlanArtifact,
+    fold_spec: FoldPlanBuildSpec, config: LoadedM3Config, spec: FeatureBuildSpec,
+    upstream_paths: FeatureUpstreamPaths, artifact_roots: Mapping[str, Path],
+    release_kind: str,
+) -> VerifiedFoldPlanArtifact | VerifiedDevelopmentExampleFoldPlanArtifact:
+    if release_kind == "formal":
+        return _fresh_formal_inputs(
+            release=cast(VerifiedG1Release, release),
+            snapshot=cast(VerifiedSnapshotArtifact, snapshot),
+            snapshot_spec=snapshot_spec,
+            provider=cast(VerifiedProviderArtifact, provider),
+            provider_spec=provider_spec,
+            experiment=cast(VerifiedExperimentIdentity, experiment),
+            experiment_spec=experiment_spec,
+            folds=cast(VerifiedFoldPlanArtifact, folds), fold_spec=fold_spec,
+            config=config, spec=spec, upstream_paths=upstream_paths,
+            artifact_roots=artifact_roots,
+        )
+    if release_kind != "development_example":
+        raise ValueError("feature release kind invalid")
+    return _fresh_development_inputs(
+        release=cast(VerifiedDevelopmentExampleG1Release, release),
+        snapshot=cast(VerifiedDevelopmentExampleSnapshotArtifact, snapshot),
+        snapshot_spec=snapshot_spec,
+        provider=cast(VerifiedDevelopmentExampleProviderArtifact, provider),
+        provider_spec=provider_spec,
+        experiment=cast(VerifiedDevelopmentExampleExperimentIdentity, experiment),
+        experiment_spec=experiment_spec,
+        folds=cast(VerifiedDevelopmentExampleFoldPlanArtifact, folds),
+        fold_spec=fold_spec, config=config, spec=spec,
+        upstream_paths=upstream_paths, artifact_roots=artifact_roots,
+    )
+
+
+def _fresh_formal_inputs(
+    *, release: VerifiedG1Release, snapshot: VerifiedSnapshotArtifact,
+    snapshot_spec: SnapshotBuildSpec, provider: VerifiedProviderArtifact,
+    provider_spec: ProviderBuildSpec, experiment: VerifiedExperimentIdentity,
+    experiment_spec: ExperimentIdentitySpec, folds: VerifiedFoldPlanArtifact,
+    fold_spec: FoldPlanBuildSpec, config: LoadedM3Config, spec: FeatureBuildSpec,
+    upstream_paths: FeatureUpstreamPaths, artifact_roots: Mapping[str, Path],
+) -> VerifiedFoldPlanArtifact:
+    fresh = verify_fold_plan_artifact(
+        root=folds.root, receipt_path=upstream_paths.fold_receipt_path,
+        release=release, snapshot=snapshot, snapshot_spec=snapshot_spec,
+        provider=provider, provider_spec=provider_spec, experiment=experiment,
+        experiment_spec=experiment_spec, config=config, spec=fold_spec,
+        upstream_paths=upstream_paths.fold_upstream_paths,
+        artifact_roots=artifact_roots,
+    )
+    _verify_feature_spec(
+        fresh=fresh, expected=folds, provider=provider,
+        experiment=experiment, config=config, spec=spec,
+    )
+    return fresh
+
+
 def _fresh_development_inputs(
     *, release: VerifiedDevelopmentExampleG1Release,
     snapshot: VerifiedDevelopmentExampleSnapshotArtifact,
@@ -549,10 +782,24 @@ def _fresh_development_inputs(
         upstream_paths=upstream_paths.fold_upstream_paths,
         artifact_roots=artifact_roots,
     )
+    _verify_feature_spec(
+        fresh=fresh, expected=folds, provider=provider,
+        experiment=experiment, config=config, spec=spec,
+    )
+    return fresh
+
+
+def _verify_feature_spec(
+    *, fresh: VerifiedFoldPlanArtifact | VerifiedDevelopmentExampleFoldPlanArtifact,
+    expected: VerifiedFoldPlanArtifact | VerifiedDevelopmentExampleFoldPlanArtifact,
+    provider: VerifiedProviderArtifact | VerifiedDevelopmentExampleProviderArtifact,
+    experiment: VerifiedExperimentIdentity | VerifiedDevelopmentExampleExperimentIdentity,
+    config: LoadedM3Config, spec: FeatureBuildSpec,
+) -> None:
     planned = next((item for item in fresh.manifest.folds if item.name == spec.fold), None)
     features = config.section("features")
     if (
-        fresh != folds or planned is None
+        fresh != expected or planned is None
         or spec.experiment_key != experiment.manifest.experiment_key
         or spec.experiment_manifest_sha256 != experiment.manifest_sha256
         or spec.planned_fold_sha256 != planned.planned_fold_sha256
@@ -561,10 +808,19 @@ def _fresh_development_inputs(
         or spec.provider_receipt_sha256 != provider.provider_receipt_sha256
         or spec.feature_version != features["feature_version"]
         or spec.expected_qlib_version != provider.manifest.qlib_version
-        or config.scientific_config_sha256 != experiment.manifest.scientific_config_sha256
+        or config.scientific_config_sha256
+        != experiment.manifest.scientific_config_sha256
     ):
-        raise ValueError("development feature identity mismatch")
-    return fresh
+        raise ValueError("feature identity mismatch")
+
+
+def _release_id(
+    release: VerifiedG1Release | VerifiedDevelopmentExampleG1Release,
+) -> str:
+    if type(release) is VerifiedG1Release:
+        return release.manifest.release_id
+    development = cast(VerifiedDevelopmentExampleG1Release, release)
+    return development.manifest.contract_release_id
 
 
 def _select_train_schema(frame: pl.DataFrame, names: tuple[str, ...]) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -646,14 +902,24 @@ def _require_raw_frame(frame: pl.DataFrame, names: tuple[str, ...]) -> None:
         raise ValueError("feature worker dtype invalid")
 
 
-def _validate_worker_response(response: Mapping[str, object], request: Mapping[str, object]) -> None:
-    expected_keys = (set(request) - {"eligible_rows"}) | {
-        "response_schema_version", "input_names", "expressions"
-    }
+def _validate_worker_response(
+    response: Mapping[str, object], request: Mapping[str, object],
+    *, release_kind: str,
+) -> None:
+    request_keys = (
+        FEATURE_FORMAL_REQUEST_KEYS
+        if release_kind == "formal"
+        else FEATURE_DEVELOPMENT_REQUEST_KEYS
+        if release_kind == "development_example"
+        else frozenset()
+    )
+    expected_keys = (request_keys - {"eligible_rows"}) | FEATURE_RESPONSE_EXTRA_KEYS
     names = response.get("input_names")
     expressions = response.get("expressions")
     if (
-        set(response) != expected_keys
+        set(request) != request_keys
+        or request.get("release_kind") != release_kind
+        or set(response) != expected_keys
         or response.get("response_schema_version") != "m3-feature-worker-response-v1"
         or any(response.get(key) != value for key, value in request.items() if key != "eligible_rows")
         or type(names) is not list or len(cast(list[object], names)) != 158
@@ -662,6 +928,12 @@ def _validate_worker_response(response: Mapping[str, object], request: Mapping[s
         or len(set(cast(list[object], expressions))) != 158
     ):
         raise ValueError("feature worker response invalid")
+
+
+def _provider_uri_sha256(provider_key: str) -> str:
+    return hashlib.sha256(
+        _canonical_bytes([provider_key, "provider"])
+    ).hexdigest()
 
 
 def _strict_object(raw: bytes) -> dict[str, object]:

@@ -6,6 +6,8 @@ import hashlib
 import json
 import math
 import os
+import stat
+import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, fields
 from functools import wraps
@@ -15,8 +17,16 @@ from typing import Any, Callable, ParamSpec, TypeVar, cast
 import numpy as np
 import polars as pl
 
+from quant.data.m3_release import VerifiedG1Release
+from quant.research.m3._artifact_publication import (
+    ArtifactPublication,
+    ArtifactPublicationError,
+    ArtifactRollbackError,
+)
 from quant.research.m3.alignment import (
+    load_supervised_segment,
     load_development_example_supervised_segment,
+    verify_alignment_artifact,
     verify_development_example_alignment_artifact,
 )
 from quant.research.m3.config import LoadedM3Config
@@ -32,6 +42,14 @@ from quant.research.m3.contracts import (
     ModelUpstreamPaths,
     ProviderBuildSpec,
     SnapshotBuildSpec,
+    VerifiedAlignmentArtifact,
+    VerifiedExperimentIdentity,
+    VerifiedFeatureArtifact,
+    VerifiedFoldPlanArtifact,
+    VerifiedLabelArtifact,
+    VerifiedModelArtifact,
+    VerifiedProviderArtifact,
+    VerifiedSnapshotArtifact,
 )
 from quant.research.m3.development_example import (
     VerifiedDevelopmentExampleAlignmentArtifact,
@@ -49,6 +67,7 @@ from quant.research.m3.run_state import (
     path_for_artifact_digest,
     verify_stage_receipt_with_bytes,
 )
+from quant.research.m3.features import feature_schema_sha256
 
 _FILES = {"model.txt", "model.metadata.json", "validation_curve.parquet"}
 _CONTROL_KEYS = {
@@ -65,15 +84,32 @@ _P = ParamSpec("_P")
 _T = TypeVar("_T")
 
 
+class _ModelPublicationFailure(Exception):
+    """Internal marker for a publication failure after exact rollback."""
+
+
 def _model_boundary(function: Callable[_P, _T]) -> Callable[_P, _T]:
     @wraps(function)
     def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _T:
+        publication_failed = False
+        rollback_failed = False
         try:
             return function(*args, **kwargs)
+        except _ModelPublicationFailure:
+            publication_failed = True
+        except ArtifactRollbackError:
+            rollback_failed = True
+        except ArtifactPublicationError:
+            publication_failed = True
         except ValueError:
             raise
         except Exception:
             raise ValueError("M3_MODEL_ARTIFACT_INVALID") from None
+        if rollback_failed:
+            raise ValueError("M3_MODEL_ROLLBACK_FAILED")
+        if publication_failed:
+            raise ValueError("M3_MODEL_ARTIFACT_INVALID")
+        raise AssertionError("unreachable")
     return wrapped
 
 
@@ -111,14 +147,90 @@ def build_development_example_model_artifact(
     output_root: Path,
 ) -> ModelManifestV1:
     """Fit native LightGBM using train and validation only."""
-    _validate_model_identity(alignment, feature, label, experiment, config, spec)
-    _require_empty_directory(output_root)
-    train = load_development_example_supervised_segment(
-        alignment=alignment, segment="train"
+    if any(type(value) is not expected for value, expected in (
+        (alignment, VerifiedDevelopmentExampleAlignmentArtifact),
+        (feature, VerifiedDevelopmentExampleFeatureArtifact),
+        (label, VerifiedDevelopmentExampleLabelArtifact),
+        (experiment, VerifiedDevelopmentExampleExperimentIdentity),
+    )):
+        raise ValueError("development model requires development inputs")
+    with ArtifactPublication(output_root) as publication:
+        return _build_model_artifact(
+            alignment=alignment, feature=feature, label=label,
+            experiment=experiment, config=config, spec=spec,
+            publication=publication, formal=False,
+        )
+
+
+@_model_boundary
+def build_model_artifact(
+    *, release: VerifiedG1Release,
+    snapshot: VerifiedSnapshotArtifact, snapshot_spec: SnapshotBuildSpec,
+    provider: VerifiedProviderArtifact, provider_spec: ProviderBuildSpec,
+    experiment: VerifiedExperimentIdentity, experiment_spec: ExperimentIdentitySpec,
+    folds: VerifiedFoldPlanArtifact, fold_spec: FoldPlanBuildSpec,
+    feature: VerifiedFeatureArtifact, feature_spec: FeatureBuildSpec,
+    label: VerifiedLabelArtifact, label_spec: LabelBuildSpec,
+    alignment: VerifiedAlignmentArtifact, alignment_spec: AlignmentBuildSpec,
+    config: LoadedM3Config, spec: LightgbmTrainingSpec,
+    upstream_paths: ModelUpstreamPaths, artifact_roots: Mapping[str, Path],
+    output_root: Path,
+) -> ModelManifestV1:
+    """Fit one formal native LightGBM model from verified supervised data."""
+    if any(type(value) is not expected for value, expected in (
+        (release, VerifiedG1Release), (snapshot, VerifiedSnapshotArtifact),
+        (provider, VerifiedProviderArtifact),
+        (experiment, VerifiedExperimentIdentity),
+        (folds, VerifiedFoldPlanArtifact), (feature, VerifiedFeatureArtifact),
+        (label, VerifiedLabelArtifact), (alignment, VerifiedAlignmentArtifact),
+    )):
+        raise ValueError("formal model requires formal inputs")
+    with ArtifactPublication(output_root) as publication:
+        fresh = _fresh_verify_formal_alignment(
+            alignment=alignment, release=release, snapshot=snapshot,
+            snapshot_spec=snapshot_spec, provider=provider,
+            provider_spec=provider_spec, experiment=experiment,
+            experiment_spec=experiment_spec, folds=folds, fold_spec=fold_spec,
+            feature=feature, feature_spec=feature_spec, label=label,
+            label_spec=label_spec, config=config, alignment_spec=alignment_spec,
+            upstream_paths=upstream_paths, artifact_roots=artifact_roots,
+        )
+        if fresh != alignment:
+            raise ValueError("model alignment stale")
+        return _build_model_artifact(
+            alignment=alignment, feature=feature, label=label,
+            experiment=experiment, config=config, spec=spec,
+            publication=publication, formal=True,
+        )
+
+
+def _build_model_artifact(
+    *,
+    alignment: VerifiedAlignmentArtifact | VerifiedDevelopmentExampleAlignmentArtifact,
+    feature: VerifiedFeatureArtifact | VerifiedDevelopmentExampleFeatureArtifact,
+    label: VerifiedLabelArtifact | VerifiedDevelopmentExampleLabelArtifact,
+    experiment: VerifiedExperimentIdentity | VerifiedDevelopmentExampleExperimentIdentity,
+    config: LoadedM3Config, spec: LightgbmTrainingSpec,
+    publication: ArtifactPublication,
+    formal: bool,
+) -> ModelManifestV1:
+    _validate_model_identity(
+        alignment, feature, label, experiment, config, spec, formal=formal
     )
-    validation = load_development_example_supervised_segment(
-        alignment=alignment, segment="validation"
-    )
+    if formal:
+        assert isinstance(alignment, VerifiedAlignmentArtifact)
+        train = load_supervised_segment(alignment=alignment, segment="train")
+        validation = load_supervised_segment(
+            alignment=alignment, segment="validation"
+        )
+    else:
+        assert isinstance(alignment, VerifiedDevelopmentExampleAlignmentArtifact)
+        train = load_development_example_supervised_segment(
+            alignment=alignment, segment="train"
+        )
+        validation = load_development_example_supervised_segment(
+            alignment=alignment, segment="validation"
+        )
     _validate_training_frames(train.features, train.labels, validation.features, validation.labels)
     lgb = _lightgbm()
     train_set = lgb.Dataset(
@@ -166,50 +278,73 @@ def build_development_example_model_artifact(
         or float(reported_best_l2) != best_l2
     ):
         raise ValueError("lightgbm best l2 invalid")
-    model_path = output_root / "model.txt"
-    booster.save_model(str(model_path), num_iteration=best_iteration)
-    if not model_path.is_file() or model_path.is_symlink() or not model_path.read_bytes():
-        raise ValueError("lightgbm model text invalid")
-    with model_path.open("r+b") as stream:
-        stream.flush()
-        os.fsync(stream.fileno())
-    curve = pl.DataFrame({
-        "iteration": pl.Series(range(1, len(curve_values) + 1), dtype=pl.Int64),
-        "validation_l2": pl.Series(curve_values, dtype=pl.Float64),
-    })
-    curve_path = output_root / "validation_curve.parquet"
-    _write_parquet(curve, curve_path)
-    train_entry = next(item for item in alignment.manifest.segments if item.name == "train")
-    validation_entry = next(item for item in alignment.manifest.segments if item.name == "validation")
-    manifest = ModelManifestV1(
-        schema_version="m3-lightgbm-model-v1",
-        experiment_key=experiment.manifest.experiment_key,
-        work_key=alignment.manifest.work_key,
-        snapshot_id=feature.manifest.snapshot_id,
-        provider_receipt_sha256=feature.manifest.provider_receipt_sha256,
-        fold=alignment.manifest.fold,
-        horizon_sessions=alignment.manifest.horizon_sessions,
-        model="lightgbm", model_version=spec.model_version,
-        alignment_manifest_sha256=alignment.manifest_sha256,
-        feature_manifest_sha256=feature.manifest_sha256,
-        label_manifest_sha256=label.manifest_sha256,
-        input_feature_schema_sha256=feature.manifest.schema.input_schema_sha256,
-        selected_feature_names=feature.manifest.schema.selected_names,
-        selected_feature_schema_sha256=feature.manifest.schema.selected_schema_sha256,
-        params_sha256=training_params_sha256(spec),
-        train_row_keys_sha256=train_entry.row_keys_sha256,
-        validation_row_keys_sha256=validation_entry.row_keys_sha256,
-        train_matrix_sha256=train_entry.matrix_sha256,
-        validation_matrix_sha256=validation_entry.matrix_sha256,
-        train_labels_sha256=train_entry.labels_sha256,
-        validation_labels_sha256=validation_entry.labels_sha256,
-        lightgbm_version=_lightgbm_version(lgb), best_iteration=best_iteration,
-        best_validation_l2=best_l2, model_sha256=_file_sha(model_path),
-        validation_curve_sha256=_file_sha(curve_path),
-    )
-    _write_exclusive(
-        output_root / "model.metadata.json", _canonical_bytes(asdict(manifest))
-    )
+    publication_failed = False
+    try:
+        model_bytes = _save_model_to_temporary_bytes(
+            booster=booster, best_iteration=best_iteration
+        )
+        _write_exclusive(publication, "model.txt", model_bytes)
+        curve = pl.DataFrame({
+            "iteration": pl.Series(
+                range(1, len(curve_values) + 1), dtype=pl.Int64
+            ),
+            "validation_l2": pl.Series(curve_values, dtype=pl.Float64),
+        })
+        _write_parquet(publication, "validation_curve.parquet", curve)
+        train_entry = next(
+            item for item in alignment.manifest.segments if item.name == "train"
+        )
+        validation_entry = next(
+            item
+            for item in alignment.manifest.segments
+            if item.name == "validation"
+        )
+        manifest = ModelManifestV1(
+            schema_version="m3-lightgbm-model-v1",
+            experiment_key=experiment.manifest.experiment_key,
+            work_key=alignment.manifest.work_key,
+            snapshot_id=feature.manifest.snapshot_id,
+            provider_receipt_sha256=feature.manifest.provider_receipt_sha256,
+            fold=alignment.manifest.fold,
+            horizon_sessions=alignment.manifest.horizon_sessions,
+            model="lightgbm", model_version=spec.model_version,
+            alignment_manifest_sha256=alignment.manifest_sha256,
+            feature_manifest_sha256=feature.manifest_sha256,
+            label_manifest_sha256=label.manifest_sha256,
+            input_feature_schema_sha256=(
+                feature.manifest.schema.input_schema_sha256
+            ),
+            selected_feature_names=feature.manifest.schema.selected_names,
+            selected_feature_schema_sha256=(
+                feature.manifest.schema.selected_schema_sha256
+            ),
+            params_sha256=training_params_sha256(spec),
+            train_row_keys_sha256=train_entry.row_keys_sha256,
+            validation_row_keys_sha256=validation_entry.row_keys_sha256,
+            train_matrix_sha256=train_entry.matrix_sha256,
+            validation_matrix_sha256=validation_entry.matrix_sha256,
+            train_labels_sha256=train_entry.labels_sha256,
+            validation_labels_sha256=validation_entry.labels_sha256,
+            lightgbm_version=_lightgbm_version(lgb),
+            best_iteration=best_iteration,
+            best_validation_l2=best_l2,
+            model_sha256=hashlib.sha256(model_bytes).hexdigest(),
+            validation_curve_sha256=publication.sha256(
+                "validation_curve.parquet"
+            ),
+        )
+        _write_exclusive(
+            publication,
+            "model.metadata.json",
+            _canonical_bytes(asdict(manifest)),
+        )
+        publication.commit(_FILES)
+    except ArtifactRollbackError:
+        raise
+    except Exception:
+        publication_failed = True
+    if publication_failed:
+        raise _ModelPublicationFailure
     return manifest
 
 
@@ -235,19 +370,131 @@ def verify_development_example_model_artifact(
     upstream_paths: ModelUpstreamPaths,
     artifact_roots: Mapping[str, Path],
 ) -> VerifiedDevelopmentExampleModelArtifact:
-    fresh = verify_development_example_alignment_artifact(
-        root=alignment.root, receipt_path=upstream_paths.alignment_receipt_path,
-        release=release, snapshot=snapshot, snapshot_spec=snapshot_spec,
-        provider=provider, provider_spec=provider_spec, experiment=experiment,
-        experiment_spec=experiment_spec, folds=folds, fold_spec=fold_spec,
-        feature=feature, feature_spec=feature_spec, label=label,
-        label_spec=label_spec, config=config, spec=alignment_spec,
-        upstream_paths=upstream_paths.alignment_upstream_paths,
-        artifact_roots=artifact_roots,
+    if any(type(value) is not expected for value, expected in (
+        (release, VerifiedDevelopmentExampleG1Release),
+        (snapshot, VerifiedDevelopmentExampleSnapshotArtifact),
+        (provider, VerifiedDevelopmentExampleProviderArtifact),
+        (experiment, VerifiedDevelopmentExampleExperimentIdentity),
+        (folds, VerifiedDevelopmentExampleFoldPlanArtifact),
+        (feature, VerifiedDevelopmentExampleFeatureArtifact),
+        (label, VerifiedDevelopmentExampleLabelArtifact),
+        (alignment, VerifiedDevelopmentExampleAlignmentArtifact),
+    )):
+        raise ValueError("development model verify requires development inputs")
+    verified = _verify_model_artifact(
+        root=root, receipt_path=receipt_path, release=release, snapshot=snapshot,
+        snapshot_spec=snapshot_spec, provider=provider, provider_spec=provider_spec,
+        experiment=experiment, experiment_spec=experiment_spec, folds=folds,
+        fold_spec=fold_spec, feature=feature, feature_spec=feature_spec,
+        label=label, label_spec=label_spec, alignment=alignment,
+        alignment_spec=alignment_spec, config=config, spec=spec,
+        upstream_paths=upstream_paths, artifact_roots=artifact_roots, formal=False,
     )
+    if type(verified) is not VerifiedDevelopmentExampleModelArtifact:
+        raise ValueError("development model result kind invalid")
+    return verified
+
+
+@_model_boundary
+def verify_model_artifact(
+    *, root: Path, receipt_path: Path, release: VerifiedG1Release,
+    snapshot: VerifiedSnapshotArtifact, snapshot_spec: SnapshotBuildSpec,
+    provider: VerifiedProviderArtifact, provider_spec: ProviderBuildSpec,
+    experiment: VerifiedExperimentIdentity, experiment_spec: ExperimentIdentitySpec,
+    folds: VerifiedFoldPlanArtifact, fold_spec: FoldPlanBuildSpec,
+    feature: VerifiedFeatureArtifact, feature_spec: FeatureBuildSpec,
+    label: VerifiedLabelArtifact, label_spec: LabelBuildSpec,
+    alignment: VerifiedAlignmentArtifact, alignment_spec: AlignmentBuildSpec,
+    config: LoadedM3Config, spec: LightgbmTrainingSpec,
+    upstream_paths: ModelUpstreamPaths, artifact_roots: Mapping[str, Path],
+) -> VerifiedModelArtifact:
+    """Fresh-verify the formal G4C chain and the exact model bundle."""
+    if any(type(value) is not expected for value, expected in (
+        (release, VerifiedG1Release), (snapshot, VerifiedSnapshotArtifact),
+        (provider, VerifiedProviderArtifact),
+        (experiment, VerifiedExperimentIdentity),
+        (folds, VerifiedFoldPlanArtifact), (feature, VerifiedFeatureArtifact),
+        (label, VerifiedLabelArtifact), (alignment, VerifiedAlignmentArtifact),
+    )):
+        raise ValueError("formal model verify requires formal inputs")
+    verified = _verify_model_artifact(
+        root=root, receipt_path=receipt_path, release=release, snapshot=snapshot,
+        snapshot_spec=snapshot_spec, provider=provider, provider_spec=provider_spec,
+        experiment=experiment, experiment_spec=experiment_spec, folds=folds,
+        fold_spec=fold_spec, feature=feature, feature_spec=feature_spec,
+        label=label, label_spec=label_spec, alignment=alignment,
+        alignment_spec=alignment_spec, config=config, spec=spec,
+        upstream_paths=upstream_paths, artifact_roots=artifact_roots, formal=True,
+    )
+    if type(verified) is not VerifiedModelArtifact:
+        raise ValueError("formal model result kind invalid")
+    return verified
+
+
+def _verify_model_artifact(
+    *, root: Path, receipt_path: Path,
+    release: VerifiedG1Release | VerifiedDevelopmentExampleG1Release,
+    snapshot: VerifiedSnapshotArtifact | VerifiedDevelopmentExampleSnapshotArtifact,
+    snapshot_spec: SnapshotBuildSpec,
+    provider: VerifiedProviderArtifact | VerifiedDevelopmentExampleProviderArtifact,
+    provider_spec: ProviderBuildSpec,
+    experiment: VerifiedExperimentIdentity | VerifiedDevelopmentExampleExperimentIdentity,
+    experiment_spec: ExperimentIdentitySpec,
+    folds: VerifiedFoldPlanArtifact | VerifiedDevelopmentExampleFoldPlanArtifact,
+    fold_spec: FoldPlanBuildSpec,
+    feature: VerifiedFeatureArtifact | VerifiedDevelopmentExampleFeatureArtifact,
+    feature_spec: FeatureBuildSpec,
+    label: VerifiedLabelArtifact | VerifiedDevelopmentExampleLabelArtifact,
+    label_spec: LabelBuildSpec,
+    alignment: VerifiedAlignmentArtifact | VerifiedDevelopmentExampleAlignmentArtifact,
+    alignment_spec: AlignmentBuildSpec, config: LoadedM3Config,
+    spec: LightgbmTrainingSpec, upstream_paths: ModelUpstreamPaths,
+    artifact_roots: Mapping[str, Path], formal: bool,
+) -> VerifiedModelArtifact | VerifiedDevelopmentExampleModelArtifact:
+    fresh: VerifiedAlignmentArtifact | VerifiedDevelopmentExampleAlignmentArtifact
+    if formal:
+        assert isinstance(release, VerifiedG1Release)
+        assert isinstance(snapshot, VerifiedSnapshotArtifact)
+        assert isinstance(provider, VerifiedProviderArtifact)
+        assert isinstance(experiment, VerifiedExperimentIdentity)
+        assert isinstance(folds, VerifiedFoldPlanArtifact)
+        assert isinstance(feature, VerifiedFeatureArtifact)
+        assert isinstance(label, VerifiedLabelArtifact)
+        assert isinstance(alignment, VerifiedAlignmentArtifact)
+        fresh = _fresh_verify_formal_alignment(
+            alignment=alignment, release=release, snapshot=snapshot,
+            snapshot_spec=snapshot_spec, provider=provider,
+            provider_spec=provider_spec, experiment=experiment,
+            experiment_spec=experiment_spec, folds=folds, fold_spec=fold_spec,
+            feature=feature, feature_spec=feature_spec, label=label,
+            label_spec=label_spec, config=config, alignment_spec=alignment_spec,
+            upstream_paths=upstream_paths, artifact_roots=artifact_roots,
+        )
+    else:
+        assert isinstance(release, VerifiedDevelopmentExampleG1Release)
+        assert isinstance(snapshot, VerifiedDevelopmentExampleSnapshotArtifact)
+        assert isinstance(provider, VerifiedDevelopmentExampleProviderArtifact)
+        assert isinstance(experiment, VerifiedDevelopmentExampleExperimentIdentity)
+        assert isinstance(folds, VerifiedDevelopmentExampleFoldPlanArtifact)
+        assert isinstance(feature, VerifiedDevelopmentExampleFeatureArtifact)
+        assert isinstance(label, VerifiedDevelopmentExampleLabelArtifact)
+        assert isinstance(alignment, VerifiedDevelopmentExampleAlignmentArtifact)
+        fresh = verify_development_example_alignment_artifact(
+            root=alignment.root,
+            receipt_path=upstream_paths.alignment_receipt_path,
+            release=release, snapshot=snapshot, snapshot_spec=snapshot_spec,
+            provider=provider, provider_spec=provider_spec, experiment=experiment,
+            experiment_spec=experiment_spec, folds=folds, fold_spec=fold_spec,
+            feature=feature, feature_spec=feature_spec, label=label,
+            label_spec=label_spec, config=config, spec=alignment_spec,
+            upstream_paths=upstream_paths.alignment_upstream_paths,
+            artifact_roots=artifact_roots,
+        )
     if fresh != alignment:
         raise ValueError("model alignment stale")
-    _validate_model_identity(alignment, feature, label, experiment, config, spec)
+    _validate_model_identity(
+        alignment, feature, label, experiment, config, spec, formal=formal
+    )
     if not root.is_dir() or root.is_symlink() or {item.name for item in os.scandir(root)} != _FILES:
         raise ValueError("model tree closure drift")
     raw = (root / "model.metadata.json").read_bytes()
@@ -268,10 +515,6 @@ def verify_development_example_model_artifact(
         != float(curve[manifest.best_iteration - 1, "validation_l2"])
     ):
         raise ValueError("model published content drift")
-    lgb = _lightgbm()
-    lgb.Booster(model_file=str(model_path))
-    if manifest.lightgbm_version != _lightgbm_version(lgb):
-        raise ValueError("model runtime version drift")
     verified_receipt = verify_stage_receipt_with_bytes(
         receipt_path=receipt_path, artifact_roots=artifact_roots
     )
@@ -289,12 +532,24 @@ def verify_development_example_model_artifact(
     )
     outputs = tuple(root / name for name in sorted(_FILES))
     if (
-        receipt.stage != "development-model" or receipt.scope != "WORK"
+        receipt.stage != ("model" if formal else "development-model")
+        or receipt.scope != "WORK"
         or receipt.scope_key != alignment.manifest.work_key
         or not _digest_paths_equal(receipt.inputs, inputs, artifact_roots)
         or not _digest_paths_equal(receipt.outputs, outputs, artifact_roots)
     ):
         raise ValueError("model receipt closure drift")
+    lgb = _lightgbm()
+    lgb.Booster(model_file=str(model_path))
+    if manifest.lightgbm_version != _lightgbm_version(lgb):
+        raise ValueError("model runtime version drift")
+    if formal:
+        return VerifiedModelArtifact(
+            root=root.resolve(strict=True), manifest=manifest,
+            manifest_sha256=hashlib.sha256(raw).hexdigest(),
+            model_receipt_sha256=verified_receipt.sha256,
+        )
+    assert isinstance(alignment, VerifiedDevelopmentExampleAlignmentArtifact)
     return VerifiedDevelopmentExampleModelArtifact(
         release_kind="development_example", formal_gate_eligible=False,
         example_id=alignment.example_id, root=root.resolve(strict=True),
@@ -324,7 +579,40 @@ def predict_development_example_fitted_model(
 ) -> tuple[float, ...]:
     if type(model) is not VerifiedDevelopmentExampleModelArtifact or type(inference) is not InferenceSegment:
         raise ValueError("model prediction inputs invalid")
+    return _predict_fitted_model(model=model, inference=inference)
+
+
+@_model_boundary
+def predict_fitted_model(
+    *, model: VerifiedModelArtifact, inference: InferenceSegment,
+) -> tuple[float, ...]:
+    """Predict with the exact saved formal model projection and best iteration."""
+    if type(model) is not VerifiedModelArtifact or type(inference) is not InferenceSegment:
+        raise ValueError("formal model prediction inputs invalid")
+    return _predict_fitted_model(model=model, inference=inference)
+
+
+def _predict_fitted_model(
+    *, model: VerifiedModelArtifact | VerifiedDevelopmentExampleModelArtifact,
+    inference: InferenceSegment,
+) -> tuple[float, ...]:
+    index = inference.features.index
+    metadata = inference.metadata
     if tuple(inference.features.columns) != model.manifest.selected_feature_names:
+        raise ValueError("model prediction schema drift")
+    if (
+        getattr(index, "nlevels", None) != 2
+        or tuple(index.names) != ("as_of", "symbol")
+        or not index.is_unique
+        or not index.is_monotonic_increasing
+        or metadata.columns != ["as_of", "symbol"]
+        or metadata.schema != {"as_of": pl.Date, "symbol": pl.String}
+        or metadata.height != len(inference.features)
+        or tuple(index.tolist()) != tuple(metadata.iter_rows())
+        or any(str(dtype) != "float64" for dtype in inference.features.dtypes)
+        or feature_schema_sha256(names=tuple(inference.features.columns))
+        != model.manifest.selected_feature_schema_sha256
+    ):
         raise ValueError("model prediction schema drift")
     values = inference.features.to_numpy(dtype="float64", copy=False)
     if np.isinf(values).any():
@@ -336,6 +624,37 @@ def predict_development_example_fitted_model(
     if len(result) != len(inference.features) or any(not math.isfinite(value) for value in result):
         raise ValueError("model prediction output invalid")
     return result
+
+
+def _fresh_verify_formal_alignment(
+    *, alignment: VerifiedAlignmentArtifact, release: VerifiedG1Release,
+    snapshot: VerifiedSnapshotArtifact, snapshot_spec: SnapshotBuildSpec,
+    provider: VerifiedProviderArtifact, provider_spec: ProviderBuildSpec,
+    experiment: VerifiedExperimentIdentity, experiment_spec: ExperimentIdentitySpec,
+    folds: VerifiedFoldPlanArtifact, fold_spec: FoldPlanBuildSpec,
+    feature: VerifiedFeatureArtifact, feature_spec: FeatureBuildSpec,
+    label: VerifiedLabelArtifact, label_spec: LabelBuildSpec,
+    config: LoadedM3Config, alignment_spec: AlignmentBuildSpec,
+    upstream_paths: ModelUpstreamPaths, artifact_roots: Mapping[str, Path],
+) -> VerifiedAlignmentArtifact:
+    failed = False
+    try:
+        verified = verify_alignment_artifact(
+            root=alignment.root,
+            receipt_path=upstream_paths.alignment_receipt_path,
+            release=release, snapshot=snapshot, snapshot_spec=snapshot_spec,
+            provider=provider, provider_spec=provider_spec, experiment=experiment,
+            experiment_spec=experiment_spec, folds=folds, fold_spec=fold_spec,
+            feature=feature, feature_spec=feature_spec, label=label,
+            label_spec=label_spec, config=config, spec=alignment_spec,
+            upstream_paths=upstream_paths.alignment_upstream_paths,
+            artifact_roots=artifact_roots,
+        )
+    except Exception:
+        failed = True
+    if failed:
+        raise ValueError("M3_MODEL_ALIGNMENT_VERIFY_FAILED") from None
+    return verified
 
 
 def training_params_sha256(spec: LightgbmTrainingSpec) -> str:
@@ -365,19 +684,34 @@ def _validate_required_params(spec: LightgbmTrainingSpec) -> None:
 
 
 def _validate_model_identity(
-    alignment: VerifiedDevelopmentExampleAlignmentArtifact,
-    feature: VerifiedDevelopmentExampleFeatureArtifact,
-    label: VerifiedDevelopmentExampleLabelArtifact,
-    experiment: VerifiedDevelopmentExampleExperimentIdentity,
+    alignment: VerifiedAlignmentArtifact | VerifiedDevelopmentExampleAlignmentArtifact,
+    feature: VerifiedFeatureArtifact | VerifiedDevelopmentExampleFeatureArtifact,
+    label: VerifiedLabelArtifact | VerifiedDevelopmentExampleLabelArtifact,
+    experiment: VerifiedExperimentIdentity | VerifiedDevelopmentExampleExperimentIdentity,
     config: LoadedM3Config, spec: LightgbmTrainingSpec,
+    *, formal: bool,
 ) -> None:
-    if any(type(value) is not expected for value, expected in (
-        (alignment, VerifiedDevelopmentExampleAlignmentArtifact),
-        (feature, VerifiedDevelopmentExampleFeatureArtifact),
-        (label, VerifiedDevelopmentExampleLabelArtifact),
-        (experiment, VerifiedDevelopmentExampleExperimentIdentity),
-    )) or len({alignment.example_id, feature.example_id, label.example_id, experiment.example_id}) != 1:
-        raise ValueError("model development identity mismatch")
+    expected = (
+        (VerifiedAlignmentArtifact, VerifiedFeatureArtifact,
+         VerifiedLabelArtifact, VerifiedExperimentIdentity)
+        if formal else
+        (VerifiedDevelopmentExampleAlignmentArtifact,
+         VerifiedDevelopmentExampleFeatureArtifact,
+         VerifiedDevelopmentExampleLabelArtifact,
+         VerifiedDevelopmentExampleExperimentIdentity)
+    )
+    if any(type(value) is not kind for value, kind in zip(
+        (alignment, feature, label, experiment), expected, strict=True
+    )):
+        raise ValueError("model capability identity mismatch")
+    if not formal:
+        assert isinstance(alignment, VerifiedDevelopmentExampleAlignmentArtifact)
+        assert isinstance(feature, VerifiedDevelopmentExampleFeatureArtifact)
+        assert isinstance(label, VerifiedDevelopmentExampleLabelArtifact)
+        assert isinstance(experiment, VerifiedDevelopmentExampleExperimentIdentity)
+        if len({alignment.example_id, feature.example_id, label.example_id,
+                experiment.example_id}) != 1:
+            raise ValueError("model development identity mismatch")
     if (
         build_lightgbm_training_spec(config) != spec
         or alignment.manifest.experiment_key != experiment.manifest.experiment_key
@@ -392,10 +726,10 @@ def _validate_model_identity(
 
 
 def _expected_manifest_identity(
-    alignment: VerifiedDevelopmentExampleAlignmentArtifact,
-    feature: VerifiedDevelopmentExampleFeatureArtifact,
-    label: VerifiedDevelopmentExampleLabelArtifact,
-    experiment: VerifiedDevelopmentExampleExperimentIdentity,
+    alignment: VerifiedAlignmentArtifact | VerifiedDevelopmentExampleAlignmentArtifact,
+    feature: VerifiedFeatureArtifact | VerifiedDevelopmentExampleFeatureArtifact,
+    label: VerifiedLabelArtifact | VerifiedDevelopmentExampleLabelArtifact,
+    experiment: VerifiedExperimentIdentity | VerifiedDevelopmentExampleExperimentIdentity,
     spec: LightgbmTrainingSpec,
 ) -> dict[str, object]:
     train = next(item for item in alignment.manifest.segments if item.name == "train")
@@ -514,18 +848,51 @@ def _file_sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _require_empty_directory(path: Path) -> None:
-    if not path.is_dir() or path.is_symlink() or any(path.iterdir()):
-        raise ValueError("model output must be an empty real directory")
+def _save_model_to_temporary_bytes(*, booster: Any, best_iteration: int) -> bytes:
+    try:
+        with tempfile.TemporaryDirectory(prefix="m3-lightgbm-model-") as directory:
+            path = Path(directory) / "model.txt"
+            booster.save_model(str(path), num_iteration=best_iteration)
+            info = os.lstat(path)
+            if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+                raise ArtifactPublicationError
+            raw = path.read_bytes()
+            if not raw:
+                raise ArtifactPublicationError
+    except ArtifactPublicationError:
+        raise
+    except Exception:
+        raise ArtifactPublicationError from None
+    return raw
 
 
-def _write_exclusive(path: Path, raw: bytes) -> None:
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o644)
-    with os.fdopen(descriptor, "wb") as stream:
-        stream.write(raw)
-        stream.flush()
-        os.fsync(stream.fileno())
+def _write_exclusive(
+    publication: ArtifactPublication, name: str, raw: bytes,
+) -> None:
+    try:
+        publication.write_bytes(name, raw)
+    except ArtifactRollbackError:
+        raise
+    except Exception:
+        raise ArtifactPublicationError from None
 
 
-def _write_parquet(frame: pl.DataFrame, path: Path) -> None:
-    frame.write_parquet(path, compression="zstd", compression_level=3, statistics=True, row_group_size=65536, use_pyarrow=False)
+def _write_parquet(
+    publication: ArtifactPublication, name: str, frame: pl.DataFrame,
+) -> None:
+    try:
+        publication.write_stream(
+            name,
+            lambda stream: frame.write_parquet(
+                stream,
+                compression="zstd",
+                compression_level=3,
+                statistics=True,
+                row_group_size=65536,
+                use_pyarrow=False,
+            ),
+        )
+    except ArtifactRollbackError:
+        raise
+    except Exception:
+        raise ArtifactPublicationError from None

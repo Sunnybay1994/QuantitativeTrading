@@ -2670,40 +2670,27 @@ def make_work_run_plan(
     feature_spec = (
         DEVELOPMENT_FEATURES_STAGE_SPEC if development else FEATURES_STAGE_SPEC
     )
-    stage_defs = (
-        (
-            "alignment",
-            DEVELOPMENT_ALIGNMENT_STAGE_SPEC if development else ALIGNMENT_STAGE_SPEC,
-        ),
-        ("train", DEVELOPMENT_MODEL_STAGE_SPEC if development else TRAIN_STAGE_SPEC),
-        (
-            "predictions",
-            DEVELOPMENT_PREDICTIONS_STAGE_SPEC
-            if development else PREDICTIONS_STAGE_SPEC,
-        ),
-        (
-            "evaluation",
-            DEVELOPMENT_EVALUATION_STAGE_SPEC
-            if development else EVALUATION_STAGE_SPEC,
-        ),
-        (
-            "targets",
-            DEVELOPMENT_TARGETS_STAGE_SPEC if development else TARGETS_STAGE_SPEC,
-        ),
-        (
-            "backtest_plan",
-            DEVELOPMENT_BACKTEST_PLAN_STAGE_SPEC
-            if development else BACKTEST_PLAN_STAGE_SPEC,
-        ),
-        (
-            "backtest",
-            DEVELOPMENT_BACKTEST_STAGE_SPEC if development else BACKTEST_STAGE_SPEC,
-        ),
-        (
-            "tracking",
-            DEVELOPMENT_TRACKING_STAGE_SPEC if development else TRACKING_STAGE_SPEC,
-        ),
-    )
+    stage_defs: tuple[tuple[str, StageSpec], ...]
+    if development:
+        stage_defs = (
+            ("alignment", DEVELOPMENT_ALIGNMENT_STAGE_SPEC),
+            ("train", DEVELOPMENT_MODEL_STAGE_SPEC),
+            ("predictions", DEVELOPMENT_PREDICTIONS_STAGE_SPEC),
+            ("evaluation", DEVELOPMENT_EVALUATION_STAGE_SPEC),
+            ("targets", DEVELOPMENT_TARGETS_STAGE_SPEC),
+            ("backtest_plan", DEVELOPMENT_BACKTEST_PLAN_STAGE_SPEC),
+            ("backtest", DEVELOPMENT_BACKTEST_STAGE_SPEC),
+            ("tracking", DEVELOPMENT_TRACKING_STAGE_SPEC),
+        )
+    else:
+        stage_defs = (
+            ("alignment", ALIGNMENT_STAGE_SPEC),
+            ("train", TRAIN_STAGE_SPEC),
+            ("predictions", PREDICTIONS_STAGE_SPEC),
+            ("evaluation", EVALUATION_STAGE_SPEC),
+            ("targets", TARGETS_STAGE_SPEC),
+            ("backtest_plan", BACKTEST_PLAN_STAGE_SPEC),
+        )
     for planned_fold in sorted(folds.manifest.folds, key=lambda item: item.name):
         fold = planned_fold.name
         feature = _static_node(

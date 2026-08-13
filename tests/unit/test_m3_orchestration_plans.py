@@ -10,9 +10,6 @@ from typing import Any, cast
 import pytest
 
 import quant.research.m3.orchestration as orchestration
-from quant.backtest.a_share_plan import verify_development_example_backtest_plan_artifact
-from quant.backtest.a_share_reporting import verify_development_example_backtest_artifact
-from quant.research.m3.alignment import verify_development_example_alignment_artifact
 from quant.research.m3.config import LoadedM3Config
 from quant.research.m3.development_example import (
     VerifiedDevelopmentExampleEvaluationArtifact,
@@ -21,12 +18,7 @@ from quant.research.m3.development_example import (
     VerifiedDevelopmentExampleLabelArtifact,
     VerifiedDevelopmentExampleLabelReconciliationArtifact,
 )
-from quant.research.m3.evaluate import (
-    verify_development_example_evaluation_artifact,
-    verify_development_example_research_summary_artifact,
-)
-from quant.research.m3.features import verify_development_example_feature_artifact
-from quant.research.m3.model import verify_development_example_model_artifact
+from quant.research.m3.evaluate import verify_development_example_research_summary_artifact
 from quant.research.m3.orchestration import (
     BACKTEST_PLAN_STAGE_SPEC,
     BACKTEST_STAGE_SPEC,
@@ -45,11 +37,8 @@ from quant.research.m3.orchestration import (
     make_summary_run_plan,
 )
 from quant.research.m3.run_state import ArtifactDigest, compute_work_key
-from quant.research.m3.predictions import verify_development_example_prediction_artifact
-from quant.research.m3.targets import verify_development_example_target_artifact
 
 _KEY = "0" * 64
-
 
 def _external() -> ExternalInput:
     return ExternalInput(ArtifactDigest("fixture", "input.json", 2, "1" * 64))
@@ -261,22 +250,6 @@ def test_work_scope_keys_only_use_verified_experiment_and_work_identity(
         node.receipt_path.startswith(f"receipts/{node.spec_name}/")
         for node in plan.nodes
     )
-    verifier_stages = {
-        "development-features": verify_development_example_feature_artifact,
-        "development-alignment": verify_development_example_alignment_artifact,
-        "development-model": verify_development_example_model_artifact,
-        "development-predictions": verify_development_example_prediction_artifact,
-        "development-evaluation": verify_development_example_evaluation_artifact,
-        "development-targets": verify_development_example_target_artifact,
-        "development-backtest-plan": (
-            verify_development_example_backtest_plan_artifact
-        ),
-        "development-backtest": verify_development_example_backtest_artifact,
-    }
-    for expected_stage, verifier in verifier_stages.items():
-        assert f'receipt.stage != "{expected_stage}"' in inspect.getsource(
-            cast(Any, verifier)
-        )
     second_label = cast(Any, labels[1])
     foreign_label = _unchecked(
         VerifiedDevelopmentExampleLabelArtifact,

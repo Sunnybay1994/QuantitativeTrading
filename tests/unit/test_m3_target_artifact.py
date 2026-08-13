@@ -16,6 +16,7 @@ from typing import Any, cast
 import polars as pl
 import pytest
 
+import quant.research.m3.targets as target_module
 from quant.domain import TargetWeightSchema
 from quant.research.m3.contracts import TargetBuildSpec, TargetUpstreamPaths
 from quant.research.m3.development_example import VerifiedDevelopmentExampleTargetArtifact
@@ -319,6 +320,37 @@ def test_target_closed_loop_has_exact_domain_daily_counts_and_decimal_weights(
     assert verified.target_receipt_sha256 == hashlib.sha256(receipt.read_bytes()).hexdigest()
     assert read_target_manifest(root / "target_manifest.json") == manifest
     assert (root / "target_manifest.json").read_bytes() == _canonical(asdict(manifest))
+
+
+def test_r2_development_target_reuses_fixed_decimal_allocation_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _build_bundle(tmp_path, monkeypatch)
+    prediction_bundle, prediction, spec = bundle[:3]
+    parts = _parts(prediction_bundle)
+    calls: list[int] = []
+    real_allocation = target_module._target_allocation
+
+    def counted_allocation(
+        *, cash_buffer: float, max_weight: float, n_selected: int,
+    ) -> tuple[Decimal, Decimal]:
+        calls.append(n_selected)
+        return real_allocation(
+            cash_buffer=cash_buffer,
+            max_weight=max_weight,
+            n_selected=n_selected,
+        )
+
+    monkeypatch.setattr(target_module, "_target_allocation", counted_allocation)
+    targets, daily = target_module._build_target_frames(
+        parts["release"], parts["feature"], prediction, parts["folds"], spec
+    )
+    assert calls == daily.get_column("n_selected").to_list()
+    assert targets.height == daily.get_column("n_eligible").sum()
+    weight, total = real_allocation(
+        cash_buffer=0.1, max_weight=0.2, n_selected=7
+    )
+    assert weight < Decimal("0.2") and total <= Decimal("0.9")
 
 
 def test_target_spec_is_config_projection_not_caller_hashes(

@@ -81,6 +81,28 @@ _PUBLIC_COMMANDS = (
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _FOLD = re.compile(r"^fold_[0-9]{3}$")
 _ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
+_DRIVE_ABS = re.compile(r"^[A-Za-z]:/")
+_FORMAL_CLI_EXIT_BY_CODE = {
+    "FORMAL_CLI_INPUT_INVALID": 2,
+    "FORMAL_CLI_CONFIG_INVALID": 2,
+    "FORMAL_CLI_RUNTIME_IDENTITY_INVALID": 2,
+    "FORMAL_CLI_G1_INVALID": 3,
+    "FORMAL_CLI_UPSTREAM_INVALID": 3,
+    "FORMAL_CLI_DEPENDENCY_UNAVAILABLE": 4,
+    "FORMAL_CLI_ARTIFACT_MISSING": 5,
+    "FORMAL_CLI_CLOSURE_DRIFT": 5,
+}
+_STAGE_RUNNER_CODES = frozenset(
+    {
+        "STAGE_INPUT_INVALID",
+        "STAGE_LOCK_FAILED",
+        "STAGE_BUILD_FAILED",
+        "STAGE_OUTPUT_INVALID",
+        "STAGE_PUBLISH_FAILED",
+        "STAGE_RECOVERY_CONFLICT",
+        "STAGE_ALREADY_COMPLETE",
+    }
+)
 _SECRET = re.compile(
     r"(?:token|password|secret|api[_-]?key|bearer)", re.IGNORECASE
 )
@@ -266,13 +288,18 @@ def build_parser() -> argparse.ArgumentParser:
     for name, stop_stage in (
         ("train", "train"),
         ("evaluate", "evaluation"),
-        ("backtest", "backtest"),
         ("verify-reproducibility", "comparison"),
     ):
         command = subparsers.add_parser(name)
         _add_config(command)
         _add_snapshot_work(command)
         command.set_defaults(stop_stage=stop_stage)
+
+    backtest = subparsers.add_parser("backtest")
+    backtest.add_argument("--config", type=str, required=True)
+    _add_snapshot_work(backtest)
+    backtest.add_argument("--no-resume", action="store_true")
+    backtest.set_defaults(stop_stage="backtest")
 
     run_all = subparsers.add_parser("run-all")
     _add_config(run_all)
@@ -399,8 +426,194 @@ def _run_public(
         return summary.payload(), 5
 
 
+def _lexical_backtest_config_relative(
+    *, project_root: Path, config_arg: str
+) -> PurePosixPath:
+    """Convert caller --config to an exact project-relative PurePosixPath.
+
+    Only lexical conversion is allowed. The caller original path is never
+    replaced by ``Path.resolve()`` before C0 anchors it.
+    """
+    if type(config_arg) is not str or not config_arg or "\\" in config_arg:
+        raise ValueError("invalid config")
+    if config_arg.startswith("//") or config_arg.startswith("\\\\"):
+        raise ValueError("invalid config")
+    if len(config_arg) >= 2 and config_arg[1] == ":" and (
+        len(config_arg) == 2 or config_arg[2] != "/"
+    ):
+        raise ValueError("invalid config")
+    if config_arg.startswith("/") or _DRIVE_ABS.match(config_arg) is not None:
+        root_text = project_root.as_posix().rstrip("/")
+        prefix = root_text + "/"
+        if config_arg == root_text or not config_arg.startswith(prefix):
+            raise ValueError("invalid config")
+        remainder = config_arg[len(prefix) :]
+        if any(part in {".", ".."} for part in remainder.split("/")):
+            raise ValueError("invalid config")
+        relative = PurePosixPath(remainder)
+    else:
+        if any(part in {".", ".."} for part in config_arg.split("/")):
+            raise ValueError("invalid config")
+        relative = PurePosixPath(config_arg)
+    text = relative.as_posix()
+    parts = relative.parts
+    if (
+        not text
+        or text.startswith("/")
+        or "\\" in text
+        or relative.is_absolute()
+        or relative.drive
+        or not parts
+        or parts[0] != "configs"
+        or any(part in {"", ".", ".."} for part in parts)
+    ):
+        raise ValueError("invalid config")
+    return relative
+
+
+def _load_backtest_config(
+    args: argparse.Namespace,
+) -> tuple[Path, PurePosixPath, LoadedM3Config] | None:
+    try:
+        project_root = Path.cwd().resolve(strict=True)
+        config_relative = _lexical_backtest_config_relative(
+            project_root=project_root, config_arg=str(args.config)
+        )
+        config = load_m3_config(project_root.joinpath(*config_relative.parts))
+    except Exception:
+        return None
+    return project_root, config_relative, config
+
+
+def _map_formal_cli_resolve_error(exc: BaseException, error_type: type) -> tuple[str, int]:
+    if type(exc) is not error_type:
+        return ("M3_COMMAND_FAILED", 5)
+    code = getattr(exc, "code", None)
+    exit_code = getattr(exc, "exit_code", None)
+    if type(code) is not str or type(exit_code) is not int:
+        return ("M3_COMMAND_FAILED", 5)
+    expected = _FORMAL_CLI_EXIT_BY_CODE.get(code)
+    if expected is None or exit_code != expected:
+        return ("M3_COMMAND_FAILED", 5)
+    return (code, exit_code)
+
+
+def _map_stage_runner_error(exc: BaseException) -> tuple[str, int]:
+    if type(exc) is not M3StageRunnerError:
+        return ("M3_COMMAND_FAILED", 5)
+    code = getattr(exc, "code", None)
+    if type(code) is not str or code not in _STAGE_RUNNER_CODES:
+        return ("M3_COMMAND_FAILED", 5)
+    return (code, 5)
+
+
+def _formal_backtest_reused(result: object, result_type: type) -> bool:
+    if type(result) is not result_type:
+        raise ValueError("invalid stage result")
+    reused = getattr(result, "reused", None)
+    if type(reused) is not bool:
+        raise ValueError("invalid stage result")
+    return reused
+
+
+def resolve_formal_backtest_cli_inputs(**kwargs: Any) -> Any:
+    """Lazy public-resolver wrapper so cold import stays free of C0/G8 modules."""
+    from quant.research.m3.formal_cli_resolve import (
+        resolve_formal_backtest_cli_inputs as resolve,
+    )
+
+    return resolve(**kwargs)
+
+
+def run_formal_backtest_stage(**kwargs: Any) -> Any:
+    """Lazy formal-stage wrapper so cold import stays free of G8 modules."""
+    from quant.research.m3.backtest_stage import run_formal_backtest_stage as run_stage
+
+    return run_stage(**kwargs)
+
+
+def _dispatch_formal_backtest(args: argparse.Namespace) -> CommandSummary:
+    command = "backtest"
+    loaded = _load_backtest_config(args)
+    if loaded is None:
+        return _failure_summary(
+            command, error_code="M3_CONFIG_INVALID", exit_code=2
+        )
+    project_root, config_relative, config = loaded
+
+    from quant.research.m3.formal_cli_resolve import FormalCliResolveError
+
+    resolution = None
+    resolve_mapped: tuple[str, int] | None = None
+    try:
+        resolution = resolve_formal_backtest_cli_inputs(
+            project_root=project_root,
+            config=config,
+            config_relative=config_relative,
+            snapshot_id=args.snapshot_id,
+            fold=args.fold,
+            horizon=args.horizon,
+        )
+    except Exception as exc:
+        resolve_mapped = _map_formal_cli_resolve_error(exc, FormalCliResolveError)
+    if resolve_mapped is not None or resolution is None:
+        mapped = resolve_mapped or ("M3_COMMAND_FAILED", 5)
+        return _failure_summary(
+            command, error_code=mapped[0], exit_code=mapped[1]
+        )
+
+    from quant.research.m3.backtest_stage import FormalBacktestStageResult
+
+    stage_result = None
+    stage_mapped: tuple[str, int] | None = None
+    reused = None
+    work_key = None
+    try:
+        stage_result = run_formal_backtest_stage(
+            stage_root=resolution.stage_root,
+            target=resolution.target,
+            plan=resolution.plan,
+            release=resolution.release,
+            experiment=resolution.experiment,
+            config=resolution.config,
+            fresh_context=resolution.fresh_context,
+            artifact_roots=resolution.artifact_roots,
+            resume=not args.no_resume,
+        )
+        reused = _formal_backtest_reused(stage_result, FormalBacktestStageResult)
+        work_key = resolution.work_key
+        if type(work_key) is not str:
+            raise ValueError("invalid resolution")
+    except Exception as exc:
+        if stage_result is None:
+            stage_mapped = _map_stage_runner_error(exc)
+        else:
+            stage_mapped = ("M3_COMMAND_FAILED", 5)
+    if stage_mapped is not None:
+        return _failure_summary(
+            command, error_code=stage_mapped[0], exit_code=stage_mapped[1]
+        )
+    if type(reused) is not bool or type(work_key) is not str:
+        return _failure_summary(
+            command, error_code="M3_COMMAND_FAILED", exit_code=5
+        )
+    return CommandSummary(
+        command=command,
+        details={
+            "fold": args.fold,
+            "horizon": args.horizon,
+            "reused": reused,
+            "snapshot_id": args.snapshot_id,
+            "stop_stage": "backtest",
+            "work_key": work_key,
+        },
+    )
+
+
 def _dispatch_public(args: argparse.Namespace) -> CommandSummary:
     command = str(args.command)
+    if command == "backtest":
+        return _dispatch_formal_backtest(args)
     if command not in {"readiness", "snapshot"}:
         return _failure_summary(
             command, error_code="M3_COMMAND_HANDLER_UNAVAILABLE", exit_code=5

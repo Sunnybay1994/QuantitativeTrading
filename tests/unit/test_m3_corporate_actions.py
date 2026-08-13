@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import datetime as dt
-import importlib
 import inspect
+import subprocess
 import sys
 from dataclasses import FrozenInstanceError, replace
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, cast
 
 import polars as pl
@@ -356,11 +357,97 @@ def test_full_day_factor_mark_is_strict_decimal_and_has_no_theoretical_api() -> 
             )
 
 
-def test_corporate_action_core_import_does_not_load_qlib(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    for name in tuple(sys.modules):
-        if name == "qlib" or name.startswith("qlib."):
-            monkeypatch.delitem(sys.modules, name, raising=False)
-    importlib.reload(importlib.import_module("quant.backtest.corporate_actions"))
-    assert not any(name == "qlib" or name.startswith("qlib.") for name in sys.modules)
+def test_corporate_action_core_import_does_not_load_qlib() -> None:
+    formal_support = Path(__file__).with_name(
+        "test_m3_formal_corporate_actions.py"
+    ).resolve()
+    source_root = Path(__file__).resolve().parents[2] / "src"
+    expected_public = (
+        "AShareEntitlementError",
+        "AShareEntitlementReplayState",
+        "AShareEntitlementReplayTransition",
+        "EntitlementPosition",
+        "EntitlementPosting",
+        "EntitlementReplayPhase",
+        "EntitlementTransition",
+        "advance_formal_a_share_entitlements_pre_open",
+        "capture_formal_a_share_entitlements_record_close",
+        "capture_record_close_entitlements",
+        "initialize_formal_a_share_entitlement_replay",
+        "mark_full_day_event_from_factor",
+        "recognize_ex_date_entitlements",
+        "settle_due_entitlements",
+    )
+    script = f"""
+import importlib
+import pathlib
+import runpy
+import sys
+import tempfile
+from decimal import Decimal
+from pytest import MonkeyPatch
+
+sys.path.insert(0, {str(source_root)!r})
+heavy = ('qlib', 'lightgbm', 'mlflow')
+def heavy_loaded():
+    return tuple(
+        name for name in sys.modules
+        if any(name == root or name.startswith(root + '.') for root in heavy)
+    )
+
+assert heavy_loaded() == ()
+module = importlib.import_module('quant.backtest.corporate_actions')
+assert heavy_loaded() == ()
+assert tuple(module.__all__) == {expected_public!r}
+assert '_initialize_formal_entitlement_capability' not in vars(module)
+
+support = runpy.run_path({str(formal_support)!r})
+frames = support['_fixture_frames']()
+dates = frames['benchmark_bar_1d.parquet']['trade_date'].to_list()
+mp = MonkeyPatch()
+facts = support['_issued_facts'](
+    pathlib.Path(tempfile.mkdtemp()), mp,
+    (support['_event'](
+        'a' * 64, symbol='600000.SH', record=dates[0], ex=dates[1],
+        cash=0.01, pay=dates[1],
+    ),),
+)
+old_state = module.initialize_formal_a_share_entitlement_replay(facts=facts)
+old_transition = module.advance_formal_a_share_entitlements_pre_open(
+    date=dates[0], replay=old_state, facts=facts,
+)
+module = importlib.reload(module)
+assert heavy_loaded() == ()
+assert tuple(module.__all__) == {expected_public!r}
+assert '_initialize_formal_entitlement_capability' not in vars(module)
+for callback in (lambda: old_state.phase, lambda: old_transition.postings):
+    try:
+        callback()
+    except ValueError as exc:
+        assert str(exc) == 'M3_A_SHARE_ENTITLEMENT_INVALID'
+        assert exc.__cause__ is None and exc.__context__ is None
+    else:
+        raise AssertionError('old formal capability survived reload')
+new_state = module.initialize_formal_a_share_entitlement_replay(facts=facts)
+assert type(new_state) is module.AShareEntitlementReplayState
+assert new_state.phase is module.EntitlementReplayPhase.PRE_OPEN
+new_transition = module.advance_formal_a_share_entitlements_pre_open(
+    date=dates[0], replay=new_state, facts=facts,
+)
+assert type(new_transition) is module.AShareEntitlementReplayTransition
+assert new_transition.replay.phase is module.EntitlementReplayPhase.RECORD_CLOSE
+assert module.mark_full_day_event_from_factor(
+    previous_mark=Decimal('10'), actual_factor_ratio=Decimal('2'),
+) == Decimal('5')
+assert heavy_loaded() == ()
+mp.undo()
+"""
+    completed = subprocess.run(
+        [sys.executable, "-I", "-c", script],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=180,
+    )
+    assert completed.returncode == 0, completed.stderr

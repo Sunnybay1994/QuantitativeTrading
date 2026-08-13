@@ -21,7 +21,9 @@ from quant.research.m3.development_example import (
     VerifiedDevelopmentExampleFeatureArtifact,
 )
 from quant.research.m3.features import (
+    build_feature_artifact,
     build_development_example_feature_artifact,
+    verify_feature_artifact,
     verify_development_example_feature_artifact,
 )
 from quant.research.m3.run_state import publish_stage_receipt
@@ -186,6 +188,8 @@ def test_package_root_exports_verified_feature_contract_without_qlib() -> None:
     assert m3_public.FeatureUpstreamPaths is FeatureUpstreamPaths
     assert m3_public.VerifiedFeatureArtifact is not None
     assert m3_public.VerifiedDevelopmentExampleFeatureArtifact is not None
+    assert m3_public.build_feature_artifact is build_feature_artifact
+    assert m3_public.verify_feature_artifact is verify_feature_artifact
     assert not any(
         name == "qlib" or name.startswith("qlib.") for name in sys.modules
     )
@@ -237,6 +241,9 @@ def test_development_feature_artifact_preserves_fold_shared_nan_contract(
     response = json.loads((root / "worker-response.json").read_bytes())
     assert request["release_kind"] == "development_example"
     assert request["formal_gate_eligible"] is False
+    assert request["provider_uri_sha256"] == hashlib.sha256(
+        _canonical([request["provider_key"], "provider"])
+    ).hexdigest()
     for key, value in request.items():
         if key != "eligible_rows":
             assert response[key] == value
@@ -322,6 +329,28 @@ def test_feature_no_clobber_and_rejects_cross_kind_or_spec_drift(
             timeout_seconds=60.0,
         )
     assert not any(cross_root.iterdir())
+
+    with pytest.raises(ValueError, match="formal feature build requires formal"):
+        build_feature_artifact(
+            release=cast(Any, release), snapshot=cast(Any, snapshot),
+            snapshot_spec=snapshot_spec, provider=cast(Any, provider),
+            provider_spec=provider_spec, experiment=cast(Any, experiment),
+            experiment_spec=experiment_spec, folds=cast(Any, folds),
+            fold_spec=fold_spec, config=config, spec=spec,
+            upstream_paths=upstream_paths, artifact_roots=roots,
+            python_executable=Path(sys.executable), output_root=cross_root,
+            timeout_seconds=60.0,
+        )
+    with pytest.raises(ValueError, match="formal feature verify requires formal"):
+        verify_feature_artifact(
+            root=root, receipt_path=cast(Path, bundle[-2]),
+            release=cast(Any, release), snapshot=cast(Any, snapshot),
+            snapshot_spec=snapshot_spec, provider=cast(Any, provider),
+            provider_spec=provider_spec, experiment=cast(Any, experiment),
+            experiment_spec=experiment_spec, folds=cast(Any, folds),
+            fold_spec=fold_spec, config=config, spec=spec,
+            upstream_paths=upstream_paths, artifact_roots=roots,
+        )
 
 
 @pytest.mark.parametrize(
@@ -432,3 +461,39 @@ def test_feature_receipt_binds_all_declared_output_bytes(
     assert verified.feature_receipt_sha256 == hashlib.sha256(
         receipt.read_bytes()
     ).hexdigest()
+
+
+@pytest.mark.parametrize("mutation", ["unknown", "provider_uri"])
+def test_artifact_verifier_rejects_request_response_schema_or_uri_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str,
+) -> None:
+    bundle = _build_feature_bundle(tmp_path, monkeypatch)
+    (
+        common, roots, release, snapshot, _, provider, _, _, _, experiment,
+        _, folds, _, upstream_paths, root, _, _,
+    ) = bundle
+    request_path = root / "request.json"
+    response_path = root / "worker-response.json"
+    request = json.loads(request_path.read_bytes())
+    response = json.loads(response_path.read_bytes())
+    if mutation == "unknown":
+        request["injected_unknown"] = "x"
+        response["injected_unknown"] = "x"
+    else:
+        request["provider_uri_sha256"] = "0" * 64
+        response["provider_uri_sha256"] = "0" * 64
+    request_path.write_bytes(_canonical(request))
+    response_path.write_bytes(_canonical(response))
+    receipt = common / "receipts" / "development-features" / f"drift-{mutation}.json"
+    publish_stage_receipt(
+        receipt_path=receipt, stage="development-features",
+        scope="EXPERIMENT", scope_key=experiment.manifest.experiment_key,
+        artifact_roots=roots,
+        inputs=_feature_inputs(
+            release=release, snapshot=snapshot, provider=provider,
+            experiment=experiment, folds=folds, upstream_paths=upstream_paths,
+        ),
+        outputs=_feature_outputs(root),
+    )
+    with pytest.raises(ValueError):
+        _verify(bundle, receipt=receipt)

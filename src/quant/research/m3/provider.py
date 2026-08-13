@@ -16,12 +16,12 @@ import stat
 import subprocess
 import sys
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import asdict
 from functools import wraps
-from pathlib import Path
-from pathlib import PurePosixPath
-from typing import Any, Callable, ParamSpec, TypeVar, cast
+from pathlib import Path, PurePosixPath
+from typing import Any, ParamSpec, TypeVar, cast
 
 import numpy as np
 import polars as pl
@@ -163,59 +163,60 @@ def _materialize(
     spec: ProviderBuildSpec, output_root: Path, timeout_seconds: float,
     development_example_id: str | None,
 ) -> ProviderBuildResult:
-    _validate_preflight(
-        snapshot=snapshot,
-        qlib_dump_script=qlib_dump_script,
-        python_executable=python_executable,
-        config=config,
-        spec=spec,
-        output_root=output_root,
-        timeout_seconds=timeout_seconds,
-        development_example_id=development_example_id,
-    )
-    qlib_dir = output_root / "provider"
-    argv = (
-        str(python_executable), str(qlib_dump_script), "dump_all",
-        "--data_path", str(snapshot.root / "staging"),
-        "--qlib_dir", str(qlib_dir), "--freq", "day",
-        "--file_suffix", ".parquet", "--date_field_name", "date",
-        "--symbol_field_name", "symbol", "--include_fields",
-        ",".join(_FIELDS), "--max_workers", "1",
-    )
-    timed_out = False
-    completed: subprocess.CompletedProcess[bytes] | None = None
-    try:
-        completed = subprocess.run(
-            argv,
-            shell=False,
-            check=False,
-            capture_output=True,
-            timeout=timeout_seconds,
+    with _hold_python_executable(python_executable):
+        _validate_preflight(
+            snapshot=snapshot,
+            qlib_dump_script=qlib_dump_script,
+            python_executable=python_executable,
+            config=config,
+            spec=spec,
+            output_root=output_root,
+            timeout_seconds=timeout_seconds,
+            development_example_id=development_example_id,
         )
-    except subprocess.TimeoutExpired:
-        timed_out = True
-    try:
-        manifest = _inspect_provider_structure(
-            qlib_dir=qlib_dir, snapshot=snapshot, spec=spec
+        qlib_dir = output_root / "provider"
+        argv = (
+            str(python_executable), str(qlib_dump_script), "dump_all",
+            "--data_path", str(snapshot.root / "staging"),
+            "--qlib_dir", str(qlib_dir), "--freq", "day",
+            "--file_suffix", ".parquet", "--date_field_name", "date",
+            "--symbol_field_name", "symbol", "--include_fields",
+            ",".join(_FIELDS), "--max_workers", "1",
         )
-    except (TypeError, ValueError, OSError, pl.exceptions.PolarsError):
+        timed_out = False
+        completed: subprocess.CompletedProcess[bytes] | None = None
+        try:
+            completed = subprocess.run(
+                argv,
+                shell=False,
+                check=False,
+                capture_output=True,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            timed_out = True
+        try:
+            manifest = _inspect_provider_structure(
+                qlib_dir=qlib_dir, snapshot=snapshot, spec=spec
+            )
+        except (TypeError, ValueError, OSError, pl.exceptions.PolarsError):
+            if timed_out:
+                raise M3ProviderError("PROVIDER_DUMP_TIMEOUT") from None
+            if completed is not None and completed.returncode != 0:
+                raise M3ProviderError("PROVIDER_DUMP_FAILED") from None
+            raise
         if timed_out:
-            raise M3ProviderError("PROVIDER_DUMP_TIMEOUT") from None
-        if completed is not None and completed.returncode != 0:
-            raise M3ProviderError("PROVIDER_DUMP_FAILED") from None
-        raise
-    if timed_out:
-        raise M3ProviderError("PROVIDER_DUMP_TIMEOUT")
-    if completed is None or completed.returncode != 0:
-        raise M3ProviderError("PROVIDER_DUMP_FAILED")
-    raw = _canonical_bytes(asdict(manifest))
-    _write_exclusive(output_root / _MANIFEST_NAME, raw)
-    return ProviderBuildResult(
-        root=output_root.resolve(strict=True),
-        qlib_dir=qlib_dir.resolve(strict=True),
-        manifest=manifest,
-        manifest_sha256=hashlib.sha256(raw).hexdigest(),
-    )
+            raise M3ProviderError("PROVIDER_DUMP_TIMEOUT")
+        if completed is None or completed.returncode != 0:
+            raise M3ProviderError("PROVIDER_DUMP_FAILED")
+        raw = _canonical_bytes(asdict(manifest))
+        _write_exclusive(output_root / _MANIFEST_NAME, raw)
+        return ProviderBuildResult(
+            root=output_root.resolve(strict=True),
+            qlib_dir=qlib_dir.resolve(strict=True),
+            manifest=manifest,
+            manifest_sha256=hashlib.sha256(raw).hexdigest(),
+        )
 
 
 def _validate_preflight(
@@ -231,7 +232,6 @@ def _validate_preflight(
     _require_empty_real_directory(output_root)
     if type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise ValueError("provider timeout 非法")
-    _read_regular(python_executable)
     tool_raw = _read_regular(qlib_dump_script)
     if len(tool_raw) != spec.dump_tool.size_bytes:
         raise ValueError("provider dump tool size drift")
@@ -244,8 +244,7 @@ def _validate_preflight(
         raise ValueError("provider runtime drift")
     if dict(actual_runtime.packages)["pyqlib"] != spec.qlib_version:
         raise ValueError("provider runtime Qlib version drift")
-    if python_executable.resolve(strict=True) != Path(sys.executable).resolve(strict=True):
-        raise ValueError("provider Python executable drift")
+    _require_current_python_executable(python_executable)
     if spec.provider_config_sha256 != config.provider_config_sha256:
         raise ValueError("provider config hash drift")
     fields = tuple(cast(Any, config.section("data"))["provider_fields"])
@@ -788,6 +787,281 @@ def _canonical_bytes(value: object) -> bytes:
 
 def _sha256_json(value: object) -> str:
     return hashlib.sha256(_canonical_bytes(value)).hexdigest()
+
+
+def _require_current_python_executable(python_executable: Path) -> None:
+    if not isinstance(python_executable, Path) or not python_executable.is_absolute():
+        raise ValueError("provider Python executable drift")
+    current = Path(sys.executable)
+    resolved = python_executable.resolve(strict=True)
+    current_resolved = current.resolve(strict=True)
+    if resolved != current_resolved or not resolved.samefile(current_resolved):
+        raise ValueError("provider Python executable drift")
+
+
+def _is_windows_current_python_executable(python_executable: Path) -> bool:
+    if os.name != "nt" or not isinstance(python_executable, Path):
+        return False
+    if not python_executable.is_absolute():
+        return False
+    try:
+        _require_current_python_executable(python_executable)
+    except (TypeError, ValueError, OSError):
+        return False
+    return True
+
+
+@contextmanager
+def _hold_python_executable(python_executable: Path) -> Iterator[None]:
+    """Anchor the dump interpreter for the full materialize critical section.
+
+    On Windows, the current ``sys.executable`` may be a legitimate conda hardlink
+    (``st_nlink >= 1``). Hold a read-only, no-share-write/delete handle across
+    preflight, subprocess, inspection, and manifest write. All other files still
+    go through ``_read_regular`` (``st_nlink == 1``).
+    """
+    if _is_windows_current_python_executable(python_executable):
+        handle, fingerprint = _open_windows_current_python_anchor(python_executable)
+        try:
+            yield
+            _verify_windows_current_python_anchor(
+                handle, python_executable, fingerprint
+            )
+        finally:
+            if not _close_windows_handle(handle):
+                raise ValueError("python executable handle close failed")
+        return
+    _read_regular(python_executable)
+    yield
+
+
+def _open_windows_current_python_anchor(
+    python_executable: Path,
+) -> tuple[int, tuple[int, int, int, int, int, str]]:
+    _require_current_python_executable(python_executable)
+    current = Path(sys.executable)
+    _require_no_reparse_chain(python_executable)
+    _require_no_reparse_chain(current)
+    status = os.lstat(python_executable)
+    current_status = os.lstat(current)
+    if (
+        not stat.S_ISREG(status.st_mode)
+        or status.st_nlink < 1
+        or status.st_size <= 0
+        or _is_windows_reparse(status)
+    ):
+        raise ValueError("python executable anchor invalid")
+    if (status.st_dev, status.st_ino, status.st_size, status.st_nlink) != (
+        current_status.st_dev,
+        current_status.st_ino,
+        current_status.st_size,
+        current_status.st_nlink,
+    ):
+        raise ValueError("python executable identity drift")
+    handle = _open_windows_readonly_no_share_write_delete(python_executable)
+    try:
+        volume, file_index, size, nlink, attributes = _windows_handle_file_info(handle)
+        if attributes & 0x400:
+            raise ValueError("python executable reparse rejected")
+        if file_index != status.st_ino:
+            raise ValueError("python executable identity drift")
+        if size != status.st_size or size <= 0:
+            raise ValueError("python executable identity drift")
+        if nlink != status.st_nlink or nlink < 1:
+            raise ValueError("python executable identity drift")
+        if (status.st_dev & 0xFFFFFFFF) != (volume & 0xFFFFFFFF):
+            raise ValueError("python executable identity drift")
+        digest = _windows_handle_sha256(handle, size)
+        return handle, (volume, file_index, size, nlink, attributes, digest)
+    except Exception:
+        _close_windows_handle(handle)
+        raise
+
+
+def _verify_windows_current_python_anchor(
+    handle: int,
+    python_executable: Path,
+    fingerprint: tuple[int, int, int, int, int, str],
+) -> None:
+    volume, file_index, size, nlink, attributes, digest = fingerprint
+    _require_current_python_executable(python_executable)
+    current = Path(sys.executable)
+    _require_no_reparse_chain(python_executable)
+    _require_no_reparse_chain(current)
+    status = os.lstat(python_executable)
+    current_status = os.lstat(current)
+    if (
+        not stat.S_ISREG(status.st_mode)
+        or status.st_nlink < 1
+        or status.st_size <= 0
+        or _is_windows_reparse(status)
+    ):
+        raise ValueError("python executable anchor invalid")
+    if (status.st_dev, status.st_ino, status.st_size, status.st_nlink) != (
+        current_status.st_dev,
+        current_status.st_ino,
+        current_status.st_size,
+        current_status.st_nlink,
+    ):
+        raise ValueError("python executable identity drift")
+    actual_volume, actual_index, actual_size, actual_nlink, actual_attributes = (
+        _windows_handle_file_info(handle)
+    )
+    if actual_attributes & 0x400:
+        raise ValueError("python executable reparse rejected")
+    if (
+        actual_volume != volume
+        or actual_index != file_index
+        or actual_size != size
+        or actual_nlink != nlink
+        or actual_attributes != attributes
+    ):
+        raise ValueError("python executable identity drift")
+    if actual_index != status.st_ino or actual_size != status.st_size:
+        raise ValueError("python executable identity drift")
+    if actual_nlink != status.st_nlink or actual_nlink < 1:
+        raise ValueError("python executable identity drift")
+    if (status.st_dev & 0xFFFFFFFF) != (actual_volume & 0xFFFFFFFF):
+        raise ValueError("python executable identity drift")
+    if _windows_handle_sha256(handle, actual_size) != digest:
+        raise ValueError("python executable digest drift")
+
+
+def _open_windows_readonly_no_share_write_delete(path: Path) -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    generic_read = 0x80000000
+    file_share_read = 0x00000001
+    open_existing = 3
+    file_flag_open_reparse_point = 0x00200000
+    win_dll = getattr(ctypes, "WinDLL")  # noqa: B009
+    create_file = win_dll("kernel32", use_last_error=True).CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    handle = create_file(
+        str(path),
+        generic_read,
+        file_share_read,
+        None,
+        open_existing,
+        file_flag_open_reparse_point,
+        None,
+    )
+    invalid = ctypes.c_void_p(-1).value
+    value = ctypes.cast(handle, ctypes.c_void_p).value
+    if value is None or value == invalid:
+        raise OSError(getattr(ctypes, "get_last_error")(), "CreateFileW failed")  # noqa: B009
+    return int(value)
+
+
+def _windows_handle_file_info(handle: int) -> tuple[int, int, int, int, int]:
+    import ctypes
+    from ctypes import wintypes
+
+    class _ByHandleFileInformation(ctypes.Structure):
+        _fields_ = [
+            ("attributes", wintypes.DWORD),
+            ("creation_time", wintypes.FILETIME),
+            ("last_access_time", wintypes.FILETIME),
+            ("last_write_time", wintypes.FILETIME),
+            ("volume_serial", wintypes.DWORD),
+            ("file_size_high", wintypes.DWORD),
+            ("file_size_low", wintypes.DWORD),
+            ("number_of_links", wintypes.DWORD),
+            ("file_index_high", wintypes.DWORD),
+            ("file_index_low", wintypes.DWORD),
+        ]
+
+    info = _ByHandleFileInformation()
+    win_dll = getattr(ctypes, "WinDLL")  # noqa: B009
+    function = win_dll(
+        "kernel32", use_last_error=True
+    ).GetFileInformationByHandle
+    function.argtypes = (wintypes.HANDLE, ctypes.POINTER(_ByHandleFileInformation))
+    function.restype = wintypes.BOOL
+    if not function(wintypes.HANDLE(handle), ctypes.byref(info)):
+        raise OSError(
+            getattr(ctypes, "get_last_error")(),  # noqa: B009
+            "GetFileInformationByHandle failed",
+        )
+    file_index = (int(info.file_index_high) << 32) | int(info.file_index_low)
+    size = (int(info.file_size_high) << 32) | int(info.file_size_low)
+    return (
+        int(info.volume_serial),
+        file_index,
+        size,
+        int(info.number_of_links),
+        int(info.attributes),
+    )
+
+
+def _windows_handle_sha256(handle: int, size: int) -> str:
+    import ctypes
+    from ctypes import wintypes
+
+    if size <= 0:
+        raise ValueError("python executable digest drift")
+    win_dll = getattr(ctypes, "WinDLL")  # noqa: B009
+    set_pointer = win_dll("kernel32", use_last_error=True).SetFilePointerEx
+    set_pointer.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_longlong,
+        ctypes.POINTER(ctypes.c_longlong),
+        wintypes.DWORD,
+    )
+    set_pointer.restype = wintypes.BOOL
+    read_file = win_dll("kernel32", use_last_error=True).ReadFile
+    read_file.argtypes = (
+        wintypes.HANDLE,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.LPVOID,
+    )
+    read_file.restype = wintypes.BOOL
+    if not set_pointer(wintypes.HANDLE(handle), 0, None, 0):
+        raise OSError(getattr(ctypes, "get_last_error")(), "SetFilePointerEx failed")  # noqa: B009
+    digest = hashlib.sha256()
+    remaining = size
+    chunk_size = 1024 * 1024
+    while remaining > 0:
+        request = min(chunk_size, remaining)
+        buffer = ctypes.create_string_buffer(request)
+        read = wintypes.DWORD(0)
+        if not read_file(
+            wintypes.HANDLE(handle),
+            buffer,
+            request,
+            ctypes.byref(read),
+            None,
+        ):
+            raise OSError(getattr(ctypes, "get_last_error")(), "ReadFile failed")  # noqa: B009
+        got = int(read.value)
+        if got <= 0:
+            raise ValueError("python executable digest drift")
+        digest.update(buffer.raw[:got])
+        remaining -= got
+    return digest.hexdigest()
+
+
+def _close_windows_handle(handle: int) -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    win_dll = getattr(ctypes, "WinDLL")  # noqa: B009
+    function = win_dll("kernel32", use_last_error=True).CloseHandle
+    function.argtypes = (wintypes.HANDLE,)
+    function.restype = wintypes.BOOL
+    return bool(function(wintypes.HANDLE(handle)))
 
 
 def _read_regular(path: Path) -> bytes:

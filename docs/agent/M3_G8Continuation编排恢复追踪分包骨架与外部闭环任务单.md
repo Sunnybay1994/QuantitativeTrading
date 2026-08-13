@@ -277,7 +277,7 @@ config/code/dependency，禁止读取正常 work model/prediction/evaluation 或
 ## 8. 外部闭环与顺序
 
 ```text
-G8A → G8B → G8C → G8D → G8E → G8F → 真实 handlers continuation 主验
+G8A → G8B → formal backtest WORK wave → formal tracking WORK wave → G8C CLI增量 → G8E → G8F → 真实 handlers continuation 主验
 ```
 
 每包“外部实现自测 → 未参与实现的外部只读初验 → 返工迭代 → 主 Agent 终验”。G8A–G8F 均分别交付，

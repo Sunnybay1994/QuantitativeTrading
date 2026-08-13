@@ -7,6 +7,8 @@ import importlib.util
 import inspect
 import json
 import math
+import os
+import subprocess
 import sys
 from collections import OrderedDict, defaultdict
 from dataclasses import replace
@@ -265,7 +267,17 @@ def test_package_root_exports_model_contract_without_lightgbm() -> None:
     assert m3_public.LightgbmTrainingSpec is LightgbmTrainingSpec
     assert m3_public.ModelUpstreamPaths is ModelUpstreamPaths
     assert m3_public.VerifiedDevelopmentExampleModelArtifact is not None
-    assert "lightgbm" not in sys.modules
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; import quant.research.m3; "
+            "assert 'lightgbm' not in sys.modules",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     assert "test" not in inspect.signature(
         build_development_example_model_artifact
     ).parameters
@@ -611,6 +623,67 @@ def test_model_no_clobber_and_cross_work_or_horizon_rejected(
     drifted_bundle = (bundle[0], drifted_alignment, *bundle[2:])
     with pytest.raises(ValueError):
         _verify(drifted_bundle)
+
+
+def test_r4_development_model_root_replacement_is_blocked_or_rolled_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_lightgbm(monkeypatch)
+    alignment_bundle = _ALIGNMENT_SUPPORT._build_alignment_bundle(
+        tmp_path, monkeypatch
+    )
+    alignment = _ALIGNMENT_SUPPORT._verify(alignment_bundle)
+    feature_bundle, feature, label, _, _, _, _, _, _ = alignment_bundle
+    common = cast(Path, feature_bundle[0])
+    config, experiment = feature_bundle[7], feature_bundle[9]
+    spec = build_lightgbm_training_spec(config)
+    root = common / "development-r4-root-race"
+    moved = common / "development-r4-root-race-moved"
+    root.mkdir()
+    real_loader = model_module.load_development_example_supervised_segment
+    attacked = False
+    replacement_succeeded = False
+
+    def attacking_loader(**kwargs: Any) -> Any:
+        nonlocal attacked, replacement_succeeded
+        if not attacked:
+            attacked = True
+            try:
+                os.rename(root, moved)
+                root.mkdir()
+                replacement_succeeded = True
+            except OSError:
+                replacement_succeeded = False
+        return real_loader(**kwargs)
+
+    monkeypatch.setattr(
+        model_module,
+        "load_development_example_supervised_segment",
+        attacking_loader,
+    )
+    build_kwargs = {
+        "alignment": alignment,
+        "feature": feature,
+        "label": label,
+        "experiment": experiment,
+        "config": config,
+        "spec": spec,
+        "output_root": root,
+    }
+    if os.name == "nt":
+        build_development_example_model_artifact(**build_kwargs)
+        assert not replacement_succeeded
+        assert {path.name for path in root.iterdir()} == {
+            "model.txt",
+            "model.metadata.json",
+            "validation_curve.parquet",
+        }
+        assert not moved.exists()
+    else:
+        with pytest.raises(ValueError, match="^M3_MODEL_ARTIFACT_INVALID$"):
+            build_development_example_model_artifact(**build_kwargs)
+        assert replacement_succeeded
+        assert not any(root.iterdir()) and not any(moved.iterdir())
 
 
 def test_model_verifier_rejects_any_output_tamper(
