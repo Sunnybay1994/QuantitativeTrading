@@ -339,6 +339,7 @@ from quant.research.m3.targets import (
 )
 from quant.research.m3.tracking import (
     FormalTrackingFreshVerificationContext,
+    M3TrackingRemoteError,
     RemoteTrackingRunV1,
     TrackingClientProtocol,
     TrackingMarkerV1,
@@ -355,8 +356,8 @@ from quant.research.m3.tracking import (
     read_tracking_request,
     register_remote_tracking_run,
     register_tracking_request,
+    verify_tracking_remote,
 )
-
 __all__ = [
     "DatasetSnapshot",
     "DateSegment",
@@ -509,13 +510,37 @@ __all__ = [
     "VerifiedQualityArtifact",
     "run_quality_gate",
     "verify_quality_artifact",
+    "M3ReadinessEvidenceError",
+    "ReadinessEvidenceReportV1",
+    "VerifiedReadinessEvidenceArtifact",
+    "read_readiness_evidence_report",
+    "resolve_readiness_evidence_artifact",
+    "run_readiness_evidence_stage",
+    "verify_readiness_evidence_artifact",
+    "FormalAcceptanceStageResult",
+    "audit_formal_m3_acceptance",
+    "run_formal_acceptance_stage",
     "AcceptanceDecisionV1",
+    "AcceptanceEvidencePlanV1",
     "AcceptanceIssueV1",
     "EvidenceLocatorV1",
     "GateName",
     "GateResultV1",
+    "M3AcceptanceAuditError",
+    "M3AcceptancePlanError",
+    "M3AcceptanceWriteError",
     "RemoteTrackingObservationV1",
+    "VerifiedAcceptanceSubject",
+    "VerifiedComparisonIdentityV1",
     "VerifiedRuntimeIdentity",
+    "audit_m3_acceptance",
+    "build_acceptance_evidence_plan",
+    "compute_acceptance_key",
+    "resolve_acceptance_subject",
+    "M3AcceptanceUpstreamError",
+    "audit_acceptance_upstream",
+    "M3AcceptanceWorkError",
+    "audit_acceptance_work",
     "FormalTrackingFreshVerificationContext",
     "FormalTrackingStageResult",
     "build_formal_tracking_request",
@@ -679,6 +704,7 @@ __all__ = [
     "verify_target_artifact",
     "verify_development_example_target_artifact",
     "RemoteTrackingRunV1",
+    "M3TrackingRemoteError",
     "TrackingClientProtocol",
     "TrackingMarkerV1",
     "TrackingRequestV1",
@@ -690,6 +716,11 @@ __all__ = [
     "read_tracking_marker",
     "read_tracking_request",
     "register_tracking_request",
+    "verify_tracking_remote",
+    "AcceptanceTrackingAuditV1",
+    "M3AcceptanceTrackingError",
+    "TrackingVerifier",
+    "audit_acceptance_tracking",
     "rank_ic_by_date",
     "summarize_prediction_metrics",
     "compute_snapshot_request_key",
@@ -707,6 +738,13 @@ __all__ = [
 
 
 def __getattr__(name: str) -> object:
+    if name in {
+        "FormalAcceptanceStageResult",
+        "audit_formal_m3_acceptance",
+        "run_formal_acceptance_stage",
+    }:
+        module = importlib.import_module("quant.research.m3.acceptance_stage")
+        return getattr(module, name)
     if name in {
         "FormalBacktestStageResult",
         "make_formal_backtest_run_plan",
@@ -752,13 +790,54 @@ def __getattr__(name: str) -> object:
         return getattr(module, name)
     if name in {
         "AcceptanceDecisionV1",
+        "AcceptanceEvidencePlanV1",
         "AcceptanceIssueV1",
         "EvidenceLocatorV1",
         "GateName",
         "GateResultV1",
+        "M3AcceptanceAuditError",
+        "M3AcceptancePlanError",
+        "M3AcceptanceWriteError",
         "RemoteTrackingObservationV1",
+        "VerifiedAcceptanceSubject",
+        "VerifiedComparisonIdentityV1",
         "VerifiedRuntimeIdentity",
+        "audit_m3_acceptance",
+        "build_acceptance_evidence_plan",
+        "compute_acceptance_key",
+        "resolve_acceptance_subject",
     }:
         module = importlib.import_module("quant.research.m3.acceptance")
+        return getattr(module, name)
+    if name in {
+        "M3AcceptanceUpstreamError",
+        "audit_acceptance_upstream",
+    }:
+        module = importlib.import_module("quant.research.m3.acceptance_upstream")
+        return getattr(module, name)
+    if name in {
+        "M3AcceptanceWorkError",
+        "audit_acceptance_work",
+    }:
+        module = importlib.import_module("quant.research.m3.acceptance_work")
+        return getattr(module, name)
+    if name in {
+        "AcceptanceTrackingAuditV1",
+        "M3AcceptanceTrackingError",
+        "TrackingVerifier",
+        "audit_acceptance_tracking",
+    }:
+        module = importlib.import_module("quant.research.m3.acceptance_tracking")
+        return getattr(module, name)
+    if name in {
+        "M3ReadinessEvidenceError",
+        "ReadinessEvidenceReportV1",
+        "VerifiedReadinessEvidenceArtifact",
+        "read_readiness_evidence_report",
+        "resolve_readiness_evidence_artifact",
+        "run_readiness_evidence_stage",
+        "verify_readiness_evidence_artifact",
+    }:
+        module = importlib.import_module("quant.research.m3.readiness_evidence")
         return getattr(module, name)
     raise AttributeError(name)

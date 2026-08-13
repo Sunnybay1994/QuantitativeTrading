@@ -124,6 +124,10 @@ def test_snapshot_stage_first_publish_resume_and_final_verify(
     assert first.request_record_path.read_bytes()
     assert first.receipt_path.read_bytes()
     assert not any((common / "m3" / ".stage-tmp").iterdir())
+    lock_files = tuple((common / "m3" / ".stage-locks").glob("*/.writer.lock"))
+    assert len(lock_files) == 1
+    assert not lock_files[0].is_symlink()
+    assert lock_files[0].read_bytes() in {b"", b"\x00"}
 
     called = False
 
@@ -137,6 +141,7 @@ def test_snapshot_stage_first_publish_resume_and_final_verify(
     )
     assert second.reused is True
     assert called is False
+    assert tuple((common / "m3" / ".stage-locks").glob("*/.writer.lock")) == lock_files
     verified = verify_snapshot_artifact(
         snapshot_root=second.snapshot_root,
         snapshot_request_path=second.request_record_path,

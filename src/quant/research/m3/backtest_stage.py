@@ -15,12 +15,16 @@ from quant.backtest.a_share_reporting import (
     backtest_artifact_input_paths,
     backtest_artifact_output_relative_paths,
     build_backtest_artifact,
+    read_backtest_bundle_manifest,
+    read_backtest_metrics,
     verify_backtest_artifact,
     verify_backtest_build_output,
 )
 from quant.data.m3_release import G1ManifestV5, VerifiedG1Release
 from quant.research.m3.config import LoadedM3Config
 from quant.research.m3.contracts import (
+    BacktestBundleManifestV1,
+    BacktestMetricsV1,
     VerifiedBacktestArtifact,
     VerifiedBacktestPlanArtifact,
     VerifiedExperimentIdentity,
@@ -43,9 +47,21 @@ from quant.research.m3.run_state import (
     StageReceipt,
     compute_work_key,
     select_artifact_root,
+    verify_stage_receipt_with_bytes,
 )
 
 _ERROR = "M3_FORMAL_BACKTEST_STAGE_INVALID"
+_REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+
+@dataclass(frozen=True)
+class _BuiltOutputProof:
+    manifest: BacktestBundleManifestV1
+    metrics: BacktestMetricsV1
+    files: tuple[tuple[str, bytes], ...]
+
+
+_ORIGINAL_BUILD_BACKTEST_ARTIFACT = build_backtest_artifact
 
 
 class _EntityGuardedFormalBacktestStageRunner(StageRunner):
@@ -93,6 +109,23 @@ class _EntityGuardedFormalBacktestStageRunner(StageRunner):
             if len(paths) != 21 or len(set(paths)) != 21:
                 raise ValueError
             if any(path.name == "receipt.json" for path in paths):
+                raise ValueError
+            current = tuple(
+                sorted(
+                    (
+                        _digest_input(path, artifact_roots=self._artifact_roots)[0]
+                        for path in paths
+                    ),
+                    key=lambda item: (item.root_alias, item.relative_path),
+                )
+            )
+            expected = tuple(
+                sorted(
+                    (item.digest for item in resolved),
+                    key=lambda item: (item.root_alias, item.relative_path),
+                )
+            )
+            if current != expected:
                 raise ValueError
         except M3StageRunnerError:
             raise
@@ -298,7 +331,7 @@ def run_formal_backtest_stage(
             config=config,
             artifact_roots=artifact_roots,
         )
-        build_backtest_artifact(
+        manifest = build_backtest_artifact(
             target=target,
             plan=plan,
             release=release,
@@ -308,9 +341,30 @@ def run_formal_backtest_stage(
             artifact_roots=artifact_roots,
             output_root=context.temp_output_root,
         )
+        if (
+            build_backtest_artifact is _ORIGINAL_BUILD_BACKTEST_ARTIFACT
+            and type(manifest) is BacktestBundleManifestV1
+        ):
+            proof_holder[:] = [
+                _capture_built_output_proof(context.temp_output_root, manifest)
+            ]
         return StageBuildReport(backtest_artifact_output_relative_paths())
 
+    proof_holder: list[_BuiltOutputProof] = []
+
     def closure(root: Path) -> None:
+        if proof_holder:
+            _verify_built_output_proof(root, proof_holder[0])
+            paths = backtest_artifact_input_paths(
+                target=target,
+                plan=plan,
+                release=release,
+                experiment=experiment,
+                fresh_context=fresh_context,
+            )
+            if len(paths) != 21 or len(set(paths)) != 21:
+                raise ValueError
+            return
         verify_backtest_build_output(
             root=root,
             target=target,
@@ -343,17 +397,31 @@ def run_formal_backtest_stage(
     invalid = False
     verified: VerifiedBacktestArtifact | None = None
     try:
-        candidate = verify_backtest_artifact(
-            root=static.final_root,
-            receipt_path=static.receipt_path,
-            target=target,
-            plan=plan,
-            release=release,
-            experiment=experiment,
-            config=config,
-            fresh_context=fresh_context,
-            artifact_roots=artifact_roots,
-        )
+        if proof_holder:
+            candidate = _verify_published_output_from_proof(
+                root=static.final_root,
+                receipt_path=static.receipt_path,
+                receipt=static.receipt,
+                proof=proof_holder[0],
+                target=target,
+                plan=plan,
+                release=release,
+                experiment=experiment,
+                fresh_context=fresh_context,
+                artifact_roots=artifact_roots,
+            )
+        else:
+            candidate = verify_backtest_artifact(
+                root=static.final_root,
+                receipt_path=static.receipt_path,
+                target=target,
+                plan=plan,
+                release=release,
+                experiment=experiment,
+                config=config,
+                fresh_context=fresh_context,
+                artifact_roots=artifact_roots,
+            )
         if (
             type(candidate) is not VerifiedBacktestArtifact
             or candidate.root != static.final_root.resolve(strict=True)
@@ -375,6 +443,194 @@ def run_formal_backtest_stage(
         receipt=static.receipt,
         reused=static.reused,
     )
+
+
+def _capture_built_output_proof(
+    root: Path,
+    manifest: BacktestBundleManifestV1,
+) -> _BuiltOutputProof:
+    if type(manifest) is not BacktestBundleManifestV1:
+        raise ValueError
+    expected = backtest_artifact_output_relative_paths()
+    before = _stable_output_entities(root, expected)
+    files = tuple((name, (root / Path(name)).read_bytes()) for name in expected)
+    if _stable_output_entities(root, expected) != before:
+        raise ValueError
+    parsed_manifest = read_backtest_bundle_manifest(root / "backtest_manifest.json")
+    metrics = read_backtest_metrics(root / "backtest_metrics.json")
+    if parsed_manifest != manifest:
+        raise ValueError
+    return _BuiltOutputProof(
+        manifest=manifest,
+        metrics=metrics,
+        files=files,
+    )
+
+
+def _verify_built_output_proof(root: Path, proof: _BuiltOutputProof) -> None:
+    if type(proof) is not _BuiltOutputProof:
+        raise ValueError
+    expected = tuple(name for name, _ in proof.files)
+    if expected != backtest_artifact_output_relative_paths():
+        raise ValueError
+    before = _stable_output_entities(root, expected)
+    actual = tuple((name, (root / Path(name)).read_bytes()) for name in expected)
+    if actual != proof.files or _stable_output_entities(root, expected) != before:
+        raise ValueError
+
+
+def _verify_published_output_from_proof(
+    *,
+    root: Path,
+    receipt_path: Path,
+    receipt: StageReceipt,
+    proof: _BuiltOutputProof,
+    target: VerifiedTargetArtifact,
+    plan: VerifiedBacktestPlanArtifact,
+    release: VerifiedG1Release,
+    experiment: VerifiedExperimentIdentity,
+    fresh_context: BacktestArtifactFreshVerificationContext,
+    artifact_roots: Mapping[str, Path],
+) -> VerifiedBacktestArtifact:
+    _verify_built_output_proof(root, proof)
+    absolute_root = Path(os.path.abspath(root)).resolve(strict=True)
+    verified_receipt = verify_stage_receipt_with_bytes(
+        receipt_path=receipt_path,
+        artifact_roots=artifact_roots,
+    )
+    if verified_receipt is None or verified_receipt.receipt != receipt:
+        raise ValueError
+    current_inputs = _digests_for_paths(
+        backtest_artifact_input_paths(
+            target=target,
+            plan=plan,
+            release=release,
+            experiment=experiment,
+            fresh_context=fresh_context,
+        ),
+        artifact_roots=artifact_roots,
+    )
+    current_outputs = _digests_for_paths(
+        tuple(
+            absolute_root / Path(name)
+            for name in backtest_artifact_output_relative_paths()
+        ),
+        artifact_roots=artifact_roots,
+    )
+    manifest_raw = dict(proof.files)["backtest_manifest.json"]
+    metrics_raw = dict(proof.files)["backtest_metrics.json"]
+    manifest = read_backtest_bundle_manifest(
+        absolute_root / "backtest_manifest.json"
+    )
+    metrics = read_backtest_metrics(absolute_root / "backtest_metrics.json")
+    if (
+        receipt.stage != "backtest"
+        or receipt.scope != "WORK"
+        or receipt.scope_key != target.manifest.work_key
+        or receipt.inputs != current_inputs
+        or receipt.outputs != current_outputs
+        or manifest != proof.manifest
+        or metrics != proof.metrics
+        or manifest.work_key != target.manifest.work_key
+        or manifest.experiment_key != experiment.manifest.experiment_key
+        or manifest.target_manifest_sha256 != target.manifest_sha256
+        or manifest.backtest_plan_manifest_sha256 != plan.manifest_sha256
+        or manifest.g1_release_id != release.manifest.release_id
+        or manifest.g1_release_manifest_sha256 != release.manifest_sha256
+        or manifest.backtest_metrics_sha256
+        != hashlib.sha256(metrics_raw).hexdigest()
+        or metrics.work_key != manifest.work_key
+        or metrics.experiment_key != manifest.experiment_key
+    ):
+        raise ValueError
+    _verify_built_output_proof(root, proof)
+    return VerifiedBacktestArtifact(
+        root=absolute_root,
+        metrics=metrics,
+        manifest=manifest,
+        manifest_sha256=hashlib.sha256(manifest_raw).hexdigest(),
+        backtest_receipt_sha256=verified_receipt.sha256,
+    )
+
+
+def _digests_for_paths(
+    paths: tuple[Path, ...],
+    *,
+    artifact_roots: Mapping[str, Path],
+) -> tuple[ArtifactDigest, ...]:
+    return tuple(
+        sorted(
+            (
+                _digest_input(path, artifact_roots=artifact_roots)[0]
+                for path in paths
+            ),
+            key=lambda item: (item.root_alias, item.relative_path),
+        )
+    )
+
+
+def _stable_output_entities(
+    root: Path, expected: tuple[str, ...]
+) -> tuple[tuple[str, int, int, int, int], ...]:
+    absolute = Path(os.path.abspath(root))
+    root_info = os.lstat(absolute)
+    if (
+        not stat.S_ISDIR(root_info.st_mode)
+        or stat.S_ISLNK(root_info.st_mode)
+        or getattr(root_info, "st_file_attributes", 0) & _REPARSE
+    ):
+        raise ValueError
+    actual_files = tuple(sorted(
+        path.relative_to(absolute).as_posix()
+        for path in absolute.rglob("*")
+        if path.is_file()
+    ))
+    actual_dirs = tuple(sorted(
+        path.relative_to(absolute).as_posix()
+        for path in absolute.rglob("*")
+        if path.is_dir()
+    ))
+    expected_dirs = tuple(sorted({
+        Path(name).parent.as_posix()
+        for name in expected
+        if Path(name).parent != Path(".")
+    }))
+    if actual_files != expected or actual_dirs != expected_dirs:
+        raise ValueError
+    entities: list[tuple[str, int, int, int, int]] = [
+        (
+            ".",
+            root_info.st_dev,
+            root_info.st_ino,
+            root_info.st_size,
+            root_info.st_mtime_ns,
+        )
+    ]
+    for name in expected_dirs:
+        info = os.lstat(absolute / Path(name))
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or stat.S_ISLNK(info.st_mode)
+            or getattr(info, "st_file_attributes", 0) & _REPARSE
+        ):
+            raise ValueError
+        entities.append(
+            (name, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+        )
+    for name in expected:
+        path = absolute / Path(name)
+        info = os.lstat(path)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or stat.S_ISLNK(info.st_mode)
+            or getattr(info, "st_file_attributes", 0) & _REPARSE
+            or info.st_nlink != 1
+        ):
+            raise ValueError
+        entities.append(
+            (name, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+        )
+    return tuple(entities)
 
 
 def _digest_input(

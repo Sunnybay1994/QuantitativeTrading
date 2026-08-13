@@ -91,6 +91,16 @@ class AShareSimulationResult:
             raise ValueError("A-share simulation result invalid")
 
 
+@dataclass(frozen=True)
+class _PreparedFormalSimulation:
+    scheduled: pl.DataFrame
+    bars: pl.DataFrame
+    suspensions: pl.DataFrame
+    reconciliation: pl.DataFrame
+    input_market_facts_sha256: str
+    sessions: tuple[dt.date, ...]
+
+
 _FORMAL_SIMULATION_ERROR = "M3_A_SHARE_SIMULATION_INVALID"
 
 
@@ -431,27 +441,73 @@ def simulate_formal_a_share_scenario(
     raise AShareSimulationError(_FORMAL_SIMULATION_ERROR) from None
 
 
-def _simulate_formal_a_share_scenario(
+def simulate_formal_a_share_scenarios(
     *,
     target: VerifiedTargetArtifact,
     plan: VerifiedBacktestPlanArtifact,
     facts: VerifiedAShareMarketFacts,
     cost_periods: tuple[AShareCostPeriod, ...],
-    multiplier: Decimal,
+    multipliers: tuple[Decimal, ...],
     initial_cash: Decimal,
     fresh_context: AShareSimulationFreshVerificationContext,
     artifact_roots: Mapping[str, Path],
-) -> AShareSimulationResult:
-    _validate_formal_outer(
-        target=target,
-        plan=plan,
-        facts=facts,
-        cost_periods=cost_periods,
-        multiplier=multiplier,
-        initial_cash=initial_cash,
-        fresh_context=fresh_context,
-        artifact_roots=artifact_roots,
-    )
+) -> tuple[AShareSimulationResult, ...]:
+    """Replay multiple cost scenarios after one common fresh input preparation."""
+    try:
+        with localcontext(_FORMAL_DECIMAL_CONTEXT):
+            if (
+                type(multipliers) is not tuple
+                or not multipliers
+                or multipliers != tuple(sorted(set(multipliers)))
+            ):
+                raise ValueError
+            for multiplier in multipliers:
+                _validate_formal_outer(
+                    target=target,
+                    plan=plan,
+                    facts=facts,
+                    cost_periods=cost_periods,
+                    multiplier=multiplier,
+                    initial_cash=initial_cash,
+                    fresh_context=fresh_context,
+                    artifact_roots=artifact_roots,
+                )
+            prepared = _prepare_formal_simulation(
+                target=target,
+                plan=plan,
+                facts=facts,
+                cost_periods=cost_periods,
+                fresh_context=fresh_context,
+                artifact_roots=artifact_roots,
+            )
+            return tuple(
+                _simulate_formal_a_share_scenario(
+                    target=target,
+                    plan=plan,
+                    facts=facts,
+                    cost_periods=cost_periods,
+                    multiplier=multiplier,
+                    initial_cash=initial_cash,
+                    fresh_context=fresh_context,
+                    artifact_roots=artifact_roots,
+                    _prepared=prepared,
+                )
+                for multiplier in multipliers
+            )
+    except Exception:
+        pass
+    raise AShareSimulationError(_FORMAL_SIMULATION_ERROR) from None
+
+
+def _prepare_formal_simulation(
+    *,
+    target: VerifiedTargetArtifact,
+    plan: VerifiedBacktestPlanArtifact,
+    facts: VerifiedAShareMarketFacts,
+    cost_periods: tuple[AShareCostPeriod, ...],
+    fresh_context: AShareSimulationFreshVerificationContext,
+    artifact_roots: Mapping[str, Path],
+) -> _PreparedFormalSimulation:
     facts_context = fresh_context.facts_fresh_context
     fresh_plan = verify_backtest_plan_artifact(
         root=plan.root,
@@ -478,28 +534,28 @@ def _simulate_formal_a_share_scenario(
         != fresh_plan.plan_receipt_sha256
     ):
         raise ValueError
-    instruments = facts.instruments
-    calendar = facts.calendar
-    bars = facts.bars
-    limits = facts.limits
-    suspensions = facts.suspensions
-    corporate_actions = facts.corporate_actions
-    reconciliation = facts.corporate_action_reconciliation
-    benchmark = facts.benchmark_bars
-    if any(
-        type(frame) is not pl.DataFrame
-        for frame in (
-            instruments,
-            calendar,
-            bars,
-            limits,
-            suspensions,
-            corporate_actions,
-            reconciliation,
-            benchmark,
-        )
-    ):
+    frames = (
+        facts.instruments,
+        facts.calendar,
+        facts.bars,
+        facts.limits,
+        facts.suspensions,
+        facts.corporate_actions,
+        facts.corporate_action_reconciliation,
+        facts.benchmark_bars,
+    )
+    if any(type(frame) is not pl.DataFrame for frame in frames):
         raise ValueError
+    (
+        _instruments,
+        calendar,
+        bars,
+        _limits,
+        suspensions,
+        _corporate_actions,
+        reconciliation,
+        benchmark,
+    ) = frames
     sessions = _validate_formal_session_domain(
         fresh_plan=fresh_plan,
         scheduled=scheduled,
@@ -507,6 +563,51 @@ def _simulate_formal_a_share_scenario(
         benchmark=benchmark,
         cost_periods=cost_periods,
     )
+    return _PreparedFormalSimulation(
+        scheduled=scheduled,
+        bars=bars,
+        suspensions=suspensions,
+        reconciliation=reconciliation,
+        input_market_facts_sha256=identity.input_market_facts_sha256,
+        sessions=sessions,
+    )
+
+
+def _simulate_formal_a_share_scenario(
+    *,
+    target: VerifiedTargetArtifact,
+    plan: VerifiedBacktestPlanArtifact,
+    facts: VerifiedAShareMarketFacts,
+    cost_periods: tuple[AShareCostPeriod, ...],
+    multiplier: Decimal,
+    initial_cash: Decimal,
+    fresh_context: AShareSimulationFreshVerificationContext,
+    artifact_roots: Mapping[str, Path],
+    _prepared: _PreparedFormalSimulation | None = None,
+) -> AShareSimulationResult:
+    _validate_formal_outer(
+        target=target,
+        plan=plan,
+        facts=facts,
+        cost_periods=cost_periods,
+        multiplier=multiplier,
+        initial_cash=initial_cash,
+        fresh_context=fresh_context,
+        artifact_roots=artifact_roots,
+    )
+    prepared = _prepared or _prepare_formal_simulation(
+        target=target,
+        plan=plan,
+        facts=facts,
+        cost_periods=cost_periods,
+        fresh_context=fresh_context,
+        artifact_roots=artifact_roots,
+    )
+    scheduled = prepared.scheduled
+    bars = prepared.bars
+    suspensions = prepared.suspensions
+    reconciliation = prepared.reconciliation
+    sessions = prepared.sessions
     replay = initialize_formal_a_share_entitlement_replay(facts=facts)
     cash = initial_cash
     positions: PositionBook = ()
@@ -593,7 +694,7 @@ def _simulate_formal_a_share_scenario(
             or transition.pre_trade_positions != positions
             or transition.pre_trade_equity != pre_trade_equity
             or transition.input_market_facts_sha256
-            != identity.input_market_facts_sha256
+            != prepared.input_market_facts_sha256
         ):
             raise ValueError
         reference_opens = transition.reference_opens
@@ -1477,4 +1578,5 @@ __all__ = [
     "AShareSimulationResult",
     "simulate_a_share_scenario",
     "simulate_formal_a_share_scenario",
+    "simulate_formal_a_share_scenarios",
 ]

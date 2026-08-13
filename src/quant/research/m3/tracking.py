@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from quant.backtest.a_share_reporting import (
         BacktestArtifactFreshVerificationContext,
     )
+    from quant.research.m3.acceptance import RemoteTrackingObservationV1
 
 _HEX64 = frozenset("0123456789abcdef")
 _REQUEST_KEYS = (
@@ -123,7 +124,15 @@ _FORMAL_SCENARIO_ORDER: tuple[Literal["0p5x", "1p0x", "2p0x"], ...] = (
     "2p0x",
 )
 _FORMAL_CONTEXT_ERROR = "M3_FORMAL_TRACKING_CONTEXT_INVALID"
+_REMOTE_VERIFY_ERROR = "M3_TRACKING_REMOTE_INVALID"
 TrackingStatus = Literal["RUNNING", "FINISHED", "FAILED", "KILLED"]
+
+
+class M3TrackingRemoteError(ValueError):
+    """Stable, redacted failure for read-only remote tracking verification."""
+
+    def __init__(self) -> None:
+        super().__init__(_REMOTE_VERIFY_ERROR)
 
 
 @dataclass(frozen=True)
@@ -463,6 +472,83 @@ def read_tracking_marker(path: Path) -> TrackingMarkerV1:
     if raw != _canonical_bytes(asdict(marker)):
         raise ValueError("tracking marker is not canonical")
     return marker
+
+
+def verify_tracking_remote(
+    *,
+    marker: TrackingMarkerV1,
+    request: TrackingRequestV1,
+    experiment_name: str,
+    client: TrackingClientProtocol,
+) -> RemoteTrackingObservationV1:
+    """Read one exact FINISHED remote run without creating or mutating it."""
+
+    result: RemoteTrackingObservationV1 | None = None
+    failed = False
+    try:
+        if (
+            type(marker) is not TrackingMarkerV1
+            or type(request) is not TrackingRequestV1
+            or type(experiment_name) is not str
+            or not experiment_name
+            or experiment_name != experiment_name.strip()
+            or not callable(getattr(client, "find_runs", None))
+        ):
+            raise ValueError
+        request_sha = hashlib.sha256(
+            _canonical_bytes(_request_mapping(request))
+        ).hexdigest()
+        tracking_key = compute_tracking_key(
+            work_key=request.work_key,
+            request_sha256=request_sha,
+        )
+        artifact_sha = _artifact_digest_sha256(request.artifacts)
+        if (
+            marker.tracking_target_key != request.tracking_target_key
+            or marker.tracking_key != tracking_key
+            or marker.request_sha256 != request_sha
+            or marker.artifact_digest_sha256 != artifact_sha
+        ):
+            raise ValueError
+        matches = tuple(
+            client.find_runs(
+                experiment_name=experiment_name,
+                tracking_key=tracking_key,
+            )
+        )
+        if len(matches) != 1:
+            raise ValueError
+        run = matches[0]
+        expected_tags = {
+            **dict(request.tags),
+            "quant_tracking_key": tracking_key,
+            "quant_tracking_target_key": request.tracking_target_key,
+            "quant_request_sha256": request_sha,
+            "quant_artifact_digest_sha256": artifact_sha,
+            "quant_work_key": request.work_key,
+        }
+        _validate_remote_run(run, expected_tags)
+        if run.run_id != marker.mlflow_run_id:
+            raise ValueError
+        from quant.research.m3.acceptance import RemoteTrackingObservationV1
+
+        result = RemoteTrackingObservationV1(
+            work_key=request.work_key,
+            tracking_target_key=request.tracking_target_key,
+            tracking_key=tracking_key,
+            run_id=run.run_id,
+            status="FINISHED",
+            request_sha256=request_sha,
+            artifact_digest_sha256=artifact_sha,
+        )
+    except Exception:
+        failed = True
+    if failed or result is None:
+        error = M3TrackingRemoteError()
+        error.__cause__ = None
+        error.__context__ = None
+        raise error from None
+    return result
 
 
 def register_tracking_request(

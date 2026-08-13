@@ -512,14 +512,33 @@ def _runtime(
 
 
 def _quality_key(runtime: M3RuntimeIdentityV1, config: LoadedM3Config) -> str:
+    return compute_quality_key(
+        code_version=runtime.code_version,
+        dependency_fingerprint_sha256=runtime.dependency_fingerprint_sha256,
+        full_config_sha256=config.full_config_sha256,
+    )
+
+
+def compute_quality_key(
+    *, code_version: str, dependency_fingerprint_sha256: str,
+    full_config_sha256: str,
+) -> str:
+    """Return the single public G9A quality artifact identity formula."""
+    if (
+        type(code_version) is not str
+        or not code_version
+        or _HEX64.fullmatch(dependency_fingerprint_sha256) is None
+        or _HEX64.fullmatch(full_config_sha256) is None
+    ):
+        _fail(_CODE)
     return hashlib.sha256(
         _canonical_bytes(
             [
                 "m3-quality-key-v1",
                 _POLICY,
-                runtime.code_version,
-                runtime.dependency_fingerprint_sha256,
-                config.full_config_sha256,
+                code_version,
+                dependency_fingerprint_sha256,
+                full_config_sha256,
             ]
         )
     ).hexdigest()
