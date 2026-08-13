@@ -339,6 +339,7 @@ from quant.research.m3.targets import (
 )
 from quant.research.m3.tracking import (
     FormalTrackingFreshVerificationContext,
+    M3TrackingRemoteError,
     RemoteTrackingRunV1,
     TrackingClientProtocol,
     TrackingMarkerV1,
@@ -355,8 +356,8 @@ from quant.research.m3.tracking import (
     read_tracking_request,
     register_remote_tracking_run,
     register_tracking_request,
+    verify_tracking_remote,
 )
-
 __all__ = [
     "DatasetSnapshot",
     "DateSegment",
@@ -695,6 +696,7 @@ __all__ = [
     "verify_target_artifact",
     "verify_development_example_target_artifact",
     "RemoteTrackingRunV1",
+    "M3TrackingRemoteError",
     "TrackingClientProtocol",
     "TrackingMarkerV1",
     "TrackingRequestV1",
@@ -706,6 +708,11 @@ __all__ = [
     "read_tracking_marker",
     "read_tracking_request",
     "register_tracking_request",
+    "verify_tracking_remote",
+    "AcceptanceTrackingAuditV1",
+    "M3AcceptanceTrackingError",
+    "TrackingVerifier",
+    "audit_acceptance_tracking",
     "rank_ic_by_date",
     "summarize_prediction_metrics",
     "compute_snapshot_request_key",
@@ -794,6 +801,14 @@ def __getattr__(name: str) -> object:
         "audit_acceptance_work",
     }:
         module = importlib.import_module("quant.research.m3.acceptance_work")
+        return getattr(module, name)
+    if name in {
+        "AcceptanceTrackingAuditV1",
+        "M3AcceptanceTrackingError",
+        "TrackingVerifier",
+        "audit_acceptance_tracking",
+    }:
+        module = importlib.import_module("quant.research.m3.acceptance_tracking")
         return getattr(module, name)
     if name in {
         "M3ReadinessEvidenceError",
