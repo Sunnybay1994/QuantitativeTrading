@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import json
+import hashlib
 from pathlib import Path
 
 import polars as pl
@@ -13,7 +14,10 @@ from quant.research.m3.features import (
     feature_schema_sha256,
     feature_segment_content_sha256,
 )
-from quant.research.m3.qlib_adapter import build_development_example_alpha158
+from quant.research.m3.qlib_adapter import (
+    build_development_example_alpha158,
+    build_formal_alpha158,
+)
 
 
 def test_f64_matrix_digest_is_stable_for_nan_and_preserves_signed_zero() -> None:
@@ -79,11 +83,17 @@ def test_development_feature_worker_emits_strict_158_shape(tmp_path: Path) -> No
         "provider_key": "1" * 64,
         "provider_manifest_sha256": "2" * 64,
         "provider_receipt_sha256": "3" * 64,
+        "provider_uri_sha256": hashlib.sha256(
+            json.dumps(
+                ["1" * 64, "provider"], separators=(",", ":")
+            ).encode()
+        ).hexdigest(),
         "fold": "fold_001",
         "planned_fold_sha256": "4" * 64,
         "scientific_config_sha256": "5" * 64,
         "feature_version": "alpha158_v1",
         "qlib_version": "0.9.7",
+        "history_start": "2025-10-01",
         "segments": {
             "train": ["2026-01-05"],
             "validation": ["2026-01-06"],
@@ -111,3 +121,29 @@ def test_development_feature_worker_emits_strict_158_shape(tmp_path: Path) -> No
     assert train["ALPHA158"].null_count() == train.height
     assert len(response["input_names"]) == len(response["expressions"]) == 158
     assert response["release_kind"] == "development_example"
+
+    formal = {
+        **request,
+        "release_kind": "formal",
+        "formal_gate_eligible": True,
+    }
+    formal_path = tmp_path / "formal-request.json"
+    formal_output = tmp_path / "formal-output"
+    formal_output.mkdir()
+    formal_path.write_text(
+        json.dumps(formal, sort_keys=True, separators=(",", ":")), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="feature worker identity invalid"):
+        build_formal_alpha158(formal_path, formal_output)
+    assert not any(formal_output.iterdir())
+
+    formal.pop("example_id")
+    formal["provider_uri_sha256"] = "0" * 64
+    formal_path.write_text(
+        json.dumps(formal, sort_keys=True, separators=(",", ":")), encoding="utf-8"
+    )
+    before = {name for name in __import__("sys").modules if name.startswith("qlib")}
+    with pytest.raises(ValueError, match="feature worker identity invalid"):
+        build_formal_alpha158(formal_path, formal_output)
+    after = {name for name in __import__("sys").modules if name.startswith("qlib")}
+    assert after == before

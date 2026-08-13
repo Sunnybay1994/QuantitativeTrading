@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import traceback
@@ -34,7 +35,11 @@ from quant.research.m3.labels import (
     verify_development_example_experiment_identity,
     verify_development_example_label_artifact,
 )
-from quant.research.m3.run_state import publish_stage_receipt, verify_stage_receipt
+from quant.research.m3.run_state import (
+    path_for_artifact_digest,
+    publish_stage_receipt,
+    verify_stage_receipt,
+)
 
 _SUPPORT_SPEC = importlib.util.spec_from_file_location(
     "m3_provider_validation_test_support",
@@ -229,6 +234,195 @@ def test_development_label_artifact_closed_loop(
     assert set(path.name for path in root.iterdir()) == {
         "labels.parquet", "diagnostics.parquet", "label_manifest.json",
     }
+
+
+def test_label_consumer_resolves_experiment_receipt_from_distinct_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    common, release, snapshot, provider, config, identity_spec, _ = (
+        _experiment(tmp_path, monkeypatch)
+    )
+    initial_roots = {
+        "root": common,
+        "EXTERNAL_QLIB": common.parent / "external_qlib",
+    }
+    old_provider_receipt = (
+        common / "receipts" / "development-provider"
+        / f"{provider.manifest.provider_key}.json"
+    )
+    old_provider_stage = verify_stage_receipt(
+        receipt_path=old_provider_receipt,
+        artifact_roots=initial_roots,
+    )
+    assert old_provider_stage is not None
+    provider_artifacts = tmp_path / "development-example-provider-artifacts"
+    provider_root = provider_artifacts / provider.root.name
+    shutil.copytree(provider.root, provider_root)
+    roots = {**initial_roots, "provider": provider_artifacts}
+    provider_receipt = (
+        provider_artifacts / "receipts" / "development-provider"
+        / f"{provider.manifest.provider_key}.json"
+    )
+    provider_receipt.parent.mkdir(parents=True)
+    publish_stage_receipt(
+        receipt_path=provider_receipt,
+        stage="development-provider",
+        scope="PROVIDER",
+        scope_key=provider.manifest.provider_key,
+        artifact_roots=roots,
+        inputs=[
+            (
+                item.root_alias,
+                path_for_artifact_digest(item, artifact_roots=initial_roots),
+            )
+            for item in old_provider_stage.inputs
+        ],
+        outputs=[
+            (
+                "provider",
+                provider_root
+                / path_for_artifact_digest(
+                    item, artifact_roots=initial_roots
+                ).relative_to(provider.root),
+            )
+            for item in old_provider_stage.outputs
+        ],
+    )
+    old_provider_receipt.unlink()
+    provider = replace(
+        provider,
+        root=provider_root,
+        qlib_dir=provider_root / "provider",
+        provider_receipt_sha256=hashlib.sha256(
+            provider_receipt.read_bytes()
+        ).hexdigest(),
+    )
+    experiment_key = compute_development_experiment_key(
+        example_id=snapshot.example_id,
+        snapshot_id=snapshot.manifest.snapshot_id,
+        provider_receipt_sha256=provider.provider_receipt_sha256,
+        scientific_config_sha256=config.scientific_config_sha256,
+        code_version=identity_spec.code_version,
+        dependency_fingerprint_sha256=(
+            identity_spec.dependency_fingerprint_sha256
+        ),
+    )
+    manifest = ExperimentIdentityManifestV1(
+        schema_version="m3-experiment-identity-v1",
+        experiment_key=experiment_key,
+        snapshot_id=snapshot.manifest.snapshot_id,
+        snapshot_manifest_sha256=snapshot.manifest_sha256,
+        provider_key=provider.manifest.provider_key,
+        provider_manifest_sha256=provider.manifest_sha256,
+        provider_receipt_sha256=provider.provider_receipt_sha256,
+        scientific_config_sha256=config.scientific_config_sha256,
+        dependency_fingerprint_sha256=(
+            identity_spec.dependency_fingerprint_sha256
+        ),
+        code_version=identity_spec.code_version,
+    )
+    experiment_artifacts = tmp_path / "development-example-experiment-artifacts"
+    experiment_root = experiment_artifacts / "development-example-experiment"
+    experiment_root.mkdir(parents=True)
+    (experiment_root / "experiment_manifest.json").write_bytes(
+        _canonical(asdict(manifest))
+    )
+    experiment_receipt = (
+        experiment_artifacts
+        / "receipts"
+        / "development-experiment-identity"
+        / f"{manifest.experiment_key}.json"
+    )
+    experiment_receipt.parent.mkdir(parents=True)
+    roots = {**roots, "experiment": experiment_artifacts}
+    publish_stage_receipt(
+        receipt_path=experiment_receipt,
+        stage="development-experiment-identity",
+        scope="EXPERIMENT",
+        scope_key=manifest.experiment_key,
+        artifact_roots=roots,
+        inputs=[
+            (
+                "root",
+                common / "receipts" / "development-snapshot"
+                / f"{snapshot.request.snapshot_request_key}.json",
+            ),
+            ("root", snapshot.root / "manifest.json"),
+            (
+                "provider",
+                provider_receipt,
+            ),
+            ("provider", provider.root / "provider_manifest.json"),
+        ],
+        outputs=[("experiment", experiment_root / "experiment_manifest.json")],
+    )
+    experiment = verify_development_example_experiment_identity(
+        experiment_root=experiment_root,
+        experiment_receipt_path=experiment_receipt,
+        snapshot=snapshot,
+        provider=provider,
+        config=config,
+        spec=identity_spec,
+        artifact_roots=roots,
+    )
+
+    spec = _label_spec(config, experiment)
+    label_root = common / "development-example-label-split-experiment"
+    label_root.mkdir()
+    build_development_example_label_artifact(
+        release=release,
+        snapshot=snapshot,
+        experiment=experiment,
+        config=config,
+        experiment_spec=identity_spec,
+        spec=spec,
+        output_root=label_root,
+    )
+    label_receipt = (
+        common / "receipts" / "development-labels"
+        / f"{experiment.manifest.experiment_key}-split.json"
+    )
+    label_receipt.parent.mkdir(parents=True, exist_ok=True)
+    paths = dict(release.artifact_paths)
+    snapshot_receipt = (
+        common / "receipts" / "development-snapshot"
+        / f"{snapshot.request.snapshot_request_key}.json"
+    )
+    publish_stage_receipt(
+        receipt_path=label_receipt,
+        stage="development-labels",
+        scope="EXPERIMENT",
+        scope_key=experiment.manifest.experiment_key,
+        artifact_roots=roots,
+        inputs=[
+            ("experiment", experiment_receipt),
+            ("experiment", experiment.root / "experiment_manifest.json"),
+            ("root", release.release.manifest_path),
+            ("root", paths["bar_1d.parquet"]),
+            ("root", paths["benchmark_bar_1d.parquet"]),
+            ("root", paths["eligible_keys.parquet"]),
+            ("root", snapshot_receipt),
+            ("root", snapshot.root / "manifest.json"),
+            ("root", snapshot.session_calendar_path),
+        ],
+        outputs=[
+            ("root", label_root / "labels.parquet"),
+            ("root", label_root / "diagnostics.parquet"),
+            ("root", label_root / "label_manifest.json"),
+        ],
+    )
+    verified = verify_development_example_label_artifact(
+        label_root=label_root,
+        label_receipt_path=label_receipt,
+        release=release,
+        snapshot=snapshot,
+        experiment=experiment,
+        config=config,
+        experiment_spec=identity_spec,
+        spec=spec,
+        artifact_roots=roots,
+    )
+    assert verified.manifest.experiment_key == experiment.manifest.experiment_key
 
 
 def test_artifact_root_inference_accepts_non_root_alias(tmp_path: Path) -> None:

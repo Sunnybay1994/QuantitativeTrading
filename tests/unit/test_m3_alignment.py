@@ -19,17 +19,28 @@ import pytest
 import quant.research.m3 as m3_public
 import quant.research.m3.alignment as alignment_module
 from quant.research.m3.alignment import (
+    build_alignment_artifact,
     build_development_example_alignment_artifact,
     build_development_example_inference_segment,
+    build_inference_segment,
     load_development_example_supervised_segment,
+    load_supervised_segment,
+    verify_alignment_artifact,
     verify_development_example_alignment_artifact,
 )
 from quant.research.m3.contracts import (
     AlignmentBuildSpec,
     AlignmentUpstreamPaths,
     InferenceUpstreamPaths,
+    VerifiedAlignmentArtifact,
+    VerifiedExperimentIdentity,
     VerifiedFeatureArtifact,
+    VerifiedFoldPlanArtifact,
+    VerifiedLabelArtifact,
+    VerifiedProviderArtifact,
+    VerifiedSnapshotArtifact,
 )
+from quant.data.m3_release import VerifiedG1Release
 from quant.research.m3.development_example import (
     VerifiedDevelopmentExampleAlignmentArtifact,
 )
@@ -246,6 +257,34 @@ def _scorable(frame: pl.DataFrame, selected: tuple[str, ...]) -> pl.DataFrame:
     )
 
 
+def _formal_nominals(bundle: tuple[Any, ...]) -> tuple[Any, ...]:
+    feature_bundle, feature, label, *_ = bundle
+    experiment = feature_bundle[9]
+    folds = feature_bundle[11]
+    return (
+        VerifiedFeatureArtifact(
+            root=feature.root, manifest=feature.manifest,
+            manifest_sha256=feature.manifest_sha256,
+            feature_receipt_sha256=feature.feature_receipt_sha256,
+        ),
+        VerifiedLabelArtifact(
+            root=label.root, labels=label.labels, diagnostics=label.diagnostics,
+            manifest=label.manifest, manifest_sha256=label.manifest_sha256,
+            label_receipt_sha256=label.label_receipt_sha256,
+        ),
+        VerifiedFoldPlanArtifact(
+            root=folds.root, manifest=folds.manifest,
+            manifest_sha256=folds.manifest_sha256,
+            folds_receipt_sha256=folds.folds_receipt_sha256,
+        ),
+        VerifiedExperimentIdentity(
+            root=experiment.root, manifest=experiment.manifest,
+            manifest_sha256=experiment.manifest_sha256,
+            experiment_receipt_sha256=experiment.experiment_receipt_sha256,
+        ),
+    )
+
+
 def test_package_root_exports_alignment_without_heavy_imports() -> None:
     assert m3_public.AlignmentBuildSpec is AlignmentBuildSpec
     assert m3_public.AlignmentUpstreamPaths is AlignmentUpstreamPaths
@@ -256,6 +295,12 @@ def test_package_root_exports_alignment_without_heavy_imports() -> None:
     parameters = inspect.signature(build_development_example_inference_segment).parameters
     forbidden = {"label", "labels", "label_artifact", "horizon", "cutoff"}
     assert forbidden.isdisjoint(parameters)
+    formal_parameters = inspect.signature(build_inference_segment).parameters
+    assert forbidden.isdisjoint(formal_parameters)
+    assert m3_public.build_alignment_artifact is build_alignment_artifact
+    assert m3_public.verify_alignment_artifact is verify_alignment_artifact
+    assert m3_public.load_supervised_segment is load_supervised_segment
+    assert m3_public.build_inference_segment is build_inference_segment
 
 
 def test_alignment_closed_loop_one_to_one_cutoff_and_loaders(
@@ -350,6 +395,152 @@ def test_alignment_closed_loop_one_to_one_cutoff_and_loaders(
         )
         expected_missing += scorable.join(label_keys, on=["as_of", "symbol"], how="anti").height
     assert missing.height == expected_missing
+
+
+def test_formal_alignment_verify_load_and_label_free_inference(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _build_alignment_bundle(tmp_path, monkeypatch)
+    feature_bundle, _, _, label_spec, spec, upstream, _, _, _ = bundle
+    formal_feature, formal_label, formal_folds, formal_experiment = _formal_nominals(
+        bundle
+    )
+    (
+        common, roots, _, _, snapshot_spec, _, provider_spec, config,
+        experiment_spec, _, fold_spec, _, feature_spec, _, _, _, _,
+    ) = feature_bundle
+    root = common / "formal-alignment"
+    root.mkdir()
+    manifest = build_alignment_artifact(
+        feature=formal_feature, label=formal_label, folds=formal_folds,
+        experiment=formal_experiment, config=config, spec=spec, output_root=root,
+    )
+    receipt = common / "receipts" / "alignment" / f"{spec.work_key}.json"
+    receipt.parent.mkdir(parents=True)
+    publish_stage_receipt(
+        receipt_path=receipt, stage="alignment", scope="WORK",
+        scope_key=spec.work_key, artifact_roots=roots,
+        inputs=_alignment_inputs(feature_bundle, formal_feature, formal_label),
+        outputs=_alignment_outputs(root),
+    )
+
+    release = cast(VerifiedG1Release, VerifiedG1Release.__new__(VerifiedG1Release))
+    snapshot = cast(
+        VerifiedSnapshotArtifact,
+        VerifiedSnapshotArtifact.__new__(VerifiedSnapshotArtifact),
+    )
+    provider = cast(
+        VerifiedProviderArtifact,
+        VerifiedProviderArtifact.__new__(VerifiedProviderArtifact),
+    )
+    fresh_calls = {"feature": 0, "label": 0}
+
+    def fresh_feature(**kwargs: Any) -> VerifiedFeatureArtifact:
+        fresh_calls["feature"] += 1
+        assert kwargs["root"] == formal_feature.root
+        assert kwargs["receipt_path"] == upstream.feature_receipt_path
+        return formal_feature
+
+    def fresh_label(**kwargs: Any) -> VerifiedLabelArtifact:
+        fresh_calls["label"] += 1
+        assert kwargs["label_root"] == formal_label.root
+        assert kwargs["label_receipt_path"] == upstream.label_receipt_path
+        return formal_label
+
+    monkeypatch.setattr(alignment_module, "verify_feature_artifact", fresh_feature)
+    monkeypatch.setattr(alignment_module, "verify_label_artifact", fresh_label)
+    verified = verify_alignment_artifact(
+        root=root, receipt_path=receipt, release=release, snapshot=snapshot,
+        snapshot_spec=snapshot_spec, provider=provider, provider_spec=provider_spec,
+        experiment=formal_experiment, experiment_spec=experiment_spec,
+        folds=formal_folds, fold_spec=fold_spec, feature=formal_feature,
+        feature_spec=feature_spec, label=formal_label, label_spec=label_spec,
+        config=config, spec=spec, upstream_paths=upstream, artifact_roots=roots,
+    )
+    assert type(verified) is VerifiedAlignmentArtifact
+    assert verified.manifest == manifest
+    assert fresh_calls == {"feature": 1, "label": 1}
+    loaded = load_supervised_segment(alignment=verified, segment="train")
+    assert loaded.name == "train" and not loaded.features.empty
+
+    def label_forbidden(**_: Any) -> Any:
+        raise AssertionError("formal inference crossed label verifier")
+
+    monkeypatch.setattr(alignment_module, "verify_label_artifact", label_forbidden)
+    real_read = pl.read_parquet
+    touched: list[str] = []
+
+    def audited_read(source: Any, *args: Any, **kwargs: Any) -> pl.DataFrame:
+        name = Path(source).name if isinstance(source, (str, Path)) else "<buffer>"
+        touched.append(name)
+        if name in {"labels.parquet", "diagnostics.parquet"}:
+            raise AssertionError("formal inference crossed label parquet")
+        return real_read(source, *args, **kwargs)
+
+    monkeypatch.setattr(pl, "read_parquet", audited_read)
+    inference = build_inference_segment(
+        release=release, snapshot=snapshot, snapshot_spec=snapshot_spec,
+        provider=provider, provider_spec=provider_spec,
+        experiment=formal_experiment, experiment_spec=experiment_spec,
+        folds=formal_folds, fold_spec=fold_spec, feature=formal_feature,
+        feature_spec=feature_spec, config=config,
+        fold_name=formal_folds.manifest.folds[0].name,
+        upstream_paths=InferenceUpstreamPaths(
+            feature_receipt_path=cast(Path, feature_bundle[15]),
+            feature_upstream_paths=feature_bundle[13],
+        ), artifact_roots=roots,
+    )
+    expected = _scorable(
+        real_read(formal_feature.root / "test.parquet"),
+        formal_feature.manifest.schema.selected_names,
+    )
+    assert inference.metadata.equals(expected.select("as_of", "symbol"))
+    assert fresh_calls == {"feature": 2, "label": 1}
+    assert "labels.parquet" not in touched and "diagnostics.parquet" not in touched
+
+
+def test_formal_builder_rejects_development_capabilities_before_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _build_alignment_bundle(tmp_path, monkeypatch)
+    feature_bundle, feature, label, _, spec, _, _, _, _ = bundle
+    output = cast(Path, feature_bundle[0]) / "formal-cross-kind-reject"
+    output.mkdir()
+    with pytest.raises(ValueError, match="formal alignment requires formal"):
+        build_alignment_artifact(
+            feature=cast(Any, feature), label=cast(Any, label),
+            folds=cast(Any, feature_bundle[11]),
+            experiment=cast(Any, feature_bundle[9]), config=feature_bundle[7],
+            spec=spec, output_root=output,
+        )
+    assert not any(output.iterdir())
+
+    formal_feature, formal_label, formal_folds, formal_experiment = _formal_nominals(
+        bundle
+    )
+    del formal_feature
+    release = cast(VerifiedG1Release, VerifiedG1Release.__new__(VerifiedG1Release))
+    snapshot = cast(
+        VerifiedSnapshotArtifact,
+        VerifiedSnapshotArtifact.__new__(VerifiedSnapshotArtifact),
+    )
+    provider = cast(
+        VerifiedProviderArtifact,
+        VerifiedProviderArtifact.__new__(VerifiedProviderArtifact),
+    )
+    with pytest.raises(ValueError, match="formal alignment verify requires formal"):
+        verify_alignment_artifact(
+            root=output, receipt_path=cast(Path, bundle[7]), release=release,
+            snapshot=snapshot, snapshot_spec=feature_bundle[4], provider=provider,
+            provider_spec=feature_bundle[6], experiment=formal_experiment,
+            experiment_spec=feature_bundle[8], folds=formal_folds,
+            fold_spec=feature_bundle[10], feature=cast(Any, feature),
+            feature_spec=feature_bundle[12], label=formal_label,
+            label_spec=bundle[3], config=feature_bundle[7], spec=spec,
+            upstream_paths=bundle[5], artifact_roots=feature_bundle[1],
+        )
 
 
 def test_inference_is_label_free_and_keeps_scorable_rows_without_future_exit(

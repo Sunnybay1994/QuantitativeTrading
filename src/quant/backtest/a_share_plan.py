@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import io
 import json
 import os
+import stat
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, fields
+from dataclasses import asdict, dataclass, fields
 from decimal import Decimal
 from functools import wraps
 from pathlib import Path
@@ -16,11 +18,38 @@ from typing import Any, Callable, ParamSpec, TypeVar, cast
 import polars as pl
 
 from quant.domain import TargetWeightSchema, TradeCalendarSchema
+from quant.data.m3_release import VerifiedG1Release
+from quant.research.m3._artifact_publication import (
+    ArtifactPublication,
+    ArtifactRollbackError,
+)
 from quant.research.m3.config import LoadedM3Config
 from quant.research.m3.contracts import (
+    AlignmentBuildSpec,
     AShareCostPeriod,
     BacktestPlanManifestV1,
     BacktestWindow,
+    ExperimentIdentitySpec,
+    FeatureBuildSpec,
+    FoldPlanBuildSpec,
+    LabelBuildSpec,
+    LightgbmTrainingSpec,
+    PredictionBuildSpec,
+    ProviderBuildSpec,
+    SnapshotBuildSpec,
+    TargetBuildSpec,
+    TargetUpstreamPaths,
+    VerifiedAlignmentArtifact,
+    VerifiedBacktestPlanArtifact,
+    VerifiedExperimentIdentity,
+    VerifiedFeatureArtifact,
+    VerifiedFoldPlanArtifact,
+    VerifiedLabelArtifact,
+    VerifiedModelArtifact,
+    VerifiedPredictionArtifact,
+    VerifiedProviderArtifact,
+    VerifiedSnapshotArtifact,
+    VerifiedTargetArtifact,
 )
 from quant.research.m3.development_example import (
     VerifiedDevelopmentExampleBacktestPlanArtifact,
@@ -34,7 +63,7 @@ from quant.research.m3.run_state import (
     path_for_artifact_digest,
     verify_stage_receipt_with_bytes,
 )
-from quant.research.m3.targets import read_target_manifest
+from quant.research.m3.targets import read_target_manifest, verify_target_artifact
 
 G7_A_SHARE_ORDER_QUANTITY_RULE_VERSION = "sse_szse_limit_order_quantity_v1"
 _FILES = {
@@ -62,6 +91,58 @@ _P = ParamSpec("_P")
 _T = TypeVar("_T")
 
 
+@dataclass(frozen=True)
+class BacktestPlanFreshVerificationContext:
+    """Non-serializable arguments required to freshly verify G7A."""
+
+    snapshot: VerifiedSnapshotArtifact
+    snapshot_spec: SnapshotBuildSpec
+    provider: VerifiedProviderArtifact
+    provider_spec: ProviderBuildSpec
+    experiment_spec: ExperimentIdentitySpec
+    fold_spec: FoldPlanBuildSpec
+    feature: VerifiedFeatureArtifact
+    feature_spec: FeatureBuildSpec
+    label: VerifiedLabelArtifact
+    label_spec: LabelBuildSpec
+    alignment: VerifiedAlignmentArtifact
+    alignment_spec: AlignmentBuildSpec
+    model: VerifiedModelArtifact
+    model_spec: LightgbmTrainingSpec
+    prediction: VerifiedPredictionArtifact
+    prediction_spec: PredictionBuildSpec
+    target_spec: TargetBuildSpec
+    target_upstream_paths: TargetUpstreamPaths
+    target_receipt_path: Path
+
+    def __post_init__(self) -> None:
+        typed = (
+            (self.snapshot, VerifiedSnapshotArtifact),
+            (self.snapshot_spec, SnapshotBuildSpec),
+            (self.provider, VerifiedProviderArtifact),
+            (self.provider_spec, ProviderBuildSpec),
+            (self.experiment_spec, ExperimentIdentitySpec),
+            (self.fold_spec, FoldPlanBuildSpec),
+            (self.feature, VerifiedFeatureArtifact),
+            (self.feature_spec, FeatureBuildSpec),
+            (self.label, VerifiedLabelArtifact),
+            (self.label_spec, LabelBuildSpec),
+            (self.alignment, VerifiedAlignmentArtifact),
+            (self.alignment_spec, AlignmentBuildSpec),
+            (self.model, VerifiedModelArtifact),
+            (self.model_spec, LightgbmTrainingSpec),
+            (self.prediction, VerifiedPredictionArtifact),
+            (self.prediction_spec, PredictionBuildSpec),
+            (self.target_spec, TargetBuildSpec),
+            (self.target_upstream_paths, TargetUpstreamPaths),
+        )
+        if (
+            any(type(value) is not expected for value, expected in typed)
+            or not isinstance(self.target_receipt_path, Path)
+        ):
+            raise ValueError("backtest plan fresh context invalid")
+
+
 def _plan_boundary(function: Callable[_P, _T]) -> Callable[_P, _T]:
     @wraps(function)
     def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _T:
@@ -71,6 +152,25 @@ def _plan_boundary(function: Callable[_P, _T]) -> Callable[_P, _T]:
             raise
         except Exception:
             raise ValueError("M3_BACKTEST_PLAN_INVALID") from None
+
+    return wrapped
+
+
+def _formal_plan_boundary(function: Callable[_P, _T]) -> Callable[_P, _T]:
+    """Expose only stable, redacted formal publication failures."""
+
+    @wraps(function)
+    def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _T:
+        rollback_failed = False
+        try:
+            return function(*args, **kwargs)
+        except ArtifactRollbackError:
+            rollback_failed = True
+        except Exception:
+            pass
+        if rollback_failed:
+            raise ValueError("M3_BACKTEST_PLAN_ROLLBACK_FAILED") from None
+        raise ValueError("M3_BACKTEST_PLAN_ARTIFACT_INVALID") from None
 
     return wrapped
 
@@ -91,6 +191,149 @@ class BacktestPlanUpstreamPaths:
         self.target_receipt_path = target_receipt_path
         self.fold_receipt_path = fold_receipt_path
         self.experiment_receipt_path = experiment_receipt_path
+
+
+@_formal_plan_boundary
+def build_backtest_plan_artifact(
+    *,
+    target: VerifiedTargetArtifact,
+    release: VerifiedG1Release,
+    folds: VerifiedFoldPlanArtifact,
+    experiment: VerifiedExperimentIdentity,
+    config: LoadedM3Config,
+    fresh_context: BacktestPlanFreshVerificationContext,
+    artifact_roots: Mapping[str, Path],
+    output_root: Path,
+) -> BacktestPlanManifestV1:
+    """Publish a formal next-SH-session plan from one freshly verified target."""
+    _validate_formal_outer(
+        target, release, folds, experiment, config, fresh_context, artifact_roots
+    )
+    _require_empty_directory(output_root)
+    with ArtifactPublication(output_root) as publication:
+        fresh = _fresh_target_once(
+            target, release, folds, experiment, config, fresh_context, artifact_roots
+        )
+        sessions = _formal_sh_open_sessions(release)
+        scheduled, diagnostics, window = _formal_schedule_targets(
+            fresh, folds, sessions
+        )
+        _require_cost_coverage(config, window.execution_dates)
+        cost_raw = _canonical_bytes(_formal_cost_schedule_payload(config))
+        scheduled_raw = _parquet_bytes(scheduled)
+        diagnostics_raw = _parquet_bytes(diagnostics)
+        manifest = _make_formal_manifest(
+            target=fresh,
+            release=release,
+            folds=folds,
+            experiment=experiment,
+            config=config,
+            window=window,
+            sessions=sessions,
+            cost_raw=cost_raw,
+            scheduled_raw=scheduled_raw,
+            diagnostics_raw=diagnostics_raw,
+        )
+        publication.write_bytes("scheduled_targets.parquet", scheduled_raw)
+        publication.write_bytes("schedule_diagnostics.parquet", diagnostics_raw)
+        publication.write_bytes("cost_schedule.json", cost_raw)
+        publication.write_bytes("manifest.json", _canonical_bytes(asdict(manifest)))
+        if (
+            not _read_formal_scheduled_bytes(
+                publication.read_bytes("scheduled_targets.parquet")
+            ).equals(scheduled)
+            or not _read_formal_diagnostics_bytes(
+                publication.read_bytes("schedule_diagnostics.parquet")
+            ).equals(diagnostics)
+            or publication.read_bytes("cost_schedule.json") != cost_raw
+            or _read_backtest_plan_manifest_bytes(
+                publication.read_bytes("manifest.json")
+            ) != manifest
+        ):
+            raise ValueError("formal backtest plan readback drift")
+        publication.commit(_FILES)
+        return manifest
+
+
+@_formal_plan_boundary
+def verify_backtest_plan_artifact(
+    *,
+    root: Path,
+    receipt_path: Path,
+    target: VerifiedTargetArtifact,
+    release: VerifiedG1Release,
+    folds: VerifiedFoldPlanArtifact,
+    experiment: VerifiedExperimentIdentity,
+    config: LoadedM3Config,
+    fresh_context: BacktestPlanFreshVerificationContext,
+    artifact_roots: Mapping[str, Path],
+) -> VerifiedBacktestPlanArtifact:
+    """Freshly recompute a formal plan and verify its exact receipt closure."""
+    _validate_formal_outer(
+        target, release, folds, experiment, config, fresh_context, artifact_roots
+    )
+    root_identity = _formal_tree_identity(root)
+    fresh = _fresh_target_once(
+        target, release, folds, experiment, config, fresh_context, artifact_roots
+    )
+    sessions = _formal_sh_open_sessions(release)
+    expected_scheduled, expected_diagnostics, window = _formal_schedule_targets(
+        fresh, folds, sessions
+    )
+    _require_cost_coverage(config, window.execution_dates)
+    raw = _stable_formal_tree_read(root, root_identity)
+    scheduled = _read_formal_scheduled_bytes(raw["scheduled_targets.parquet"])
+    diagnostics = _read_formal_diagnostics_bytes(raw["schedule_diagnostics.parquet"])
+    if (
+        not scheduled.equals(expected_scheduled)
+        or not diagnostics.equals(expected_diagnostics)
+    ):
+        raise ValueError("formal backtest plan content drift")
+    expected_cost = _canonical_bytes(_formal_cost_schedule_payload(config))
+    if raw["cost_schedule.json"] != expected_cost:
+        raise ValueError("formal backtest plan cost drift")
+    manifest = _read_backtest_plan_manifest_bytes(raw["manifest.json"])
+    expected_manifest = _make_formal_manifest(
+        target=fresh,
+        release=release,
+        folds=folds,
+        experiment=experiment,
+        config=config,
+        window=window,
+        sessions=sessions,
+        cost_raw=expected_cost,
+        scheduled_raw=raw["scheduled_targets.parquet"],
+        diagnostics_raw=raw["schedule_diagnostics.parquet"],
+    )
+    if manifest != expected_manifest:
+        raise ValueError("formal backtest plan manifest drift")
+    verified_receipt = verify_stage_receipt_with_bytes(
+        receipt_path=receipt_path, artifact_roots=artifact_roots
+    )
+    if verified_receipt is None:
+        raise ValueError("formal backtest plan receipt missing")
+    inputs = _formal_receipt_inputs(
+        release, folds, experiment, fresh_context, fresh
+    )
+    outputs = tuple(root / name for name in sorted(_FILES))
+    receipt = verified_receipt.receipt
+    if (
+        receipt.stage != "backtest-plan"
+        or receipt.scope != "WORK"
+        or receipt.scope_key != fresh.manifest.work_key
+        or not _digest_paths_equal(receipt.inputs, inputs, artifact_roots)
+        or not _digest_paths_equal(receipt.outputs, outputs, artifact_roots)
+    ):
+        raise ValueError("formal backtest plan receipt closure drift")
+    if _stable_formal_tree_read(root, root_identity) != raw:
+        raise ValueError("formal backtest plan post-verification drift")
+    return VerifiedBacktestPlanArtifact(
+        root=Path(os.path.abspath(root)),
+        scheduled_targets=scheduled,
+        manifest=manifest,
+        manifest_sha256=hashlib.sha256(raw["manifest.json"]).hexdigest(),
+        plan_receipt_sha256=verified_receipt.sha256,
+    )
 
 
 @_plan_boundary
@@ -214,7 +457,10 @@ def verify_development_example_backtest_plan_artifact(
 
 @_plan_boundary
 def read_backtest_plan_manifest(path: Path) -> BacktestPlanManifestV1:
-    raw = path.read_bytes()
+    return _read_backtest_plan_manifest_bytes(path.read_bytes())
+
+
+def _read_backtest_plan_manifest_bytes(raw: bytes) -> BacktestPlanManifestV1:
     payload = _strict_object(raw)
     if set(payload) != {field.name for field in fields(BacktestPlanManifestV1)}:
         raise ValueError("backtest plan manifest fields drift")
@@ -247,6 +493,467 @@ def read_backtest_plan_manifest(path: Path) -> BacktestPlanManifestV1:
     if raw != _canonical_bytes(asdict(manifest)):
         raise ValueError("backtest plan manifest non-canonical")
     return manifest
+
+
+def _validate_formal_outer(
+    target: VerifiedTargetArtifact,
+    release: VerifiedG1Release,
+    folds: VerifiedFoldPlanArtifact,
+    experiment: VerifiedExperimentIdentity,
+    config: LoadedM3Config,
+    context: BacktestPlanFreshVerificationContext,
+    artifact_roots: Mapping[str, Path],
+) -> None:
+    if (
+        type(target) is not VerifiedTargetArtifact
+        or type(release) is not VerifiedG1Release
+        or type(folds) is not VerifiedFoldPlanArtifact
+        or type(experiment) is not VerifiedExperimentIdentity
+        or type(config) is not LoadedM3Config
+        or type(context) is not BacktestPlanFreshVerificationContext
+        or not isinstance(artifact_roots, Mapping)
+        or not artifact_roots
+        or any(type(name) is not str or not isinstance(path, Path)
+               for name, path in artifact_roots.items())
+    ):
+        raise ValueError("formal backtest plan inputs invalid")
+    planned = next(
+        (item for item in folds.manifest.folds if item.name == target.manifest.fold),
+        None,
+    )
+    if (
+        planned is None
+        or target.manifest.experiment_key != experiment.manifest.experiment_key
+        or target.manifest.experiment_manifest_sha256 != experiment.manifest_sha256
+        or target.manifest.g1_release_id != release.manifest.release_id
+        or target.manifest.g1_release_manifest_sha256 != release.manifest_sha256
+        or target.manifest.fold_plan_manifest_sha256 != folds.manifest_sha256
+        or target.manifest.scientific_config_sha256 != config.scientific_config_sha256
+        or experiment.manifest.scientific_config_sha256
+        != config.scientific_config_sha256
+        or context.target_spec.work_key != target.manifest.work_key
+        or context.target_spec.fold != target.manifest.fold
+        or context.target_spec.horizon_sessions != target.manifest.horizon_sessions
+    ):
+        raise ValueError("formal backtest plan identity drift")
+    _validate_formal_scientific_config(config)
+    _formal_fresh_upstream_bytes(target, release, folds, experiment, context)
+
+
+def _validate_formal_scientific_config(config: LoadedM3Config) -> None:
+    backtest = config.section("backtest")
+    a_share = backtest.get("a_share")
+    if not isinstance(a_share, Mapping):
+        raise ValueError("formal backtest plan config invalid")
+    multipliers = a_share.get("friction_multipliers")
+    if not isinstance(multipliers, Sequence) or isinstance(multipliers, (str, bytes)):
+        raise ValueError("formal backtest plan multipliers invalid")
+    rebuilt = tuple(Decimal(str(value)) for value in multipliers)
+    if (
+        rebuilt != (Decimal("0.5"), Decimal("1"), Decimal("2"))
+        or a_share.get("execution_price_rounding")
+        != "BUY_CEIL_SELL_FLOOR_TICK_V1"
+        or a_share.get("fee_rounding") != "EACH_COMPONENT_HALF_UP_CENT_V1"
+        or a_share.get("cash_settlement_rounding") != "HALF_UP_CENT_V1"
+        or a_share.get("annualization_sessions") != 252
+        or config.section("costs").get("scaled_components")
+        != ("commission_rate", "commission_min", "slippage")
+    ):
+        raise ValueError("formal backtest plan scientific config drift")
+
+
+def _fresh_target_once(
+    target: VerifiedTargetArtifact,
+    release: VerifiedG1Release,
+    folds: VerifiedFoldPlanArtifact,
+    experiment: VerifiedExperimentIdentity,
+    config: LoadedM3Config,
+    context: BacktestPlanFreshVerificationContext,
+    artifact_roots: Mapping[str, Path],
+) -> VerifiedTargetArtifact:
+    fresh = verify_target_artifact(
+        root=target.root,
+        receipt_path=context.target_receipt_path,
+        release=release,
+        snapshot=context.snapshot,
+        snapshot_spec=context.snapshot_spec,
+        provider=context.provider,
+        provider_spec=context.provider_spec,
+        experiment=experiment,
+        experiment_spec=context.experiment_spec,
+        folds=folds,
+        fold_spec=context.fold_spec,
+        feature=context.feature,
+        feature_spec=context.feature_spec,
+        label=context.label,
+        label_spec=context.label_spec,
+        alignment=context.alignment,
+        alignment_spec=context.alignment_spec,
+        model=context.model,
+        model_spec=context.model_spec,
+        prediction=context.prediction,
+        prediction_spec=context.prediction_spec,
+        config=config,
+        spec=context.target_spec,
+        upstream_paths=context.target_upstream_paths,
+        artifact_roots=artifact_roots,
+    )
+    if (
+        type(fresh) is not VerifiedTargetArtifact
+        or Path(os.path.abspath(fresh.root)) != Path(os.path.abspath(target.root))
+        or not fresh.targets.equals(target.targets)
+        or not fresh.target_daily.equals(target.target_daily)
+        or fresh.manifest != target.manifest
+        or fresh.manifest_sha256 != target.manifest_sha256
+        or fresh.target_receipt_sha256 != target.target_receipt_sha256
+        or fresh.target_receipt_sha256 != _file_sha(context.target_receipt_path)
+    ):
+        raise ValueError("formal backtest plan fresh target mismatch")
+    return fresh
+
+
+def _formal_sh_open_sessions(release: VerifiedG1Release) -> tuple[dt.date, ...]:
+    calendar_path = dict(release.artifact_paths)["trade_calendar.parquet"]
+    raw = pl.read_parquet(calendar_path)
+    calendar = TradeCalendarSchema.validate(raw)
+    if not calendar.equals(raw):
+        raise ValueError("formal SH calendar schema normalization forbidden")
+    sessions = tuple(cast(
+        list[dt.date],
+        calendar.filter((pl.col("market") == "SH") & pl.col("is_open"))
+        .get_column("date").to_list(),
+    ))
+    if not sessions or tuple(sorted(set(sessions))) != sessions:
+        raise ValueError("formal SH calendar physical order invalid")
+    return sessions
+
+
+def _formal_target_frame(target: VerifiedTargetArtifact) -> pl.DataFrame:
+    frame = target.targets
+    validated = TargetWeightSchema.validate(frame)
+    if (
+        not validated.equals(frame)
+        or frame.columns != [
+            "as_of", "strategy", "strategy_version", "symbol", "weight"
+        ]
+        or frame.n_unique(["as_of", "symbol"]) != frame.height
+        or not frame.equals(frame.sort("as_of", "symbol"))
+    ):
+        raise ValueError("formal target physical order invalid")
+    return frame
+
+
+def _formal_schedule_targets(
+    target: VerifiedTargetArtifact,
+    folds: VerifiedFoldPlanArtifact,
+    sessions: tuple[dt.date, ...],
+) -> tuple[pl.DataFrame, pl.DataFrame, BacktestWindow]:
+    frame = _formal_target_frame(target)
+    planned = next(
+        item for item in folds.manifest.folds if item.name == target.manifest.fold
+    )
+    physical_dates = tuple(dict.fromkeys(cast(list[dt.date], frame["as_of"].to_list())))
+    if physical_dates != planned.test_dates:
+        raise ValueError("formal target signal domain drift")
+    session_index = {day: index for index, day in enumerate(sessions)}
+    executions: list[dt.date] = []
+    for signal in planned.test_dates:
+        index = session_index.get(signal)
+        if index is None or index + 1 >= len(sessions):
+            raise ValueError("formal backtest plan next SH session missing")
+        executions.append(sessions[index + 1])
+    by_signal = dict(zip(planned.test_dates, executions, strict=True))
+    execution_column = [by_signal[day] for day in frame["as_of"].to_list()]
+    scheduled = frame.with_columns(
+        pl.Series("execution_date", execution_column, dtype=pl.Date)
+    ).select(_SCHEDULED_COLUMNS)
+    if not scheduled.equals(scheduled.sort("execution_date", "as_of", "symbol")):
+        raise ValueError("formal scheduled target order invalid")
+    diagnostics_rows: list[dict[str, object]] = []
+    for signal, execution in zip(planned.test_dates, executions, strict=True):
+        batch = frame.filter(pl.col("as_of") == signal)
+        if batch.is_empty():
+            raise ValueError("formal backtest plan empty signal batch")
+        total = sum(
+            (Decimal(str(value)) for value in batch["weight"].to_list()),
+            Decimal(0),
+        )
+        diagnostics_rows.append({
+            "as_of": signal,
+            "execution_date": execution,
+            "n_targets": batch.height,
+            "total_target_weight": float(total),
+            "session_lag": 1,
+        })
+    diagnostics = pl.DataFrame(diagnostics_rows, schema=_DIAGNOSTICS_SCHEMA)
+    if not diagnostics.equals(diagnostics.sort("as_of")):
+        raise ValueError("formal diagnostics order invalid")
+    window = BacktestWindow(
+        signal_dates=planned.test_dates,
+        execution_dates=tuple(executions),
+        first_execution_date=executions[0],
+        terminal_valuation_date=executions[-1],
+        force_liquidation=False,
+    )
+    return scheduled, diagnostics, window
+
+
+def _formal_cost_schedule_payload(config: LoadedM3Config) -> dict[str, object]:
+    _validate_formal_scientific_config(config)
+    costs = config.section("costs")
+    raw_periods = cast(Sequence[Mapping[str, object]], costs["a_share_periods"])
+    periods = tuple(_cost_period(item) for item in raw_periods)
+    _validate_cost_periods(periods)
+    a_share = cast(Mapping[str, object], config.section("backtest")["a_share"])
+    multipliers = tuple(
+        Decimal(str(value))
+        for value in cast(Sequence[object], a_share["friction_multipliers"])
+    )
+    return {
+        "multipliers": [_decimal_text(value) for value in multipliers],
+        "scaled_components": list(cast(tuple[str, ...], costs["scaled_components"])),
+        "schedules": [
+            {
+                "multiplier": _decimal_text(multiplier),
+                "periods": [_period_payload(period, multiplier) for period in periods],
+            }
+            for multiplier in multipliers
+        ],
+    }
+
+
+def _require_cost_coverage(
+    config: LoadedM3Config, execution_dates: tuple[dt.date, ...]
+) -> None:
+    periods = tuple(
+        _cost_period(item)
+        for item in cast(
+            Sequence[Mapping[str, object]],
+            config.section("costs")["a_share_periods"],
+        )
+    )
+    _validate_cost_periods(periods)
+    for day in execution_dates:
+        matches = [
+            period for period in periods
+            if period.effective_from <= day
+            and (period.effective_to is None or day <= period.effective_to)
+        ]
+        if len(matches) != 1:
+            raise ValueError("formal backtest plan cost coverage invalid")
+
+
+def _make_formal_manifest(
+    *,
+    target: VerifiedTargetArtifact,
+    release: VerifiedG1Release,
+    folds: VerifiedFoldPlanArtifact,
+    experiment: VerifiedExperimentIdentity,
+    config: LoadedM3Config,
+    window: BacktestWindow,
+    sessions: tuple[dt.date, ...],
+    cost_raw: bytes,
+    scheduled_raw: bytes,
+    diagnostics_raw: bytes,
+) -> BacktestPlanManifestV1:
+    return BacktestPlanManifestV1(
+        schema_version="m3-a-share-backtest-plan-v1",
+        experiment_key=target.manifest.experiment_key,
+        experiment_manifest_sha256=experiment.manifest_sha256,
+        work_key=target.manifest.work_key,
+        target_manifest_sha256=target.manifest_sha256,
+        target_receipt_sha256=target.target_receipt_sha256,
+        g1_release_id=release.manifest.release_id,
+        g1_release_manifest_sha256=release.manifest_sha256,
+        scientific_config_sha256=config.scientific_config_sha256,
+        fold_plan_manifest_sha256=folds.manifest_sha256,
+        fold=target.manifest.fold,
+        horizon_sessions=target.manifest.horizon_sessions,
+        window=window,
+        session_calendar_sha256=_sha256_json(
+            [day.isoformat() for day in sessions]
+        ),
+        cost_schedule_sha256=hashlib.sha256(cost_raw).hexdigest(),
+        cost_schedule_version=cast(str, config.section("costs")["schedule_version"]),
+        order_quantity_rule_version=G7_A_SHARE_ORDER_QUANTITY_RULE_VERSION,
+        scheduled_targets_sha256=hashlib.sha256(scheduled_raw).hexdigest(),
+        schedule_diagnostics_sha256=hashlib.sha256(diagnostics_raw).hexdigest(),
+    )
+
+
+def _formal_g1_quality_path(release: VerifiedG1Release) -> Path:
+    quality = release.release.quality_path
+    expected = release.release.root / "quality.json"
+    if (
+        not isinstance(quality, Path)
+        or quality.name != "quality.json"
+        or quality != expected
+    ):
+        raise ValueError("formal backtest plan g1 quality path invalid")
+    return quality
+
+
+def _formal_fresh_upstream_bytes(
+    target: VerifiedTargetArtifact,
+    release: VerifiedG1Release,
+    folds: VerifiedFoldPlanArtifact,
+    experiment: VerifiedExperimentIdentity,
+    context: BacktestPlanFreshVerificationContext,
+) -> None:
+    quality = _formal_g1_quality_path(release)
+    paths = context.target_upstream_paths
+    checks = (
+        (target.root / "target_manifest.json", target.manifest_sha256),
+        (context.target_receipt_path, target.target_receipt_sha256),
+        (release.release.manifest_path, release.manifest_sha256),
+        (quality, release.quality_sha256),
+        (folds.root / "folds.json", folds.manifest_sha256),
+        (paths.fold_receipt_path, folds.folds_receipt_sha256),
+        (experiment.root / "experiment_manifest.json", experiment.manifest_sha256),
+        (paths.experiment_receipt_path, experiment.experiment_receipt_sha256),
+    )
+    if any(not path.is_file() or _file_sha(path) != digest for path, digest in checks):
+        raise ValueError("formal backtest plan upstream bytes stale")
+
+
+def _formal_receipt_inputs(
+    release: VerifiedG1Release,
+    folds: VerifiedFoldPlanArtifact,
+    experiment: VerifiedExperimentIdentity,
+    context: BacktestPlanFreshVerificationContext,
+    target: VerifiedTargetArtifact,
+) -> tuple[Path, ...]:
+    paths = context.target_upstream_paths
+    quality = _formal_g1_quality_path(release)
+    inputs = (
+        release.release.manifest_path,
+        quality,
+        dict(release.artifact_paths)["eligible_keys.parquet"],
+        context.feature.root / "feature_manifest.json",
+        paths.feature_receipt_path,
+        context.feature.root / "coverage.parquet",
+        context.feature.root / "test.parquet",
+        context.prediction.root / "prediction_manifest.json",
+        paths.prediction_receipt_path,
+        context.prediction.root / "predictions.parquet",
+        folds.root / "folds.json",
+        paths.fold_receipt_path,
+        experiment.root / "experiment_manifest.json",
+        paths.experiment_receipt_path,
+        target.root / "target_manifest.json",
+        context.target_receipt_path,
+        target.root / "target_weights.parquet",
+        target.root / "target_daily.parquet",
+        dict(release.artifact_paths)["trade_calendar.parquet"],
+    )
+    if any(path.name == "receipt.json" for path in inputs[:3]):
+        raise ValueError("formal backtest plan g1 receipt input forbidden")
+    normalized = tuple(os.path.normcase(os.path.abspath(path)) for path in inputs)
+    if len(inputs) != 19 or len(set(normalized)) != 19:
+        raise ValueError("formal backtest plan receipt input duplicate")
+    for index, left in enumerate(inputs):
+        for right in inputs[index + 1:]:
+            if os.path.samefile(left, right):
+                raise ValueError("formal backtest plan receipt input alias")
+    return inputs
+
+
+def _parquet_bytes(frame: pl.DataFrame) -> bytes:
+    stream = io.BytesIO()
+    frame.write_parquet(
+        stream,
+        compression="zstd",
+        compression_level=3,
+        statistics=True,
+        row_group_size=65536,
+        use_pyarrow=False,
+    )
+    return stream.getvalue()
+
+
+def _read_formal_scheduled_bytes(raw: bytes) -> pl.DataFrame:
+    frame = pl.read_parquet(io.BytesIO(raw))
+    if (
+        frame.columns != _SCHEDULED_COLUMNS
+        or frame.schema != {
+            "as_of": pl.Date,
+            "strategy": pl.String,
+            "strategy_version": pl.String,
+            "symbol": pl.String,
+            "weight": pl.Float64,
+            "execution_date": pl.Date,
+        }
+        or not frame.equals(frame.sort("execution_date", "as_of", "symbol"))
+        or not TargetWeightSchema.validate(frame.drop("execution_date")).equals(
+            frame.drop("execution_date")
+        )
+    ):
+        raise ValueError("formal scheduled target invalid")
+    return frame
+
+
+def _read_formal_diagnostics_bytes(raw: bytes) -> pl.DataFrame:
+    frame = pl.read_parquet(io.BytesIO(raw))
+    if (
+        frame.columns != list(_DIAGNOSTICS_SCHEMA)
+        or frame.schema != _DIAGNOSTICS_SCHEMA
+        or not frame.equals(frame.sort("as_of"))
+    ):
+        raise ValueError("formal schedule diagnostics invalid")
+    return frame
+
+
+def _is_link_or_reparse(info: os.stat_result) -> bool:
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    )
+
+
+def _formal_tree_identity(root: Path) -> tuple[os.stat_result, dict[str, os.stat_result]]:
+    root_info = os.lstat(root)
+    if (
+        not stat.S_ISDIR(root_info.st_mode)
+        or _is_link_or_reparse(root_info)
+        or {item.name for item in os.scandir(root)} != _FILES
+    ):
+        raise ValueError("formal backtest plan tree invalid")
+    files: dict[str, os.stat_result] = {}
+    for name in _FILES:
+        info = os.lstat(root / name)
+        if not stat.S_ISREG(info.st_mode) or _is_link_or_reparse(info):
+            raise ValueError("formal backtest plan entry invalid")
+        files[name] = info
+    return root_info, files
+
+
+def _require_same_tree_identity(
+    root: Path, identity: tuple[os.stat_result, dict[str, os.stat_result]]
+) -> None:
+    root_info, files = identity
+    current_root = os.lstat(root)
+    if (
+        _is_link_or_reparse(current_root)
+        or not os.path.samestat(root_info, current_root)
+        or {item.name for item in os.scandir(root)} != _FILES
+    ):
+        raise ValueError("formal backtest plan root replaced")
+    for name, expected in files.items():
+        current = os.lstat(root / name)
+        if _is_link_or_reparse(current) or not os.path.samestat(expected, current):
+            raise ValueError("formal backtest plan file replaced")
+
+
+def _stable_formal_tree_read(
+    root: Path, identity: tuple[os.stat_result, dict[str, os.stat_result]]
+) -> dict[str, bytes]:
+    first = {name: (root / name).read_bytes() for name in sorted(_FILES)}
+    _require_same_tree_identity(root, identity)
+    second = {name: (root / name).read_bytes() for name in sorted(_FILES)}
+    _require_same_tree_identity(root, identity)
+    if first != second:
+        raise ValueError("formal backtest plan unstable read")
+    return first
 
 
 def _validate_inputs(
@@ -658,11 +1365,14 @@ def _write_parquet(frame: pl.DataFrame, path: Path) -> None:
 
 __all__ = [
     "AShareCostPeriod",
+    "BacktestPlanFreshVerificationContext",
     "BacktestPlanManifestV1",
     "BacktestPlanUpstreamPaths",
     "BacktestWindow",
     "G7_A_SHARE_ORDER_QUANTITY_RULE_VERSION",
+    "build_backtest_plan_artifact",
     "build_development_example_backtest_plan_artifact",
     "read_backtest_plan_manifest",
+    "verify_backtest_plan_artifact",
     "verify_development_example_backtest_plan_artifact",
 ]

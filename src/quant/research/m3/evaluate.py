@@ -4,19 +4,26 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import io
 import json
 import math
 import os
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, fields
+from dataclasses import asdict, dataclass, fields
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, ParamSpec, TypeVar, cast
+from typing import Any, Callable, Literal, ParamSpec, TypeVar, cast
 
 import polars as pl
 
+from quant.data.m3_release import VerifiedG1Release
 from quant.domain import ForwardReturnLabelSchema, PredictionScoreSchema
+from quant.research.m3._artifact_publication import (
+    ArtifactPublication,
+    ArtifactPublicationError,
+    ArtifactRollbackError,
+)
 from quant.research.m3.alignment import _read_feature_segment, _scorable_expression
 from quant.research.m3.config import LoadedM3Config
 from quant.research.m3.contracts import (
@@ -37,6 +44,17 @@ from quant.research.m3.contracts import (
     ResearchSummaryMetricsV1,
     ResearchSummaryUpstreamPaths,
     SnapshotBuildSpec,
+    VerifiedAlignmentArtifact,
+    VerifiedEvaluationArtifact,
+    VerifiedExperimentIdentity,
+    VerifiedFeatureArtifact,
+    VerifiedFoldPlanArtifact,
+    VerifiedLabelArtifact,
+    VerifiedModelArtifact,
+    VerifiedPredictionArtifact,
+    VerifiedProviderArtifact,
+    VerifiedResearchSummaryArtifact,
+    VerifiedSnapshotArtifact,
 )
 from quant.research.m3.development_example import (
     VerifiedDevelopmentExampleAlignmentArtifact,
@@ -52,8 +70,11 @@ from quant.research.m3.development_example import (
     VerifiedDevelopmentExampleResearchSummaryArtifact,
     VerifiedDevelopmentExampleSnapshotArtifact,
 )
+from quant.research.m3.features import canonical_row_keys_sha256
+from quant.research.m3.labels import verify_label_artifact
 from quant.research.m3.predictions import (
     verify_development_example_prediction_artifact,
+    verify_prediction_artifact,
 )
 from quant.research.m3.run_state import (
     ArtifactDigest,
@@ -386,6 +407,197 @@ def build_evaluation_spec(
         fold=prediction.manifest.fold,
         horizon_sessions=cast(Any, prediction.manifest.horizon_sessions),
         minimum_ic_symbols=minimum,
+    )
+
+
+def _formal_evaluation_boundary(function: Callable[_P, _T]) -> Callable[_P, _T]:
+    """Expose only stable formal evaluation errors."""
+    @wraps(function)
+    def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _T:
+        failed = False
+        rollback_failed = False
+        try:
+            return function(*args, **kwargs)
+        except ArtifactRollbackError:
+            rollback_failed = True
+        except Exception:
+            failed = True
+        if rollback_failed:
+            raise ValueError("M3_EVALUATION_ROLLBACK_FAILED")
+        if failed:
+            raise ValueError("M3_EVALUATION_ARTIFACT_INVALID")
+        raise AssertionError("unreachable")
+
+    return wrapped
+
+
+@_formal_evaluation_boundary
+def build_evaluation_artifact(
+    *,
+    release: VerifiedG1Release,
+    snapshot: VerifiedSnapshotArtifact,
+    snapshot_spec: SnapshotBuildSpec,
+    provider: VerifiedProviderArtifact,
+    provider_spec: ProviderBuildSpec,
+    experiment: VerifiedExperimentIdentity,
+    experiment_spec: ExperimentIdentitySpec,
+    folds: VerifiedFoldPlanArtifact,
+    fold_spec: FoldPlanBuildSpec,
+    feature: VerifiedFeatureArtifact,
+    feature_spec: FeatureBuildSpec,
+    label: VerifiedLabelArtifact,
+    label_spec: LabelBuildSpec,
+    alignment: VerifiedAlignmentArtifact,
+    alignment_spec: AlignmentBuildSpec,
+    model: VerifiedModelArtifact,
+    model_spec: LightgbmTrainingSpec,
+    prediction: VerifiedPredictionArtifact,
+    prediction_spec: PredictionBuildSpec,
+    config: LoadedM3Config,
+    spec: EvaluationSpec,
+    upstream_paths: EvaluationUpstreamPaths,
+    artifact_roots: Mapping[str, Path],
+    output_root: Path,
+) -> EvaluationManifestV1:
+    """Build a formal work-scoped evaluation from a fresh G1--G5B chain."""
+    _validate_formal_evaluation_inputs(
+        release=release, snapshot=snapshot, snapshot_spec=snapshot_spec,
+        provider=provider, provider_spec=provider_spec, experiment=experiment,
+        experiment_spec=experiment_spec, folds=folds, fold_spec=fold_spec,
+        feature=feature, feature_spec=feature_spec, label=label,
+        label_spec=label_spec, alignment=alignment,
+        alignment_spec=alignment_spec, model=model, model_spec=model_spec,
+        prediction=prediction, prediction_spec=prediction_spec, config=config,
+        spec=spec, upstream_paths=upstream_paths,
+    )
+    with ArtifactPublication(output_root) as publication:
+        daily, metrics_factory, manifest_factory = _fresh_formal_evaluation(
+            release=release, snapshot=snapshot, snapshot_spec=snapshot_spec,
+            provider=provider, provider_spec=provider_spec,
+            experiment=experiment, experiment_spec=experiment_spec,
+            folds=folds, fold_spec=fold_spec, feature=feature,
+            feature_spec=feature_spec, label=label, label_spec=label_spec,
+            alignment=alignment, alignment_spec=alignment_spec, model=model,
+            model_spec=model_spec, prediction=prediction,
+            prediction_spec=prediction_spec, config=config, spec=spec,
+            upstream_paths=upstream_paths, artifact_roots=artifact_roots,
+        )
+        daily_raw = _parquet_bytes(daily)
+        daily_sha = hashlib.sha256(daily_raw).hexdigest()
+        metrics = metrics_factory(daily_sha)
+        metrics_raw = _canonical_bytes(asdict(metrics))
+        manifest = manifest_factory(
+            daily_sha, hashlib.sha256(metrics_raw).hexdigest()
+        )
+        publication.write_bytes("daily_ic.parquet", daily_raw)
+        publication.write_bytes("metrics.json", metrics_raw)
+        publication.write_bytes(
+            "evaluation_manifest.json", _canonical_bytes(asdict(manifest))
+        )
+        if (
+            not _read_evaluation_daily(output_root / "daily_ic.parquet").equals(daily)
+            or read_evaluation_metrics(output_root / "metrics.json") != metrics
+            or read_evaluation_manifest(output_root / "evaluation_manifest.json")
+            != manifest
+        ):
+            raise ArtifactPublicationError
+        publication.commit(_EVALUATION_FILES)
+        return manifest
+
+
+@_formal_evaluation_boundary
+def verify_evaluation_artifact(
+    *,
+    root: Path,
+    receipt_path: Path,
+    release: VerifiedG1Release,
+    snapshot: VerifiedSnapshotArtifact,
+    snapshot_spec: SnapshotBuildSpec,
+    provider: VerifiedProviderArtifact,
+    provider_spec: ProviderBuildSpec,
+    experiment: VerifiedExperimentIdentity,
+    experiment_spec: ExperimentIdentitySpec,
+    folds: VerifiedFoldPlanArtifact,
+    fold_spec: FoldPlanBuildSpec,
+    feature: VerifiedFeatureArtifact,
+    feature_spec: FeatureBuildSpec,
+    label: VerifiedLabelArtifact,
+    label_spec: LabelBuildSpec,
+    alignment: VerifiedAlignmentArtifact,
+    alignment_spec: AlignmentBuildSpec,
+    model: VerifiedModelArtifact,
+    model_spec: LightgbmTrainingSpec,
+    prediction: VerifiedPredictionArtifact,
+    prediction_spec: PredictionBuildSpec,
+    config: LoadedM3Config,
+    spec: EvaluationSpec,
+    upstream_paths: EvaluationUpstreamPaths,
+    artifact_roots: Mapping[str, Path],
+) -> VerifiedEvaluationArtifact:
+    """Freshly rebuild and verify a formal evaluation and exact receipt."""
+    _validate_formal_evaluation_inputs(
+        release=release, snapshot=snapshot, snapshot_spec=snapshot_spec,
+        provider=provider, provider_spec=provider_spec, experiment=experiment,
+        experiment_spec=experiment_spec, folds=folds, fold_spec=fold_spec,
+        feature=feature, feature_spec=feature_spec, label=label,
+        label_spec=label_spec, alignment=alignment,
+        alignment_spec=alignment_spec, model=model, model_spec=model_spec,
+        prediction=prediction, prediction_spec=prediction_spec, config=config,
+        spec=spec, upstream_paths=upstream_paths,
+    )
+    daily, metrics_factory, manifest_factory = _fresh_formal_evaluation(
+        release=release, snapshot=snapshot, snapshot_spec=snapshot_spec,
+        provider=provider, provider_spec=provider_spec,
+        experiment=experiment, experiment_spec=experiment_spec,
+        folds=folds, fold_spec=fold_spec, feature=feature,
+        feature_spec=feature_spec, label=label, label_spec=label_spec,
+        alignment=alignment, alignment_spec=alignment_spec, model=model,
+        model_spec=model_spec, prediction=prediction,
+        prediction_spec=prediction_spec, config=config, spec=spec,
+        upstream_paths=upstream_paths, artifact_roots=artifact_roots,
+    )
+    if (
+        not root.is_dir()
+        or root.is_symlink()
+        or {item.name for item in os.scandir(root)} != _EVALUATION_FILES
+    ):
+        raise ValueError("evaluation tree closure drift")
+    raw_manifest = (root / "evaluation_manifest.json").read_bytes()
+    actual_daily = _read_evaluation_daily(root / "daily_ic.parquet")
+    actual_metrics = read_evaluation_metrics(root / "metrics.json")
+    actual_manifest = read_evaluation_manifest(root / "evaluation_manifest.json")
+    daily_sha = _file_sha(root / "daily_ic.parquet")
+    expected_metrics = metrics_factory(daily_sha)
+    expected_manifest = manifest_factory(daily_sha, _file_sha(root / "metrics.json"))
+    if (
+        not actual_daily.equals(daily)
+        or actual_metrics != expected_metrics
+        or actual_manifest != expected_manifest
+    ):
+        raise ValueError("evaluation content drift")
+    verified_receipt = verify_stage_receipt_with_bytes(
+        receipt_path=receipt_path, artifact_roots=artifact_roots
+    )
+    if verified_receipt is None:
+        raise ValueError("evaluation receipt missing")
+    receipt = verified_receipt.receipt
+    inputs = _formal_evaluation_receipt_inputs(
+        release, feature, prediction, label, folds, experiment, upstream_paths
+    )
+    outputs = tuple(root / name for name in sorted(_EVALUATION_FILES))
+    if (
+        receipt.stage != "evaluation"
+        or receipt.scope != "WORK"
+        or receipt.scope_key != spec.work_key
+        or not _digest_paths_equal(receipt.inputs, inputs, artifact_roots)
+        or not _digest_paths_equal(receipt.outputs, outputs, artifact_roots)
+    ):
+        raise ValueError("evaluation receipt closure drift")
+    return VerifiedEvaluationArtifact(
+        root=root.resolve(strict=True), daily=actual_daily,
+        metrics=actual_metrics, manifest=actual_manifest,
+        manifest_sha256=hashlib.sha256(raw_manifest).hexdigest(),
+        evaluation_receipt_sha256=verified_receipt.sha256,
     )
 
 
@@ -726,7 +938,7 @@ def _daily_status(
 def _summarize_evaluation(
     *,
     daily: pl.DataFrame,
-    prediction: VerifiedDevelopmentExamplePredictionArtifact,
+    prediction: VerifiedDevelopmentExamplePredictionArtifact | VerifiedPredictionArtifact,
     spec: EvaluationSpec,
     daily_sha256: str,
 ) -> EvaluationMetricsV1:
@@ -828,6 +1040,233 @@ _FOLD_METRICS_SCHEMA = {
     "status_count_label_zero_variance": pl.Int64,
     "status_count_computable": pl.Int64,
 }
+
+
+@dataclass(frozen=True)
+class EvaluationFreshVerificationContext:
+    """Non-serialized formal inputs required to freshly verify one evaluation."""
+
+    release: VerifiedG1Release
+    snapshot: VerifiedSnapshotArtifact
+    snapshot_spec: SnapshotBuildSpec
+    provider: VerifiedProviderArtifact
+    provider_spec: ProviderBuildSpec
+    experiment: VerifiedExperimentIdentity
+    experiment_spec: ExperimentIdentitySpec
+    folds: VerifiedFoldPlanArtifact
+    fold_spec: FoldPlanBuildSpec
+    feature: VerifiedFeatureArtifact
+    feature_spec: FeatureBuildSpec
+    label: VerifiedLabelArtifact
+    label_spec: LabelBuildSpec
+    alignment: VerifiedAlignmentArtifact
+    alignment_spec: AlignmentBuildSpec
+    model: VerifiedModelArtifact
+    model_spec: LightgbmTrainingSpec
+    prediction: VerifiedPredictionArtifact
+    prediction_spec: PredictionBuildSpec
+    evaluation_spec: EvaluationSpec
+    evaluation_upstream_paths: EvaluationUpstreamPaths
+
+    def __post_init__(self) -> None:
+        exact = (
+            (self.release, VerifiedG1Release),
+            (self.snapshot, VerifiedSnapshotArtifact),
+            (self.snapshot_spec, SnapshotBuildSpec),
+            (self.provider, VerifiedProviderArtifact),
+            (self.provider_spec, ProviderBuildSpec),
+            (self.experiment, VerifiedExperimentIdentity),
+            (self.experiment_spec, ExperimentIdentitySpec),
+            (self.folds, VerifiedFoldPlanArtifact),
+            (self.fold_spec, FoldPlanBuildSpec),
+            (self.feature, VerifiedFeatureArtifact),
+            (self.feature_spec, FeatureBuildSpec),
+            (self.label, VerifiedLabelArtifact),
+            (self.label_spec, LabelBuildSpec),
+            (self.alignment, VerifiedAlignmentArtifact),
+            (self.alignment_spec, AlignmentBuildSpec),
+            (self.model, VerifiedModelArtifact),
+            (self.model_spec, LightgbmTrainingSpec),
+            (self.prediction, VerifiedPredictionArtifact),
+            (self.prediction_spec, PredictionBuildSpec),
+            (self.evaluation_spec, EvaluationSpec),
+            (self.evaluation_upstream_paths, EvaluationUpstreamPaths),
+        )
+        if any(type(value) is not expected for value, expected in exact):
+            raise ValueError("formal evaluation verification context invalid")
+
+
+def _formal_summary_boundary(function: Callable[_P, _T]) -> Callable[_P, _T]:
+    """Expose only stable formal research-summary failures."""
+    @wraps(function)
+    def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _T:
+        rollback_failed = False
+        try:
+            return function(*args, **kwargs)
+        except ArtifactRollbackError:
+            rollback_failed = True
+        except Exception:
+            pass
+        if rollback_failed:
+            raise ValueError("M3_RESEARCH_SUMMARY_ROLLBACK_FAILED") from None
+        raise ValueError("M3_RESEARCH_SUMMARY_ARTIFACT_INVALID") from None
+
+    return wrapped
+
+
+@_formal_summary_boundary
+def build_research_summary_artifact(
+    *,
+    evaluations: Sequence[VerifiedEvaluationArtifact],
+    evaluation_contexts: Sequence[EvaluationFreshVerificationContext],
+    experiment: VerifiedExperimentIdentity,
+    config: LoadedM3Config,
+    horizon_sessions: Literal[5, 10],
+    upstream_paths: ResearchSummaryUpstreamPaths,
+    artifact_roots: Mapping[str, Path],
+    output_root: Path,
+) -> ResearchSummaryManifestV1:
+    """Build one formal fixed-horizon summary from all freshly verified folds."""
+    if not isinstance(output_root, Path) or output_root.name != f"horizon={horizon_sessions}":
+        raise ValueError("formal research summary output root invalid")
+    with ArtifactPublication(output_root) as publication:
+        verified, daily, fold_metrics = _fresh_formal_summary(
+            evaluations=evaluations,
+            evaluation_contexts=evaluation_contexts,
+            experiment=experiment,
+            config=config,
+            horizon_sessions=horizon_sessions,
+            upstream_paths=upstream_paths,
+            artifact_roots=artifact_roots,
+        )
+        daily_raw = _parquet_bytes(daily)
+        fold_raw = _parquet_bytes(fold_metrics)
+        daily_sha = hashlib.sha256(daily_raw).hexdigest()
+        metrics = _summarize_research(
+            daily=daily,
+            experiment_key=experiment.manifest.experiment_key,
+            horizon_sessions=horizon_sessions,
+            model=verified[0].manifest.model,
+            model_version=verified[0].manifest.model_version,
+            folds=tuple(item.manifest.fold for item in verified),
+            daily_sha256=daily_sha,
+        )
+        metrics_raw = _canonical_bytes(asdict(metrics))
+        manifest = _formal_summary_manifest(
+            evaluations=verified,
+            experiment=experiment,
+            config=config,
+            horizon_sessions=horizon_sessions,
+            daily=daily,
+            daily_sha=daily_sha,
+            fold_sha=hashlib.sha256(fold_raw).hexdigest(),
+            metrics_sha=hashlib.sha256(metrics_raw).hexdigest(),
+        )
+        publication.write_bytes("daily_ic.parquet", daily_raw)
+        publication.write_bytes("fold_metrics.parquet", fold_raw)
+        publication.write_bytes("metrics.json", metrics_raw)
+        publication.write_bytes("manifest.json", _canonical_bytes(asdict(manifest)))
+        if (
+            not _read_evaluation_daily(output_root / "daily_ic.parquet").equals(daily)
+            or not _read_fold_metrics(output_root / "fold_metrics.parquet").equals(
+                fold_metrics
+            )
+            or read_research_summary_metrics(output_root / "metrics.json") != metrics
+            or read_research_summary_manifest(output_root / "manifest.json") != manifest
+        ):
+            raise ArtifactPublicationError
+        publication.commit(_SUMMARY_FILES)
+        return manifest
+
+
+@_formal_summary_boundary
+def verify_research_summary_artifact(
+    *,
+    root: Path,
+    receipt_path: Path,
+    evaluations: Sequence[VerifiedEvaluationArtifact],
+    evaluation_contexts: Sequence[EvaluationFreshVerificationContext],
+    experiment: VerifiedExperimentIdentity,
+    config: LoadedM3Config,
+    horizon_sessions: Literal[5, 10],
+    upstream_paths: ResearchSummaryUpstreamPaths,
+    artifact_roots: Mapping[str, Path],
+) -> VerifiedResearchSummaryArtifact:
+    """Freshly rebuild and verify a formal fixed-horizon summary and receipt."""
+    verified, expected_daily, expected_fold_metrics = _fresh_formal_summary(
+        evaluations=evaluations,
+        evaluation_contexts=evaluation_contexts,
+        experiment=experiment,
+        config=config,
+        horizon_sessions=horizon_sessions,
+        upstream_paths=upstream_paths,
+        artifact_roots=artifact_roots,
+    )
+    if (
+        not isinstance(root, Path)
+        or not isinstance(receipt_path, Path)
+        or not root.is_dir()
+        or root.is_symlink()
+        or root.name != f"horizon={horizon_sessions}"
+        or {item.name for item in os.scandir(root)} != _SUMMARY_FILES
+    ):
+        raise ValueError("formal research summary tree drift")
+    raw_manifest = (root / "manifest.json").read_bytes()
+    daily = _read_evaluation_daily(root / "daily_ic.parquet")
+    fold_metrics = _read_fold_metrics(root / "fold_metrics.parquet")
+    metrics = read_research_summary_metrics(root / "metrics.json")
+    manifest = read_research_summary_manifest(root / "manifest.json")
+    expected_metrics = _summarize_research(
+        daily=expected_daily,
+        experiment_key=experiment.manifest.experiment_key,
+        horizon_sessions=horizon_sessions,
+        model=verified[0].manifest.model,
+        model_version=verified[0].manifest.model_version,
+        folds=tuple(item.manifest.fold for item in verified),
+        daily_sha256=_file_sha(root / "daily_ic.parquet"),
+    )
+    expected_manifest = _formal_summary_manifest(
+        evaluations=verified,
+        experiment=experiment,
+        config=config,
+        horizon_sessions=horizon_sessions,
+        daily=expected_daily,
+        daily_sha=_file_sha(root / "daily_ic.parquet"),
+        fold_sha=_file_sha(root / "fold_metrics.parquet"),
+        metrics_sha=_file_sha(root / "metrics.json"),
+    )
+    if (
+        not daily.equals(expected_daily)
+        or not fold_metrics.equals(expected_fold_metrics)
+        or metrics != expected_metrics
+        or manifest != expected_manifest
+    ):
+        raise ValueError("formal research summary content drift")
+    verified_receipt = verify_stage_receipt_with_bytes(
+        receipt_path=receipt_path, artifact_roots=artifact_roots
+    )
+    if verified_receipt is None:
+        raise ValueError("formal research summary receipt missing")
+    receipt = verified_receipt.receipt
+    inputs = _formal_summary_receipt_inputs(verified, experiment, upstream_paths)
+    outputs = tuple(root / name for name in sorted(_SUMMARY_FILES))
+    if (
+        receipt.stage != "research-summary"
+        or receipt.scope != "EXPERIMENT"
+        or receipt.scope_key != experiment.manifest.experiment_key
+        or not _digest_paths_equal(receipt.inputs, inputs, artifact_roots)
+        or not _digest_paths_equal(receipt.outputs, outputs, artifact_roots)
+    ):
+        raise ValueError("formal research summary receipt closure drift")
+    return VerifiedResearchSummaryArtifact(
+        root=root.resolve(strict=True),
+        daily=daily,
+        fold_metrics=fold_metrics,
+        metrics=metrics,
+        manifest=manifest,
+        manifest_sha256=hashlib.sha256(raw_manifest).hexdigest(),
+        summary_receipt_sha256=verified_receipt.sha256,
+    )
 
 
 def build_development_example_research_summary_artifact(
@@ -1200,6 +1639,247 @@ def _fresh_verify_summary_upstreams(
             raise ValueError("research summary evaluation stale")
 
 
+def _fresh_formal_summary(
+    *,
+    evaluations: Sequence[VerifiedEvaluationArtifact],
+    evaluation_contexts: Sequence[EvaluationFreshVerificationContext],
+    experiment: VerifiedExperimentIdentity,
+    config: LoadedM3Config,
+    horizon_sessions: int,
+    upstream_paths: ResearchSummaryUpstreamPaths,
+    artifact_roots: Mapping[str, Path],
+) -> tuple[tuple[VerifiedEvaluationArtifact, ...], pl.DataFrame, pl.DataFrame]:
+    if (
+        not isinstance(evaluations, Sequence)
+        or not isinstance(evaluation_contexts, Sequence)
+        or type(experiment) is not VerifiedExperimentIdentity
+        or type(config) is not LoadedM3Config
+        or type(horizon_sessions) is not int
+        or horizon_sessions not in {5, 10}
+        or type(upstream_paths) is not ResearchSummaryUpstreamPaths
+        or not isinstance(artifact_roots, Mapping)
+        or not evaluations
+        or len(evaluations) != len(evaluation_contexts)
+        or len(evaluations) != len(upstream_paths.evaluation_receipt_paths)
+        or any(type(item) is not VerifiedEvaluationArtifact for item in evaluations)
+        or any(
+            type(item) is not EvaluationFreshVerificationContext
+            for item in evaluation_contexts
+        )
+    ):
+        raise ValueError("formal research summary inputs invalid")
+    supplied = tuple(evaluations)
+    contexts = tuple(evaluation_contexts)
+    receipts = upstream_paths.evaluation_receipt_paths
+    fold_names = tuple(item.manifest.fold for item in supplied)
+    context_folds = tuple(item.evaluation_spec.fold for item in contexts)
+    if (
+        fold_names != tuple(sorted(fold_names))
+        or len(set(fold_names)) != len(fold_names)
+        or context_folds != fold_names
+    ):
+        raise ValueError("formal research summary fold order drift")
+    if not _all_distinct_physical_paths(receipts):
+        raise ValueError("formal research summary receipt paths alias")
+    verified: list[VerifiedEvaluationArtifact] = []
+    for supplied_item, context, receipt_path in zip(
+        supplied, contexts, receipts, strict=True
+    ):
+        fresh = verify_evaluation_artifact(
+            root=supplied_item.root,
+            receipt_path=receipt_path,
+            release=context.release,
+            snapshot=context.snapshot,
+            snapshot_spec=context.snapshot_spec,
+            provider=context.provider,
+            provider_spec=context.provider_spec,
+            experiment=context.experiment,
+            experiment_spec=context.experiment_spec,
+            folds=context.folds,
+            fold_spec=context.fold_spec,
+            feature=context.feature,
+            feature_spec=context.feature_spec,
+            label=context.label,
+            label_spec=context.label_spec,
+            alignment=context.alignment,
+            alignment_spec=context.alignment_spec,
+            model=context.model,
+            model_spec=context.model_spec,
+            prediction=context.prediction,
+            prediction_spec=context.prediction_spec,
+            config=config,
+            spec=context.evaluation_spec,
+            upstream_paths=context.evaluation_upstream_paths,
+            artifact_roots=artifact_roots,
+        )
+        if not _same_formal_evaluation(fresh, supplied_item):
+            raise ValueError("formal research summary evaluation stale")
+        verified.append(fresh)
+    first_context = contexts[0]
+    expected_folds = tuple(item.name for item in first_context.folds.manifest.folds)
+    derived_experiment_receipts = tuple(
+        context.evaluation_upstream_paths.prediction_upstream_paths
+        .feature_upstream_paths.fold_upstream_paths.experiment_receipt_path
+        for context in contexts
+    )
+    if (
+        fold_names != expected_folds
+        or config.scientific_config_sha256
+        != experiment.manifest.scientific_config_sha256
+        or any(
+            context.experiment != experiment
+            or not _same_formal_fold_plan(context.folds, first_context.folds)
+            or context.experiment_spec != first_context.experiment_spec
+            or context.snapshot_spec != first_context.snapshot_spec
+            or context.provider_spec != first_context.provider_spec
+            or context.fold_spec != first_context.fold_spec
+            or context.model_spec != first_context.model_spec
+            or context.evaluation_spec.horizon_sessions != horizon_sessions
+            or context.label_spec.horizon_sessions != horizon_sessions
+            or context.prediction_spec.horizon_sessions != horizon_sessions
+            or item.manifest.horizon_sessions != horizon_sessions
+            or item.manifest.model != verified[0].manifest.model
+            or item.manifest.model_version != verified[0].manifest.model_version
+            or item.manifest.experiment_key != experiment.manifest.experiment_key
+            or item.manifest.scientific_config_sha256
+            != config.scientific_config_sha256
+            for item, context in zip(verified, contexts, strict=True)
+        )
+        or not _all_exact_paths(
+            (upstream_paths.experiment_receipt_path, *derived_experiment_receipts)
+        )
+        or _file_sha(upstream_paths.experiment_receipt_path)
+        != experiment.experiment_receipt_sha256
+    ):
+        raise ValueError("formal research summary identity drift")
+    planned_by_name = {
+        item.name: item for item in first_context.folds.manifest.folds
+    }
+    dates: list[dt.date] = []
+    for item in verified:
+        item_dates = tuple(
+            cast(list[dt.date], item.daily.get_column("as_of").to_list())
+        )
+        if item_dates != planned_by_name[item.manifest.fold].test_dates:
+            raise ValueError("formal research summary test dates drift")
+        dates.extend(item_dates)
+    if len(dates) != len(set(dates)):
+        raise ValueError("formal research summary fold dates overlap")
+    ordered = tuple(verified)
+    daily = pl.concat([item.daily for item in ordered]).sort("as_of")
+    _assert_summary_dates(daily)
+    if tuple(cast(list[dt.date], daily.get_column("as_of").to_list())) != tuple(
+        sorted(dates)
+    ):
+        raise ValueError("formal research summary date closure drift")
+    return ordered, daily, _build_formal_fold_metrics(ordered)
+
+
+def _same_formal_evaluation(
+    left: VerifiedEvaluationArtifact, right: VerifiedEvaluationArtifact
+) -> bool:
+    return (
+        type(left) is VerifiedEvaluationArtifact
+        and left.root == right.root
+        and left.daily.equals(right.daily)
+        and left.metrics == right.metrics
+        and left.manifest == right.manifest
+        and left.manifest_sha256 == right.manifest_sha256
+        and left.evaluation_receipt_sha256 == right.evaluation_receipt_sha256
+    )
+
+
+def _same_formal_fold_plan(
+    left: VerifiedFoldPlanArtifact, right: VerifiedFoldPlanArtifact
+) -> bool:
+    return (
+        type(left) is VerifiedFoldPlanArtifact
+        and left.root == right.root
+        and left.manifest == right.manifest
+        and left.manifest_sha256 == right.manifest_sha256
+        and left.folds_receipt_sha256 == right.folds_receipt_sha256
+    )
+
+
+def _all_distinct_physical_paths(paths: Sequence[Path]) -> bool:
+    if len(paths) != len(set(os.path.normcase(os.path.abspath(path)) for path in paths)):
+        return False
+    try:
+        return all(
+            not os.path.samefile(left, right)
+            for index, left in enumerate(paths)
+            for right in paths[index + 1 :]
+        )
+    except OSError:
+        return False
+
+
+def _build_formal_fold_metrics(
+    evaluations: Sequence[VerifiedEvaluationArtifact],
+) -> pl.DataFrame:
+    return _build_fold_metrics(cast(Any, evaluations))
+
+
+def _formal_summary_manifest(
+    *,
+    evaluations: Sequence[VerifiedEvaluationArtifact],
+    experiment: VerifiedExperimentIdentity,
+    config: LoadedM3Config,
+    horizon_sessions: int,
+    daily: pl.DataFrame,
+    daily_sha: str,
+    fold_sha: str,
+    metrics_sha: str,
+) -> ResearchSummaryManifestV1:
+    return ResearchSummaryManifestV1(
+        schema_version="m3-research-summary-v1",
+        experiment_key=experiment.manifest.experiment_key,
+        horizon_sessions=horizon_sessions,
+        model=evaluations[0].manifest.model,
+        model_version=evaluations[0].manifest.model_version,
+        scientific_config_sha256=config.scientific_config_sha256,
+        folds=tuple(item.manifest.fold for item in evaluations),
+        evaluation_manifest_sha256s=tuple(
+            item.manifest_sha256 for item in evaluations
+        ),
+        evaluation_receipt_sha256s=tuple(
+            item.evaluation_receipt_sha256 for item in evaluations
+        ),
+        test_dates_sha256=_sha_dates(
+            tuple(cast(list[dt.date], daily.get_column("as_of").to_list()))
+        ),
+        daily_sha256=daily_sha,
+        fold_metrics_sha256=fold_sha,
+        metrics_sha256=metrics_sha,
+    )
+
+
+def _formal_summary_receipt_inputs(
+    evaluations: Sequence[VerifiedEvaluationArtifact],
+    experiment: VerifiedExperimentIdentity,
+    upstream_paths: ResearchSummaryUpstreamPaths,
+) -> tuple[Path, ...]:
+    paths = [
+        experiment.root / "experiment_manifest.json",
+        upstream_paths.experiment_receipt_path,
+    ]
+    for item, receipt_path in zip(
+        evaluations, upstream_paths.evaluation_receipt_paths, strict=True
+    ):
+        paths.extend(
+            (
+                item.root / "daily_ic.parquet",
+                item.root / "metrics.json",
+                item.root / "evaluation_manifest.json",
+                receipt_path,
+            )
+        )
+    result = tuple(paths)
+    if not _all_distinct_physical_paths(result):
+        raise ValueError("formal research summary input paths alias")
+    return result
+
+
 def _summary_receipt_inputs(
     evaluations: Sequence[VerifiedDevelopmentExampleEvaluationArtifact],
     experiment: VerifiedDevelopmentExampleExperimentIdentity,
@@ -1236,6 +1916,307 @@ def _read_evaluation_daily(path: Path) -> pl.DataFrame:
     if any(value not in _IC_STATUSES for value in frame.get_column("ic_status")):
         raise ValueError("evaluation daily status drift")
     return frame
+
+
+def _validate_formal_evaluation_inputs(
+    *, release: VerifiedG1Release, snapshot: VerifiedSnapshotArtifact,
+    snapshot_spec: SnapshotBuildSpec, provider: VerifiedProviderArtifact,
+    provider_spec: ProviderBuildSpec, experiment: VerifiedExperimentIdentity,
+    experiment_spec: ExperimentIdentitySpec, folds: VerifiedFoldPlanArtifact,
+    fold_spec: FoldPlanBuildSpec, feature: VerifiedFeatureArtifact,
+    feature_spec: FeatureBuildSpec, label: VerifiedLabelArtifact,
+    label_spec: LabelBuildSpec, alignment: VerifiedAlignmentArtifact,
+    alignment_spec: AlignmentBuildSpec, model: VerifiedModelArtifact,
+    model_spec: LightgbmTrainingSpec, prediction: VerifiedPredictionArtifact,
+    prediction_spec: PredictionBuildSpec, config: LoadedM3Config,
+    spec: EvaluationSpec, upstream_paths: EvaluationUpstreamPaths,
+) -> None:
+    exact = (
+        (release, VerifiedG1Release), (snapshot, VerifiedSnapshotArtifact),
+        (snapshot_spec, SnapshotBuildSpec), (provider, VerifiedProviderArtifact),
+        (provider_spec, ProviderBuildSpec),
+        (experiment, VerifiedExperimentIdentity),
+        (experiment_spec, ExperimentIdentitySpec),
+        (folds, VerifiedFoldPlanArtifact), (fold_spec, FoldPlanBuildSpec),
+        (feature, VerifiedFeatureArtifact), (feature_spec, FeatureBuildSpec),
+        (label, VerifiedLabelArtifact), (label_spec, LabelBuildSpec),
+        (alignment, VerifiedAlignmentArtifact),
+        (alignment_spec, AlignmentBuildSpec), (model, VerifiedModelArtifact),
+        (model_spec, LightgbmTrainingSpec),
+        (prediction, VerifiedPredictionArtifact),
+        (prediction_spec, PredictionBuildSpec), (config, LoadedM3Config),
+        (spec, EvaluationSpec), (upstream_paths, EvaluationUpstreamPaths),
+    )
+    if any(type(value) is not expected for value, expected in exact):
+        raise ValueError("formal evaluation inputs invalid")
+    minimum = config.section("evaluation").get("minimum_ic_symbols")
+    expected_spec = EvaluationSpec(
+        experiment_key=prediction.manifest.experiment_key,
+        work_key=prediction.manifest.work_key,
+        fold=prediction.manifest.fold,
+        horizon_sessions=cast(Any, prediction.manifest.horizon_sessions),
+        minimum_ic_symbols=cast(Any, minimum),
+    )
+    planned = next(
+        (item for item in folds.manifest.folds if item.name == spec.fold), None
+    )
+    test_segment = next(
+        (item for item in feature.manifest.segments if item.name == "test"), None
+    )
+    if (
+        expected_spec != spec
+        or planned is None
+        or test_segment is None
+        or prediction.manifest.feature_manifest_sha256 != feature.manifest_sha256
+        or prediction.manifest.model_manifest_sha256 != model.manifest_sha256
+        or prediction.manifest.eligibility_sha256
+        != test_segment.eligible_keys_sha256
+        or prediction.manifest.n_eligible != test_segment.n_eligible
+        or prediction.manifest.n_scorable != test_segment.n_scorable
+        or prediction.manifest.n_predicted != test_segment.n_scorable
+        or feature.manifest.planned_fold_sha256 != planned.planned_fold_sha256
+        or feature.manifest.experiment_key != experiment.manifest.experiment_key
+        or label.manifest.experiment_key != experiment.manifest.experiment_key
+        or label.manifest.horizon_sessions != spec.horizon_sessions
+        or alignment.manifest.work_key != spec.work_key
+        or alignment.manifest.feature_manifest_sha256 != feature.manifest_sha256
+        or alignment.manifest.label_manifest_sha256 != label.manifest_sha256
+        or model.manifest.work_key != spec.work_key
+        or model.manifest.alignment_manifest_sha256 != alignment.manifest_sha256
+        or model.manifest.model_version != prediction.manifest.model_version
+        or config.scientific_config_sha256
+        != experiment.manifest.scientific_config_sha256
+    ):
+        raise ValueError("formal evaluation identity drift")
+    _validate_evaluation_upstream_paths(upstream_paths)
+
+
+def _validate_evaluation_upstream_paths(paths: EvaluationUpstreamPaths) -> None:
+    prediction = paths.prediction_upstream_paths
+    model = prediction.model_upstream_paths
+    alignment = model.alignment_upstream_paths
+    feature_paths = (
+        paths.feature_receipt_path,
+        prediction.feature_receipt_path,
+        alignment.feature_receipt_path,
+    )
+    fold_paths = (
+        paths.fold_receipt_path,
+        prediction.fold_receipt_path,
+        prediction.feature_upstream_paths.fold_receipt_path,
+        alignment.feature_upstream_paths.fold_receipt_path,
+    )
+    label_paths = (paths.label_receipt_path, alignment.label_receipt_path)
+    experiment_paths = (
+        prediction.feature_upstream_paths.fold_upstream_paths.experiment_receipt_path,
+        alignment.feature_upstream_paths.fold_upstream_paths.experiment_receipt_path,
+    )
+    if not all(
+        _all_exact_paths(group)
+        for group in (feature_paths, fold_paths, label_paths, experiment_paths)
+    ):
+        raise ValueError("evaluation upstream path drift")
+
+
+def _all_exact_paths(paths: Sequence[Path]) -> bool:
+    normalized = tuple(os.path.normcase(os.path.abspath(path)) for path in paths)
+    if len(set(normalized)) != 1:
+        return False
+    try:
+        return all(os.path.samefile(paths[0], path) for path in paths[1:])
+    except OSError:
+        return False
+
+
+def _fresh_formal_evaluation(
+    *, release: VerifiedG1Release, snapshot: VerifiedSnapshotArtifact,
+    snapshot_spec: SnapshotBuildSpec, provider: VerifiedProviderArtifact,
+    provider_spec: ProviderBuildSpec, experiment: VerifiedExperimentIdentity,
+    experiment_spec: ExperimentIdentitySpec, folds: VerifiedFoldPlanArtifact,
+    fold_spec: FoldPlanBuildSpec, feature: VerifiedFeatureArtifact,
+    feature_spec: FeatureBuildSpec, label: VerifiedLabelArtifact,
+    label_spec: LabelBuildSpec, alignment: VerifiedAlignmentArtifact,
+    alignment_spec: AlignmentBuildSpec, model: VerifiedModelArtifact,
+    model_spec: LightgbmTrainingSpec, prediction: VerifiedPredictionArtifact,
+    prediction_spec: PredictionBuildSpec, config: LoadedM3Config,
+    spec: EvaluationSpec, upstream_paths: EvaluationUpstreamPaths,
+    artifact_roots: Mapping[str, Path],
+) -> tuple[
+    pl.DataFrame,
+    Callable[[str], EvaluationMetricsV1],
+    Callable[[str, str], EvaluationManifestV1],
+]:
+    fresh_prediction = verify_prediction_artifact(
+        root=prediction.root,
+        receipt_path=upstream_paths.prediction_receipt_path,
+        release=release, snapshot=snapshot, snapshot_spec=snapshot_spec,
+        provider=provider, provider_spec=provider_spec, experiment=experiment,
+        experiment_spec=experiment_spec, folds=folds, fold_spec=fold_spec,
+        feature=feature, feature_spec=feature_spec, label=label,
+        label_spec=label_spec, alignment=alignment,
+        alignment_spec=alignment_spec, model=model, model_spec=model_spec,
+        config=config, spec=prediction_spec,
+        upstream_paths=upstream_paths.prediction_upstream_paths,
+        artifact_roots=artifact_roots,
+    )
+    if not _same_formal_prediction(fresh_prediction, prediction):
+        raise ValueError("evaluation prediction stale")
+    fresh_label = verify_label_artifact(
+        label_root=label.root,
+        label_receipt_path=upstream_paths.label_receipt_path,
+        release=release, snapshot=snapshot, experiment=experiment, config=config,
+        experiment_spec=experiment_spec, spec=label_spec,
+        artifact_roots=artifact_roots,
+    )
+    if not _same_formal_label(fresh_label, label):
+        raise ValueError("evaluation label stale")
+    _validate_formal_evaluation_inputs(
+        release=release, snapshot=snapshot, snapshot_spec=snapshot_spec,
+        provider=provider, provider_spec=provider_spec, experiment=experiment,
+        experiment_spec=experiment_spec, folds=folds, fold_spec=fold_spec,
+        feature=feature, feature_spec=feature_spec, label=fresh_label,
+        label_spec=label_spec, alignment=alignment,
+        alignment_spec=alignment_spec, model=model, model_spec=model_spec,
+        prediction=fresh_prediction, prediction_spec=prediction_spec,
+        config=config, spec=spec, upstream_paths=upstream_paths,
+    )
+    planned = next(item for item in folds.manifest.folds if item.name == spec.fold)
+    eligible = _formal_eligible_test_keys(release, planned.test_dates)
+    eligibility_sha = canonical_row_keys_sha256(tuple(
+        (day.isoformat(), symbol)
+        for day, symbol in eligible.iter_rows()
+    ))
+    if eligibility_sha != prediction.manifest.eligibility_sha256:
+        raise ValueError("evaluation eligibility identity drift")
+    scorable = _formal_scorable_test_keys(feature)
+    labels = (
+        fresh_label.labels.filter(
+            (pl.col("horizon_sessions") == spec.horizon_sessions)
+            & pl.col("as_of").is_in(list(planned.test_dates))
+        )
+        .select("as_of", "symbol", "relative_return")
+        .sort("as_of", "symbol")
+    )
+    daily = _evaluate_daily_slices(
+        eligible=eligible, scorable=scorable,
+        predictions=fresh_prediction.predictions.select("as_of", "symbol", "score"),
+        labels=labels, evaluation_dates=planned.test_dates,
+        minimum_ic_symbols=spec.minimum_ic_symbols,
+    )
+    if (
+        int(daily.get_column("n_eligible").sum()) == 0
+        or int(daily.get_column("n_labeled").sum()) == 0
+    ):
+        raise ValueError("evaluation empty denominator")
+
+    def metrics_factory(daily_sha: str) -> EvaluationMetricsV1:
+        return _summarize_evaluation(
+            daily=daily, prediction=fresh_prediction, spec=spec,
+            daily_sha256=daily_sha,
+        )
+
+    def manifest_factory(daily_sha: str, metrics_sha: str) -> EvaluationManifestV1:
+        return EvaluationManifestV1(
+            schema_version="m3-evaluation-artifact-v1",
+            experiment_key=spec.experiment_key, work_key=spec.work_key,
+            prediction_manifest_sha256=fresh_prediction.manifest_sha256,
+            label_manifest_sha256=fresh_label.manifest_sha256,
+            feature_manifest_sha256=feature.manifest_sha256,
+            fold_plan_manifest_sha256=folds.manifest_sha256,
+            eligible_keys_sha256=eligibility_sha,
+            evaluation_dates_sha256=_sha_dates(planned.test_dates),
+            scientific_config_sha256=config.scientific_config_sha256,
+            fold=spec.fold, horizon_sessions=spec.horizon_sessions,
+            model=fresh_prediction.manifest.model,
+            model_version=fresh_prediction.manifest.model_version,
+            daily_sha256=daily_sha, metrics_sha256=metrics_sha,
+        )
+
+    return daily, metrics_factory, manifest_factory
+
+
+def _same_formal_prediction(
+    left: VerifiedPredictionArtifact, right: VerifiedPredictionArtifact,
+) -> bool:
+    return (
+        type(left) is VerifiedPredictionArtifact
+        and left.root == right.root
+        and left.predictions.equals(right.predictions)
+        and left.manifest == right.manifest
+        and left.manifest_sha256 == right.manifest_sha256
+        and left.prediction_receipt_sha256 == right.prediction_receipt_sha256
+    )
+
+
+def _same_formal_label(
+    left: VerifiedLabelArtifact, right: VerifiedLabelArtifact,
+) -> bool:
+    return (
+        type(left) is VerifiedLabelArtifact
+        and left.root == right.root
+        and left.labels.equals(right.labels)
+        and left.diagnostics.equals(right.diagnostics)
+        and left.manifest == right.manifest
+        and left.manifest_sha256 == right.manifest_sha256
+        and left.label_receipt_sha256 == right.label_receipt_sha256
+    )
+
+
+def _formal_eligible_test_keys(
+    release: VerifiedG1Release, dates: tuple[dt.date, ...],
+) -> pl.DataFrame:
+    path = dict(release.artifact_paths)["eligible_keys.parquet"]
+    return _validated_keys(
+        pl.read_parquet(path)
+        .select("as_of", "symbol")
+        .filter(pl.col("as_of").is_in(list(dates)))
+        .sort("as_of", "symbol"),
+        value_column=None, name="eligible",
+    )
+
+
+def _formal_scorable_test_keys(feature: VerifiedFeatureArtifact) -> pl.DataFrame:
+    names = feature.manifest.schema.selected_names
+    return _validated_keys(
+        pl.read_parquet(feature.root / "test.parquet")
+        .filter(_scorable_expression(names))
+        .select("as_of", "symbol")
+        .sort("as_of", "symbol"),
+        value_column=None, name="scorable",
+    )
+
+
+def _formal_evaluation_receipt_inputs(
+    release: VerifiedG1Release, feature: VerifiedFeatureArtifact,
+    prediction: VerifiedPredictionArtifact, label: VerifiedLabelArtifact,
+    folds: VerifiedFoldPlanArtifact, experiment: VerifiedExperimentIdentity,
+    upstream_paths: EvaluationUpstreamPaths,
+) -> tuple[Path, ...]:
+    experiment_receipt = (
+        upstream_paths.prediction_upstream_paths.feature_upstream_paths
+        .fold_upstream_paths.experiment_receipt_path
+    )
+    paths = (
+        release.release.manifest_path,
+        dict(release.artifact_paths)["eligible_keys.parquet"],
+        feature.root / "feature_manifest.json", upstream_paths.feature_receipt_path,
+        feature.root / "coverage.parquet", feature.root / "test.parquet",
+        prediction.root / "prediction_manifest.json",
+        upstream_paths.prediction_receipt_path,
+        prediction.root / "predictions.parquet",
+        label.root / "label_manifest.json", upstream_paths.label_receipt_path,
+        label.root / "labels.parquet", label.root / "diagnostics.parquet",
+        folds.root / "folds.json", upstream_paths.fold_receipt_path,
+        experiment.root / "experiment_manifest.json", experiment_receipt,
+    )
+    normalized = tuple(os.path.normcase(os.path.abspath(path)) for path in paths)
+    if len(set(normalized)) != 17:
+        raise ValueError("evaluation receipt input duplicate")
+    for index, left in enumerate(paths):
+        for right in paths[index + 1:]:
+            if os.path.samefile(left, right):
+                raise ValueError("evaluation receipt input alias")
+    return paths
 
 
 def _evaluation_receipt_inputs(
@@ -1466,3 +2447,16 @@ def _write_parquet(frame: pl.DataFrame, path: Path) -> None:
         row_group_size=65536,
         use_pyarrow=False,
     )
+
+
+def _parquet_bytes(frame: pl.DataFrame) -> bytes:
+    buffer = io.BytesIO()
+    frame.write_parquet(
+        buffer,
+        compression="zstd",
+        compression_level=3,
+        statistics=True,
+        row_group_size=65536,
+        use_pyarrow=False,
+    )
+    return buffer.getvalue()

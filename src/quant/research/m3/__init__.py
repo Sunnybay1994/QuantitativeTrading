@@ -1,5 +1,7 @@
 """M3 机器学习研究边界；重依赖仅允许在具体适配器内导入。"""
 
+import importlib
+
 from quant.research.m3.config import (
     ConfigIssue,
     LoadedM3Config,
@@ -100,6 +102,7 @@ from quant.research.m3.contracts import (
     VerifiedEvaluationArtifact,
     VerifiedSnapshotArtifact,
     VerifiedTargetArtifact,
+    VerifiedBacktestPlanArtifact,
     VerifiedExperimentIdentity,
     VerifiedFeatureArtifact,
     VerifiedFoldPlanArtifact,
@@ -145,16 +148,23 @@ from quant.research.m3.development_example import (
     verify_development_example_g1_release,
 )
 from quant.research.m3.alignment import (
+    build_alignment_artifact,
     build_development_example_alignment_artifact,
     build_development_example_inference_segment,
+    build_inference_segment,
     load_development_example_supervised_segment,
+    load_supervised_segment,
     read_alignment_manifest,
+    verify_alignment_artifact,
     verify_development_example_alignment_artifact,
 )
 from quant.research.m3.evaluate import (
+    EvaluationFreshVerificationContext,
+    build_evaluation_artifact,
     build_development_example_evaluation_artifact,
     build_development_example_research_summary_artifact,
     build_evaluation_spec,
+    build_research_summary_artifact,
     rank_ic_by_date,
     read_evaluation_manifest,
     read_evaluation_metrics,
@@ -162,6 +172,8 @@ from quant.research.m3.evaluate import (
     read_research_summary_metrics,
     summarize_prediction_metrics,
     verify_development_example_evaluation_artifact,
+    verify_evaluation_artifact,
+    verify_research_summary_artifact,
     verify_development_example_research_summary_artifact,
 )
 from quant.research.m3.fetch_qlib_tool import (
@@ -169,12 +181,14 @@ from quant.research.m3.fetch_qlib_tool import (
     ensure_qlib_dump_tool,
 )
 from quant.research.m3.features import (
+    build_feature_artifact,
     build_development_example_feature_artifact,
     canonical_row_keys_sha256,
     f64_matrix_sha256,
     feature_schema_sha256,
     feature_segment_content_sha256,
     read_feature_manifest,
+    verify_feature_artifact,
     verify_development_example_feature_artifact,
 )
 from quant.research.m3.folds import (
@@ -207,19 +221,24 @@ from quant.research.m3.labels import (
     verify_label_reconciliation_artifact,
 )
 from quant.research.m3.model import (
+    build_model_artifact,
     build_development_example_model_artifact,
     build_lightgbm_training_spec,
+    predict_fitted_model,
     predict_development_example_fitted_model,
     read_model_manifest,
     training_params_sha256,
+    verify_model_artifact,
     verify_development_example_model_artifact,
 )
 from quant.research.m3.predictions import (
+    build_prediction_artifact,
     build_development_example_prediction_artifact,
     build_prediction_spec,
     normalize_prediction_scores,
     prediction_keys_sha256,
     read_prediction_manifest,
+    verify_prediction_artifact,
     verify_development_example_prediction_artifact,
 )
 from quant.research.m3.orchestration import (
@@ -232,6 +251,7 @@ from quant.research.m3.orchestration import (
     SnapshotStageResult,
     StaticStageResult,
     STAGE_SPEC_REGISTRY,
+    get_m3_stage_registry,
     StageBuildReport,
     StageContext,
     StageNode,
@@ -309,24 +329,31 @@ from quant.research.m3.snapshot import (
     write_staging_by_symbol,
 )
 from quant.research.m3.targets import (
+    build_target_artifact,
     build_development_example_target_artifact,
     build_target_spec,
     read_target_manifest,
     target_keys_sha256,
+    verify_target_artifact,
     verify_development_example_target_artifact,
 )
 from quant.research.m3.tracking import (
+    FormalTrackingFreshVerificationContext,
     RemoteTrackingRunV1,
     TrackingClientProtocol,
     TrackingMarkerV1,
     TrackingRequestV1,
+    build_formal_tracking_request,
     build_tracking_request,
     compute_tracking_key,
     create_mlflow_tracking_client,
+    formal_tracking_input_paths,
+    formal_tracking_upload_paths,
     publish_tracking_marker,
     publish_tracking_request,
     read_tracking_marker,
     read_tracking_request,
+    register_remote_tracking_run,
     register_tracking_request,
 )
 
@@ -362,6 +389,7 @@ __all__ = [
     "TargetUpstreamPaths",
     "TargetManifestV1",
     "VerifiedTargetArtifact",
+    "VerifiedBacktestPlanArtifact",
     "ExperimentIdentitySpec",
     "ExperimentIdentityManifestV1",
     "VerifiedExperimentIdentity",
@@ -410,6 +438,7 @@ __all__ = [
     "ResearchSummaryMetricsV1",
     "ResearchSummaryManifestV1",
     "VerifiedResearchSummaryArtifact",
+    "EvaluationFreshVerificationContext",
     "DevelopmentG1ArtifactEntryV1",
     "DevelopmentExampleG1ManifestV1",
     "DevelopmentExampleG1RequestV1",
@@ -449,6 +478,7 @@ __all__ = [
     "SnapshotStageResult",
     "StaticStageResult",
     "STAGE_SPEC_REGISTRY",
+    "get_m3_stage_registry",
     "StageRunner",
     "make_snapshot_run_plan",
     "make_development_snapshot_run_plan",
@@ -459,6 +489,41 @@ __all__ = [
     "make_label_reconciliation_run_plan",
     "make_summary_run_plan",
     "make_work_run_plan",
+    "FormalBacktestStageResult",
+    "make_formal_backtest_run_plan",
+    "run_formal_backtest_stage",
+    "FormalCliResolveError",
+    "FormalBacktestCliResolution",
+    "FormalReproducibilityCliResolution",
+    "resolve_formal_backtest_cli_inputs",
+    "resolve_formal_reproducibility_cli_inputs",
+    "FormalReproducibilityResult",
+    "M3ReproducibilityError",
+    "run_formal_reproducibility_stage",
+    "verify_formal_reproducibility_artifact",
+    "CommandExecution",
+    "CommandExecutor",
+    "M3QualityGateError",
+    "QualityCheckResultV1",
+    "QualityReportV1",
+    "VerifiedQualityArtifact",
+    "run_quality_gate",
+    "verify_quality_artifact",
+    "AcceptanceDecisionV1",
+    "AcceptanceIssueV1",
+    "EvidenceLocatorV1",
+    "GateName",
+    "GateResultV1",
+    "RemoteTrackingObservationV1",
+    "VerifiedRuntimeIdentity",
+    "FormalTrackingFreshVerificationContext",
+    "FormalTrackingStageResult",
+    "build_formal_tracking_request",
+    "formal_tracking_input_paths",
+    "formal_tracking_upload_paths",
+    "make_formal_tracking_run_plan",
+    "register_remote_tracking_run",
+    "run_formal_tracking_stage",
     "ConfigIssue",
     "LoadedM3Config",
     "M3ConfigError",
@@ -509,26 +574,35 @@ __all__ = [
     "verify_label_artifact",
     "verify_development_example_label_artifact",
     "build_lightgbm_training_spec",
+    "build_model_artifact",
     "build_development_example_model_artifact",
     "read_model_manifest",
+    "verify_model_artifact",
     "verify_development_example_model_artifact",
+    "predict_fitted_model",
     "predict_development_example_fitted_model",
     "training_params_sha256",
     "build_prediction_spec",
+    "build_prediction_artifact",
     "build_development_example_prediction_artifact",
     "read_prediction_manifest",
+    "verify_prediction_artifact",
     "verify_development_example_prediction_artifact",
     "normalize_prediction_scores",
     "prediction_keys_sha256",
     "build_evaluation_spec",
+    "build_evaluation_artifact",
     "build_development_example_evaluation_artifact",
     "read_evaluation_manifest",
     "read_evaluation_metrics",
     "verify_development_example_evaluation_artifact",
+    "verify_evaluation_artifact",
     "build_development_example_research_summary_artifact",
+    "build_research_summary_artifact",
     "read_research_summary_manifest",
     "read_research_summary_metrics",
     "verify_development_example_research_summary_artifact",
+    "verify_research_summary_artifact",
     "reconcile_labels_with_qlib",
     "reconcile_development_example_labels_with_qlib",
     "read_label_reconciliation_summary",
@@ -547,16 +621,22 @@ __all__ = [
     "ensure_qlib_dump_tool",
     "canonical_row_keys_sha256",
     "build_development_example_feature_artifact",
+    "build_feature_artifact",
     "build_development_example_alignment_artifact",
+    "build_alignment_artifact",
     "verify_development_example_alignment_artifact",
+    "verify_alignment_artifact",
     "read_alignment_manifest",
     "load_development_example_supervised_segment",
+    "load_supervised_segment",
     "build_development_example_inference_segment",
+    "build_inference_segment",
     "f64_matrix_sha256",
     "feature_schema_sha256",
     "feature_segment_content_sha256",
     "read_feature_manifest",
     "verify_development_example_feature_artifact",
+    "verify_feature_artifact",
     "M3ProviderError",
     "build_provider_runtime_fingerprint",
     "materialize_qlib_provider",
@@ -592,9 +672,11 @@ __all__ = [
     "to_qlib_symbol",
     "from_qlib_symbol",
     "build_target_spec",
+    "build_target_artifact",
     "build_development_example_target_artifact",
     "read_target_manifest",
     "target_keys_sha256",
+    "verify_target_artifact",
     "verify_development_example_target_artifact",
     "RemoteTrackingRunV1",
     "TrackingClientProtocol",
@@ -622,3 +704,61 @@ __all__ = [
     "verify_stage_receipt_with_bytes",
     "publish_stage_receipt",
 ]
+
+
+def __getattr__(name: str) -> object:
+    if name in {
+        "FormalBacktestStageResult",
+        "make_formal_backtest_run_plan",
+        "run_formal_backtest_stage",
+    }:
+        module = importlib.import_module("quant.research.m3.backtest_stage")
+        return getattr(module, name)
+    if name in {
+        "FormalTrackingStageResult",
+        "make_formal_tracking_run_plan",
+        "run_formal_tracking_stage",
+    }:
+        module = importlib.import_module("quant.research.m3.tracking_stage")
+        return getattr(module, name)
+    if name in {
+        "FormalCliResolveError",
+        "FormalBacktestCliResolution",
+        "FormalReproducibilityCliResolution",
+        "resolve_formal_backtest_cli_inputs",
+        "resolve_formal_reproducibility_cli_inputs",
+    }:
+        module = importlib.import_module("quant.research.m3.formal_cli_resolve")
+        return getattr(module, name)
+    if name in {
+        "FormalReproducibilityResult",
+        "M3ReproducibilityError",
+        "run_formal_reproducibility_stage",
+        "verify_formal_reproducibility_artifact",
+    }:
+        module = importlib.import_module("quant.research.m3.reproducibility")
+        return getattr(module, name)
+    if name in {
+        "CommandExecution",
+        "CommandExecutor",
+        "M3QualityGateError",
+        "QualityCheckResultV1",
+        "QualityReportV1",
+        "VerifiedQualityArtifact",
+        "run_quality_gate",
+        "verify_quality_artifact",
+    }:
+        module = importlib.import_module("quant.research.m3.quality_gate")
+        return getattr(module, name)
+    if name in {
+        "AcceptanceDecisionV1",
+        "AcceptanceIssueV1",
+        "EvidenceLocatorV1",
+        "GateName",
+        "GateResultV1",
+        "RemoteTrackingObservationV1",
+        "VerifiedRuntimeIdentity",
+    }:
+        module = importlib.import_module("quant.research.m3.acceptance")
+        return getattr(module, name)
+    raise AttributeError(name)

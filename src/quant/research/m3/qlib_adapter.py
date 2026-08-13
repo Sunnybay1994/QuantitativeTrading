@@ -12,10 +12,16 @@ import hashlib
 import importlib.metadata
 import json
 import math
+import os
 from pathlib import Path
 from typing import Any, cast
 
 import polars as pl
+
+from quant.research.m3.contracts import (
+    FEATURE_DEVELOPMENT_REQUEST_KEYS,
+    FEATURE_FORMAL_REQUEST_KEYS,
+)
 
 _FIELDS = ("open", "high", "low", "close", "vwap", "volume", "factor")
 _REQUEST_KEYS = {
@@ -31,15 +37,6 @@ _LABEL_REQUEST_KEYS = {
     "provider_key", "qlib_version",
     "provider_uri", "provider_uri_sha256", "horizon_sessions",
     "qlib_expression", "label_rows", "row_key_sha256",
-}
-_EXAMPLE_FEATURE_REQUEST_KEYS = {
-    "schema_version", "worker_protocol_version", "release_kind",
-    "formal_gate_eligible", "example_id", "experiment_key",
-    "experiment_manifest_sha256", "g1_release_id",
-    "g1_release_manifest_sha256", "snapshot_id", "snapshot_manifest_sha256",
-    "provider_key", "provider_manifest_sha256", "provider_receipt_sha256",
-    "fold", "planned_fold_sha256", "scientific_config_sha256",
-    "feature_version", "qlib_version", "segments", "eligible_rows",
 }
 _RAW_SCHEMA = {
     "sample_kind": pl.Utf8,
@@ -60,6 +57,15 @@ _LABEL_RAW_SCHEMA = {
     "qlib_expression_raw": pl.Float64,
     "provider_direct_raw": pl.Float64,
 }
+
+
+def is_qlib_importable() -> bool:
+    """Probe Qlib lazily without spreading its import outside this adapter."""
+    try:
+        import qlib  # type: ignore[import-not-found]  # noqa: F401
+    except ImportError:
+        return False
+    return True
 
 
 def _require_feature_frame_contract(frame: Any, qlib_fields: list[str]) -> None:
@@ -441,36 +447,50 @@ def reconcile_labels(
     response_path.write_bytes(_canonical_bytes(response))
 
 
-def build_development_example_alpha158(request_path: Path, output_root: Path) -> None:
-    """Emit deterministic Alpha158-shaped raw frames without importing Qlib."""
-    request = _strict_json(request_path.read_bytes())
-    if set(request) != _EXAMPLE_FEATURE_REQUEST_KEYS:
-        raise ValueError("development feature worker request schema invalid")
+def _parse_feature_request(
+    request: dict[str, object], *, formal: bool,
+) -> tuple[tuple[tuple[str, str, str], ...], dict[str, list[str]]]:
+    expected_keys = (
+        FEATURE_FORMAL_REQUEST_KEYS
+        if formal else FEATURE_DEVELOPMENT_REQUEST_KEYS
+    )
     identity_names = (
         "experiment_key", "experiment_manifest_sha256", "g1_release_id",
         "g1_release_manifest_sha256", "snapshot_id", "snapshot_manifest_sha256",
         "provider_key", "provider_manifest_sha256", "provider_receipt_sha256",
         "planned_fold_sha256", "scientific_config_sha256",
     )
+    expected_kind = "formal" if formal else "development_example"
     if (
-        request["schema_version"] != "m3-feature-worker-request-v1"
-        or request["worker_protocol_version"] != "m3-qlib-worker-v1"
-        or request["release_kind"] != "development_example"
-        or request["formal_gate_eligible"] is not False
-        or request["qlib_version"] != "0.9.7"
-        or request["feature_version"] != "alpha158_v1"
-        or any(not _is_bare_hex64(request[name]) for name in identity_names)
-        or type(request["example_id"]) is not str
+        set(request) != expected_keys
+        or request.get("schema_version") != "m3-feature-worker-request-v1"
+        or request.get("worker_protocol_version") != "m3-qlib-worker-v1"
+        or request.get("release_kind") != expected_kind
+        or request.get("formal_gate_eligible") is not formal
+        or request.get("qlib_version") != "0.9.7"
+        or request.get("feature_version") != "alpha158_v1"
+        or any(not _is_bare_hex64(request.get(name)) for name in identity_names)
+        or request.get("provider_uri_sha256")
+        != _hash([request.get("provider_key"), "provider"])
+        or type(request.get("fold")) is not str
+        or type(request.get("history_start")) is not str
+    ):
+        raise ValueError("feature worker identity invalid")
+    dt.date.fromisoformat(cast(str, request["history_start"]))
+    if not formal and (
+        type(request.get("example_id")) is not str
         or not cast(str, request["example_id"]).startswith("development-example-")
-        or type(request["fold"]) is not str
     ):
         raise ValueError("development feature worker identity invalid")
-    segments = request["segments"]
-    eligible_rows = request["eligible_rows"]
-    if type(segments) is not dict or set(cast(dict[object, object], segments)) != {
-        "train", "validation", "test"
-    } or type(eligible_rows) is not list:
-        raise ValueError("development feature worker rows invalid")
+    segments = request.get("segments")
+    eligible_rows = request.get("eligible_rows")
+    if (
+        type(segments) is not dict
+        or set(cast(dict[object, object], segments))
+        != {"train", "validation", "test"}
+        or type(eligible_rows) is not list
+    ):
+        raise ValueError("feature worker rows invalid")
     parsed_rows: list[tuple[str, str, str]] = []
     for row in cast(list[object], eligible_rows):
         if (
@@ -478,27 +498,143 @@ def build_development_example_alpha158(request_path: Path, output_root: Path) ->
             or len(cast(list[object], row)) != 3
             or any(type(value) is not str for value in cast(list[object], row))
         ):
-            raise ValueError("development feature eligible row invalid")
+            raise ValueError("feature worker eligible row invalid")
         segment, date_text, symbol = cast(list[str], row)
         if segment not in {"train", "validation", "test"}:
-            raise ValueError("development feature segment invalid")
+            raise ValueError("feature worker segment invalid")
         dt.date.fromisoformat(date_text)
+        _qlib_symbol(symbol)
         parsed_rows.append((segment, date_text, symbol))
     segment_rank = {"train": 0, "validation": 1, "test": 2}
     if tuple(parsed_rows) != tuple(sorted(
         set(parsed_rows), key=lambda row: (segment_rank[row[0]], row[1], row[2])
     )):
-        raise ValueError("development feature rows must be unique and sorted")
+        raise ValueError("feature worker rows must be unique and sorted")
+    clean_segments: dict[str, list[str]] = {}
     for name, values in cast(dict[str, object], segments).items():
         if (
             type(values) is not list
             or any(type(value) is not str for value in cast(list[object], values))
             or tuple(cast(list[str], values))
             != tuple(sorted(set(cast(list[str], values))))
-            or any(dt.date.fromisoformat(value) is None for value in cast(list[str], values))
-            or any(row[1] not in cast(list[str], values) for row in parsed_rows if row[0] == name)
+            or not cast(list[str], values)
+            or any(
+                row[1] not in cast(list[str], values)
+                for row in parsed_rows if row[0] == name
+            )
         ):
-            raise ValueError("development feature segment dates invalid")
+            raise ValueError("feature worker segment dates invalid")
+        for value in cast(list[str], values):
+            dt.date.fromisoformat(value)
+        clean_segments[name] = cast(list[str], values)
+    return tuple(parsed_rows), clean_segments
+
+
+def build_formal_alpha158(request_path: Path, output_root: Path) -> None:
+    """Build formal Alpha158 frames; Qlib is imported only in this worker."""
+    request = _strict_json(request_path.read_bytes())
+    parsed_rows, segments = _parse_feature_request(request, formal=True)
+    if not output_root.is_dir() or any(output_root.iterdir()):
+        raise ValueError("formal feature worker output root must be empty")
+    if importlib.metadata.version("pyqlib") != "0.9.7":
+        raise ValueError("formal feature worker Qlib version invalid")
+    provider_text = os.environ.get("M3_QLIB_PROVIDER_URI")
+    if type(provider_text) is not str or not provider_text:
+        raise ValueError("formal feature worker provider missing")
+    provider_uri = Path(provider_text).resolve(strict=True)
+
+    import pandas as pd  # type: ignore[import-untyped]
+    import qlib  # type: ignore[import-not-found]
+    from qlib.constant import REG_CN  # type: ignore[import-not-found]
+    from qlib.contrib.data.handler import Alpha158  # type: ignore[import-not-found]
+    from qlib.data.dataset import DatasetH  # type: ignore[import-not-found]
+    from qlib.data.dataset.handler import DataHandlerLP  # type: ignore[import-not-found]
+
+    from quant.research.m3.snapshot import from_qlib_symbol
+
+    qlib.init(provider_uri=str(provider_uri), region=REG_CN)
+    segment_bounds = {
+        name: (values[0], values[-1]) for name, values in segments.items()
+    }
+    handler = Alpha158(
+        instruments="all",
+        start_time=cast(str, request["history_start"]),
+        end_time=segments["test"][-1],
+        infer_processors=[], learn_processors=[], label=([], []),
+    )
+    expressions_raw, names_raw = handler.get_feature_config()
+    expressions = tuple(cast(list[str], expressions_raw))
+    names = tuple(cast(list[str], names_raw))
+    if len(names) != 158 or len(set(names)) != 158 or len(expressions) != 158:
+        raise ValueError("formal Alpha158 config invalid")
+    dataset = DatasetH(handler=handler, segments=segment_bounds)
+    eligible = {
+        name: tuple((day, symbol) for segment, day, symbol in parsed_rows if segment == name)
+        for name in ("train", "validation", "test")
+    }
+    for segment in ("train", "validation", "test"):
+        frame = dataset.prepare(
+            segment, col_set="feature", data_key=DataHandlerLP.DK_I
+        )
+        if not isinstance(frame, pd.DataFrame):
+            raise ValueError("formal feature worker frame invalid")
+        if frame.index.nlevels != 2 or set(frame.index.names) != {
+            "datetime", "instrument"
+        }:
+            raise ValueError("formal feature worker index invalid")
+        if getattr(frame.columns, "nlevels", 1) == 2:
+            columns = tuple(frame.columns)
+            if any(item[0] != "feature" for item in columns):
+                raise ValueError("formal feature worker column group invalid")
+            leaf_names = tuple(cast(str, item[1]) for item in columns)
+        elif getattr(frame.columns, "nlevels", 1) == 1:
+            leaf_names = tuple(cast(str, item) for item in frame.columns)
+        else:
+            raise ValueError("formal feature worker columns invalid")
+        if leaf_names != names:
+            raise ValueError("formal feature worker schema drift")
+        values_by_key: dict[tuple[str, str], tuple[float, ...]] = {}
+        for index, values in frame.iterrows():
+            index_map = dict(zip(frame.index.names, index, strict=True))
+            day = _date_only(index_map["datetime"]).isoformat()
+            symbol = from_qlib_symbol(cast(str, index_map["instrument"]))
+            key = (day, symbol)
+            if key not in eligible[segment]:
+                continue
+            if key in values_by_key:
+                raise ValueError("formal feature worker duplicate key")
+            values_by_key[key] = tuple(
+                math.nan if pd.isna(value) else float(value) for value in values
+            )
+        records: list[dict[str, object]] = []
+        for day, symbol in eligible[segment]:
+            row_values = values_by_key.get((day, symbol), (math.nan,) * len(names))
+            records.append({
+                "as_of": dt.date.fromisoformat(day), "symbol": symbol,
+                **dict(zip(names, row_values, strict=True)),
+            })
+        schema = {
+            "as_of": pl.Date, "symbol": pl.Utf8,
+            **{name: pl.Float64 for name in names},
+        }
+        pl.DataFrame(records, schema=schema).select(*schema).write_parquet(
+            output_root / f"raw_{segment}.parquet", compression="zstd",
+            compression_level=3, statistics=True, row_group_size=65536,
+            use_pyarrow=False,
+        )
+    echo_keys = tuple(sorted(FEATURE_FORMAL_REQUEST_KEYS - {"eligible_rows"}))
+    response = {
+        **{key: request[key] for key in echo_keys},
+        "response_schema_version": "m3-feature-worker-response-v1",
+        "input_names": list(names), "expressions": list(expressions),
+    }
+    (output_root / "worker-response.json").write_bytes(_canonical_bytes(response))
+
+
+def build_development_example_alpha158(request_path: Path, output_root: Path) -> None:
+    """Emit deterministic Alpha158-shaped raw frames without importing Qlib."""
+    request = _strict_json(request_path.read_bytes())
+    parsed_rows, _ = _parse_feature_request(request, formal=False)
     if not output_root.is_dir() or any(output_root.iterdir()):
         raise ValueError("development feature worker output root must be empty")
 
@@ -534,7 +670,9 @@ def build_development_example_alpha158(request_path: Path, output_root: Path) ->
             compression="zstd", compression_level=3, statistics=True,
             row_group_size=65536, use_pyarrow=False,
         )
-    echo_keys = tuple(sorted(_EXAMPLE_FEATURE_REQUEST_KEYS - {"eligible_rows"}))
+    echo_keys = tuple(sorted(
+        FEATURE_DEVELOPMENT_REQUEST_KEYS - {"eligible_rows"}
+    ))
     response = {
         **{key: request[key] for key in echo_keys},
         "response_schema_version": "m3-feature-worker-response-v1",
@@ -558,6 +696,9 @@ def main(argv: list[str] | None = None) -> int:
     feature_example = subparsers.add_parser("build-alpha158-example")
     feature_example.add_argument("--request", type=Path, required=True)
     feature_example.add_argument("--output-root", type=Path, required=True)
+    feature_formal = subparsers.add_parser("build-alpha158-formal")
+    feature_formal.add_argument("--request", type=Path, required=True)
+    feature_formal.add_argument("--output-root", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == "validate-provider":
         validate_provider(args.request, args.response, args.details)
@@ -565,6 +706,8 @@ def main(argv: list[str] | None = None) -> int:
         reconcile_labels(args.request, args.response, args.details)
     elif args.command == "build-alpha158-example":
         build_development_example_alpha158(args.request, args.output_root)
+    elif args.command == "build-alpha158-formal":
+        build_formal_alpha158(args.request, args.output_root)
     else:
         raise ValueError("unknown worker command")
     return 0

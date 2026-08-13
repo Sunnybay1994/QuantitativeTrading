@@ -16,6 +16,21 @@ from quant.research.m3.run_state import ArtifactDigest
 
 _HEX64 = frozenset("0123456789abcdef")
 
+FEATURE_REQUEST_COMMON_KEYS = frozenset({
+    "schema_version", "worker_protocol_version", "release_kind",
+    "formal_gate_eligible", "experiment_key", "experiment_manifest_sha256",
+    "g1_release_id", "g1_release_manifest_sha256", "snapshot_id",
+    "snapshot_manifest_sha256", "provider_key", "provider_manifest_sha256",
+    "provider_receipt_sha256", "provider_uri_sha256", "fold",
+    "planned_fold_sha256", "scientific_config_sha256", "feature_version",
+    "qlib_version", "history_start", "segments", "eligible_rows",
+})
+FEATURE_FORMAL_REQUEST_KEYS = FEATURE_REQUEST_COMMON_KEYS
+FEATURE_DEVELOPMENT_REQUEST_KEYS = FEATURE_REQUEST_COMMON_KEYS | {"example_id"}
+FEATURE_RESPONSE_EXTRA_KEYS = frozenset({
+    "response_schema_version", "input_names", "expressions",
+})
+
 
 def _require_bare_hex64(name: str, value: str) -> None:
     if type(value) is not str:
@@ -1726,6 +1741,25 @@ class VerifiedTargetArtifact:
             raise ValueError("verified target artifact 非法")
         _require_bare_hex64("manifest_sha256", self.manifest_sha256)
         _require_bare_hex64("target_receipt_sha256", self.target_receipt_sha256)
+
+
+@dataclass(frozen=True)
+class VerifiedBacktestPlanArtifact:
+    root: Path
+    scheduled_targets: pl.DataFrame
+    manifest: BacktestPlanManifestV1
+    manifest_sha256: str
+    plan_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.root, Path)
+            or not isinstance(self.scheduled_targets, pl.DataFrame)
+            or type(self.manifest) is not BacktestPlanManifestV1
+        ):
+            raise ValueError("verified backtest plan artifact invalid")
+        _require_bare_hex64("manifest_sha256", self.manifest_sha256)
+        _require_bare_hex64("plan_receipt_sha256", self.plan_receipt_sha256)
 
 
 ScenarioName = Literal["0p5x", "1p0x", "2p0x"]

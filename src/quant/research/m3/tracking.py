@@ -10,16 +10,36 @@ import stat
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, fields
+from decimal import Decimal
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 from quant.data._journal_lock import hold_journal_writer_lock
-from quant.research.m3.config import canonical_tracking_target_key
+from quant.data.m3_release import VerifiedG1Release
+from quant.research.m3.config import LoadedM3Config, canonical_tracking_target_key
+from quant.research.m3.contracts import (
+    AShareScenarioMetricsV1,
+    EvaluationMetricsV1,
+    VerifiedBacktestArtifact,
+    VerifiedBacktestPlanArtifact,
+    VerifiedEvaluationArtifact,
+    VerifiedExperimentIdentity,
+    VerifiedTargetArtifact,
+)
 from quant.research.m3.development_example import (
     VerifiedDevelopmentExampleBacktestArtifact,
     VerifiedDevelopmentExampleEvaluationArtifact,
 )
-from quant.research.m3.run_state import ArtifactDigest
+from quant.research.m3.evaluate import (
+    EvaluationFreshVerificationContext,
+    verify_evaluation_artifact,
+)
+from quant.research.m3.run_state import ArtifactDigest, select_artifact_root
+
+if TYPE_CHECKING:
+    from quant.backtest.a_share_reporting import (
+        BacktestArtifactFreshVerificationContext,
+    )
 
 _HEX64 = frozenset("0123456789abcdef")
 _REQUEST_KEYS = (
@@ -58,8 +78,86 @@ _PROTECTED_TAGS = frozenset(
         "quant_work_key",
     }
 )
+_FORMAL_PARAM_KEYS = (
+    "backtest_manifest_sha256",
+    "backtest_plan_manifest_sha256",
+    "backtest_receipt_sha256",
+    "eligible_keys_sha256",
+    "evaluation_dates_sha256",
+    "evaluation_manifest_sha256",
+    "evaluation_receipt_sha256",
+    "experiment_key",
+    "feature_manifest_sha256",
+    "fold",
+    "fold_plan_manifest_sha256",
+    "g1_release_id",
+    "g1_release_manifest_sha256",
+    "horizon_sessions",
+    "label_manifest_sha256",
+    "model",
+    "model_version",
+    "prediction_manifest_sha256",
+    "scenario_count",
+    "scientific_config_sha256",
+    "target_manifest_sha256",
+    "work_key",
+)
+_FORMAL_EVALUATION_FILES = (
+    "daily_ic.parquet",
+    "evaluation_manifest.json",
+    "metrics.json",
+)
+_FORMAL_UPLOAD_BACKTEST_RELATIVE = (
+    "0p5x/manifest.json",
+    "0p5x/metrics.json",
+    "1p0x/manifest.json",
+    "1p0x/metrics.json",
+    "2p0x/manifest.json",
+    "2p0x/metrics.json",
+    "backtest_manifest.json",
+    "backtest_metrics.json",
+)
+_FORMAL_SCENARIO_ORDER: tuple[Literal["0p5x", "1p0x", "2p0x"], ...] = (
+    "0p5x",
+    "1p0x",
+    "2p0x",
+)
+_FORMAL_CONTEXT_ERROR = "M3_FORMAL_TRACKING_CONTEXT_INVALID"
 TrackingStatus = Literal["RUNNING", "FINISHED", "FAILED", "KILLED"]
 
+
+@dataclass(frozen=True)
+class FormalTrackingFreshVerificationContext:
+    """Process-local inputs required to freshly verify formal tracking sources."""
+
+    evaluation_context: EvaluationFreshVerificationContext
+    evaluation_receipt_path: Path
+    target: VerifiedTargetArtifact
+    plan: VerifiedBacktestPlanArtifact
+    release: VerifiedG1Release
+    experiment: VerifiedExperimentIdentity
+    backtest_context: BacktestArtifactFreshVerificationContext
+    backtest_receipt_path: Path
+
+    def __post_init__(self) -> None:
+        from quant.backtest.a_share_reporting import (
+            BacktestArtifactFreshVerificationContext as BacktestFreshContext,
+        )
+
+        if (
+            type(self.evaluation_context) is not EvaluationFreshVerificationContext
+            or not isinstance(self.evaluation_receipt_path, Path)
+            or type(self.target) is not VerifiedTargetArtifact
+            or type(self.plan) is not VerifiedBacktestPlanArtifact
+            or type(self.release) is not VerifiedG1Release
+            or type(self.experiment) is not VerifiedExperimentIdentity
+            or type(self.backtest_context) is not BacktestFreshContext
+            or not isinstance(self.backtest_receipt_path, Path)
+        ):
+            raise ValueError(_FORMAL_CONTEXT_ERROR)
+
+    def __reduce__(self) -> Any:
+        raise TypeError(_FORMAL_CONTEXT_ERROR)
 
 @dataclass(frozen=True)
 class TrackingRequestV1:
@@ -141,6 +239,89 @@ class TrackingClientProtocol(Protocol):
     ) -> None: ...
 
     def finish_run(self, *, run_id: str) -> None: ...
+
+
+def formal_tracking_input_paths(
+    *,
+    evaluation: VerifiedEvaluationArtifact,
+    backtest: VerifiedBacktestArtifact,
+    fresh_context: FormalTrackingFreshVerificationContext,
+) -> tuple[Path, ...]:
+    """Return the exact unordered physical 34-file formal tracking input closure."""
+    from quant.backtest.a_share_reporting import backtest_artifact_output_relative_paths
+
+    if (
+        type(evaluation) is not VerifiedEvaluationArtifact
+        or type(backtest) is not VerifiedBacktestArtifact
+        or type(fresh_context) is not FormalTrackingFreshVerificationContext
+    ):
+        raise ValueError("formal tracking input identity invalid")
+    evaluation_paths = tuple(
+        Path(os.path.abspath(evaluation.root / name))
+        for name in _FORMAL_EVALUATION_FILES
+    )
+    backtest_paths = tuple(
+        Path(os.path.abspath(backtest.root / name))
+        for name in backtest_artifact_output_relative_paths()
+    )
+    result = (
+        *evaluation_paths,
+        Path(os.path.abspath(fresh_context.evaluation_receipt_path)),
+        *backtest_paths,
+        Path(os.path.abspath(fresh_context.backtest_receipt_path)),
+    )
+    if len(result) != 34 or len(set(result)) != 34:
+        raise ValueError("formal tracking input closure invalid")
+    return result
+
+
+def formal_tracking_upload_paths(
+    *,
+    evaluation: VerifiedEvaluationArtifact,
+    backtest: VerifiedBacktestArtifact,
+) -> tuple[Path, ...]:
+    """Return the exact 11-file MLflow upload allowlist for formal tracking."""
+    if (
+        type(evaluation) is not VerifiedEvaluationArtifact
+        or type(backtest) is not VerifiedBacktestArtifact
+    ):
+        raise ValueError("formal tracking upload identity invalid")
+    evaluation_paths = tuple(
+        Path(os.path.abspath(evaluation.root / name))
+        for name in _FORMAL_EVALUATION_FILES
+    )
+    backtest_paths = tuple(
+        Path(os.path.abspath(backtest.root / name))
+        for name in _FORMAL_UPLOAD_BACKTEST_RELATIVE
+    )
+    result = (*evaluation_paths, *backtest_paths)
+    if len(result) != 11 or len(set(result)) != 11:
+        raise ValueError("formal tracking upload closure invalid")
+    return result
+
+
+def build_formal_tracking_request(
+    *,
+    evaluation: VerifiedEvaluationArtifact,
+    backtest: VerifiedBacktestArtifact,
+    config: LoadedM3Config,
+    fresh_context: FormalTrackingFreshVerificationContext,
+    artifact_roots: Mapping[str, Path],
+) -> TrackingRequestV1:
+    """Build a secret-free formal tracking request from freshly verified work artifacts."""
+    fresh_evaluation, fresh_backtest = _fresh_formal_tracking_sources(
+        evaluation=evaluation,
+        backtest=backtest,
+        config=config,
+        fresh_context=fresh_context,
+        artifact_roots=artifact_roots,
+    )
+    return _build_formal_tracking_request_from_fresh(
+        evaluation=fresh_evaluation,
+        backtest=fresh_backtest,
+        config=config,
+        artifact_roots=artifact_roots,
+    )
 
 
 def build_tracking_request(
@@ -312,13 +493,6 @@ def register_tracking_request(
     lock_root = marker_path.parent / ".tracking-locks" / target_key / tracking_key
     lock_root.mkdir(parents=True, exist_ok=True)
     with hold_journal_writer_lock(journal_root=lock_root.resolve(strict=True)):
-        expected_tags = {
-            "quant_tracking_key": tracking_key,
-            "quant_tracking_target_key": target_key,
-            "quant_request_sha256": request_sha,
-            "quant_artifact_digest_sha256": artifact_sha,
-            "quant_work_key": request.work_key,
-        }
         local_marker: TrackingMarkerV1 | None = None
         if marker_path.exists() or marker_path.is_symlink():
             local_marker = read_tracking_marker(marker_path)
@@ -336,57 +510,67 @@ def register_tracking_request(
             )
             if actual_marker_identity != expected_marker_identity:
                 raise ValueError("local tracking marker identity conflict")
-        matches = tuple(
-            remote.find_runs(
-                experiment_name=experiment_name,
-                tracking_key=tracking_key,
-            )
-        )
-        if len(matches) > 1:
-            raise ValueError("multiple remote tracking runs")
-        if local_marker is not None and not matches:
-            raise ValueError("local tracking marker has no remote run")
-        if matches:
-            run = matches[0]
-            _validate_remote_run(run, expected_tags)
-            if local_marker is not None and run.run_id != local_marker.mlflow_run_id:
-                raise ValueError("local and remote tracking run conflict")
-            marker = _marker(
-                request=request,
-                tracking_key=tracking_key,
-                request_sha=request_sha,
-                artifact_sha=artifact_sha,
-                run_id=run.run_id,
-            )
-            publish_tracking_marker(path=marker_path, marker=marker)
-            return marker
-
-        run_id = remote.create_run(
-            experiment_name=experiment_name,
-            tags={**dict(request.tags), **expected_tags},
-        )
-        _require_stable_string("mlflow_run_id", run_id)
-        remote.log_params(run_id=run_id, params=dict(request.params))
-        remote.log_metrics(run_id=run_id, metrics=dict(request.metrics))
-        for digest in request.artifacts:
-            local = roots[digest.root_alias] / PurePosixPath(digest.relative_path)
-            parent = PurePosixPath(digest.relative_path).parent.as_posix()
-            artifact_path = digest.root_alias if parent == "." else f"{digest.root_alias}/{parent}"
-            remote.log_artifact(
-                run_id=run_id,
-                local_path=local,
-                artifact_path=artifact_path,
-            )
-        remote.finish_run(run_id=run_id)
-        marker = _marker(
+        marker = _register_remote_locked(
             request=request,
-            tracking_key=tracking_key,
             request_sha=request_sha,
+            tracking_key=tracking_key,
             artifact_sha=artifact_sha,
-            run_id=run_id,
+            experiment_name=experiment_name,
+            roots=roots,
+            remote=remote,
+            local_marker=local_marker,
         )
         publish_tracking_marker(path=marker_path, marker=marker)
         return marker
+
+
+def register_remote_tracking_run(
+    *,
+    request: TrackingRequestV1,
+    request_sha256: str,
+    tracking_uri: str,
+    experiment_name: str,
+    artifact_roots: Mapping[str, Path],
+    lock_root: Path,
+    client: TrackingClientProtocol | None = None,
+) -> TrackingMarkerV1:
+    """Idempotently register one request remotely without writing journal files."""
+    if type(request) is not TrackingRequestV1 or not isinstance(lock_root, Path):
+        raise ValueError("remote tracking registration input invalid")
+    expected_sha = hashlib.sha256(
+        _canonical_bytes(_request_mapping(request))
+    ).hexdigest()
+    if (
+        type(request_sha256) is not str
+        or request_sha256 != expected_sha
+        or len(request_sha256) != 64
+    ):
+        raise ValueError("tracking request digest mismatch")
+    target_key = canonical_tracking_target_key(
+        tracking_uri=tracking_uri,
+        experiment_name=experiment_name,
+    )
+    if target_key != request.tracking_target_key:
+        raise ValueError("tracking target identity mismatch")
+    tracking_key = compute_tracking_key(
+        work_key=request.work_key, request_sha256=request_sha256
+    )
+    artifact_sha = _artifact_digest_sha256(request.artifacts)
+    roots = _validate_artifact_roots(artifact_roots)
+    _verify_artifacts(request.artifacts, roots)
+    remote = client or create_mlflow_tracking_client(tracking_uri=tracking_uri)
+    lock_root.mkdir(parents=True, exist_ok=True)
+    with hold_journal_writer_lock(journal_root=lock_root.resolve(strict=True)):
+        return _register_remote_locked(
+            request=request,
+            request_sha=request_sha256,
+            tracking_key=tracking_key,
+            artifact_sha=artifact_sha,
+            experiment_name=experiment_name,
+            roots=roots,
+            remote=remote,
+            local_marker=None,
+        )
 
 
 def create_mlflow_tracking_client(*, tracking_uri: str) -> TrackingClientProtocol:
@@ -479,6 +663,364 @@ def log_m3_run(
         for path in artifacts:
             mlflow.log_artifact(str(path))
         return cast(str, run.info.run_id)
+
+
+def _register_remote_locked(
+    *,
+    request: TrackingRequestV1,
+    request_sha: str,
+    tracking_key: str,
+    artifact_sha: str,
+    experiment_name: str,
+    roots: Mapping[str, Path],
+    remote: TrackingClientProtocol,
+    local_marker: TrackingMarkerV1 | None,
+) -> TrackingMarkerV1:
+    expected_tags = {
+        "quant_tracking_key": tracking_key,
+        "quant_tracking_target_key": request.tracking_target_key,
+        "quant_request_sha256": request_sha,
+        "quant_artifact_digest_sha256": artifact_sha,
+        "quant_work_key": request.work_key,
+    }
+    matches = tuple(
+        remote.find_runs(
+            experiment_name=experiment_name,
+            tracking_key=tracking_key,
+        )
+    )
+    if len(matches) > 1:
+        raise ValueError("multiple remote tracking runs")
+    if local_marker is not None and not matches:
+        raise ValueError("local tracking marker has no remote run")
+    if matches:
+        run = matches[0]
+        _validate_remote_run(run, {**dict(request.tags), **expected_tags})
+        if local_marker is not None and run.run_id != local_marker.mlflow_run_id:
+            raise ValueError("local and remote tracking run conflict")
+        return _marker(
+            request=request,
+            tracking_key=tracking_key,
+            request_sha=request_sha,
+            artifact_sha=artifact_sha,
+            run_id=run.run_id,
+        )
+
+    run_id = remote.create_run(
+        experiment_name=experiment_name,
+        tags={**dict(request.tags), **expected_tags},
+    )
+    _require_stable_string("mlflow_run_id", run_id)
+    remote.log_params(run_id=run_id, params=dict(request.params))
+    remote.log_metrics(run_id=run_id, metrics=dict(request.metrics))
+    for digest in request.artifacts:
+        local = roots[digest.root_alias] / PurePosixPath(digest.relative_path)
+        parent = PurePosixPath(digest.relative_path).parent.as_posix()
+        artifact_path = (
+            digest.root_alias if parent == "." else f"{digest.root_alias}/{parent}"
+        )
+        remote.log_artifact(
+            run_id=run_id,
+            local_path=local,
+            artifact_path=artifact_path,
+        )
+    remote.finish_run(run_id=run_id)
+    return _marker(
+        request=request,
+        tracking_key=tracking_key,
+        request_sha=request_sha,
+        artifact_sha=artifact_sha,
+        run_id=run_id,
+    )
+
+
+def _fresh_formal_tracking_sources(
+    *,
+    evaluation: VerifiedEvaluationArtifact,
+    backtest: VerifiedBacktestArtifact,
+    config: LoadedM3Config,
+    fresh_context: FormalTrackingFreshVerificationContext,
+    artifact_roots: Mapping[str, Path],
+) -> tuple[VerifiedEvaluationArtifact, VerifiedBacktestArtifact]:
+    from quant.backtest.a_share_reporting import verify_backtest_artifact
+
+    if (
+        type(evaluation) is not VerifiedEvaluationArtifact
+        or type(backtest) is not VerifiedBacktestArtifact
+        or type(config) is not LoadedM3Config
+        or type(fresh_context) is not FormalTrackingFreshVerificationContext
+        or not isinstance(artifact_roots, Mapping)
+        or not artifact_roots
+    ):
+        raise ValueError("formal tracking fresh input invalid")
+    evaluation_context = fresh_context.evaluation_context
+    fresh_evaluation = verify_evaluation_artifact(
+        root=evaluation.root,
+        receipt_path=fresh_context.evaluation_receipt_path,
+        release=evaluation_context.release,
+        snapshot=evaluation_context.snapshot,
+        snapshot_spec=evaluation_context.snapshot_spec,
+        provider=evaluation_context.provider,
+        provider_spec=evaluation_context.provider_spec,
+        experiment=evaluation_context.experiment,
+        experiment_spec=evaluation_context.experiment_spec,
+        folds=evaluation_context.folds,
+        fold_spec=evaluation_context.fold_spec,
+        feature=evaluation_context.feature,
+        feature_spec=evaluation_context.feature_spec,
+        label=evaluation_context.label,
+        label_spec=evaluation_context.label_spec,
+        alignment=evaluation_context.alignment,
+        alignment_spec=evaluation_context.alignment_spec,
+        model=evaluation_context.model,
+        model_spec=evaluation_context.model_spec,
+        prediction=evaluation_context.prediction,
+        prediction_spec=evaluation_context.prediction_spec,
+        config=config,
+        spec=evaluation_context.evaluation_spec,
+        upstream_paths=evaluation_context.evaluation_upstream_paths,
+        artifact_roots=artifact_roots,
+    )
+    fresh_backtest = verify_backtest_artifact(
+        root=backtest.root,
+        receipt_path=fresh_context.backtest_receipt_path,
+        target=fresh_context.target,
+        plan=fresh_context.plan,
+        release=fresh_context.release,
+        experiment=fresh_context.experiment,
+        config=config,
+        fresh_context=fresh_context.backtest_context,
+        artifact_roots=artifact_roots,
+    )
+    _assert_fresh_evaluation_matches(evaluation, fresh_evaluation)
+    _assert_fresh_backtest_matches(backtest, fresh_backtest)
+    _assert_formal_tracking_identity_chain(
+        evaluation=fresh_evaluation,
+        backtest=fresh_backtest,
+        config=config,
+        fresh_context=fresh_context,
+    )
+    return fresh_evaluation, fresh_backtest
+
+
+def _assert_fresh_evaluation_matches(
+    outer: VerifiedEvaluationArtifact,
+    fresh: VerifiedEvaluationArtifact,
+) -> None:
+    if (
+        type(fresh) is not VerifiedEvaluationArtifact
+        or fresh.root.resolve(strict=True) != outer.root.resolve(strict=True)
+        or not fresh.daily.equals(outer.daily)
+        or fresh.metrics != outer.metrics
+        or fresh.manifest != outer.manifest
+        or fresh.manifest_sha256 != outer.manifest_sha256
+        or fresh.evaluation_receipt_sha256 != outer.evaluation_receipt_sha256
+    ):
+        raise ValueError("formal tracking evaluation fresh mismatch")
+
+
+def _assert_fresh_backtest_matches(
+    outer: VerifiedBacktestArtifact,
+    fresh: VerifiedBacktestArtifact,
+) -> None:
+    if (
+        type(fresh) is not VerifiedBacktestArtifact
+        or fresh.root.resolve(strict=True) != outer.root.resolve(strict=True)
+        or fresh.metrics != outer.metrics
+        or fresh.manifest != outer.manifest
+        or fresh.manifest_sha256 != outer.manifest_sha256
+        or fresh.backtest_receipt_sha256 != outer.backtest_receipt_sha256
+    ):
+        raise ValueError("formal tracking backtest fresh mismatch")
+
+
+def _assert_formal_tracking_identity_chain(
+    *,
+    evaluation: VerifiedEvaluationArtifact,
+    backtest: VerifiedBacktestArtifact,
+    config: LoadedM3Config,
+    fresh_context: FormalTrackingFreshVerificationContext,
+) -> None:
+    evaluation_manifest = evaluation.manifest
+    backtest_manifest = backtest.manifest
+    target_manifest = fresh_context.target.manifest
+    plan_manifest = fresh_context.plan.manifest
+    evaluation_context = fresh_context.evaluation_context
+    facts = fresh_context.backtest_context.facts_fresh_context
+    if (
+        evaluation_manifest.work_key != backtest_manifest.work_key
+        or evaluation_manifest.experiment_key != backtest_manifest.experiment_key
+        or evaluation_manifest.scientific_config_sha256
+        != backtest_manifest.scientific_config_sha256
+        or evaluation_manifest.fold != target_manifest.fold
+        or evaluation_manifest.horizon_sessions != target_manifest.horizon_sessions
+        or evaluation_manifest.model != target_manifest.model
+        or evaluation_manifest.model_version != target_manifest.model_version
+        or plan_manifest.work_key != backtest_manifest.work_key
+        or plan_manifest.fold != target_manifest.fold
+        or plan_manifest.horizon_sessions != target_manifest.horizon_sessions
+        or plan_manifest.experiment_key != backtest_manifest.experiment_key
+        or plan_manifest.scientific_config_sha256
+        != backtest_manifest.scientific_config_sha256
+        or target_manifest.work_key != backtest_manifest.work_key
+        or target_manifest.experiment_key != backtest_manifest.experiment_key
+        or target_manifest.scientific_config_sha256
+        != backtest_manifest.scientific_config_sha256
+        or evaluation_context.release is not fresh_context.release
+        or evaluation_context.experiment is not fresh_context.experiment
+        or facts.config is not config
+        or facts.experiment is not fresh_context.experiment
+        or facts.target is not fresh_context.target
+        or fresh_context.backtest_context.facts_fresh_context.config.scientific_config_sha256
+        != config.scientific_config_sha256
+        or evaluation_manifest.scientific_config_sha256 != config.scientific_config_sha256
+        or backtest_manifest.scientific_config_sha256 != config.scientific_config_sha256
+        or evaluation_context.experiment.manifest.experiment_key
+        != evaluation_manifest.experiment_key
+        or fresh_context.experiment.manifest.experiment_key
+        != evaluation_manifest.experiment_key
+        or fresh_context.release.manifest.release_id
+        != backtest_manifest.g1_release_id
+        or fresh_context.release.manifest_sha256
+        != backtest_manifest.g1_release_manifest_sha256
+        or evaluation_context.evaluation_spec.work_key != evaluation_manifest.work_key
+        or evaluation_context.evaluation_spec.fold != evaluation_manifest.fold
+        or evaluation_context.evaluation_spec.horizon_sessions
+        != evaluation_manifest.horizon_sessions
+        or evaluation_context.evaluation_spec.experiment_key
+        != evaluation_manifest.experiment_key
+    ):
+        raise ValueError("formal tracking identity chain invalid")
+
+
+def _build_formal_tracking_request_from_fresh(
+    *,
+    evaluation: VerifiedEvaluationArtifact,
+    backtest: VerifiedBacktestArtifact,
+    config: LoadedM3Config,
+    artifact_roots: Mapping[str, Path],
+) -> TrackingRequestV1:
+    experiment_name = config.section("tracking")["experiment_name"]
+    if type(experiment_name) is not str:
+        raise ValueError("tracking experiment_name invalid")
+    expected_target = canonical_tracking_target_key(
+        tracking_uri=config.canonical_tracking_uri,
+        experiment_name=experiment_name,
+    )
+    if config.tracking_target_key != expected_target:
+        raise ValueError("tracking target identity mismatch")
+    evaluation_manifest = evaluation.manifest
+    backtest_manifest = backtest.manifest
+    work_key = evaluation_manifest.work_key
+    if work_key != backtest_manifest.work_key:
+        raise ValueError("formal tracking work identity mismatch")
+    params = {
+        "backtest_manifest_sha256": backtest.manifest_sha256,
+        "backtest_plan_manifest_sha256": backtest_manifest.backtest_plan_manifest_sha256,
+        "backtest_receipt_sha256": backtest.backtest_receipt_sha256,
+        "eligible_keys_sha256": evaluation_manifest.eligible_keys_sha256,
+        "evaluation_dates_sha256": evaluation_manifest.evaluation_dates_sha256,
+        "evaluation_manifest_sha256": evaluation.manifest_sha256,
+        "evaluation_receipt_sha256": evaluation.evaluation_receipt_sha256,
+        "experiment_key": evaluation_manifest.experiment_key,
+        "feature_manifest_sha256": evaluation_manifest.feature_manifest_sha256,
+        "fold": evaluation_manifest.fold,
+        "fold_plan_manifest_sha256": evaluation_manifest.fold_plan_manifest_sha256,
+        "g1_release_id": backtest_manifest.g1_release_id,
+        "g1_release_manifest_sha256": backtest_manifest.g1_release_manifest_sha256,
+        "horizon_sessions": evaluation_manifest.horizon_sessions,
+        "label_manifest_sha256": evaluation_manifest.label_manifest_sha256,
+        "model": evaluation_manifest.model,
+        "model_version": evaluation_manifest.model_version,
+        "prediction_manifest_sha256": evaluation_manifest.prediction_manifest_sha256,
+        "scenario_count": "3",
+        "scientific_config_sha256": evaluation_manifest.scientific_config_sha256,
+        "target_manifest_sha256": backtest_manifest.target_manifest_sha256,
+        "work_key": work_key,
+    }
+    if tuple(sorted(params)) != _FORMAL_PARAM_KEYS:
+        raise ValueError("formal tracking params closure invalid")
+    metric_values: dict[str, float] = {}
+    metric_values.update(_formal_numeric_metrics("evaluation", evaluation.metrics))
+    scenarios = {
+        item.scenario: item for item in backtest.metrics.scenarios
+    }
+    for scenario in _FORMAL_SCENARIO_ORDER:
+        metric_values.update(
+            _formal_numeric_metrics(f"backtest.{scenario}", scenarios[scenario])
+        )
+    artifacts = tuple(
+        sorted(
+            (
+                _digest_path(path, artifact_roots=artifact_roots)
+                for path in formal_tracking_upload_paths(
+                    evaluation=evaluation,
+                    backtest=backtest,
+                )
+            ),
+            key=_artifact_key,
+        )
+    )
+    if len(artifacts) != 11:
+        raise ValueError("formal tracking upload digests invalid")
+    tags = {
+        "formal_gate_eligible": "true",
+        "release_kind": "formal",
+    }
+    _assert_safe_value(params, "params")
+    _assert_safe_value(tags, "tags")
+    return TrackingRequestV1(
+        schema_version="m3-tracking-request-v1",
+        tracking_target_key=config.tracking_target_key,
+        work_key=work_key,
+        params=tuple(
+            (key, _stringify(params[key])) for key in _FORMAL_PARAM_KEYS
+        ),
+        tags=tuple(sorted((key, value) for key, value in tags.items())),
+        metrics=tuple(sorted(metric_values.items())),
+        artifacts=artifacts,
+    )
+
+
+def _formal_numeric_metrics(prefix: str, value: object) -> dict[str, float]:
+    if type(value) not in {EvaluationMetricsV1, AShareScenarioMetricsV1}:
+        raise ValueError("formal tracking metrics type invalid")
+    result: dict[str, float] = {}
+    for field in fields(cast(Any, value)):
+        if field.name in {"schema_version", "status_counts", "scenario"}:
+            continue
+        item = getattr(value, field.name)
+        if item is None:
+            continue
+        if isinstance(item, Decimal):
+            raise ValueError("formal tracking metric decimal drift")
+        if type(item) is bool or type(item) not in {int, float}:
+            continue
+        number = float(item)
+        if not math.isfinite(number):
+            raise ValueError("tracking metric is not finite")
+        result[f"{prefix}.{field.name}"] = number
+    return result
+
+
+def _digest_path(
+    path: Path,
+    *,
+    artifact_roots: Mapping[str, Path],
+) -> ArtifactDigest:
+    absolute = Path(os.path.abspath(path))
+    alias, root = select_artifact_root(absolute, artifact_roots=artifact_roots)
+    resolved = absolute.resolve(strict=True)
+    if os.path.normcase(str(resolved)) != os.path.normcase(str(absolute)):
+        raise ValueError("tracking artifact path invalid")
+    raw = _read_regular(absolute)
+    relative = resolved.relative_to(root).as_posix()
+    return ArtifactDigest(
+        root_alias=alias,
+        relative_path=relative,
+        size_bytes=len(raw),
+        sha256=hashlib.sha256(raw).hexdigest(),
+    )
 
 
 def _marker(
