@@ -1641,6 +1641,11 @@ STAGE_SPEC_REGISTRY: Mapping[str, StageSpec] = MappingProxyType({
 })
 STAGE_REGISTRY = STAGE_SPEC_REGISTRY
 
+
+def get_m3_stage_registry() -> Mapping[str, StageSpec]:
+    """Return the single immutable G8/G9 stage registry."""
+    return STAGE_SPEC_REGISTRY
+
 ExperimentArtifact = (
     VerifiedExperimentIdentity | VerifiedDevelopmentExampleExperimentIdentity
 )

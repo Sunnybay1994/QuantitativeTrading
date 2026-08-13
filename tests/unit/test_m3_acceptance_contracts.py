@@ -15,8 +15,18 @@ from quant.research.m3.acceptance import (
     VerifiedRuntimeIdentity,
 )
 from quant.research.m3.run_state import ArtifactDigest
+from quant.research.m3.orchestration import STAGE_SPEC_REGISTRY, get_m3_stage_registry
 
 _HEX = "a" * 64
+
+
+def test_public_stage_registry_is_single_and_immutable() -> None:
+    registry = get_m3_stage_registry()
+    assert registry is STAGE_SPEC_REGISTRY
+    assert get_m3_stage_registry() is registry
+    assert registry["quality"].scope == "ACCEPTANCE"
+    with pytest.raises(TypeError):
+        registry["hostile"] = registry["quality"]  # type: ignore[index]
 
 
 def _digest(path: str) -> ArtifactDigest:
