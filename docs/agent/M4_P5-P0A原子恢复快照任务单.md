@@ -1,6 +1,6 @@
 # M4-P5-P0A 原子恢复快照任务单
 
-状态：冻结实现边界；本包只提供 P5 的 typed read prerequisite，不关闭 P5/M4/Linux Gate。
+状态：实现、外部独立初验与主 Agent 最终验收均已通过；本包只提供 P5 的 typed read prerequisite，不关闭 P5/M4/Linux Gate。
 
 ## 目标与接口
 

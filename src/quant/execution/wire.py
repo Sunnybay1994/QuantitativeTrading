@@ -33,9 +33,11 @@ from quant.domain.enums import (
     TimeInForce,
 )
 from quant.execution.contracts import (
+    CancelCommand,
     ExecutionEvent,
     OrderCommand,
     OrderIntent,
+    build_cancel_command_identity,
     build_execution_event,
     build_execution_event_identity,
     build_fee_component,
@@ -49,16 +51,90 @@ from quant.execution.oms import OrderAggregate
 _COMMAND_SCHEMA = "m4-order-command-v1"
 _EVENT_SCHEMA = "m4-execution-event-v1"
 _AGGREGATE_SCHEMA = "m4-order-aggregate-v1"
+_CANCEL_SCHEMA = "m4-cancel-command-v1"
 
 __all__ = [
     "WireError",
+    "decode_cancel_command",
     "decode_execution_event",
     "decode_order_aggregate",
     "decode_order_command",
+    "encode_cancel_command",
     "encode_execution_event",
     "encode_order_aggregate",
     "encode_order_command",
 ]
+
+
+def encode_cancel_command(value: CancelCommand) -> bytes:
+    """Encode one self-proving PAPER cancel request."""
+    try:
+        build_cancel_command_identity(value)
+        return _canonical(
+            {
+                "aggregate_status": value.aggregate_status.value,
+                "as_of": _datetime_text(value.as_of),
+                "broker_order_id": value.broker_order_id,
+                "cancel_id": value.cancel_id,
+                "command_id": value.command_id,
+                "mode": value.mode.value,
+                "observed_event_ids": list(value.observed_event_ids),
+                "observed_filled_quantity": value.observed_filled_quantity,
+                "observed_last_event_at": _datetime_text(value.observed_last_event_at),
+                "schema_version": _CANCEL_SCHEMA,
+            }
+        )
+    except WireError:
+        raise
+    except Exception:
+        pass
+    _fail()
+
+
+def decode_cancel_command(payload: bytes) -> CancelCommand:
+    """Decode and re-prove a canonical PAPER cancel request."""
+    root = _root(
+        payload,
+        schema=_CANCEL_SCHEMA,
+        keys={
+            "aggregate_status",
+            "as_of",
+            "broker_order_id",
+            "cancel_id",
+            "command_id",
+            "mode",
+            "observed_event_ids",
+            "observed_filled_quantity",
+            "observed_last_event_at",
+        },
+    )
+    event_ids = root["observed_event_ids"]
+    if type(event_ids) is not list:
+        _fail()
+    try:
+        cancel = CancelCommand(
+            cancel_id=cast(str, _string(root["cancel_id"])),
+            command_id=cast(str, _string(root["command_id"])),
+            broker_order_id=cast(str, _string(root["broker_order_id"])),
+            mode=_enum(ExecutionMode, root["mode"]),
+            aggregate_status=_enum(OrderStatus, root["aggregate_status"]),
+            observed_filled_quantity=_integer(
+                root["observed_filled_quantity"], minimum=0
+            ),
+            observed_event_ids=tuple(
+                cast(str, _string(item)) for item in cast(list[object], event_ids)
+            ),
+            observed_last_event_at=_datetime(root["observed_last_event_at"]),
+            as_of=_datetime(root["as_of"]),
+        )
+        if cancel.cancel_id != _string(root["cancel_id"]) or encode_cancel_command(cancel) != payload:
+            _fail()
+        return cancel
+    except WireError:
+        raise
+    except Exception:
+        pass
+    _fail()
 
 
 def _intent_payload(intent: OrderIntent) -> dict[str, object]:
@@ -328,3 +404,5 @@ def decode_order_aggregate(payload: bytes, *, command: OrderCommand) -> OrderAgg
     except Exception:
         pass
     _fail()
+    build_cancel_command_identity,
+    "encode_cancel_command",

@@ -15,12 +15,14 @@ from quant.domain.enums import ConnectRoute, Currency, ExecutionMode, Market, Or
 from quant.execution.config import TradingConfig, trading_config_identity
 from quant.execution.contracts import (
     AccountSnapshot,
+    CancelCommand,
     OrderCommand,
     OrderIntent,
     OrderPlan,
     VerifiedConnectMarketContext,
     VerifiedMarketSnapshot,
     build_account_snapshot_identity,
+    build_cancel_command_identity,
     build_order_command,
     build_order_plan_identity,
     build_verified_connect_market_context_identity,
@@ -103,6 +105,30 @@ class RiskDecision:
     commands: tuple[OrderCommand, ...]
     projected_counters: DailyRiskCounters
     requires_manual_approval: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CancelRiskDecision:
+    """One deterministic daily cancel-limit decision."""
+
+    accepted: bool
+    cancel_id: str
+    code: str
+    policy_identity: str
+    projected_counters: DailyRiskCounters
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.accepted) is not bool
+            or type(self.cancel_id) is not str
+            or len(self.cancel_id) != 64
+            or type(self.code) is not str
+            or self.code not in {"CANCEL_LIMIT_OK", "CANCEL_LIMIT_EXCEEDED"}
+            or type(self.policy_identity) is not str
+            or len(self.policy_identity) != 64
+            or type(self.projected_counters) is not DailyRiskCounters
+        ):
+            raise RiskInputError("CANCEL_RISK_INPUT_INVALID")
 
 
 def _result(
@@ -991,10 +1017,56 @@ def _reject_all(
     )
 
 
+def evaluate_cancel_risk(
+    cancel: CancelCommand,
+    config: TradingConfig,
+    counters: DailyRiskCounters,
+) -> CancelRiskDecision:
+    """Apply the versioned daily cancel limit without performing I/O."""
+    result: CancelRiskDecision | None = None
+    try:
+        if type(cancel) is not CancelCommand:
+            raise ValueError
+        cancel_id = build_cancel_command_identity(cancel)
+        if type(config) is not TradingConfig:
+            raise ValueError
+        policy_id = trading_config_identity(config)
+        checked = DailyRiskCounters(
+            session_date=counters.session_date,
+            order_count=counters.order_count,
+            cancel_count=counters.cancel_count,
+            buy_notional=counters.buy_notional,
+        )
+        limit = _as_int(_select_limits(config, checked.session_date)["max_cancels_per_day"])
+        accepted = checked.cancel_count + 1 <= limit
+        projected = checked
+        if accepted:
+            projected = DailyRiskCounters(
+                session_date=checked.session_date,
+                order_count=checked.order_count,
+                cancel_count=checked.cancel_count + 1,
+                buy_notional=checked.buy_notional,
+            )
+        result = CancelRiskDecision(
+            accepted=accepted,
+            cancel_id=cancel_id,
+            code="CANCEL_LIMIT_OK" if accepted else "CANCEL_LIMIT_EXCEEDED",
+            policy_identity=policy_id,
+            projected_counters=projected,
+        )
+    except Exception:
+        pass
+    if result is None:
+        raise RiskInputError("CANCEL_RISK_INPUT_INVALID") from None
+    return result
+
+
 __all__ = [
+    "CancelRiskDecision",
     "DailyRiskCounters",
     "RiskDecision",
     "RiskInputError",
     "RiskRuleResult",
     "evaluate_pretrade",
+    "evaluate_cancel_risk",
 ]

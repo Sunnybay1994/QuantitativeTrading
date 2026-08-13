@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
-from dataclasses import replace
+from dataclasses import fields, replace
 from decimal import Decimal
 from pathlib import Path
 
 import polars as pl
 import pytest
 
+import quant.backtest.event_simulator as simulator_module
 from quant.backtest import verify_simulation_result_identity as public_identity_verifier
 from quant.backtest.a_share_execution import build_a_share_rule_config
 from quant.backtest.connect_execution import build_connect_rule_config
@@ -260,6 +261,36 @@ def _fixture(*, partial: bool = False, suspended: bool = False):
     return (scenario,), snapshots, account, config
 
 
+def _unsafe_replace(value: object, **changes: object) -> object:
+    forged = type(value).__new__(type(value))
+    for field in fields(value):
+        object.__setattr__(
+            forged, field.name, changes.get(field.name, getattr(value, field.name))
+        )
+    return forged
+
+
+def _fully_rehash_result(result, scenario):
+    scenario = replace(
+        scenario,
+        scenario_result_id=simulator_module._identity(
+            "VerifiedScenarioResult", simulator_module._result_payload(scenario)
+        ),
+    )
+    root_payload = {
+        "config_id": result.config_id,
+        "initial_account_snapshot_id": result.initial_account_snapshot_id,
+        "market_snapshot_ids": result.market_snapshot_ids,
+        "scenario_result_ids": (scenario.scenario_result_id,),
+        "replay_input_id": result.replay_inputs.replay_input_id,
+    }
+    return replace(
+        result,
+        result_id=simulator_module._identity("VerifiedSimulationResult", root_payload),
+        scenarios=(scenario,),
+    )
+
+
 def test_a_share_t1_company_action_and_no_order_sessions_advance() -> None:
     args = _fixture()
     result = simulate_order_plans(*args)
@@ -388,6 +419,142 @@ def test_result_identity_verifier_rejects_root_scenario_and_collection_forgery()
         verify_simulation_result_identity(replace(combined, scenarios=combined.scenarios[:1]))
     with pytest.raises(EventSimulationError, match=error):
         verify_simulation_result_identity(replace(result, scenarios=combined.scenarios))
+
+
+@pytest.mark.parametrize(
+    ("field_name", "replacement"),
+    [
+        ("accepted", False),
+        ("code", "FORGED_DECISION"),
+        ("normalized_quantity", 0),
+        ("normalized_limit_price", Decimal("9.99")),
+        ("rule_version", "forged-rule-v1"),
+    ],
+)
+def test_full_rehash_cannot_replace_rule_decision_semantics(
+    field_name: str, replacement: object
+) -> None:
+    result = simulate_order_plans(*_fixture(partial=True))
+    scenario = result.scenarios[0]
+    decision = replace(scenario.rule_decisions[0], **{field_name: replacement})
+    forged = _fully_rehash_result(
+        result, replace(scenario, rule_decisions=(decision,))
+    )
+    with pytest.raises(
+        EventSimulationError, match="^EVENT_SIM_RESULT_IDENTITY_INVALID$"
+    ):
+        verify_simulation_result_identity(forged)
+
+
+def test_full_rehash_cannot_delete_duplicate_or_transplant_decisions() -> None:
+    result = simulate_order_plans(*_fixture(partial=True))
+    scenario = result.scenarios[0]
+    suspended = simulate_order_plans(*_fixture(suspended=True)).scenarios[0]
+    variants = (
+        (),
+        scenario.rule_decisions + scenario.rule_decisions,
+        (suspended.rule_decisions[0], scenario.rule_decisions[0]),
+        suspended.rule_decisions,
+    )
+    for decisions in variants:
+        forged = _fully_rehash_result(
+            result, replace(scenario, rule_decisions=decisions)
+        )
+        with pytest.raises(
+            EventSimulationError, match="^EVENT_SIM_RESULT_IDENTITY_INVALID$"
+        ):
+            verify_simulation_result_identity(forged)
+
+
+@pytest.mark.parametrize(
+    "field_name", ["commands", "events", "transitions", "checkpoints"]
+)
+def test_full_rehash_cannot_remove_execution_or_ledger_evidence(
+    field_name: str,
+) -> None:
+    result = simulate_order_plans(*_fixture(partial=True))
+    scenario = result.scenarios[0]
+    values = getattr(scenario, field_name)
+    forged = _fully_rehash_result(
+        result, replace(scenario, **{field_name: values[1:]})
+    )
+    with pytest.raises(
+        EventSimulationError, match="^EVENT_SIM_RESULT_IDENTITY_INVALID$"
+    ):
+        verify_simulation_result_identity(forged)
+
+
+def test_replay_closure_body_and_identity_drift_fail_closed() -> None:
+    result = simulate_order_plans(*_fixture(partial=True))
+    replay = result.replay_inputs
+    scheduled = replay.plans[0].scheduled_plans[0]
+    forged_plan = _unsafe_replace(
+        scheduled.plan, target_identity="f" * 64
+    )
+    plan_drift = replace(
+        replay,
+        plans=(
+            replace(
+                replay.plans[0],
+                scheduled_plans=(replace(scheduled, plan=forged_plan),),
+            ),
+        ),
+    )
+    snapshot = replay.snapshots[0]
+    forged_state = _unsafe_replace(
+        snapshot.states[0], reference_price=Decimal("10.01")
+    )
+    snapshot_drift = _unsafe_replace(
+        replay,
+        snapshots=(
+            _unsafe_replace(snapshot, states=(forged_state,)),
+            *replay.snapshots[1:],
+        ),
+    )
+    account_drift = _unsafe_replace(
+        replay,
+        initial_account=_unsafe_replace(
+            replay.initial_account, snapshot_id="e" * 64
+        ),
+    )
+    config_drift = _unsafe_replace(
+        replay,
+        config=_unsafe_replace(replay.config, terminal_date=MON),
+    )
+    identity_drift = _unsafe_replace(replay, replay_input_id="d" * 64)
+
+    for forged_replay in (
+        plan_drift,
+        snapshot_drift,
+        account_drift,
+        config_drift,
+        identity_drift,
+    ):
+        with pytest.raises(
+            EventSimulationError, match="^EVENT_SIM_RESULT_IDENTITY_INVALID$"
+        ) as caught:
+            verify_simulation_result_identity(
+                replace(result, replay_inputs=forged_replay)
+            )
+        assert caught.value.__cause__ is None and caught.value.__context__ is None
+
+
+def test_replay_failure_is_detached_without_sensitive_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = simulate_order_plans(*_fixture(partial=True))
+    sentinel = "C:/TOKEN_REPLAY_SENTINEL"
+
+    def hostile(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError(sentinel)
+
+    monkeypatch.setattr(simulator_module, "simulate_order_plans", hostile)
+    with pytest.raises(
+        EventSimulationError, match="^EVENT_SIM_RESULT_IDENTITY_INVALID$"
+    ) as caught:
+        verify_simulation_result_identity(result)
+    assert sentinel not in str(caught.value)
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
 
 
 def test_nested_frozen_plan_mutation_is_reproved_without_sentinel_leak() -> None:

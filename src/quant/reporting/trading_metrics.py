@@ -409,7 +409,10 @@ def build_trading_metrics(
     except TradingMetricsError:
         raise
     except Exception:
-        _fail()
+        pass
+    # Raise outside the active exception handler so hostile verifier details
+    # cannot survive in ``__context__`` or a rendered traceback.
+    _fail()
 
 
 __all__ = [

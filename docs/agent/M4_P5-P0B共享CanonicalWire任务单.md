@@ -2,7 +2,7 @@
 
 ## 状态与边界
 
-- 状态：冻结；当前轮按用户指示由主 Agent 自行实现、自验，不调用外部 Agent。
+- 状态：实现、外部独立初验与主 Agent 最终验收均已通过；仅关闭共享 canonical wire 子合同。
 - 权威设计：[`M4_P5-P0恢复与账本持久化前置设计.md`](M4_P5-P0恢复与账本持久化前置设计.md) §3。
 - 工作目录：独立开发 worktree `artifacts/dev_worktrees/m3-g8ab-prereq`。
 - 禁止范围：正式 G1 进程、journal、候选映射和发布根；P0C store schema/migration/context/checkpoint；M1/M3 其他 worktree。

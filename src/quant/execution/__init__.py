@@ -5,6 +5,11 @@
 程序化交易合规(先报告后交易、当日下单/撤单次数上限)在事前风控中实现。
 """
 
+from __future__ import annotations
+
+from importlib import import_module
+from typing import TYPE_CHECKING, Any
+
 from quant.execution.config import (
     ConfigIssue,
     TradingConfig,
@@ -67,6 +72,92 @@ from quant.execution.ports import (
     MarketDataRepository,
 )
 
+if TYPE_CHECKING:
+    from quant.execution.paper_formal_broker_snapshot import (
+        FormalPaperBrokerSnapshotError,
+        open_verified_formal_paper_broker_snapshot_port,
+    )
+    from quant.execution.paper_formal_broker_store import (
+        FormalPaperBrokerStoreError,
+        VerifiedFormalPaperBrokerStoreCapability,
+        initialize_verified_formal_paper_broker_store,
+        open_verified_formal_paper_broker_store,
+        verify_existing_formal_paper_broker_store_capability,
+    )
+    from quant.execution.soak import (
+        FaultDrillReceipt,
+        REQUIRED_FAULT_DRILLS,
+        SoakAppendAnchor,
+        SoakError,
+        SoakEvidenceKind,
+        SoakGateDecision,
+        SoakRunManifest,
+        SoakSessionReceipt,
+        VerifiedDevelopmentSoakEvidence,
+        VerifiedPaperSoakEvidence,
+        append_fault_drill,
+        append_soak_session,
+        build_soak_run,
+        decide_soak_gate,
+        expected_schedule_identity,
+        verify_soak_evidence,
+    )
+
+_SOAK_EXPORTS = frozenset(
+    {
+        "FaultDrillReceipt",
+        "REQUIRED_FAULT_DRILLS",
+        "SoakAppendAnchor",
+        "SoakError",
+        "SoakEvidenceKind",
+        "SoakGateDecision",
+        "SoakRunManifest",
+        "SoakSessionReceipt",
+        "VerifiedDevelopmentSoakEvidence",
+        "VerifiedPaperSoakEvidence",
+        "append_fault_drill",
+        "append_soak_session",
+        "build_soak_run",
+        "decide_soak_gate",
+        "expected_schedule_identity",
+        "verify_soak_evidence",
+    }
+)
+
+_FORMAL_STORE_EXPORTS = frozenset(
+    {
+        "FormalPaperBrokerStoreError",
+        "VerifiedFormalPaperBrokerStoreCapability",
+        "initialize_verified_formal_paper_broker_store",
+        "open_verified_formal_paper_broker_store",
+        "verify_existing_formal_paper_broker_store_capability",
+    }
+)
+
+_FORMAL_SNAPSHOT_EXPORTS = frozenset(
+    {
+        "FormalPaperBrokerSnapshotError",
+        "open_verified_formal_paper_broker_snapshot_port",
+    }
+)
+
+
+def __getattr__(name: str) -> Any:
+    """Resolve P8 exports without pulling reporting/backtest at package import."""
+    if name in _FORMAL_SNAPSHOT_EXPORTS:
+        value = getattr(import_module("quant.execution.paper_formal_broker_snapshot"), name)
+        globals()[name] = value
+        return value
+    if name in _FORMAL_STORE_EXPORTS:
+        value = getattr(import_module("quant.execution.paper_formal_broker_store"), name)
+        globals()[name] = value
+        return value
+    if name not in _SOAK_EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module("quant.execution.soak"), name)
+    globals()[name] = value
+    return value
+
 __all__ = [
     "AccountSnapshot",
     "AccountSnapshotRepository",
@@ -77,6 +168,9 @@ __all__ = [
     "ContractError",
     "ExecutionEvent",
     "FeeComponent",
+    "FaultDrillReceipt",
+    "FormalPaperBrokerSnapshotError",
+    "FormalPaperBrokerStoreError",
     "MarketDataRepository",
     "MoneyAmount",
     "OrderCommand",
@@ -86,12 +180,24 @@ __all__ = [
     "OrderPlanDecision",
     "OrderPlanReasonClass",
     "PositionBalance",
+    "REQUIRED_FAULT_DRILLS",
     "RuleDecision",
+    "SoakError",
+    "SoakAppendAnchor",
+    "SoakEvidenceKind",
+    "SoakGateDecision",
+    "SoakRunManifest",
+    "SoakSessionReceipt",
     "SymbolMarketState",
     "TradingConfig",
     "TradingConfigError",
     "VerifiedConnectMarketContext",
+    "VerifiedDevelopmentSoakEvidence",
+    "VerifiedFormalPaperBrokerStoreCapability",
     "VerifiedMarketSnapshot",
+    "VerifiedPaperSoakEvidence",
+    "append_fault_drill",
+    "append_soak_session",
     "build_account_snapshot",
     "build_account_snapshot_identity",
     "build_cash_balance",
@@ -115,6 +221,7 @@ __all__ = [
     "build_position_balance_identity",
     "build_rule_decision",
     "build_rule_decision_identity",
+    "build_soak_run",
     "build_symbol_market_state",
     "build_symbol_market_state_identity",
     "build_verified_connect_market_context",
@@ -122,5 +229,12 @@ __all__ = [
     "build_verified_market_snapshot",
     "build_verified_market_snapshot_identity",
     "load_trading_config",
+    "initialize_verified_formal_paper_broker_store",
+    "open_verified_formal_paper_broker_store",
+    "open_verified_formal_paper_broker_snapshot_port",
+    "decide_soak_gate",
+    "expected_schedule_identity",
     "trading_config_identity",
+    "verify_soak_evidence",
+    "verify_existing_formal_paper_broker_store_capability",
 ]

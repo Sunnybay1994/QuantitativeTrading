@@ -8,12 +8,23 @@ import traceback
 from decimal import Decimal
 from pathlib import Path
 
-from quant.domain.enums import ConnectRoute, Currency, ExecutionMode, Market, OrderSide
+import pytest
+
+from quant.domain.enums import (
+    ConnectRoute,
+    Currency,
+    ExecutionEventType,
+    ExecutionMode,
+    Market,
+    OrderSide,
+)
 from quant.execution.config import load_trading_config, trading_config_identity
 from quant.execution.contracts import (
     OrderIntentSpec,
     build_account_snapshot,
+    build_cancel_command,
     build_cash_balance,
+    build_execution_event,
     build_money_amount,
     build_order_plan,
     build_position_balance,
@@ -21,9 +32,12 @@ from quant.execution.contracts import (
     build_verified_connect_market_context,
     build_verified_market_snapshot,
 )
+from quant.execution.oms import new_order_aggregate, reduce_order
 from quant.execution.risk import (
+    CancelRiskDecision,
     DailyRiskCounters,
     RiskInputError,
+    evaluate_cancel_risk,
     evaluate_pretrade,
 )
 
@@ -248,6 +262,78 @@ def _counters(**kwargs: object) -> DailyRiskCounters:
 
 def _codes(decision) -> list[str]:
     return [item.code for item in decision.rule_results]
+
+
+def _cancel(config):
+    market = _market()
+    account = _account()
+    plan = _plan(
+        config,
+        market,
+        account,
+        intents=[("600000.SH", OrderSide.BUY, 100, Decimal("10"))],
+    )
+    risk = evaluate_pretrade(plan, account, market, config, _counters(), now=_utc(3))
+    command = risk.commands[0]
+    accepted = build_execution_event(
+        command=command,
+        broker_order_id="PAPER-1",
+        event_type=ExecutionEventType.ACCEPTED,
+        occurred_at=_utc(3),
+        cumulative_quantity=0,
+        last_quantity=0,
+        last_price=None,
+        fees=(),
+        reject_code=None,
+    )
+    aggregate = reduce_order(new_order_aggregate(command), command, accepted)
+    return build_cancel_command(command=command, aggregate=aggregate, as_of=_utc(3))
+
+
+def test_cancel_risk_uses_versioned_daily_limit_and_changes_only_cancel_count(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path, max_cancels_per_day="20")
+    cancel = _cancel(config)
+    accepted = evaluate_cancel_risk(
+        cancel,
+        config,
+        _counters(order_count=7, cancel_count=19, buy_notional=Decimal("123.45")),
+    )
+    rejected = evaluate_cancel_risk(
+        cancel,
+        config,
+        _counters(order_count=7, cancel_count=20, buy_notional=Decimal("123.45")),
+    )
+
+    assert isinstance(accepted, CancelRiskDecision)
+    assert accepted.accepted and accepted.code == "CANCEL_LIMIT_OK"
+    assert accepted.projected_counters == _counters(
+        order_count=7, cancel_count=20, buy_notional=Decimal("123.45")
+    )
+    assert not rejected.accepted and rejected.code == "CANCEL_LIMIT_EXCEEDED"
+    assert rejected.projected_counters == _counters(
+        order_count=7, cancel_count=20, buy_notional=Decimal("123.45")
+    )
+    assert accepted.policy_identity == trading_config_identity(config)
+
+
+def test_cancel_risk_rejects_session_or_identity_drift_without_context(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    cancel = _cancel(config)
+    object.__setattr__(cancel, "broker_order_id", "TOKEN C:\\hostile")
+    with pytest.raises(RiskInputError, match="^CANCEL_RISK_INPUT_INVALID$") as info:
+        evaluate_cancel_risk(cancel, config, _counters())
+    assert info.value.__cause__ is None
+    assert info.value.__context__ is None
+    assert "TOKEN" not in repr(info.value)
+    clean = _cancel(config)
+    hostile_counters = _counters()
+    object.__setattr__(hostile_counters, "cancel_count", -1)
+    with pytest.raises(RiskInputError, match="^CANCEL_RISK_INPUT_INVALID$"):
+        evaluate_cancel_risk(clean, config, hostile_counters)
 
 
 def test_happy_path_paper_emits_commands_and_full_audit(tmp_path: Path) -> None:
@@ -1372,3 +1458,5 @@ def test_p0b3_duplicate_route_contexts_fail_closed_at_prove(tmp_path: Path) -> N
         _assert_stable_risk_input_error(exc, "MARKET_CONTRACT_INVALID")
     else:
         raise AssertionError("duplicate connect contexts must raise")
+    build_execution_event,
+    evaluate_cancel_risk,

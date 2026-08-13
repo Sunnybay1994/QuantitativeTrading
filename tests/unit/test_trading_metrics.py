@@ -6,6 +6,7 @@ from dataclasses import fields, replace
 from decimal import ROUND_DOWN, Decimal, localcontext
 
 import pytest
+import quant.reporting.trading_metrics as trading_metrics_module
 
 from quant.backtest.event_simulator import (
     SimulationFillSpec,
@@ -31,6 +32,7 @@ from tests.unit.test_event_simulator import (
     _actions,
     _at,
     _fixture,
+    _fully_rehash_result,
     _market,
     _planner,
     _rule,
@@ -94,7 +96,7 @@ def test_partial_fill_fees_and_identity_are_exact_and_deterministic() -> None:
     left = build_trading_metrics(result, 252)
     right = build_trading_metrics(result, 252)
     assert left == right
-    assert left.metrics_id == "89df553c387137d041f9f10147d3962e84aff4c3b4de3f8be59e293347130915"
+    assert left.metrics_id == "86c8b05580164e7259d71bb17fdf53cf8b1863f0f78cb1cf85e097245eaea816"
     with localcontext() as context:
         context.prec = 6
         context.rounding = ROUND_DOWN
@@ -172,3 +174,36 @@ def test_forged_b6_root_and_scenario_identity_are_rejected_before_metrics() -> N
     ):
         with pytest.raises(TradingMetricsError, match="^TRADING_METRICS_INPUT_INVALID$"):
             build_trading_metrics(tampered, 252)
+
+
+def test_fully_rehashed_b6_semantic_forgery_is_rejected_before_metrics() -> None:
+    result = simulate_order_plans(*_fixture(partial=True))
+    scenario = result.scenarios[0]
+    forged_decision = replace(
+        scenario.rule_decisions[0],
+        accepted=False,
+        code="FORGED_DECISION",
+        normalized_quantity=0,
+    )
+    forged = _fully_rehash_result(
+        result, replace(scenario, rule_decisions=(forged_decision,))
+    )
+    with pytest.raises(TradingMetricsError, match="^TRADING_METRICS_INPUT_INVALID$"):
+        build_trading_metrics(forged, 252)
+
+
+def test_hostile_b6_verifier_failure_is_detached_before_metrics(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    result = simulate_order_plans(*_fixture(partial=True))
+
+    def _hostile_verifier(_result):  # type: ignore[no-untyped-def]
+        raise RuntimeError("C:/PRIVATE_TOKEN_SENTINEL")
+
+    monkeypatch.setattr(
+        trading_metrics_module, "verify_simulation_result_identity", _hostile_verifier
+    )
+    with pytest.raises(
+        TradingMetricsError, match="^TRADING_METRICS_INPUT_INVALID$"
+    ) as error:
+        build_trading_metrics(result, 252)
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None

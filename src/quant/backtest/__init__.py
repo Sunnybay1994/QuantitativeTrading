@@ -89,6 +89,7 @@ from quant.backtest.a_share_reporting import (
     verify_development_example_backtest_artifact,
 )
 from quant.backtest.event_simulator import (
+    SimulationReplayInputs,
     VerifiedSimulationResult,
     verify_simulation_result_identity,
 )
@@ -126,6 +127,7 @@ __all__ = [
     "ExecutionFill",
     "ExecutionRejection",
     "SimulationResult",
+    "SimulationReplayInputs",
     "VerifiedSimulationResult",
     "TargetOrderIntent",
     "allocate_buy_lots",

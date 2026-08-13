@@ -11,18 +11,21 @@ import pytest
 
 from quant.domain.enums import Currency, ExecutionEventType, ExecutionMode, Market, OrderSide
 from quant.execution.contracts import (
+    build_cancel_command,
     build_execution_event,
     build_fee_component,
     build_money_amount,
     build_order_command,
     build_order_intent,
 )
-from quant.execution.oms import new_order_aggregate
+from quant.execution.oms import new_order_aggregate, reduce_order
 from quant.execution.wire import (
     WireError,
+    decode_cancel_command,
     decode_execution_event,
     decode_order_aggregate,
     decode_order_command,
+    encode_cancel_command,
     encode_execution_event,
     encode_order_aggregate,
     encode_order_command,
@@ -97,6 +100,44 @@ def test_p4_fixture_golden_bytes_and_hashes_are_unchanged() -> None:
     assert decode_order_command(payloads[0]) == command
     assert decode_order_aggregate(payloads[1], command=command) == aggregate
     assert decode_execution_event(payloads[2], command=command) == event
+
+
+def test_cancel_command_round_trip_and_structural_tamper_fail_closed() -> None:
+    command = _command()
+    accepted = _event(command)
+    aggregate = reduce_order(new_order_aggregate(command), command, accepted)
+    cancel = build_cancel_command(command=command, aggregate=aggregate, as_of=NOW)
+    payload = encode_cancel_command(cancel)
+
+    assert decode_cancel_command(payload) == cancel
+    assert encode_cancel_command(decode_cancel_command(payload)) == payload
+    raw = json.loads(payload)
+    raw["broker_order_id"] = "TOKEN C:/hostile"
+    with pytest.raises(WireError, match="^WIRE_INVALID$") as info:
+        decode_cancel_command(_canonical(raw))
+    _assert_sanitized(info.value)
+    assert "TOKEN" not in repr(info.value)
+
+
+@pytest.mark.parametrize("mutation", ["extra", "missing", "identity", "mode", "time"])
+def test_cancel_command_exact_schema_and_identity_are_enforced(mutation: str) -> None:
+    command = _command()
+    aggregate = reduce_order(new_order_aggregate(command), command, _event(command))
+    raw = json.loads(
+        encode_cancel_command(build_cancel_command(command=command, aggregate=aggregate, as_of=NOW))
+    )
+    if mutation == "extra":
+        raw["extra"] = 1
+    elif mutation == "missing":
+        del raw["observed_event_ids"]
+    elif mutation == "identity":
+        raw["cancel_id"] = "0" * 64
+    elif mutation == "mode":
+        raw["mode"] = "LIVE"
+    else:
+        raw["as_of"] = "2026-07-19T16:00:00.000000+08:00"
+    with pytest.raises(WireError, match="^WIRE_INVALID$"):
+        decode_cancel_command(_canonical(raw))
 
 
 @pytest.mark.parametrize("mutation", ["extra", "missing", "identity", "enum"])
