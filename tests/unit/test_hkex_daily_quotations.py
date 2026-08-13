@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
+import json
+import traceback
 from dataclasses import fields
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -19,10 +23,105 @@ from quant.data.hkex_daily_quotations import (
     HKEXDailyQuotationsError,
     ParsedHKEXDailyQuotation,
     VerifiedHKEXDailyQuotation,
+    VerifiedHKEXDailyQuotationRetainedBundle,
     parse_and_verify_hkex_daily_quotation,
     parse_hkex_daily_quotation,
     verify_hkex_daily_quotation,
+    verify_hkex_daily_quotation_retained,
 )
+
+
+def _canonical(value: object) -> bytes:
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+
+def test_retained_metadata_is_canonical_content_bound_and_exact_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = b"SYNTHETIC HKEX RETAINED RAW"
+    evidence = SimpleNamespace(
+        source_record_id="HKEX_DAILY_QUOTATIONS:2026-07-10:2983",
+        trade_date=dt.date(2026, 7, 10),
+        raw_sha256=hashlib.sha256(raw).hexdigest(),
+    )
+    monkeypatch.setattr(
+        hkex_module,
+        "verify_hkex_daily_quotation",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            evidence_id="a" * 64, evidence=evidence
+        ),
+    )
+    base = {
+        "schema_version": "hkex-daily-quotation-retained-metadata-v1",
+        "source": "HKEX_DAILY_QUOTATIONS",
+        "source_record_id": evidence.source_record_id,
+        "report_trade_date": "2026-07-10",
+        "market": "HK",
+        "source_observed_at": "2026-07-18T12:00:00+00:00",
+        "raw_file_sha256": evidence.raw_sha256,
+    }
+    base["metadata_identity"] = hkex_module._identity(
+        "HKEXDailyQuotationRetainedMetadata", base
+    )
+    bundle = verify_hkex_daily_quotation_retained(
+        raw,
+        _canonical(base),
+        source_url=SOURCE_URL,
+        expected_raw_sha256=EXPECTED_RAW_SHA256,
+    )
+    assert type(bundle) is VerifiedHKEXDailyQuotationRetainedBundle
+    assert bundle.metadata.source_observed_at == dt.datetime(
+        2026, 7, 18, 12, tzinfo=dt.timezone.utc
+    )
+    with pytest.raises(HKEXDailyQuotationsError, match="^HKEX_DAILY_QUOTATIONS_INVALID$"):
+        verify_hkex_daily_quotation_retained(
+            raw,
+            json.dumps(base, indent=2).encode(),
+            source_url=SOURCE_URL,
+            expected_raw_sha256=EXPECTED_RAW_SHA256,
+        )
+    changed = {**base, "market": "SH"}
+    changed["metadata_identity"] = hkex_module._identity(
+        "HKEXDailyQuotationRetainedMetadata",
+        {key: value for key, value in changed.items() if key != "metadata_identity"},
+    )
+    with pytest.raises(HKEXDailyQuotationsError, match="^HKEX_DAILY_QUOTATIONS_INVALID$"):
+        verify_hkex_daily_quotation_retained(
+            raw,
+            _canonical(changed),
+            source_url=SOURCE_URL,
+            expected_raw_sha256=EXPECTED_RAW_SHA256,
+        )
+
+
+def test_retained_public_verifier_removes_hostile_exception_graph(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = "TOKEN_HKEX_RETAINED_HOSTILE_MARKER"
+
+    def hostile(_payload: bytes) -> None:
+        raise RuntimeError(marker)
+
+    monkeypatch.setattr(hkex_module, "verify_hkex_daily_quotation", lambda *_a, **_k: None)
+    monkeypatch.setattr(hkex_module, "_parse_retained_metadata", hostile)
+    with pytest.raises(
+        HKEXDailyQuotationsError, match="^HKEX_DAILY_QUOTATIONS_INVALID$"
+    ) as caught:
+        verify_hkex_daily_quotation_retained(
+            b"raw",
+            b"{}",
+            source_url=SOURCE_URL,
+            expected_raw_sha256=EXPECTED_RAW_SHA256,
+        )
+    error = caught.value
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert marker not in repr(error)
+    assert marker not in "".join(
+        traceback.format_exception(type(error), error, error.__traceback__)
+    )
 
 
 def _raw(

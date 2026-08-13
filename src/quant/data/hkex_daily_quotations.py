@@ -13,7 +13,7 @@ import json
 import re
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, localcontext
-from typing import NoReturn, cast
+from typing import Any, NoReturn, cast
 
 SOURCE = "HKEX_DAILY_QUOTATIONS"
 SOURCE_URL = "https://www.hkex.com.hk/eng/stat/smstat/dayquot/d260710e.htm"
@@ -272,6 +272,238 @@ class VerifiedHKEXDailyQuotation:
         _fail(_INVALID)
 
 
+@dataclass(frozen=True, slots=True)
+class HKEXDailyQuotationRetainedMetadata:
+    """Canonical retained-observation metadata bound to official raw bytes."""
+
+    schema_version: str
+    source: str
+    source_record_id: str
+    report_trade_date: dt.date
+    market: str
+    source_observed_at: dt.datetime
+    raw_file_sha256: str
+    metadata_identity: str
+    source_issue_id: str | None = None
+
+    def __post_init__(self) -> None:
+        observed = self.source_observed_at
+        if (
+            self.schema_version != "hkex-daily-quotation-retained-metadata-v1"
+            or self.source != SOURCE
+            or type(self.source_record_id) is not str
+            or not self.source_record_id
+            or type(self.report_trade_date) is not dt.date
+            or self.market != "HK"
+            or type(observed) is not dt.datetime
+            or observed.tzinfo is None
+            or observed.utcoffset() != dt.timedelta(0)
+            or not _HEX64.fullmatch(self.raw_file_sha256)
+            or not _HEX64.fullmatch(self.metadata_identity)
+            or (
+                self.source_issue_id is not None
+                and (
+                    type(self.source_issue_id) is not str
+                    or not self.source_issue_id
+                    or self.source_issue_id.strip() != self.source_issue_id
+                )
+            )
+            or self.metadata_identity
+            != _identity("HKEXDailyQuotationRetainedMetadata", _metadata_payload(self))
+        ):
+            _fail(_INVALID)
+
+
+def _metadata_payload(value: HKEXDailyQuotationRetainedMetadata) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema_version": value.schema_version,
+        "source": value.source,
+        "source_record_id": value.source_record_id,
+        "report_trade_date": value.report_trade_date.isoformat(),
+        "market": value.market,
+        "source_observed_at": value.source_observed_at.isoformat(),
+        "raw_file_sha256": value.raw_file_sha256,
+    }
+    if value.source_issue_id is not None:
+        payload["source_issue_id"] = value.source_issue_id
+    return payload
+
+
+class VerifiedHKEXDailyQuotationRetainedBundle:
+    """Exact-type retained raw+metadata result eligible for history receipt v3."""
+
+    __slots__ = (
+        "bundle_id",
+        "quotation",
+        "metadata",
+        "retained_raw",
+        "retained_metadata",
+    )
+
+    bundle_id: str
+    quotation: VerifiedHKEXDailyQuotation
+    metadata: HKEXDailyQuotationRetainedMetadata
+    retained_raw: bytes
+    retained_metadata: bytes
+
+    def __new__(
+        cls, *_args: object, **_kwargs: object
+    ) -> VerifiedHKEXDailyQuotationRetainedBundle:
+        del cls
+        _fail(_INVALID)
+
+    def __init_subclass__(cls, **_kwargs: object) -> None:
+        del cls
+        raise TypeError("VerifiedHKEXDailyQuotationRetainedBundle is final")
+
+    def __setattr__(self, _name: str, _value: object) -> NoReturn:
+        _fail(_INVALID)
+
+
+def _strict_canonical_object(payload: bytes) -> dict[str, Any]:
+    def reject_duplicate(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError
+            value[key] = item
+        return value
+
+    value = json.loads(payload.decode("utf-8"), object_pairs_hook=reject_duplicate)
+    if type(value) is not dict:
+        raise ValueError
+    canonical = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    if payload != canonical:
+        raise ValueError
+    return value
+
+
+def _parse_retained_metadata(payload: bytes) -> HKEXDailyQuotationRetainedMetadata:
+    value = _strict_canonical_object(payload)
+    required = {
+        "schema_version",
+        "source",
+        "source_record_id",
+        "report_trade_date",
+        "market",
+        "source_observed_at",
+        "raw_file_sha256",
+        "metadata_identity",
+    }
+    if set(value) not in (required, required | {"source_issue_id"}):
+        raise ValueError
+    if any(type(value[key]) is not str for key in required):
+        raise ValueError
+    observed = dt.datetime.fromisoformat(value["source_observed_at"])
+    if observed.tzinfo is None or observed.utcoffset() != dt.timedelta(0):
+        raise ValueError
+    if value["source_observed_at"] != observed.isoformat():
+        raise ValueError
+    return HKEXDailyQuotationRetainedMetadata(
+        schema_version=value["schema_version"],
+        source=value["source"],
+        source_record_id=value["source_record_id"],
+        report_trade_date=dt.date.fromisoformat(value["report_trade_date"]),
+        market=value["market"],
+        source_observed_at=observed,
+        raw_file_sha256=value["raw_file_sha256"],
+        metadata_identity=value["metadata_identity"],
+        source_issue_id=value.get("source_issue_id"),
+    )
+
+
+def verify_hkex_daily_quotation_retained(
+    retained_raw: bytes,
+    retained_metadata: bytes,
+    *,
+    source_url: str,
+    expected_raw_sha256: str,
+) -> VerifiedHKEXDailyQuotationRetainedBundle:
+    """Freshly bind canonical observation metadata to the verified quotation."""
+    result: VerifiedHKEXDailyQuotationRetainedBundle | None = None
+    failure: str | None = None
+    try:
+        if type(retained_raw) is not bytes or type(retained_metadata) is not bytes:
+            raise ValueError
+        quotation = verify_hkex_daily_quotation(
+            retained_raw,
+            source_url=source_url,
+            expected_raw_sha256=expected_raw_sha256,
+        )
+        metadata = _parse_retained_metadata(retained_metadata)
+        evidence = quotation.evidence
+        if (
+            metadata.source_record_id != evidence.source_record_id
+            or metadata.report_trade_date != evidence.trade_date
+            or metadata.raw_file_sha256 != evidence.raw_sha256
+        ):
+            raise ValueError
+        bundle_payload = {
+            "quotation_evidence_id": quotation.evidence_id,
+            "metadata_identity": metadata.metadata_identity,
+            "metadata_file_sha256": hashlib.sha256(retained_metadata).hexdigest(),
+            "raw_file_sha256": evidence.raw_sha256,
+        }
+        result = object.__new__(VerifiedHKEXDailyQuotationRetainedBundle)
+        object.__setattr__(
+            result,
+            "bundle_id",
+            _identity("VerifiedHKEXDailyQuotationRetainedBundle", bundle_payload),
+        )
+        object.__setattr__(result, "quotation", quotation)
+        object.__setattr__(result, "metadata", metadata)
+        object.__setattr__(result, "retained_raw", retained_raw)
+        object.__setattr__(result, "retained_metadata", retained_metadata)
+    except Exception as error:
+        failure = _hkex_public_error_code(error)
+    if failure is not None:
+        _fail(failure)
+    if result is None:
+        _fail(_INVALID)
+    return result
+
+
+def verify_hkex_daily_quotation_retained_bundle(
+    bundle: VerifiedHKEXDailyQuotationRetainedBundle,
+) -> VerifiedHKEXDailyQuotationRetainedBundle:
+    """Reject fabricated or stale bundles by re-reading their captured bytes."""
+    result: VerifiedHKEXDailyQuotationRetainedBundle | None = None
+    failure: str | None = None
+    try:
+        if type(bundle) is not VerifiedHKEXDailyQuotationRetainedBundle:
+            raise ValueError
+        result = verify_hkex_daily_quotation_retained(
+            bundle.retained_raw,
+            bundle.retained_metadata,
+            source_url=SOURCE_URL,
+            expected_raw_sha256=EXPECTED_RAW_SHA256,
+        )
+        if result.bundle_id != bundle.bundle_id:
+            raise ValueError
+    except Exception as error:
+        failure = _hkex_public_error_code(error)
+    if failure is not None:
+        _fail(failure)
+    if result is None:
+        _fail(_INVALID)
+    return result
+
+
+def _hkex_public_error_code(error: Exception) -> str:
+    if type(error) is HKEXDailyQuotationsError and str(error) in {
+        _INVALID,
+        _NOT_CLOSED,
+    }:
+        return str(error)
+    return _INVALID
+
+
 def _quotation(lines: list[str], start: int, end: int) -> tuple[Decimal, ...]:
     code_matches = [
         index
@@ -514,6 +746,8 @@ def verify_hkex_daily_quotation(
     expected_raw_sha256: str,
 ) -> VerifiedHKEXDailyQuotation:
     """Verify retained official bytes; Parsed objects are never verification input."""
+    result: VerifiedHKEXDailyQuotation | None = None
+    failure: str | None = None
     try:
         if expected_raw_sha256 != EXPECTED_RAW_SHA256:
             raise ValueError
@@ -524,11 +758,14 @@ def verify_hkex_daily_quotation(
                 expected_raw_sha256=expected_raw_sha256,
             )
         )
-        return _make_verified_evidence(rebuilt)
-    except HKEXDailyQuotationsError:
-        raise
-    except Exception:
+        result = _make_verified_evidence(rebuilt)
+    except Exception as error:
+        failure = _hkex_public_error_code(error)
+    if failure is not None:
+        _fail(failure)
+    if result is None:
         _fail(_INVALID)
+    return result
 
 
 def parse_and_verify_hkex_daily_quotation(
@@ -549,6 +786,7 @@ __all__ = [
     "EXPECTED_RAW_SHA256",
     "EXPECTED_RAW_SIZE",
     "HKEXDailyQuotationsError",
+    "HKEXDailyQuotationRetainedMetadata",
     "HKEXSaleRecord",
     "PARSER_VERSION",
     "ParsedHKEXDailyQuotation",
@@ -556,7 +794,10 @@ __all__ = [
     "SOURCE_URL",
     "TURNOVER_ROUNDING_VERSION",
     "VerifiedHKEXDailyQuotation",
+    "VerifiedHKEXDailyQuotationRetainedBundle",
     "parse_and_verify_hkex_daily_quotation",
     "parse_hkex_daily_quotation",
     "verify_hkex_daily_quotation",
+    "verify_hkex_daily_quotation_retained",
+    "verify_hkex_daily_quotation_retained_bundle",
 ]

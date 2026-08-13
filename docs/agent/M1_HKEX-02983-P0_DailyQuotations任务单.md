@@ -2,6 +2,8 @@
 
 日期：2026-08-02（Asia/Shanghai）
 
+状态：**返工独立复验与主 Agent 最终验收 PASS；仅关闭 retained Daily Quotations 证据工程合同，不关闭正式 02983 bar、HK60 或 M1 Gate。**
+
 ## 目标与边界
 
 对已留存的 HKEX Main Board `d260710e.htm` 建立独立、严格的 Daily Quotations

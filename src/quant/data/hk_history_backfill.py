@@ -9,21 +9,32 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import hmac
+import io
 import json
 import os
 import re
 import stat
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, NoReturn, Sequence
 
 import polars as pl
 
 from quant.data._journal_lock import M3JournalLockError, hold_journal_writer_lock
 from quant.data.connectors.tushare import TushareConnector
+from quant.data.hkex_daily_quotations import (
+    EXPECTED_RAW_SHA256 as HKEX_02983_RAW_SHA256,
+    SOURCE_URL as HKEX_02983_SOURCE_URL,
+    HKEXDailyQuotationsError,
+    VerifiedHKEXDailyQuotationRetainedBundle,
+    verify_hkex_daily_quotation,
+    verify_hkex_daily_quotation_retained,
+    verify_hkex_daily_quotation_retained_bundle,
+)
 from quant.data.mappers import TushareBarMapper
 from quant.data.storage import CleanBarStore, RawStore, RequestRawSnapshot
-from quant.domain import Bar1dSchema
+from quant.domain import Bar1dSchema, HkBarAvailabilityEvidenceSchema
 from quant.domain.schemas import HKNoTradeEvidenceSchema
 
 HK_DAILY_FIELDS = (
@@ -41,10 +52,59 @@ HK_HISTORY_RAW_TABLE = "hk_daily_multi_symbol_backfill"
 _HK_SYMBOL = re.compile(r"^[0-9]{5}\.HK$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _RAW_COLUMNS = tuple(HK_DAILY_FIELDS.split(","))
+_HKEX_SUPPLEMENT_UNRESOLVED = (("02983.HK", ("2026-07-10",)),)
+_AVAILABILITY_FILE = "availability.json"
+_HKEX_RETAINED_RAW_FILE = "hkex-retained.raw"
+_HKEX_RETAINED_METADATA_FILE = "hkex-retained.metadata.json"
+_CAPABILITY_SECRET = os.urandom(32)
+_O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 
 class HKHistoryBackfillError(RuntimeError):
     """A stable, sanitized HK history failure code."""
+
+
+class VerifiedHkBarBundle:
+    """Process-local, content-bound view of a freshly verified v3 publication."""
+
+    __slots__ = (
+        "_bars",
+        "_availability",
+        "plan_sha256",
+        "publication_sha256",
+        "_root_identities",
+        "_attestation",
+    )
+
+    _bars: pl.DataFrame
+    _availability: pl.DataFrame
+    plan_sha256: str
+    publication_sha256: str
+    _root_identities: tuple[tuple[str, int, int], ...]
+    _attestation: str
+
+    def __new__(cls, *_args: object, **_kwargs: object) -> VerifiedHkBarBundle:
+        del cls
+        raise HKHistoryBackfillError("HK_BAR_VERIFY_FAILED") from None
+
+    def __init_subclass__(cls, **_kwargs: object) -> None:
+        del cls
+        raise TypeError("VerifiedHkBarBundle is final")
+
+    def __setattr__(self, _name: str, _value: object) -> NoReturn:
+        raise HKHistoryBackfillError("HK_BAR_VERIFY_FAILED") from None
+
+    @property
+    def bars(self) -> pl.DataFrame:
+        return self._bars.clone()
+
+    @property
+    def availability(self) -> pl.DataFrame:
+        return self._availability.clone()
+
+    def __reduce__(self) -> NoReturn:
+        raise TypeError("VerifiedHkBarBundle is process-local")
 
 
 @dataclass(frozen=True)
@@ -352,6 +412,8 @@ def load_hk_no_trade_evidence(
     path: Path, *, raw_root: Path
 ) -> HKNoTradeEvidenceSet:
     """Load canonical evidence and verify every retained raw/metadata byte digest."""
+    result: HKNoTradeEvidenceSet | None = None
+    failure: str | None = None
     try:
         payload = path.read_bytes()
         value = _strict_json(payload)
@@ -360,26 +422,31 @@ def load_hk_no_trade_evidence(
         if type(value["evidences"]) is not list:
             raise ValueError
         evidences = tuple(_evidence_from_dict(item) for item in value["evidences"])
-        result = HKNoTradeEvidenceSet(
+        loaded = HKNoTradeEvidenceSet(
             schema_version=value["schema_version"],
             evidences=evidences,
             evidence_set_sha256=value["evidence_set_sha256"],
         )
         expected_payload = _canonical_json(
             {
-                "schema_version": result.schema_version,
-                "evidences": [asdict(item) for item in result.evidences],
-                "evidence_set_sha256": result.evidence_set_sha256,
+                "schema_version": loaded.schema_version,
+                "evidences": [asdict(item) for item in loaded.evidences],
+                "evidence_set_sha256": loaded.evidence_set_sha256,
             }
         ).encode("utf-8")
         if payload != expected_payload:
             raise ValueError
-        _verify_evidence_projection(result, raw_root=raw_root)
-        return result
-    except HKHistoryBackfillError:
-        raise
+        _verify_evidence_projection(loaded, raw_root=raw_root)
+        result = loaded
+    except HKHistoryBackfillError as error:
+        failure = str(error)
     except Exception:
+        failure = "HK_HISTORY_REFERENCE_INVALID"
+    if failure is not None:
+        raise HKHistoryBackfillError(failure) from None
+    if result is None:
         raise HKHistoryBackfillError("HK_HISTORY_REFERENCE_INVALID") from None
+    return result
 
 
 def build_hk_history_plan_v2(
@@ -392,6 +459,8 @@ def build_hk_history_plan_v2(
     window_start: dt.date,
 ) -> HKHistoryPlan:
     """Build a v2 plan whose effective keys subtract only exact verified evidence."""
+    result: HKHistoryPlan | None = None
+    failure: str | None = None
     try:
         if (
             type(as_of) is not dt.date
@@ -476,14 +545,22 @@ def build_hk_history_plan_v2(
         values["plan_sha256"] = hashlib.sha256(
             _canonical_json(payload).encode()
         ).hexdigest()
-        return HKHistoryPlan(**values)
-    except (KeyError, TypeError, ValueError):
+        result = HKHistoryPlan(**values)
+    except HKHistoryBackfillError as error:
+        failure = str(error)
+    except Exception:
+        failure = "HK_HISTORY_REFERENCE_INVALID"
+    if failure is not None:
+        raise HKHistoryBackfillError(failure) from None
+    if result is None:
         raise HKHistoryBackfillError("HK_HISTORY_REFERENCE_INVALID") from None
+    return result
 
 
 def write_or_verify_plan(path: Path, plan: HKHistoryPlan) -> None:
     """Create an immutable plan or verify the existing plan byte-for-byte."""
     payload = _canonical_json(_plan_dict(plan)).encode("utf-8")
+    failure: str | None = None
     try:
         if path.exists():
             if path.read_bytes() != payload:
@@ -491,22 +568,33 @@ def write_or_verify_plan(path: Path, plan: HKHistoryPlan) -> None:
             load_hk_history_plan(path)
             return
         _write_once(path, payload)
-    except HKHistoryBackfillError:
-        raise
-    except OSError:
-        raise HKHistoryBackfillError("HK_HISTORY_PLAN_CONFLICT") from None
+    except HKHistoryBackfillError as error:
+        failure = str(error)
+    except Exception:
+        failure = "HK_HISTORY_PLAN_CONFLICT"
+    if failure is not None:
+        raise HKHistoryBackfillError(failure) from None
 
 
 def load_hk_history_plan(path: Path) -> HKHistoryPlan:
     """Load and strictly reconstruct an immutable plan."""
+    result: HKHistoryPlan | None = None
+    failure: str | None = None
     try:
         value = _strict_json(path.read_bytes())
         plan = _plan_from_dict(value)
         if path.read_bytes() != _canonical_json(_plan_dict(plan)).encode("utf-8"):
             raise ValueError
-        return plan
-    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+        result = plan
+    except HKHistoryBackfillError as error:
+        failure = str(error)
+    except Exception:
+        failure = "HK_HISTORY_PLAN_CONFLICT"
+    if failure is not None:
+        raise HKHistoryBackfillError(failure) from None
+    if result is None:
         raise HKHistoryBackfillError("HK_HISTORY_PLAN_CONFLICT") from None
+    return result
 
 
 def execute_next_hk_history_request(
@@ -553,6 +641,8 @@ def recover_existing_hk_history_requests(
     _validate_plan_again(plan)
     if plan.schema_version != HK_HISTORY_SCHEMA_VERSION_V2:
         raise HKHistoryBackfillError("HK_HISTORY_PLAN_CONFLICT")
+    result: HKHistoryExecutionResult | None = None
+    failure: str | None = None
     try:
         journal_root.mkdir(parents=True, exist_ok=True)
         with hold_journal_writer_lock(journal_root=journal_root):
@@ -572,19 +662,24 @@ def recover_existing_hk_history_requests(
                 frame = _read_and_validate_request(request, raw_store)
                 _write_receipt(plan, request, raw_store, journal_root, frame)
                 completed += 1
-            return HKHistoryExecutionResult(
+            result = HKHistoryExecutionResult(
                 request_id=None,
                 network_requests=0,
                 completed_requests=completed,
                 total_requests=len(plan.requests),
                 is_complete=True,
             )
-    except HKHistoryBackfillError:
-        raise
+    except HKHistoryBackfillError as error:
+        failure = str(error)
     except M3JournalLockError:
+        failure = "HK_HISTORY_REFERENCE_INVALID"
+    except Exception:
+        failure = "HK_HISTORY_REFERENCE_INVALID"
+    if failure is not None:
+        raise HKHistoryBackfillError(failure) from None
+    if result is None:
         raise HKHistoryBackfillError("HK_HISTORY_REFERENCE_INVALID") from None
-    except OSError:
-        raise HKHistoryBackfillError("HK_HISTORY_REFERENCE_INVALID") from None
+    return result
 
 
 def finalize_hk_history(
@@ -594,21 +689,39 @@ def finalize_hk_history(
     journal_root: Path,
     seed_raw_root: Path,
     clean_root: Path,
+    hkex_retained_raw: bytes | None = None,
+    hkex_retained_bundle: VerifiedHKEXDailyQuotationRetainedBundle | None = None,
 ) -> int:
     """Publish all validated planned bars after a read-only conflict preflight."""
     _validate_plan_again(plan)
+    if hkex_retained_raw is not None and hkex_retained_bundle is not None:
+        raise HKHistoryBackfillError("HK_HISTORY_AVAILABILITY_INVALID") from None
+    supplement_frame: pl.DataFrame | None
+    supplement_receipt: dict[str, Any] | None
+    v3_bundle: VerifiedHKEXDailyQuotationRetainedBundle | None = None
+    if hkex_retained_bundle is not None:
+        supplement_frame, supplement_receipt, v3_bundle = _prepare_hkex_supplement_v3(
+            plan=plan, retained_bundle=hkex_retained_bundle
+        )
+    else:
+        supplement_frame, supplement_receipt = _prepare_hkex_supplement(
+            plan=plan, retained_raw=hkex_retained_raw
+        )
     try:
         journal_root.mkdir(parents=True, exist_ok=True)
         with hold_journal_writer_lock(journal_root=journal_root):
             seed_frame, seed_fetched_at = _load_seed(plan, seed_raw_root)
             _bind_v2_journal(plan, journal_root)
-            del seed_fetched_at
             frames = [seed_frame]
+            request_frames: list[tuple[HKHistoryRequest, pl.DataFrame]] = []
             for request in plan.requests:
                 receipt = _verify_receipt(plan, request, raw_store, journal_root)
                 if receipt is None:
                     raise HKHistoryBackfillError("HK_HISTORY_INCOMPLETE")
                 frames.append(receipt)
+                request_frames.append((request, receipt))
+            if supplement_frame is not None:
+                frames.append(supplement_frame)
             clean = Bar1dSchema.validate(pl.concat(frames, how="vertical_relaxed")).sort(
                 "symbol", "trade_date", "source"
             )
@@ -620,17 +733,48 @@ def finalize_hk_history(
             expected_keys = {
                 (symbol, _date(date_value))
                 for symbol, dates in expected_source
-                if symbol not in dict(plan.unresolved)
                 for date_value in dates
             }
             actual_keys = set(clean.select("symbol", "trade_date").iter_rows())
             if actual_keys != expected_keys or clean.height != len(expected_keys):
-                raise HKHistoryBackfillError("HK_HISTORY_RAW_INVALID")
+                raise HKHistoryBackfillError(
+                    "HK_HISTORY_AVAILABILITY_INVALID"
+                    if v3_bundle is not None
+                    else "HK_HISTORY_RAW_INVALID"
+                )
+            availability: pl.DataFrame | None = None
+            if v3_bundle is not None:
+                availability = _build_availability_evidence(
+                    plan=plan,
+                    seed_frame=seed_frame,
+                    seed_fetched_at=seed_fetched_at,
+                    request_frames=request_frames,
+                    raw_store=raw_store,
+                    journal_root=journal_root,
+                    hkex_frame=supplement_frame,
+                    hkex_bundle=v3_bundle,
+                )
             _preflight_clean(clean, clean_root)
             try:
                 written = CleanBarStore(clean_root).upsert(clean)
                 _verify_published(clean, clean_root)
-                _write_finalize_receipt(journal_root, plan, clean)
+                if v3_bundle is None:
+                    _write_finalize_receipt(
+                        journal_root, plan, clean, hkex_supplement=supplement_receipt
+                    )
+                else:
+                    if availability is None:
+                        raise HKHistoryBackfillError(
+                            "HK_HISTORY_AVAILABILITY_INVALID"
+                        )
+                    _write_finalize_v3(
+                        root=journal_root,
+                        plan=plan,
+                        clean=clean,
+                        availability=availability,
+                        raw_store=raw_store,
+                        hkex_bundle=v3_bundle,
+                    )
                 return written
             except HKHistoryBackfillError:
                 raise
@@ -642,6 +786,311 @@ def finalize_hk_history(
         raise HKHistoryBackfillError("HK_HISTORY_PUBLISH_FAILED") from None
     except Exception:
         raise HKHistoryBackfillError("HK_HISTORY_REFERENCE_INVALID") from None
+
+
+def load_verified_hkex_retained_bundle_for_finalize(
+    raw_path: Path,
+    metadata_path: Path,
+) -> VerifiedHKEXDailyQuotationRetainedBundle:
+    """Read and freshly verify one explicit retained HKEX input pair.
+
+    The retained inputs are trusted to have been published write-once/no-clobber,
+    and the caller must keep them free of concurrent writers until downstream
+    finalize has consumed the returned bundle.  Each file remains physically
+    anchored through its final held-instance content and identity checks, and
+    the returned bundle is derived only from the initially cached bytes.  These
+    finite sequential checks do not prove that both external paths are immutable
+    at one common instant.  The loader never creates or repairs retained metadata.
+    """
+    anchors: list[_DirectoryAnchor] = []
+    result: VerifiedHKEXDailyQuotationRetainedBundle | None = None
+    failed = False
+    try:
+        raw_absolute = raw_path.absolute()
+        metadata_absolute = metadata_path.absolute()
+        raw_anchor = _DirectoryAnchor(raw_absolute.parent)
+        anchors.append(raw_anchor)
+        metadata_anchor = _DirectoryAnchor(metadata_absolute.parent)
+        anchors.append(metadata_anchor)
+
+        raw_payload = raw_anchor.read_bytes(raw_absolute.name)
+        raw_identity = _last_anchored_file_identity(raw_anchor)
+        raw_content = (len(raw_payload), hashlib.sha256(raw_payload).digest())
+        metadata_payload = metadata_anchor.read_bytes(metadata_absolute.name)
+        metadata_identity = _last_anchored_file_identity(metadata_anchor)
+        metadata_content = (
+            len(metadata_payload),
+            hashlib.sha256(metadata_payload).digest(),
+        )
+        if raw_identity == metadata_identity:
+            raise _AnchorViolation
+
+        result = verify_hkex_daily_quotation_retained(
+            raw_payload,
+            metadata_payload,
+            source_url=HKEX_02983_SOURCE_URL,
+            expected_raw_sha256=HKEX_02983_RAW_SHA256,
+        )
+        for anchor, path, expected_identity, expected_content in (
+            (raw_anchor, raw_absolute, raw_identity, raw_content),
+            (
+                metadata_anchor,
+                metadata_absolute,
+                metadata_identity,
+                metadata_content,
+            ),
+        ):
+            anchor.assert_live()
+            if _reread_held_file_content(anchor) != expected_content:
+                raise _AnchorViolation
+            anchor.assert_namespace()
+            if _path_file_identity(path) != expected_identity:
+                raise _AnchorViolation
+    except Exception:
+        failed = True
+    finally:
+        for anchor in reversed(anchors):
+            try:
+                anchor.close()
+            except Exception:
+                failed = True
+    if failed or result is None:
+        raise HKHistoryBackfillError("HK_HISTORY_REFERENCE_INVALID") from None
+    return result
+
+
+def _last_anchored_file_identity(anchor: _DirectoryAnchor) -> tuple[int, int]:
+    if os.name == "nt":
+        if not anchor._held_handles:
+            raise _AnchorViolation
+        _handle, _duplicate, attributes, volume, index = anchor._held_handles[-1]
+        if attributes & 0x00000400 or attributes & 0x00000010:
+            raise _AnchorViolation
+        return volume, index
+    if not anchor._held_fds:
+        raise _AnchorViolation
+    _fd, _duplicate, device, inode, file_type, _flags = anchor._held_fds[-1]
+    if file_type != stat.S_IFREG:
+        raise _AnchorViolation
+    return device, inode
+
+
+def _reread_held_file_content(anchor: _DirectoryAnchor) -> tuple[int, bytes]:
+    original_offset: int | None = None
+    payload: bytes | None = None
+    failed = False
+    try:
+        original_offset = _held_file_current_offset(anchor)
+        _held_file_seek_start(anchor)
+        payload = _held_file_read_all(anchor)
+    except Exception:
+        failed = True
+    finally:
+        if original_offset is not None:
+            try:
+                _held_file_restore_offset(anchor, original_offset)
+            except Exception:
+                failed = True
+    if failed or payload is None:
+        raise _AnchorViolation from None
+    return len(payload), hashlib.sha256(payload).digest()
+
+
+def _held_file_current_offset(anchor: _DirectoryAnchor) -> int:
+    descriptor = _last_held_file_descriptor(anchor)
+    if os.name == "nt":
+        return _win_seek_file_handle(descriptor, 0, 1)
+    return os.lseek(descriptor, 0, os.SEEK_CUR)
+
+
+def _held_file_seek_start(anchor: _DirectoryAnchor) -> None:
+    descriptor = _last_held_file_descriptor(anchor)
+    observed = (
+        _win_seek_file_handle(descriptor, 0, 0)
+        if os.name == "nt"
+        else os.lseek(descriptor, 0, os.SEEK_SET)
+    )
+    if observed != 0:
+        raise _AnchorViolation
+
+
+def _held_file_read_all(anchor: _DirectoryAnchor) -> bytes:
+    descriptor = _last_held_file_descriptor(anchor)
+    if os.name == "nt":
+        return _win_read_file_handle(descriptor)
+    chunks: list[bytes] = []
+    while True:
+        chunk = os.read(descriptor, 1024 * 1024)
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+
+
+def _held_file_restore_offset(anchor: _DirectoryAnchor, offset: int) -> None:
+    descriptor = _last_held_file_descriptor(anchor)
+    observed = (
+        _win_seek_file_handle(descriptor, offset, 0)
+        if os.name == "nt"
+        else os.lseek(descriptor, offset, os.SEEK_SET)
+    )
+    if observed != offset:
+        raise _AnchorViolation
+
+
+def _last_held_file_descriptor(anchor: _DirectoryAnchor) -> int:
+    if os.name == "nt":
+        if not anchor._held_handles:
+            raise _AnchorViolation
+        return anchor._held_handles[-1][0]
+    if not anchor._held_fds:
+        raise _AnchorViolation
+    return anchor._held_fds[-1][0]
+
+
+def _path_file_identity(path: Path) -> tuple[int, int]:
+    if os.name == "nt":
+        handle = _win_create_handle(path, directory=False)
+        try:
+            attributes, volume, index = _win_file_information(handle)
+            if attributes & 0x00000400 or attributes & 0x00000010:
+                raise _AnchorViolation
+            return volume, index
+        finally:
+            _win_close_handle(handle)
+    fd = os.open(path, os.O_RDONLY | _O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise _AnchorViolation
+        return info.st_dev, info.st_ino
+    finally:
+        os.close(fd)
+
+
+def _prepare_hkex_supplement(
+    *, plan: HKHistoryPlan, retained_raw: bytes | None
+) -> tuple[pl.DataFrame | None, dict[str, Any] | None]:
+    """Freshly verify and map the one frozen HKEX supplement before any write."""
+    if (
+        plan.unresolved == _HKEX_SUPPLEMENT_UNRESOLVED
+        and plan.schema_version != HK_HISTORY_SCHEMA_VERSION_V2
+    ):
+        raise HKHistoryBackfillError("HK_HISTORY_PLAN_CONFLICT")
+    if plan.unresolved != _HKEX_SUPPLEMENT_UNRESOLVED:
+        if plan.unresolved or retained_raw is not None:
+            raise HKHistoryBackfillError("HK_HISTORY_PLAN_CONFLICT")
+        return None, None
+    if retained_raw is None:
+        raise HKHistoryBackfillError("HK_HISTORY_INCOMPLETE")
+    if type(retained_raw) is not bytes:
+        raise HKHistoryBackfillError("HK_HISTORY_REFERENCE_INVALID")
+    try:
+        verified = verify_hkex_daily_quotation(
+            retained_raw,
+            source_url=HKEX_02983_SOURCE_URL,
+            expected_raw_sha256=HKEX_02983_RAW_SHA256,
+        )
+        evidence = verified.evidence
+        frame = Bar1dSchema.validate(
+            pl.DataFrame(
+                {
+                    "symbol": [evidence.symbol],
+                    "trade_date": [evidence.trade_date],
+                    "open": [float(evidence.open)],
+                    "high": [float(evidence.high)],
+                    "low": [float(evidence.low)],
+                    "close": [float(evidence.close)],
+                    "volume": [float(evidence.sales_volume)],
+                    "amount": [float(evidence.sales_turnover)],
+                    "adj_factor": [1.0],
+                    "source": ["hkex"],
+                }
+            )
+        )
+        if (
+            frame.height != 1
+            or frame.select("symbol", "trade_date").row(0)
+            != ("02983.HK", dt.date(2026, 7, 10))
+        ):
+            raise ValueError
+        receipt = {
+            "evidence_id": verified.evidence_id,
+            "raw_sha256": evidence.raw_sha256,
+            "source_record_id": evidence.source_record_id,
+            "supplement_content_sha256": _frame_hash(frame),
+        }
+        return frame, receipt
+    except HKHistoryBackfillError:
+        raise
+    except HKEXDailyQuotationsError:
+        raise HKHistoryBackfillError("HK_HISTORY_REFERENCE_INVALID") from None
+    except Exception:
+        raise HKHistoryBackfillError("HK_HISTORY_REFERENCE_INVALID") from None
+
+
+def _prepare_hkex_supplement_v3(
+    *,
+    plan: HKHistoryPlan,
+    retained_bundle: VerifiedHKEXDailyQuotationRetainedBundle,
+) -> tuple[
+    pl.DataFrame,
+    dict[str, Any],
+    VerifiedHKEXDailyQuotationRetainedBundle,
+]:
+    """Freshly reverify an exact retained bundle eligible for receipt v3."""
+    if (
+        plan.schema_version != HK_HISTORY_SCHEMA_VERSION_V2
+        or plan.unresolved != _HKEX_SUPPLEMENT_UNRESOLVED
+        or type(retained_bundle) is not VerifiedHKEXDailyQuotationRetainedBundle
+    ):
+        raise HKHistoryBackfillError("HK_HISTORY_AVAILABILITY_INVALID") from None
+    try:
+        rebuilt = verify_hkex_daily_quotation_retained_bundle(retained_bundle)
+        evidence = rebuilt.quotation.evidence
+        metadata = rebuilt.metadata
+        if (
+            metadata.report_trade_date != evidence.trade_date
+            or metadata.market != "HK"
+            or metadata.source_record_id != evidence.source_record_id
+        ):
+            raise ValueError
+        frame = Bar1dSchema.validate(
+            pl.DataFrame(
+                {
+                    "symbol": [evidence.symbol],
+                    "trade_date": [evidence.trade_date],
+                    "open": [float(evidence.open)],
+                    "high": [float(evidence.high)],
+                    "low": [float(evidence.low)],
+                    "close": [float(evidence.close)],
+                    "volume": [float(evidence.sales_volume)],
+                    "amount": [float(evidence.sales_turnover)],
+                    "adj_factor": [1.0],
+                    "source": ["hkex"],
+                }
+            )
+        )
+        if frame.select("symbol", "trade_date").row(0) != (
+            "02983.HK",
+            dt.date(2026, 7, 10),
+        ):
+            raise ValueError
+        receipt = {
+            "evidence_id": rebuilt.quotation.evidence_id,
+            "bundle_id": rebuilt.bundle_id,
+            "raw_sha256": evidence.raw_sha256,
+            "metadata_sha256": hashlib.sha256(rebuilt.retained_metadata).hexdigest(),
+            "metadata_identity": metadata.metadata_identity,
+            "source_record_id": evidence.source_record_id,
+            "supplement_content_sha256": _frame_hash(frame),
+        }
+        return frame, receipt, rebuilt
+    except HKHistoryBackfillError:
+        raise
+    except HKEXDailyQuotationsError:
+        raise HKHistoryBackfillError("HK_HISTORY_AVAILABILITY_INVALID") from None
+    except Exception:
+        raise HKHistoryBackfillError("HK_HISTORY_AVAILABILITY_INVALID") from None
 
 
 def _execute_locked(
@@ -749,6 +1198,8 @@ def _validate_raw(
     all_expected: Mapping[str, tuple[str, ...]],
     symbols: tuple[str, ...],
 ) -> pl.DataFrame:
+    result: pl.DataFrame | None = None
+    failure: str | None = None
     try:
         if tuple(raw.columns) != _RAW_COLUMNS or raw.height >= HK_HISTORY_ROW_LIMIT:
             raise ValueError
@@ -776,22 +1227,35 @@ def _validate_raw(
         enriched = raw.with_columns(
             pl.col("ts_code").alias("_request_symbol"), pl.lit("HK").alias("_market")
         )
-        return Bar1dSchema.validate(TushareBarMapper().map(enriched))
+        result = Bar1dSchema.validate(TushareBarMapper().map(enriched))
     except Exception:
+        failure = "HK_HISTORY_RAW_INVALID"
+    if failure is not None:
+        raise HKHistoryBackfillError(failure) from None
+    if result is None:
         raise HKHistoryBackfillError("HK_HISTORY_RAW_INVALID") from None
+    return result
 
 
 def _read_and_validate_request(
-    request: HKHistoryRequest, raw_store: RawStore
+    request: HKHistoryRequest,
+    raw_store: RawStore,
+    *,
+    raw_anchor: _DirectoryAnchor | None = None,
 ) -> pl.DataFrame:
+    failure: str | None = None
+    frame: pl.DataFrame | None = None
     try:
-        _, frame = raw_store.verify_request_bundle(
-            source="tushare",
-            table=HK_HISTORY_RAW_TABLE,
-            request_id=request.request_id,
-            parameters=dict(request.parameters),
+        _, frame = _verify_request_bundle_fresh(
+            request=request, raw_store=raw_store, raw_anchor=raw_anchor
         )
-    except (OSError, ValueError):
+    except HKHistoryBackfillError as error:
+        failure = str(error)
+    except Exception:
+        failure = "HK_HISTORY_RAW_INVALID"
+    if failure is not None:
+        raise HKHistoryBackfillError(failure) from None
+    if frame is None:
         raise HKHistoryBackfillError("HK_HISTORY_RAW_INVALID") from None
     expected = (
         request.effective_expected_dates
@@ -801,33 +1265,128 @@ def _read_and_validate_request(
     return _validate_raw(frame, dict(expected), request.symbols)
 
 
-def _verify_receipt(
-    plan: HKHistoryPlan,
+def _read_anchored_path(
+    path: Path, *, root: Path, anchor: _DirectoryAnchor | None
+) -> bytes:
+    if anchor is None:
+        return path.read_bytes()
+    return anchor.read_bytes(path.relative_to(root))
+
+
+def _verify_request_bundle_fresh(
+    *,
     request: HKHistoryRequest,
     raw_store: RawStore,
-    journal_root: Path,
-) -> pl.DataFrame | None:
-    path = journal_root / "requests" / request.request_id / "receipt.json"
-    _guard_journal_path(journal_root, path)
-    if not path.exists():
-        return None
-    if plan.schema_version == HK_HISTORY_SCHEMA_VERSION:
-        _verify_intent(journal_root, request)
-    frame = _read_and_validate_request(request, raw_store)
-    try:
-        value = _strict_json(path.read_bytes())
-        snapshot, _ = raw_store.verify_request_bundle(
+    raw_anchor: _DirectoryAnchor | None,
+) -> tuple[RequestRawSnapshot, pl.DataFrame]:
+    if raw_anchor is None:
+        return raw_store.verify_request_bundle(
             source="tushare",
             table=HK_HISTORY_RAW_TABLE,
             request_id=request.request_id,
             parameters=dict(request.parameters),
         )
+    data_path, metadata_path = raw_store.request_paths(
+        source="tushare",
+        table=HK_HISTORY_RAW_TABLE,
+        request_id=request.request_id,
+    )
+    payload = _read_anchored_path(data_path, root=raw_store.root, anchor=raw_anchor)
+    metadata_payload = _read_anchored_path(
+        metadata_path, root=raw_store.root, anchor=raw_anchor
+    )
+    metadata = _strict_json(metadata_payload)
+    expected_keys = {
+        "schema_version",
+        "snapshot_id",
+        "source",
+        "table",
+        "request_id",
+        "fetched_at",
+        "parameters",
+        "rows",
+        "columns",
+        "checksum_sha256",
+        "size_bytes",
+    }
+    if (
+        set(metadata) != expected_keys
+        or metadata_payload != _canonical_json(metadata).encode("utf-8")
+        or metadata["schema_version"] != "request-raw-v1"
+        or metadata["snapshot_id"] != request.request_id
+        or metadata["request_id"] != request.request_id
+        or metadata["source"] != "tushare"
+        or metadata["table"] != HK_HISTORY_RAW_TABLE
+        or metadata["parameters"] != dict(request.parameters)
+        or type(metadata["rows"]) is not int
+        or type(metadata["size_bytes"]) is not int
+        or type(metadata["fetched_at"]) is not str
+        or type(metadata["columns"]) is not list
+        or not all(type(item) is str for item in metadata["columns"])
+    ):
+        raise ValueError
+    fetched_at = dt.datetime.fromisoformat(metadata["fetched_at"])
+    if fetched_at.tzinfo is None:
+        raise ValueError
+    checksum = hashlib.sha256(payload).hexdigest()
+    if metadata["checksum_sha256"] != checksum or metadata["size_bytes"] != len(payload):
+        raise ValueError
+    frame = pl.read_parquet(io.BytesIO(payload))
+    if frame.height != metadata["rows"] or frame.columns != metadata["columns"]:
+        raise ValueError
+    return (
+        RequestRawSnapshot(
+            snapshot_id=request.request_id,
+            data_path=data_path,
+            metadata_path=metadata_path,
+            checksum_sha256=checksum,
+            metadata_sha256=hashlib.sha256(metadata_payload).hexdigest(),
+            size_bytes=len(payload),
+            row_count=frame.height,
+            columns=tuple(frame.columns),
+        ),
+        frame,
+    )
+
+
+def _verify_receipt(
+    plan: HKHistoryPlan,
+    request: HKHistoryRequest,
+    raw_store: RawStore,
+    journal_root: Path,
+    *,
+    journal_anchor: _DirectoryAnchor | None = None,
+    raw_anchor: _DirectoryAnchor | None = None,
+) -> pl.DataFrame | None:
+    path = journal_root / "requests" / request.request_id / "receipt.json"
+    _guard_journal_path(journal_root, path)
+    if journal_anchor is None and not path.exists():
+        return None
+    result: pl.DataFrame | None = None
+    failure: str | None = None
+    try:
+        if plan.schema_version == HK_HISTORY_SCHEMA_VERSION:
+            _verify_intent(journal_root, request)
+        frame = _read_and_validate_request(request, raw_store, raw_anchor=raw_anchor)
+        payload = _read_anchored_path(
+            path, root=journal_root, anchor=journal_anchor
+        )
+        value = _strict_json(payload)
+        snapshot, _ = _verify_request_bundle_fresh(
+            request=request, raw_store=raw_store, raw_anchor=raw_anchor
+        )
         expected = _receipt_dict(plan, request, snapshot, frame)
-        if value != expected or path.read_bytes() != _canonical_json(expected).encode("utf-8"):
+        expected_payload = _canonical_json(expected).encode("utf-8")
+        if value != _strict_json(expected_payload) or payload != expected_payload:
             raise ValueError
-        return frame
-    except (OSError, ValueError, json.JSONDecodeError):
-        raise HKHistoryBackfillError("HK_HISTORY_RAW_INVALID") from None
+        result = frame
+    except HKHistoryBackfillError as error:
+        failure = str(error)
+    except Exception:
+        failure = "HK_HISTORY_RAW_INVALID"
+    if failure is not None:
+        raise HKHistoryBackfillError(failure) from None
+    return result
 
 
 def _write_receipt(
@@ -837,6 +1396,7 @@ def _write_receipt(
     journal_root: Path,
     frame: pl.DataFrame,
 ) -> None:
+    failure: str | None = None
     try:
         snapshot, _ = raw_store.verify_request_bundle(
             source="tushare",
@@ -849,10 +1409,12 @@ def _write_receipt(
             _receipt_dict(plan, request, snapshot, frame),
             "HK_HISTORY_RAW_INVALID",
         )
-    except HKHistoryBackfillError:
-        raise
-    except (OSError, ValueError):
-        raise HKHistoryBackfillError("HK_HISTORY_RAW_INVALID") from None
+    except HKHistoryBackfillError as error:
+        failure = str(error)
+    except Exception:
+        failure = "HK_HISTORY_RAW_INVALID"
+    if failure is not None:
+        raise HKHistoryBackfillError(failure) from None
 
 
 def _receipt_dict(
@@ -886,8 +1448,14 @@ def _receipt_dict(
     return value
 
 
-def _load_seed(plan: HKHistoryPlan, raw_root: Path) -> tuple[pl.DataFrame, dt.datetime]:
+def _load_seed(
+    plan: HKHistoryPlan,
+    raw_root: Path,
+    *,
+    seed_anchor: _DirectoryAnchor | None = None,
+) -> tuple[pl.DataFrame, dt.datetime]:
     if plan.schema_version == HK_HISTORY_SCHEMA_VERSION_V2:
+        failure: str | None = None
         try:
             _verify_evidence_projection(
                 HKNoTradeEvidenceSet(
@@ -896,19 +1464,28 @@ def _load_seed(plan: HKHistoryPlan, raw_root: Path) -> tuple[pl.DataFrame, dt.da
                     evidence_set_sha256=plan.no_trade_evidence_sha256,
                 ),
                 raw_root=raw_root,
+                anchor=seed_anchor,
             )
+        except HKHistoryBackfillError as error:
+            failure = str(error)
         except (TypeError, ValueError):
-            raise HKHistoryBackfillError("HK_HISTORY_REFERENCE_INVALID") from None
+            failure = "HK_HISTORY_REFERENCE_INVALID"
+        if failure is not None:
+            raise HKHistoryBackfillError(failure) from None
     base = raw_root.resolve()
     data_path = (base / PurePosixPath(plan.seed.selector)).resolve()
+    result: tuple[pl.DataFrame, dt.datetime] | None = None
+    failure = None
     try:
         data_path.relative_to(base)
         if data_path.suffix != ".parquet":
             raise ValueError
         metadata_path = data_path.with_suffix(".json")
-        metadata_payload = metadata_path.read_bytes()
+        metadata_payload = _read_anchored_path(
+            metadata_path, root=raw_root, anchor=seed_anchor
+        )
         metadata = _strict_json(metadata_payload)
-        payload = data_path.read_bytes()
+        payload = _read_anchored_path(data_path, root=raw_root, anchor=seed_anchor)
         payload_checksum = hashlib.sha256(payload).hexdigest()
         if (
             payload_checksum != metadata["checksum_sha256"]
@@ -917,7 +1494,7 @@ def _load_seed(plan: HKHistoryPlan, raw_root: Path) -> tuple[pl.DataFrame, dt.da
             != plan.seed.metadata_sha256
         ):
             raise ValueError
-        raw = pl.read_parquet(data_path)
+        raw = pl.read_parquet(io.BytesIO(payload))
         if metadata["rows"] != raw.height or metadata["columns"] != raw.columns:
             raise ValueError
         fetched_at = _utc(dt.datetime.fromisoformat(metadata["fetched_at"]))
@@ -927,11 +1504,16 @@ def _load_seed(plan: HKHistoryPlan, raw_root: Path) -> tuple[pl.DataFrame, dt.da
             else plan.expected_dates
         )
         clean = _validate_seed_raw(raw, dict(expected_source), plan.seed.symbols)
-        return clean, fetched_at
-    except HKHistoryBackfillError:
-        raise
+        result = (clean, fetched_at)
+    except HKHistoryBackfillError as error:
+        failure = str(error)
     except Exception:
+        failure = "HK_HISTORY_REFERENCE_INVALID"
+    if failure is not None:
+        raise HKHistoryBackfillError(failure) from None
+    if result is None:
         raise HKHistoryBackfillError("HK_HISTORY_REFERENCE_INVALID") from None
+    return result
 
 
 def _validate_seed_raw(
@@ -944,17 +1526,24 @@ def _validate_seed_raw(
         return _validate_raw(raw, all_expected, symbols)
     if tuple(raw.columns) != (*_RAW_COLUMNS, "_request_symbol", "_market"):
         raise HKHistoryBackfillError("HK_HISTORY_RAW_INVALID")
+    failure: str | None = None
+    result: pl.DataFrame | None = None
     try:
         if raw.filter(
             (pl.col("_request_symbol") != pl.col("ts_code"))
             | (pl.col("_market") != "HK")
         ).height:
             raise ValueError
-        return _validate_raw(raw.select(_RAW_COLUMNS), all_expected, symbols)
-    except HKHistoryBackfillError:
-        raise
+        result = _validate_raw(raw.select(_RAW_COLUMNS), all_expected, symbols)
+    except HKHistoryBackfillError as error:
+        failure = str(error)
     except Exception:
+        failure = "HK_HISTORY_RAW_INVALID"
+    if failure is not None:
+        raise HKHistoryBackfillError(failure) from None
+    if result is None:
         raise HKHistoryBackfillError("HK_HISTORY_RAW_INVALID") from None
+    return result
 
 
 def _preflight_clean(incoming: pl.DataFrame, root: Path) -> None:
@@ -989,25 +1578,1444 @@ def _verify_published(incoming: pl.DataFrame, root: Path) -> None:
         raise HKHistoryBackfillError("HK_HISTORY_PUBLISH_FAILED")
 
 
-def _write_finalize_receipt(root: Path, plan: HKHistoryPlan, clean: pl.DataFrame) -> None:
-    value = {
-        "schema_version": "hk-history-finalize-v1",
+def _write_finalize_receipt(
+    root: Path,
+    plan: HKHistoryPlan,
+    clean: pl.DataFrame,
+    *,
+    hkex_supplement: dict[str, Any] | None,
+) -> None:
+    value: dict[str, Any] = {
+        "schema_version": (
+            "hk-history-finalize-v2"
+            if hkex_supplement is not None
+            else "hk-history-finalize-v1"
+        ),
         "plan_sha256": plan.plan_sha256,
         "row_count": clean.height,
         "clean_content_sha256": _frame_hash(clean),
     }
+    if hkex_supplement is not None:
+        value["hkex_supplement"] = hkex_supplement
     path = root / "finalize.json"
     _guard_journal_path(root, path)
     _write_or_verify_json(path, value, "HK_HISTORY_PUBLISH_FAILED")
 
 
-def _raw_state(store: RawStore, request: HKHistoryRequest) -> str:
+def _availability_row(
+    *,
+    symbol: str,
+    trade_date: dt.date,
+    source: str,
+    kind: str,
+    available_at: dt.datetime,
+    source_record_id: str,
+    request_id: str | None,
+    raw_file_sha256: str,
+    raw_metadata_sha256: str,
+    request_receipt_sha256: str | None,
+    plan_sha256: str,
+) -> dict[str, Any]:
+    value: dict[str, Any] = {
+        "symbol": symbol,
+        "trade_date": trade_date.isoformat(),
+        "source": source,
+        "availability_source_kind": kind,
+        "bar_available_at": _utc(available_at).isoformat(),
+        "source_record_id": source_record_id,
+        "request_id": request_id,
+        "raw_file_sha256": raw_file_sha256,
+        "raw_metadata_sha256": raw_metadata_sha256,
+        "request_receipt_sha256": request_receipt_sha256,
+        "plan_sha256": plan_sha256,
+    }
+    value["availability_evidence_sha256"] = hashlib.sha256(
+        _canonical_json(value).encode("utf-8")
+    ).hexdigest()
+    return value
+
+
+def _metadata_fetched_at(
+    path: Path,
+    expected_sha256: str,
+    *,
+    root: Path | None = None,
+    anchor: _DirectoryAnchor | None = None,
+) -> dt.datetime:
+    payload = (
+        path.read_bytes()
+        if anchor is None or root is None
+        else _read_anchored_path(path, root=root, anchor=anchor)
+    )
+    if hashlib.sha256(payload).hexdigest() != expected_sha256:
+        raise ValueError
+    value = _strict_json(payload)
+    if type(value.get("fetched_at")) is not str:
+        raise ValueError
+    return _utc(dt.datetime.fromisoformat(value["fetched_at"]))
+
+
+def _build_availability_evidence(
+    *,
+    plan: HKHistoryPlan,
+    seed_frame: pl.DataFrame,
+    seed_fetched_at: dt.datetime,
+    request_frames: Sequence[tuple[HKHistoryRequest, pl.DataFrame]],
+    raw_store: RawStore,
+    journal_root: Path,
+    hkex_frame: pl.DataFrame | None,
+    hkex_bundle: VerifiedHKEXDailyQuotationRetainedBundle,
+    anchors: _ReadAnchors | None = None,
+) -> pl.DataFrame:
+    """Build the exact one-source-per-effective-key retained observation table."""
     try:
-        return store.inspect_request_state(
+        rows: list[dict[str, Any]] = []
+        for row in seed_frame.iter_rows(named=True):
+            rows.append(
+                _availability_row(
+                    symbol=row["symbol"],
+                    trade_date=row["trade_date"],
+                    source=row["source"],
+                    kind="SEED_RAW",
+                    available_at=seed_fetched_at,
+                    source_record_id=plan.seed.selector,
+                    request_id=None,
+                    raw_file_sha256=plan.seed.checksum_sha256,
+                    raw_metadata_sha256=plan.seed.metadata_sha256,
+                    request_receipt_sha256=None,
+                    plan_sha256=plan.plan_sha256,
+                )
+            )
+        for request, frame in request_frames:
+            snapshot, _ = _verify_request_bundle_fresh(
+                request=request,
+                raw_store=raw_store,
+                raw_anchor=None if anchors is None else anchors.raw,
+            )
+            fetched_at = _metadata_fetched_at(
+                snapshot.metadata_path,
+                snapshot.metadata_sha256,
+                root=raw_store.root,
+                anchor=None if anchors is None else anchors.raw,
+            )
+            receipt_path = (
+                journal_root / "requests" / request.request_id / "receipt.json"
+            )
+            _guard_journal_path(journal_root, receipt_path)
+            receipt_payload = _read_anchored_path(
+                receipt_path,
+                root=journal_root,
+                anchor=None if anchors is None else anchors.journal,
+            )
+            if receipt_payload != _canonical_json(
+                _receipt_dict(plan, request, snapshot, frame)
+            ).encode("utf-8"):
+                raise ValueError
+            receipt_sha256 = hashlib.sha256(receipt_payload).hexdigest()
+            for row in frame.iter_rows(named=True):
+                rows.append(
+                    _availability_row(
+                        symbol=row["symbol"],
+                        trade_date=row["trade_date"],
+                        source=row["source"],
+                        kind="REQUEST_RAW",
+                        available_at=fetched_at,
+                        source_record_id=request.request_id,
+                        request_id=request.request_id,
+                        raw_file_sha256=snapshot.checksum_sha256,
+                        raw_metadata_sha256=snapshot.metadata_sha256,
+                        request_receipt_sha256=receipt_sha256,
+                        plan_sha256=plan.plan_sha256,
+                    )
+                )
+        if hkex_frame is None:
+            raise ValueError
+        metadata = hkex_bundle.metadata
+        for row in hkex_frame.iter_rows(named=True):
+            rows.append(
+                _availability_row(
+                    symbol=row["symbol"],
+                    trade_date=row["trade_date"],
+                    source=row["source"],
+                    kind="HKEX_SUPPLEMENT",
+                    available_at=metadata.source_observed_at,
+                    source_record_id=metadata.source_record_id,
+                    request_id=None,
+                    raw_file_sha256=metadata.raw_file_sha256,
+                    raw_metadata_sha256=hashlib.sha256(
+                        hkex_bundle.retained_metadata
+                    ).hexdigest(),
+                    request_receipt_sha256=None,
+                    plan_sha256=plan.plan_sha256,
+                )
+            )
+        expected = {
+            (symbol, _date(date_value))
+            for symbol, dates in plan.effective_expected_dates
+            for date_value in dates
+        }
+        keys = [(row["symbol"], _date(row["trade_date"])) for row in rows]
+        if set(keys) != expected or len(keys) != len(expected):
+            raise ValueError
+        rows.sort(key=lambda item: (item["symbol"], item["trade_date"]))
+        frame = pl.DataFrame(rows).with_columns(
+            pl.col("trade_date").str.to_date(),
+            pl.col("bar_available_at").str.to_datetime(time_zone="UTC"),
+        )
+        validated = HkBarAvailabilityEvidenceSchema.validate(frame)
+        for row in validated.iter_rows(named=True):
+            serialized = {
+                key: (_scalar(value) if key != "availability_evidence_sha256" else value)
+                for key, value in row.items()
+                if key != "availability_evidence_sha256"
+            }
+            if row["availability_evidence_sha256"] != hashlib.sha256(
+                _canonical_json(serialized).encode("utf-8")
+            ).hexdigest():
+                raise ValueError
+        return validated.sort("symbol", "trade_date")
+    except Exception:
+        raise HKHistoryBackfillError("HK_HISTORY_AVAILABILITY_INVALID") from None
+
+
+def _availability_payload(plan: HKHistoryPlan, frame: pl.DataFrame) -> dict[str, Any]:
+    rows = [
+        {key: _scalar(value) for key, value in row.items()}
+        for row in frame.sort("symbol", "trade_date").iter_rows(named=True)
+    ]
+    return {
+        "schema_version": "hk-bar-availability-v1",
+        "plan_sha256": plan.plan_sha256,
+        "availability_content_sha256": hashlib.sha256(
+            _canonical_json(rows).encode("utf-8")
+        ).hexdigest(),
+        "rows": rows,
+    }
+
+
+def _request_source_receipts(
+    plan: HKHistoryPlan,
+    raw_store: RawStore,
+    root: Path,
+    *,
+    anchors: _ReadAnchors | None = None,
+) -> list[dict[str, str]]:
+    values = []
+    for request in plan.requests:
+        path = root / "requests" / request.request_id / "receipt.json"
+        _guard_journal_path(root, path)
+        payload = _read_anchored_path(
+            path,
+            root=root,
+            anchor=None if anchors is None else anchors.journal,
+        )
+        snapshot, frame = _verify_request_bundle_fresh(
+            request=request,
+            raw_store=raw_store,
+            raw_anchor=None if anchors is None else anchors.raw,
+        )
+        clean = _validate_raw(
+            frame,
+            dict(request.effective_expected_dates or request.expected_dates),
+            request.symbols,
+        )
+        if payload != _canonical_json(
+            _receipt_dict(plan, request, snapshot, clean)
+        ).encode("utf-8"):
+            raise ValueError
+        values.append(
+            {
+                "request_id": request.request_id,
+                "receipt_sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        )
+    return values
+
+
+def _write_finalize_v3(
+    *,
+    root: Path,
+    plan: HKHistoryPlan,
+    clean: pl.DataFrame,
+    availability: pl.DataFrame,
+    raw_store: RawStore,
+    hkex_bundle: VerifiedHKEXDailyQuotationRetainedBundle,
+) -> None:
+    """Publish the retained HKEX closure, availability and finalize atomically."""
+    try:
+        availability_value = _availability_payload(plan, availability)
+        availability_bytes = _canonical_json(availability_value).encode("utf-8")
+        metadata_sha256 = hashlib.sha256(
+            hkex_bundle.retained_metadata
+        ).hexdigest()
+        finalize_value = {
+            "schema_version": "hk-history-finalize-v3",
+            "plan_sha256": plan.plan_sha256,
+            "row_count": clean.height,
+            "clean_content_sha256": _frame_hash(clean),
+            "availability_content_sha256": availability_value[
+                "availability_content_sha256"
+            ],
+            "availability_file_sha256": hashlib.sha256(availability_bytes).hexdigest(),
+            "source_receipts": {
+                "seed": {
+                    "source_record_id": plan.seed.selector,
+                    "raw_file_sha256": plan.seed.checksum_sha256,
+                    "raw_metadata_sha256": plan.seed.metadata_sha256,
+                },
+                "requests": _request_source_receipts(plan, raw_store, root),
+                "hkex": {
+                    "bundle_id": hkex_bundle.bundle_id,
+                    "quotation_evidence_id": hkex_bundle.quotation.evidence_id,
+                    "metadata_identity": hkex_bundle.metadata.metadata_identity,
+                    "raw_file": _HKEX_RETAINED_RAW_FILE,
+                    "raw_file_sha256": hashlib.sha256(
+                        hkex_bundle.retained_raw
+                    ).hexdigest(),
+                    "metadata_file": _HKEX_RETAINED_METADATA_FILE,
+                    "raw_metadata_sha256": metadata_sha256,
+                    "source_record_id": hkex_bundle.metadata.source_record_id,
+                },
+            },
+        }
+        files = {
+            _HKEX_RETAINED_RAW_FILE: hkex_bundle.retained_raw,
+            _HKEX_RETAINED_METADATA_FILE: hkex_bundle.retained_metadata,
+            _AVAILABILITY_FILE: availability_bytes,
+            "finalize.json": _canonical_json(finalize_value).encode("utf-8"),
+        }
+        _write_v3_file_set(root, files)
+    except HKHistoryBackfillError:
+        raise
+    except Exception:
+        raise HKHistoryBackfillError("HK_HISTORY_FINALIZE_V3_INVALID") from None
+
+
+def _write_v3_file_set(root: Path, files: Mapping[str, bytes]) -> None:
+    paths = {name: root / name for name in files}
+    for path in paths.values():
+        _guard_journal_path(root, path)
+    existing = {name for name, path in paths.items() if path.exists()}
+    if existing:
+        if existing != set(files) or any(
+            paths[name].read_bytes() != payload for name, payload in files.items()
+        ):
+            raise HKHistoryBackfillError("HK_HISTORY_FINALIZE_V3_INVALID") from None
+        return
+    created: list[Path] = []
+    try:
+        for name, payload in files.items():
+            if _write_v3_one(paths[name], payload):
+                created.append(paths[name])
+    except Exception:
+        rollback_failed = False
+        for path in reversed(created):
+            try:
+                path.unlink()
+            except OSError:
+                rollback_failed = True
+        if rollback_failed:
+            raise HKHistoryBackfillError("HK_HISTORY_FINALIZE_V3_INVALID") from None
+        raise HKHistoryBackfillError("HK_HISTORY_FINALIZE_V3_INVALID") from None
+
+
+def _write_v3_one(path: Path, payload: bytes) -> bool:
+    """Hard-link one no-clobber file and report whether this caller created it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.parent / f".{path.name}.{os.getpid()}.v3.tmp"
+    try:
+        with temporary.open("xb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, path)
+            return True
+        except FileExistsError:
+            if path.read_bytes() != payload:
+                raise HKHistoryBackfillError(
+                    "HK_HISTORY_FINALIZE_V3_INVALID"
+                ) from None
+            return False
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _root_identity(path: Path) -> tuple[str, int, int]:
+    try:
+        absolute = path.absolute()
+        resolved = path.resolve(strict=True)
+        mode = os.lstat(path)
+        attributes = getattr(mode, "st_file_attributes", 0)
+        if (
+            resolved != absolute
+            or stat.S_ISLNK(mode.st_mode)
+            or not stat.S_ISDIR(mode.st_mode)
+            or attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        ):
+            raise ValueError
+        return str(resolved), mode.st_dev, mode.st_ino
+    except Exception:
+        raise HKHistoryBackfillError("HK_BAR_VERIFY_FAILED") from None
+
+
+class _AnchorViolation(RuntimeError):
+    pass
+
+
+class _DirectoryAnchor:
+    """Physical directory object held for one complete verification window."""
+
+    __slots__ = (
+        "path",
+        "identity",
+        "_fd",
+        "_fd_duplicate",
+        "_fd_status_flags",
+        "_handle",
+        "_handle_duplicate",
+        "_held_fds",
+        "_held_handles",
+        "_closed",
+    )
+
+    def __init__(self, path: Path) -> None:
+        self.path = path.absolute()
+        self._fd: int | None = None
+        self._fd_duplicate: int | None = None
+        self._fd_status_flags: int | None = None
+        self._handle: int | None = None
+        self._handle_duplicate: int | None = None
+        self._held_fds: list[tuple[int, int, int, int, int, int]] = []
+        self._held_handles: list[tuple[int, int, int, int, int]] = []
+        self._closed = False
+        if os.name == "nt":
+            handle, identity = _win_open_directory(self.path)
+            try:
+                duplicate = _win_duplicate_handle(handle)
+            except Exception:
+                _win_close_handle(handle)
+                raise
+            self._handle, self._handle_duplicate = handle, duplicate
+            self.identity = identity
+        else:
+            flags = os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW
+            fd = os.open(self.path, flags)
+            try:
+                info = os.fstat(fd)
+                if not stat.S_ISDIR(info.st_mode):
+                    raise ValueError
+                resolved = self.path.resolve(strict=True)
+                duplicate, status_flags = _posix_duplicate_fd(fd)
+            except Exception:
+                os.close(fd)
+                raise
+            self._fd, self._fd_duplicate = fd, duplicate
+            self._fd_status_flags = status_flags
+            self.identity = (str(resolved), info.st_dev, info.st_ino)
+
+    def read_bytes(self, relative: str | Path) -> bytes:
+        self.assert_namespace()
+        parts = _safe_anchor_parts(relative)
+        if os.name == "nt":
+            if self._handle is None:
+                raise ValueError
+            payload, held = _win_read_anchored(self.path, parts)
+            self._held_handles.extend(held)
+            self.assert_namespace()
+            return payload
+        if self._fd is None:
+            raise ValueError
+        directory_fd = self._fd
+        opened: list[tuple[int, int, int, int, int, int]] = []
+        try:
+            for part in parts[:-1]:
+                next_fd = os.open(
+                    part,
+                    os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW,
+                    dir_fd=directory_fd,
+                )
+                try:
+                    info = os.fstat(next_fd)
+                    duplicate, status_flags = _posix_duplicate_fd(next_fd)
+                except Exception:
+                    os.close(next_fd)
+                    raise
+                opened.append((
+                    next_fd,
+                    duplicate,
+                    info.st_dev,
+                    info.st_ino,
+                    stat.S_IFMT(info.st_mode),
+                    status_flags,
+                ))
+                directory_fd = next_fd
+            file_fd = os.open(
+                parts[-1], os.O_RDONLY | _O_NOFOLLOW, dir_fd=directory_fd
+            )
+            try:
+                info = os.fstat(file_fd)
+                if not stat.S_ISREG(info.st_mode):
+                    raise ValueError
+                duplicate, status_flags = _posix_duplicate_fd(file_fd)
+            except Exception:
+                os.close(file_fd)
+                raise
+            opened.append((
+                file_fd,
+                duplicate,
+                info.st_dev,
+                info.st_ino,
+                stat.S_IFMT(info.st_mode),
+                status_flags,
+            ))
+            chunks = []
+            while True:
+                chunk = os.read(file_fd, 1024 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            payload = b"".join(chunks)
+            self._held_fds.extend(opened)
+            opened = []
+            self.assert_namespace()
+            return payload
+        finally:
+            for fd, duplicate, *_identity in reversed(opened):
+                os.close(duplicate)
+                os.close(fd)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        failure: Exception | None = None
+        for fd, duplicate, *_identity in reversed(self._held_fds):
+            for descriptor in (duplicate, fd):
+                try:
+                    os.close(descriptor)
+                except Exception as error:
+                    failure = failure or error
+        self._held_fds.clear()
+        for handle, duplicate, *_identity in reversed(self._held_handles):
+            for descriptor in (duplicate, handle):
+                try:
+                    _win_close_handle(descriptor)
+                except Exception as error:
+                    failure = failure or error
+        self._held_handles.clear()
+        if self._fd_duplicate is not None:
+            try:
+                os.close(self._fd_duplicate)
+            except Exception as error:
+                failure = failure or error
+            self._fd_duplicate = None
+        if self._fd is not None:
+            try:
+                os.close(self._fd)
+            except Exception as error:
+                failure = failure or error
+            self._fd = None
+        self._fd_status_flags = None
+        if self._handle_duplicate is not None:
+            try:
+                _win_close_handle(self._handle_duplicate)
+            except Exception as error:
+                failure = failure or error
+            self._handle_duplicate = None
+        if self._handle is not None:
+            try:
+                _win_close_handle(self._handle)
+            except Exception as error:
+                failure = failure or error
+            self._handle = None
+        if failure is not None:
+            raise failure
+
+    def assert_live(self) -> None:
+        if self._closed:
+            raise _AnchorViolation
+        if os.name == "nt":
+            if self._handle is None or self._handle_duplicate is None:
+                raise _AnchorViolation
+            attributes, volume, index = _win_file_information(self._handle)
+            duplicate_identity = _win_file_information(self._handle_duplicate)
+            if (
+                attributes & 0x00000400
+                or not attributes & 0x00000010
+                or (volume, index) != self.identity[1:]
+                or duplicate_identity != (attributes, volume, index)
+                or not _win_same_object_handle(
+                    self._handle, self._handle_duplicate
+                )
+            ):
+                raise _AnchorViolation
+            for handle, duplicate, expected_attributes, expected_volume, expected_index in (
+                self._held_handles
+            ):
+                observed = _win_file_information(handle)
+                duplicate_identity = _win_file_information(duplicate)
+                if observed != (
+                    expected_attributes,
+                    expected_volume,
+                    expected_index,
+                ) or duplicate_identity != observed or not _win_same_object_handle(
+                    handle, duplicate
+                ):
+                    raise _AnchorViolation
+        else:
+            if (
+                self._fd is None
+                or self._fd_duplicate is None
+                or self._fd_status_flags is None
+            ):
+                raise _AnchorViolation
+            info = os.fstat(self._fd)
+            duplicate_info = os.fstat(self._fd_duplicate)
+            if (
+                not stat.S_ISDIR(info.st_mode)
+                or (info.st_dev, info.st_ino) != self.identity[1:]
+                or (
+                    duplicate_info.st_dev,
+                    duplicate_info.st_ino,
+                    stat.S_IFMT(duplicate_info.st_mode),
+                )
+                != (info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode))
+            ):
+                raise _AnchorViolation
+            _posix_assert_same_open_instance(
+                self._fd, self._fd_duplicate, self._fd_status_flags
+            )
+            for (
+                fd,
+                duplicate,
+                expected_dev,
+                expected_ino,
+                expected_type,
+                expected_flags,
+            ) in self._held_fds:
+                observed_stat = os.fstat(fd)
+                duplicate_stat = os.fstat(duplicate)
+                if (
+                    observed_stat.st_dev,
+                    observed_stat.st_ino,
+                    stat.S_IFMT(observed_stat.st_mode),
+                ) != (expected_dev, expected_ino, expected_type) or (
+                    duplicate_stat.st_dev,
+                    duplicate_stat.st_ino,
+                    stat.S_IFMT(duplicate_stat.st_mode),
+                ) != (expected_dev, expected_ino, expected_type):
+                    raise _AnchorViolation
+                _posix_assert_same_open_instance(fd, duplicate, expected_flags)
+
+    def assert_namespace(self) -> None:
+        self.assert_live()
+        self._assert_path_namespace()
+
+    def _assert_path_namespace(self) -> None:
+        if os.name == "nt":
+            handle, identity = _win_open_directory(self.path)
+            _win_close_handle(handle)
+        else:
+            identity = _root_identity(self.path)
+        if identity != self.identity:
+            raise _AnchorViolation
+
+
+class _ReadAnchors:
+    __slots__ = ("journal", "seed", "raw", "clean", "_closed")
+
+    def __init__(
+        self, *, journal: Path, seed: Path, raw: Path, clean: Path
+    ) -> None:
+        self._closed = False
+        opened: list[_DirectoryAnchor] = []
+        try:
+            self.journal = _DirectoryAnchor(journal)
+            opened.append(self.journal)
+            self.seed = _DirectoryAnchor(seed)
+            opened.append(self.seed)
+            self.raw = _DirectoryAnchor(raw)
+            opened.append(self.raw)
+            self.clean = _DirectoryAnchor(clean)
+            opened.append(self.clean)
+        except Exception:
+            for anchor in reversed(opened):
+                anchor.close()
+            raise
+
+    @property
+    def identities(self) -> tuple[tuple[str, int, int], ...]:
+        return (
+            self.journal.identity,
+            self.seed.identity,
+            self.raw.identity,
+            self.clean.identity,
+        )
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        failure: Exception | None = None
+        for anchor in (self.clean, self.raw, self.seed, self.journal):
+            try:
+                anchor.close()
+            except Exception as error:
+                failure = failure or error
+        if failure is not None:
+            raise failure
+
+    def assert_namespaces(self) -> None:
+        if self._closed:
+            raise _AnchorViolation
+        anchors = (self.journal, self.seed, self.raw, self.clean)
+        for anchor in anchors:
+            anchor.assert_live()
+        for anchor in anchors:
+            anchor._assert_path_namespace()
+
+
+def _safe_anchor_parts(relative: str | Path) -> tuple[str, ...]:
+    value = Path(relative)
+    if value.is_absolute() or not value.parts or any(
+        part in {"", ".", ".."} for part in value.parts
+    ):
+        raise ValueError
+    return tuple(value.parts)
+
+
+def _posix_duplicate_fd(fd: int) -> tuple[int, int]:
+    import importlib
+
+    fcntl = importlib.import_module("fcntl")
+    duplicate = int(fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 0))
+    try:
+        status_flags = int(fcntl.fcntl(fd, fcntl.F_GETFL))
+        if int(fcntl.fcntl(duplicate, fcntl.F_GETFL)) != status_flags:
+            raise _AnchorViolation
+        return duplicate, status_flags
+    except Exception:
+        os.close(duplicate)
+        raise
+
+
+def _posix_assert_same_open_instance(
+    fd: int, duplicate: int, expected_flags: int
+) -> None:
+    import importlib
+
+    fcntl = importlib.import_module("fcntl")
+    toggle = int(getattr(os, "O_NONBLOCK", 0))
+    if not toggle:
+        raise _AnchorViolation
+    restore_required = False
+    failed = False
+    try:
+        original_flags = int(fcntl.fcntl(fd, fcntl.F_GETFL))
+        duplicate_flags = int(fcntl.fcntl(duplicate, fcntl.F_GETFL))
+        if original_flags != expected_flags or duplicate_flags != expected_flags:
+            raise _AnchorViolation
+        toggled_flags = expected_flags ^ toggle
+        fcntl.fcntl(fd, fcntl.F_SETFL, toggled_flags)
+        restore_required = True
+        observed_original = int(fcntl.fcntl(fd, fcntl.F_GETFL))
+        observed_duplicate = int(fcntl.fcntl(duplicate, fcntl.F_GETFL))
+        if (
+            observed_original & toggle != toggled_flags & toggle
+            or observed_duplicate & toggle != toggled_flags & toggle
+            or observed_original & ~toggle != expected_flags & ~toggle
+            or observed_duplicate & ~toggle != expected_flags & ~toggle
+        ):
+            failed = True
+    except Exception:
+        failed = True
+    finally:
+        if restore_required:
+            try:
+                fcntl.fcntl(fd, fcntl.F_SETFL, expected_flags)
+            except Exception:
+                failed = True
+        try:
+            if (
+                int(fcntl.fcntl(fd, fcntl.F_GETFL)) != expected_flags
+                or int(fcntl.fcntl(duplicate, fcntl.F_GETFL)) != expected_flags
+            ):
+                failed = True
+        except Exception:
+            failed = True
+    if failed:
+        raise _AnchorViolation from None
+
+
+def _win_file_information(handle: int) -> tuple[int, int, int]:
+    import ctypes
+    from ctypes import wintypes
+
+    class FileInformation(ctypes.Structure):
+        _fields_ = [
+            ("attributes", wintypes.DWORD),
+            ("creation_time", wintypes.FILETIME),
+            ("last_access_time", wintypes.FILETIME),
+            ("last_write_time", wintypes.FILETIME),
+            ("volume_serial", wintypes.DWORD),
+            ("size_high", wintypes.DWORD),
+            ("size_low", wintypes.DWORD),
+            ("links", wintypes.DWORD),
+            ("file_index_high", wintypes.DWORD),
+            ("file_index_low", wintypes.DWORD),
+        ]
+
+    info = FileInformation()
+    kernel32 = getattr(ctypes, "windll").kernel32
+    get_info = kernel32.GetFileInformationByHandle
+    get_info.argtypes = [wintypes.HANDLE, ctypes.POINTER(FileInformation)]
+    get_info.restype = wintypes.BOOL
+    if not get_info(wintypes.HANDLE(handle), ctypes.byref(info)):
+        raise OSError
+    file_index = (int(info.file_index_high) << 32) | int(info.file_index_low)
+    return int(info.attributes), int(info.volume_serial), file_index
+
+
+def _win_duplicate_handle(handle: int) -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = getattr(ctypes, "windll").kernel32
+    current_process = kernel32.GetCurrentProcess
+    current_process.argtypes = []
+    current_process.restype = wintypes.HANDLE
+    duplicate_handle = kernel32.DuplicateHandle
+    duplicate_handle.argtypes = [
+        wintypes.HANDLE,
+        wintypes.HANDLE,
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.HANDLE),
+        wintypes.DWORD,
+        wintypes.BOOL,
+        wintypes.DWORD,
+    ]
+    duplicate_handle.restype = wintypes.BOOL
+    process = current_process()
+    duplicate = wintypes.HANDLE()
+    if not duplicate_handle(
+        process,
+        wintypes.HANDLE(handle),
+        process,
+        ctypes.byref(duplicate),
+        0,
+        False,
+        0x00000002,
+    ):
+        raise OSError
+    if duplicate.value is None:
+        raise OSError
+    return int(duplicate.value)
+
+
+def _win_same_object_handle(handle: int, duplicate: int) -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    try:
+        kernelbase = getattr(ctypes, "WinDLL")(
+            "KernelBase.dll", use_last_error=True
+        )
+        compare = kernelbase.CompareObjectHandles
+    except Exception:
+        raise _AnchorViolation from None
+    compare.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    compare.restype = wintypes.BOOL
+    try:
+        return bool(compare(wintypes.HANDLE(handle), wintypes.HANDLE(duplicate)))
+    except Exception:
+        raise _AnchorViolation from None
+
+
+def _win_create_handle(path: Path, *, directory: bool) -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = getattr(ctypes, "windll").kernel32
+    create = kernel32.CreateFileW
+    create.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create.restype = wintypes.HANDLE
+    # OPEN_REPARSE_POINT is 0x00200000; BACKUP_SEMANTICS is 0x02000000.
+    flags = 0x00200000 | (0x02000000 if directory else 0)
+    handle = create(
+        str(path),
+        0x80000000,
+        0x00000001 | 0x00000002,
+        None,
+        3,
+        flags,
+        None,
+    )
+    invalid = ctypes.c_void_p(-1).value
+    if handle == invalid:
+        raise OSError
+    return int(handle)
+
+
+def _win_open_directory(path: Path) -> tuple[int, tuple[str, int, int]]:
+    handle = _win_create_handle(path, directory=True)
+    try:
+        attributes, volume, index = _win_file_information(handle)
+        if attributes & 0x00000400 or not attributes & 0x00000010:
+            raise ValueError
+        resolved = path.resolve(strict=True)
+        if resolved != path:
+            raise ValueError
+        return handle, (str(resolved), volume, index)
+    except Exception:
+        _win_close_handle(handle)
+        raise
+
+
+def _win_close_handle(handle: int) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    close_handle = getattr(ctypes, "windll").kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+    if not close_handle(wintypes.HANDLE(handle)):
+        raise OSError
+
+
+def _win_read_anchored(
+    root: Path, parts: tuple[str, ...]
+) -> tuple[bytes, list[tuple[int, int, int, int, int]]]:
+    records: list[tuple[int, int, int, int, int]] = []
+    try:
+        cursor = root
+        for part in parts[:-1]:
+            cursor /= part
+            handle = _win_create_handle(cursor, directory=True)
+            try:
+                attributes, volume, index = _win_file_information(handle)
+                if attributes & 0x00000400 or not attributes & 0x00000010:
+                    raise ValueError
+                duplicate = _win_duplicate_handle(handle)
+            except Exception:
+                _win_close_handle(handle)
+                raise
+            records.append((handle, duplicate, attributes, volume, index))
+        file_handle = _win_create_handle(cursor / parts[-1], directory=False)
+        try:
+            attributes, volume, index = _win_file_information(file_handle)
+            if attributes & 0x00000400 or attributes & 0x00000010:
+                raise ValueError
+            duplicate = _win_duplicate_handle(file_handle)
+        except Exception:
+            _win_close_handle(file_handle)
+            raise
+        records.append((file_handle, duplicate, attributes, volume, index))
+        payload = _win_read_file_handle(file_handle)
+        held = records
+        records = []
+        return payload, held
+    finally:
+        for handle, duplicate, *_identity in reversed(records):
+            _win_close_handle(duplicate)
+            _win_close_handle(handle)
+
+
+def _win_read_file_handle(handle: int) -> bytes:
+    import ctypes
+    from ctypes import wintypes
+
+    read_file = getattr(ctypes, "windll").kernel32.ReadFile
+    read_file.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.LPVOID,
+    ]
+    read_file.restype = wintypes.BOOL
+    chunks: list[bytes] = []
+    while True:
+        buffer = ctypes.create_string_buffer(1024 * 1024)
+        read = wintypes.DWORD()
+        if not read_file(
+            wintypes.HANDLE(handle), buffer, len(buffer), ctypes.byref(read), None
+        ):
+            raise OSError
+        if read.value == 0:
+            return b"".join(chunks)
+        chunks.append(buffer.raw[: read.value])
+
+
+def _win_seek_file_handle(handle: int, offset: int, method: int) -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    set_pointer = getattr(ctypes, "windll").kernel32.SetFilePointerEx
+    set_pointer.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_longlong,
+        ctypes.POINTER(ctypes.c_longlong),
+        wintypes.DWORD,
+    ]
+    set_pointer.restype = wintypes.BOOL
+    observed = ctypes.c_longlong()
+    if not set_pointer(
+        wintypes.HANDLE(handle),
+        ctypes.c_longlong(offset),
+        ctypes.byref(observed),
+        method,
+    ):
+        raise OSError
+    return int(observed.value)
+
+
+def _verify_journal_binding(
+    plan: HKHistoryPlan, root: Path, *, anchor: _DirectoryAnchor | None = None
+) -> None:
+    marker = root / "binding.json"
+    _guard_journal_path(root, marker)
+    expected = {
+        "schema_version": "hk-history-journal-binding-v2",
+        "journal_id": plan.journal_id,
+        "plan_sha256": plan.plan_sha256,
+        "no_trade_evidence_sha256": plan.no_trade_evidence_sha256,
+    }
+    payload = _read_anchored_path(marker, root=root, anchor=anchor)
+    if payload != _canonical_json(expected).encode("utf-8"):
+        raise HKHistoryBackfillError("HK_HISTORY_FINALIZE_V3_INVALID") from None
+
+
+def _read_published_exact(
+    plan: HKHistoryPlan,
+    clean_root: Path,
+    *,
+    anchor: _DirectoryAnchor | None = None,
+) -> pl.DataFrame:
+    rows: list[pl.DataFrame] = []
+    expected = {
+        (symbol, _date(value))
+        for symbol, dates in plan.effective_expected_dates
+        for value in dates
+    }
+    for trade_date in sorted({item[1] for item in expected}):
+        target = clean_root / f"date={trade_date.isoformat()}" / "data.parquet"
+        _guard_journal_path(clean_root, target)
+        payload = _read_anchored_path(target, root=clean_root, anchor=anchor)
+        part = Bar1dSchema.validate(pl.read_parquet(io.BytesIO(payload))).filter(
+            pl.col("trade_date") == trade_date
+        )
+        symbols = [symbol for symbol, date_value in expected if date_value == trade_date]
+        selected = part.filter(pl.col("symbol").is_in(symbols))
+        rows.append(selected)
+    clean = Bar1dSchema.validate(pl.concat(rows, how="vertical_relaxed")).sort(
+        "symbol", "trade_date", "source"
+    )
+    keys = list(clean.select("symbol", "trade_date").iter_rows())
+    if set(keys) != expected or len(keys) != len(expected):
+        raise ValueError
+    if clean.filter(
+        ~pl.col("symbol").str.contains(r"^[0-9]{5}\.HK$")
+        | (pl.col("adj_factor") != 1.0)
+    ).height:
+        raise ValueError
+    return clean
+
+
+def _parse_availability(payload: bytes, plan: HKHistoryPlan) -> pl.DataFrame:
+    value = _strict_json(payload)
+    if (
+        set(value)
+        != {
+            "schema_version",
+            "plan_sha256",
+            "availability_content_sha256",
+            "rows",
+        }
+        or value["schema_version"] != "hk-bar-availability-v1"
+        or value["plan_sha256"] != plan.plan_sha256
+        or type(value["rows"]) is not list
+        or payload != _canonical_json(value).encode("utf-8")
+        or value["availability_content_sha256"]
+        != hashlib.sha256(_canonical_json(value["rows"]).encode("utf-8")).hexdigest()
+    ):
+        raise ValueError
+    exact = {
+        "symbol",
+        "trade_date",
+        "source",
+        "availability_source_kind",
+        "bar_available_at",
+        "source_record_id",
+        "request_id",
+        "raw_file_sha256",
+        "raw_metadata_sha256",
+        "request_receipt_sha256",
+        "plan_sha256",
+        "availability_evidence_sha256",
+    }
+    if any(type(row) is not dict or set(row) != exact for row in value["rows"]):
+        raise ValueError
+    frame = pl.DataFrame(value["rows"]).with_columns(
+        pl.col("trade_date").str.to_date(),
+        pl.col("bar_available_at").str.to_datetime(time_zone="UTC"),
+    )
+    validated = HkBarAvailabilityEvidenceSchema.validate(frame).sort(
+        "symbol", "trade_date"
+    )
+    for row in value["rows"]:
+        evidence = row["availability_evidence_sha256"]
+        base = {key: item for key, item in row.items() if key != "availability_evidence_sha256"}
+        if evidence != hashlib.sha256(_canonical_json(base).encode("utf-8")).hexdigest():
+            raise ValueError
+    return validated
+
+
+def _load_v3_state(
+    *,
+    plan: HKHistoryPlan,
+    journal_root: Path,
+    seed_raw_root: Path,
+    raw_store: RawStore,
+    clean_root: Path,
+    as_of: dt.datetime,
+) -> tuple[
+    pl.DataFrame,
+    pl.DataFrame,
+    str,
+    tuple[tuple[str, int, int], ...],
+    _ReadAnchors,
+]:
+    _validate_plan_again(plan)
+    cutoff = _utc(as_of)
+    anchors: _ReadAnchors | None = None
+    try:
+        anchors = _ReadAnchors(
+            journal=journal_root,
+            seed=seed_raw_root,
+            raw=raw_store.root,
+            clean=clean_root,
+        )
+        identities = anchors.identities
+        finalize_path = journal_root / "finalize.json"
+        _guard_journal_path(journal_root, finalize_path)
+        try:
+            finalize_payload = _read_anchored_path(
+                finalize_path, root=journal_root, anchor=anchors.journal
+            )
+            finalize = _strict_json(finalize_payload)
+        except (OSError, ValueError, json.JSONDecodeError):
+            raise HKHistoryBackfillError(
+                "HK_HISTORY_FINALIZE_V3_INVALID"
+            ) from None
+        if finalize.get("schema_version") in {
+            "hk-history-finalize-v1",
+            "hk-history-finalize-v2",
+        }:
+            raise HKHistoryBackfillError(
+                "HK_HISTORY_AVAILABILITY_UNSUPPORTED"
+            ) from None
+        if (
+            finalize.get("schema_version") != "hk-history-finalize-v3"
+            or finalize_payload != _canonical_json(finalize).encode("utf-8")
+            or set(finalize)
+            != {
+                "schema_version",
+                "plan_sha256",
+                "row_count",
+                "clean_content_sha256",
+                "availability_content_sha256",
+                "availability_file_sha256",
+                "source_receipts",
+            }
+            or finalize["plan_sha256"] != plan.plan_sha256
+        ):
+            raise ValueError
+        _verify_journal_binding(plan, journal_root, anchor=anchors.journal)
+        seed_frame, seed_time = _load_seed(
+            plan, seed_raw_root, seed_anchor=anchors.seed
+        )
+        request_frames: list[tuple[HKHistoryRequest, pl.DataFrame]] = []
+        for request in plan.requests:
+            frame = _verify_receipt(
+                plan,
+                request,
+                raw_store,
+                journal_root,
+                journal_anchor=anchors.journal,
+                raw_anchor=anchors.raw,
+            )
+            if frame is None:
+                raise ValueError
+            request_frames.append((request, frame))
+        raw_path = journal_root / _HKEX_RETAINED_RAW_FILE
+        metadata_path = journal_root / _HKEX_RETAINED_METADATA_FILE
+        _guard_journal_path(journal_root, raw_path)
+        _guard_journal_path(journal_root, metadata_path)
+        retained = verify_hkex_daily_quotation_retained(
+            _read_anchored_path(
+                raw_path, root=journal_root, anchor=anchors.journal
+            ),
+            _read_anchored_path(
+                metadata_path, root=journal_root, anchor=anchors.journal
+            ),
+            source_url=HKEX_02983_SOURCE_URL,
+            expected_raw_sha256=HKEX_02983_RAW_SHA256,
+        )
+        hkex_frame, _receipt, retained = _prepare_hkex_supplement_v3(
+            plan=plan, retained_bundle=retained
+        )
+        expected_availability = _build_availability_evidence(
+            plan=plan,
+            seed_frame=seed_frame,
+            seed_fetched_at=seed_time,
+            request_frames=request_frames,
+            raw_store=raw_store,
+            journal_root=journal_root,
+            hkex_frame=hkex_frame,
+            hkex_bundle=retained,
+            anchors=anchors,
+        )
+        availability_path = journal_root / _AVAILABILITY_FILE
+        _guard_journal_path(journal_root, availability_path)
+        availability_payload = _read_anchored_path(
+            availability_path, root=journal_root, anchor=anchors.journal
+        )
+        availability = _parse_availability(availability_payload, plan)
+        expected_payload = _canonical_json(
+            _availability_payload(plan, expected_availability)
+        ).encode("utf-8")
+        if availability_payload != expected_payload:
+            raise ValueError
+        if availability.filter(pl.col("bar_available_at") > cutoff).height:
+            raise HKHistoryBackfillError("HK_BAR_PUBLICATION_INVALID") from None
+        clean = _read_published_exact(plan, clean_root, anchor=anchors.clean)
+        expected_clean = Bar1dSchema.validate(
+            pl.concat(
+                [seed_frame, *(frame for _, frame in request_frames), hkex_frame],
+                how="vertical_relaxed",
+            )
+        ).sort("symbol", "trade_date", "source")
+        if _frame_hash(clean) != _frame_hash(expected_clean):
+            raise ValueError
+        source_receipts = finalize["source_receipts"]
+        expected_sources = {
+            "seed": {
+                "source_record_id": plan.seed.selector,
+                "raw_file_sha256": plan.seed.checksum_sha256,
+                "raw_metadata_sha256": plan.seed.metadata_sha256,
+            },
+            "requests": _request_source_receipts(
+                plan, raw_store, journal_root, anchors=anchors
+            ),
+            "hkex": {
+                "bundle_id": retained.bundle_id,
+                "quotation_evidence_id": retained.quotation.evidence_id,
+                "metadata_identity": retained.metadata.metadata_identity,
+                "raw_file": _HKEX_RETAINED_RAW_FILE,
+                "raw_file_sha256": hashlib.sha256(retained.retained_raw).hexdigest(),
+                "metadata_file": _HKEX_RETAINED_METADATA_FILE,
+                "raw_metadata_sha256": hashlib.sha256(
+                    retained.retained_metadata
+                ).hexdigest(),
+                "source_record_id": retained.metadata.source_record_id,
+            },
+        }
+        availability_value = _availability_payload(plan, availability)
+        if (
+            source_receipts != expected_sources
+            or finalize["row_count"] != clean.height
+            or finalize["clean_content_sha256"] != _frame_hash(clean)
+            or finalize["availability_content_sha256"]
+            != availability_value["availability_content_sha256"]
+            or finalize["availability_file_sha256"]
+            != hashlib.sha256(availability_payload).hexdigest()
+        ):
+            raise ValueError
+        return (
+            clean,
+            availability,
+            hashlib.sha256(finalize_payload).hexdigest(),
+            identities,
+            anchors,
+        )
+    except HKHistoryBackfillError as error:
+        if anchors is not None:
+            anchors.close()
+        if str(error) in {
+            "HK_HISTORY_AVAILABILITY_UNSUPPORTED",
+            "HK_HISTORY_FINALIZE_V3_INVALID",
+            "HK_BAR_PUBLICATION_INVALID",
+        }:
+            raise
+        raise HKHistoryBackfillError("HK_BAR_VERIFY_FAILED") from None
+    except Exception:
+        if anchors is not None:
+            anchors.close()
+        raise HKHistoryBackfillError("HK_BAR_VERIFY_FAILED") from None
+
+
+def _capability_attestation(
+    *,
+    plan_sha256: str,
+    bars: pl.DataFrame,
+    availability: pl.DataFrame,
+    publication_sha256: str,
+    root_identities: tuple[tuple[str, int, int], ...],
+    anchors: _ReadAnchors | None = None,
+) -> str:
+    if anchors is not None:
+        anchors.assert_namespaces()
+    payload = _canonical_json(
+        {
+            "plan_sha256": plan_sha256,
+            "bars": _frame_hash(bars),
+            "availability": _frame_hash(availability),
+            "publication_sha256": publication_sha256,
+            "root_identities": root_identities,
+        }
+    ).encode("utf-8")
+    return hmac.new(_CAPABILITY_SECRET, payload, hashlib.sha256).hexdigest()
+
+
+def load_verified_hk_bar_bundle(
+    *,
+    plan: HKHistoryPlan,
+    journal_root: Path,
+    seed_raw_root: Path,
+    raw_store: RawStore,
+    clean_root: Path,
+    as_of: dt.datetime,
+) -> VerifiedHkBarBundle:
+    """Freshly load a v3 publication into a process-local capability."""
+    anchors: _ReadAnchors | None = None
+    result: VerifiedHkBarBundle | None = None
+    failure: str | None = None
+    try:
+        bars, availability, publication, roots, anchors = _load_v3_state(
+            plan=plan,
+            journal_root=journal_root,
+            seed_raw_root=seed_raw_root,
+            raw_store=raw_store,
+            clean_root=clean_root,
+            as_of=as_of,
+        )
+        anchors.assert_namespaces()
+        attestation = _capability_attestation(
+            plan_sha256=plan.plan_sha256,
+            bars=bars,
+            availability=availability,
+            publication_sha256=publication,
+            root_identities=roots,
+            anchors=anchors,
+        )
+        result = object.__new__(VerifiedHkBarBundle)
+        object.__setattr__(result, "_bars", bars.clone())
+        object.__setattr__(result, "_availability", availability.clone())
+        object.__setattr__(result, "plan_sha256", plan.plan_sha256)
+        object.__setattr__(result, "publication_sha256", publication)
+        object.__setattr__(result, "_root_identities", roots)
+        object.__setattr__(
+            result,
+            "_attestation",
+            attestation,
+        )
+    except Exception as error:
+        failure = _public_hk_bar_error_code(error)
+    finally:
+        if anchors is not None:
+            try:
+                anchors.close()
+            except Exception:
+                failure = "HK_BAR_VERIFY_FAILED"
+    if failure is not None:
+        raise HKHistoryBackfillError(failure) from None
+    if result is None:
+        raise HKHistoryBackfillError("HK_BAR_VERIFY_FAILED") from None
+    return result
+
+
+def _public_hk_bar_error_code(error: Exception) -> str:
+    if type(error) is HKHistoryBackfillError and str(error) in {
+        "HK_HISTORY_AVAILABILITY_UNSUPPORTED",
+        "HK_HISTORY_FINALIZE_V3_INVALID",
+        "HK_BAR_PUBLICATION_INVALID",
+    }:
+        return str(error)
+    return "HK_BAR_VERIFY_FAILED"
+
+
+def verify_hk_bar_bundle(
+    bundle: VerifiedHkBarBundle,
+    *,
+    plan: HKHistoryPlan,
+    journal_root: Path,
+    seed_raw_root: Path,
+    raw_store: RawStore,
+    clean_root: Path,
+    as_of: dt.datetime,
+) -> None:
+    """Freshly rebuild every source and reject stale/fabricated capabilities."""
+    failure: str | None = None
+    try:
+        if type(bundle) is not VerifiedHkBarBundle:
+            raise ValueError
+        rebuilt = load_verified_hk_bar_bundle(
+            plan=plan,
+            journal_root=journal_root,
+            seed_raw_root=seed_raw_root,
+            raw_store=raw_store,
+            clean_root=clean_root,
+            as_of=as_of,
+        )
+        expected = _capability_attestation(
+            plan_sha256=bundle.plan_sha256,
+            bars=bundle._bars,
+            availability=bundle._availability,
+            publication_sha256=bundle.publication_sha256,
+            root_identities=bundle._root_identities,
+        )
+        if (
+            bundle.plan_sha256 != rebuilt.plan_sha256
+            or bundle.publication_sha256 != rebuilt.publication_sha256
+            or bundle._root_identities != rebuilt._root_identities
+            or _frame_hash(bundle._bars) != _frame_hash(rebuilt._bars)
+            or _frame_hash(bundle._availability) != _frame_hash(rebuilt._availability)
+            or not hmac.compare_digest(bundle._attestation, expected)
+            or not hmac.compare_digest(bundle._attestation, rebuilt._attestation)
+        ):
+            raise ValueError
+    except Exception as error:
+        failure = _public_hk_bar_error_code(error)
+    if failure is not None:
+        raise HKHistoryBackfillError(failure) from None
+
+
+def _raw_state(store: RawStore, request: HKHistoryRequest) -> str:
+    failure: str | None = None
+    state: str | None = None
+    try:
+        state = store.inspect_request_state(
             source="tushare", table=HK_HISTORY_RAW_TABLE, request_id=request.request_id
         )
-    except (OSError, ValueError):
+    except Exception:
+        failure = "HK_HISTORY_RAW_INVALID"
+    if failure is not None:
+        raise HKHistoryBackfillError(failure) from None
+    if state is None:
         raise HKHistoryBackfillError("HK_HISTORY_RAW_INVALID") from None
+    return state
 
 
 def _load_attempts(root: Path, request_id: str) -> tuple[dt.datetime, ...]:
@@ -1283,18 +3291,26 @@ def _evidence_set_identity(evidences: Sequence[HKNoTradeEvidence]) -> str:
 
 
 def _verify_evidence_projection(
-    evidence_set: HKNoTradeEvidenceSet, *, raw_root: Path
+    evidence_set: HKNoTradeEvidenceSet,
+    *,
+    raw_root: Path,
+    anchor: _DirectoryAnchor | None = None,
 ) -> None:
     base = raw_root.resolve()
     rows: list[dict[str, Any]] = []
     for evidence in evidence_set.evidences:
         raw_path = (base / PurePosixPath(evidence.raw_selector)).resolve()
         metadata_path = raw_path.with_suffix(".json")
+        failure: str | None = None
         try:
             raw_path.relative_to(base)
             metadata_path.relative_to(base)
-            raw_payload = raw_path.read_bytes()
-            metadata_payload = metadata_path.read_bytes()
+            raw_payload = _read_anchored_path(
+                raw_path, root=raw_root, anchor=anchor
+            )
+            metadata_payload = _read_anchored_path(
+                metadata_path, root=raw_root, anchor=anchor
+            )
             if (
                 hashlib.sha256(raw_payload).hexdigest() != evidence.raw_file_sha256
                 or hashlib.sha256(metadata_payload).hexdigest()
@@ -1320,11 +3336,16 @@ def _verify_evidence_projection(
             row["source_as_of"] = dt.datetime.fromisoformat(evidence.source_as_of)
             rows.append(row)
         except Exception:
-            raise HKHistoryBackfillError("HK_HISTORY_REFERENCE_INVALID") from None
+            failure = "HK_HISTORY_REFERENCE_INVALID"
+        if failure is not None:
+            raise HKHistoryBackfillError(failure) from None
+    failure = None
     try:
         HKNoTradeEvidenceSchema.validate(pl.DataFrame(rows))
     except Exception:
-        raise HKHistoryBackfillError("HK_HISTORY_REFERENCE_INVALID") from None
+        failure = "HK_HISTORY_REFERENCE_INVALID"
+    if failure is not None:
+        raise HKHistoryBackfillError(failure) from None
 
 
 def _frame_hash(frame: pl.DataFrame) -> str:
@@ -1356,16 +3377,19 @@ def _strict_json(payload: bytes) -> dict[str, Any]:
 
 def _write_or_verify_json(path: Path, value: dict[str, Any], code: str) -> None:
     payload = _canonical_json(value).encode("utf-8")
+    failure: str | None = None
     try:
         if path.exists():
             if path.read_bytes() != payload:
                 raise HKHistoryBackfillError(code)
             return
         _write_once(path, payload)
-    except HKHistoryBackfillError:
-        raise
+    except HKHistoryBackfillError as error:
+        failure = str(error)
     except OSError:
-        raise HKHistoryBackfillError(code) from None
+        failure = code
+    if failure is not None:
+        raise HKHistoryBackfillError(failure) from None
 
 
 def _bind_v2_journal(plan: HKHistoryPlan, root: Path) -> None:
@@ -1379,16 +3403,19 @@ def _bind_v2_journal(plan: HKHistoryPlan, root: Path) -> None:
         "plan_sha256": plan.plan_sha256,
         "no_trade_evidence_sha256": plan.no_trade_evidence_sha256,
     }
+    failure: str | None = None
     try:
         if not marker.exists():
             existing = {path.name for path in root.iterdir()}
             if existing - {".writer.lock"}:
                 raise HKHistoryBackfillError("HK_HISTORY_PLAN_CONFLICT")
         _write_or_verify_json(marker, expected, "HK_HISTORY_PLAN_CONFLICT")
-    except HKHistoryBackfillError:
-        raise
-    except OSError:
-        raise HKHistoryBackfillError("HK_HISTORY_PLAN_CONFLICT") from None
+    except HKHistoryBackfillError as error:
+        failure = str(error)
+    except Exception:
+        failure = "HK_HISTORY_PLAN_CONFLICT"
+    if failure is not None:
+        raise HKHistoryBackfillError(failure) from None
 
 
 def _write_once(path: Path, payload: bytes) -> None:
