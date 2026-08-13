@@ -237,7 +237,7 @@ def _validate_config(
     source_path = _inside(
         project_root, Path(forward["candidate_source_config_relative_path"])
     )
-    if hashlib.sha256(source_path.read_bytes()).hexdigest() != forward[
+    if _canonical_text_sha256(source_path.read_bytes()) != forward[
         "candidate_source_config_sha256"
     ]:
         raise ValueError("候选来源配置身份不匹配")
@@ -248,6 +248,13 @@ def _validate_config(
     ):
         raise ValueError("信号日期早于候选冻结后的首个允许月末")
     return forward
+
+
+def _canonical_text_sha256(payload: bytes) -> str:
+    """Hash UTF-8 config text independently of Git checkout line endings."""
+    text = payload.decode("utf-8")
+    canonical = text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
 
 
 def _require_complete_month_end(calendars: pl.DataFrame, as_of: dt.date) -> None:

@@ -6,7 +6,10 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from quant.research.run_s2_forward_observation import publish_forward_observation
+from quant.research.run_s2_forward_observation import (
+    _canonical_text_sha256,
+    publish_forward_observation,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -61,6 +64,13 @@ def _calendars() -> pl.DataFrame:
         "is_connect_open": [False] * (len(dates) * 2),
         "is_half_day": [False] * (len(dates) * 2),
     })
+
+
+def test_candidate_source_hash_is_checkout_eol_independent() -> None:
+    payload = b"[meta]\npurpose = \"candidate\"\n"
+    assert _canonical_text_sha256(payload) == _canonical_text_sha256(
+        payload.replace(b"\n", b"\r\n")
+    )
 
 
 def test_forward_observation_publishes_research_only_target_no_clobber(

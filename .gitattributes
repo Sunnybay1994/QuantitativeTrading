@@ -1,0 +1,4 @@
+# These research configs participate in an explicit SHA-256 provenance link.
+# Keep their checkout bytes stable on Windows and Linux.
+configs/research/m2_s2_minimum_breadth.toml text eol=lf
+configs/research/m2_s2_minimum_breadth_forward.toml text eol=lf
