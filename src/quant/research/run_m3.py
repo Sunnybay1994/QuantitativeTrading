@@ -13,7 +13,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Never, TypeAlias
+from typing import Any, Never, TypeAlias, cast
 
 import polars as pl
 
@@ -614,6 +614,8 @@ def _dispatch_public(args: argparse.Namespace) -> CommandSummary:
     command = str(args.command)
     if command == "backtest":
         return _dispatch_formal_backtest(args)
+    if command == "acceptance-audit":
+        return _dispatch_acceptance_audit(args)
     if command not in {"readiness", "snapshot"}:
         return _failure_summary(
             command, error_code="M3_COMMAND_HANDLER_UNAVAILABLE", exit_code=5
@@ -712,6 +714,141 @@ def _dispatch_public(args: argparse.Namespace) -> CommandSummary:
             "stop_stage": "snapshot",
         },
     )
+
+
+def _dispatch_acceptance_audit(args: argparse.Namespace) -> CommandSummary:
+    command = "acceptance-audit"
+    try:
+        project_root = Path.cwd().resolve(strict=True)
+        config_path = args.config.resolve(strict=True)
+        config_relative = PurePosixPath(
+            config_path.relative_to(project_root).as_posix()
+        )
+        config = load_m3_config(config_path)
+        horizons = config.section("labels")["horizons_sessions"]
+        if type(horizons) is not tuple or not horizons:
+            raise ValueError
+    except Exception:
+        return _failure_summary(
+            command, error_code="M3_CONFIG_INVALID", exit_code=2
+        )
+    try:
+        from quant.research.m3.acceptance import (
+            build_acceptance_evidence_plan,
+            resolve_acceptance_subject,
+        )
+        from quant.research.m3.acceptance_stage import (
+            audit_formal_m3_acceptance,
+            run_formal_acceptance_stage,
+        )
+        from quant.research.m3.formal_cli_resolve import (
+            resolve_formal_reproducibility_cli_inputs,
+        )
+        from quant.research.m3.quality_gate import run_quality_gate
+        from quant.research.m3.readiness_evidence import (
+            resolve_readiness_evidence_artifact,
+        )
+
+        first = resolve_formal_reproducibility_cli_inputs(
+            project_root=project_root,
+            config=config,
+            config_relative=config_relative,
+            snapshot_id=args.snapshot_id,
+            fold="fold_001",
+            horizon=min(cast(tuple[int, ...], horizons)),
+        )
+        readiness = resolve_readiness_evidence_artifact(
+            project_root=project_root,
+            config=config,
+            config_relative=config_relative,
+            release=first.release,
+        )
+        subject = resolve_acceptance_subject(
+            project_root=project_root,
+            config=config,
+            config_relative=config_relative,
+            snapshot_id=args.snapshot_id,
+            readiness=readiness,
+            python_executable=Path(sys.executable),
+        )
+        plan = build_acceptance_evidence_plan(subject=subject, config=config)
+        quality = run_quality_gate(
+            project_root=project_root,
+            config=config,
+            config_relative=config_relative,
+        )
+        roots = dict(first.artifact_roots)
+        roots["PROJECT"] = project_root
+        decision = audit_formal_m3_acceptance(
+            subject=subject,
+            plan=plan,
+            quality=quality,
+            config=config,
+            artifact_roots=roots,
+        )
+        if decision.overall_status != "PASS":
+            failures: list[CommandFailure] = []
+            for gate in decision.gate_results:
+                for issue in gate.issues:
+                    exit_code = _acceptance_issue_exit_code(
+                        gate=gate.gate,
+                        issue_code=issue.code,
+                    )
+                    failures.append(CommandFailure(
+                        scope=gate.gate.lower(),
+                        node_id=issue.subject,
+                        error_code=issue.code,
+                        exit_code=exit_code,
+                    ))
+            return CommandSummary(
+                command=command,
+                failures=tuple(failures),
+                details={"overall_status": "FAIL"},
+            )
+        stage = run_formal_acceptance_stage(
+            subject=subject,
+            plan=plan,
+            quality=quality,
+            config=config,
+            artifact_roots=roots,
+        )
+        return CommandSummary(
+            command=command,
+            details={
+                "acceptance_key": stage.decision.acceptance_key,
+                "overall_status": "PASS",
+                "reused": stage.reused,
+                "snapshot_id": args.snapshot_id,
+                "stop_stage": "acceptance",
+            },
+        )
+    except ModuleNotFoundError:
+        return _failure_summary(
+            command,
+            error_code="M3_ACCEPTANCE_DEPENDENCY_UNAVAILABLE",
+            exit_code=4,
+        )
+    except Exception:
+        return _failure_summary(
+            command, error_code="M3_ACCEPTANCE_FAILED", exit_code=8
+        )
+
+
+def _acceptance_issue_exit_code(*, gate: str, issue_code: str) -> int:
+    """Map stable G9 issues to the public CLI's frozen exit categories."""
+    if gate == "G9":
+        return 8
+    if "REPRO" in issue_code:
+        return 7
+    if gate == "G8":
+        return 6
+    if "DEPENDENCY" in issue_code or "RUNTIME" in issue_code:
+        return 4
+    if gate in {"G1", "G2", "G3"} or "READINESS" in issue_code:
+        return 3
+    if gate == "G0" and "CONFIG" in issue_code:
+        return 2
+    return 5
 
 
 def _failure_summary(

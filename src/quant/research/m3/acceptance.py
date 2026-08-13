@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import re
 import hashlib
+import json
+import os
+import stat
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal, NoReturn, TypeAlias, cast
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, TypeAlias, cast
 
 from quant.research.m3.config import LoadedM3Config
 from quant.research.m3.contracts import (
@@ -42,6 +45,10 @@ from quant.research.m3.run_state import ArtifactDigest, Scope
 from quant.research.m3.run_state import compute_provider_validation_key, compute_work_key
 from quant.research.m3.contracts import ProviderValidationSpec
 
+if TYPE_CHECKING:
+    from quant.research.m3.acceptance_tracking import TrackingVerifier
+    from quant.research.m3.quality_gate import VerifiedQualityArtifact
+
 GateName: TypeAlias = Literal[
     "G0", "G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9"
 ]
@@ -53,6 +60,9 @@ _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 _FOLD = re.compile(r"^fold_[0-9]{3}$")
 _PLAN_CODE = "M3_ACCEPTANCE_PLAN_INVALID"
+_AUDIT_CODE = "M3_ACCEPTANCE_AUDIT_INVALID"
+_WRITE_CODE = "M3_ACCEPTANCE_WRITE_INVALID"
+_ACCEPTANCE_KEY_VERSION = "m3-acceptance-key-v1"
 
 
 class M3AcceptancePlanError(ValueError):
@@ -60,6 +70,20 @@ class M3AcceptancePlanError(ValueError):
 
     def __init__(self) -> None:
         super().__init__(_PLAN_CODE)
+
+
+class M3AcceptanceAuditError(ValueError):
+    """Stable public failure for invalid G9F audit caller inputs."""
+
+    def __init__(self) -> None:
+        super().__init__(_AUDIT_CODE)
+
+
+class M3AcceptanceWriteError(ValueError):
+    """Stable public failure for invalid or non-PASS acceptance publication."""
+
+    def __init__(self) -> None:
+        super().__init__(_WRITE_CODE)
 
 
 @dataclass(frozen=True)
@@ -646,6 +670,20 @@ def _plan_fail() -> NoReturn:
     raise M3AcceptancePlanError() from None
 
 
+def _audit_fail() -> NoReturn:
+    error = M3AcceptanceAuditError()
+    error.__cause__ = None
+    error.__context__ = None
+    raise error from None
+
+
+def _write_fail() -> NoReturn:
+    error = M3AcceptanceWriteError()
+    error.__cause__ = None
+    error.__context__ = None
+    raise error from None
+
+
 @dataclass(frozen=True)
 class RemoteTrackingObservationV1:
     work_key: str
@@ -712,6 +750,217 @@ class AcceptanceDecisionV1:
             raise ValueError("invalid acceptance overall status")
 
 
+def compute_acceptance_key(
+    *,
+    experiment_key: str,
+    acceptance_config_sha256: str,
+    tracking_target_key: str,
+    quality_receipt_sha256: str,
+    tracking_observations_sha256: str,
+    required_receipt_sha256s: tuple[str, ...],
+) -> str:
+    """Return the sole identity for one exact acceptance evidence closure."""
+
+    for value in (
+        experiment_key,
+        acceptance_config_sha256,
+        tracking_target_key,
+        quality_receipt_sha256,
+        tracking_observations_sha256,
+    ):
+        _require_hex(value)
+    if (
+        type(required_receipt_sha256s) is not tuple
+        or not required_receipt_sha256s
+    ):
+        raise ValueError(_AUDIT_CODE)
+    for value in required_receipt_sha256s:
+        _require_hex(value)
+    return hashlib.sha256(
+        _canonical_bytes(
+            [
+                _ACCEPTANCE_KEY_VERSION,
+                experiment_key,
+                acceptance_config_sha256,
+                tracking_target_key,
+                quality_receipt_sha256,
+                tracking_observations_sha256,
+                list(required_receipt_sha256s),
+            ]
+        )
+    ).hexdigest()
+
+
+def audit_m3_acceptance(
+    *,
+    subject: VerifiedAcceptanceSubject,
+    plan: AcceptanceEvidencePlanV1,
+    quality: VerifiedQualityArtifact,
+    config: LoadedM3Config,
+    artifact_roots: Mapping[str, Path],
+    tracking_verifier: TrackingVerifier,
+) -> AcceptanceDecisionV1:
+    """Aggregate G0-G9 from the three strict checkers and no caller gate input."""
+
+    result: AcceptanceDecisionV1 | None = None
+    failed = False
+    try:
+        from quant.research.m3.acceptance_tracking import (
+            audit_acceptance_tracking,
+        )
+        from quant.research.m3.acceptance_upstream import audit_acceptance_upstream
+        from quant.research.m3.acceptance_work import audit_acceptance_work
+        from quant.research.m3.quality_gate import VerifiedQualityArtifact
+        from quant.research.m3.run_state import verify_stage_receipt_with_bytes
+
+        if (
+            type(subject) is not VerifiedAcceptanceSubject
+            or type(plan) is not AcceptanceEvidencePlanV1
+            or type(quality) is not VerifiedQualityArtifact
+            or type(config) is not LoadedM3Config
+            or not isinstance(artifact_roots, Mapping)
+            or not artifact_roots
+            or not callable(tracking_verifier)
+            or plan != build_acceptance_evidence_plan(subject=subject, config=config)
+        ):
+            raise ValueError
+        upstream = audit_acceptance_upstream(
+            subject=subject,
+            plan=plan,
+            config=config,
+            artifact_roots=artifact_roots,
+        )
+        work = audit_acceptance_work(
+            subject=subject,
+            plan=plan,
+            config=config,
+            artifact_roots=artifact_roots,
+        )
+        tracking = audit_acceptance_tracking(
+            subject=subject,
+            plan=plan,
+            quality=quality,
+            config=config,
+            artifact_roots=artifact_roots,
+            tracking_verifier=tracking_verifier,
+        )
+        gate_results = (*upstream, *work, *tracking.gate_results)
+        if (
+            len(gate_results) != 10
+            or tuple(item.gate for item in gate_results) != _GATES
+        ):
+            raise ValueError
+        receipt_hashes: list[str] = []
+        for locator in plan.evidence:
+            root = artifact_roots[locator.root_alias]
+            receipt_path = root.joinpath(
+                *PurePosixPath(locator.receipt_relative_path).parts
+            )
+            receipt = verify_stage_receipt_with_bytes(
+                receipt_path=receipt_path,
+                artifact_roots=artifact_roots,
+            )
+            if (
+                receipt is None
+                or
+                receipt.receipt.stage != locator.expected_stage
+                or receipt.receipt.scope != locator.expected_scope
+                or receipt.receipt.scope_key != locator.expected_scope_key
+            ):
+                raise ValueError
+            receipt_hashes.append(receipt.sha256)
+        acceptance_key = compute_acceptance_key(
+            experiment_key=subject.experiment.manifest.experiment_key,
+            acceptance_config_sha256=config.acceptance_config_sha256,
+            tracking_target_key=config.tracking_target_key,
+            quality_receipt_sha256=quality.receipt_sha256,
+            tracking_observations_sha256=(
+                tracking.tracking_observations_sha256
+            ),
+            required_receipt_sha256s=tuple(receipt_hashes),
+        )
+        result = AcceptanceDecisionV1(
+            schema_version="m3-acceptance-report-v1",
+            acceptance_key=acceptance_key,
+            experiment_key=subject.experiment.manifest.experiment_key,
+            acceptance_config_sha256=config.acceptance_config_sha256,
+            code_version=subject.runtime.code_version,
+            dependency_fingerprint_sha256=(
+                subject.runtime.dependency_fingerprint_sha256
+            ),
+            tracking_target_key=config.tracking_target_key,
+            tracking_observations_sha256=(
+                tracking.tracking_observations_sha256
+            ),
+            gate_results=cast(tuple[GateResultV1, ...], gate_results),
+            overall_status=(
+                "PASS"
+                if all(item.status == "PASS" for item in gate_results)
+                else "FAIL"
+            ),
+        )
+    except Exception:
+        failed = True
+    if failed or result is None:
+        _audit_fail()
+    return result
+
+
+def write_acceptance_candidate(
+    *, decision: AcceptanceDecisionV1, temp_output_root: Path
+) -> ArtifactDigest:
+    """Write the sole canonical PASS report into an already-empty temp root."""
+
+    result: ArtifactDigest | None = None
+    failed = False
+    try:
+        if (
+            type(decision) is not AcceptanceDecisionV1
+            or decision.overall_status != "PASS"
+            or not isinstance(temp_output_root, Path)
+            or not temp_output_root.is_absolute()
+            or temp_output_root.is_symlink()
+        ):
+            raise ValueError
+        root = temp_output_root.resolve(strict=True)
+        root_stat = os.lstat(root)
+        if (
+            not stat.S_ISDIR(root_stat.st_mode)
+            or bool(getattr(root_stat, "st_file_attributes", 0) & 0x400)
+            or any(root.iterdir())
+        ):
+            raise ValueError
+        raw = _canonical_bytes(asdict(decision))
+        path = root / "acceptance_report.json"
+        with path.open("xb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if path.read_bytes() != raw:
+            raise ValueError
+        result = ArtifactDigest(
+            root_alias="ACCEPTANCE",
+            relative_path="acceptance_report.json",
+            size_bytes=len(raw),
+            sha256=hashlib.sha256(raw).hexdigest(),
+        )
+    except Exception:
+        failed = True
+    if failed or result is None:
+        _write_fail()
+    return result
+
+
+def _canonical_bytes(value: object) -> bytes:
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("utf-8")
+
+
 def _require_gate(value: object) -> None:
     if value not in _GATES:
         raise ValueError("invalid gate")
@@ -758,10 +1007,15 @@ __all__ = [
     "GateName",
     "GateResultV1",
     "M3AcceptancePlanError",
+    "M3AcceptanceAuditError",
+    "M3AcceptanceWriteError",
     "RemoteTrackingObservationV1",
     "VerifiedAcceptanceSubject",
     "VerifiedComparisonIdentityV1",
     "VerifiedRuntimeIdentity",
+    "audit_m3_acceptance",
     "build_acceptance_evidence_plan",
+    "compute_acceptance_key",
     "resolve_acceptance_subject",
+    "write_acceptance_candidate",
 ]

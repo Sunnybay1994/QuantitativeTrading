@@ -514,20 +514,28 @@ __all__ = [
     "ReadinessEvidenceReportV1",
     "VerifiedReadinessEvidenceArtifact",
     "read_readiness_evidence_report",
+    "resolve_readiness_evidence_artifact",
     "run_readiness_evidence_stage",
     "verify_readiness_evidence_artifact",
+    "FormalAcceptanceStageResult",
+    "audit_formal_m3_acceptance",
+    "run_formal_acceptance_stage",
     "AcceptanceDecisionV1",
     "AcceptanceEvidencePlanV1",
     "AcceptanceIssueV1",
     "EvidenceLocatorV1",
     "GateName",
     "GateResultV1",
+    "M3AcceptanceAuditError",
     "M3AcceptancePlanError",
+    "M3AcceptanceWriteError",
     "RemoteTrackingObservationV1",
     "VerifiedAcceptanceSubject",
     "VerifiedComparisonIdentityV1",
     "VerifiedRuntimeIdentity",
+    "audit_m3_acceptance",
     "build_acceptance_evidence_plan",
+    "compute_acceptance_key",
     "resolve_acceptance_subject",
     "M3AcceptanceUpstreamError",
     "audit_acceptance_upstream",
@@ -731,6 +739,13 @@ __all__ = [
 
 def __getattr__(name: str) -> object:
     if name in {
+        "FormalAcceptanceStageResult",
+        "audit_formal_m3_acceptance",
+        "run_formal_acceptance_stage",
+    }:
+        module = importlib.import_module("quant.research.m3.acceptance_stage")
+        return getattr(module, name)
+    if name in {
         "FormalBacktestStageResult",
         "make_formal_backtest_run_plan",
         "run_formal_backtest_stage",
@@ -780,12 +795,16 @@ def __getattr__(name: str) -> object:
         "EvidenceLocatorV1",
         "GateName",
         "GateResultV1",
+        "M3AcceptanceAuditError",
         "M3AcceptancePlanError",
+        "M3AcceptanceWriteError",
         "RemoteTrackingObservationV1",
         "VerifiedAcceptanceSubject",
         "VerifiedComparisonIdentityV1",
         "VerifiedRuntimeIdentity",
+        "audit_m3_acceptance",
         "build_acceptance_evidence_plan",
+        "compute_acceptance_key",
         "resolve_acceptance_subject",
     }:
         module = importlib.import_module("quant.research.m3.acceptance")
@@ -815,6 +834,7 @@ def __getattr__(name: str) -> object:
         "ReadinessEvidenceReportV1",
         "VerifiedReadinessEvidenceArtifact",
         "read_readiness_evidence_report",
+        "resolve_readiness_evidence_artifact",
         "run_readiness_evidence_stage",
         "verify_readiness_evidence_artifact",
     }:

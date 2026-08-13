@@ -210,6 +210,51 @@ def verify_readiness_evidence_artifact(
     return result
 
 
+def resolve_readiness_evidence_artifact(
+    *,
+    project_root: Path,
+    config: LoadedM3Config,
+    config_relative: PurePosixPath,
+    release: VerifiedG1Release,
+) -> VerifiedReadinessEvidenceArtifact:
+    """Resolve and freshly verify the sole current readiness artifact."""
+
+    result: VerifiedReadinessEvidenceArtifact | None = None
+    failed = False
+    try:
+        project, _ = _validate_outer(
+            project_root=project_root,
+            config=config,
+            config_relative=config_relative,
+            release=release,
+        )
+        fresh = _fresh_release(release)
+        runtime = _runtime(project, config, config_relative)
+        provider_sha = build_provider_runtime_fingerprint().sha256
+        key = _readiness_key(
+            release=fresh,
+            config=config,
+            runtime=runtime,
+            provider_sha=provider_sha,
+        )
+        stage_root = _stage_root(project, config)
+        result = verify_readiness_evidence_artifact(
+            root=stage_root / "acceptance" / "readiness" / key,
+            receipt_path=(
+                stage_root / "receipts" / "readiness-evidence" / f"{key}.json"
+            ),
+            project_root=project,
+            config=config,
+            config_relative=config_relative,
+            release=fresh,
+        )
+    except Exception:
+        failed = True
+    if failed or result is None:
+        _fail()
+    return result
+
+
 def _run_stage(
     *,
     project_root: Path,
@@ -683,6 +728,7 @@ __all__ = [
     "ReadinessEvidenceReportV1",
     "VerifiedReadinessEvidenceArtifact",
     "read_readiness_evidence_report",
+    "resolve_readiness_evidence_artifact",
     "run_readiness_evidence_stage",
     "verify_readiness_evidence_artifact",
 ]

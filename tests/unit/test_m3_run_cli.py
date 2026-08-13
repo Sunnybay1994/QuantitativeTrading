@@ -318,7 +318,6 @@ def test_dispatcher_exception_cannot_forge_error_code(capsys) -> None:
             "verify-reproducibility",
             ["--snapshot-id", _ID, "--fold", "fold_001", "--horizon", "10"],
         ),
-        ("acceptance-audit", ["--snapshot-id", _ID]),
     ],
 )
 def test_unimplemented_public_handler_is_explicit_and_does_not_fake_artifacts(
@@ -339,6 +338,96 @@ def test_unimplemented_public_handler_is_explicit_and_does_not_fake_artifacts(
         ],
         "ok": False,
     }
+
+
+def test_acceptance_audit_public_handler_resolves_audits_and_publishes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    import quant.research.m3.acceptance as acceptance_module
+    import quant.research.m3.acceptance_stage as stage_module
+    import quant.research.m3.formal_cli_resolve as resolve_module
+    import quant.research.m3.quality_gate as quality_module
+    import quant.research.m3.readiness_evidence as readiness_module
+
+    config_path = tmp_path / "m3.toml"
+    config_path.write_text("fixture=true\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    config = SimpleNamespace(
+        section=lambda name: {"horizons_sessions": (5, 10)}
+        if name == "labels"
+        else {},
+    )
+    monkeypatch.setattr(run_m3, "load_m3_config", lambda path: config)
+    first = SimpleNamespace(release=object(), artifact_roots={"G8": tmp_path})
+    monkeypatch.setattr(
+        resolve_module,
+        "resolve_formal_reproducibility_cli_inputs",
+        lambda **kwargs: first,
+    )
+    monkeypatch.setattr(
+        readiness_module,
+        "resolve_readiness_evidence_artifact",
+        lambda **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        acceptance_module, "resolve_acceptance_subject", lambda **kwargs: object()
+    )
+    monkeypatch.setattr(
+        acceptance_module, "build_acceptance_evidence_plan", lambda **kwargs: object()
+    )
+    monkeypatch.setattr(quality_module, "run_quality_gate", lambda **kwargs: object())
+    decision = SimpleNamespace(overall_status="PASS")
+    monkeypatch.setattr(
+        stage_module, "audit_formal_m3_acceptance", lambda **kwargs: decision
+    )
+    monkeypatch.setattr(
+        stage_module,
+        "run_formal_acceptance_stage",
+        lambda **kwargs: SimpleNamespace(
+            decision=SimpleNamespace(acceptance_key="a" * 64), reused=False
+        ),
+    )
+
+    code = main([
+        "acceptance-audit",
+        "--config",
+        str(config_path),
+        "--snapshot-id",
+        _ID,
+    ])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert payload == {
+        "acceptance_key": "a" * 64,
+        "command": "acceptance-audit",
+        "failures": [],
+        "ok": True,
+        "overall_status": "PASS",
+        "reused": False,
+        "snapshot_id": _ID,
+        "stop_stage": "acceptance",
+    }
+
+
+@pytest.mark.parametrize(
+    ("gate", "issue_code", "expected"),
+    [
+        ("G0", "CONFIG_DISABLED", 2),
+        ("G1", "RELEASE_LINEAGE_INVALID", 3),
+        ("G6", "DEPENDENCY_INVALID", 4),
+        ("G7", "WORK_INVALID", 5),
+        ("G8", "TRACKING_REMOTE_INVALID", 6),
+        ("G8", "REPRODUCIBILITY_INVALID", 7),
+        ("G9", "QUALITY_INVALID", 8),
+    ],
+)
+def test_acceptance_issue_exit_categories_are_stable(
+    gate: str, issue_code: str, expected: int
+) -> None:
+    assert run_m3._acceptance_issue_exit_code(
+        gate=gate, issue_code=issue_code
+    ) == expected
 
 
 def test_backtest_parser_defaults_resume_and_accepts_no_resume() -> None:

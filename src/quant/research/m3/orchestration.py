@@ -1616,6 +1616,10 @@ READINESS_EVIDENCE_STAGE_SPEC = StageSpec(
     "readiness-evidence", "ACCEPTANCE", (),
     (OutputSpec("readiness_report.json", "FILE", None),),
 )
+ACCEPTANCE_STAGE_SPEC = StageSpec(
+    "acceptance", "ACCEPTANCE", (),
+    (OutputSpec("acceptance_report.json", "FILE", None),),
+)
 
 STAGE_SPEC_REGISTRY: Mapping[str, StageSpec] = MappingProxyType({
     spec.name: spec for spec in (
@@ -1642,6 +1646,7 @@ STAGE_SPEC_REGISTRY: Mapping[str, StageSpec] = MappingProxyType({
         REPRODUCIBILITY_STAGE_SPEC,
         QUALITY_STAGE_SPEC,
         READINESS_EVIDENCE_STAGE_SPEC,
+        ACCEPTANCE_STAGE_SPEC,
     )
 })
 STAGE_REGISTRY = STAGE_SPEC_REGISTRY
