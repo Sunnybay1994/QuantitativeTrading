@@ -59,6 +59,15 @@ _LABEL_RAW_SCHEMA = {
 }
 
 
+def is_qlib_importable() -> bool:
+    """Probe Qlib lazily without spreading its import outside this adapter."""
+    try:
+        import qlib  # type: ignore[import-not-found]  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def _require_feature_frame_contract(frame: Any, qlib_fields: list[str]) -> None:
     """Reject Qlib frames whose public feature shape could be misinterpreted."""
     if list(frame.columns) != qlib_fields:

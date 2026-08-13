@@ -499,6 +499,14 @@ __all__ = [
     "M3ReproducibilityError",
     "run_formal_reproducibility_stage",
     "verify_formal_reproducibility_artifact",
+    "CommandExecution",
+    "CommandExecutor",
+    "M3QualityGateError",
+    "QualityCheckResultV1",
+    "QualityReportV1",
+    "VerifiedQualityArtifact",
+    "run_quality_gate",
+    "verify_quality_artifact",
     "FormalTrackingFreshVerificationContext",
     "FormalTrackingStageResult",
     "build_formal_tracking_request",
@@ -720,5 +728,17 @@ def __getattr__(name: str) -> object:
         "verify_formal_reproducibility_artifact",
     }:
         module = importlib.import_module("quant.research.m3.reproducibility")
+        return getattr(module, name)
+    if name in {
+        "CommandExecution",
+        "CommandExecutor",
+        "M3QualityGateError",
+        "QualityCheckResultV1",
+        "QualityReportV1",
+        "VerifiedQualityArtifact",
+        "run_quality_gate",
+        "verify_quality_artifact",
+    }:
+        module = importlib.import_module("quant.research.m3.quality_gate")
         return getattr(module, name)
     raise AttributeError(name)

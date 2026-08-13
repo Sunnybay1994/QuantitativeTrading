@@ -1602,6 +1602,16 @@ REPRODUCIBILITY_STAGE_SPEC = StageSpec(
         OutputSpec("reproducibility.json", "FILE", None),
     ),
 )
+QUALITY_STAGE_SPEC = StageSpec(
+    "quality", "ACCEPTANCE", (),
+    (
+        OutputSpec("import_isolation.json", "FILE", None),
+        OutputSpec("mypy.log", "FILE", None),
+        OutputSpec("pytest.log", "FILE", None),
+        OutputSpec("quality_report.json", "FILE", None),
+        OutputSpec("ruff.log", "FILE", None),
+    ),
+)
 
 STAGE_SPEC_REGISTRY: Mapping[str, StageSpec] = MappingProxyType({
     spec.name: spec for spec in (
@@ -1626,6 +1636,7 @@ STAGE_SPEC_REGISTRY: Mapping[str, StageSpec] = MappingProxyType({
         TRACKING_STAGE_SPEC, DEVELOPMENT_TRACKING_STAGE_SPEC,
         SUMMARY_STAGE_SPEC, DEVELOPMENT_SUMMARY_STAGE_SPEC,
         REPRODUCIBILITY_STAGE_SPEC,
+        QUALITY_STAGE_SPEC,
     )
 })
 STAGE_REGISTRY = STAGE_SPEC_REGISTRY

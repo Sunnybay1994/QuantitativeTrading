@@ -724,9 +724,9 @@ def _version_tuple(text: str) -> tuple[int, ...]:
 
 
 def _check_qlib_importable() -> list[ReadinessIssue]:
-    try:
-        import qlib  # type: ignore[import-not-found]  # noqa: F401
-    except ImportError:
+    from quant.research.m3.qlib_adapter import is_qlib_importable
+
+    if not is_qlib_importable():
         return [
             _error(
                 "QLIB_NOT_IMPORTABLE",
