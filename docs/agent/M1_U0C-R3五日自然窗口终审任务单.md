@@ -96,17 +96,17 @@ symlink；run_id/selector 错配；receipt/raw whole-rehash；复制另一日完
 StartBoundary 漂移；registered XML 改写；runner SHA 漂移；LastTaskResult 非0；LastRunTime 跨日；提前日日志；
 Operational disabled 时错误推断“无人干预”。所有失败不得修改正式证据或补跑。
 
-## 8. 四段职责与白名单
+## 8. 串行执行与白名单
 
-1. 主 Agent 已冻结本任务；
-2. 08-14 后全新 Cursor `auto` 取证会话：只读查询/运行离线 audit，仅写
-   `docs/agent/M1_U0C-R3五日自然窗口终审取证报告.md`；
-3. 另一全新 Cursor `auto` 独立初验：生产、证据、取证报告只读，仅写
-   `docs/agent/M1_U0C-R3五日自然窗口终审独立初验报告.md`；
-4. 主 Agent 最终验收，仅通过后写最终报告并同步 UA-M1-003/路线图准确状态。
+按用户 2026-08-13 的项目级协作裁决，当前暂停外部 Agent，由主 Agent 在 08-14 自然任务结束后串行完成：
 
-禁止生产/tests/data/run_state/artifacts/计划任务写入；禁止并行写同一报告；禁止联网、add/commit/push。正式
-证据目录在终审期间不可变。任何修复必须开新的未来窗口，不能补写本窗口。
+1. 只读查询 Scheduler 轴并运行一次零网络离线 audit；
+2. 按本任务冻结条件作正常工程核对，不另设“独立实现/独立初验”或内部 subagent 复验；
+3. 写唯一 `docs/agent/M1_U0C-R3五日自然窗口终审报告.md`，并仅在两轴均 PASS 后同步
+   UA-M1-003 与路线图状态。
+
+禁止生产/tests/data/run_state/artifacts/计划任务写入；禁止联网、补跑、重注册、add/push。正式证据目录在终审
+期间不可变。任何修复必须开新的未来窗口，不能补写本窗口。正常开发核对不构成额外独立验收阶段。
 
 ## 9. 停止条件
 
