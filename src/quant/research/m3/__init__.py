@@ -530,6 +530,8 @@ __all__ = [
     "resolve_acceptance_subject",
     "M3AcceptanceUpstreamError",
     "audit_acceptance_upstream",
+    "M3AcceptanceWorkError",
+    "audit_acceptance_work",
     "FormalTrackingFreshVerificationContext",
     "FormalTrackingStageResult",
     "build_formal_tracking_request",
@@ -786,6 +788,12 @@ def __getattr__(name: str) -> object:
         "audit_acceptance_upstream",
     }:
         module = importlib.import_module("quant.research.m3.acceptance_upstream")
+        return getattr(module, name)
+    if name in {
+        "M3AcceptanceWorkError",
+        "audit_acceptance_work",
+    }:
+        module = importlib.import_module("quant.research.m3.acceptance_work")
         return getattr(module, name)
     if name in {
         "M3ReadinessEvidenceError",
