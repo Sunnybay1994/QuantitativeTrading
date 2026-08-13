@@ -142,6 +142,21 @@ def test_low_volatility_strategy_kind_is_an_explicit_research_contract() -> None
     assert spec.strategy_kind == "etf_regime_low_volatility"
 
 
+def test_risk_adjusted_momentum_kind_is_an_explicit_research_contract() -> None:
+    spec = _research_spec({
+        "research": {
+            "hypothesis_id": "s2-fixed-risk-adjusted-momentum-v1",
+            "hypothesis": "A fixed momentum-per-unit-risk ranking hypothesis.",
+            "strategy_kind": "etf_regime_risk_adjusted_momentum",
+            "strategy_version": "1.0.0",
+            "conclusion": "RESEARCH_ONLY",
+            "random_seed": 0,
+        }
+    })
+
+    assert spec.strategy_kind == "etf_regime_risk_adjusted_momentum"
+
+
 def test_volatility_target_config_is_explicit_and_unlevered() -> None:
     assert _volatility_target_spec({
         "volatility_target": {

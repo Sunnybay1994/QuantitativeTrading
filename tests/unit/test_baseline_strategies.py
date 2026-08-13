@@ -9,6 +9,7 @@ from quant.strategies import (
     EqualWeightStrategy,
     EtfTrendStrategy,
     RegimeFilteredEtfLowVolatilityStrategy,
+    RegimeFilteredEtfRiskAdjustedMomentumStrategy,
     RegimeFilteredEtfTrendStrategy,
 )
 from quant.portfolio import (
@@ -172,6 +173,43 @@ def test_low_volatility_strategy_uses_independent_risk_ranking() -> None:
     ).target_weights(AS_OF, factors)
 
     assert result.get_column("symbol").to_list() == ["512880.SH", "510300.SH"]
+    assert result.get_column("weight").to_list() == [0.45, 0.45]
+
+
+def test_risk_adjusted_momentum_changes_only_positive_trend_ranking() -> None:
+    factors = _trend_factors({
+        "510300.SH": [0.01, 0.03, 0.06, 0.4],
+        "512880.SH": [0.03, 0.06, 0.12, 0.9],
+        "513060.SH": [0.02, 0.05, 0.10, 0.7],
+        "513330.SH": [-0.01, 0.02, 0.20, 1.0],
+    })
+    factors = pl.concat([
+        factors,
+        pl.DataFrame([
+            {
+                "as_of": AS_OF,
+                "symbol": symbol,
+                "factor": "annualized_realized_volatility_60",
+                "value": value,
+                "factor_version": "risk_v1",
+            }
+            for symbol, value in {
+                "510300.SH": 0.20,
+                "512880.SH": 0.30,
+                "513060.SH": 0.10,
+                "513330.SH": 0.05,
+            }.items()
+        ]),
+    ])
+
+    result = RegimeFilteredEtfRiskAdjustedMomentumStrategy(
+        candidates=("510300.SH", "512880.SH", "513060.SH", "513330.SH"),
+        regime_symbol="510300.SH",
+        top_k=2,
+        cash_buffer=0.1,
+    ).target_weights(AS_OF, factors)
+
+    assert result.get_column("symbol").to_list() == ["513060.SH", "512880.SH"]
     assert result.get_column("weight").to_list() == [0.45, 0.45]
 
 
