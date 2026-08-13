@@ -3,7 +3,11 @@ import math
 
 import polars as pl
 
-from quant.factors import compute_trend_factors, compute_trend_factors_from_prices
+from quant.factors import (
+    compute_realized_volatility_factors_from_prices,
+    compute_trend_factors,
+    compute_trend_factors_from_prices,
+)
 
 
 def bars(symbol: str, *, daily_log_return: float, days: int = 121) -> pl.DataFrame:
@@ -62,3 +66,28 @@ def test_hfq_research_prices_use_same_factor_core() -> None:
     )
     momentum = result.filter(pl.col("factor") == "momentum_120").item(0, "value")
     assert momentum > 0
+
+
+def test_realized_volatility_uses_only_returns_ending_at_as_of() -> None:
+    dates = [dt.date(2026, 7, day) for day in (6, 7, 8, 9, 10)]
+    prices = pl.DataFrame({
+        "symbol": ["510300.SH"] * 5,
+        "trade_date": dates,
+        "adjusted_close": [100.0, 110.0, 99.0, 108.9, 108.9],
+        "adjustment_method": ["TOTAL_RETURN_DIVIDEND"] * 5,
+        "source": ["fixture"] * 5,
+    })
+
+    result = compute_realized_volatility_factors_from_prices(
+        prices,
+        as_of=dates[-1],
+        source="fixture",
+        windows=(4,),
+        annualization_sessions=1,
+    )
+
+    log_returns = [math.log(1.1), math.log(0.9), math.log(1.1), 0.0]
+    mean = sum(log_returns) / 4
+    expected = math.sqrt(sum((value - mean) ** 2 for value in log_returns) / 3)
+    assert result.item(0, "factor") == "annualized_realized_volatility_4"
+    assert math.isclose(result.item(0, "value"), expected)

@@ -5,9 +5,11 @@ import polars as pl
 import pytest
 
 from quant.backtest import (
+    EtfDiagnosticSimulationResult,
     EtfCostModel,
     SimulationResult,
     simulate_etf_targets,
+    simulate_etf_targets_with_diagnostics,
 )
 
 
@@ -70,6 +72,86 @@ def test_cost_model_applies_slippage_and_minimum_commission() -> None:
     assert costs.execution_price(10.0, "BUY") == pytest.approx(10.01)
     assert costs.execution_price(10.0, "SELL") == pytest.approx(9.99)
     assert costs.fee(1000.0, dt.date(2026, 1, 2)) == 5.0
+
+
+def test_diagnostic_entrypoint_distinguishes_lot_and_cash_target_gaps() -> None:
+    date = dt.date(2026, 1, 5)
+    bars = pl.DataFrame({
+        "symbol": ["510300.SH"],
+        "trade_date": [date],
+        "open": [10.0],
+        "high": [10.0],
+        "low": [10.0],
+        "close": [10.0],
+        "volume": [1000.0],
+        "amount": [10000.0],
+        "adj_factor": [1.0],
+        "source": ["fixture"],
+    })
+    research = pl.DataFrame({
+        "symbol": ["510300.SH"],
+        "trade_date": [date],
+        "adjusted_close": [10.0],
+        "adjustment_method": ["TOTAL_RETURN_DIVIDEND"],
+        "source": ["fixture"],
+    })
+    targets = pl.DataFrame({
+        "as_of": [dt.date(2026, 1, 2)],
+        "strategy": ["s2"],
+        "strategy_version": ["1"],
+        "symbol": ["510300.SH"],
+        "weight": [1.0],
+        "execution_date": [date],
+    })
+    instruments = pl.DataFrame({
+        "symbol": ["510300.SH"],
+        "market": ["SH"],
+        "name": ["ETF"],
+        "instrument_type": ["ETF"],
+        "currency": ["CNY"],
+        "list_date": [dt.date(2012, 1, 1)],
+        "delist_date": [None],
+        "board_lot": [100],
+        "status": ["LISTED"],
+    })
+    costs = EtfCostModel(0.0, 5.0, 0.0, dt.date(2026, 1, 1))
+
+    lot_gap = simulate_etf_targets_with_diagnostics(
+        bars=bars,
+        research_prices=research,
+        scheduled_targets=targets,
+        instruments=instruments,
+        initial_cash=10025.0,
+        costs=costs,
+        strategy="s2",
+    )
+    cash_gap = simulate_etf_targets_with_diagnostics(
+        bars=bars,
+        research_prices=research,
+        scheduled_targets=targets,
+        instruments=instruments,
+        initial_cash=10000.0,
+        costs=costs,
+        strategy="s2",
+    )
+
+    assert lot_gap.target_gaps.select(
+        "gap_reason", "rounded_target_quantity", "achieved_quantity"
+    ).row(0) == ("LOT_ROUNDING", 1000, 1000)
+    assert cash_gap.target_gaps.select(
+        "gap_reason", "rounded_target_quantity", "achieved_quantity"
+    ).row(0) == ("CASH_CONSTRAINT", 1000, 900)
+    assert lot_gap.nav.equals(
+        simulate_etf_targets(
+            bars=bars,
+            research_prices=research,
+            scheduled_targets=targets,
+            instruments=instruments,
+            initial_cash=10025.0,
+            costs=costs,
+            strategy="s2",
+        ).nav
+    )
 
 
 def test_dividend_cash_is_available_for_same_open_rebalance() -> None:
@@ -210,3 +292,8 @@ def test_legacy_etf_entrypoint_signature_and_result_shape_are_stable() -> None:
         ).parameters.values()
     )
     assert tuple(SimulationResult.__dataclass_fields__) == ("nav", "trades")
+    assert tuple(EtfDiagnosticSimulationResult.__dataclass_fields__) == (
+        "nav",
+        "trades",
+        "target_gaps",
+    )

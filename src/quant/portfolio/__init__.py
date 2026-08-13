@@ -10,6 +10,10 @@ from quant.portfolio.order_planner import (
     build_order_plan,
     build_order_planner_config,
 )
+from quant.portfolio.selection import (
+    retain_ranked_target_selection,
+    scale_target_weights_to_volatility,
+)
 
 __all__ = [
     "OrderPlannerConfig",
@@ -17,4 +21,6 @@ __all__ = [
     "OrderPlanTarget",
     "build_order_plan",
     "build_order_planner_config",
+    "retain_ranked_target_selection",
+    "scale_target_weights_to_volatility",
 ]

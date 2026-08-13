@@ -1,0 +1,45 @@
+[meta]
+config_version = "1.5.0"
+purpose = "Forward-only observation of the frozen M2 minimum-breadth candidate"
+
+[research]
+hypothesis_id = "s2-monthly-minimum-breadth-v1"
+hypothesis = "A monthly broad-market regime filter with at least two selected ETFs can preserve positive forward economic value after the candidate was frozen."
+strategy_kind = "etf_regime_trend"
+strategy_version = "1.4.0"
+conclusion = "RESEARCH_ONLY"
+random_seed = 0
+
+[forward_observation]
+artifact_kind = "non_deploying_forward_observation"
+candidate_source_run_id = "4ea4493f798ed5df8ac61d316f74e56fbfd87730bc6ff578bf979705acb5f1e6"
+candidate_source_config_relative_path = "configs/research/m2_s2_minimum_breadth.toml"
+candidate_source_config_sha256 = "df9c3bd99231b4a813183841d13ccd821ac780f0d7532139901628983c6feaea"
+candidate_frozen_date = 2026-08-13
+first_eligible_signal_date = 2026-08-31
+selected_top_k = 2
+selected_regression_window = 60
+
+[data]
+historical_raw_price_source = "akshare_sina"
+incremental_raw_price_source = "baostock"
+dividend_source = "akshare_sina"
+adjustment = "total_return_dividend"
+minimum_history_observations = 121
+
+[universe]
+name = "ETF_POOL_M2_V1"
+frozen_as_of = 2026-07-12
+wide = ["510300.SH", "159919.SZ", "510500.SH", "159922.SZ"]
+industry = ["512880.SH", "512170.SH", "515790.SH"]
+hong_kong_theme = ["513060.SH", "513330.SH", "513180.SH", "159920.SZ"]
+
+[strategy.etf_regime_trend]
+regime_symbol = "510300.SH"
+momentum_windows = [20, 60, 120]
+regression_window = 60
+top_k = 2
+cash_buffer = 0.10
+factor_version = "trend_v1"
+signal_timing = "close"
+execution_timing = "next_session_open"

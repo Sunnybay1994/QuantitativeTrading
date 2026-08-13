@@ -5,6 +5,9 @@ A 股:T+1、涨跌停不可成交、停牌、整手、佣金/印花税/过户费
 所有候选策略(含 Qlib/vectorbt 产出)必须经此层准入复核。
 """
 
+import importlib
+from typing import TYPE_CHECKING, Any
+
 from quant.backtest.timing import schedule_next_trading_day
 from quant.backtest.a_share_execution import (
     AccountPosition,
@@ -96,7 +99,12 @@ from quant.backtest.daily_simulator import (
     DailySimulationResult,
     simulate_daily_targets,
 )
-from quant.backtest.simulator import SimulationResult, simulate_etf_targets
+from quant.backtest.simulator import (
+    EtfDiagnosticSimulationResult,
+    SimulationResult,
+    simulate_etf_targets,
+    simulate_etf_targets_with_diagnostics,
+)
 from quant.backtest.a_share_simulator import (
     AShareSimulationError,
     AShareSimulationFreshVerificationContext,
@@ -119,11 +127,27 @@ from quant.backtest.a_share_reporting import (
     verify_backtest_build_output,
     verify_development_example_backtest_artifact,
 )
-from quant.backtest.event_simulator import (
-    SimulationReplayInputs,
-    VerifiedSimulationResult,
-    verify_simulation_result_identity,
-)
+if TYPE_CHECKING:
+    from quant.backtest.event_simulator import (
+        SimulationReplayInputs,
+        VerifiedSimulationResult,
+    )
+
+_EVENT_SIMULATOR_EXPORTS = frozenset({
+    "SimulationReplayInputs",
+    "VerifiedSimulationResult",
+    "verify_simulation_result_identity",
+})
+
+
+def __getattr__(name: str) -> Any:
+    """Load the event replay API without creating a portfolio import cycle."""
+    if name not in _EVENT_SIMULATOR_EXPORTS:
+        raise AttributeError(name)
+    module = importlib.import_module("quant.backtest.event_simulator")
+    value = getattr(module, name)
+    globals()[name] = value
+    return value
 
 __all__ = [
     "AccountPosition",
@@ -158,6 +182,7 @@ __all__ = [
     "ConnectRuleInputError",
     "DailyMarketState",
     "DailySimulationResult",
+    "EtfDiagnosticSimulationResult",
     "EtfCostModel",
     "ExecutionCostError",
     "ExecutionCostPeriod",
@@ -218,6 +243,7 @@ __all__ = [
     "simulate_etf_targets",
     "simulate_a_share_scenario",
     "simulate_formal_a_share_scenario",
+    "simulate_etf_targets_with_diagnostics",
     "simulate_daily_targets",
     "settle_due_entitlements",
     "verify_development_example_backtest_plan_artifact",
