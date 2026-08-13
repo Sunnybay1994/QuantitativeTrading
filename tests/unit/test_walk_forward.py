@@ -105,6 +105,22 @@ def test_failed_hypothesis_can_be_recorded_as_rejected() -> None:
     assert spec.conclusion == "REJECTED"
 
 
+def test_market_breadth_strategy_kind_is_an_explicit_research_contract() -> None:
+    spec = _research_spec({
+        "research": {
+            "hypothesis_id": "s2-fixed-majority-market-breadth-v1",
+            "hypothesis": "A strict-majority breadth hypothesis.",
+            "strategy_kind": "etf_breadth_regime_trend",
+            "strategy_version": "1.4.0",
+            "conclusion": "REJECTED",
+            "random_seed": 0,
+        }
+    })
+
+    assert spec.strategy_kind == "etf_breadth_regime_trend"
+    assert spec.conclusion == "REJECTED"
+
+
 def test_volatility_target_config_is_explicit_and_unlevered() -> None:
     assert _volatility_target_spec({
         "volatility_target": {

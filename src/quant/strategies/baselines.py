@@ -133,6 +133,63 @@ class RegimeFilteredEtfTrendStrategy(Strategy):
         )
 
 
+@dataclass(frozen=True)
+class BreadthFilteredEtfTrendStrategy(Strategy):
+    """仅在冻结候选池严格多数处于正动量时承担趋势组合风险。"""
+
+    candidates: tuple[str, ...]
+    top_k: int = 1
+    cash_buffer: float = 0.0
+    factor_version: str = "trend_v1"
+    momentum_windows: tuple[int, ...] = (20, 60, 120)
+    regression_window: int = 60
+    breadth_window: int = 120
+    name: str = "etf_breadth_regime_trend"
+    version: str = "1.0.0"
+
+    def __post_init__(self) -> None:
+        _validate_parameters(self.candidates, self.cash_buffer)
+        if self.top_k <= 0:
+            raise ValueError("top_k 必须大于 0")
+        if self.breadth_window not in self.momentum_windows:
+            raise ValueError("breadth_window 必须包含在 momentum_windows")
+
+    def target_weights(self, as_of: dt.date, data: pl.DataFrame) -> pl.DataFrame:
+        """宽度输入不完整或未达到严格多数时显式回到现金。"""
+        by_symbol = _factor_values(
+            data, as_of=as_of, factor_version=self.factor_version
+        )
+        breadth_name = f"momentum_{self.breadth_window}"
+        breadth_values = [
+            by_symbol.get(symbol, {}).get(breadth_name)
+            for symbol in self.candidates
+        ]
+        risk_on = (
+            all(value is not None for value in breadth_values)
+            and sum(value > 0 for value in breadth_values if value is not None) * 2
+            > len(self.candidates)
+        )
+        ranked = (
+            _rank_positive_trends(
+                by_symbol=by_symbol,
+                candidates=self.candidates,
+                momentum_windows=self.momentum_windows,
+                regression_window=self.regression_window,
+            )
+            if risk_on
+            else []
+        )
+        selected = [symbol for symbol, _ in ranked[: self.top_k]]
+        return _weights_frame(
+            as_of=as_of,
+            strategy=self.name,
+            version=self.version,
+            symbols=selected,
+            invested_weight=1.0 - self.cash_buffer,
+            zero_symbols=list(self.candidates),
+        )
+
+
 def _factor_values(
     data: pl.DataFrame, *, as_of: dt.date, factor_version: str
 ) -> dict[str, dict[str, float | None]]:

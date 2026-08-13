@@ -33,6 +33,7 @@ from quant.research.lightweight_run import (
     publish_lightweight_research_run,
 )
 from quant.strategies import (
+    BreadthFilteredEtfTrendStrategy,
     EqualWeightStrategy,
     EtfTrendStrategy,
     RegimeFilteredEtfTrendStrategy,
@@ -77,7 +78,9 @@ class Parameters:
 class ResearchSpec:
     hypothesis_id: str
     hypothesis: str
-    strategy_kind: Literal["etf_trend", "etf_regime_trend"]
+    strategy_kind: Literal[
+        "etf_trend", "etf_regime_trend", "etf_breadth_regime_trend"
+    ]
     strategy_version: str
     conclusion: Literal["REJECTED", "RESEARCH_ONLY"]
     random_seed: int
@@ -650,12 +653,20 @@ def build_window_targets(
             "name": strategy_name,
             "version": strategy_version,
         }
-        strategy: EtfTrendStrategy | RegimeFilteredEtfTrendStrategy
+        strategy: (
+            EtfTrendStrategy
+            | RegimeFilteredEtfTrendStrategy
+            | BreadthFilteredEtfTrendStrategy
+        )
         if strategy_kind == "etf_trend":
             strategy = EtfTrendStrategy(**common)
         elif strategy_kind == "etf_regime_trend":
             strategy = RegimeFilteredEtfTrendStrategy(
                 **common, regime_symbol=strategy_config["regime_symbol"]
+            )
+        elif strategy_kind == "etf_breadth_regime_trend":
+            strategy = BreadthFilteredEtfTrendStrategy(
+                **common, breadth_window=strategy_config["breadth_window"]
             )
         else:
             raise ValueError(f"不支持的研究策略: {strategy_kind}")
@@ -664,12 +675,21 @@ def build_window_targets(
             retention_common = dict(common)
             retention_common["top_k"] = params.top_k + retention_buffer
             if strategy_kind == "etf_trend":
-                retention_strategy: EtfTrendStrategy | RegimeFilteredEtfTrendStrategy
+                retention_strategy: (
+                    EtfTrendStrategy
+                    | RegimeFilteredEtfTrendStrategy
+                    | BreadthFilteredEtfTrendStrategy
+                )
                 retention_strategy = EtfTrendStrategy(**retention_common)
-            else:
+            elif strategy_kind == "etf_regime_trend":
                 retention_strategy = RegimeFilteredEtfTrendStrategy(
                     **retention_common,
                     regime_symbol=strategy_config["regime_symbol"],
+                )
+            else:
+                retention_strategy = BreadthFilteredEtfTrendStrategy(
+                    **retention_common,
+                    breadth_window=strategy_config["breadth_window"],
                 )
             current_targets = retain_ranked_target_selection(
                 current_targets=current_targets,
@@ -936,7 +956,11 @@ def _research_spec(config: dict[str, Any]) -> ResearchSpec:
     if set(section) != required:
         raise ValueError("research 配置字段不完整或包含未知字段")
     strategy_kind = section["strategy_kind"]
-    if strategy_kind not in {"etf_trend", "etf_regime_trend"}:
+    if strategy_kind not in {
+        "etf_trend",
+        "etf_regime_trend",
+        "etf_breadth_regime_trend",
+    }:
         raise ValueError("research.strategy_kind 不受支持")
     conclusion = section["conclusion"]
     if conclusion not in {"REJECTED", "RESEARCH_ONLY"}:
@@ -945,7 +969,10 @@ def _research_spec(config: dict[str, Any]) -> ResearchSpec:
         hypothesis_id=section["hypothesis_id"],
         hypothesis=section["hypothesis"],
         strategy_kind=cast(
-            Literal["etf_trend", "etf_regime_trend"], strategy_kind
+            Literal[
+                "etf_trend", "etf_regime_trend", "etf_breadth_regime_trend"
+            ],
+            strategy_kind,
         ),
         strategy_version=section["strategy_version"],
         conclusion=cast(Literal["REJECTED", "RESEARCH_ONLY"], conclusion),

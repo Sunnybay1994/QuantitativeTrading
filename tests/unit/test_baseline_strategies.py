@@ -5,6 +5,7 @@ import polars as pl
 import pytest
 
 from quant.strategies import (
+    BreadthFilteredEtfTrendStrategy,
     EqualWeightStrategy,
     EtfTrendStrategy,
     RegimeFilteredEtfTrendStrategy,
@@ -100,6 +101,42 @@ def test_regime_filtered_etf_trend_moves_to_cash_when_risk_off() -> None:
     ).target_weights(AS_OF, factors)
     assert result.get_column("symbol").to_list() == ["510300.SH", "512880.SH"]
     assert result.get_column("weight").to_list() == [0.0, 0.0]
+
+
+def test_breadth_filter_requires_strict_majority_without_tuning_threshold() -> None:
+    factors = _trend_factors({
+        "510300.SH": [0.01, 0.03, 0.05, 0.4],
+        "512880.SH": [0.03, 0.06, 0.09, 0.8],
+        "513060.SH": [-0.03, -0.02, -0.01, -0.2],
+    })
+    result = BreadthFilteredEtfTrendStrategy(
+        candidates=("510300.SH", "512880.SH", "513060.SH"),
+        top_k=1,
+        cash_buffer=0.1,
+        breadth_window=120,
+    ).target_weights(AS_OF, factors)
+    assert result.get_column("symbol").to_list() == ["512880.SH"]
+    assert result.get_column("weight").to_list() == [0.9]
+
+
+def test_breadth_filter_fails_closed_on_tie_or_missing_candidate_input() -> None:
+    complete = _trend_factors({
+        "510300.SH": [0.01, 0.03, 0.05, 0.4],
+        "512880.SH": [0.03, 0.06, 0.09, 0.8],
+        "513060.SH": [-0.03, -0.02, -0.01, -0.2],
+        "513330.SH": [-0.04, -0.03, -0.02, -0.3],
+    })
+    strategy = BreadthFilteredEtfTrendStrategy(
+        candidates=("510300.SH", "512880.SH", "513060.SH", "513330.SH"),
+        top_k=1,
+        breadth_window=120,
+    )
+    tied = strategy.target_weights(AS_OF, complete)
+    missing = strategy.target_weights(
+        AS_OF, complete.filter(pl.col("symbol") != "513330.SH")
+    )
+    assert tied.get_column("weight").to_list() == [0.0] * 4
+    assert missing.get_column("weight").to_list() == [0.0] * 4
 
 
 def test_rank_retention_keeps_prior_symbol_inside_explicit_buffer() -> None:

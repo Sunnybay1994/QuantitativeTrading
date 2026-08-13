@@ -1,0 +1,94 @@
+[meta]
+config_version = "1.5.0"
+purpose = "M2 S2 fixed-majority market-breadth confirmation experiment"
+
+[research]
+hypothesis_id = "s2-fixed-majority-market-breadth-v1"
+hypothesis = "Requiring a strict majority of the frozen ETF pool to have positive 120-session total-return momentum can avoid narrow risk-on regimes and improve worst-fold drawdown without sacrificing cost robustness."
+strategy_kind = "etf_breadth_regime_trend"
+strategy_version = "1.4.0"
+conclusion = "REJECTED"
+random_seed = 0
+
+# Pre-registered before the run; the raw TOML bytes, including these comments,
+# are bound by config_sha256.  Comparator is the frozen minimum-breadth run:
+# 4ea4493f798ed5df8ac61d316f74e56fbfd87730bc6ff578bf979705acb5f1e6
+# No threshold or parameter grid is searched: breadth is the mathematical strict
+# majority of all 11 frozen candidates, top_k=2 and regression_window=60.
+# Pass only if all four conditions hold:
+# 1. both frozen test-fold net returns remain positive at 1x and 2x costs;
+# 2. the worse of the two maximum drawdowns improves by at least 1 percentage point;
+# 3. two-fold compounded 1x return is at least 80% of the comparator;
+# 4. one-way turnover does not increase in either fold.
+# Observed outcome: conditions 1 and 3 passed; conditions 2 and 4 failed.
+# The hypothesis is therefore rejected without changing the frozen threshold.
+
+[data]
+historical_raw_price_source = "akshare_sina"
+incremental_raw_price_source = "baostock"
+dividend_source = "akshare_sina"
+adjustment = "total_return_dividend"
+start_date = 2023-01-01
+end_date = 2026-07-10
+minimum_history_observations = 121
+
+[universe]
+name = "ETF_POOL_M2_V1"
+frozen_as_of = 2026-07-12
+wide = ["510300.SH", "159919.SZ", "510500.SH", "159922.SZ"]
+industry = ["512880.SH", "512170.SH", "515790.SH"]
+hong_kong_theme = ["513060.SH", "513330.SH", "513180.SH", "159920.SZ"]
+
+[strategy.equal_weight]
+rebalance = "month_end_signal_next_session_open"
+cash_buffer = 0.00
+
+[strategy.etf_breadth_regime_trend]
+breadth_window = 120
+momentum_windows = [20, 60, 120]
+regression_window = 60
+top_k = 2
+cash_buffer = 0.10
+factor_version = "trend_v1"
+signal_timing = "close"
+execution_timing = "next_session_open"
+
+[backtest]
+initial_cash = 1000000.0
+valuation_timing = "close"
+execution_timing = "next_session_open"
+
+[benchmark.csi300]
+symbol = "000300.SH"
+tracked_etf = "510300.SH"
+official_as_of = 2026-03-31
+official_ytd_return = -0.0389
+official_tolerance = 0.0001
+official_source = "https://oss-ch.csindex.com.cn/static/html/csindex/public/uploads/indices/detail/files/en/000300factsheeten.pdf"
+
+[walk_forward]
+enabled = true
+train_months = 24
+validation_months = 6
+test_months = 6
+step_months = 6
+selection_metric = "net_sharpe"
+cost_multipliers = [0.5, 1.0, 2.0]
+
+[walk_forward.grid]
+top_k = [2]
+regression_window = [60]
+
+[costs.a_share]
+commission_rate = 0.00025
+commission_min = 5.0
+stamp_tax_sell = 0.0005
+transfer_fee = 0.00001
+slippage = 0.001
+effective_from = 2026-01-01
+
+[costs.etf]
+commission_rate = 0.00025
+commission_min = 5.0
+slippage = 0.001
+effective_from = 2023-01-01
