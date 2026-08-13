@@ -371,9 +371,9 @@ N 个精确开市日；官方为 OTHER/缺失时才回退 Instrument 分类。�
 
 ## 当前状态
 
-M0 已通过验收；M1 已完成 A 股/ETF 数据、三地基础日历与股票主表、双路由港股通快照/事件/日历、基线后成员区间及“时点股票池 × 历史行情窗口”查询。M2 已完成趋势因子、策略接口、长期总回报研究价格、S0/S1 walk-forward、成本压力、独立指数对账与 QuantStats 报告。M3 已冻结标签/预测契约、版本化配置、模块骨架、四段式 Agent 交付流程和 G0–G9 验收矩阵；C0、E3 严格 Receipt、G1-B2A/P1/P2/P3/P4A/P4B/P4C 代码子包及 G0 Python 兼容子项已通过主 Agent 最终验收，B4/G1 与 G0–G9 Gate 仍未关闭。`py312` 已验收 Qlib 0.9.7 兼容性且 base 未变；真实链路仍受 `CSI300_PIT` 长期数据、BaoStock smoke 和支持内核发布证据约束，详见[路线图](项目实施路线图.md)。研究阶段可使用本地 ignored Tushare token，启用实盘前必须轮换。统一回测器也仍需把股票 T+1、显式停牌/涨跌停状态和费用规则原语接入日频模拟器。
+M0 已通过验收；M1 已完成 A 股/ETF 数据、三地基础日历与股票主表、双路由港股通快照/事件/日历、基线后成员区间及“时点股票池 × 历史行情窗口”查询，HK licensed provenance 与五日自然窗口仍开放。M2 工程闭环已完成。M3 已具备 Windows G1 正式发布物、G2–G7 formal artifact/fresh verifier、G8 StageRunner/tracking/reproducibility 与 fake full DAG；G9A quality artifact 已完成。honest public CLI 长运行等待 `UA-M3-001`，G9B 输入闭包等待 `UA-M3-002`，因此 G8/G9/M3 Gate 均未关闭。M4 formal runtime/policy/binding/account/store 与只读 broker snapshot port 已完成 Windows 工程闭环；gateway dispatch 等待 `UA-M4-003`，service/runner/28 日 soak 尚未开始。`py312` 已验收 Qlib 0.9.7 兼容性且 base 未变；Linux/ext4 当前按用户指示暂不实施。详见[路线图](项目实施路线图.md)。持续审批事项由主工作树的 `docs/agent/用户待批示与参与事项.md` 维护，待合流时一并纳入。研究阶段可使用本地 ignored Tushare token，启用实盘前必须轮换。
 
-## M2 基线策略（评估完成，市场规则补齐中）
+## M2 基线策略（工程闭环完成，策略有效性继续观察）
 
 版本化配置位于 `configs/research/m2_baseline.toml`。`ETF_POOL_M2_V1` 冻结了宽基、
 行业和港股主题三组共 11 只 ETF，本地证券主表已核验全部为上市 ETF。当前实现：
@@ -451,8 +451,9 @@ python -m quant.reporting.quantstats_report \
 费用 `249.92` 元；等权月调仓收益 `+3.684%`（零成本 `+4.156%`，成本拖累
 `-0.472%`）、最大回撤 `-32.651%`、费用 `2,436.62` 元。产物位于
 `artifacts/research/m2/s0/`，其中 `quantstats/` 保存两份 HTML tear sheet。
-QuantStats 是 `research` 可选依赖，不进入交易运行时依赖。ETF 涨跌停拒单和券商
-费率校准仍属于统一回测器后续项；
+QuantStats 是 `research` 可选依赖，不进入交易运行时依赖。统一日频事件模拟器已覆盖 ETF/股票涨跌停拒单、
+股票 T+1、停牌估值和版本化费用压力；成本参数仍是研究假设，真实券商账单校准属于后续 M4 运维边界。详见
+[`M2 U1 最终验收报告`](docs/agent/M2_U1统一股票ETF日频事件模拟器主Agent最终验收报告.md)。
 S0 的数据与收益口径由下述独立指数检查验收。
 
 独立指数校验使用中证指数官方 2026-03-31 事实表的沪深300 YTD `-3.89%`。
