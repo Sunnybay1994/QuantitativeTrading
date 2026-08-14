@@ -67,7 +67,8 @@ M2 合流暴露两个只在组合分支可见的问题，并已形成最小修�
 
 ## 4. 尚未完成
 
-- M1：A 股/ETF 主闭环已完成；五日自然调度已取得 4/5，等待 2026-08-14 自然运行后终审。HK licensed
+- M1：A 股/ETF 主闭环已完成；U0C-R3 五日自然调度已由 Scheduler 正面证据与 WSL base 五日
+  receipt/data fresh 审计共同确认 5/5 PASS。HK licensed
   provenance 与 `01065.HK` 权威无交易事实仍等待外部合规材料。
 - M2：投研框架 MVP 与研究快线已完成并合入；策略开发已拆到独立 `codex/m2-strategy-research`
   worktree，当前仍无 `PAPER_CANDIDATE`。
