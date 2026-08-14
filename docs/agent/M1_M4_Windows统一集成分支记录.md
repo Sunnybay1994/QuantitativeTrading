@@ -1,6 +1,6 @@
 # M1–M4 Windows 统一集成分支记录
 
-日期：2026-08-13
+日期：2026-08-14
 
 ## 1. 集成范围
 
@@ -12,6 +12,10 @@
 - M3 合流：`e62d2ec`，来源 `codex/m3-g4-formal`
 - M2 研究快线合流：`b6d652d`，来源 `codex/m2-strategy-fastlane`
 - M3 G9G 增量合流：`55b3ac7`，来源 `codex/m3-g4-formal`
+- M3 honest 300 终态与路径修正：`4af07fe`、`bf9bdfa`，来源 `codex/m3-g4-formal`
+- M4 formal gateway/service/schedule/daily runner：`c5c8e93`、`e63d834`、`e90f825`、`7298a72`
+- M4 scoped cancel recovery 修正：`ad5504d`
+- 共享 Tushare bulk/raw ingestion 合流：`c16ec68`，来源 `codex/m2-strategy-research`
 
 三个来源分支均已成为当前集成分支祖先。未 push、未创建 PR。
 
@@ -51,6 +55,11 @@ M2 合流暴露两个只在组合分支可见的问题，并已形成最小修�
 - M3 G9G 增量合流的 acceptance contracts/decision/readiness：`23 passed`；40 个相关源文件 mypy、Ruff、
   M2/M3 同进程冷导入通过。完整 G9A–G9G `68 passed, 1 skipped` 的来源分支证据仍由 G9G 报告承载，
   合流时未在 honest 300 后台任务旁机械重复长组。
+- M3 honest 300 最终 revision：public CLI 首发与 completed resume 同一节点 `1 passed`，耗时
+  `9716.55s (2:41:56)`；业务树零额外写入、G1 零写、session-owned roots 精确清理均通过。
+- M4 formal daily runner：focused `4 passed`，Ruff、mypy、惰性冷导入通过；cancel scoped recovery
+  修正后的 CLI/reconcile 邻接 `35 passed`。
+- 共享 Tushare bulk discovery/recoverable raw ingestion：`37 passed`，Ruff、mypy 通过。
 
 这些结果是合流过程中的正常开发反馈，不是独立初验或 Windows/Linux Gate 声明。
 
@@ -60,12 +69,12 @@ M2 合流暴露两个只在组合分支可见的问题，并已形成最小修�
   provenance 与 `01065.HK` 权威无交易事实仍等待外部合规材料。
 - M2：投研框架 MVP 与研究快线已完成并合入；策略开发已拆到独立 `codex/m2-strategy-research`
   worktree，当前仍无 `PAPER_CANDIDATE`。
-- M3：G9A–G9G Windows fake 工程闭包已完成。honest 300 的 R1/R2 首发业务 CLI 均成功；R1 误计持久
-  advisory lock，R2 又把 Windows 反斜杠相对路径误当成非 canonical 产物。两项都只属于验收 helper，未改
-  StageRunner、receipt 或经济计算。R3 已把相对路径统一为 POSIX `/`，快速回归、Ruff 和 diff-check 通过，
-  固定 revision `706ab2c`；2026-08-14 00:27:43 起按 `UA-M3-001` 的资源上限重新执行完整首发与
-  completed resume。终态前不能关闭 G8/G9 honest Gate，也不能拼接 R1/R2 局部成功。
-- M4：formal gateway dispatch 语义等待 `UA-M4-003`；service/runner/28 日 soak 尚未完成。
+- M3：G9A–G9G Windows fake 工程闭包已完成；honest 300 R3 已在固定 revision `706ab2c` 完成同一次
+  public CLI 首发与 completed resume，关闭 Windows honest 300 性能、恢复与零写工程准入。真实远端
+  tracking/MLflow 证据仍开放；Linux/ext4 不在本阶段判定内。
+- M4：formal gateway、service、schedule、daily input/runner 的 Windows 工程实现已完成。首个真实
+  `PAPER_CANDIDATE` 由策略会话提供，开盘事实等待真实 clean source；任务注册、真实 PAPER 启动和 28 日
+  soak 仍受 `UA-M4-002` 控制，当前未启动。
 - Linux/ext4 当前按用户指示不纳入本阶段实施或完成判定。
 
 因此本记录只证明 Windows 开发分支已形成统一可继续演进的集成基线，不宣称 M1、M3、M4 或总项目完成。
