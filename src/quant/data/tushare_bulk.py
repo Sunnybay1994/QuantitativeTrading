@@ -72,7 +72,7 @@ class DatasetSpec:
 
 @dataclass(frozen=True)
 class Catalog:
-    """Strict catalog plus the physical bytes identity used for reports."""
+    """Strict catalog plus its canonical-LF content identity used for reports."""
 
     version: str
     source_url: str
@@ -84,7 +84,8 @@ class Catalog:
 def load_catalog(path: Path) -> Catalog:
     """Load a strict catalog; unknown keys and duplicate datasets fail closed."""
     payload = path.read_bytes()
-    raw = tomllib.loads(payload.decode("utf-8"))
+    canonical_payload = payload.replace(b"\r\n", b"\n")
+    raw = tomllib.loads(canonical_payload.decode("utf-8"))
     if set(raw) != {"meta", "datasets"}:
         raise ValueError("TUSHARE_CATALOG_INVALID")
     meta = raw["meta"]
@@ -107,7 +108,7 @@ def load_catalog(path: Path) -> Catalog:
         source_url=_nonempty_string(meta["source_url"]),
         captured_on=captured_on,
         datasets=datasets,
-        sha256=hashlib.sha256(payload).hexdigest(),
+        sha256=hashlib.sha256(canonical_payload).hexdigest(),
     )
 
 

@@ -193,6 +193,14 @@ def test_report_is_immutable_and_duplicate_catalog_names_fail(tmp_path: Path) ->
         load_catalog(duplicate)
 
 
+def test_catalog_identity_is_stable_across_lf_and_crlf(tmp_path: Path) -> None:
+    lf_path = _catalog(tmp_path / "lf.toml")
+    lf_path.write_bytes(lf_path.read_bytes().replace(b"\r\n", b"\n"))
+    crlf_path = tmp_path / "crlf.toml"
+    crlf_path.write_bytes(lf_path.read_bytes().replace(b"\n", b"\r\n"))
+    assert load_catalog(lf_path) == load_catalog(crlf_path)
+
+
 def test_versioned_catalog_covers_all_supported_market_categories() -> None:
     catalog = load_catalog(Path("configs/data/tushare_bulk_v1.toml"))
     assert len(catalog.datasets) >= 60
