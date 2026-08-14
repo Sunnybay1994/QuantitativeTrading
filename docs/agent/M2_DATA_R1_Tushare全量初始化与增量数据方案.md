@@ -223,3 +223,15 @@ F:\AI_Coding\QuantitativeTrading\data\
 P1 首先把 `daily`、`adj_factor` 和可全市场按日返回的同类接口改为按交易日请求；基础主表先落 raw，随后从
 `index_basic`、`cb_basic`、`fut_basic` 和 `opt_basic` 生成下一阶段 inventory。财务、持仓及事件类接口保留
 逐证券或按公告窗口切分。只有重新生成的计划通过截断风险检查并写入可恢复 SQLite ledger 后，才启动历史请求。
+
+## 13. P1 当前进展
+
+- 沪深日历已按十年窗口真实回补：SH 为 1990-12-19 至 2026-12-31、8,797 个开市日；SZ 为
+  1991-07-03 至 2026-12-31、8,661 个开市日；物理业务键无重复。
+- 新增 `tushare_bulk_ingest`：确定 request ID、SQLite ledger、单 writer 租约、崩溃后 `RUNNING` 恢复、
+  有界指数退避、不可变 request raw、完整 raw 零联网恢复，以及行数上限 `SPLIT_REQUIRED` 门禁。
+- 真实 smoke 已完成 4 个请求：A股 `daily` 两日、`adj_factor` 一日、`fund_daily` 一日；非空样本分别获得
+  5,540、5,557、2,104 行，均低于 6,000 行截断门槛并已写入共享 raw。
+- 2026-08-14 当日 `daily` 返回合法空集，按原样保留；空集不自动等价为数据缺失或权限失败。
+- 下一步将三个核心按日数据集的全部历史请求写入 ledger，以 60 次/分钟单请求流运行。该阶段主要受接口
+  限频约束，不会持续占满 CPU；clean/PIT 晋升在 raw 覆盖与完整性审计后单独执行。
