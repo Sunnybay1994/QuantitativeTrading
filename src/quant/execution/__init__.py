@@ -85,6 +85,12 @@ if TYPE_CHECKING:
         open_verified_formal_paper_service_composition,
         verify_existing_formal_paper_service_composition,
     )
+    from quant.execution.paper_formal_schedule import (
+        FormalPaperScheduleError,
+        VerifiedFormalPaperSoakSchedule,
+        build_verified_formal_paper_soak_schedule,
+        verify_existing_formal_paper_soak_schedule,
+    )
     from quant.execution.paper_formal_execution_store import (
         FormalPaperExecutionStoreError,
         VerifiedFormalPaperExecutionStoreCapability,
@@ -199,9 +205,22 @@ _FORMAL_SERVICE_EXPORTS = frozenset(
     }
 )
 
+_FORMAL_SCHEDULE_EXPORTS = frozenset(
+    {
+        "FormalPaperScheduleError",
+        "VerifiedFormalPaperSoakSchedule",
+        "build_verified_formal_paper_soak_schedule",
+        "verify_existing_formal_paper_soak_schedule",
+    }
+)
+
 
 def __getattr__(name: str) -> Any:
     """Resolve P8 exports without pulling reporting/backtest at package import."""
+    if name in _FORMAL_SCHEDULE_EXPORTS:
+        value = getattr(import_module("quant.execution.paper_formal_schedule"), name)
+        globals()[name] = value
+        return value
     if name in _FORMAL_SERVICE_EXPORTS:
         value = getattr(import_module("quant.execution.paper_formal_service"), name)
         globals()[name] = value
@@ -251,6 +270,7 @@ __all__ = [
     "FormalPaperGatewayError",
     "FormalPaperLedgerContextError",
     "FormalPaperServiceError",
+    "FormalPaperScheduleError",
     "MarketDataRepository",
     "MoneyAmount",
     "OrderCommand",
@@ -275,6 +295,7 @@ __all__ = [
     "VerifiedFormalPaperExecutionStoreCapability",
     "VerifiedFormalPaperLedgerContextProvider",
     "VerifiedFormalPaperServiceComposition",
+    "VerifiedFormalPaperSoakSchedule",
     "VerifiedDevelopmentSoakEvidence",
     "VerifiedFormalPaperBrokerStoreCapability",
     "VerifiedMarketSnapshot",
@@ -311,6 +332,7 @@ __all__ = [
     "build_verified_connect_market_context_identity",
     "build_verified_market_snapshot",
     "build_verified_market_snapshot_identity",
+    "build_verified_formal_paper_soak_schedule",
     "load_trading_config",
     "load_verified_formal_paper_ledger_context_provider",
     "initialize_verified_formal_paper_broker_store",
@@ -328,4 +350,5 @@ __all__ = [
     "verify_existing_formal_paper_execution_store_capability",
     "verify_existing_formal_paper_ledger_context_provider",
     "verify_existing_formal_paper_service_composition",
+    "verify_existing_formal_paper_soak_schedule",
 ]
