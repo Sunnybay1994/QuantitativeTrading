@@ -664,12 +664,14 @@ def test_cancel_counter_shortfall_and_sent_without_link_are_manual(
         )
         with store.transaction() as repo:
             cancel_row = repo.read_recovery_rows().cancel_commands[0]
-            original_counter = repo.get_daily_risk_counters(cancel_row.risk_counter_key)
+            original_counter = repo.get_scoped_daily_risk_counters(
+                cancel_row.risk_counter_key
+            )
         assert original_counter is not None
         database = tmp_path / "reconcile" / "execution.db"
         with sqlite3.connect(database) as connection:
             connection.execute(
-                "UPDATE daily_risk_counters SET identity=?, payload=? "
+                "UPDATE scoped_daily_risk_counters SET identity=?, payload=? "
                 "WHERE counter_key=?",
                 (
                     hashlib.sha256(counter_payload).hexdigest(),
@@ -686,7 +688,7 @@ def test_cancel_counter_shortfall_and_sent_without_link_are_manual(
 
         with sqlite3.connect(database) as connection:
             connection.execute(
-                "UPDATE daily_risk_counters SET identity=?, payload=? "
+                "UPDATE scoped_daily_risk_counters SET identity=?, payload=? "
                 "WHERE counter_key=?",
                 (
                     original_counter.identity,

@@ -308,7 +308,9 @@ def recover_local_state(store: ExecutionStore) -> RecoveryResult:
         with store.transaction() as repo:
             rows = repo.read_recovery_rows()
             cancel_counter_rows = {
-                row.risk_counter_key: repo.get_daily_risk_counters(row.risk_counter_key)
+                row.risk_counter_key: repo.get_scoped_daily_risk_counters(
+                    row.risk_counter_key
+                )
                 for row in rows.cancel_commands
             }
         commands: list[OrderCommand] = []
