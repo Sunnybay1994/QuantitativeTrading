@@ -10,7 +10,7 @@
 - M3 契约与交接：[`../M3实施与Agent交接.md`](../M3实施与Agent交接.md)
 - 正式产物方法论：[`../../正式产物身份、数据溯源与可复现性方法论.md`](../../正式产物身份、数据溯源与可复现性方法论.md)
 
-截至 2026-08-14，前台优先级是策略研究与首个 `PAPER_CANDIDATE`；`UA-M4-004` 已批准，M4 的 Windows formal gateway、store、service composition、verified schedule 与只读 daily runner 已完成，现等待真实候选与开盘事实。M3 曾通过的 honest 300 public CLI 属于已被 `research-summary` stage 修正取代的旧 revision；修正 revision 已生成 retained locator，h5/h10 与后续 summary/reproducibility/readiness 正在续跑。Linux/ext4、真实 PAPER 运行和 28 日 soak 仍未完成。
+截至 2026-08-14，前台优先级是策略研究与首个 `PAPER_CANDIDATE`；`UA-M4-004` 已批准，M4 的 Windows formal gateway、store、service composition、verified schedule 与只读 daily runner 已完成，现等待真实候选与开盘事实。M3 修正 revision 的 honest 300 h5/h10 三场景 backtest 已完成，但 retained fold plan 只有一个 fold，正式跨折 `research-summary` 因最小 two-fold 合同 fail-closed；该 root 不进入 tracking/acceptance。下一后台包复用现有 G1 release，从延长一个 session 的新配置派生 two-fold × two-horizon 链。Linux/ext4、真实 PAPER 运行和 28 日 soak 仍未完成。
 
 ## 归档规则
 
