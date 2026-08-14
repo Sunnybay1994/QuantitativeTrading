@@ -1,5 +1,69 @@
 # Codex 项目迁移交接
 
+### 2026-08-14 当前续写摘要（覆盖下文旧停止点）
+
+- 前台主线是 M2 策略发现、证伪与首个 `PAPER_CANDIDATE`；正在开发的 `m2-strategy-research` 工作树保留，不能被 formal 工程阻塞或混入共享 worktree。
+- M3 honest 300 public CLI 已在资源受限的唯一 Windows 进程中完整通过首发、completed resume、零写边界与 teardown（`1 passed in 9716.55s`）；工作树提交 `439cf39` 已以 `4af07fe` 合入 `codex/m1-m4-windows-integration`。
+- M4 已完成 formal gateway、broker/OMS store、fresh G1 calendar ledger provider、ExecutionService composition 与 VerifiedSoakSchedule，最新集成提交 `e90f825`。下一业务决策是 `UA-M4-004`：首个 PAPER target 与当日 market snapshot 来源。未获批准前不以 fixture、历史回测或空 target 冒充正式 PAPER。
+- Linux/ext4、真实 PAPER、28 日 soak 和 LIVE 均未完成。外部 Agent 当前暂停，由主 Agent 串行开发；内部 subagent 不用于模拟独立实现/初验。
+- 已完成 worktree 与临时目录清理：统一集成、活动 M1、活动 M2 三个附加工作树保留；其余完成分支保留为 Git 历史，不再占用有效 worktree 注册。历史 ACL 残留未取得所有权强删，而是整体移入 `artifacts/archive/acl-test-residue-20260814/` 与 `artifacts/archive/retired-worktree-residue-20260814/` 留档。
+
+### 2026-08-10 当前续写摘要（覆盖下文旧 G1/M3/M4 停止点）
+
+- 正式 G1 Windows轨已完成并从磁盘fresh验真：release `08eb9b31...7359`、manifest
+  `d3923fa1...f99c4`、17个exact artifact paths、quality 0 error/0 warning；见
+  [`20260809_M3_G1_Windows正式发布物磁盘复验报告.md`](agent/20260809_M3_G1_Windows正式发布物磁盘复验报告.md)。
+  WSL仍为WSL1/DrvFS，Linux/ext4 Gate开放。
+- M2工程闭环已完成。M3正式研究链已推进至G6B主验PASS；G5A/G5B输出事务与root lease、G6A/G6B评估汇总
+  均已闭合工程合同。G7A正式TargetArtifact的R1 Decimal尾差已由R2固定Decimal50/ROUND_DOWN闭包关闭，
+  实现、独立复验和主验均PASS；G7B formal BacktestPlanArtifact亦已完成实现、独立初验和主验PASS，主验正式
+  文件Windows/WSL各4 passed且实现扩大回归各109 passed。G7D-F0唯一formal八表MarketFacts经R1/R2来源闭包
+  返工后已于R3完成独立复验和主验PASS；G7C亦已完成R1/R2运行时来源闭包和R3 tests-only证据返工，生产文件
+  在R3前后SHA保持不变，独立复验与主验均PASS。G7D remaining已拆为串行F1/F2；F1正式A股开盘执行事实已
+  完成实现、全新独立初验和主验PASS。F2 formal session订单执行状态转移的R1 rejection notional缺口已由R2
+  `reference_opens` + canonical self-digest及逐项 `open*quantity` 复算关闭；实现、全新独立复验与主验均PASS，
+  Windows/WSL最终formal各20 passed，允许进入G7E。self-digest仅为普通值内部一致性，不是来源证明；G7E必须
+  在自己的调用栈内调用F2。随后G7E审计发现F0遗留旧`H00300.CSI`与正式config/SSOT的`510300.SH`冲突；
+  F0 R4已改为只从fresh config派生exact `510300.SH`，并移除F1 date guard的平行旧常量。R4实现、全新独立
+  复验与主验均PASS，主验Windows/WSL F0+F1+F2各68 passed。随后G7E hostile Decimal联调发现F2
+  null-gap的ambient `abs`与F1 half-tick环境算术缺口；F2 R3已改用`copy_abs()`，F1 R2已改用exact
+  `0.005`及私有80位add/sub，两包均完成实现、全新独立复验和主验PASS。G7E现已恢复实现；其formal
+  simulator的R1 Float64 NAV独立投影导致合法Decimal账户被Schema自拒绝；R2已改为四个已投影Float64分量
+  按Schema同序生成输出equity，同时保留Decimal收益与后续状态链。R2实现、全新独立复验和主验均PASS，
+  G7E单场景账户回放工程合同完成。G7F因正式三场景嵌套目录发布而新增P0共享NestedArtifactPublication
+  前置；P0实现、全新独立初验与主验均PASS，受限两层nested publication及全部flat客户端兼容闭合，现已
+  解锁G7F。G7F R1三场景29-file/21-input artifact本体与独立Decimal/whole-bundle/tree对抗通过，但邻接发现
+  corporate-actions cold test在父pytest内reload导致G7E identity顺序污染；R2仅把reload隔离到fresh子进程，
+  production与G7F tests哈希不变。R2全新独立复验与主验PASS，G7F工程合同完成并解锁G8。G8 R1已闭合
+  formal backtest单WORK wave：exact 21 inputs/29 outputs、StageRunner首次/恢复/orphan逐次fresh及receipt前后
+  G7F验真均完成实现、全新外部Cursor独立初验和主验PASS。Windows actual exclusive commit通过；本机WSL1
+  不支持`RENAME_NOREPLACE`，仅91 passed/1窄skip，Linux ext4 Gate仍开放。随后G8D-F1 formal Tracking
+  StageRunner单WORK wave完成：exact 34 inputs/11 uploads/22 params/2 request tags、显式client、外置lock、
+  request→remote→marker及首次/resume/orphan闭包均通过。R1独立初验发现FINISHED run未比较两个request tags；
+  R2已将request tags与五个protected tags共同纳入逐键复用校验，并经另一全新外部Cursor独立复验及主验PASS。
+  当前只声明G8D-F1工程合同完成；真实MLflow/网络与ext4仍未验。G7C不得另建corporate-action facts capability。
+  G8 CLI/fresh-process/fake full DAG、正式全work性能、G9与M3 Gate仍开放；下一工程包应先冻结G8C CLI增量。
+- M4 P4-P8工程合同、RUN-0A环境合同、RUN-0B1独立durable PAPER broker均已通过相应主验；P8正式状态仍为
+  `WAITING_FOR_SOAK_EVIDENCE`。RUN-0B2A1 R2 durable ORDER/CANCEL risk receipt/recovery已于2026-08-09
+  主验PASS；B2A2已完成移除P7 caller risk、接入recovery retained receipts并于同日主验PASS。正式runner、
+  WSL2/ext4、注册和真实28日soak尚未开始；RUN-0B2B A股formal PAPER policy/config loader已于同日完成
+  独立复验与主验；RUN-0B2C formal broker policy binding亦已完成实现、独立初验与主验，自身不创建
+  root/DB/gateway。下一包B2D formal PAPER账户Genesis任务已冻结为停止状态，仍等待用户批准account selector、
+  非秘密label、genesis UTC与初始CNY现金四项业务SSOT；批准前不创建正式account TOML或实现loader。
+- M1 PRE-B v3 availability capability已于R4主验PASS；fixture-only显式v3 finalize CLI外壳R2已关闭单文件
+  held-instance内容漂移，但独立复验确认无锁双文件顺序扫描无法证明共同返回瞬间不可变；§12 R3已诚实重冻为
+  write-once retained输入与caller quiescence信任边界，禁止用增加扫描轮数伪造强保证；R3已于同日完成独立
+  复验与主验。P1A HK总回报应用日程来源无关工程合同亦已完成实现、独立初验和主验；下一步先只读冻结
+  P1B gross total-return研究价格数值与development四文件发布合同已完成实现、独立初验和主验。正式P1C
+  必须等待真实HK60 v3与licensed HK公司行动provenance，不再扩张fixture wrapper。正式HK60仍受02983可信observed
+  metadata与licensed `01065.HK@2026-05-05`完整HKEX issue/spec阻塞；U0C-R3五个自然交易日任务已在
+  2026-08-09只读回查为Ready且从未运行；同日preflight发现正式WSL路径缺少runner，已用注册时冻结的exact
+  bytes（SHA `bdedb953...02c`）恢复并通过WSL SHA/bash-n/冷导入，任务本身未修改或触发。窗口仍冻结在
+  2026-08-10至08-14自然触发，禁止手动提前触发。
+- 当前按用户最新指示继续由主Agent推进，但后续减少内部subagent，优先使用不同全新外部`cursor-agent`
+  会话承担实现与独立初验；主Agent负责冻结任务、裁决与最终验收。各worktree包含大量用户与既有里程碑脏文件，
+  禁止add/commit或清理无关内容。
+
 ### 2026-07-31 最新续写摘要（覆盖下文旧停止点与执行模式）
 
 - 当前分支为 `main`；P0K-A-REAL1 闭包提交 `dec16c8`，P0K-B 主实现提交 `3ba098d`。本摘要之后

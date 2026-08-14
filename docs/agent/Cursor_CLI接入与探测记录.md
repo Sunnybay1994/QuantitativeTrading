@@ -1,7 +1,7 @@
 # Cursor CLI 接入与探测记录
 
 日期：2026-07-14  
-状态：Windows Agent 已认证并可调用 Cursor Grok 4.5；WSL Agent 仍不可执行
+状态：Windows Agent 已认证；后续调用按用户 2026-08-11 指示统一使用 `auto`；WSL Agent 仍不可执行
 
 ## 1. 目的与边界
 
@@ -20,7 +20,8 @@
 - `cursor-agent status` 确认当前 Windows CLI 已登录；本记录不保存或展示账户邮箱、认证 token 或其他身份信息。
 - `cursor-agent models` 确认账号可用模型包含 `cursor-grok-4.5-high`，显示名为 `Cursor Grok 4.5`，另有
   `low`、`medium`、`high` 及对应 `fast` 变体。本项目后续若指定“Cursor Grok 4.5”，默认使用
-  `cursor-grok-4.5-high`，除非任务书另有说明。
+  `cursor-grok-4.5-high`，除非任务书或用户另有说明。自 2026-08-11 起，用户已明确要求后续新会话统一
+  使用 `--model auto`；该最新指示覆盖此前默认值。
 - 只读 smoke test 已用 `cursor-grok-4.5-high` 成功读取根 `pyproject.toml`，准确返回
   `requires-python=\">=3.10\"` 与 `pytest.ini_options.testpaths=[\"tests\"]`，退出码为 0，并返回约定标记。
   测试使用 `ask` 模式，未修改文件、未运行项目 Python 工具、未联网。
@@ -57,7 +58,7 @@ Ruff、mypy 和项目脚本都由它通过 WSL Miniforge base 执行，禁止 Wi
 ```powershell
 & "$HOME\AppData\Local\cursor-agent\cursor-agent.ps1" `
   --print --output-format json --mode ask `
-  --model cursor-grok-4.5-high --trust `
+  --model auto --trust `
   --workspace 'G:\BaiduSyncdisk\wsl\Cursor\quant' `
   $prompt
 ```
@@ -67,7 +68,7 @@ Ruff、mypy 和项目脚本都由它通过 WSL Miniforge base 执行，禁止 Wi
 ```powershell
 & "$HOME\AppData\Local\cursor-agent\cursor-agent.ps1" `
   --print --output-format json --force `
-  --model cursor-grok-4.5-high --trust `
+  --model auto --trust `
   --workspace 'G:\BaiduSyncdisk\wsl\Cursor\quant' `
   $prompt
 ```

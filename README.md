@@ -364,7 +364,11 @@ N 个精确开市日；官方为 OTHER/缺失时才回退 Instrument 分类。�
 
 沪港通没有与深交所同等稳定的逐日机器接口，因此使用版本化、人工复核的上交所年度公告配置叠加沪市基础日历生成；配置保留公告 URL、文号、发布日期、全日及半日例外。深港通仍直接使用深交所机器接口，两条路由互不冒充。日历审计会检查双路由差异，以及港股通开通但内地或香港基础市场休市的非法状态。
 
-## 当前状态
+## 当前状态（2026-08-14）
+
+策略研究是当前前台主线。M3 的资源受限 honest 300 public CLI 已完整通过首发、completed resume、零写边界与 teardown。M4 已完成 Windows formal runtime/policy/account、broker/OMS store、只读 broker snapshot、gateway dispatch、ExecutionService composition 与 verified schedule；下一步等待 [`UA-M4-004`](docs/agent/用户待批示与参与事项.md) 冻结首个 `PAPER_CANDIDATE` target 和当日 market snapshot 来源。真实 PAPER、28 日 soak 与 Linux/ext4 均未开始。
+
+下面保留 2026-08-13 的详细阶段快照供审计；其中关于 honest CLI 与 UA-M4-003 的停止点已由上段终态覆盖。
 
 M0 已通过验收；M1 已完成 A 股/ETF 数据、三地基础日历与股票主表、双路由港股通快照/事件/日历、基线后成员区间及“时点股票池 × 历史行情窗口”查询，HK licensed provenance 与五日自然窗口仍开放。M2 的数据契约、策略接口、统一日频回测、walk-forward、成本压力、轻量不可覆盖 `run.json` 和目标缺口诊断已经达到**投研框架 MVP 完成**；当前唯一前台关键路径是策略假设—证伪与前向观察，PAPER MVP 为第二优先级，M3/M4 formal 工程以单一在制包在后台推进，不再反向阻塞研究。研究、PAPER 和 formal 复用同一 Schema、市场规则、费用和账户计算；候选晋级时通过正式入口受控重跑，不能把轻量产物原地冒充正式产物。月度 S2 两个样本外测试折均为正；双月调仓和一位排名保留缓冲均未满足各自预注册条件，已记为 `REJECTED`；固定 60 观测、12% 年化、无杠杆的波动率目标与最小两只 ETF 分散化均通过各自预注册条件，但因没有真正前向样本、且分散化第一折的验证选择来自零交易并列，均保持 `RESEARCH_ONLY`。M3 已具备 Windows G1 正式发布物、G2–G7 formal artifact/fresh verifier、G8 StageRunner/tracking/reproducibility 与 fake full DAG；G9A/G9B 和资源受限性能闭包已完成。首轮 honest 300 业务 CLI 已完成，但集成验收在 stage root 新增文件集合处失败，completed resume 尚未执行；下一步用小型探针定位，不重复长链，也不阻塞 S2+。M4 formal runtime/policy/binding/account/store 与只读 broker snapshot port 已完成 Windows 工程闭环；第一波 A 股/ETF PAPER 只要求人工确认、订单幂等、资金/可卖量、持久账本和日终对账，完整来源证明留给 formal/影子/实盘候选，gateway dispatch 仍等待 `UA-M4-003`，service/runner/28 日 soak 尚未开始。`py312` 已验收 Qlib 0.9.7 兼容性且 base 未变；Linux/ext4 当前按用户指示暂不实施。详见[路线图](项目实施路线图.md)、[方法论](正式产物身份、数据溯源与可复现性方法论.md)和[持续审批事项](docs/agent/用户待批示与参与事项.md)。研究阶段可使用本地 ignored Tushare token，启用实盘前必须轮换。
 

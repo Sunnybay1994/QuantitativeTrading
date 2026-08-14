@@ -17,7 +17,7 @@
 2. 全新代码只读验收 Agent 独立初验 D1-R；失败则返工并用新会话复验，直到通过；
 3. 确认 D1-R 全部写进程退出后，全新实现 Agent 完成 HISTORY-H1 的**零网络代码返工**；
 4. 全新代码与 data 只读验收 Agent 独立初验 HISTORY-H1，并且只在最后运行一次零网络 status；失败则返工/复验；
-5. 更新 `docs/agent/M3_M4后续外部执行总报告.md` 和并发调度台账，停止并报告。
+5. 更新 `docs/archive/agent-history/2026-08-external-batch/M3_M4后续外部执行总报告.md` 和并发调度台账，停止并报告。
 
 Cursor 从 Windows 启动，但所有命令必须在 WSL
 `/mnt/g/BaiduSyncdisk/wsl/Cursor/quant` 使用 Miniforge `base`。禁止 Windows Python/conda，禁止初始化 Git。
@@ -39,4 +39,3 @@ journal、receipt。HISTORY-H1 只改计划/connector 合同并验证既有 evid
 - 一句可供用户决定的新版 HISTORY 授权建议。
 
 完成后停止，不启动网络阶段，等待主 Agent 验收和用户授权。
-

@@ -7,6 +7,12 @@
 为准，里程碑状态以 [`../项目实施路线图.md`](../项目实施路线图.md) 为准。
 当前 D1–D8 的执行范围和禁止事项见 [`M3另一个Agent任务单.md`](archive/M3另一个Agent任务单.md)。
 
+> **2026-08-13 路线定位：** M3 是机器学习基准与 formal 晋级稳线，不再是开始日常策略研究的
+> 全局前置。新策略先在 M2 已验收的数据、`target_weight` 和统一事件回测器上走轻量
+> 研究 MVP；M3 honest 300 长运行作为后台 S3 基准继续推进。候选要进入 PAPER/影子/实盘时，
+> 才按风险逐级消费本文冻结的 verified artifact、fresh verification 和 G9 准入能力。实施优先级
+> 以 [`M3_M4实施总规划.md`](M3_M4实施总规划.md) 和根目录 [`项目实施路线图.md`](../项目实施路线图.md) 为准；本文的严格契约继续有效，但只在对应晋级边界触发。
+
 ## 1. 本阶段要交付什么
 
 M3 的最终闭环是：
@@ -2320,13 +2326,28 @@ class VerifiedRuntimeIdentity:
     readiness_receipt_sha256: str
 
 @dataclass(frozen=True)
+class VerifiedComparisonIdentityV1:
+    work_key: str
+    fold: str
+    horizon: int
+    comparison_key: str
+    comparison_receipt_sha256: str
+    feature_receipt_sha256: str
+    label_receipt_sha256: str
+    alignment_receipt_sha256: str
+    python_executable_sha256: str
+
+@dataclass(frozen=True)
 class VerifiedAcceptanceSubject:
+    release: VerifiedG1Release
     snapshot: VerifiedSnapshotArtifact
     provider: VerifiedProviderArtifact
     provider_validation: VerifiedProviderValidationArtifact
     experiment: VerifiedExperimentIdentity
     folds: VerifiedFoldPlanArtifact
     runtime: VerifiedRuntimeIdentity
+    readiness: VerifiedReadinessEvidenceArtifact
+    comparisons: tuple[VerifiedComparisonIdentityV1, ...]
 
 @dataclass(frozen=True)
 class AcceptanceEvidencePlanV1:
@@ -2380,8 +2401,16 @@ G9A quality handler 只以 `shell=False` 顺序运行当前 WSL Python 的固定
 fingerprint 与 experiment 完全一致时才发布 quality receipt；失败只返回脱敏诊断，
 不得发布成功 receipt。
 
-`resolve_acceptance_subject` 从已验真的 snapshot、当前配置、code/dependency fingerprint 重算 provider key 和
-experiment key，调用者提供的 snapshot ID 只用于定位，不能信任目录名或 manifest 自报 identity。
+G9B 前先由 `readiness-evidence` ACCEPTANCE stage 把 fresh `VerifiedG1Release`、当前完整 config/runtime/provider
+fingerprint 与 `audit_m3_readiness` 的 canonical ERROR/WARNING 结果绑定为正式 report+receipt。失败 readiness
+可以形成审计证据，但只有 ERROR 为 0 才可使后续 G0 PASS。stage 必须进入唯一 registry；不得让纯函数返回值或
+caller 自报 SHA 冒充 readiness receipt。
+
+`resolve_acceptance_subject` 从 fresh readiness、已验真的 release/snapshot/provider/provider-validation/
+experiment/folds、当前配置及 code/dependency fingerprint 重算 provider key 和 experiment key，调用者提供的
+snapshot ID 只用于定位，不能信任目录名或 manifest 自报 identity。每个 fold×horizon 的 comparison identity
+必须由实际 G8E comparison tree、receipt、两次 read audit 和 exact formal feature/label/alignment/Python 输入
+重验后签发；subject 不接受裸 comparison key。
 `build_acceptance_evidence_plan` 再使用 G8 的 plan builder/StageSpec registry 枚举明确 receipt locator；
 生产函数内部调用唯一 `get_m3_stage_registry()`，不得由 CLI/调用者注入另一份 Mapping。
 禁止扫描目录猜 work。每个期望 fold×horizon 必须恰有一个 work、tracking marker

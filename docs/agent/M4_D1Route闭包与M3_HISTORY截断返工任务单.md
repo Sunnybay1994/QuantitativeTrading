@@ -223,7 +223,7 @@ python -m quant.research.m3.run_g1 \
 
 每个包必须使用一个全新实现 Agent 和另一个全新、代码/data 只读验收 Agent。初验失败回实现 Agent返工，再开
 新的独立复验，直至通过。两个包的报告统一更新
-`docs/agent/M3_M4后续外部执行总报告.md`，状态只能写“外部闭环通过，待主 Agent 验收”。
+`docs/archive/agent-history/2026-08-external-batch/M3_M4后续外部执行总报告.md`，状态只能写“外部闭环通过，待主 Agent 验收”。
 
 两包闭环后停止所有外部会话，向用户返回：
 
@@ -233,4 +233,3 @@ python -m quant.research.m3.run_g1 \
 - 建议的新网络授权语句。
 
 没有用户新的明确授权，不得执行 HISTORY。
-
