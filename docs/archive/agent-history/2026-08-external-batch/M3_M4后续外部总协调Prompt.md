@@ -16,7 +16,7 @@
 2. `.ai/README.md`、`.ai/coding_rules.md`、`.ai/workflows/multi_agent_delivery.md`
 3. `docs/M3当前验收与返工总览.md`
 4. `docs/M3_M4实施总规划.md`
-5. `docs/agent/M3_M4后续外部总执行任务书.md`（本轮唯一总调度合同）
+5. `docs/archive/agent-history/2026-08-external-batch/M3_M4后续外部总执行任务书.md`（本轮唯一总调度合同，现已归档）
 
 启动前先确认现有 `R1C-B INDEX 身份合同返工` Cursor 进程及其 WSL pytest 子进程已经退出。不要高频轮询；若仍
 在运行，记录状态并停止本回合，等用户再次唤醒。退出后先按总任务书第 4 节完成全新的只读独立复验；不得重新
@@ -41,7 +41,7 @@
 5. 报告只保留压缩证据，不贴长日志，不泄露 token、绝对个人路径、账号或 SDK 原始异常。数据任务只有一个写者。
 6. 不更新路线图勾选和 Gate，不宣称 M3/M4 完成。所有子包状态只能是“外部闭环通过，待主 Agent 整体验收”。
 
-维护唯一总报告：`docs/agent/M3_M4后续外部执行总报告.md`。逐包记录状态、实现/验收报告链接、验证摘要、证据
+维护唯一总报告：`docs/archive/agent-history/2026-08-external-batch/M3_M4后续外部执行总报告.md`。逐包记录状态、实现/验收报告链接、验证摘要、证据
 类型、依赖、阻塞和下一动作，保留所有历史失败与返工链接。
 
 当所有当前可执行包完成、或只剩真实网络授权、`RENAME_NOREPLACE` 环境、实盘边界、P8 四周自然时间等硬阻塞
