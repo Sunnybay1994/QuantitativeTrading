@@ -202,6 +202,15 @@ python -m quant.data.tushare_bulk_ingest status
 ```
 
 返回行数达到目录声明上限时任务进入 `SPLIT_REQUIRED`，原始响应仍会保留，但不会被当成完整历史。
+核心历史 raw 完成后，先运行只读 clean 准入审计；它不会发布 clean，退出码 3 表示审计完成但存在需隔离问题：
+
+```powershell
+python -m quant.data.audit_tushare_bulk_clean `
+  --data-root data --threads 2 `
+  --output artifacts/data_quality/tushare-bulk-clean-admission.json
+```
+
+已有独立逐文件 SHA 证据时可加 `--skip-byte-verification` 缩短开发反馈；正式复核应验全部文件字节。
 
 Tushare 港股的开盘竞价价可能落在供应商所报日内 high/low 之外。raw 始终保留供应商原值；mapper 仅在
 原 high/low 自洽且 close 位于原区间时扩展 canonical high/low 以包含 open。A 股开盘越界、港股收盘
