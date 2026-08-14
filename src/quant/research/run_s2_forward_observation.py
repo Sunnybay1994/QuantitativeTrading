@@ -25,6 +25,7 @@ from quant.research.lightweight_run import (
     dataframe_input_digest,
 )
 from quant.strategies import RegimeFilteredEtfTrendStrategy
+from quant.settings import resolve_data_root
 
 _SCHEMA_VERSION = "m2-forward-target-observation-v1"
 _EXPECTED_ARTIFACT_KIND = "non_deploying_forward_observation"
@@ -47,14 +48,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=Path("configs/research/m2_s2_minimum_breadth_forward.toml"),
     )
     parser.add_argument("--as-of", type=dt.date.fromisoformat, required=True)
-    parser.add_argument("--data-root", type=Path, default=Path("data"))
+    parser.add_argument("--data-root", type=Path)
     parser.add_argument("--artifact-root", type=Path, default=Path("artifacts"))
     parser.add_argument("--project-root", type=Path, default=Path("."))
     args = parser.parse_args(argv)
 
     project_root = args.project_root.resolve(strict=True)
     config_path = _inside(project_root, args.config)
-    data_root = _inside(project_root, args.data_root)
+    data_root = resolve_data_root(args.data_root, base=project_root)
     artifact_root = _inside(project_root, args.artifact_root, strict=False)
     config_payload = config_path.read_bytes()
     with config_path.open("rb") as stream:

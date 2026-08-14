@@ -175,6 +175,34 @@ python -m quant.data.update_instruments --source tushare --market HK
 python -m quant.data.audit_instruments
 ```
 
+独立研究 worktree 可显式复用主项目的大体量共享数据根，避免复制 raw/clean。命令行 `--data-root` 优先，
+其次读取 `QUANT_DATA_ROOT`；Tushare Token 仍只从 Git 忽略的本地配置读取：
+
+```powershell
+$env:QUANT_DATA_ROOT = 'F:\AI_Coding\QuantitativeTrading\data'
+$env:QUANT_TUSHARE_CONFIG = 'F:\AI_Coding\QuantitativeTrading\configs\tushare.local.toml'
+python -m quant.data.tushare_bulk catalog-summary
+python -m quant.data.tushare_bulk probe --priority all --requests-per-minute 100
+```
+
+全量初始化先生成脱敏权限报告和 dry-run 计划；在计划仍标记
+`historical_download_authorized=false` 时不得直接启动历史下载。完整分层、增量和资源方案见
+[`M2_DATA_R1_Tushare全量初始化与增量数据方案.md`](docs/agent/M2_DATA_R1_Tushare全量初始化与增量数据方案.md)。
+
+P1 raw 回补使用共享 SQLite ledger；`prepare` 只生成确定请求，`run` 每次执行有界数量，完整 raw 已存在时
+只验真而不再次联网：
+
+```powershell
+python -m quant.data.tushare_bulk_ingest prepare `
+  --permission-report F:\AI_Coding\QuantitativeTrading\data\run_state\tushare_bulk\permission_reports\<report>.json `
+  --dataset daily --dataset adj_factor --dataset fund_daily `
+  --start 1990-01-01 --end 2026-08-14
+python -m quant.data.tushare_bulk_ingest run --max-requests 100 --requests-per-minute 60
+python -m quant.data.tushare_bulk_ingest status
+```
+
+返回行数达到目录声明上限时任务进入 `SPLIT_REQUIRED`，原始响应仍会保留，但不会被当成完整历史。
+
 Tushare 港股的开盘竞价价可能落在供应商所报日内 high/low 之外。raw 始终保留供应商原值；mapper 仅在
 原 high/low 自洽且 close 位于原区间时扩展 canonical high/low 以包含 open。A 股开盘越界、港股收盘
 越界、`high < low` 或非正价格仍由 `Bar1dSchema` 拒绝。

@@ -45,6 +45,17 @@ class TushareConnector(BaseConnector):
         self._pro_client = tushare.pro_api(settings.token)
         return self._pro_client
 
+    def query_raw(self, api_name: str, **params: str) -> pl.DataFrame:
+        """Run one explicit catalog query and keep the supplier columns unchanged."""
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", api_name):
+            raise ValueError("Tushare api_name 非法")
+        if not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in params.items()
+        ):
+            raise ValueError("Tushare query 参数必须为字符串")
+        return _to_polars(self.client.query(api_name, **params))
+
     def fetch_instruments(self, market: str) -> pl.DataFrame:
         if market in {"SH", "SZ"}:
             exchange = "SSE" if market == "SH" else "SZSE"
