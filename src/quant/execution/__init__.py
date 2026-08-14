@@ -73,6 +73,13 @@ from quant.execution.ports import (
 )
 
 if TYPE_CHECKING:
+    from quant.execution.paper_formal_execution_store import (
+        FormalPaperExecutionStoreError,
+        VerifiedFormalPaperExecutionStoreCapability,
+        initialize_verified_formal_paper_execution_store,
+        open_verified_formal_paper_execution_store,
+        verify_existing_formal_paper_execution_store_capability,
+    )
     from quant.execution.paper_formal_gateway import (
         FormalPaperGatewayError,
         open_verified_formal_paper_gateway_factory,
@@ -152,9 +159,25 @@ _FORMAL_GATEWAY_EXPORTS = frozenset(
     }
 )
 
+_FORMAL_EXECUTION_STORE_EXPORTS = frozenset(
+    {
+        "FormalPaperExecutionStoreError",
+        "VerifiedFormalPaperExecutionStoreCapability",
+        "initialize_verified_formal_paper_execution_store",
+        "open_verified_formal_paper_execution_store",
+        "verify_existing_formal_paper_execution_store_capability",
+    }
+)
+
 
 def __getattr__(name: str) -> Any:
     """Resolve P8 exports without pulling reporting/backtest at package import."""
+    if name in _FORMAL_EXECUTION_STORE_EXPORTS:
+        value = getattr(
+            import_module("quant.execution.paper_formal_execution_store"), name
+        )
+        globals()[name] = value
+        return value
     if name in _FORMAL_GATEWAY_EXPORTS:
         value = getattr(import_module("quant.execution.paper_formal_gateway"), name)
         globals()[name] = value
@@ -186,6 +209,7 @@ __all__ = [
     "FaultDrillReceipt",
     "FormalPaperBrokerSnapshotError",
     "FormalPaperBrokerStoreError",
+    "FormalPaperExecutionStoreError",
     "FormalPaperGatewayError",
     "MarketDataRepository",
     "MoneyAmount",
@@ -208,6 +232,7 @@ __all__ = [
     "TradingConfig",
     "TradingConfigError",
     "VerifiedConnectMarketContext",
+    "VerifiedFormalPaperExecutionStoreCapability",
     "VerifiedDevelopmentSoakEvidence",
     "VerifiedFormalPaperBrokerStoreCapability",
     "VerifiedMarketSnapshot",
@@ -246,12 +271,15 @@ __all__ = [
     "build_verified_market_snapshot_identity",
     "load_trading_config",
     "initialize_verified_formal_paper_broker_store",
+    "initialize_verified_formal_paper_execution_store",
     "open_verified_formal_paper_broker_store",
     "open_verified_formal_paper_broker_snapshot_port",
     "open_verified_formal_paper_gateway_factory",
+    "open_verified_formal_paper_execution_store",
     "decide_soak_gate",
     "expected_schedule_identity",
     "trading_config_identity",
     "verify_soak_evidence",
     "verify_existing_formal_paper_broker_store_capability",
+    "verify_existing_formal_paper_execution_store_capability",
 ]

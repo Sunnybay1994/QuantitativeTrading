@@ -786,7 +786,7 @@ def _probe_root_identity(
         return _absent_root_identity(role, parent_identity, root)
     if not formal:
         raise _Failure("PAPER_RUNTIME_LAYOUT_INVALID")
-    if role != "broker":
+    if role not in {"broker", "runtime"}:
         raise _Failure("PAPER_RUNTIME_LAYOUT_INVALID")
     if stat.S_ISLNK(status.st_mode) or _is_reparse(status):
         raise _Failure("PAPER_RUNTIME_LAYOUT_INVALID")
