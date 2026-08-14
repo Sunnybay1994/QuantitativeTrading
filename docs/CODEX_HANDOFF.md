@@ -3,10 +3,10 @@
 ### 2026-08-14 当前续写摘要（覆盖下文旧停止点）
 
 - 前台主线是 M2 策略发现、证伪与首个 `PAPER_CANDIDATE`；正在开发的 `m2-strategy-research` 工作树保留，不能被 formal 工程阻塞或混入共享 worktree。
-- M3 honest 300 public CLI 已在资源受限的唯一 Windows 进程中完整通过首发、completed resume、零写边界与 teardown（`1 passed in 9716.55s`）；工作树提交 `439cf39` 已以 `4af07fe` 合入 `codex/m1-m4-windows-integration`。
-- M4 已完成 formal gateway、broker/OMS store、fresh G1 calendar ledger provider、ExecutionService composition 与 VerifiedSoakSchedule，最新集成提交 `e90f825`。下一业务决策是 `UA-M4-004`：首个 PAPER target 与当日 market snapshot 来源。未获批准前不以 fixture、历史回测或空 target 冒充正式 PAPER。
+- M3 honest 300 public CLI 曾在资源受限的唯一 Windows 进程中通过首发、completed resume、零写边界与 teardown（`1 passed in 9716.55s`），但该产物使用了已由 SSOT 从 `summary` 修正为 `research-summary` 的旧 stage，不能继续用于 tracking。当前修正 revision `c9f2f36` 已生成 retained locator；h5/h10、summary、reproducibility 与 readiness 正在同一 retained 根续跑，tracking 仍等待 `UA-M3-003`。
+- M4 已完成 formal gateway、broker/OMS store、fresh G1 calendar ledger provider、ExecutionService composition、VerifiedSoakSchedule 与只读 daily runner。`UA-M4-004` 已批准：首个 PAPER target 由策略会话产出的真实 `PAPER_CANDIDATE` 提供，开盘事实由 receipt-backed clean source 提供；fixture、历史回测、空 target 与 `RESEARCH_ONLY` 均不得冒充正式输入。真实任务注册和启动仍受 `UA-M4-002` 控制。
 - Linux/ext4、真实 PAPER、28 日 soak 和 LIVE 均未完成。外部 Agent 当前暂停，由主 Agent 串行开发；内部 subagent 不用于模拟独立实现/初验。
-- 已完成 worktree 与临时目录清理：统一集成、活动 M1、活动 M2 三个附加工作树保留；其余完成分支保留为 Git 历史，不再占用有效 worktree 注册。历史 ACL 残留未取得所有权强删，而是整体移入 `artifacts/archive/acl-test-residue-20260814/` 与 `artifacts/archive/retired-worktree-residue-20260814/` 留档。
+- 已完成 worktree 与临时目录清理：统一集成、活动 M1、活动 M2 三个附加工作树因分别承载 M3 续跑、M1 第五次自然任务和策略候选开发而保留；旧 M3 run 已移入 `artifacts/archive/agent_runs/20260814/`，活动/归档树中的测试与字节码缓存已清理。未挂载的旧 `m3-g4-formal` 与 `pre-m2-main-dirty-20260802` 分支已先建立 `archive/*` 标签再删除活动分支引用，可完整恢复历史。
 
 ### 2026-08-10 当前续写摘要（覆盖下文旧 G1/M3/M4 停止点）
 

@@ -71,9 +71,10 @@ M2 合流暴露两个只在组合分支可见的问题，并已形成最小修�
   provenance 与 `01065.HK` 权威无交易事实仍等待外部合规材料。
 - M2：投研框架 MVP 与研究快线已完成并合入；策略开发已拆到独立 `codex/m2-strategy-research`
   worktree，当前仍无 `PAPER_CANDIDATE`。
-- M3：G9A–G9G Windows fake 工程闭包与单 work formal tracking CLI 已完成；honest 300 R3 已在固定 revision `706ab2c` 完成同一次
-  public CLI 首发与 completed resume，关闭 Windows honest 300 性能、恢复与零写工程准入。真实远端
-  tracking/MLflow 证据仍开放；Linux/ext4 不在本阶段判定内。
+- M3：G9A–G9G Windows fake 工程闭包与单 work formal tracking CLI 已完成；旧 revision `706ab2c` 的 honest 300
+  public CLI 首发与 completed resume 证据仍保留，但因 summary stage SSOT 已修正为 `research-summary`，该旧产物
+  不再进入 tracking。修正 revision `c9f2f36` 已生成 retained locator，当前正续跑 h5/h10、summary、
+  reproducibility 与 readiness；项目内 MLflow 写入仍等待 `UA-M3-003`，Linux/ext4 不在本阶段判定内。
 - M4：formal gateway、service、schedule、daily input/runner 的 Windows 工程实现已完成。首个真实
   `PAPER_CANDIDATE` 由策略会话提供，开盘事实等待真实 clean source；任务注册、真实 PAPER 启动和 28 日
   soak 仍受 `UA-M4-002` 控制，当前未启动。
