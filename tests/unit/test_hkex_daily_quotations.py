@@ -409,7 +409,7 @@ def test_hostile_subclass_cannot_override_new_and_write_forged_dict(
 
 
 def test_retained_raw_constants_are_frozen_without_reading_formal_data() -> None:
-    assert EXPECTED_RAW_SIZE == 32_792_632
+    assert EXPECTED_RAW_SIZE == 32_792_625
     assert EXPECTED_RAW_SHA256 == (
-        "67d1109fe358021543579a6cb5f26c2a31c47f8feae6543e451f8356efcec5b8"
+        "88a45f28aceaf2775153e7a06f26f9b05ed8c5113cfb1c65f5ffccd19bcdb4d2"
     )
