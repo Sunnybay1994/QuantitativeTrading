@@ -1,7 +1,7 @@
 # M3 G8C-C1 U13 R1：资源受限性能闭包与 Public CLI 长运行任务单
 
 日期：2026-08-13  
-状态：**R1 长运行验收失败；根因已定位为验收误计持久 advisory lock；R2 修正已完成快速回归，待重新执行一次完整 CLI 首发与 resume**
+状态：**R3 honest 300 证券 public CLI 首发、completed resume、零额外业务写与 fixture teardown 已在最终 revision 自然 PASS；Windows 工程准入闭合，不代表 Linux/ext4 或真实远端 tracking Gate**
 
 ## 1. 目标
 
@@ -72,3 +72,41 @@
 
 第 4 节全部条件不变。必须在最终测试版本上重新执行一次完整 300 证券 public CLI，并真实跑到第二次
 completed resume 与 fixture teardown；不得把 R1 的首发业务成功和本轮快速测试拼接为整体 PASS。
+
+## 9. R2 启动记录
+
+- 启动时间：2026-08-13 22:49:29（Asia/Shanghai）；
+- 唯一 pytest/public CLI 进程 PID：`11444`，包装器 PID：`32000`；
+- 状态目录：`artifacts/agent_runs/m3-u13-r2/`；
+- 上限：`28800` 秒（8 小时）；启动时已确认 AC 睡眠禁用；
+- 资源限制：`BelowNormal`，CPU affinity `255`（最多 8/12 逻辑线程），Polars/OMP 各 4 线程，BLAS 2 线程；
+- 2026-08-13 23:17 只读检查为 `RUNNING`，进程正常，未重启、未并发重复。终态前不声明 R2 PASS。
+
+## 10. R2 终态与 R3 最小修正
+
+- R2 唯一 pytest 进程于 2026-08-14 00:20 自然结束：`1 failed`，耗时
+  `5451.68s`（`1:30:51`）。public `backtest` CLI 仍为 `code=0`、`reused=false`，规范 JSON、
+  G1 零写和业务输出均已通过；失败仍发生在验收 helper 的新文件集合断言之前，
+  completed resume 未执行。
+- 现象：`_tree_signature` 使用 `str(path.relative_to(root))`，Windows 产生
+  `work\\<key>\\backtest\\...`；验收边界使用跨平台 canonical POSIX
+  `work/<key>/backtest/...`，因而 29 个合法业务输出和 receipt 全部被误拒。
+- 根因：这是验收路径表示未规范化，不是 StageRunner、29-output 集合、receipt
+  或经济计算缺陷。
+- 应遵循规则：产物相对路径身份在所有平台都用 POSIX `/`；Windows 物理路径
+  分隔符不能进入 canonical 集合。
+- 最小修正：`_tree_signature` 仅把键改为
+  `path.relative_to(root).as_posix()`，同时把快速回归的期望值固定为
+  `work/result.json`。不改任何生产代码、文件选择、receipt、fresh verifier 或业务计算。
+- 通过条件：快速路径/advisory-lock 回归和静态检查通过后，R3 必须在同一最终
+  revision 上重新自然完成一次 public CLI 首发、completed resume、零写边界与 fixture
+  teardown；仍不得拼接 R1/R2 的首发成功为整体 PASS。
+
+## 11. R3 终态（2026-08-14）
+
+- 最终 revision：`706ab2cd1f6923fed6eb5b31e78d22bc9d1c3a17`；
+- 唯一 pytest/public CLI PID：`10952`，`BelowNormal`，affinity `255`，Polars/OMP 4、BLAS 2；
+- 自然终态：`1 passed, 1123808 warnings in 9716.55s (2:41:56)`；stderr 为空；
+- 同一测试内部依次断言首次 `reused=false`、completed resume `reused=true`、G1 与 stage business tree 零额外写、canonical JSON 及 `_f0r*` 零残留；fixture teardown 已随 pytest PASS 执行；
+- 包装器 `status.json` 的 `exit_code` 为 `null`，属于 PowerShell `Start-Process` 退出对象元数据取值缺口；原始 stdout 明确 pytest PASS、进程已自然退出，未改写原始证据，也未据此放宽业务断言；
+- 运行证据目录：`artifacts/agent_runs/m3-u13-r3/`。详见 `M3_G8C_C1_U13_R3_honest300PublicCLI终态报告.md`。
