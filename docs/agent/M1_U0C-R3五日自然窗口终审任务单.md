@@ -27,6 +27,18 @@
 `LastRunTime`，下一次自然触发为 2026-08-14 21:30:30。禁止手工触发、补跑或提前计数；完整数据闭包
 终审仍只能在 08-14 自然任务结束后执行。
 
+2026-08-14 17:47 的终审前只读检查发现，Windows checkout 曾把已注册 runner 的 LF 字节展开为 CRLF：
+物理 SHA 变为 `7f1aff00...e2`，WSL `bash -n` 在 `case ... in\r` 处失败。Git 索引中的原始 blob 仍精确为
+注册 SHA `bdedb953...02c`，因此本轮没有修改脚本逻辑、没有重注册或触发任务，只从现有索引恢复同一冻结
+字节，并在 `.gitattributes` 对该 runner 增加 `text eol=lf`。恢复后 Windows/WSL 物理 SHA 均重新等于
+`bdedb953...02c`，`bash -n` 通过。该保护提交为 `068c7e1`。
+
+同次检查还确认 Task Scheduler 当前只可枚举 08-14 任务；08-10～13 的 live task objects 已不再存在，
+Operational 历史通道仍为 disabled。注册收据、五份 registered XML、前四日日志及逐日同时期状态记录仍在。
+主 Agent 已启动只读 watcher，在 08-14 自然任务完成后立即保存 live XML、`LastRunTime` 和
+`LastTaskResult`；watcher 不调用注册、修改或触发 API。终审必须如实判断这些证据是否满足 Scheduler 轴，
+不得因五日日志绿色而自动把缺失的 live 历史对象表述为已证明。
+
 ## 3. 冻结调度合同
 
 - 日期：`2026-08-10` 至 `2026-08-14` 五个共同开市日；
