@@ -60,6 +60,8 @@ M2 合流暴露两个只在组合分支可见的问题，并已形成最小修�
 - M4 formal daily runner：focused `4 passed`，Ruff、mypy、惰性冷导入通过；cancel scoped recovery
   修正后的 CLI/reconcile 邻接 `35 passed`。
 - 共享 Tushare bulk discovery/recoverable raw ingestion：`37 passed`，Ruff、mypy 通过。
+- M3 单 work formal tracking CLI：与既有 backtest CLI 合并定向 `50 passed, 1 skipped`，Ruff、mypy、
+  冷导入通过；尚未在已清理的 honest 300 stage tree 上创建真实 tracking marker。
 
 这些结果是合流过程中的正常开发反馈，不是独立初验或 Windows/Linux Gate 声明。
 
@@ -69,7 +71,7 @@ M2 合流暴露两个只在组合分支可见的问题，并已形成最小修�
   provenance 与 `01065.HK` 权威无交易事实仍等待外部合规材料。
 - M2：投研框架 MVP 与研究快线已完成并合入；策略开发已拆到独立 `codex/m2-strategy-research`
   worktree，当前仍无 `PAPER_CANDIDATE`。
-- M3：G9A–G9G Windows fake 工程闭包已完成；honest 300 R3 已在固定 revision `706ab2c` 完成同一次
+- M3：G9A–G9G Windows fake 工程闭包与单 work formal tracking CLI 已完成；honest 300 R3 已在固定 revision `706ab2c` 完成同一次
   public CLI 首发与 completed resume，关闭 Windows honest 300 性能、恢复与零写工程准入。真实远端
   tracking/MLflow 证据仍开放；Linux/ext4 不在本阶段判定内。
 - M4：formal gateway、service、schedule、daily input/runner 的 Windows 工程实现已完成。首个真实
