@@ -1582,7 +1582,7 @@ DEVELOPMENT_TRACKING_STAGE_SPEC = StageSpec(
     TRACKING_STAGE_SPEC.outputs,
 )
 SUMMARY_STAGE_SPEC = StageSpec(
-    "summary", "EXPERIMENT", ("evaluation",),
+    "research-summary", "EXPERIMENT", ("evaluation",),
     (
         OutputSpec("daily_ic.parquet", "FILE", None),
         OutputSpec("fold_metrics.parquet", "FILE", None),

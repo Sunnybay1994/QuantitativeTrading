@@ -578,9 +578,9 @@ def build_acceptance_evidence_plan(
                 model_version = cast(str, lightgbm["model_version"])
                 identity = f"h{item.horizon}.lightgbm.{model_version}"
                 add(
-                    "G6", f"summary.{identity}", "summary", "EXPERIMENT",
+                    "G6", f"summary.{identity}", "research-summary", "EXPERIMENT",
                     experiment_key,
-                    f"receipts/summary/{experiment_key}.{identity}.json",
+                    f"receipts/research-summary/{experiment_key}.{identity}.json",
                 )
             add(
                 "G5", f"features.{item.fold}", "features", "EXPERIMENT",

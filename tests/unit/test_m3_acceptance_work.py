@@ -43,7 +43,7 @@ def _publish_work_receipts(bundle: Any) -> Any:
         "predictions": ("prediction_manifest.json",),
         "reproducibility": ("reproducibility.json",),
         "evaluation": ("evaluation_manifest.json", "metrics.json"),
-        "summary": ("manifest.json", "metrics.json"),
+        "research-summary": ("manifest.json", "metrics.json"),
         "targets": ("target_manifest.json",),
         "backtest-plan": ("manifest.json",),
         "backtest": backtest_artifact_output_relative_paths(),

@@ -189,7 +189,7 @@ def _build_dag(tmp_path: Path) -> _FakeDag:
     for horizon in (5, 10):
         add(
             f"summary-h{horizon}",
-            "summary",
+            "research-summary",
             tuple(evaluations[horizon]),
             horizon=horizon,
         )

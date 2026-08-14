@@ -248,6 +248,12 @@ def test_two_fold_two_horizon_closes_g0_g9_and_resumes(
             if item.gate == "G6" and item.node_id.startswith("summary.")
         )
     ) == 2
+    assert all(
+        item.expected_stage == "research-summary"
+        and item.receipt_relative_path.startswith("receipts/research-summary/")
+        for item in bundle.plan.evidence
+        if item.gate == "G6" and item.node_id.startswith("summary.")
+    )
     assert len(
         tuple(item for item in bundle.plan.evidence if item.gate == "G8")
     ) == 4

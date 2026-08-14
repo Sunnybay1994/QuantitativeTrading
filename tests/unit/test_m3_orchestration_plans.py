@@ -26,6 +26,7 @@ from quant.research.m3.orchestration import (
     PROVIDER_STAGE_SPEC,
     PROVIDER_VALIDATION_STAGE_SPEC,
     STAGE_SPEC_REGISTRY,
+    SUMMARY_STAGE_SPEC,
     TARGETS_STAGE_SPEC,
     TRACKING_STAGE_SPEC,
     ExternalInput,
@@ -80,8 +81,9 @@ def test_registry_is_complete_and_tree_outputs_have_closure_manifests() -> None:
         "development-predictions", "evaluation", "development-evaluation",
         "targets", "development-targets", "backtest_plan",
         "development-backtest-plan", "backtest", "development-backtest",
-        "tracking", "development-tracking", "summary",
+        "tracking", "development-tracking", "research-summary",
         "development-research-summary", "quality", "reproducibility",
+        "readiness-evidence", "acceptance",
     }
     assert all(
         output.closure_manifest is not None
@@ -289,6 +291,11 @@ def test_g7_and_tracking_registry_preserve_frozen_work_order() -> None:
     assert BACKTEST_STAGE_SPEC.dependencies == ("backtest_plan",)
     assert TRACKING_STAGE_SPEC.dependencies == ("backtest", "evaluation")
     assert EVALUATION_STAGE_SPEC.dependencies == ("predictions",)
+
+
+def test_formal_summary_registry_matches_receipt_verifier_stage() -> None:
+    assert SUMMARY_STAGE_SPEC.name == "research-summary"
+    assert SUMMARY_STAGE_SPEC.dependencies == ("evaluation",)
 
 
 def test_development_summary_uses_verifier_receipt_stage(
