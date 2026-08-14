@@ -75,3 +75,7 @@ Scheduler 正面证据和五日数据闭包同时成立，未命中定义漂移�
 - Task Scheduler Operational 历史通道关闭，缺少事件级全历史；该限制已披露，不反转本次正面证据结论；
 - M1 的 HK licensed provenance、`01065.HK` 权威无交易事实、HK60、正式许可/复权/公司行动仍未完成；
 - WSL 当前仍不是 Linux/ext4 Gate 环境，本报告不扩大为该平台结论。
+
+终审报告和 live 终态证据落定后，已删除最后一个完成的一次性 Task Scheduler 对象及临时 watcher 目录，
+避免遗留无未来触发的系统任务。五份注册 XML、注册收据、正式日 JSON、daily receipt 与全部数据产物均保留，
+任务定义可由注册快照审计或恢复；本次清理没有触碰任何正式数据闭包。
