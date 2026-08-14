@@ -16,8 +16,8 @@ import duckdb
 
 from quant.settings import resolve_data_root
 
-SCHEMA_VERSION = "tushare-bulk-clean-admission-v1"
-_DATASETS = ("adj_factor", "daily", "fund_daily")
+SCHEMA_VERSION = "tushare-bulk-clean-admission-v2"
+_DATASETS = ("adj_factor", "daily", "fund_adj", "fund_daily")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -105,11 +105,13 @@ def _audit_tushare_bulk_clean_admission(
             connection.from_parquet(paths[dataset]).create_view(dataset)
         dataset_stats = {
             "daily": _daily_stats(connection),
-            "adj_factor": _factor_stats(connection),
+            "adj_factor": _factor_stats(connection, "adj_factor"),
             "fund_daily": _fund_stats(connection),
+            "fund_adj": _factor_stats(connection, "fund_adj"),
         }
         blocking.extend(_blocking_issues(connection, dataset_stats))
         warnings = _warning_issues(dataset_stats)
+        scoped_clean_plan = _scoped_clean_plan(connection, dataset_stats)
     finally:
         connection.close()
     return {
@@ -120,6 +122,7 @@ def _audit_tushare_bulk_clean_admission(
         "request_count": len(selected),
         "ledger_status_counts": dict(sorted(status_counts.items())),
         "datasets": dataset_stats,
+        "scoped_clean_plan": scoped_clean_plan,
         "blocking_issues": blocking,
         "warnings": warnings,
     }
@@ -277,26 +280,30 @@ def _daily_stats(connection: duckdb.DuckDBPyConnection) -> dict[str, Any]:
     )
 
 
-def _factor_stats(connection: duckdb.DuckDBPyConnection) -> dict[str, Any]:
+def _factor_stats(
+    connection: duckdb.DuckDBPyConnection, dataset: str
+) -> dict[str, Any]:
+    if dataset not in {"adj_factor", "fund_adj"}:
+        raise ValueError("TUSHARE_BULK_CLEAN_AUDIT_INVALID")
     row = connection.execute(
-        """
+        f"""
         SELECT count(*), count(*) - count(DISTINCT (ts_code, trade_date)),
           count(*) FILTER (WHERE ts_code IS NULL OR trade_date IS NULL OR adj_factor IS NULL),
           count(*) FILTER (WHERE adj_factor <= 0), 0, 0,
-          count(*) FILTER (WHERE NOT regexp_matches(ts_code, '^[0-9]{6}\\.(SH|SZ)$')),
-          count(*) FILTER (WHERE NOT regexp_matches(trade_date, '^[0-9]{8}$')),
+          count(*) FILTER (WHERE NOT regexp_matches(ts_code, '^[0-9]{{6}}\\.(SH|SZ)$')),
+          count(*) FILTER (WHERE NOT regexp_matches(trade_date, '^[0-9]{{8}}$')),
           min(trade_date), max(trade_date)
-        FROM adj_factor
+        FROM {dataset}
         """
     ).fetchone()
     assert row is not None
     unsupported_examples = connection.execute(
-        "SELECT ts_code, min(trade_date) FROM adj_factor "
+        f"SELECT ts_code, min(trade_date) FROM {dataset} "
         "WHERE NOT regexp_matches(ts_code, '^[0-9]{6}\\.(SH|SZ)$') "
         "GROUP BY ts_code ORDER BY ts_code LIMIT 25"
     ).fetchall()
     date_examples = connection.execute(
-        "SELECT ts_code, trade_date FROM adj_factor "
+        f"SELECT ts_code, trade_date FROM {dataset} "
         "WHERE NOT regexp_matches(trade_date, '^[0-9]{8}$') "
         "ORDER BY ts_code, trade_date LIMIT 25"
     ).fetchall()
@@ -424,6 +431,33 @@ def _blocking_issues(
                 [[str(value) for value in item] for item in examples],
             )
         )
+    fund_missing = connection.execute(
+        """
+        SELECT count(*) FROM fund_daily d LEFT JOIN fund_adj a
+          ON d.ts_code=a.ts_code AND d.trade_date=a.trade_date
+        WHERE regexp_matches(d.ts_code, '^[0-9]{6}\\.(SH|SZ)$')
+          AND a.ts_code IS NULL
+        """
+    ).fetchone()
+    assert fund_missing is not None
+    if cast(int, fund_missing[0]):
+        examples = connection.execute(
+            """
+            SELECT d.ts_code, min(d.trade_date), max(d.trade_date), count(*)
+            FROM fund_daily d LEFT JOIN fund_adj a
+              ON d.ts_code=a.ts_code AND d.trade_date=a.trade_date
+            WHERE regexp_matches(d.ts_code, '^[0-9]{6}\\.(SH|SZ)$')
+              AND a.ts_code IS NULL
+            GROUP BY d.ts_code ORDER BY d.ts_code LIMIT 25
+            """
+        ).fetchall()
+        issues.append(
+            _issue(
+                "FUND_DAILY_ADJ_FACTOR_MISSING",
+                cast(int, fund_missing[0]),
+                [[str(value) for value in item] for item in examples],
+            )
+        )
     return issues
 
 
@@ -432,6 +466,95 @@ def _warning_issues(stats: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     if len(set(cutoffs.values())) == 1:
         return []
     return [{"code": "DATASET_CUTOFFS_DIFFER", "cutoffs": cutoffs}]
+
+
+def _scoped_clean_plan(
+    connection: duckdb.DuckDBPyConnection,
+    stats: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    stock = _bar_clean_classification(
+        connection, daily_dataset="daily", factor_dataset="adj_factor"
+    )
+    fund = _bar_clean_classification(
+        connection, daily_dataset="fund_daily", factor_dataset="fund_adj"
+    )
+    structural_ok = all(
+        cast(int, stats[dataset]["duplicate_keys"]) == 0
+        for dataset in _DATASETS
+    )
+    exact_coverage = all(
+        value["source_rows"] == value["classified_rows"]
+        for value in (stock, fund)
+    )
+    return {
+        "schema_version": "tushare-bulk-scoped-clean-plan-v1",
+        "status": "READY" if structural_ok and exact_coverage else "BLOCKED",
+        "scope": {
+            "markets": ["SH", "SZ"],
+            "symbol_pattern": "^[0-9]{6}\\.(SH|SZ)$",
+            "bar_schema": "Bar1dSchema",
+            "source": "tushare",
+            "volume_multiplier": 100,
+            "amount_multiplier": 1000,
+        },
+        "stock_bar_1d": stock,
+        "fund_bar_1d": fund,
+    }
+
+
+def _bar_clean_classification(
+    connection: duckdb.DuckDBPyConnection,
+    *,
+    daily_dataset: str,
+    factor_dataset: str,
+) -> dict[str, Any]:
+    if (daily_dataset, factor_dataset) not in {
+        ("daily", "adj_factor"),
+        ("fund_daily", "fund_adj"),
+    }:
+        raise ValueError("TUSHARE_BULK_CLEAN_AUDIT_INVALID")
+    rows = connection.execute(
+        f"""
+        WITH classified AS (
+          SELECT CASE
+            WHEN d.ts_code IS NULL OR d.trade_date IS NULL OR d.open IS NULL
+              OR d.high IS NULL OR d.low IS NULL OR d.close IS NULL
+              OR d.vol IS NULL OR d.amount IS NULL THEN 'CRITICAL_NULL'
+            WHEN NOT regexp_matches(d.ts_code, '^[0-9]{{6}}\\.(SH|SZ)$')
+              THEN 'UNSUPPORTED_SYMBOL'
+            WHEN NOT regexp_matches(d.trade_date, '^[0-9]{{8}}$')
+              THEN 'TRADE_DATE_FORMAT_INVALID'
+            WHEN d.open <= 0 OR d.high <= 0 OR d.low <= 0 OR d.close <= 0
+              THEN 'NONPOSITIVE_PRICE'
+            WHEN d.vol < 0 OR d.amount < 0 THEN 'NEGATIVE_VOLUME_OR_AMOUNT'
+            WHEN d.low > d.open OR d.low > d.close OR d.high < d.open OR d.high < d.close
+              THEN 'OHLC_RELATION_INVALID'
+            WHEN a.ts_code IS NULL THEN 'ADJ_FACTOR_MISSING'
+            WHEN a.adj_factor IS NULL OR a.adj_factor <= 0 THEN 'ADJ_FACTOR_INVALID'
+            ELSE 'ELIGIBLE'
+          END reason
+          FROM {daily_dataset} d LEFT JOIN {factor_dataset} a
+            ON d.ts_code=a.ts_code AND d.trade_date=a.trade_date
+        )
+        SELECT reason, count(*) FROM classified
+        GROUP BY reason ORDER BY reason
+        """
+    ).fetchall()
+    counts = {cast(str, reason): cast(int, count) for reason, count in rows}
+    source_rows_row = connection.execute(
+        f"SELECT count(*) FROM {daily_dataset}"
+    ).fetchone()
+    assert source_rows_row is not None
+    source_rows = cast(int, source_rows_row[0])
+    classified_rows = sum(counts.values())
+    eligible_rows = counts.get("ELIGIBLE", 0)
+    return {
+        "source_rows": source_rows,
+        "classified_rows": classified_rows,
+        "eligible_rows": eligible_rows,
+        "quarantined_rows": classified_rows - eligible_rows,
+        "reasons": counts,
+    }
 
 
 def _issue(code: str, count: int, examples: list[list[str]] | None = None) -> dict[str, Any]:

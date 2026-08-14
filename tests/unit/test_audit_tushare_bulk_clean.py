@@ -43,7 +43,9 @@ def _request(
     return checksum, frame.height, len(raw)
 
 
-def _root(tmp_path: Path, *, bad: bool = False) -> Path:
+def _root(
+    tmp_path: Path, *, bad: bool = False, fund_factor_date: str = "20260813"
+) -> Path:
     root = tmp_path / "data"
     ledger = root / "run_state" / "tushare_bulk" / "state.sqlite"
     ledger.parent.mkdir(parents=True)
@@ -86,13 +88,23 @@ def _root(tmp_path: Path, *, bad: bool = False) -> Path:
                     pl.DataFrame(
                         {
                             "ts_code": ["510300.SH"],
-                            "trade_date": ["20260813"],
+                            "trade_date": [fund_factor_date],
                             "open": [4.0],
                             "high": [4.1],
                             "low": [3.9],
                             "close": [4.0],
                             "vol": [100.0],
                             "amount": [400.0],
+                        }
+                    ),
+                ),
+                (
+                    "fund_adj",
+                    pl.DataFrame(
+                        {
+                            "ts_code": ["510300.SH"],
+                            "trade_date": ["20260813"],
+                            "adj_factor": [1.5],
                         }
                     ),
                 ),
@@ -130,8 +142,11 @@ def test_ready_fixture_is_deterministic_and_does_not_write(tmp_path: Path) -> No
     second = audit_tushare_bulk_clean_admission(data_root=root)
     assert first == second
     assert first["status"] == "READY"
-    assert first["request_count"] == 3
+    assert first["request_count"] == 4
     assert first["blocking_issues"] == []
+    assert first["scoped_clean_plan"]["status"] == "READY"
+    assert first["scoped_clean_plan"]["stock_bar_1d"]["eligible_rows"] == 1
+    assert first["scoped_clean_plan"]["fund_bar_1d"]["eligible_rows"] == 1
     assert sorted(path.relative_to(root) for path in root.rglob("*")) == before
 
 
@@ -140,6 +155,9 @@ def test_ohlc_anomaly_blocks_clean_admission(tmp_path: Path) -> None:
     assert result["status"] == "BLOCKED"
     assert {item["code"] for item in result["blocking_issues"]} == {
         "DAILY_OHLC_RELATION_INVALID"
+    }
+    assert result["scoped_clean_plan"]["stock_bar_1d"]["reasons"] == {
+        "OHLC_RELATION_INVALID": 1
     }
 
 
@@ -155,6 +173,19 @@ def test_byte_or_directory_closure_drift_fails_closed(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="^TUSHARE_BULK_CLEAN_AUDIT_INVALID$"):
         audit_tushare_bulk_clean_admission(data_root=root)
 
+
+def test_scoped_plan_classifies_missing_fund_factor_once(tmp_path: Path) -> None:
+    result = audit_tushare_bulk_clean_admission(
+        data_root=_root(tmp_path, fund_factor_date="20260812")
+    )
+    assert result["status"] == "BLOCKED"
+    assert result["scoped_clean_plan"]["fund_bar_1d"] == {
+        "source_rows": 1,
+        "classified_rows": 1,
+        "eligible_rows": 0,
+        "quarantined_rows": 1,
+        "reasons": {"ADJ_FACTOR_MISSING": 1},
+    }
 
 def test_cli_writes_once_and_returns_blocked_exit_code(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]

@@ -6,8 +6,8 @@
 ## 1. 审计范围与用途
 
 本审计只读检查共享数据根
-`F:\AI_Coding\QuantitativeTrading\data` 下的 `daily`、`adj_factor` 和
-`fund_daily` 核心历史采集。检查目标是回答两件事：
+`F:\AI_Coding\QuantitativeTrading\data` 下的 `daily`、`adj_factor`、
+`fund_daily` 和 `fund_adj` 核心历史采集。检查目标是回答两件事：
 
 1. 后台采集是否自然完成，账本、文件和内容摘要是否闭合；
 2. 这些不可变 raw 是否已经具备进入标准化和策略研究的最低质量条件。
@@ -16,19 +16,20 @@
 
 ## 2. 采集自然终态
 
-- SQLite ledger：`COMPLETE=24,343`，其余状态均为 0；
+- SQLite ledger：`COMPLETE=25,941`，其余状态均为 0；
 - 后台采集进程已自然退出；
 - stderr 文件为 0 字节；
-- 24,343 个完成请求均存在 `data.parquet + metadata.json`，无缺失、无额外 request 目录；
+- 25,941 个完成请求均存在 `data.parquet + metadata.json`，无缺失、无额外 request 目录；
 - metadata 的 request id、行数、文件大小和 SHA-256 与 ledger 全部一致；
-- 重新读取 24,343 个 Parquet 文件并计算 SHA-256，差异数为 0。
+- 重新读取 25,941 个 Parquet 文件并计算 SHA-256，差异数为 0。
 
 | 数据集 | 请求/文件 | 数据行 | 空结果请求 | 最大单次行数 | Parquet 字节 |
 |---|---:|---:|---:|---:|---:|
 | `daily` | 8,704 | 18,107,780 | 1 | 5,540 | 618,637,098 |
 | `adj_factor` | 8,704 | 18,935,088 | 0 | 5,557 | 101,707,430 |
 | `fund_daily` | 6,935 | 3,145,969 | 56 | 2,104 | 140,417,623 |
-| 合计 | 24,343 | 40,188,837 | 57 | — | 860,762,151 |
+| `fund_adj` | 1,598 | 1,406,345 | 0 | 2,600 | 3,954,418 |
+| 合计 | 25,941 | 41,595,182 | 57 | — | 864,716,569 |
 
 没有请求达到冻结的最大行数上限，ledger 中没有 `FAILED`、`RETRYABLE` 或 `SPLIT_REQUIRED`。
 
@@ -42,9 +43,11 @@
 | `daily` | 0 | 232（均为 `amount`） | 0 | 0 | 21 |
 | `adj_factor` | 0 | 0 | 0 | 不适用 | 不适用 |
 | `fund_daily` | 0 | 0 | 0 | 0 | 0 |
+| `fund_adj` | 0 | 0 | 0 | 不适用 | 不适用 |
 
 日期字段均为 8 位文本。`daily` 覆盖 1990-12-19 至 2026-08-13；`adj_factor`
-覆盖至 2026-08-14；`fund_daily` 的首个非空交易日为 1998-04-07，覆盖至 2026-08-14。
+覆盖至 2026-08-14；`fund_daily` 的首个非空交易日为 1998-04-07，覆盖至 2026-08-14；
+当前 ETF inventory 对应的 `fund_adj` 从 2015-12-03 覆盖至 2026-08-14。
 
 ## 4. 必须在 clean 前处理的异常
 
@@ -76,6 +79,10 @@
 2000-07-19 至 2006-09-25。反向差异较多，主要来自停牌日仍发布复权因子，不能简单要求两表全集相等。
 需要总回报价格的 clean 构建应对前一类缺口 fail closed，不能默认填充 1.0。
 
+`fund_daily` 的六位 SH/SZ 代码中另有 1,739,576 个 key 没有对应 `fund_adj`。本轮 `fund_adj`
+严格按当前 1,598 只 ETF inventory 采集，不能把未覆盖的历史分级基金、其他基金类别或供应商未给出的早期
+因子默认成 1.0。它们进入隔离区；只有实际因子闭合的 1,399,311 条基金日线可进入本轮窄 clean 计划。
+
 ### 4.5 截止时点差异
 
 `daily` 的唯一空结果请求是 2026-08-14；同日 `adj_factor` 和 `fund_daily` 已有数据。
@@ -85,33 +92,49 @@
 `fund_daily` 的 56 个空结果全部位于 1998-01-05 至 1998-04-06，早于首个非空基金日线，属于可解释的
 前置空窗口。
 
-## 5. 下游使用裁定
+## 5. 可执行的窄 clean 计划
+
+v2 审计对股票和基金日线分别执行互斥、全覆盖分类，优先级依次为：核心空值、证券范围、日期格式、
+非正价格、负成交量/额、OHLC 关系、缺复权因子、非法复权因子、可用。分类总数必须精确等于来源行数，
+四表主键必须零重复，否则计划 fail closed。
+
+| 范围 | 来源行 | 可用行 | 隔离行 | 隔离原因 |
+|---|---:|---:|---:|---|
+| 股票 `bar_1d` | 18,107,780 | 17,766,134 | 341,646 | BJ/非当前范围 339,947；缺因子 1,448；空值 232；当前 SH/SZ 范围内 OHLC 异常 19 |
+| 基金 `bar_1d` | 3,145,969 | 1,399,311 | 1,746,658 | 缺因子 1,739,576；特殊代码 7,082 |
+
+因此顶层整批 raw 准入仍为 `BLOCKED`，但 `scoped_clean_plan.status=READY`：后续标准化任务可以只发布
+上述 SH/SZ 六位代码且因子闭合的可用行，并把其余行连同原因计数写入隔离证据。`READY` 只表示计划自身
+覆盖完整、可执行，不表示隔离项已经修复，也不允许策略直接读取 raw。
+
+## 6. 下游使用裁定
 
 - **可用**：作为不可覆盖的 Tushare raw 基线；用于后续可重放的标准化、异常隔离和增量采集。
 - **暂不可用**：未经 clean Schema、特殊代码映射、OHLC 隔离和复权覆盖门禁，不能由策略、因子或回测层直接读取。
 - **不改变既有策略结论**：当前 M2 walk-forward 仍绑定既有 frozen clean 内容摘要；本批 raw 的完成不会自动更新已有 `run.json`。
 
-因此数据采集阶段可以关闭，但 clean 发布仍需一个窄任务：以本报告列出的异常为回归样本，构建显式的
-标准化与质量门禁，并由新的 run 绑定新 clean snapshot 后才能用于新增研究窗口。
+因此核心 raw 采集阶段可以关闭；下一步是按已冻结的窄计划执行标准化和隔离发布，并由新的 run 绑定新
+clean snapshot 后才能用于新增研究窗口。
 
-## 6. 可重放 clean 准入门禁
+## 7. 可重放 clean 准入门禁
 
 项目现提供只读命令 `quant.data.audit_tushare_bulk_clean`。它从 SQLite ledger 派生唯一请求集合，核对
 request 目录、metadata、行数、大小和可选 Parquet SHA，再以受限 DuckDB 线程扫描全量主键、空值、价格、
-OHLC、证券代码与 `daily`/`adj_factor` 覆盖。它只生成 `READY` 或 `BLOCKED` 证据，不执行 clean 发布。
+OHLC、证券代码与股票/基金复权覆盖。它只生成顶层 `READY/BLOCKED` 和窄 `scoped_clean_plan` 证据，
+不执行 clean 发布。
 
 ```powershell
 $env:PYTHONPATH = 'src'
 python -m quant.data.audit_tushare_bulk_clean `
   --data-root data --threads 2 `
-  --output artifacts/data_quality/tushare-bulk-clean-admission-20260814.json
+  --output artifacts/data_quality/tushare-bulk-clean-admission-v2-20260814.json
 ```
 
-开发机已有逐文件 SHA 闭包证据时，可加 `--skip-byte-verification` 避免重复读取 860 MB；正式独立复核仍应
+开发机已有逐文件 SHA 闭包证据时，可加 `--skip-byte-verification` 避免重复读取约 865 MB；正式复核仍应
 省略该选项。命令返回 0 表示 `READY`，返回 3 表示审计正常完成但准入被阻断；输入、目录或来源闭包无效则
 抛出稳定错误，不把异常数据当作普通质量问题继续运行。
 
 本次真实全量运行返回 `BLOCKED`，审计产物为
-`artifacts/data_quality/tushare-bulk-clean-admission-20260814.json`，SHA-256 为
-`F75568F131717995F1FFC506FAAE75A611B7E9FE53901F9785EF4ED2A5CF8B61`；其
-`raw_snapshot_sha256=78d664f6cd4820659ea5378e252124c45d7467ef161737dd05fb60a1d6d8e61d`。
+`artifacts/data_quality/tushare-bulk-clean-admission-v2-20260814.json`，SHA-256 为
+`B4ACDF6F81CEADE6D4E9441BFB8D6F4D634ED808271B74ECBE4DE83D9D3EE401`；其
+`raw_snapshot_sha256=f6a6cb56d3c0f86a13376cb07ec75cc0ae1b9e56af9f2c22e2b886e684c38e60`。
