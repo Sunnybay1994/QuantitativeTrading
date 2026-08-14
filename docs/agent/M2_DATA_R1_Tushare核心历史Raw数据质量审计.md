@@ -138,3 +138,21 @@ python -m quant.data.audit_tushare_bulk_clean `
 `artifacts/data_quality/tushare-bulk-clean-admission-v2-20260814.json`，SHA-256 为
 `B4ACDF6F81CEADE6D4E9441BFB8D6F4D634ED808271B74ECBE4DE83D9D3EE401`；其
 `raw_snapshot_sha256=f6a6cb56d3c0f86a13376cb07ec75cc0ae1b9e56af9f2c22e2b886e684c38e60`。
+
+## 8. Scoped clean 真实发布结果
+
+2026-08-15，按 [`M2_DATA_R2_TushareScopedCleanSnapshot任务单.md`](M2_DATA_R2_TushareScopedCleanSnapshot任务单.md)
+执行首次真实发布。进程为 `BelowNormal`，限定 DuckDB 2 线程、Polars 4 线程和 8/12 逻辑核亲和；发布前后
+两次全字节审计逐字段相等。最终结果：
+
+- snapshot ID：`b79a7b5e66dee0ae439c030078414157ca6c1f3b6ce7fbe5e36ff3910c1089d2`；
+- manifest SHA-256：`5c7fec856eb11b742831a15e3c098e39de80f6100511c5717d0c8b77565cbe30`；
+- clean 股票 17,766,134 行、clean 基金 1,399,311 行、quarantine 2,088,304 行；
+- 51 个 manifest 业务文件、52 个 exact tree 文件，总计 345,832,354 字节；
+- 首发 `reused=false`，同一 raw 的第二次真实运行 `reused=true`，identity、manifest SHA 和行数完全相同；
+- 两次 stderr 均为空，snapshot parent 中无 owned temp 残留。
+
+发布路径固定为
+`data/clean/tushare_bulk/snapshots/b79a7b5e66dee0ae439c030078414157ca6c1f3b6ce7fbe5e36ff3910c1089d2/`。
+该路径没有替换既有 `clean/bar_1d`，也没有自动改变任何策略或 PAPER source selector；下游必须显式绑定
+上述 snapshot ID，才可以在新的 run/market receipt 中使用。

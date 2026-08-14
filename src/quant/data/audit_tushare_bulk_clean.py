@@ -19,6 +19,25 @@ from quant.settings import resolve_data_root
 SCHEMA_VERSION = "tushare-bulk-clean-admission-v2"
 _DATASETS = ("adj_factor", "daily", "fund_adj", "fund_daily")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_CLASSIFICATION_CASE = """
+CASE
+  WHEN d.ts_code IS NULL OR d.trade_date IS NULL OR d.open IS NULL
+    OR d.high IS NULL OR d.low IS NULL OR d.close IS NULL
+    OR d.vol IS NULL OR d.amount IS NULL THEN 'CRITICAL_NULL'
+  WHEN NOT regexp_matches(d.ts_code, '^[0-9]{6}\\.(SH|SZ)$')
+    THEN 'UNSUPPORTED_SYMBOL'
+  WHEN NOT regexp_matches(d.trade_date, '^[0-9]{8}$')
+    THEN 'TRADE_DATE_FORMAT_INVALID'
+  WHEN d.open <= 0 OR d.high <= 0 OR d.low <= 0 OR d.close <= 0
+    THEN 'NONPOSITIVE_PRICE'
+  WHEN d.vol < 0 OR d.amount < 0 THEN 'NEGATIVE_VOLUME_OR_AMOUNT'
+  WHEN d.low > d.open OR d.low > d.close OR d.high < d.open OR d.high < d.close
+    THEN 'OHLC_RELATION_INVALID'
+  WHEN a.ts_code IS NULL THEN 'ADJ_FACTOR_MISSING'
+  WHEN a.adj_factor IS NULL OR a.adj_factor <= 0 THEN 'ADJ_FACTOR_INVALID'
+  ELSE 'ELIGIBLE'
+END
+""".strip()
 
 
 def audit_tushare_bulk_clean_admission(
@@ -516,23 +535,7 @@ def _bar_clean_classification(
     rows = connection.execute(
         f"""
         WITH classified AS (
-          SELECT CASE
-            WHEN d.ts_code IS NULL OR d.trade_date IS NULL OR d.open IS NULL
-              OR d.high IS NULL OR d.low IS NULL OR d.close IS NULL
-              OR d.vol IS NULL OR d.amount IS NULL THEN 'CRITICAL_NULL'
-            WHEN NOT regexp_matches(d.ts_code, '^[0-9]{{6}}\\.(SH|SZ)$')
-              THEN 'UNSUPPORTED_SYMBOL'
-            WHEN NOT regexp_matches(d.trade_date, '^[0-9]{{8}}$')
-              THEN 'TRADE_DATE_FORMAT_INVALID'
-            WHEN d.open <= 0 OR d.high <= 0 OR d.low <= 0 OR d.close <= 0
-              THEN 'NONPOSITIVE_PRICE'
-            WHEN d.vol < 0 OR d.amount < 0 THEN 'NEGATIVE_VOLUME_OR_AMOUNT'
-            WHEN d.low > d.open OR d.low > d.close OR d.high < d.open OR d.high < d.close
-              THEN 'OHLC_RELATION_INVALID'
-            WHEN a.ts_code IS NULL THEN 'ADJ_FACTOR_MISSING'
-            WHEN a.adj_factor IS NULL OR a.adj_factor <= 0 THEN 'ADJ_FACTOR_INVALID'
-            ELSE 'ELIGIBLE'
-          END reason
+          SELECT {_CLASSIFICATION_CASE} reason
           FROM {daily_dataset} d LEFT JOIN {factor_dataset} a
             ON d.ts_code=a.ts_code AND d.trade_date=a.trade_date
         )

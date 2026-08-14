@@ -214,6 +214,16 @@ python -m quant.data.audit_tushare_bulk_clean `
 
 已有独立逐文件 SHA 证据时可加 `--skip-byte-verification` 缩短开发反馈；正式复核应验全部文件字节。
 
+当顶层整批审计仍为 `BLOCKED`、但 `scoped_clean_plan.status=READY` 时，可发布严格隔离后的版本化 clean
+snapshot；命令会在发布前后各做一次全字节审计，绝不覆盖现有 `clean/bar_1d`：
+
+```powershell
+python -m quant.data.publish_tushare_bulk_clean --data-root data --threads 2
+```
+
+输出固定在 `data/clean/tushare_bulk/snapshots/<snapshot_id>/`，包含按资产/年份分区的 `Bar1dSchema`
+Parquet、逐行 `quarantine.parquet`、canonical audit 与 manifest。重复运行只完整验真并返回 `reused=true`。
+
 Tushare 港股的开盘竞价价可能落在供应商所报日内 high/low 之外。raw 始终保留供应商原值；mapper 仅在
 原 high/low 自洽且 close 位于原区间时扩展 canonical high/low 以包含 open。A 股开盘越界、港股收盘
 越界、`high < low` 或非正价格仍由 `Bar1dSchema` 拒绝。
@@ -415,7 +425,7 @@ N 个精确开市日；官方为 OTHER/缺失时才回退 Instrument 分类。�
 
 下面保留 2026-08-13 的详细阶段快照供审计；其中关于 honest CLI 与 UA-M4-003 的停止点已由上段终态覆盖。
 
-M0 已通过验收；M1 已完成 A 股/ETF 数据、三地基础日历与股票主表、双路由港股通快照/事件/日历、基线后成员区间及“时点股票池 × 历史行情窗口”查询，HK licensed provenance 与五日自然窗口仍开放。M2 的数据契约、策略接口、统一日频回测、walk-forward、成本压力、轻量不可覆盖 `run.json` 和目标缺口诊断已经达到**投研框架 MVP 完成**；策略研究已拆到独立 worktree，可与本集成线并行。Tushare 股票/基金日线及复权因子四类历史 raw 已闭合，逐行互斥的窄 clean 计划已 `READY`，实际 clean 发布尚未执行。研究、PAPER 和 formal 复用同一 Schema、市场规则、费用和账户计算；候选晋级时通过正式入口受控重跑，不能把轻量产物原地冒充正式产物。M3 已具备 Windows G1 正式发布物、G2–G7 formal artifact/fresh verifier、G8 StageRunner/tracking/reproducibility 与 fake full DAG，G9A–G9G 的 Windows fake 工程闭包已完成；honest 300 证券、三成本场景 public CLI 已在最终 revision 上完成同一次首发与 completed resume。M4 formal runtime/policy/binding/account/store、snapshot、gateway、service、schedule 和只读 daily runner 已完成 Windows 工程闭环；第一波 A 股/ETF PAPER 仍等待策略会话提供首个 `PAPER_CANDIDATE` 和真实 clean opening facts，任务注册、真实启动及 28 日 soak 受 `UA-M4-002` 控制。`py312` 已验收 Qlib 0.9.7 兼容性且 base 未变；Linux/ext4 当前按用户指示暂不实施。详见[路线图](项目实施路线图.md)、[方法论](正式产物身份、数据溯源与可复现性方法论.md)和[持续审批事项](docs/agent/用户待批示与参与事项.md)。研究阶段可使用本地 ignored Tushare token，启用实盘前必须轮换。
+M0 已通过验收；M1 已完成 A 股/ETF 数据、三地基础日历与股票主表、双路由港股通快照/事件/日历、基线后成员区间及“时点股票池 × 历史行情窗口”查询，HK licensed provenance 与五日自然窗口仍开放。M2 的数据契约、策略接口、统一日频回测、walk-forward、成本压力、轻量不可覆盖 `run.json` 和目标缺口诊断已经达到**投研框架 MVP 完成**；策略研究已拆到独立 worktree，可与本集成线并行。Tushare 股票/基金日线及复权因子四类历史 raw 已闭合，逐行互斥的版本化 clean snapshot 已真实发布并完成 no-clobber 重放；它尚未自动替换任何策略或 PAPER source selector。研究、PAPER 和 formal 复用同一 Schema、市场规则、费用和账户计算；候选晋级时通过正式入口受控重跑，不能把轻量产物原地冒充正式产物。M3 已具备 Windows G1 正式发布物、G2–G7 formal artifact/fresh verifier、G8 StageRunner/tracking/reproducibility 与 fake full DAG，G9A–G9G 的 Windows fake 工程闭包已完成；honest 300 证券、三成本场景 public CLI 已在最终 revision 上完成同一次首发与 completed resume。M4 formal runtime/policy/binding/account/store、snapshot、gateway、service、schedule 和只读 daily runner 已完成 Windows 工程闭环；第一波 A 股/ETF PAPER 仍等待策略会话提供首个 `PAPER_CANDIDATE` 和真实 clean opening facts，任务注册、真实启动及 28 日 soak 受 `UA-M4-002` 控制。`py312` 已验收 Qlib 0.9.7 兼容性且 base 未变；Linux/ext4 当前按用户指示暂不实施。详见[路线图](项目实施路线图.md)、[方法论](正式产物身份、数据溯源与可复现性方法论.md)和[持续审批事项](docs/agent/用户待批示与参与事项.md)。研究阶段可使用本地 ignored Tushare token，启用实盘前必须轮换。
 
 ## M2 基线策略（工程闭环完成，策略有效性继续观察）
 
