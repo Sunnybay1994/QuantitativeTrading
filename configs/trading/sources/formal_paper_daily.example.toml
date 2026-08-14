@@ -1,0 +1,18 @@
+# Documentation-only template. Formal runtime selectors reject names containing
+# "example"; copy this file to a versioned selector after a PAPER_CANDIDATE run
+# and opening-market input have both been published.
+
+[meta]
+schema_version = "formal-paper-daily-source-v1"
+classification = "formal-paper-simulation"
+source_version = "replace_with_versioned_source_selector"
+
+[target]
+run_id = "0000000000000000000000000000000000000000000000000000000000000000"
+artifact_kind = "lightweight-research-run-v1"
+signal_timing = "close"
+execution_timing = "next_session_open"
+
+[market]
+source_version = "replace_with_clean_opening_source_version"
+allowed_markets = ["SH", "SZ"]

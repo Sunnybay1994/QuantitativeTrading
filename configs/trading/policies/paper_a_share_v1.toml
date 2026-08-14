@@ -1,0 +1,68 @@
+[meta]
+schema_version = "paper-execution-policy-v1"
+policy_version = "paper_a_share_v1"
+classification = "formal-paper-simulation"
+assumption_notice = "Versioned local PAPER simulation assumptions; not broker quotes or live-trading authority."
+effective_from = 2026-01-01
+supported_markets = ["SH", "SZ"]
+
+[selectors]
+a_share_rule_selector = "a_share_execution_rules_v1"
+cost_schedule_selector = "paper_a_share_cost_schedule_v1"
+adapter_policy_version = "paper_durable_a_share_adapter_v1"
+fill_policy_version = "paper_deterministic_fill_v1"
+fault_policy_version = "paper_controlled_fault_drills_v1"
+finality_policy_version = "paper_session_eod_finality_v1"
+clock_policy_version = "utc_system_clock_v1"
+
+[costs]
+minimum_order_notional_cny = "1.00"
+
+[[costs.periods]]
+market = "SH"
+effective_from = 2026-01-01
+commission_rate = "0.00025"
+commission_min = "5.00"
+stamp_tax_sell = "0.0005"
+transfer_fee = "0.00001"
+settlement_currency = "CNY"
+
+[[costs.periods]]
+market = "SZ"
+effective_from = 2026-01-01
+commission_rate = "0.00025"
+commission_min = "5.00"
+stamp_tax_sell = "0.0005"
+transfer_fee = "0.00001"
+settlement_currency = "CNY"
+
+[trading_config.meta]
+schema_version = "trading-config-v1"
+
+[trading_config.execution]
+mode = "PAPER"
+auto_trade = false
+manual_approval = true
+sell_only = false
+frozen_symbols = []
+
+[trading_config.rules]
+a_share_rule_selector = "a_share_execution_rules_v1"
+hk_connect_rule_selector = "hk_connect_disabled_v1"
+fee_schedule_selector = "paper_a_share_cost_schedule_v1"
+fx_schedule_selector = "cny_only_no_fx_v1"
+
+[trading_config.data]
+snapshot_max_age_seconds = 86400
+
+[trading_config.store]
+sqlite_uri = "sqlite:///oms.sqlite3"
+
+[[trading_config.risk.limits]]
+effective_from = 2026-01-01
+max_order_notional = 1000000.0
+max_symbol_weight = 0.10
+max_gross_exposure = 1.0
+max_daily_notional = 5000000.0
+max_orders_per_day = 50
+max_cancels_per_day = 20

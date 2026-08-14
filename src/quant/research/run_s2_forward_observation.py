@@ -25,6 +25,7 @@ from quant.research.lightweight_run import (
     dataframe_input_digest,
 )
 from quant.strategies import RegimeFilteredEtfTrendStrategy
+from quant.settings import resolve_data_root
 
 _SCHEMA_VERSION = "m2-forward-target-observation-v1"
 _EXPECTED_ARTIFACT_KIND = "non_deploying_forward_observation"
@@ -47,14 +48,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=Path("configs/research/m2_s2_minimum_breadth_forward.toml"),
     )
     parser.add_argument("--as-of", type=dt.date.fromisoformat, required=True)
-    parser.add_argument("--data-root", type=Path, default=Path("data"))
+    parser.add_argument("--data-root", type=Path)
     parser.add_argument("--artifact-root", type=Path, default=Path("artifacts"))
     parser.add_argument("--project-root", type=Path, default=Path("."))
     args = parser.parse_args(argv)
 
     project_root = args.project_root.resolve(strict=True)
     config_path = _inside(project_root, args.config)
-    data_root = _inside(project_root, args.data_root)
+    data_root = resolve_data_root(args.data_root, base=project_root)
     artifact_root = _inside(project_root, args.artifact_root, strict=False)
     config_payload = config_path.read_bytes()
     with config_path.open("rb") as stream:
@@ -237,7 +238,7 @@ def _validate_config(
     source_path = _inside(
         project_root, Path(forward["candidate_source_config_relative_path"])
     )
-    if hashlib.sha256(source_path.read_bytes()).hexdigest() != forward[
+    if _canonical_text_sha256(source_path.read_bytes()) != forward[
         "candidate_source_config_sha256"
     ]:
         raise ValueError("候选来源配置身份不匹配")
@@ -248,6 +249,13 @@ def _validate_config(
     ):
         raise ValueError("信号日期早于候选冻结后的首个允许月末")
     return forward
+
+
+def _canonical_text_sha256(payload: bytes) -> str:
+    """Hash UTF-8 config text independently of Git checkout line endings."""
+    text = payload.decode("utf-8")
+    canonical = text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
 
 
 def _require_complete_month_end(calendars: pl.DataFrame, as_of: dt.date) -> None:

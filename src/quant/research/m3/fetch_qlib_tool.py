@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -22,12 +23,13 @@ def build_qlib_dump_tool_spec(config: LoadedM3Config) -> QlibDumpToolSpec:
     return QlibDumpToolSpec(
         url=cast(str, qlib["dump_script_url"]),
         sha256=cast(str, qlib["dump_script_sha256"]),
-        bytes=cast(int, qlib["dump_script_bytes"]),
-        version=cast(str, qlib["version"]),
+        size_bytes=cast(int, qlib["dump_script_bytes"]),
+        qlib_version=cast(Any, qlib["version"]),
+        command="dump_all",
     )
 
 
-def ensure_qlib_dump_script(
+def ensure_qlib_dump_tool(
     *,
     spec: QlibDumpToolSpec,
     target_path: Path = DEFAULT_TARGET_PATH,
@@ -40,10 +42,19 @@ def ensure_qlib_dump_script(
     - 不存在：下载到临时文件，三项全部匹配后再原子移动。
     """
     expected_sha = spec.sha256
-    expected_bytes = spec.bytes
+    expected_bytes = spec.size_bytes
     url = spec.url
 
-    if target_path.exists():
+    if os.path.lexists(target_path):
+        _require_no_reparse_chain(target_path)
+        status = os.lstat(target_path)
+        attributes = getattr(status, "st_file_attributes", 0)
+        if (
+            not stat.S_ISREG(status.st_mode)
+            or status.st_nlink != 1
+            or attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+        ):
+            raise ValueError(f"已存在的 {target_path} 不是可信单链接普通文件，拒绝复用")
         payload = target_path.read_bytes()
         digest = hashlib.sha256(payload).hexdigest()
         if len(payload) == expected_bytes and digest == expected_sha:
@@ -54,6 +65,7 @@ def ensure_qlib_dump_script(
         )
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
+    _require_no_reparse_chain(target_path.parent)
     with tempfile.NamedTemporaryFile(
         dir=target_path.parent, delete=False, prefix=".dump_bin.", suffix=".tmp"
     ) as tmp:
@@ -79,6 +91,26 @@ def ensure_qlib_dump_script(
             f"下载内容校验失败: size={len(payload)} sha256={digest}; "
             f"expected size={expected_bytes} sha256={expected_sha}"
         )
-    os.replace(tmp_path, target_path)
+    try:
+        os.link(tmp_path, target_path)
+    except FileExistsError:
+        raise ValueError(f"发布 {target_path} 时目标已存在，拒绝覆盖") from None
+    except OSError:
+        raise ValueError(f"发布 {target_path} 时无法执行原子 no-clobber") from None
+    finally:
+        tmp_path.unlink(missing_ok=True)
     return target_path
+
+
+def _require_no_reparse_chain(path: Path) -> None:
+    for candidate in (path, *path.parents):
+        try:
+            status = os.lstat(candidate)
+        except FileNotFoundError:
+            continue
+        attributes = getattr(status, "st_file_attributes", 0)
+        if stat.S_ISLNK(status.st_mode) or (
+            attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+        ):
+            raise ValueError("Qlib dump tool 路径包含 symlink/reparse point")
 

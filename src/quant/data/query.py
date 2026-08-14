@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -12,6 +13,11 @@ import duckdb
 import polars as pl
 
 from quant.data.eligibility import eligible_symbols_on
+from quant.data.hk_history_backfill import (
+    HKHistoryBackfillError,
+    HKNoTradeEvidence,
+    load_hk_no_trade_evidence,
+)
 from quant.domain.enums import InstrumentType, Market
 from quant.domain.schemas import (
     ConnectEligibilityEventSchema,
@@ -267,6 +273,9 @@ class AvailableHistoryCoverage:
     required_sessions: tuple[tuple[str, tuple[dt.date, ...]], ...]
     missing_sessions: tuple[tuple[str, tuple[dt.date, ...]], ...]
     unexpected_sessions: tuple[tuple[str, tuple[dt.date, ...]], ...]
+    exempted_sessions: tuple[tuple[str, tuple[dt.date, ...]], ...]
+    exemption_reason_counts: tuple[tuple[str, int], ...]
+    no_trade_evidence_sha256: str | None
 
     def __post_init__(self) -> None:
         if type(self.universe) is not str or not self.universe:
@@ -290,9 +299,10 @@ class AvailableHistoryCoverage:
                 raise BarWindowQueryError("BAR_WINDOW_INPUT_INVALID")
             _require_canonical_symbol(symbol)
 
-        required = self._validate_session_items(self.required_sessions, allow_empty_dates=False)
+        required = self._validate_session_items(self.required_sessions, allow_empty_dates=True)
         missing = self._validate_session_items(self.missing_sessions, allow_empty_dates=False)
         unexpected = self._validate_session_items(self.unexpected_sessions, allow_empty_dates=False)
+        exempted = self._validate_session_items(self.exempted_sessions, allow_empty_dates=False)
         required_symbols = set(required)
         if required_symbols & set(self.excluded_etf_symbols):
             raise BarWindowQueryError("BAR_WINDOW_INPUT_INVALID")
@@ -300,7 +310,7 @@ class AvailableHistoryCoverage:
             raise BarWindowQueryError("BAR_WINDOW_INPUT_INVALID")
         if not set(missing).issubset(required_symbols) or not set(unexpected).issubset(
             required_symbols
-        ):
+        ) or not set(exempted).issubset(required_symbols):
             raise BarWindowQueryError("BAR_WINDOW_INPUT_INVALID")
         for symbol, dates in required.items():
             if len(dates) > self.requested_observations:
@@ -311,6 +321,27 @@ class AvailableHistoryCoverage:
                 raise BarWindowQueryError("BAR_WINDOW_INPUT_INVALID")
             if set(unexpected.get(symbol, ())) & set(dates):
                 raise BarWindowQueryError("BAR_WINDOW_INPUT_INVALID")
+            if set(exempted.get(symbol, ())) & set(dates):
+                raise BarWindowQueryError("BAR_WINDOW_INPUT_INVALID")
+        if type(self.exemption_reason_counts) is not tuple or any(
+            type(reason) is not str
+            or not reason
+            or type(count) is not int
+            or count <= 0
+            for reason, count in self.exemption_reason_counts
+        ):
+            raise BarWindowQueryError("BAR_WINDOW_INPUT_INVALID")
+        if self.exemption_reason_counts != tuple(sorted(self.exemption_reason_counts)):
+            raise BarWindowQueryError("BAR_WINDOW_INPUT_INVALID")
+        exempted_total = sum(len(dates) for dates in exempted.values())
+        if sum(count for _, count in self.exemption_reason_counts) != exempted_total:
+            raise BarWindowQueryError("BAR_WINDOW_INPUT_INVALID")
+        if (self.no_trade_evidence_sha256 is None) != (exempted_total == 0):
+            raise BarWindowQueryError("BAR_WINDOW_INPUT_INVALID")
+        if self.no_trade_evidence_sha256 is not None and not re.fullmatch(
+            r"[0-9a-f]{64}", self.no_trade_evidence_sha256
+        ):
+            raise BarWindowQueryError("BAR_WINDOW_INPUT_INVALID")
 
     @staticmethod
     def _validate_session_items(
@@ -352,6 +383,10 @@ class AvailableHistoryCoverage:
     def max_required_sessions(self) -> int:
         counts = [len(dates) for _, dates in self.required_sessions]
         return max(counts, default=0)
+
+    @property
+    def exempted_session_count(self) -> int:
+        return sum(len(dates) for _, dates in self.exempted_sessions)
 
     @property
     def is_available_history_complete(self) -> bool:
@@ -454,6 +489,8 @@ def _available_history_from_references(
     instrument_path: Path,
     eligibility_snapshot_root: Path,
     eligibility_event_root: Path,
+    no_trade_evidence_path: Path | None,
+    no_trade_raw_root: Path | None,
 ) -> AvailableHistoryCoverage:
     if not all(
         isinstance(path, Path)
@@ -502,6 +539,24 @@ def _available_history_from_references(
         raise BarWindowQueryError("BAR_WINDOW_REFERENCE_INVALID")
     open_date_set = set(open_dates)
 
+    no_trade_evidences: tuple[HKNoTradeEvidence, ...] = ()
+    evidence_sha256: str | None = None
+    if no_trade_evidence_path is not None and no_trade_evidence_path.exists():
+        if no_trade_raw_root is None:
+            raise BarWindowQueryError("BAR_WINDOW_REFERENCE_INVALID")
+        try:
+            evidence_set = load_hk_no_trade_evidence(
+                no_trade_evidence_path, raw_root=no_trade_raw_root
+            )
+        except HKHistoryBackfillError as exc:
+            raise BarWindowQueryError("BAR_WINDOW_REFERENCE_INVALID") from exc
+        no_trade_evidences = evidence_set.evidences
+        evidence_sha256 = evidence_set.evidence_set_sha256
+    evidence_by_key = {
+        (item.symbol, dt.date.fromisoformat(item.trade_date)): item
+        for item in no_trade_evidences
+    }
+
     frame_symbols = (
         set(audited.frame.get_column("symbol").to_list()) if audited.frame.height else set()
     )
@@ -522,6 +577,8 @@ def _available_history_from_references(
 
     excluded_etfs: list[str] = []
     required_sessions: list[tuple[str, tuple[dt.date, ...]]] = []
+    exempted_sessions: list[tuple[str, tuple[dt.date, ...]]] = []
+    selected_reasons: Counter[str] = Counter()
     requested = audited.coverage.requested_observations
     as_of = audited.coverage.as_of
     for symbol in sorted(eligible_symbols):
@@ -551,10 +608,19 @@ def _available_history_from_references(
         available_dates = tuple(date for date in open_dates if date >= list_date)
         if list_date < first_calendar_date and len(available_dates) < requested:
             raise BarWindowQueryError("BAR_WINDOW_REFERENCE_INVALID")
-        sessions = available_dates[-requested:]
-        if not sessions:
+        original_sessions = available_dates[-requested:]
+        if not original_sessions:
             raise BarWindowQueryError("BAR_WINDOW_REFERENCE_INVALID")
+        exemptions = tuple(
+            date for date in original_sessions if (symbol, date) in evidence_by_key
+        )
+        sessions = tuple(date for date in original_sessions if date not in set(exemptions))
         required_sessions.append((symbol, sessions))
+        if exemptions:
+            exempted_sessions.append((symbol, exemptions))
+            selected_reasons.update(
+                evidence_by_key[(symbol, date)].reason for date in exemptions
+            )
 
     observed: dict[str, set[dt.date]] = {symbol: set() for symbol, _ in required_sessions}
     if audited.frame.height:
@@ -581,6 +647,9 @@ def _available_history_from_references(
         required_sessions=tuple(required_sessions),
         missing_sessions=missing_sessions,
         unexpected_sessions=unexpected_sessions,
+        exempted_sessions=tuple(exempted_sessions),
+        exemption_reason_counts=tuple(sorted(selected_reasons.items())),
+        no_trade_evidence_sha256=(evidence_sha256 if exempted_sessions else None),
     )
 
 
@@ -850,6 +919,8 @@ class BarQuery:
         instrument_path: Path,
         eligibility_snapshot_root: Path,
         eligibility_event_root: Path,
+        no_trade_evidence_path: Path | None = None,
+        no_trade_raw_root: Path | None = None,
         universe: str,
         as_of: dt.date,
         source: str,
@@ -869,6 +940,8 @@ class BarQuery:
             instrument_path=instrument_path,
             eligibility_snapshot_root=eligibility_snapshot_root,
             eligibility_event_root=eligibility_event_root,
+            no_trade_evidence_path=no_trade_evidence_path,
+            no_trade_raw_root=no_trade_raw_root,
         )
 
     def audit_available_history(
@@ -879,6 +952,8 @@ class BarQuery:
         instrument_path: Path,
         eligibility_snapshot_root: Path,
         eligibility_event_root: Path,
+        no_trade_evidence_path: Path | None = None,
+        no_trade_raw_root: Path | None = None,
     ) -> AuditedAvailableHistoryBarWindow:
         """Bind trusted HK references and exact available-history evidence."""
         if type(audited) is not AuditedBarWindow:
@@ -889,6 +964,8 @@ class BarQuery:
             instrument_path=instrument_path,
             eligibility_snapshot_root=eligibility_snapshot_root,
             eligibility_event_root=eligibility_event_root,
+            no_trade_evidence_path=no_trade_evidence_path,
+            no_trade_raw_root=no_trade_raw_root,
         )
         return AuditedAvailableHistoryBarWindow(
             frame=audited.frame,

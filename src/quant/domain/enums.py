@@ -40,6 +40,29 @@ class CorporateActionType(str, Enum):
     RIGHTS = "RIGHTS"            # 配股/供股
 
 
+class EntitlementLegState(str, Enum):
+    ABSENT = "ABSENT"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+    CAPTURED = "CAPTURED"
+    RECOGNIZED = "RECOGNIZED"
+    SETTLED = "SETTLED"
+
+
+class EntitlementPostingType(str, Enum):
+    CAPTURE = "CAPTURE"
+    CASH_RECOGNIZE = "CASH_RECOGNIZE"
+    STOCK_RECOGNIZE = "STOCK_RECOGNIZE"
+    CASH_SETTLE = "CASH_SETTLE"
+    STOCK_SETTLE = "STOCK_SETTLE"
+
+
+class AShareBoard(str, Enum):
+    SSE_MAIN = "SSE_MAIN"
+    SSE_STAR = "SSE_STAR"
+    SZSE_MAIN = "SZSE_MAIN"
+    SZSE_CHINEXT = "SZSE_CHINEXT"
+
+
 class OrderSide(str, Enum):
     BUY = "BUY"
     SELL = "SELL"
@@ -61,9 +84,13 @@ class ExecutionRejectReason(str, Enum):
     """回测与 OMS 共用的事前成交拒绝原因。"""
 
     SUSPENDED = "SUSPENDED"
+    OPEN_UNKNOWN = "OPEN_UNKNOWN"
+    MISSING_OPEN = "MISSING_OPEN"
     BUY_AT_UPPER_LIMIT = "BUY_AT_UPPER_LIMIT"
     SELL_AT_LOWER_LIMIT = "SELL_AT_LOWER_LIMIT"
     T_PLUS_ONE = "T_PLUS_ONE"
+    LOT_CONSTRAINT = "LOT_CONSTRAINT"
+    CASH_CONSTRAINT = "CASH_CONSTRAINT"
     RULE_NOT_EFFECTIVE = "RULE_NOT_EFFECTIVE"
     RULE_VERSION_MISMATCH = "RULE_VERSION_MISMATCH"
     CONNECT_CALENDAR_CLOSED = "CONNECT_CALENDAR_CLOSED"

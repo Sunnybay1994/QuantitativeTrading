@@ -1917,7 +1917,11 @@ def _fsync_directory(directory: Path) -> None:
 def _windows_movefileex_noreplace(src: Path, dst: Path) -> None:
     """Exclusive directory publish commit on Windows (no REPLACE_EXISTING)."""
     try:
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        win_dll = getattr(ctypes, "WinDLL", None)
+        get_last_error = getattr(ctypes, "get_last_error", None)
+        if not callable(win_dll) or not callable(get_last_error):
+            raise M3ReleaseError("G1_RELEASE_PUBLISH_UNSUPPORTED")
+        kernel32 = win_dll("kernel32", use_last_error=True)
         move_file_ex_w = kernel32.MoveFileExW
         move_file_ex_w.argtypes = [
             ctypes.c_wchar_p,
@@ -1928,7 +1932,7 @@ def _windows_movefileex_noreplace(src: Path, dst: Path) -> None:
         # flags=0: fail if destination exists; do not copy; do not replace.
         if move_file_ex_w(os.fspath(src), os.fspath(dst), 0):
             return
-        err = ctypes.get_last_error()
+        err = get_last_error()
     except M3ReleaseError:
         raise
     except (AttributeError, OSError, TypeError, ValueError):
@@ -1978,6 +1982,11 @@ def _renameat2_noreplace(src: Path, dst: Path) -> None:
     if err in {errno.EINVAL, errno.ENOSYS, getattr(errno, "ENOTSUP", errno.EOPNOTSUPP)}:
         raise M3ReleaseError("G1_RELEASE_PUBLISH_UNSUPPORTED")
     raise M3ReleaseError("G1_RELEASE_IO_FAILED")
+
+
+def commit_directory_noreplace(src: Path, dst: Path) -> None:
+    """Atomically commit a directory without replacing an existing target."""
+    _renameat2_noreplace(src, dst)
 
 
 def platform_supports_renameat2_noreplace() -> bool:

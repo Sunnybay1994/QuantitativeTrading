@@ -12,6 +12,7 @@ import polars as pl
 from quant.backtest import schedule_next_trading_day
 from quant.factors import compute_trend_factors_from_prices
 from quant.strategies import EtfTrendStrategy
+from quant.settings import resolve_data_root
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -20,17 +21,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--config", type=Path, default=Path("configs/research/m2_baseline.toml")
     )
     parser.add_argument("--as-of", type=dt.date.fromisoformat)
-    parser.add_argument("--data-root", type=Path, default=Path("data"))
+    parser.add_argument("--data-root", type=Path)
     parser.add_argument("--artifact-root", type=Path, default=Path("artifacts"))
     args = parser.parse_args(argv)
+    data_root = resolve_data_root(args.data_root)
     with args.config.open("rb") as stream:
         config: dict[str, Any] = tomllib.load(stream)
     as_of = args.as_of or config["data"]["end_date"]
     candidates = _candidates(config)
     strategy_config = config["strategy"]["etf_trend"]
 
-    price_glob = args.data_root / "clean" / "research_price_1d" / "date=*" / "data.parquet"
-    if not list((args.data_root / "clean" / "research_price_1d").glob("date=*")):
+    price_glob = data_root / "clean" / "research_price_1d" / "date=*" / "data.parquet"
+    if not list((data_root / "clean" / "research_price_1d").glob("date=*")):
         raise FileNotFoundError(price_glob)
     prices = pl.read_parquet(price_glob).filter(pl.col("symbol").is_in(candidates))
     present = set(prices.get_column("symbol").unique().to_list())
@@ -56,7 +58,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     targets = strategy.target_weights(as_of, factors)
     calendars = pl.concat([
         pl.read_parquet(
-            args.data_root / "clean" / "trade_calendar" / f"market={market}" / "data.parquet"
+            data_root / "clean" / "trade_calendar" / f"market={market}" / "data.parquet"
         )
         for market in ("SH", "SZ")
     ])

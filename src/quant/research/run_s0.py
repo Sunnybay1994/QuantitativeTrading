@@ -15,6 +15,7 @@ from quant.backtest import (
     simulate_etf_targets,
 )
 from quant.strategies import EqualWeightStrategy
+from quant.settings import resolve_data_root
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -22,16 +23,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--config", type=Path, default=Path("configs/research/m2_baseline.toml")
     )
-    parser.add_argument("--data-root", type=Path, default=Path("data"))
+    parser.add_argument("--data-root", type=Path)
     parser.add_argument("--artifact-root", type=Path, default=Path("artifacts"))
     args = parser.parse_args(argv)
+    data_root = resolve_data_root(args.data_root)
     with args.config.open("rb") as stream:
         config: dict[str, Any] = tomllib.load(stream)
     start, end = config["data"]["start_date"], config["data"]["end_date"]
     candidates = _candidates(config)
 
     bars = pl.read_parquet(
-        args.data_root / "clean" / "bar_1d" / "date=*" / "data.parquet"
+        data_root / "clean" / "bar_1d" / "date=*" / "data.parquet"
     ).filter(
         pl.col("symbol").is_in(candidates)
         & pl.col("trade_date").is_between(start, end, closed="both")
@@ -41,7 +43,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     )
     research_prices = pl.read_parquet(
-        args.data_root / "clean" / "research_price_1d" / "date=*" / "data.parquet"
+        data_root / "clean" / "research_price_1d" / "date=*" / "data.parquet"
     ).filter(
         pl.col("symbol").is_in(candidates)
         & (pl.col("adjustment_method") == "TOTAL_RETURN_DIVIDEND")
@@ -52,13 +54,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     calendars = pl.concat([
         pl.read_parquet(
-            args.data_root / "clean" / "trade_calendar" / f"market={market}" / "data.parquet"
+            data_root / "clean" / "trade_calendar" / f"market={market}" / "data.parquet"
         )
         for market in ("SH", "SZ")
     ])
     instruments = pl.concat([
         pl.read_parquet(
-            args.data_root / "clean" / "instrument" / f"market={market}" / "data.parquet"
+            data_root / "clean" / "instrument" / f"market={market}" / "data.parquet"
         )
         for market in ("SH", "SZ")
     ]).filter(pl.col("symbol").is_in(candidates))

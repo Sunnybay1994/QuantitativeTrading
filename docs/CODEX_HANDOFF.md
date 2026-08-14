@@ -63,6 +63,39 @@
 - 当前按用户最新指示继续由主Agent推进，但后续减少内部subagent，优先使用不同全新外部`cursor-agent`
   会话承担实现与独立初验；主Agent负责冻结任务、裁决与最终验收。各worktree包含大量用户与既有里程碑脏文件，
   禁止add/commit或清理无关内容。
+### 2026-08-02 G6A 续写摘要（覆盖下文旧停止点）
+
+- G7P0 已完成：四个回测舍入/年化字段进入 scientific identity；当前严格闭包为 148 shapes / 161 leaves，
+  Windows 与 WSL base 配置集合均 `89 passed`。早期任务单的 138→142 已被后续 C0 增量超越，不得回退。
+- development example G6B 也已完成：同 horizon 跨折 summary、严格 fold metrics、跨日重算和 experiment
+  receipt 闭包在 Windows/WSL base 均为 `8 passed`；开发研究链 G4A→G6B 的工程合同至此闭合，但正式
+  production G4–G6 与真实绩效 Gate 仍保持开放。详见
+  [`docs/agent/M3_G6B开发示例跨折研究汇总Artifact主Agent阶段验收报告.md`](agent/M3_G6B开发示例跨折研究汇总Artifact主Agent阶段验收报告.md)。
+- development example 研究链已推进到 G6A：逐 work evaluation artifact、八状态 IC、五层 key 闭包、
+  四类 coverage、canonical manifest 与 fresh receipt verifier 已完成；Windows 与 WSL base 定向集合均为
+  `19 passed`。详见
+  [`docs/agent/M3_G6A开发示例逐Work评价Artifact主Agent阶段验收报告.md`](agent/M3_G6A开发示例逐Work评价Artifact主Agent阶段验收报告.md)。
+- 正式 G2A 已完成 Windows 独立发布与 fresh verify；正式 G2B 当前在独立工作树执行，G1 fresh verify 已
+  PASS，正在 fresh 验证 G2A snapshot，尚未进入 provider materialize。development 结果仍不得关闭正式 Gate。
+
+### 2026-08-02 最新续写摘要（覆盖下文旧停止点）
+
+- 正式 G1 Windows release 已完成磁盘验真：release id
+  `08eb9b31ab4d8c8473c0a7bb612df83009a68b761b8a35816653b2ce07807359`，manifest SHA-256
+  `d3923fa1143fbc5c4ff352f7b4d0cf5baeb197d2bb161ead34255bd7375f99c4`，17 个 artifact。该事实不等于
+  Linux/ext4 Gate；正式 release、journal 和候选目录继续只读。
+- 正式 G2A 在独立 `artifacts/formal_g2a_windows/` 根并行执行：snapshot 物理构建、request 与约 630 个
+  output 的 receipt 已 no-clobber 发布，当前在最终 fresh G1 + snapshot 全链 verifier；未取得
+  `VerifiedSnapshotArtifact` 前不得启动正式 G2B。
+- development example 路径严格隔离，身份固定 `development_example`、`formal_gate_eligible=false`。
+  G4A/G4B/G4C、G5A 和 G5B 的开发合同已完成；G5A 双平台 fixture 为 14 项且 Windows 真实
+  LightGBM 4.6.0 native train/save/load/predict 冷启动通过；G5B Windows prediction 对抗集 17 项、
+  WSL base 合并受影响回归 44 项通过。它们不能关闭 production G4/G5 或正式 Gate。
+- M2 统一股票/ETF 日频模拟器已合入 main 并双平台通过 118 项定向测试。M4 P3-RC1 日风险计数器 SQLite
+  CAS 持久化已合入 main；Windows 197 passed/5 skipped，WSL base 202 passed，并补齐 v2→v3 migration
+  回归。M4 仍待 cancel 接入、PaperGateway、服务编排、恢复对账、运维报告和连续 28 天 PAPER。
+- 当前执行方式：主 Agent 自行实现与验证；正式 G1/G2 长时 I/O 低频异步推进，不能阻塞 development
+  G2–G9 与 M4 工程。内部 subagent 仅用于文件互斥的只读审查或独立后台工作，不调用外部 Cursor Agent。
 
 ### 2026-07-31 最新续写摘要（覆盖下文旧停止点与执行模式）
 

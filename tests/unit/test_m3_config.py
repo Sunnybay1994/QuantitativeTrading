@@ -101,7 +101,7 @@ def _identities(document: Mapping[str, object]) -> dict[str, str]:
 def test_valid_example_has_closed_shape_and_nine_bare_identities() -> None:
     loaded = _loaded()
     leaves = list(_iter_assignment_leaves(loaded.document, []))
-    assert len(leaves) == 154
+    assert len(leaves) == 161
     shapes = {".".join(str(part) for part in ())}  # force a distinct local set
     shapes.clear()
     for tokens, _value in leaves:
@@ -112,7 +112,7 @@ def test_valid_example_has_closed_shape_and_nine_bare_identities() -> None:
             else:
                 parts.append(token)
         shapes.add(".".join(parts))
-    assert len(_FIELD_SPECS) == 141
+    assert len(_FIELD_SPECS) == 148
     assert shapes == set(_FIELD_SPECS)
     assert sum(not spec.required for spec in _FIELD_SPECS.values()) == 1
     assert all(spec.kind and spec.selectors <= set(SELECTOR_ATTRS) for spec in _FIELD_SPECS.values())
@@ -351,6 +351,25 @@ def test_version_frozen_literals_reject_nearby_values(path: str, value: object) 
     parts = path.split(".")
     _nested(document, *parts[:-1])[parts[-1]] = value
     _assert_issue(document, "VALUE_ERROR", path)
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "code"),
+    [
+        ("backtest.a_share.execution_price_rounding", "ROUND_NEAREST", "VALUE_ERROR"),
+        ("backtest.a_share.fee_rounding", "ROUND_TOTAL_ONLY", "VALUE_ERROR"),
+        ("backtest.a_share.cash_settlement_rounding", "BANKERS", "VALUE_ERROR"),
+        ("backtest.a_share.annualization_sessions", 251, "VALUE_ERROR"),
+        ("backtest.a_share.annualization_sessions", True, "TYPE_ERROR"),
+    ],
+)
+def test_g7p0_scientific_rounding_contract_rejects_drift(
+    path: str, value: object, code: str
+) -> None:
+    document = _document()
+    parts = path.split(".")
+    _nested(document, *parts[:-1])[parts[-1]] = value
+    _assert_issue(document, code, path)
 
 
 @pytest.mark.parametrize(

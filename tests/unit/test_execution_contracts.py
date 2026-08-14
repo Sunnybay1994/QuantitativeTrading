@@ -16,11 +16,13 @@ from quant.domain.enums import (
     ExecutionMode,
     Market,
     OrderSide,
+    OrderStatus,
     OrderType,
     TimeInForce,
 )
 from quant.execution.contracts import (
     AccountSnapshot,
+    CancelCommand,
     ContractError,
     ExecutionEvent,
     FeeComponent,
@@ -29,12 +31,15 @@ from quant.execution.contracts import (
     OrderIntent,
     OrderIntentSpec,
     OrderPlan,
+    OrderPlanDecision,
     RuleDecision,
     VerifiedConnectMarketContext,
     VerifiedMarketSnapshot,
     build_account_snapshot,
     build_account_snapshot_identity,
     build_cash_balance,
+    build_cancel_command,
+    build_cancel_command_identity,
     build_execution_event,
     build_execution_event_identity,
     build_fee_component,
@@ -45,6 +50,7 @@ from quant.execution.contracts import (
     build_order_intent,
     build_order_intent_identity,
     build_order_plan,
+    build_order_plan_decision,
     build_order_plan_identity,
     build_position_balance,
     build_rule_decision,
@@ -55,6 +61,7 @@ from quant.execution.contracts import (
     build_verified_market_snapshot,
     build_verified_market_snapshot_identity,
 )
+from quant.execution.oms import new_order_aggregate, reduce_order
 
 
 UTC = dt.timezone.utc
@@ -88,6 +95,47 @@ def _p0b1_ctx(
         calendar_identity=_hex64("cal"),
         quota_identity=_hex64("quota"),
         source_identity=_hex64("src"),
+    )
+
+
+def _cancel_test_command(*, mode: ExecutionMode = ExecutionMode.PAPER) -> OrderCommand:
+    intent = build_order_intent(
+        plan_id=_hex64("cancel-plan"),
+        symbol="600000.SH",
+        market=Market.SH,
+        side=OrderSide.BUY,
+        quantity=100,
+        limit_price=Decimal("10.50"),
+        quote_currency=Currency.CNY,
+        session_date=dt.date(2026, 7, 16),
+        generated_at=_utc(2),
+        target_identity=_hex64("cancel-target"),
+        market_snapshot_id=_hex64("cancel-market"),
+        account_snapshot_id=_hex64("cancel-account"),
+        config_identity=_hex64("cancel-config"),
+        connect_route=None,
+    )
+    return build_order_command(intent=intent, mode=mode)
+
+
+def _cancel_test_event(
+    command: OrderCommand,
+    *,
+    event_type: ExecutionEventType,
+    minute: int,
+    cumulative: int,
+    last: int,
+) -> ExecutionEvent:
+    return build_execution_event(
+        command=command,
+        broker_order_id="PAPER-CANCEL-1",
+        event_type=event_type,
+        occurred_at=dt.datetime(2026, 7, 16, 2, minute, tzinfo=UTC),
+        cumulative_quantity=cumulative,
+        last_quantity=last,
+        last_price=Decimal("10.50") if last else None,
+        fees=(),
+        reject_code=None,
     )
 
 
@@ -472,6 +520,7 @@ def test_order_plan_unique_intent_keys_and_identity() -> None:
         market_snapshot_id=_hex64("mkt"),
         account_snapshot_id=_hex64("acct"),
         config_identity=_hex64("cfg"),
+        trading_config_identity=_hex64("trading-cfg"),
         intent_specs=(spec_buy, spec_sell),
         rejections=(rejection,),
         residual_cash=(build_money_amount(Currency.CNY, Decimal("5")),),
@@ -501,9 +550,141 @@ def test_order_plan_unique_intent_keys_and_identity() -> None:
             market_snapshot_id=_hex64("mkt"),
             account_snapshot_id=_hex64("acct"),
             config_identity=_hex64("cfg"),
+            trading_config_identity=_hex64("trading-cfg"),
             intent_specs=(spec_buy, dup_spec),
             rejections=(),
             residual_cash=(),
+        )
+
+
+def test_order_plan_decision_closes_quantities_identity_and_intent() -> None:
+    from quant.execution import (
+        OrderPlanDecision as PublicOrderPlanDecision,
+        build_order_plan_decision as public_build_order_plan_decision,
+    )
+
+    assert PublicOrderPlanDecision is OrderPlanDecision
+    assert public_build_order_plan_decision is build_order_plan_decision
+    accepted = build_rule_decision(
+        accepted=True,
+        code="ACCEPTED",
+        normalized_quantity=100,
+        normalized_limit_price=Decimal("10"),
+        rule_version="a-v1",
+    )
+    decision = build_order_plan_decision(
+        symbol="600000.SH",
+        market=Market.SH,
+        connect_route=None,
+        side=OrderSide.BUY,
+        requested_quantity=150,
+        accepted_quantity=100,
+        rejected_quantity=0,
+        zero_delta_quantity=50,
+        outcome=accepted,
+        reason_class="ACCEPTED",
+    )
+    spec = OrderIntentSpec(
+        symbol="600000.SH",
+        market=Market.SH,
+        side=OrderSide.BUY,
+        quantity=100,
+        limit_price=Decimal("10"),
+        quote_currency=Currency.CNY,
+        session_date=dt.date(2026, 7, 16),
+        generated_at=_utc(),
+        target_identity=_hex64("decision-target"),
+        market_snapshot_id=_hex64("decision-market"),
+        account_snapshot_id=_hex64("decision-account"),
+        config_identity=_hex64("decision-config"),
+        connect_route=None,
+    )
+    plan = build_order_plan(
+        target_identity=spec.target_identity,
+        market_snapshot_id=spec.market_snapshot_id,
+        account_snapshot_id=spec.account_snapshot_id,
+        config_identity=spec.config_identity,
+        trading_config_identity=_hex64("trading-cfg"),
+        intent_specs=(spec,),
+        rejections=(),
+        residual_cash=(),
+        decisions=(decision,),
+    )
+    assert plan.decisions == (decision,)
+    assert build_order_plan_identity(plan) == plan.plan_id
+
+    with pytest.raises(ContractError, match="quantity conservation"):
+        OrderPlanDecision(
+            target_key=decision.target_key,
+            symbol=decision.symbol,
+            market=decision.market,
+            connect_route=decision.connect_route,
+            side=decision.side,
+            requested_quantity=150,
+            accepted_quantity=100,
+            rejected_quantity=0,
+            zero_delta_quantity=49,
+            outcome=decision.outcome,
+            reason_class=decision.reason_class,
+        )
+    with pytest.raises(ContractError, match="intents must match"):
+        build_order_plan(
+            target_identity=spec.target_identity,
+            market_snapshot_id=spec.market_snapshot_id,
+            account_snapshot_id=spec.account_snapshot_id,
+            config_identity=spec.config_identity,
+            trading_config_identity=_hex64("trading-cfg"),
+            intent_specs=(),
+            rejections=(),
+            residual_cash=(),
+            decisions=(decision,),
+        )
+
+
+def test_order_plan_decision_route_and_rejection_are_identity_bound() -> None:
+    rejected = build_rule_decision(
+        accepted=False,
+        code="SUSPENDED",
+        normalized_quantity=0,
+        normalized_limit_price=Decimal("0"),
+        rule_version="hk-v1",
+    )
+    sh_route = build_order_plan_decision(
+        symbol="00700.HK",
+        market=Market.HK,
+        connect_route=ConnectRoute.SH_CONNECT,
+        side=OrderSide.BUY,
+        requested_quantity=100,
+        accepted_quantity=0,
+        rejected_quantity=100,
+        zero_delta_quantity=0,
+        outcome=rejected,
+        reason_class="RULE_REJECTED",
+    )
+    sz_route = build_order_plan_decision(
+        symbol="00700.HK",
+        market=Market.HK,
+        connect_route=ConnectRoute.SZ_CONNECT,
+        side=OrderSide.BUY,
+        requested_quantity=100,
+        accepted_quantity=0,
+        rejected_quantity=100,
+        zero_delta_quantity=0,
+        outcome=rejected,
+        reason_class="RULE_REJECTED",
+    )
+    assert sh_route.target_key != sz_route.target_key
+    with pytest.raises(ContractError, match="rejections must match"):
+        build_order_plan(
+            target_identity=_hex64("rejected-target"),
+            market_snapshot_id=_hex64("rejected-market"),
+            account_snapshot_id=_hex64("rejected-account"),
+            config_identity=_hex64("rejected-config"),
+            trading_config_identity=_hex64("trading-cfg"),
+            intent_specs=(),
+            rejections=(),
+            residual_cash=(),
+            decisions=(sh_route,),
         )
 
 
@@ -632,6 +813,7 @@ def test_order_plan_forged_plan_id_rejected() -> None:
         market_snapshot_id=_hex64("mkt"),
         account_snapshot_id=_hex64("acct"),
         config_identity=_hex64("cfg"),
+        trading_config_identity=_hex64("trading-cfg"),
         intent_specs=(spec,),
         rejections=(),
         residual_cash=(),
@@ -643,6 +825,7 @@ def test_order_plan_forged_plan_id_rejected() -> None:
             market_snapshot_id=plan.market_snapshot_id,
             account_snapshot_id=plan.account_snapshot_id,
             config_identity=plan.config_identity,
+            trading_config_identity=plan.trading_config_identity,
             intents=plan.intents,
             rejections=plan.rejections,
             residual_cash=plan.residual_cash,
@@ -677,6 +860,7 @@ def test_order_plan_rejects_nested_identity_mismatch_and_replace() -> None:
         "market_snapshot_id": _hex64("mkt"),
         "account_snapshot_id": _hex64("acct"),
         "config_identity": _hex64("cfg"),
+        "trading_config_identity": _hex64("trading-cfg"),
     }
     mismatch_fields = (
         ("target_identity", _hex64("target-other")),
@@ -703,6 +887,8 @@ def test_order_plan_rejects_nested_identity_mismatch_and_replace() -> None:
     )
     with pytest.raises(ContractError):
         replace(plan, target_identity=_hex64("target-replaced"))
+    with pytest.raises(ContractError):
+        replace(plan, trading_config_identity=_hex64("trading-config-replaced"))
 
     foreign_intent = build_order_intent(
         plan_id=plan.plan_id,
@@ -946,6 +1132,7 @@ def test_builders_reject_wrong_sequence_elements_as_contract_error() -> None:
             market_snapshot_id=_hex64("mkt"),
             account_snapshot_id=_hex64("acct"),
             config_identity=_hex64("cfg"),
+            trading_config_identity=_hex64("trading-cfg"),
             intent_specs=(good_spec,),
             rejections=("bad-rejection",),  # type: ignore[arg-type]
             residual_cash=(),
@@ -956,6 +1143,7 @@ def test_builders_reject_wrong_sequence_elements_as_contract_error() -> None:
             market_snapshot_id=_hex64("mkt"),
             account_snapshot_id=_hex64("acct"),
             config_identity=_hex64("cfg"),
+            trading_config_identity=_hex64("trading-cfg"),
             intent_specs=(good_spec,),
             rejections=(),
             residual_cash=("bad-cash",),  # type: ignore[arg-type]
@@ -1507,3 +1695,283 @@ def test_p0b1_snapshot_hk_requires_context_a_share_forbids_context() -> None:
     assert other_ctx_id != ctx.context_id
     assert build_verified_market_snapshot_identity(a_only) == a_only.snapshot_id
 
+
+def test_cancel_command_is_deterministic_public_and_snapshot_bound() -> None:
+    from quant.execution import CancelCommand as PublicCancelCommand
+    from quant.execution import build_cancel_command as public_build_cancel_command
+
+    command = _cancel_test_command()
+    aggregate = reduce_order(
+        new_order_aggregate(command),
+        command,
+        _cancel_test_event(
+            command,
+            event_type=ExecutionEventType.ACCEPTED,
+            minute=1,
+            cumulative=0,
+            last=0,
+        ),
+    )
+    as_of = dt.datetime(2026, 7, 16, 2, 5, tzinfo=UTC)
+    first = build_cancel_command(command=command, aggregate=aggregate, as_of=as_of)
+    second = public_build_cancel_command(command=command, aggregate=aggregate, as_of=as_of)
+    assert PublicCancelCommand is CancelCommand
+    assert first == second
+    assert first.cancel_id == build_cancel_command_identity(first)
+    assert first.command_id == command.command_id
+    assert first.broker_order_id == "PAPER-CANCEL-1"
+    assert first.aggregate_status is OrderStatus.SUBMITTED
+    assert first.observed_filled_quantity == 0
+    assert first.observed_event_ids == aggregate.applied_event_ids
+    assert first.observed_last_event_at == aggregate.last_event_at
+
+
+def test_partial_fill_cancel_binds_filled_and_event_closure() -> None:
+    command = _cancel_test_command()
+    aggregate = reduce_order(
+        new_order_aggregate(command),
+        command,
+        _cancel_test_event(
+            command, event_type=ExecutionEventType.ACCEPTED, minute=1, cumulative=0, last=0
+        ),
+    )
+    aggregate = reduce_order(
+        aggregate,
+        command,
+        _cancel_test_event(
+            command, event_type=ExecutionEventType.PARTIAL_FILL, minute=2, cumulative=40, last=40
+        ),
+    )
+    cancel = build_cancel_command(
+        command=command,
+        aggregate=aggregate,
+        as_of=dt.datetime(2026, 7, 16, 2, 5, tzinfo=UTC),
+    )
+    assert cancel.aggregate_status is OrderStatus.PARTIAL_FILLED
+    assert cancel.observed_filled_quantity == 40
+    assert cancel.observed_event_ids == aggregate.applied_event_ids
+
+
+def test_cancelling_only_replays_same_cancel_even_after_late_fill() -> None:
+    command = _cancel_test_command()
+    aggregate = reduce_order(
+        new_order_aggregate(command),
+        command,
+        _cancel_test_event(
+            command, event_type=ExecutionEventType.ACCEPTED, minute=1, cumulative=0, last=0
+        ),
+    )
+    cancel = build_cancel_command(
+        command=command,
+        aggregate=aggregate,
+        as_of=dt.datetime(2026, 7, 16, 2, 5, tzinfo=UTC),
+    )
+    aggregate = reduce_order(
+        aggregate,
+        command,
+        _cancel_test_event(
+            command, event_type=ExecutionEventType.CANCEL_ACCEPTED, minute=6, cumulative=0, last=0
+        ),
+    )
+    with pytest.raises(ContractError, match="existing cancel_id"):
+        build_cancel_command(
+            command=command,
+            aggregate=aggregate,
+            as_of=dt.datetime(2026, 7, 16, 2, 7, tzinfo=UTC),
+        )
+    assert (
+        build_cancel_command(
+            command=command,
+            aggregate=aggregate,
+            as_of=dt.datetime(2026, 7, 16, 2, 7, tzinfo=UTC),
+            replay=cancel,
+        )
+        is cancel
+    )
+
+    aggregate = reduce_order(
+        aggregate,
+        command,
+        _cancel_test_event(
+            command, event_type=ExecutionEventType.PARTIAL_FILL, minute=7, cumulative=20, last=20
+        ),
+    )
+    assert (
+        build_cancel_command(
+            command=command,
+            aggregate=aggregate,
+            as_of=dt.datetime(2026, 7, 16, 2, 8, tzinfo=UTC),
+            replay=cancel,
+        )
+        is cancel
+    )
+
+
+def test_cancel_command_fail_closed_on_illegal_source_and_forgery() -> None:
+    command = _cancel_test_command()
+    created = new_order_aggregate(command)
+    with pytest.raises(ContractError, match="bound broker_order_id"):
+        build_cancel_command(command=command, aggregate=created, as_of=_utc(3))
+
+    shadow = _cancel_test_command(mode=ExecutionMode.SHADOW)
+    shadow_aggregate = reduce_order(
+        new_order_aggregate(shadow),
+        shadow,
+        _cancel_test_event(
+            shadow, event_type=ExecutionEventType.ACCEPTED, minute=1, cumulative=0, last=0
+        ),
+    )
+    with pytest.raises(ContractError, match="PAPER"):
+        build_cancel_command(command=shadow, aggregate=shadow_aggregate, as_of=_utc(3))
+
+    aggregate = reduce_order(
+        created,
+        command,
+        _cancel_test_event(
+            command, event_type=ExecutionEventType.ACCEPTED, minute=1, cumulative=0, last=0
+        ),
+    )
+    with pytest.raises(ContractError, match="UTC|timezone"):
+        build_cancel_command(
+            command=command,
+            aggregate=aggregate,
+            as_of=dt.datetime(2026, 7, 16, 3),
+        )
+    cancel = build_cancel_command(command=command, aggregate=aggregate, as_of=_utc(3))
+    object.__setattr__(cancel, "observed_filled_quantity", 1)
+    with pytest.raises(ContractError, match="CANCEL_COMMAND_INVALID"):
+        build_cancel_command_identity(cancel)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("mode", "PAPER"),
+        ("aggregate_status", "SUBMITTED"),
+        ("observed_event_ids", [_hex64("event-as-list")]),
+    ],
+)
+def test_cancel_identity_reconstructs_types_before_digest(field: str, value: object) -> None:
+    command = _cancel_test_command()
+    aggregate = reduce_order(
+        new_order_aggregate(command),
+        command,
+        _cancel_test_event(
+            command, event_type=ExecutionEventType.ACCEPTED, minute=1, cumulative=0, last=0
+        ),
+    )
+    cancel = build_cancel_command(command=command, aggregate=aggregate, as_of=_utc(3))
+    object.__setattr__(cancel, field, value)
+    with pytest.raises(ContractError, match="CANCEL_COMMAND_INVALID") as exc_info:
+        build_cancel_command_identity(cancel)
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+
+
+def test_cancel_identity_checks_event_shape_before_uniqueness_without_echo() -> None:
+    command = _cancel_test_command()
+    aggregate = reduce_order(
+        new_order_aggregate(command),
+        command,
+        _cancel_test_event(
+            command, event_type=ExecutionEventType.ACCEPTED, minute=1, cumulative=0, last=0
+        ),
+    )
+    cancel = build_cancel_command(command=command, aggregate=aggregate, as_of=_utc(3))
+    sentinel = "TOKEN_SECRET_EVENT_ID"
+    object.__setattr__(cancel, "observed_event_ids", (sentinel, sentinel))
+    with pytest.raises(ContractError, match="CANCEL_COMMAND_INVALID") as exc_info:
+        build_cancel_command_identity(cancel)
+    text = str(exc_info.value)
+    assert sentinel not in text
+    assert "TOKEN" not in text
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+
+
+def test_cancel_identity_hides_hostile_timezone_exception() -> None:
+    class HostileTimezone(dt.tzinfo):
+        def utcoffset(self, value: dt.datetime | None) -> dt.timedelta:
+            del value
+            raise RuntimeError("TOKEN_SECRET_TZ")
+
+        def dst(self, value: dt.datetime | None) -> dt.timedelta:
+            del value
+            return dt.timedelta(0)
+
+    command = _cancel_test_command()
+    aggregate = reduce_order(
+        new_order_aggregate(command),
+        command,
+        _cancel_test_event(
+            command, event_type=ExecutionEventType.ACCEPTED, minute=1, cumulative=0, last=0
+        ),
+    )
+    cancel = build_cancel_command(command=command, aggregate=aggregate, as_of=_utc(3))
+    object.__setattr__(
+        cancel, "as_of", dt.datetime(2026, 7, 16, 3, tzinfo=HostileTimezone())
+    )
+    with pytest.raises(ContractError, match="CANCEL_COMMAND_INVALID") as exc_info:
+        build_cancel_command_identity(cancel)
+    assert "TOKEN" not in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+
+
+def test_cancel_replay_survives_cancelled_and_filled_monotonic_successors() -> None:
+    command = _cancel_test_command()
+    submitted = reduce_order(
+        new_order_aggregate(command),
+        command,
+        _cancel_test_event(
+            command, event_type=ExecutionEventType.ACCEPTED, minute=1, cumulative=0, last=0
+        ),
+    )
+    cancel = build_cancel_command(command=command, aggregate=submitted, as_of=_utc(3))
+    cancelling = reduce_order(
+        submitted,
+        command,
+        _cancel_test_event(
+            command,
+            event_type=ExecutionEventType.CANCEL_ACCEPTED,
+            minute=4,
+            cumulative=0,
+            last=0,
+        ),
+    )
+    cancelled = reduce_order(
+        cancelling,
+        command,
+        _cancel_test_event(
+            command,
+            event_type=ExecutionEventType.CANCELLED,
+            minute=5,
+            cumulative=0,
+            last=0,
+        ),
+    )
+    filled = reduce_order(
+        cancelling,
+        command,
+        _cancel_test_event(
+            command,
+            event_type=ExecutionEventType.FILL,
+            minute=5,
+            cumulative=100,
+            last=100,
+        ),
+    )
+    for successor in (cancelled, filled):
+        assert build_cancel_command(
+            command=command,
+            aggregate=successor,
+            as_of=dt.datetime(2026, 7, 16, 2, 6, tzinfo=UTC),
+            replay=cancel,
+        ) is cancel
+    with pytest.raises(ContractError, match="CANCELLING, CANCELLED or FILLED"):
+        build_cancel_command(
+            command=command,
+            aggregate=submitted,
+            as_of=dt.datetime(2026, 7, 16, 2, 6, tzinfo=UTC),
+            replay=cancel,
+        )

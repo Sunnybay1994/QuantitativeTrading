@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import json
 import os
 import sqlite3
 import traceback
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
 
@@ -17,6 +19,7 @@ from quant.execution.store import (
     ExecutionRepository,
     ExecutionStore,
     IdempotencyConflict,
+    LEDGER_CHECKPOINT_KEY,
     MigrationInterruptedError,
     OutboxDeliveryState,
     StoreError,
@@ -25,10 +28,31 @@ from quant.execution.store import (
 )
 from quant.execution.migrations.v001_initial import upgrade as upgrade_v001
 from quant.execution.migrations.v002_outbox_delivery import upgrade as upgrade_v002
+from quant.execution.migrations.v003_daily_risk_counters import (
+    upgrade as upgrade_typed_v003,
+)
+from quant.execution.migrations.v003_execution_state import (
+    upgrade as upgrade_scoped_v003,
+)
+from quant.execution.risk import (
+    DailyRiskCounters,
+    build_daily_risk_counters_identity,
+    serialize_daily_risk_counters,
+)
 
 
 def _hex(tag: str) -> str:
     return hashlib.sha256(tag.encode("utf-8")).hexdigest()
+
+
+def _canonical_bytes(payload: object) -> bytes:
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
 
 
 ID_A = _hex("id-a")
@@ -336,6 +360,172 @@ def test_aggregates_ledger_reconciliation_idempotent(cwd_tmp: Path) -> None:
         store.close()
 
 
+def test_v3_execution_stage_is_immutable_and_preserves_canonical_bytes(
+    cwd_tmp: Path,
+) -> None:
+    payload = _canonical_bytes(
+        {"schema_version": "m4-execution-stage-v1", "symbols": ["600000.SH", "腾讯"]}
+    )
+    store = _open("stage-v3.db", cwd_tmp)
+    try:
+        with store.transaction() as repo:
+            assert repo.put_execution_stage(
+                plan_id="plan-1", identity=ID_A, payload=payload
+            )
+            assert not repo.put_execution_stage(
+                plan_id="plan-1", identity=ID_A, payload=payload
+            )
+            with pytest.raises(IdempotencyConflict, match="execution_stage"):
+                repo.put_execution_stage(
+                    plan_id="plan-1", identity=ID_A, payload=b"different"
+                )
+            got = repo.get_execution_stage("plan-1")
+            assert got is not None
+            assert got.identity == ID_A
+            assert got.payload == payload
+            with pytest.raises(IdempotencyConflict, match="execution_stage"):
+                repo.put_execution_stage(
+                    plan_id="plan-1", identity=ID_B, payload=b"different"
+                )
+    finally:
+        store.close()
+
+
+def test_v3_order_aggregate_strict_cas_and_exact_replay(cwd_tmp: Path) -> None:
+    store = _open("aggregate-cas-v3.db", cwd_tmp)
+    try:
+        with store.transaction() as repo:
+            repo.put_order_aggregate(
+                command_id="cmd-cas", identity=ID_A, payload=b"created"
+            )
+            assert repo.replace_order_aggregate(
+                command_id="cmd-cas",
+                expected_identity=ID_A,
+                identity=ID_B,
+                payload=b"submitted",
+            )
+            assert not repo.replace_order_aggregate(
+                command_id="cmd-cas",
+                expected_identity=ID_A,
+                identity=ID_B,
+                payload=b"submitted",
+            )
+            with pytest.raises(IdempotencyConflict, match="IDEMPOTENCY_CONFLICT"):
+                repo.replace_order_aggregate(
+                    command_id="cmd-cas",
+                    expected_identity=ID_B,
+                    identity=ID_B,
+                    payload=b"same-identity-different-payload",
+                )
+            with pytest.raises(IdempotencyConflict, match="CAS_MISMATCH"):
+                repo.replace_order_aggregate(
+                    command_id="cmd-cas",
+                    expected_identity=ID_A,
+                    identity=ID_X,
+                    payload=b"filled",
+                )
+            got = repo.get_order_aggregate("cmd-cas")
+            assert got is not None
+            assert (got.identity, got.payload) == (ID_B, b"submitted")
+    finally:
+        store.close()
+
+
+def test_v4_scoped_daily_risk_counters_insert_read_and_cas(cwd_tmp: Path) -> None:
+    initial = _canonical_bytes(
+        {"buy_notional": "0", "cancel_count": 0, "order_count": 0}
+    )
+    projected = _canonical_bytes(
+        {"buy_notional": "1000.00", "cancel_count": 0, "order_count": 1}
+    )
+    store = _open("counters-cas-v3.db", cwd_tmp)
+    try:
+        with store.transaction() as repo:
+            assert repo.put_scoped_daily_risk_counters(
+                counter_key="paper:2026-08-03", identity=ID_A, payload=initial
+            )
+            assert not repo.put_scoped_daily_risk_counters(
+                counter_key="paper:2026-08-03", identity=ID_A, payload=initial
+            )
+            with pytest.raises(IdempotencyConflict, match="daily_risk_counters"):
+                repo.put_scoped_daily_risk_counters(
+                    counter_key="paper:2026-08-03",
+                    identity=ID_B,
+                    payload=projected,
+                )
+            assert repo.compare_and_set_scoped_daily_risk_counters(
+                counter_key="paper:2026-08-03",
+                expected_identity=ID_A,
+                identity=ID_B,
+                payload=projected,
+            )
+            assert not repo.compare_and_set_scoped_daily_risk_counters(
+                counter_key="paper:2026-08-03",
+                expected_identity=ID_A,
+                identity=ID_B,
+                payload=projected,
+            )
+            with pytest.raises(IdempotencyConflict, match="IDEMPOTENCY_CONFLICT"):
+                repo.compare_and_set_scoped_daily_risk_counters(
+                    counter_key="paper:2026-08-03",
+                    expected_identity=ID_B,
+                    identity=ID_B,
+                    payload=b"same-identity-different-payload",
+                )
+            with pytest.raises(IdempotencyConflict, match="CAS_MISMATCH"):
+                repo.compare_and_set_scoped_daily_risk_counters(
+                    counter_key="paper:2026-08-03",
+                    expected_identity=ID_A,
+                    identity=ID_X,
+                    payload=b"forbidden",
+                )
+            got = repo.get_scoped_daily_risk_counters("paper:2026-08-03")
+            assert got is not None
+            assert (got.identity, got.payload) == (ID_B, projected)
+    finally:
+        store.close()
+
+
+def test_v4_execution_state_outer_transaction_rolls_back_together(
+    cwd_tmp: Path,
+) -> None:
+    store = _open("state-atomic-v3.db", cwd_tmp)
+    try:
+        with store.transaction() as repo:
+            repo.put_order_aggregate(
+                command_id="cmd-atomic", identity=ID_A, payload=b"created"
+            )
+            repo.put_scoped_daily_risk_counters(
+                counter_key="paper:2026-08-03", identity=ID_A, payload=b"zero"
+            )
+        with pytest.raises(RuntimeError, match="crash"):
+            with store.transaction() as repo:
+                repo.replace_order_aggregate(
+                    command_id="cmd-atomic",
+                    expected_identity=ID_A,
+                    identity=ID_B,
+                    payload=b"submitted",
+                )
+                repo.compare_and_set_scoped_daily_risk_counters(
+                    counter_key="paper:2026-08-03",
+                    expected_identity=ID_A,
+                    identity=ID_B,
+                    payload=b"one",
+                )
+                repo.put_execution_stage(
+                    plan_id="plan-atomic", identity=ID_X, payload=b"receipt"
+                )
+                raise RuntimeError("crash")
+        with store.transaction() as repo:
+            aggregate = repo.get_order_aggregate("cmd-atomic")
+            counters = repo.get_scoped_daily_risk_counters("paper:2026-08-03")
+            assert aggregate is not None and aggregate.identity == ID_A
+            assert counters is not None and counters.identity == ID_A
+            assert repo.get_execution_stage("plan-atomic") is None
+    finally:
+        store.close()
+
+
 # --- F1: SQLite URI defensive alignment with C0 ---
 
 
@@ -439,6 +629,18 @@ def _putters() -> list[tuple[str, Callable[[ExecutionRepository, Any], bool]]]:
             "reconciliation_run",
             lambda repo, ident: repo.put_reconciliation_run(
                 run_id="rec-k", identity=ident, payload=b"p"
+            ),
+        ),
+        (
+            "execution_stage",
+            lambda repo, ident: repo.put_execution_stage(
+                plan_id="plan-k", identity=ident, payload=b"p"
+            ),
+        ),
+        (
+            "scoped_daily_risk_counters",
+            lambda repo, ident: repo.put_scoped_daily_risk_counters(
+                counter_key="paper:2026-08-03", identity=ident, payload=b"p"
             ),
         ),
     ]
@@ -1289,6 +1491,137 @@ def test_v1_to_current_preserves_legacy_outbox_but_does_not_make_it_sendable(
         store.close()
 
 
+def test_v2_to_current_preserves_delivery_rows_and_adds_execution_state(
+    cwd_tmp: Path,
+) -> None:
+    db = cwd_tmp / "legacy-v2.db"
+    now_text = "2026-08-03T00:00:00.000000Z"
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE schema_version (singleton INTEGER PRIMARY KEY "
+            "CHECK (singleton = 1), version INTEGER NOT NULL, status TEXT NOT NULL, "
+            "applied_at TEXT NOT NULL)"
+        )
+        upgrade_v001(conn)
+        upgrade_v002(conn)
+        conn.execute(
+            "INSERT INTO schema_version VALUES (1, 2, 'ready', ?)", (now_text,)
+        )
+        conn.execute("INSERT INTO commands VALUES ('cmd-old', ?, ?)", (ID_A, b"c"))
+        conn.execute(
+            "INSERT INTO order_aggregates VALUES ('cmd-old', ?, ?)",
+            (ID_AGG, b"created"),
+        )
+        conn.execute("INSERT INTO outbox VALUES ('obx-old', ?, ?)", (ID_O_A, b"o"))
+        conn.execute(
+            "INSERT INTO outbox_deliveries VALUES "
+            "('obx-old', 'cmd-old', 'PENDING', 0, ?, NULL, NULL, NULL, NULL)",
+            (now_text,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    store = _open("legacy-v2.db", cwd_tmp)
+    try:
+        assert store.schema_version() == CURRENT_SCHEMA_VERSION
+        with store.transaction() as repo:
+            delivery = repo.get_outbox_delivery("obx-old")
+            assert delivery is not None
+            assert delivery.state is OutboxDeliveryState.PENDING
+            assert repo.get_execution_stage("plan-new") is None
+            assert repo.get_scoped_daily_risk_counters("paper:2026-08-03") is None
+    finally:
+        store.close()
+
+
+def test_scoped_v3_to_v7_preserves_rows_and_adds_typed_counters(
+    cwd_tmp: Path,
+) -> None:
+    db = cwd_tmp / "legacy-scoped-v3.db"
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE schema_version (singleton INTEGER PRIMARY KEY "
+            "CHECK (singleton = 1), version INTEGER NOT NULL, status TEXT NOT NULL, "
+            "applied_at TEXT NOT NULL)"
+        )
+        upgrade_v001(conn)
+        upgrade_v002(conn)
+        upgrade_scoped_v003(conn)
+        conn.execute(
+            "INSERT INTO schema_version VALUES (1, 3, 'ready', "
+            "'2026-08-03T00:00:00Z')"
+        )
+        conn.execute(
+            "INSERT INTO daily_risk_counters VALUES (?, ?, ?)",
+            ("paper:2026-08-03", ID_A, b"legacy-scoped"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    store = _open("legacy-scoped-v3.db", cwd_tmp)
+    try:
+        assert store.schema_version() == CURRENT_SCHEMA_VERSION
+        with store.transaction() as repo:
+            scoped = repo.get_scoped_daily_risk_counters("paper:2026-08-03")
+            assert scoped is not None
+            assert (scoped.identity, scoped.payload) == (ID_A, b"legacy-scoped")
+            assert repo.get_daily_risk_counters(dt.date(2026, 8, 3)) is None
+    finally:
+        store.close()
+
+
+def test_typed_v3_to_v7_preserves_rows_and_adds_scoped_counters(
+    cwd_tmp: Path,
+) -> None:
+    db = cwd_tmp / "legacy-typed-v3.db"
+    counters = DailyRiskCounters(
+        session_date=dt.date(2026, 8, 3),
+        order_count=2,
+        cancel_count=1,
+        buy_notional=Decimal("123.45"),
+    )
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE schema_version (singleton INTEGER PRIMARY KEY "
+            "CHECK (singleton = 1), version INTEGER NOT NULL, status TEXT NOT NULL, "
+            "applied_at TEXT NOT NULL)"
+        )
+        upgrade_v001(conn)
+        upgrade_v002(conn)
+        upgrade_typed_v003(conn)
+        conn.execute(
+            "INSERT INTO schema_version VALUES (1, 3, 'ready', "
+            "'2026-08-03T00:00:00Z')"
+        )
+        conn.execute(
+            "INSERT INTO daily_risk_counters VALUES (?, ?, ?, ?)",
+            (
+                counters.session_date.isoformat(),
+                build_daily_risk_counters_identity(counters),
+                serialize_daily_risk_counters(counters),
+                "2026-08-03T00:00:00.000000Z",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    store = _open("legacy-typed-v3.db", cwd_tmp)
+    try:
+        assert store.schema_version() == CURRENT_SCHEMA_VERSION
+        with store.transaction() as repo:
+            typed = repo.get_daily_risk_counters(dt.date(2026, 8, 3))
+            assert typed is not None and typed.counters == counters
+            assert repo.get_scoped_daily_risk_counters("paper:2026-08-03") is None
+    finally:
+        store.close()
+
+
 def test_delivery_requires_command_aggregate_and_outbox_in_atomic_transaction(
     cwd_tmp: Path,
 ) -> None:
@@ -1679,3 +2012,1047 @@ def test_batch_claim_sql_failure_rolls_back_savepoint_when_caller_catches(
                 assert got.attempt_count == 0
     finally:
         store.close()
+
+
+def test_selected_claim_preserves_input_order_and_excludes_other_ready_rows(
+    cwd_tmp: Path,
+) -> None:
+    now = dt.datetime(2026, 8, 2, tzinfo=UTC)
+    command_ids = tuple(sorted((_hex("selected-a"), _hex("selected-b"))))
+    other = _hex("other-ready")
+    store = _open("selected-exact.db", cwd_tmp)
+    try:
+        for command_id in (*command_ids, other):
+            with store.transaction() as repo:
+                repo.put_command(
+                    command_id=command_id, identity=command_id, payload=b"wire"
+                )
+                repo.put_order_aggregate(
+                    command_id=command_id, identity=ID_AGG, payload=b"aggregate"
+                )
+                repo.put_outbox(
+                    outbox_key=command_id, identity=command_id, payload=b"wire"
+                )
+                repo.put_outbox_delivery(
+                    outbox_key=command_id,
+                    command_id=command_id,
+                    available_at=now,
+                )
+        with store.transaction() as repo:
+            before = repo.get_outbox_delivery(other)
+            claimed = repo.claim_selected_outbox_deliveries(
+                command_ids=command_ids,
+                worker_id="selected-worker",
+                now=now,
+                lease_until=now + dt.timedelta(minutes=1),
+            )
+            after = repo.get_outbox_delivery(other)
+        assert tuple(item.command_id for item in claimed) == command_ids
+        assert before == after
+        assert after is not None and after.state is OutboxDeliveryState.PENDING
+    finally:
+        store.close()
+
+
+def test_selected_claim_rolls_back_all_members_when_one_is_terminal(
+    cwd_tmp: Path,
+) -> None:
+    now = dt.datetime(2026, 8, 2, 1, tzinfo=UTC)
+    command_ids = tuple(sorted((_hex("atomic-a"), _hex("atomic-b"))))
+    store = _open("selected-atomic.db", cwd_tmp)
+    try:
+        for command_id in command_ids:
+            with store.transaction() as repo:
+                repo.put_command(
+                    command_id=command_id, identity=command_id, payload=b"wire"
+                )
+                repo.put_order_aggregate(
+                    command_id=command_id, identity=ID_AGG, payload=b"aggregate"
+                )
+                repo.put_outbox(
+                    outbox_key=command_id, identity=command_id, payload=b"wire"
+                )
+                repo.put_outbox_delivery(
+                    outbox_key=command_id,
+                    command_id=command_id,
+                    available_at=now,
+                )
+        terminal_id = command_ids[1]
+        with store.transaction() as repo:
+            delivery = repo.claim_selected_outbox_deliveries(
+                command_ids=(terminal_id,),
+                worker_id="terminal-worker",
+                now=now,
+                lease_until=now + dt.timedelta(minutes=1),
+            )[0]
+            repo.mark_outbox_sent(
+                outbox_key=terminal_id,
+                lease_owner="terminal-worker",
+                expected_attempt=delivery.attempt_count,
+                sent_at=now + dt.timedelta(seconds=1),
+            )
+        with pytest.raises(StoreError, match="OUTBOX_DELIVERY_SELECTED_UNCLAIMABLE"):
+            with store.transaction() as repo:
+                repo.claim_selected_outbox_deliveries(
+                    command_ids=command_ids,
+                    worker_id="selected-worker",
+                    now=now,
+                    lease_until=now + dt.timedelta(minutes=1),
+                )
+        with store.transaction() as repo:
+            ready = repo.get_outbox_delivery(command_ids[0])
+        assert ready is not None and ready.state is OutboxDeliveryState.PENDING
+        assert ready.attempt_count == 0
+    finally:
+        store.close()
+
+
+def _stage_exact_pending_delivery(
+    store: ExecutionStore,
+    *,
+    command_id: str,
+    available_at: dt.datetime,
+) -> None:
+    with store.transaction() as repo:
+        repo.put_command(
+            command_id=command_id, identity=command_id, payload=b"wire"
+        )
+        repo.put_order_aggregate(
+            command_id=command_id, identity=ID_AGG, payload=b"aggregate"
+        )
+        repo.put_outbox(
+            outbox_key=command_id, identity=command_id, payload=b"wire"
+        )
+        repo.put_outbox_delivery(
+            outbox_key=command_id,
+            command_id=command_id,
+            available_at=available_at,
+        )
+
+
+def test_exact_pending_claim_succeeds_only_for_complete_global_set(
+    cwd_tmp: Path,
+) -> None:
+    now = dt.datetime(2026, 8, 2, 2, tzinfo=UTC)
+    command_ids = tuple(sorted((_hex("exact-a"), _hex("exact-b"))))
+    store = _open("exact-pending-success.db", cwd_tmp)
+    try:
+        for command_id in command_ids:
+            _stage_exact_pending_delivery(
+                store, command_id=command_id, available_at=now
+            )
+        with store.transaction() as repo:
+            claimed = repo.claim_exact_pending_outbox_deliveries(
+                command_ids=command_ids,
+                worker_id="exact-worker",
+                now=now,
+                lease_until=now + dt.timedelta(minutes=1),
+            )
+        assert tuple(item.command_id for item in claimed) == command_ids
+        assert all(item.state is OutboxDeliveryState.LEASED for item in claimed)
+        assert all(item.lease_owner == "exact-worker" for item in claimed)
+    finally:
+        store.close()
+
+
+def test_exact_pending_claim_preserves_sqlite_write_failure_as_retryable(
+    cwd_tmp: Path,
+) -> None:
+    now = dt.datetime(2026, 8, 2, 2, 30, tzinfo=UTC)
+    command_id = _hex("exact-write-failure")
+    store = _open("exact-pending-write-failure.db", cwd_tmp)
+    try:
+        _stage_exact_pending_delivery(store, command_id=command_id, available_at=now)
+        store._conn.execute(  # noqa: SLF001 - fault injection at SQLite boundary
+            """
+            CREATE TRIGGER fail_exact_pending_claim
+            BEFORE UPDATE OF state ON outbox_deliveries
+            WHEN NEW.state = 'LEASED'
+            BEGIN
+                SELECT RAISE(ABORT, 'PRIVATE_TRIGGER_SENTINEL');
+            END
+            """
+        )
+        with pytest.raises(
+            StoreError, match="^OUTBOX_DELIVERY_EXACT_CLAIM_FAILED$"
+        ) as error:
+            with store.transaction() as repo:
+                repo.claim_exact_pending_outbox_deliveries(
+                    command_ids=(command_id,),
+                    worker_id="exact-worker",
+                    now=now,
+                    lease_until=now + dt.timedelta(minutes=1),
+                )
+        assert error.value.__cause__ is None
+        assert error.value.__context__ is None
+        with store.transaction() as repo:
+            delivery = repo.get_outbox_delivery(command_id)
+        assert delivery is not None
+        assert delivery.state is OutboxDeliveryState.PENDING
+        assert delivery.attempt_count == 0
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("drift_kind", ["EXTRA", "MISSING", "FUTURE"])
+def test_exact_pending_claim_rejects_any_pending_set_drift(
+    cwd_tmp: Path, drift_kind: str
+) -> None:
+    now = dt.datetime(2026, 8, 2, 3, tzinfo=UTC)
+    command_ids = tuple(sorted((_hex("drift-a"), _hex("drift-b"))))
+    store = _open(f"exact-pending-{drift_kind.lower()}.db", cwd_tmp)
+    try:
+        for index, command_id in enumerate(command_ids):
+            available_at = (
+                now + dt.timedelta(minutes=1)
+                if drift_kind == "FUTURE" and index == 1
+                else now
+            )
+            _stage_exact_pending_delivery(
+                store, command_id=command_id, available_at=available_at
+            )
+        if drift_kind == "EXTRA":
+            selected = (command_ids[0],)
+        elif drift_kind == "MISSING":
+            selected = tuple(sorted((command_ids[0], _hex("absent"))))
+        else:
+            selected = command_ids
+        with pytest.raises(StoreError, match="^OUTBOX_DELIVERY_EXACT_SET_DRIFT$"):
+            with store.transaction() as repo:
+                repo.claim_exact_pending_outbox_deliveries(
+                    command_ids=selected,
+                    worker_id="exact-worker",
+                    now=now,
+                    lease_until=now + dt.timedelta(minutes=1),
+                )
+        with store.transaction() as repo:
+            deliveries = tuple(
+                repo.get_outbox_delivery(command_id) for command_id in command_ids
+            )
+        assert all(item is not None for item in deliveries)
+        assert all(
+            item is not None
+            and item.state is OutboxDeliveryState.PENDING
+            and item.attempt_count == 0
+            for item in deliveries
+        )
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("blocked_state", ["LEASED", "UNKNOWN"])
+def test_exact_pending_claim_rejects_global_ambiguous_delivery(
+    cwd_tmp: Path, blocked_state: str
+) -> None:
+    now = dt.datetime(2026, 8, 2, 4, tzinfo=UTC)
+    command_ids = tuple(sorted((_hex("ambiguous-a"), _hex("ambiguous-b"))))
+    store = _open(f"exact-pending-{blocked_state.lower()}.db", cwd_tmp)
+    try:
+        for command_id in command_ids:
+            _stage_exact_pending_delivery(
+                store, command_id=command_id, available_at=now
+            )
+        with store.transaction() as repo:
+            claimed = repo.claim_selected_outbox_deliveries(
+                command_ids=(command_ids[1],),
+                worker_id="other-worker",
+                now=now,
+                lease_until=now + dt.timedelta(minutes=1),
+            )[0]
+            if blocked_state == "UNKNOWN":
+                repo.mark_outbox_unknown(
+                    outbox_key=claimed.outbox_key,
+                    lease_owner="other-worker",
+                    expected_attempt=claimed.attempt_count,
+                    unknown_at=now + dt.timedelta(seconds=1),
+                    error_code="FIXTURE_UNKNOWN",
+                )
+        with pytest.raises(StoreError, match="^OUTBOX_DELIVERY_EXACT_SET_DRIFT$"):
+            with store.transaction() as repo:
+                repo.claim_exact_pending_outbox_deliveries(
+                    command_ids=(command_ids[0],),
+                    worker_id="exact-worker",
+                    now=now,
+                    lease_until=now + dt.timedelta(minutes=1),
+                )
+        with store.transaction() as repo:
+            untouched = repo.get_outbox_delivery(command_ids[0])
+        assert untouched is not None
+        assert untouched.state is OutboxDeliveryState.PENDING
+        assert untouched.attempt_count == 0
+    finally:
+        store.close()
+
+
+def test_v3_cas_post_update_failure_rolls_back_savepoint_when_caller_catches(
+    cwd_tmp: Path,
+) -> None:
+    store = _open("state-cas-savepoint.db", cwd_tmp)
+    with store.transaction() as repo:
+        repo.put_order_aggregate(
+            command_id="cmd-savepoint", identity=ID_A, payload=b"created"
+        )
+    inner = store._conn  # noqa: SLF001 - fault injection at SQLite boundary
+    assert inner is not None
+    leak = str(cwd_tmp / "private-state")
+
+    class _FailPostUpdateRead:
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            self._inner = conn
+            self._aggregate_selects = 0
+
+        def execute(self, sql: str, parameters: object = ()) -> sqlite3.Cursor:
+            if sql.lstrip().startswith(
+                "SELECT command_id, identity, payload FROM order_aggregates"
+            ):
+                self._aggregate_selects += 1
+                if self._aggregate_selects == 2:
+                    raise sqlite3.OperationalError(f"injected failure near {leak}")
+            return self._inner.execute(sql, parameters)  # type: ignore[arg-type]
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+    store._conn = _FailPostUpdateRead(inner)  # type: ignore[assignment]  # noqa: SLF001
+    try:
+        with store.transaction() as repo:
+            with pytest.raises(StoreError, match="ORDER_AGGREGATE_CAS_FAILED") as exc_info:
+                repo.replace_order_aggregate(
+                    command_id="cmd-savepoint",
+                    expected_identity=ID_A,
+                    identity=ID_B,
+                    payload=b"submitted",
+                )
+            assert leak not in str(exc_info.value)
+            assert exc_info.value.__cause__ is None
+            assert exc_info.value.__context__ is None
+            got = repo.get_order_aggregate("cmd-savepoint")
+            assert got is not None
+            assert (got.identity, got.payload) == (ID_A, b"created")
+    finally:
+        store.close()
+
+
+def test_v3_cas_missing_rows_fail_without_creating_state(cwd_tmp: Path) -> None:
+    store = _open("state-cas-missing.db", cwd_tmp)
+    try:
+        with store.transaction() as repo:
+            with pytest.raises(StoreError, match="ORDER_AGGREGATE_NOT_FOUND"):
+                repo.replace_order_aggregate(
+                    command_id="missing-command",
+                    expected_identity=ID_A,
+                    identity=ID_B,
+                    payload=b"x",
+                )
+            with pytest.raises(StoreError, match="DAILY_RISK_COUNTERS_NOT_FOUND"):
+                repo.compare_and_set_scoped_daily_risk_counters(
+                    counter_key="paper:2026-08-03",
+                    expected_identity=ID_A,
+                    identity=ID_B,
+                    payload=b"x",
+                )
+            assert repo.get_order_aggregate("missing-command") is None
+            assert repo.get_scoped_daily_risk_counters("paper:2026-08-03") is None
+    finally:
+        store.close()
+
+
+def test_v3_stage_select_operational_error_is_sanitized_and_atomic(
+    cwd_tmp: Path,
+) -> None:
+    store = _open("stage-select-failure.db", cwd_tmp)
+    inner = store._conn  # noqa: SLF001 - fault injection at SQLite boundary
+    assert inner is not None
+    sentinel = str(cwd_tmp / "stage-select-sentinel")
+
+    class _FailStageSelect:
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            self._inner = conn
+
+        def execute(self, sql: str, parameters: object = ()) -> sqlite3.Cursor:
+            if sql.lstrip().startswith(
+                "SELECT identity, payload FROM execution_stages"
+            ):
+                raise sqlite3.OperationalError(f"select failed near {sentinel}")
+            return self._inner.execute(sql, parameters)  # type: ignore[arg-type]
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+    store._conn = _FailStageSelect(inner)  # type: ignore[assignment]  # noqa: SLF001
+    try:
+        with store.transaction() as repo:
+            with pytest.raises(StoreError, match="EXECUTION_STAGE_QUERY_FAILED") as info:
+                repo.put_execution_stage(
+                    plan_id="plan-select-failure", identity=ID_A, payload=b"receipt"
+                )
+            assert sentinel not in str(info.value)
+            assert info.value.__cause__ is None
+            assert info.value.__context__ is None
+            assert repo.get_execution_stage("plan-select-failure") is None
+    finally:
+        store.close()
+
+
+def test_v4_scoped_counter_insert_operational_error_is_sanitized_and_atomic(
+    cwd_tmp: Path,
+) -> None:
+    store = _open("counter-insert-failure.db", cwd_tmp)
+    inner = store._conn  # noqa: SLF001 - fault injection at SQLite boundary
+    assert inner is not None
+    sentinel = str(cwd_tmp / "counter-insert-sentinel")
+
+    class _FailCounterInsert:
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            self._inner = conn
+
+        def execute(self, sql: str, parameters: object = ()) -> sqlite3.Cursor:
+            if sql.lstrip().startswith("INSERT INTO scoped_daily_risk_counters"):
+                raise sqlite3.OperationalError(f"insert failed near {sentinel}")
+            return self._inner.execute(sql, parameters)  # type: ignore[arg-type]
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+    store._conn = _FailCounterInsert(inner)  # type: ignore[assignment]  # noqa: SLF001
+    try:
+        with store.transaction() as repo:
+            with pytest.raises(
+                StoreError, match="DAILY_RISK_COUNTERS_WRITE_FAILED"
+            ) as info:
+                repo.put_scoped_daily_risk_counters(
+                    counter_key="paper:2026-08-03", identity=ID_A, payload=b"zero"
+                )
+            assert sentinel not in str(info.value)
+            assert info.value.__cause__ is None
+            assert info.value.__context__ is None
+            assert repo.get_scoped_daily_risk_counters("paper:2026-08-03") is None
+    finally:
+        store.close()
+
+
+def test_put_event_foreign_key_failure_keeps_referential_integrity_code(
+    cwd_tmp: Path,
+) -> None:
+    store = _open("event-fk-regression.db", cwd_tmp)
+    try:
+        with store.transaction() as repo:
+            with pytest.raises(StoreError, match="REFERENTIAL_INTEGRITY") as info:
+                repo.put_event(
+                    event_id="event-without-command",
+                    command_id="missing-command",
+                    identity=ID_E,
+                    payload=b"event",
+                )
+            assert info.value.__cause__ is None
+            assert info.value.__context__ is None
+            assert repo.get_event("event-without-command") is None
+    finally:
+        store.close()
+
+
+def test_recovery_rows_empty_store_is_valid(cwd_tmp: Path) -> None:
+    store = _open("recovery-empty.db", cwd_tmp)
+    try:
+        with store.transaction() as repo:
+            rows = repo.read_recovery_rows()
+        assert rows.commands == ()
+        assert rows.events == ()
+        assert rows.order_aggregates == ()
+        assert rows.outbox_deliveries == ()
+        assert rows.ledger_entries == ()
+        assert rows.ledger_contexts == ()
+        assert rows.ledger_checkpoints == ()
+    finally:
+        store.close()
+
+
+def test_recovery_rows_are_strict_and_sorted_by_primary_key(cwd_tmp: Path) -> None:
+    store = _open("recovery-sorted.db", cwd_tmp)
+    now = dt.datetime(2026, 8, 3, 1, tzinfo=UTC)
+    try:
+        with store.transaction() as repo:
+            for suffix in ("b", "a"):
+                command_id = f"cmd-{suffix}"
+                repo.put_command(
+                    command_id=command_id,
+                    identity=_hex(f"command-{suffix}"),
+                    payload=f"command-{suffix}".encode(),
+                )
+                repo.put_order_aggregate(
+                    command_id=command_id,
+                    identity=_hex(f"aggregate-{suffix}"),
+                    payload=f"aggregate-{suffix}".encode(),
+                )
+                repo.put_event(
+                    event_id=f"evt-{suffix}",
+                    command_id=command_id,
+                    identity=_hex(f"event-{suffix}"),
+                    payload=f"event-{suffix}".encode(),
+                )
+                repo.put_outbox(
+                    outbox_key=f"obx-{suffix}",
+                    identity=_hex(f"outbox-{suffix}"),
+                    payload=f"outbox-{suffix}".encode(),
+                )
+                repo.put_outbox_delivery(
+                    outbox_key=f"obx-{suffix}",
+                    command_id=command_id,
+                    available_at=now,
+                )
+                repo.put_ledger_entry(
+                    entry_id=f"led-{suffix}",
+                    identity=_hex(f"ledger-{suffix}"),
+                    payload=f"ledger-{suffix}".encode(),
+                )
+                repo.put_ledger_context(
+                    command_id=command_id,
+                    identity=_hex(f"context-{suffix}"),
+                    payload=f"context-{suffix}".encode(),
+                )
+            repo.put_ledger_checkpoint(
+                checkpoint_key="paper-shadow-primary-v1",
+                identity=_hex("checkpoint"),
+                payload=b"checkpoint",
+                last_entry_id="led-b",
+            )
+            rows = repo.read_recovery_rows()
+
+        assert tuple(item.key for item in rows.commands) == ("cmd-a", "cmd-b")
+        assert tuple(item.event_id for item in rows.events) == ("evt-a", "evt-b")
+        assert tuple(item.command_id for item in rows.events) == ("cmd-a", "cmd-b")
+        assert tuple(item.key for item in rows.order_aggregates) == ("cmd-a", "cmd-b")
+        assert tuple(item.outbox_key for item in rows.outbox_deliveries) == (
+            "obx-a",
+            "obx-b",
+        )
+        assert tuple(item.key for item in rows.ledger_entries) == ("led-a", "led-b")
+        assert tuple(item.key for item in rows.ledger_contexts) == ("cmd-a", "cmd-b")
+        assert tuple(item.checkpoint_key for item in rows.ledger_checkpoints) == (
+            "paper-shadow-primary-v1",
+        )
+        assert rows.ledger_checkpoints[0].last_entry_id == "led-b"
+    finally:
+        store.close()
+
+
+def test_recovery_rows_hold_one_transaction_snapshot(cwd_tmp: Path) -> None:
+    first = _open("recovery-atomic.db", cwd_tmp)
+    second = _open("recovery-atomic.db", cwd_tmp)
+    try:
+        with first.transaction() as repo:
+            repo.put_command(command_id="cmd-a", identity=ID_A, payload=b"a")
+            before = repo.read_recovery_rows()
+            with pytest.raises(StoreError, match="^TX_BUSY$"):
+                with second.transaction() as other:
+                    other.put_command(command_id="cmd-b", identity=ID_B, payload=b"b")
+            after = repo.read_recovery_rows()
+            assert before == after
+
+        with second.transaction() as repo:
+            repo.put_command(command_id="cmd-b", identity=ID_B, payload=b"b")
+        with first.transaction() as repo:
+            latest = repo.read_recovery_rows()
+        assert tuple(item.key for item in latest.commands) == ("cmd-a", "cmd-b")
+    finally:
+        first.close()
+        second.close()
+
+
+def test_ledger_checkpoint_cas_and_context_idempotency(cwd_tmp: Path) -> None:
+    store = _open("ledger-v4-cas.db", cwd_tmp)
+    try:
+        with store.transaction() as repo:
+            repo.put_command(command_id="cmd-a", identity=ID_A, payload=b"command")
+            assert repo.put_ledger_context(
+                command_id="cmd-a", identity=ID_B, payload=b"context"
+            )
+            assert not repo.put_ledger_context(
+                command_id="cmd-a", identity=ID_B, payload=b"context"
+            )
+            repo.put_ledger_entry(entry_id="entry-a", identity=ID_E, payload=b"entry")
+            assert repo.put_ledger_checkpoint(
+                checkpoint_key="paper-shadow-primary-v1",
+                identity=ID_A,
+                payload=b"state-a",
+                last_entry_id=None,
+            )
+            assert repo.replace_ledger_checkpoint(
+                checkpoint_key="paper-shadow-primary-v1",
+                expected_identity=ID_A,
+                identity=ID_B,
+                payload=b"state-b",
+                last_entry_id="entry-a",
+            )
+            with pytest.raises(StoreError, match="LEDGER_CHECKPOINT_CAS_CONFLICT"):
+                repo.replace_ledger_checkpoint(
+                    checkpoint_key="paper-shadow-primary-v1",
+                    expected_identity=ID_A,
+                    identity=ID_E,
+                    payload=b"state-c",
+                    last_entry_id="entry-a",
+                )
+    finally:
+        store.close()
+
+
+def test_ledger_checkpoint_api_rejects_every_noncanonical_key(cwd_tmp: Path) -> None:
+    store = _open("ledger-v4-fixed-key.db", cwd_tmp)
+    try:
+        with store.transaction() as repo:
+            for operation in (
+                lambda: repo.put_ledger_checkpoint(
+                    checkpoint_key="arbitrary-account-path", identity=ID_A,
+                    payload=b"state", last_entry_id=None,
+                ),
+                lambda: repo.get_ledger_checkpoint("arbitrary-account-path"),
+                lambda: repo.replace_ledger_checkpoint(
+                    checkpoint_key="arbitrary-account-path",
+                    expected_identity=ID_A, identity=ID_B,
+                    payload=b"state-b", last_entry_id=None,
+                ),
+            ):
+                with pytest.raises(StoreError, match="^LEDGER_CHECKPOINT_KEY_INVALID$"):
+                    operation()
+            assert repo.get_ledger_checkpoint(LEDGER_CHECKPOINT_KEY) is None
+    finally:
+        store.close()
+
+
+def test_recovery_rejects_offline_second_checkpoint_key(cwd_tmp: Path) -> None:
+    name = "ledger-v4-offline-second-key.db"
+    database = cwd_tmp / name
+    store = _open(name, cwd_tmp)
+    store.close()
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "INSERT INTO ledger_checkpoints "
+            "(checkpoint_key, identity, payload, last_entry_id) VALUES (?, ?, ?, NULL)",
+            ("arbitrary-account-path", ID_A, b"hostile"),
+        )
+    reopened = _open(name, cwd_tmp)
+    try:
+        with reopened.transaction() as repo:
+            with pytest.raises(StoreError, match="^ROW_CORRUPT$") as error:
+                repo.read_recovery_rows()
+        assert error.value.__cause__ is None
+        assert error.value.__context__ is None
+    finally:
+        reopened.close()
+
+
+@pytest.mark.parametrize(
+    ("first_kind", "second_kind"),
+    [("ORDER", "ORDER"), ("CANCEL", "CANCEL"), ("ORDER", "CANCEL")],
+)
+def test_risk_receipt_same_predecessor_is_serialized_and_fresh_retry_does_not_fork(
+    cwd_tmp: Path, first_kind: str, second_kind: str
+) -> None:
+    name = f"risk-race-{first_kind}-{second_kind}.db"
+    first = _open(name, cwd_tmp)
+    second = _open(name, cwd_tmp)
+    first_subject = _hex(f"{first_kind}-subject-1")
+    second_subject = _hex(f"{second_kind}-subject-2")
+    first_receipt = _hex(f"{first_kind}-receipt-1")
+    second_receipt = _hex(f"{second_kind}-receipt-2")
+
+    def put(
+        repo: ExecutionRepository,
+        *,
+        sequence: int,
+        kind: str,
+        subject: str,
+        receipt: str,
+        previous: str,
+    ) -> bool:
+        return repo.put_risk_transition_receipt(
+            sequence=sequence,
+            transition_kind=kind,
+            subject_id=subject,
+            receipt_id=receipt,
+            previous_receipt_id=previous,
+            risk_counter_key="paper-account:2026-08-09",
+            predecessor_counter_identity=_hex(f"counter-{sequence - 1}"),
+            projected_counter_identity=_hex(f"counter-{sequence}"),
+            payload=f"{kind}-{sequence}".encode(),
+        )
+
+    try:
+        with first.transaction() as repo:
+            assert put(
+                repo,
+                sequence=1,
+                kind=first_kind,
+                subject=first_subject,
+                receipt=first_receipt,
+                previous="0" * 64,
+            )
+            with pytest.raises(StoreError, match="^TX_BUSY$"):
+                with second.transaction():
+                    pass
+        with second.transaction() as repo:
+            assert put(
+                repo,
+                sequence=2,
+                kind=second_kind,
+                subject=second_subject,
+                receipt=second_receipt,
+                previous=first_receipt,
+            )
+            tail = repo.get_risk_transition_tail()
+            assert tail is not None and tail.sequence == 2
+        with first.transaction() as repo:
+            rows = repo.read_recovery_rows().risk_transition_receipts
+        assert tuple(item.previous_receipt_id for item in rows) == (
+            "0" * 64,
+            first_receipt,
+        )
+    finally:
+        second.close()
+        first.close()
+
+
+def test_v3_upgrade_adds_empty_ledger_tables_without_forging_context(
+    cwd_tmp: Path,
+) -> None:
+    name = "legacy-v3-ledger.db"
+    store = _open(name, cwd_tmp)
+    with store.transaction() as repo:
+        repo.put_command(command_id="cmd-a", identity=ID_A, payload=b"legacy")
+        repo.put_order_aggregate(
+            command_id="cmd-a", identity=ID_AGG, payload=b"aggregate"
+        )
+    store.close()
+    database = cwd_tmp / name
+    with sqlite3.connect(database) as conn:
+        conn.execute("DROP TABLE risk_transition_receipts")
+        conn.execute("DROP TABLE cancel_event_links")
+        conn.execute("DROP TABLE cancel_deliveries")
+        conn.execute("DROP TABLE cancel_commands")
+        conn.execute("DROP TABLE ledger_checkpoints")
+        conn.execute("DROP TABLE ledger_contexts")
+        conn.execute("UPDATE schema_version SET version = 3")
+    reopened = _open(name, cwd_tmp)
+    try:
+        assert reopened.schema_version() == CURRENT_SCHEMA_VERSION
+        with reopened.transaction() as repo:
+            rows = repo.read_recovery_rows()
+        assert tuple(item.key for item in rows.commands) == ("cmd-a",)
+        assert rows.ledger_contexts == ()
+        assert rows.ledger_checkpoints == ()
+    finally:
+        reopened.close()
+
+
+@pytest.mark.parametrize("subject", ["event", "aggregate", "delivery", "context"])
+def test_recovery_rows_fail_closed_on_broken_join(
+    cwd_tmp: Path, subject: str
+) -> None:
+    name = f"recovery-broken-{subject}.db"
+    db = cwd_tmp / name
+    store = _open(name, cwd_tmp)
+    now = dt.datetime(2026, 8, 3, 1, tzinfo=UTC)
+    with store.transaction() as repo:
+        repo.put_command(command_id="cmd-a", identity=ID_A, payload=b"command")
+        if subject != "context":
+            repo.put_order_aggregate(
+                command_id="cmd-a", identity=ID_AGG, payload=b"aggregate"
+            )
+        if subject == "event":
+            repo.put_event(
+                event_id="evt-a",
+                command_id="cmd-a",
+                identity=ID_E,
+                payload=b"event",
+            )
+        elif subject in {"aggregate", "delivery"}:
+            repo.put_outbox(outbox_key="obx-a", identity=ID_O_A, payload=b"outbox")
+            repo.put_outbox_delivery(
+                outbox_key="obx-a", command_id="cmd-a", available_at=now
+            )
+        else:
+            repo.put_ledger_context(
+                command_id="cmd-a", identity=ID_B, payload=b"context"
+            )
+    store.close()
+
+    with sqlite3.connect(db) as conn:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        if subject in {"event", "aggregate", "context"}:
+            conn.execute("DELETE FROM commands WHERE command_id = 'cmd-a'")
+        else:
+            conn.execute("DELETE FROM outbox WHERE outbox_key = 'obx-a'")
+        conn.commit()
+
+    store = _open(name, cwd_tmp)
+    try:
+        with store.transaction() as repo:
+            with pytest.raises(StoreError, match="^ROW_CORRUPT$") as exc_info:
+                repo.read_recovery_rows()
+        assert exc_info.value.__cause__ is None
+        assert exc_info.value.__context__ is None
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("subject", ["context", "checkpoint"])
+def test_recovery_rows_fail_closed_on_hostile_ledger_row(
+    cwd_tmp: Path, subject: str
+) -> None:
+    name = f"recovery-hostile-ledger-{subject}.db"
+    database = cwd_tmp / name
+    store = _open(name, cwd_tmp)
+    with store.transaction() as repo:
+        repo.put_command(command_id="cmd-a", identity=ID_A, payload=b"command")
+        repo.put_ledger_context(
+            command_id="cmd-a", identity=ID_B, payload=b"context"
+        )
+        repo.put_ledger_checkpoint(
+            checkpoint_key="paper-shadow-primary-v1",
+            identity=ID_A,
+            payload=b"checkpoint",
+            last_entry_id=None,
+        )
+    store.close()
+    with sqlite3.connect(database) as conn:
+        table = "ledger_contexts" if subject == "context" else "ledger_checkpoints"
+        conn.execute(f"UPDATE {table} SET identity = 'HOSTILE'")
+    reopened = _open(name, cwd_tmp)
+    try:
+        with reopened.transaction() as repo:
+            with pytest.raises(StoreError, match="^ROW_CORRUPT$"):
+                repo.read_recovery_rows()
+    finally:
+        reopened.close()
+
+
+def test_recovery_rows_fail_closed_when_checkpoint_tail_is_missing(
+    cwd_tmp: Path,
+) -> None:
+    name = "recovery-missing-ledger-tail.db"
+    database = cwd_tmp / name
+    store = _open(name, cwd_tmp)
+    with store.transaction() as repo:
+        repo.put_ledger_entry(entry_id="entry-a", identity=ID_E, payload=b"entry")
+        repo.put_ledger_checkpoint(
+            checkpoint_key="paper-shadow-primary-v1",
+            identity=ID_A,
+            payload=b"checkpoint",
+            last_entry_id="entry-a",
+        )
+    store.close()
+    with sqlite3.connect(database) as conn:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("DELETE FROM ledger_entries WHERE entry_id = 'entry-a'")
+        conn.commit()
+    reopened = _open(name, cwd_tmp)
+    try:
+        with reopened.transaction() as repo:
+            with pytest.raises(StoreError, match="^ROW_CORRUPT$"):
+                repo.read_recovery_rows()
+    finally:
+        reopened.close()
+
+
+def test_recovery_rows_sqlite_error_is_stable_scrubbed_and_detached(
+    cwd_tmp: Path,
+) -> None:
+    store = _open("recovery-hostile.db", cwd_tmp)
+    inner = store._conn  # noqa: SLF001 - fault injection at SQLite boundary
+    assert inner is not None
+    sentinel = str(cwd_tmp / "TOKEN-recovery-hostile")
+
+    class _FailRecoveryRead:
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            self._inner = conn
+
+        def execute(self, sql: str, parameters: object = ()) -> sqlite3.Cursor:
+            if sql.startswith("SELECT command_id, identity, payload FROM commands ORDER"):
+                raise sqlite3.OperationalError(f"failed near {sentinel}")
+            return self._inner.execute(sql, parameters)  # type: ignore[arg-type]
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+    store._conn = _FailRecoveryRead(inner)  # type: ignore[assignment]  # noqa: SLF001
+    try:
+        with store.transaction() as repo:
+            with pytest.raises(
+                StoreError, match="^RECOVERY_SNAPSHOT_READ_FAILED$"
+            ) as exc_info:
+                repo.read_recovery_rows()
+        _assert_scrubbed_store_error(
+            exc_info.value,
+            code="RECOVERY_SNAPSHOT_READ_FAILED",
+            injected=sentinel,
+        )
+    finally:
+        store.close()
+
+
+def test_v5_cancel_command_delivery_round_trip_and_strict_lease_boundary(
+    cwd_tmp: Path,
+) -> None:
+    store = _open("cancel-v5-round-trip.db", cwd_tmp)
+    command_id = _hex("cancel-target")
+    cancel_id = _hex("cancel-request")
+    policy_id = _hex("cancel-policy")
+    now = dt.datetime(2026, 8, 2, 2, tzinfo=UTC)
+    try:
+        with store.transaction() as repo:
+            repo.put_command(
+                command_id=command_id, identity=command_id, payload=b"order-wire"
+            )
+            assert repo.put_cancel_command(
+                cancel_id=cancel_id,
+                command_id=command_id,
+                identity=cancel_id,
+                payload=b"cancel-wire",
+                risk_counter_key="paper:2026-08-02",
+                risk_policy_identity=policy_id,
+            )
+            assert not repo.put_cancel_command(
+                cancel_id=cancel_id,
+                command_id=command_id,
+                identity=cancel_id,
+                payload=b"cancel-wire",
+                risk_counter_key="paper:2026-08-02",
+                risk_policy_identity=policy_id,
+            )
+            assert repo.put_cancel_delivery(
+                cancel_id=cancel_id, command_id=command_id, available_at=now
+            )
+            claimed = repo.claim_cancel_delivery(
+                cancel_id=cancel_id,
+                worker_id="cancel-worker-1",
+                now=now,
+                lease_until=now + dt.timedelta(minutes=1),
+            )
+        with pytest.raises(StoreError, match="^CANCEL_DELIVERY_NOT_CLAIMABLE$"):
+            with store.transaction() as repo:
+                repo.claim_cancel_delivery(
+                    cancel_id=cancel_id,
+                    worker_id="cancel-worker-2",
+                    now=now + dt.timedelta(minutes=1),
+                    lease_until=now + dt.timedelta(minutes=2),
+                )
+        with store.transaction() as repo:
+            reclaimed = repo.claim_cancel_delivery(
+                cancel_id=cancel_id,
+                worker_id="cancel-worker-2",
+                now=now + dt.timedelta(minutes=1, microseconds=1),
+                lease_until=now + dt.timedelta(minutes=2),
+            )
+            assert reclaimed.attempt_count == claimed.attempt_count + 1
+            assert repo.mark_cancel_unknown(
+                cancel_id=cancel_id,
+                lease_owner="cancel-worker-2",
+                expected_attempt=reclaimed.attempt_count,
+                unknown_at=now + dt.timedelta(minutes=1, seconds=1),
+                error_code="GATEWAY_UNKNOWN",
+            )
+            terminal = repo.get_cancel_delivery(cancel_id)
+        assert terminal is not None
+        assert terminal.state is OutboxDeliveryState.UNKNOWN
+        assert terminal.last_error_code == "GATEWAY_UNKNOWN"
+    finally:
+        store.close()
+
+
+def test_v5_cancel_not_sent_returns_to_explicit_retry_without_resetting_attempt(
+    cwd_tmp: Path,
+) -> None:
+    store = _open("cancel-v5-not-sent.db", cwd_tmp)
+    command_id = _hex("cancel-not-sent-target")
+    cancel_id = _hex("cancel-not-sent")
+    now = dt.datetime(2026, 8, 2, 3, tzinfo=UTC)
+    try:
+        with store.transaction() as repo:
+            repo.put_command(command_id=command_id, identity=command_id, payload=b"o")
+            repo.put_cancel_command(
+                cancel_id=cancel_id,
+                command_id=command_id,
+                identity=cancel_id,
+                payload=b"c",
+                risk_counter_key="paper:2026-08-02",
+                risk_policy_identity=_hex("policy"),
+            )
+            repo.put_cancel_delivery(
+                cancel_id=cancel_id, command_id=command_id, available_at=now
+            )
+            first = repo.claim_cancel_delivery(
+                cancel_id=cancel_id,
+                worker_id="worker",
+                now=now,
+                lease_until=now + dt.timedelta(minutes=1),
+            )
+            repo.mark_cancel_not_sent(
+                cancel_id=cancel_id,
+                lease_owner="worker",
+                expected_attempt=first.attempt_count,
+                retry_at=now + dt.timedelta(seconds=1),
+            )
+            pending = repo.get_cancel_delivery(cancel_id)
+            assert pending is not None
+            assert pending.state is OutboxDeliveryState.PENDING
+            assert pending.attempt_count == 1
+            assert pending.last_error_code == "CANCEL_GATEWAY_NOT_SENT"
+            second = repo.claim_cancel_delivery(
+                cancel_id=cancel_id,
+                worker_id="worker",
+                now=now + dt.timedelta(seconds=1),
+                lease_until=now + dt.timedelta(minutes=1),
+            )
+        assert second.attempt_count == 2
+    finally:
+        store.close()
+
+
+def test_v5_recovery_rows_close_cancel_event_link_and_reject_orphan(
+    cwd_tmp: Path,
+) -> None:
+    name = "cancel-v5-recovery.db"
+    database = cwd_tmp / name
+    store = _open(name, cwd_tmp)
+    command_id = _hex("cancel-link-target")
+    cancel_id = _hex("cancel-link")
+    event_id = _hex("cancel-event")
+    now = dt.datetime(2026, 8, 2, 4, tzinfo=UTC)
+    try:
+        with store.transaction() as repo:
+            repo.put_command(command_id=command_id, identity=command_id, payload=b"o")
+            repo.put_event(
+                event_id=event_id,
+                command_id=command_id,
+                identity=event_id,
+                payload=b"e",
+            )
+            repo.put_cancel_command(
+                cancel_id=cancel_id,
+                command_id=command_id,
+                identity=cancel_id,
+                payload=b"c",
+                risk_counter_key="paper:2026-08-02",
+                risk_policy_identity=_hex("policy"),
+            )
+            repo.put_cancel_delivery(
+                cancel_id=cancel_id, command_id=command_id, available_at=now
+            )
+            assert repo.put_cancel_event_link(cancel_id=cancel_id, event_id=event_id)
+            assert not repo.put_cancel_event_link(cancel_id=cancel_id, event_id=event_id)
+            rows = repo.read_recovery_rows()
+        assert rows.cancel_commands[0].cancel_id == cancel_id
+        assert rows.cancel_deliveries[0].cancel_id == cancel_id
+        assert rows.cancel_event_links[0].command_id == command_id
+    finally:
+        store.close()
+    with sqlite3.connect(database) as conn:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("DELETE FROM events WHERE event_id=?", (event_id,))
+    reopened = _open(name, cwd_tmp)
+    try:
+        with pytest.raises(StoreError, match="^ROW_CORRUPT$"):
+            with reopened.transaction() as repo:
+                repo.read_recovery_rows()
+    finally:
+        reopened.close()

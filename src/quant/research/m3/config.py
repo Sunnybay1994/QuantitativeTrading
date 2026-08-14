@@ -310,6 +310,25 @@ def _field_specs() -> dict[str, FieldSpec]:
         add(f"backtest.a_share.{name}", "string", "scientific", literal=value)
     add("backtest.a_share.force_liquidation", "bool", "scientific", literal=False)
     add("backtest.a_share.friction_multipliers", "float_array", "scientific", literal=(0.5, 1.0, 2.0))
+    add(
+        "backtest.a_share.execution_price_rounding",
+        "string",
+        "scientific",
+        literal="BUY_CEIL_SELL_FLOOR_TICK_V1",
+    )
+    add(
+        "backtest.a_share.fee_rounding",
+        "string",
+        "scientific",
+        literal="EACH_COMPONENT_HALF_UP_CENT_V1",
+    )
+    add(
+        "backtest.a_share.cash_settlement_rounding",
+        "string",
+        "scientific",
+        literal="HALF_UP_CENT_V1",
+    )
+    add("backtest.a_share.annualization_sessions", "int", "scientific", literal=252)
     add("evaluation.minimum_ic_symbols", "int", "scientific", minimum=2)
 
     # independent validation identities
@@ -388,8 +407,8 @@ def _field_specs() -> dict[str, FieldSpec]:
     ):
         add(f"acceptance.{name}", "float", "acceptance", minimum=0.0, maximum=1.0)
 
-    if len(specs) != 144:
-        raise AssertionError(f"M3 field spec closure must contain 144 shapes, got {len(specs)}")
+    if len(specs) != 148:
+        raise AssertionError(f"M3 field spec closure must contain 148 shapes, got {len(specs)}")
     return specs
 
 
@@ -412,6 +431,7 @@ class LoadedM3Config:
     acceptance_config_sha256: str
     canonical_tracking_uri: str
     tracking_target_key: str
+    raw_config_sha256: str | None = None
 
     def section(self, name: str) -> Mapping[str, object]:
         """Return one required, read-only root section without implicit defaults."""
@@ -440,7 +460,9 @@ def load_m3_config(path: Path) -> LoadedM3Config:
         ),))
 
     normalized = _validate_and_normalize(parsed)
-    return _loaded_from_normalized(normalized)
+    return _loaded_from_normalized(
+        normalized, raw_config_sha256=hashlib.sha256(raw).hexdigest()
+    )
 
 
 def _read_config_bytes(path: Path) -> bytes | None:
@@ -502,7 +524,9 @@ def canonical_tracking_target_key(*, tracking_uri: str, experiment_name: str) ->
     return _sha256_json(envelope)
 
 
-def _loaded_from_normalized(document: dict[str, object]) -> LoadedM3Config:
+def _loaded_from_normalized(
+    document: dict[str, object], *, raw_config_sha256: str | None = None
+) -> LoadedM3Config:
     tracking = cast(dict[str, object], document["tracking"])
     uri = cast(str, tracking["tracking_uri"])
     experiment = cast(str, tracking["experiment_name"])
@@ -523,6 +547,7 @@ def _loaded_from_normalized(document: dict[str, object]) -> LoadedM3Config:
             tracking_uri=uri,
             experiment_name=experiment,
         ),
+        raw_config_sha256=raw_config_sha256,
     )
 
 

@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
-from typing import Any
+from typing import Any, Literal, TypeAlias
 
 from quant.domain.enums import (
     ConnectRoute,
@@ -22,6 +22,7 @@ from quant.domain.enums import (
     ExecutionMode,
     Market,
     OrderSide,
+    OrderStatus,
     OrderType,
     TimeInForce,
 )
@@ -63,6 +64,19 @@ def _require_utc_datetime(name: str, value: object) -> dt.datetime:
     if value.utcoffset() != dt.timedelta(0):
         raise ContractError(f"{name} must be timezone-aware UTC")
     return value
+
+
+def _require_cancel_utc_datetime(name: str, value: object) -> dt.datetime:
+    """Cancel-boundary UTC validator that hides hostile tzinfo failures."""
+    invalid = False
+    checked: dt.datetime | None = None
+    try:
+        checked = _require_utc_datetime(name, value)
+    except Exception:
+        invalid = True
+    if invalid or checked is None:
+        raise ContractError(f"{name} must be timezone-aware UTC")
+    return checked
 
 
 def _require_date(name: str, value: object) -> dt.date:
@@ -262,6 +276,40 @@ def _rule_decision_payload(decision: "RuleDecision") -> dict[str, object]:
         "normalized_quantity": decision.normalized_quantity,
         "normalized_limit_price": decision.normalized_limit_price,
         "rule_version": decision.rule_version,
+    }
+
+
+def _order_plan_decision_target_digest(
+    *,
+    symbol: str,
+    market: Market,
+    connect_route: ConnectRoute | None,
+) -> str:
+    return _sha256_envelope(
+        type_name="OrderPlanDecisionTarget",
+        payload={
+            "symbol": symbol,
+            "market": market,
+            "connect_route": connect_route,
+        },
+    )
+
+
+def _order_plan_decision_payload(
+    decision: "OrderPlanDecision",
+) -> dict[str, object]:
+    return {
+        "target_key": decision.target_key,
+        "symbol": decision.symbol,
+        "market": decision.market,
+        "connect_route": decision.connect_route,
+        "side": decision.side,
+        "requested_quantity": decision.requested_quantity,
+        "accepted_quantity": decision.accepted_quantity,
+        "rejected_quantity": decision.rejected_quantity,
+        "zero_delta_quantity": decision.zero_delta_quantity,
+        "outcome": _rule_decision_payload(decision.outcome),
+        "reason_class": decision.reason_class,
     }
 
 
@@ -513,6 +561,32 @@ def _order_command_digest(
     )
 
 
+def _cancel_command_digest(
+    *,
+    command_id: str,
+    broker_order_id: str,
+    mode: ExecutionMode,
+    aggregate_status: OrderStatus,
+    observed_filled_quantity: int,
+    observed_event_ids: tuple[str, ...],
+    observed_last_event_at: dt.datetime,
+    as_of: dt.datetime,
+) -> str:
+    return _sha256_envelope(
+        type_name="CancelCommand",
+        payload={
+            "command_id": command_id,
+            "broker_order_id": broker_order_id,
+            "mode": mode,
+            "aggregate_status": aggregate_status,
+            "observed_filled_quantity": observed_filled_quantity,
+            "observed_event_ids": observed_event_ids,
+            "observed_last_event_at": observed_last_event_at,
+            "as_of": as_of,
+        },
+    )
+
+
 def _execution_event_digest(
     *,
     command_id: str,
@@ -547,9 +621,11 @@ def _order_plan_digest(
     market_snapshot_id: str,
     account_snapshot_id: str,
     config_identity: str,
+    trading_config_identity: str,
     intent_bodies: list[dict[str, object]],
     rejections: tuple["RuleDecision", ...],
     residual_cash: tuple[MoneyAmount, ...],
+    decisions: tuple["OrderPlanDecision", ...],
 ) -> str:
     return _sha256_envelope(
         type_name="OrderPlan",
@@ -558,9 +634,11 @@ def _order_plan_digest(
             "market_snapshot_id": market_snapshot_id,
             "account_snapshot_id": account_snapshot_id,
             "config_identity": config_identity,
+            "trading_config_identity": trading_config_identity,
             "intents": intent_bodies,
             "rejections": [_rule_decision_payload(item) for item in rejections],
             "residual_cash": [_money_payload(item) for item in residual_cash],
+            "decisions": [_order_plan_decision_payload(item) for item in decisions],
         },
     )
 
@@ -988,6 +1066,59 @@ class OrderCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class CancelCommand:
+    """Durable, content-addressed request to cancel one PAPER order."""
+
+    cancel_id: str
+    command_id: str
+    broker_order_id: str
+    mode: ExecutionMode
+    aggregate_status: OrderStatus
+    observed_filled_quantity: int
+    observed_event_ids: tuple[str, ...]
+    observed_last_event_at: dt.datetime
+    as_of: dt.datetime
+
+    def __post_init__(self) -> None:
+        _require_hex64("cancel_id", self.cancel_id)
+        _require_hex64("command_id", self.command_id)
+        _require_non_empty_str("broker_order_id", self.broker_order_id)
+        mode = _require_enum("mode", self.mode, ExecutionMode)
+        if mode is not ExecutionMode.PAPER:
+            raise ContractError("cancel mode must be PAPER")
+        status = _require_enum("aggregate_status", self.aggregate_status, OrderStatus)
+        if status not in (OrderStatus.SUBMITTED, OrderStatus.PARTIAL_FILLED):
+            raise ContractError("cancel aggregate_status must be SUBMITTED or PARTIAL_FILLED")
+        filled = _require_int("observed_filled_quantity", self.observed_filled_quantity, minimum=0)
+        if status is OrderStatus.SUBMITTED and filled != 0:
+            raise ContractError("SUBMITTED cancel snapshot requires zero filled quantity")
+        if status is OrderStatus.PARTIAL_FILLED and filled <= 0:
+            raise ContractError("PARTIAL_FILLED cancel snapshot requires positive filled quantity")
+        if type(self.observed_event_ids) is not tuple or not self.observed_event_ids:
+            raise ContractError("observed_event_ids must be a non-empty tuple")
+        for event_id in self.observed_event_ids:
+            _require_hex64("observed_event_id", event_id)
+        _ensure_unique_keys(self.observed_event_ids, label="observed event")
+        observed_at = _require_cancel_utc_datetime(
+            "observed_last_event_at", self.observed_last_event_at
+        )
+        as_of = _require_cancel_utc_datetime("as_of", self.as_of)
+        if as_of < observed_at:
+            raise ContractError("cancel as_of must not precede observed_last_event_at")
+        expected = _cancel_command_digest(
+            command_id=self.command_id,
+            broker_order_id=self.broker_order_id,
+            mode=self.mode,
+            aggregate_status=self.aggregate_status,
+            observed_filled_quantity=self.observed_filled_quantity,
+            observed_event_ids=self.observed_event_ids,
+            observed_last_event_at=self.observed_last_event_at,
+            as_of=self.as_of,
+        )
+        _reject_forged_identity("cancel_id", self.cancel_id, expected)
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionEvent:
     """Broker/gateway execution event; event_id is package-computed."""
 
@@ -1073,6 +1204,111 @@ class RuleDecision:
         _require_non_empty_str("rule_version", self.rule_version)
 
 
+OrderPlanReasonClass: TypeAlias = Literal[
+    "ACCEPTED",
+    "RULE_REJECTED",
+    "ECONOMIC_REJECTED",
+    "CASH_REJECTED",
+    "ZERO_DELTA",
+    "PARTIAL_CASH",
+]
+_ORDER_PLAN_REASON_CLASSES = frozenset(
+    {
+        "ACCEPTED",
+        "RULE_REJECTED",
+        "ECONOMIC_REJECTED",
+        "CASH_REJECTED",
+        "ZERO_DELTA",
+        "PARTIAL_CASH",
+    }
+)
+_ORDER_PLAN_REJECTION_CLASSES = frozenset(
+    {"RULE_REJECTED", "ECONOMIC_REJECTED", "CASH_REJECTED"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class OrderPlanDecision:
+    """Per-target auditable allocation outcome with package-computed target key."""
+
+    target_key: str
+    symbol: str
+    market: Market
+    connect_route: ConnectRoute | None
+    side: OrderSide
+    requested_quantity: int
+    accepted_quantity: int
+    rejected_quantity: int
+    zero_delta_quantity: int
+    outcome: RuleDecision
+    reason_class: OrderPlanReasonClass
+
+    def __post_init__(self) -> None:
+        _require_hex64("target_key", self.target_key)
+        _require_non_empty_str("symbol", self.symbol)
+        market = _require_enum("market", self.market, Market)
+        route = _require_connect_route_for_market(market, self.connect_route)
+        _require_enum("side", self.side, OrderSide)
+        requested = _require_int(
+            "requested_quantity", self.requested_quantity, minimum=0
+        )
+        accepted = _require_int(
+            "accepted_quantity", self.accepted_quantity, minimum=0
+        )
+        rejected = _require_int(
+            "rejected_quantity", self.rejected_quantity, minimum=0
+        )
+        zero_delta = _require_int(
+            "zero_delta_quantity", self.zero_delta_quantity, minimum=0
+        )
+        if requested != accepted + rejected + zero_delta:
+            raise ContractError("order plan decision quantity conservation failed")
+        if type(self.outcome) is not RuleDecision:
+            raise ContractError("outcome must be RuleDecision")
+        if self.reason_class not in _ORDER_PLAN_REASON_CLASSES:
+            raise ContractError("order plan decision reason_class invalid")
+        expected_key = _order_plan_decision_target_digest(
+            symbol=self.symbol,
+            market=market,
+            connect_route=route,
+        )
+        _reject_forged_identity("target_key", self.target_key, expected_key)
+
+        if self.reason_class == "ACCEPTED":
+            valid = (
+                requested > 0
+                and accepted > 0
+                and rejected == 0
+                and self.outcome.accepted
+                and self.outcome.normalized_quantity == accepted
+            )
+        elif self.reason_class == "PARTIAL_CASH":
+            valid = (
+                accepted > 0
+                and rejected > 0
+                and self.outcome.accepted
+                and self.outcome.normalized_quantity == accepted
+            )
+        elif self.reason_class == "ZERO_DELTA":
+            valid = (
+                accepted == 0
+                and rejected == 0
+                and zero_delta == requested
+                and self.outcome.accepted
+                and self.outcome.normalized_quantity == 0
+            )
+        else:
+            valid = (
+                requested > 0
+                and accepted == 0
+                and rejected > 0
+                and not self.outcome.accepted
+                and self.outcome.normalized_quantity == 0
+            )
+        if not valid:
+            raise ContractError("order plan decision state combination invalid")
+
+
 @dataclass(frozen=True, slots=True)
 class OrderPlan:
     """Sorted unique intents plus rejections; plan_id is package-computed."""
@@ -1082,9 +1318,11 @@ class OrderPlan:
     market_snapshot_id: str
     account_snapshot_id: str
     config_identity: str
+    trading_config_identity: str
     intents: tuple[OrderIntent, ...]
     rejections: tuple[RuleDecision, ...]
     residual_cash: tuple[MoneyAmount, ...]
+    decisions: tuple[OrderPlanDecision, ...] = ()
 
     def __post_init__(self) -> None:
         _require_hex64("plan_id", self.plan_id)
@@ -1092,6 +1330,7 @@ class OrderPlan:
         _require_hex64("market_snapshot_id", self.market_snapshot_id)
         _require_hex64("account_snapshot_id", self.account_snapshot_id)
         _require_hex64("config_identity", self.config_identity)
+        _require_hex64("trading_config_identity", self.trading_config_identity)
         if type(self.intents) is not tuple or any(
             not isinstance(item, OrderIntent) for item in self.intents
         ):
@@ -1104,11 +1343,18 @@ class OrderPlan:
             not isinstance(item, MoneyAmount) for item in self.residual_cash
         ):
             raise ContractError("residual_cash must be tuple[MoneyAmount, ...]")
+        if type(self.decisions) is not tuple or any(
+            type(item) is not OrderPlanDecision for item in self.decisions
+        ):
+            raise ContractError("decisions must be tuple[OrderPlanDecision, ...]")
         _ensure_unique_keys(
             ((item.market, item.symbol, item.side) for item in self.intents),
             label="intent",
         )
         _ensure_unique_keys((item.currency for item in self.residual_cash), label="residual cash")
+        _ensure_unique_keys(
+            (item.target_key for item in self.decisions), label="target decision"
+        )
         for intent in self.intents:
             if intent.plan_id != self.plan_id:
                 raise ContractError("intent.plan_id must match plan_id")
@@ -1125,11 +1371,45 @@ class OrderPlan:
         for decision in self.rejections:
             if decision.accepted:
                 raise ContractError("rejections must have accepted=False")
+        if self.decisions:
+            expected_rejections = tuple(
+                item.outcome
+                for item in self.decisions
+                if item.reason_class in _ORDER_PLAN_REJECTION_CLASSES
+            )
+            if self.rejections != expected_rejections:
+                raise ContractError("rejections must match failed target decisions")
+            accepted_decisions = tuple(
+                item for item in self.decisions if item.accepted_quantity > 0
+            )
+            if len(self.intents) != len(accepted_decisions):
+                raise ContractError("intents must match accepted target decisions")
+            intents_by_key = {
+                (item.market, item.symbol, item.connect_route, item.side): item
+                for item in self.intents
+            }
+            for target_decision in accepted_decisions:
+                matched_intent = intents_by_key.get(
+                    (
+                        target_decision.market,
+                        target_decision.symbol,
+                        target_decision.connect_route,
+                        target_decision.side,
+                    )
+                )
+                if (
+                    matched_intent is None
+                    or matched_intent.quantity != target_decision.accepted_quantity
+                ):
+                    raise ContractError(
+                        "intent quantity must match accepted target decision"
+                    )
         expected = _order_plan_digest(
             target_identity=self.target_identity,
             market_snapshot_id=self.market_snapshot_id,
             account_snapshot_id=self.account_snapshot_id,
             config_identity=self.config_identity,
+            trading_config_identity=self.trading_config_identity,
             intent_bodies=[
                 _intent_body_payload(
                     symbol=item.symbol,
@@ -1150,12 +1430,20 @@ class OrderPlan:
             ],
             rejections=self.rejections,
             residual_cash=self.residual_cash,
+            decisions=self.decisions,
         )
         _reject_forged_identity("plan_id", self.plan_id, expected)
 
 
 def _intent_sort_key(spec: OrderIntentSpec | OrderIntent) -> tuple[str, str, str]:
     return (spec.market.value, spec.symbol, spec.side.value)
+
+
+def _plan_decision_sort_key(
+    decision: OrderPlanDecision,
+) -> tuple[str, str, str, str]:
+    route = "" if decision.connect_route is None else decision.connect_route.value
+    return (decision.market.value, decision.symbol, route, decision.side.value)
 
 
 def build_money_amount(currency: Currency, amount: Decimal) -> MoneyAmount:
@@ -1563,6 +1851,139 @@ def build_order_command_identity(command: OrderCommand) -> str:
     return digest
 
 
+def build_cancel_command(
+    *,
+    command: OrderCommand,
+    aggregate: object,
+    as_of: dt.datetime,
+    replay: CancelCommand | None = None,
+) -> CancelCommand:
+    """Build a first cancel, or prove and return the same command while cancelling."""
+    if not isinstance(command, OrderCommand):
+        raise ContractError("command must be OrderCommand")
+    source_invalid = False
+    try:
+        build_order_intent_identity(command.intent)
+        build_order_command_identity(command)
+    except Exception:
+        source_invalid = True
+    if source_invalid:
+        raise ContractError("CANCEL_SOURCE_COMMAND_INVALID")
+    if command.mode is not ExecutionMode.PAPER:
+        raise ContractError("cancel command requires PAPER OrderCommand")
+
+    # Local import avoids making the foundational value-object module depend on OMS.
+    from quant.execution.oms import OrderAggregate
+
+    if not isinstance(aggregate, OrderAggregate):
+        raise ContractError("aggregate must be OrderAggregate")
+    # Reconstruct to re-run all invariants even if a frozen instance was mutated.
+    aggregate_invalid = False
+    verified: OrderAggregate | None = None
+    try:
+        verified = OrderAggregate(
+            command_id=aggregate.command_id,
+            status=aggregate.status,
+            filled_quantity=aggregate.filled_quantity,
+            broker_order_id=aggregate.broker_order_id,
+            reject_code=aggregate.reject_code,
+            applied_event_ids=aggregate.applied_event_ids,
+            command_quantity=aggregate.command_quantity,
+            last_event_at=aggregate.last_event_at,
+        )
+    except (TypeError, ValueError):
+        aggregate_invalid = True
+    if aggregate_invalid or verified is None:
+        raise ContractError("CANCEL_SOURCE_AGGREGATE_INVALID")
+    if verified.command_id != command.command_id:
+        raise ContractError("aggregate command_id must match command")
+    if verified.command_quantity != command.intent.quantity:
+        raise ContractError("aggregate command_quantity must match command")
+    if verified.broker_order_id is None:
+        raise ContractError("cancel requires a bound broker_order_id")
+    requested_at = _require_cancel_utc_datetime("as_of", as_of)
+    if requested_at < command.intent.generated_at:
+        raise ContractError("cancel as_of must not precede command generated_at")
+
+    if replay is not None:
+        if verified.status not in (
+            OrderStatus.CANCELLING,
+            OrderStatus.CANCELLED,
+            OrderStatus.FILLED,
+        ):
+            raise ContractError("replay requires CANCELLING, CANCELLED or FILLED aggregate")
+        build_cancel_command_identity(replay)
+        if replay.command_id != verified.command_id:
+            raise ContractError("replayed cancel command_id mismatch")
+        if replay.broker_order_id != verified.broker_order_id:
+            raise ContractError("replayed cancel broker_order_id mismatch")
+        if replay.mode is not command.mode:
+            raise ContractError("replayed cancel mode mismatch")
+        if replay.observed_filled_quantity > verified.filled_quantity:
+            raise ContractError("replayed cancel observes impossible filled quantity")
+        observed_ids = replay.observed_event_ids
+        if verified.applied_event_ids[: len(observed_ids)] != observed_ids:
+            raise ContractError("replayed cancel event closure mismatch")
+        if verified.last_event_at is None or verified.last_event_at < replay.observed_last_event_at:
+            raise ContractError("replayed cancel last event time mismatch")
+        if requested_at < verified.last_event_at:
+            raise ContractError("replay as_of must not precede aggregate last_event_at")
+        return replay
+
+    if verified.status is OrderStatus.CANCELLING:
+        raise ContractError("CANCELLING requires replay of the existing cancel_id")
+    if verified.status not in (OrderStatus.SUBMITTED, OrderStatus.PARTIAL_FILLED):
+        raise ContractError("first cancel requires SUBMITTED or PARTIAL_FILLED aggregate")
+    if verified.last_event_at is None or requested_at < verified.last_event_at:
+        raise ContractError("cancel as_of must not precede aggregate last_event_at")
+    cancel_id = _cancel_command_digest(
+        command_id=verified.command_id,
+        broker_order_id=verified.broker_order_id,
+        mode=command.mode,
+        aggregate_status=verified.status,
+        observed_filled_quantity=verified.filled_quantity,
+        observed_event_ids=verified.applied_event_ids,
+        observed_last_event_at=verified.last_event_at,
+        as_of=requested_at,
+    )
+    return CancelCommand(
+        cancel_id=cancel_id,
+        command_id=verified.command_id,
+        broker_order_id=verified.broker_order_id,
+        mode=command.mode,
+        aggregate_status=verified.status,
+        observed_filled_quantity=verified.filled_quantity,
+        observed_event_ids=verified.applied_event_ids,
+        observed_last_event_at=verified.last_event_at,
+        as_of=requested_at,
+    )
+
+
+def build_cancel_command_identity(command: CancelCommand) -> str:
+    """Strictly reconstruct, then return the durable cancel-command identity."""
+    if not isinstance(command, CancelCommand):
+        raise TypeError("build_cancel_command_identity requires CancelCommand")
+    invalid = False
+    verified: CancelCommand | None = None
+    try:
+        verified = CancelCommand(
+            cancel_id=command.cancel_id,
+            command_id=command.command_id,
+            broker_order_id=command.broker_order_id,
+            mode=command.mode,
+            aggregate_status=command.aggregate_status,
+            observed_filled_quantity=command.observed_filled_quantity,
+            observed_event_ids=command.observed_event_ids,
+            observed_last_event_at=command.observed_last_event_at,
+            as_of=command.as_of,
+        )
+    except Exception:
+        invalid = True
+    if invalid or verified is None:
+        raise ContractError("CANCEL_COMMAND_INVALID")
+    return verified.cancel_id
+
+
 def build_execution_event(
     *,
     command: OrderCommand,
@@ -1681,24 +2102,68 @@ def build_rule_decision_identity(decision: RuleDecision) -> str:
     )
 
 
+def build_order_plan_decision(
+    *,
+    symbol: str,
+    market: Market,
+    connect_route: ConnectRoute | None,
+    side: OrderSide,
+    requested_quantity: int,
+    accepted_quantity: int,
+    rejected_quantity: int,
+    zero_delta_quantity: int,
+    outcome: RuleDecision,
+    reason_class: OrderPlanReasonClass,
+) -> OrderPlanDecision:
+    """Build one strict target-level planning decision."""
+    market_e = _require_enum("market", market, Market)
+    route = _require_connect_route_for_market(market_e, connect_route)
+    target_key = _order_plan_decision_target_digest(
+        symbol=symbol,
+        market=market_e,
+        connect_route=route,
+    )
+    return OrderPlanDecision(
+        target_key=target_key,
+        symbol=symbol,
+        market=market_e,
+        connect_route=route,
+        side=side,
+        requested_quantity=requested_quantity,
+        accepted_quantity=accepted_quantity,
+        rejected_quantity=rejected_quantity,
+        zero_delta_quantity=zero_delta_quantity,
+        outcome=outcome,
+        reason_class=reason_class,
+    )
+
+
 def build_order_plan(
     *,
     target_identity: str,
     market_snapshot_id: str,
     account_snapshot_id: str,
     config_identity: str,
+    trading_config_identity: str,
     intent_specs: Sequence[OrderIntentSpec],
     rejections: Sequence[RuleDecision],
     residual_cash: Sequence[MoneyAmount],
+    decisions: Sequence[OrderPlanDecision] = (),
 ) -> OrderPlan:
     """Build OrderPlan: compute plan_id, then intents bound to that plan_id."""
     target = _require_hex64("target_identity", target_identity)
     market_id = _require_hex64("market_snapshot_id", market_snapshot_id)
     account_id = _require_hex64("account_snapshot_id", account_snapshot_id)
     config_id = _require_hex64("config_identity", config_identity)
+    trading_config_id = _require_hex64(
+        "trading_config_identity", trading_config_identity
+    )
     spec_items = _require_sequence_of("intent_specs", intent_specs, OrderIntentSpec)
     rejection_items = _require_sequence_of("rejections", rejections, RuleDecision)
     cash_items = _require_sequence_of("residual_cash", residual_cash, MoneyAmount)
+    decision_items = _require_sequence_of(
+        "decisions", decisions, OrderPlanDecision
+    )
     for spec in spec_items:
         _require_plan_intent_source_closure(
             target_identity=target,
@@ -1713,6 +2178,7 @@ def build_order_plan(
     ordered_specs = tuple(sorted(spec_items, key=_intent_sort_key))
     ordered_rejections = rejection_items
     ordered_cash = _sorted_money(cash_items)
+    ordered_decisions = tuple(sorted(decision_items, key=_plan_decision_sort_key))
     bodies = [
         _intent_body_payload(
             symbol=spec.symbol,
@@ -1736,9 +2202,11 @@ def build_order_plan(
         market_snapshot_id=market_id,
         account_snapshot_id=account_id,
         config_identity=config_id,
+        trading_config_identity=trading_config_id,
         intent_bodies=bodies,
         rejections=ordered_rejections,
         residual_cash=ordered_cash,
+        decisions=ordered_decisions,
     )
     intents = tuple(
         build_order_intent(
@@ -1765,9 +2233,11 @@ def build_order_plan(
         market_snapshot_id=market_id,
         account_snapshot_id=account_id,
         config_identity=config_id,
+        trading_config_identity=trading_config_id,
         intents=intents,
         rejections=ordered_rejections,
         residual_cash=ordered_cash,
+        decisions=ordered_decisions,
     )
 
 
@@ -1780,6 +2250,7 @@ def build_order_plan_identity(plan: OrderPlan) -> str:
         market_snapshot_id=plan.market_snapshot_id,
         account_snapshot_id=plan.account_snapshot_id,
         config_identity=plan.config_identity,
+        trading_config_identity=plan.trading_config_identity,
         intent_bodies=[
             _intent_body_payload(
                 symbol=item.symbol,
@@ -1800,6 +2271,7 @@ def build_order_plan_identity(plan: OrderPlan) -> str:
         ],
         rejections=plan.rejections,
         residual_cash=plan.residual_cash,
+        decisions=plan.decisions,
     )
     _reject_forged_identity("plan_id", plan.plan_id, digest)
     return digest
@@ -1808,6 +2280,7 @@ def build_order_plan_identity(plan: OrderPlan) -> str:
 __all__ = [
     "AccountSnapshot",
     "CashBalance",
+    "CancelCommand",
     "ContractError",
     "ExecutionEvent",
     "FeeComponent",
@@ -1816,6 +2289,8 @@ __all__ = [
     "OrderIntent",
     "OrderIntentSpec",
     "OrderPlan",
+    "OrderPlanDecision",
+    "OrderPlanReasonClass",
     "PositionBalance",
     "RuleDecision",
     "SymbolMarketState",
@@ -1825,6 +2300,8 @@ __all__ = [
     "build_account_snapshot_identity",
     "build_cash_balance",
     "build_cash_balance_identity",
+    "build_cancel_command",
+    "build_cancel_command_identity",
     "build_execution_event",
     "build_execution_event_identity",
     "build_fee_component",
@@ -1836,6 +2313,7 @@ __all__ = [
     "build_order_intent",
     "build_order_intent_identity",
     "build_order_plan",
+    "build_order_plan_decision",
     "build_order_plan_identity",
     "build_position_balance",
     "build_position_balance_identity",

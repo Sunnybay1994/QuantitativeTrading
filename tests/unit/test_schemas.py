@@ -15,16 +15,236 @@ from quant.domain import (
     BacktestNavSchema,
     CorporateActionLedgerSchema,
     CorporateActionReconciliationSchema,
+    CorporateActionSchema,
     CorporateActionSelectionEvidenceSchema,
     FactorValueSchema,
+    HkCorporateActionImplementationEvidenceSchema,
+    HkBarAvailabilityEvidenceSchema,
     InstrumentSchema,
+    HkCorporateActionRevisionEvidenceSchema,
     OrderSchema,
     PositionSchema,
     PriceLimit1dSchema,
+    ResearchPrice1dSchema,
+    SnapshotSessionCalendarSchema,
     TargetWeightSchema,
     TradeCalendarSchema,
     UniverseMembershipSchema,
 )
+from quant.domain.schemas import HKNoTradeEvidenceSchema
+
+
+def test_research_price_schema_accepts_hk_gross_total_return_method() -> None:
+    ResearchPrice1dSchema.validate(
+        pl.DataFrame(
+            [
+                {
+                    "symbol": "00700.HK",
+                    "trade_date": dt.date(2026, 5, 8),
+                    "adjusted_close": 194.0,
+                    "adjustment_method": "HK_GROSS_TOTAL_RETURN_V1",
+                    "source": "derived_hk_bar_and_ca_v1",
+                }
+            ]
+        )
+    )
+
+
+def test_hk_bar_availability_schema_enforces_exact_key_and_kind_nullability() -> None:
+    base = {
+        "symbol": "00700.HK",
+        "trade_date": dt.date(2026, 7, 10),
+        "source": "tushare",
+        "availability_source_kind": "REQUEST_RAW",
+        "bar_available_at": dt.datetime(2026, 7, 11, tzinfo=dt.timezone.utc),
+        "source_record_id": "a" * 64,
+        "request_id": "a" * 64,
+        "raw_file_sha256": "b" * 64,
+        "raw_metadata_sha256": "c" * 64,
+        "request_receipt_sha256": "d" * 64,
+        "plan_sha256": "e" * 64,
+        "availability_evidence_sha256": "f" * 64,
+    }
+    HkBarAvailabilityEvidenceSchema.validate(pl.DataFrame([base]))
+    for changed in (
+        {**base, "request_id": None},
+        {
+            **base,
+            "availability_source_kind": "SEED_RAW",
+            "request_receipt_sha256": None,
+        },
+    ):
+        with pytest.raises(pandera.errors.SchemaError):
+            HkBarAvailabilityEvidenceSchema.validate(pl.DataFrame([changed]))
+    with pytest.raises(pandera.errors.SchemaError):
+        HkBarAvailabilityEvidenceSchema.validate(pl.DataFrame([base, base]))
+
+
+def _hk_corporate_action_row(**overrides: object) -> dict[str, object]:
+    row: dict[str, object] = {
+        "event_id": "a" * 64,
+        "symbol": "00700.HK",
+        "action_type": "DIVIDEND",
+        "record_date": dt.date(2026, 5, 8),
+        "ex_date": dt.date(2026, 5, 11),
+        "pay_date": dt.date(2026, 5, 20),
+        "stock_list_date": None,
+        "declared_currency": "HKD",
+        "cash_per_share_gross": 0.5,
+        "stock_ratio": None,
+        "share_multiplier": None,
+        "rights_ratio": None,
+        "rights_subscription_price": None,
+        "rights_subscription_start": None,
+        "rights_subscription_end": None,
+        "announce_time": dt.datetime(2026, 5, 4, 9, tzinfo=dt.UTC),
+        "source": "FIXTURE",
+        "source_event_id": "event-1",
+        "source_revision_id": "revision-1",
+        "source_snapshot_sha256": "b" * 64,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_hk_corporate_action_schema_enforces_action_units() -> None:
+    CorporateActionSchema.validate(pl.DataFrame([_hk_corporate_action_row()]))
+    split = _hk_corporate_action_row(
+        event_id="c" * 64,
+        action_type="SPLIT",
+        pay_date=None,
+        stock_list_date=dt.date(2026, 5, 12),
+        declared_currency=None,
+        cash_per_share_gross=None,
+        share_multiplier=0.5,
+    )
+    CorporateActionSchema.validate(pl.DataFrame([split]))
+    with pytest.raises(pandera.errors.SchemaError):
+        CorporateActionSchema.validate(pl.DataFrame([{**split, "share_multiplier": 1.0}]))
+    with pytest.raises(pandera.errors.SchemaError):
+        CorporateActionSchema.validate(pl.DataFrame([{**split, "stock_ratio": 0.5}]))
+
+
+def test_hk_revision_evidence_schema_rejects_invalid_selected_reason() -> None:
+    action = _hk_corporate_action_row()
+    row = {
+        "economic_event_key_sha256": "d" * 64,
+        "candidate_id": "e" * 64,
+        **{key: action[key] for key in (
+            "symbol", "action_type", "source", "source_event_id", "source_revision_id",
+            "record_date", "ex_date", "pay_date", "stock_list_date", "declared_currency",
+            "cash_per_share_gross", "stock_ratio", "share_multiplier", "rights_ratio",
+            "rights_subscription_price", "rights_subscription_start", "rights_subscription_end",
+        )},
+        "revision_sequence": 1,
+        "predecessor_candidate_id": None,
+        "revision_status": "ACTIVE",
+        "published_at": action["announce_time"],
+        "source_observed_at": dt.datetime(2026, 8, 1, tzinfo=dt.UTC),
+        "raw_bundle_sha256": "f" * 64,
+        "raw_file_sha256": "1" * 64,
+        "raw_metadata_sha256": "2" * 64,
+        "raw_selector": "row/1",
+        "selected": True,
+        "selection_reason": "SELECTED_AS_OF",
+        "query_as_of": dt.datetime(2026, 5, 5, tzinfo=dt.UTC),
+    }
+    HkCorporateActionRevisionEvidenceSchema.validate(pl.DataFrame([row]))
+    with pytest.raises(pandera.errors.SchemaError):
+        HkCorporateActionRevisionEvidenceSchema.validate(
+            pl.DataFrame([{**row, "selection_reason": "FUTURE_AS_OF"}])
+        )
+    with pytest.raises(pandera.errors.SchemaError):
+        HkCorporateActionRevisionEvidenceSchema.validate(
+            pl.DataFrame([{**row, "stock_ratio": 0.1}])
+        )
+
+
+def test_hk_implementation_evidence_schema_is_strict_and_implemented_only() -> None:
+    row = {
+        "event_id": "a" * 64,
+        "symbol": "00700.HK",
+        "action_type": "DIVIDEND",
+        "source": "FIXTURE",
+        "source_event_id": "event-1",
+        "source_revision_id": "revision-1",
+        "implementation_status": "IMPLEMENTED",
+        "implementation_effective_date": dt.date(2026, 5, 8),
+        "implementation_confirmed_at": dt.datetime(2026, 5, 9, tzinfo=dt.UTC),
+        "source_observed_at": dt.datetime(2026, 5, 10, tzinfo=dt.UTC),
+        "source_record_id": "record-1",
+        "raw_selector": "records/0",
+        "raw_file_sha256": "b" * 64,
+        "raw_metadata_sha256": "c" * 64,
+        "raw_bundle_sha256": "d" * 64,
+        "p0_actions_content_sha256": "e" * 64,
+        "p0_evidence_content_sha256": "f" * 64,
+        "p0_query_sha256": "1" * 64,
+        "implementation_evidence_sha256": "2" * 64,
+    }
+    HkCorporateActionImplementationEvidenceSchema.validate(pl.DataFrame([row]))
+    with pytest.raises(pandera.errors.SchemaError):
+        HkCorporateActionImplementationEvidenceSchema.validate(
+            pl.DataFrame([{**row, "implementation_status": "PENDING"}])
+        )
+    with pytest.raises(pandera.errors.SchemaError):
+        HkCorporateActionImplementationEvidenceSchema.validate(
+            pl.DataFrame(
+                [
+                    {
+                        **row,
+                        "source_observed_at": dt.datetime(
+                            2026, 5, 8, tzinfo=dt.UTC
+                        ),
+                    }
+                ]
+            )
+        )
+
+
+def test_hk_no_trade_evidence_schema_rejects_duplicate_key() -> None:
+    row = {
+        "schema_version": "hk-no-trade-evidence-v1",
+        "evidence_sha256": "a" * 64,
+        "symbol": "01065.HK",
+        "trade_date": dt.date(2026, 5, 5),
+        "market": "HK",
+        "reason": "NO_DAILY_TRADING_V1",
+        "source": "HKEX_DAILY_QUOTATIONS",
+        "source_record_id": "synthetic-fixture",
+        "source_as_of": dt.datetime(2026, 7, 31),
+        "raw_selector": "hkex/d260505e.html",
+        "raw_file_sha256": "b" * 64,
+        "raw_metadata_sha256": "c" * 64,
+    }
+    HKNoTradeEvidenceSchema.validate(pl.DataFrame([row]))
+    duplicate = dict(row)
+    duplicate["evidence_sha256"] = "d" * 64
+    with pytest.raises(pandera.errors.SchemaError):
+        HKNoTradeEvidenceSchema.validate(pl.DataFrame([row, duplicate]))
+
+
+class TestSnapshotSessionCalendarSchema:
+    def test_strictly_increasing_dates_pass(self) -> None:
+        SnapshotSessionCalendarSchema.validate(pl.DataFrame({
+            "date": [dt.date(2026, 1, 5), dt.date(2026, 1, 6)]
+        }))
+
+    @pytest.mark.parametrize(
+        "dates",
+        [
+            [],
+            [dt.date(2026, 1, 5), dt.date(2026, 1, 5)],
+            [dt.date(2026, 1, 6), dt.date(2026, 1, 5)],
+        ],
+    )
+    def test_empty_duplicate_or_unsorted_dates_fail(
+        self, dates: list[dt.date],
+    ) -> None:
+        with pytest.raises(pandera.errors.SchemaError):
+            SnapshotSessionCalendarSchema.validate(
+                pl.DataFrame({"date": dates}, schema={"date": pl.Date})
+            )
 
 
 def make_bar(**overrides) -> pl.DataFrame:

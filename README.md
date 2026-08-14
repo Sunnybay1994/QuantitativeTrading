@@ -175,6 +175,34 @@ python -m quant.data.update_instruments --source tushare --market HK
 python -m quant.data.audit_instruments
 ```
 
+独立研究 worktree 可显式复用主项目的大体量共享数据根，避免复制 raw/clean。命令行 `--data-root` 优先，
+其次读取 `QUANT_DATA_ROOT`；Tushare Token 仍只从 Git 忽略的本地配置读取：
+
+```powershell
+$env:QUANT_DATA_ROOT = 'F:\AI_Coding\QuantitativeTrading\data'
+$env:QUANT_TUSHARE_CONFIG = 'F:\AI_Coding\QuantitativeTrading\configs\tushare.local.toml'
+python -m quant.data.tushare_bulk catalog-summary
+python -m quant.data.tushare_bulk probe --priority all --requests-per-minute 100
+```
+
+全量初始化先生成脱敏权限报告和 dry-run 计划；在计划仍标记
+`historical_download_authorized=false` 时不得直接启动历史下载。完整分层、增量和资源方案见
+[`M2_DATA_R1_Tushare全量初始化与增量数据方案.md`](docs/agent/M2_DATA_R1_Tushare全量初始化与增量数据方案.md)。
+
+P1 raw 回补使用共享 SQLite ledger；`prepare` 只生成确定请求，`run` 每次执行有界数量，完整 raw 已存在时
+只验真而不再次联网：
+
+```powershell
+python -m quant.data.tushare_bulk_ingest prepare `
+  --permission-report F:\AI_Coding\QuantitativeTrading\data\run_state\tushare_bulk\permission_reports\<report>.json `
+  --dataset daily --dataset adj_factor --dataset fund_daily `
+  --start 1990-01-01 --end 2026-08-14
+python -m quant.data.tushare_bulk_ingest run --max-requests 100 --requests-per-minute 60
+python -m quant.data.tushare_bulk_ingest status
+```
+
+返回行数达到目录声明上限时任务进入 `SPLIT_REQUIRED`，原始响应仍会保留，但不会被当成完整历史。
+
 Tushare 港股的开盘竞价价可能落在供应商所报日内 high/low 之外。raw 始终保留供应商原值；mapper 仅在
 原 high/low 自洽且 close 位于原区间时扩展 canonical high/low 以包含 open。A 股开盘越界、港股收盘
 越界、`high < low` 或非正价格仍由 `Bar1dSchema` 拒绝。
@@ -183,8 +211,10 @@ Tushare 港股的开盘竞价价可能落在供应商所报日内 high/low 之�
 批量历史回填只能通过逐批精确覆盖、5000 行截断、重复键和目标集合 Gate 的可恢复 manifest 使用；任何
 行为漂移均 fail closed，不在同一运行中静默追加单代码或逐日请求。
 
-当前冻结计划位于 `artifacts/data_quality/hk_history/hk60_2026-07-10/plan.json`。每次执行最多发出一个新
-请求，并从 P1 seed 或最近 attempt 起强制冷却至少 3,600 秒；同一 plan 只能由 WSL writer 执行：
+历史 R1 冻结计划位于 `artifacts/data_quality/hk_history/hk60_2026-07-10/plan.json`。该计划已因
+`01065.HK@2026-05-05` 缺少权威无交易证据而 fail closed，现只作为审计输入保留，不得继续执行或补写。
+取得许可允许的 HKEX Daily Quotations（或同等级官方历史产品）raw 后，必须生成独立 v2 plan 与全新 journal；
+每次网络执行仍最多发出一个新请求，并从 seed 或最近 attempt 起强制冷却至少 3,600 秒。历史命令形态为：
 
 ```bash
 python -m quant.data.backfill_hk_history \
@@ -197,6 +227,10 @@ python -m quant.data.backfill_hk_history \
 API 异常留下的 attempt 在冷却后仍需显式 `--confirm-uncertain-retry`；完整 request raw/receipt 会直接复验，
 不会再次联网。8 批全部 PASS 前禁止 `--finalize`；finalize 只发布 Tushare 已闭合的 612 只股票，
 `02983.HK` 仍保持显式未解决，不能据此宣称全量 HK60 Gate 通过。
+
+v2 plan 可用 `--recover-existing-only` 在全新 journal 中离线复验并恢复既有 COMPLETE raw；该模式在
+connector 构造前分流，严格零网络、零 intent/attempt/failure/clean/finalize 写入，遇首个 ABSENT raw 返回
+`HK_HISTORY_INCOMPLETE`。权威 evidence 尚未形成前不得创建或运行正式 v2 plan。
 
 Tushare `hk_basic` 只覆盖港股股票。HKEX 公共网站现行条款禁止未经书面许可的程序化/脚本化访问、
 系统性抓取和建库，因此 `hkex-etp` 公共网页连接器已 fail closed：
@@ -370,7 +404,7 @@ N 个精确开市日；官方为 OTHER/缺失时才回退 Instrument 分类。�
 
 下面保留 2026-08-13 的详细阶段快照供审计；其中关于 honest CLI 与 UA-M4-003 的停止点已由上段终态覆盖。
 
-M0 已通过验收；M1 已完成 A 股/ETF 数据、三地基础日历与股票主表、双路由港股通快照/事件/日历、基线后成员区间及“时点股票池 × 历史行情窗口”查询，HK licensed provenance 与五日自然窗口仍开放。M2 的数据契约、策略接口、统一日频回测、walk-forward、成本压力、轻量不可覆盖 `run.json` 和目标缺口诊断已经达到**投研框架 MVP 完成**；当前唯一前台关键路径是策略假设—证伪与前向观察，PAPER MVP 为第二优先级，M3/M4 formal 工程以单一在制包在后台推进，不再反向阻塞研究。研究、PAPER 和 formal 复用同一 Schema、市场规则、费用和账户计算；候选晋级时通过正式入口受控重跑，不能把轻量产物原地冒充正式产物。月度 S2 两个样本外测试折均为正；双月调仓和一位排名保留缓冲均未满足各自预注册条件，已记为 `REJECTED`；固定 60 观测、12% 年化、无杠杆的波动率目标与最小两只 ETF 分散化均通过各自预注册条件，但因没有真正前向样本、且分散化第一折的验证选择来自零交易并列，均保持 `RESEARCH_ONLY`。M3 已具备 Windows G1 正式发布物、G2–G7 formal artifact/fresh verifier、G8 StageRunner/tracking/reproducibility 与 fake full DAG；G9A/G9B 和资源受限性能闭包已完成。首轮 honest 300 业务 CLI 已完成，但集成验收在 stage root 新增文件集合处失败，completed resume 尚未执行；下一步用小型探针定位，不重复长链，也不阻塞 S2+。M4 formal runtime/policy/binding/account/store 与只读 broker snapshot port 已完成 Windows 工程闭环；第一波 A 股/ETF PAPER 只要求人工确认、订单幂等、资金/可卖量、持久账本和日终对账，完整来源证明留给 formal/影子/实盘候选，gateway dispatch 仍等待 `UA-M4-003`，service/runner/28 日 soak 尚未开始。`py312` 已验收 Qlib 0.9.7 兼容性且 base 未变；Linux/ext4 当前按用户指示暂不实施。详见[路线图](项目实施路线图.md)、[方法论](正式产物身份、数据溯源与可复现性方法论.md)和[持续审批事项](docs/agent/用户待批示与参与事项.md)。研究阶段可使用本地 ignored Tushare token，启用实盘前必须轮换。
+M0 已通过验收；M1 已完成 A 股/ETF 数据、三地基础日历与股票主表、双路由港股通快照/事件/日历、基线后成员区间及“时点股票池 × 历史行情窗口”查询，HK licensed provenance 与五日自然窗口仍开放。M2 的数据契约、策略接口、统一日频回测、walk-forward、成本压力、轻量不可覆盖 `run.json` 和目标缺口诊断已经达到**投研框架 MVP 完成**；策略研究已拆到独立 worktree，可与本集成线并行。研究、PAPER 和 formal 复用同一 Schema、市场规则、费用和账户计算；候选晋级时通过正式入口受控重跑，不能把轻量产物原地冒充正式产物。M3 已具备 Windows G1 正式发布物、G2–G7 formal artifact/fresh verifier、G8 StageRunner/tracking/reproducibility 与 fake full DAG，G9A–G9G 的 Windows fake 工程闭包已完成；honest 300 证券、三成本场景 public CLI 已在最终 revision 上完成同一次首发与 completed resume。M4 formal runtime/policy/binding/account/store、snapshot、gateway、service、schedule 和只读 daily runner 已完成 Windows 工程闭环；第一波 A 股/ETF PAPER 仍等待策略会话提供首个 `PAPER_CANDIDATE` 和真实 clean opening facts，任务注册、真实启动及 28 日 soak 受 `UA-M4-002` 控制。`py312` 已验收 Qlib 0.9.7 兼容性且 base 未变；Linux/ext4 当前按用户指示暂不实施。详见[路线图](项目实施路线图.md)、[方法论](正式产物身份、数据溯源与可复现性方法论.md)和[持续审批事项](docs/agent/用户待批示与参与事项.md)。研究阶段可使用本地 ignored Tushare token，启用实盘前必须轮换。
 
 ## M2 基线策略（工程闭环完成，策略有效性继续观察）
 
