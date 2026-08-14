@@ -74,6 +74,7 @@ _PUBLIC_COMMANDS = (
     "train",
     "evaluate",
     "backtest",
+    "tracking",
     "run-all",
     "verify-reproducibility",
     "acceptance-audit",
@@ -300,6 +301,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_snapshot_work(backtest)
     backtest.add_argument("--no-resume", action="store_true")
     backtest.set_defaults(stop_stage="backtest")
+
+    tracking = subparsers.add_parser("tracking")
+    tracking.add_argument("--config", type=str, required=True)
+    _add_snapshot_work(tracking)
+    tracking.add_argument("--no-resume", action="store_true")
+    tracking.set_defaults(stop_stage="tracking")
 
     run_all = subparsers.add_parser("run-all")
     _add_config(run_all)
@@ -532,6 +539,29 @@ def run_formal_backtest_stage(**kwargs: Any) -> Any:
     return run_stage(**kwargs)
 
 
+def resolve_formal_tracking_cli_inputs(**kwargs: Any) -> Any:
+    """Lazy tracking-resolver wrapper; ordinary CLI import stays lightweight."""
+    from quant.research.m3.formal_cli_resolve import (
+        resolve_formal_tracking_cli_inputs as resolve,
+    )
+
+    return resolve(**kwargs)
+
+
+def create_mlflow_tracking_client(**kwargs: Any) -> Any:
+    """Import the production MLflow adapter only after local resolution succeeds."""
+    from quant.research.m3.tracking import create_mlflow_tracking_client as create
+
+    return create(**kwargs)
+
+
+def run_formal_tracking_stage(**kwargs: Any) -> Any:
+    """Lazy formal tracking-stage wrapper."""
+    from quant.research.m3.tracking_stage import run_formal_tracking_stage as run_stage
+
+    return run_stage(**kwargs)
+
+
 def _dispatch_formal_backtest(args: argparse.Namespace) -> CommandSummary:
     command = "backtest"
     loaded = _load_backtest_config(args)
@@ -610,10 +640,93 @@ def _dispatch_formal_backtest(args: argparse.Namespace) -> CommandSummary:
     )
 
 
+def _dispatch_formal_tracking(args: argparse.Namespace) -> CommandSummary:
+    command = "tracking"
+    loaded = _load_backtest_config(args)
+    if loaded is None:
+        return _failure_summary(command, error_code="M3_CONFIG_INVALID", exit_code=2)
+    project_root, config_relative, config = loaded
+
+    from quant.research.m3.formal_cli_resolve import FormalCliResolveError
+
+    resolution = None
+    resolve_mapped: tuple[str, int] | None = None
+    try:
+        resolution = resolve_formal_tracking_cli_inputs(
+            project_root=project_root,
+            config=config,
+            config_relative=config_relative,
+            snapshot_id=args.snapshot_id,
+            fold=args.fold,
+            horizon=args.horizon,
+        )
+    except Exception as exc:
+        resolve_mapped = _map_formal_cli_resolve_error(exc, FormalCliResolveError)
+    if resolve_mapped is not None or resolution is None:
+        mapped = resolve_mapped or ("M3_COMMAND_FAILED", 5)
+        return _failure_summary(command, error_code=mapped[0], exit_code=mapped[1])
+
+    client = None
+    try:
+        client = create_mlflow_tracking_client(
+            tracking_uri=resolution.config.canonical_tracking_uri
+        )
+    except (ImportError, ModuleNotFoundError):
+        return _failure_summary(
+            command,
+            error_code="FORMAL_CLI_DEPENDENCY_UNAVAILABLE",
+            exit_code=4,
+        )
+    except Exception:
+        return _failure_summary(command, error_code="M3_COMMAND_FAILED", exit_code=5)
+
+    from quant.research.m3.tracking_stage import FormalTrackingStageResult
+
+    stage_result = None
+    stage_mapped: tuple[str, int] | None = None
+    reused = None
+    try:
+        stage_result = run_formal_tracking_stage(
+            stage_root=resolution.stage_root,
+            evaluation=resolution.evaluation,
+            backtest=resolution.backtest,
+            config=resolution.config,
+            fresh_context=resolution.fresh_context,
+            artifact_roots=resolution.artifact_roots,
+            client=client,
+            resume=not args.no_resume,
+        )
+        reused = _formal_backtest_reused(stage_result, FormalTrackingStageResult)
+    except Exception as exc:
+        if stage_result is None:
+            stage_mapped = _map_stage_runner_error(exc)
+        else:
+            stage_mapped = ("M3_COMMAND_FAILED", 5)
+    if stage_mapped is not None:
+        return _failure_summary(
+            command, error_code=stage_mapped[0], exit_code=stage_mapped[1]
+        )
+    if type(reused) is not bool or type(resolution.work_key) is not str:
+        return _failure_summary(command, error_code="M3_COMMAND_FAILED", exit_code=5)
+    return CommandSummary(
+        command=command,
+        details={
+            "fold": args.fold,
+            "horizon": args.horizon,
+            "reused": reused,
+            "snapshot_id": args.snapshot_id,
+            "stop_stage": "tracking",
+            "work_key": resolution.work_key,
+        },
+    )
+
+
 def _dispatch_public(args: argparse.Namespace) -> CommandSummary:
     command = str(args.command)
     if command == "backtest":
         return _dispatch_formal_backtest(args)
+    if command == "tracking":
+        return _dispatch_formal_tracking(args)
     if command == "acceptance-audit":
         return _dispatch_acceptance_audit(args)
     if command not in {"readiness", "snapshot"}:

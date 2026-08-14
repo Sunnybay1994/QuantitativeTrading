@@ -20,6 +20,7 @@ from quant.backtest.a_share_plan import (
 from quant.backtest.a_share_reporting import (
     BacktestArtifactFreshVerificationContext,
     FormalBacktestArtifactUpstreamPaths,
+    verify_backtest_artifact,
 )
 from quant.data.m3_release import G1Release, VerifiedG1Release, verify_g1_release
 from quant.research.m3.alignment import verify_alignment_artifact
@@ -27,6 +28,8 @@ from quant.research.m3.config import LoadedM3Config
 from quant.research.m3.contracts import (
     AlignmentBuildSpec,
     AlignmentUpstreamPaths,
+    EvaluationSpec,
+    EvaluationUpstreamPaths,
     ExperimentIdentitySpec,
     FeatureBuildSpec,
     FeatureUpstreamPaths,
@@ -42,8 +45,10 @@ from quant.research.m3.contracts import (
     TargetBuildSpec,
     TargetUpstreamPaths,
     VerifiedAlignmentArtifact,
+    VerifiedBacktestArtifact,
     VerifiedBacktestPlanArtifact,
     VerifiedExperimentIdentity,
+    VerifiedEvaluationArtifact,
     VerifiedFeatureArtifact,
     VerifiedFoldPlanArtifact,
     VerifiedLabelArtifact,
@@ -55,6 +60,10 @@ from quant.research.m3.features import verify_feature_artifact
 from quant.research.m3.fetch_qlib_tool import build_qlib_dump_tool_spec
 from quant.research.m3.folds import verify_fold_plan_artifact
 from quant.research.m3.labels import verify_experiment_identity, verify_label_artifact
+from quant.research.m3.evaluate import (
+    EvaluationFreshVerificationContext,
+    verify_evaluation_artifact,
+)
 from quant.research.m3.model import build_lightgbm_training_spec, verify_model_artifact
 from quant.research.m3.predictions import verify_prediction_artifact
 from quant.research.m3.provider import (
@@ -81,6 +90,7 @@ from quant.research.m3.snapshot import (
     verify_snapshot_artifact,
 )
 from quant.research.m3.targets import verify_target_artifact
+from quant.research.m3.tracking import FormalTrackingFreshVerificationContext
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _FOLD = re.compile(r"^fold_[0-9]{3}$")
@@ -133,6 +143,35 @@ class FormalBacktestCliResolution:
             or type(self.target) is not VerifiedTargetArtifact
             or type(self.plan) is not VerifiedBacktestPlanArtifact
             or type(self.fresh_context) is not BacktestArtifactFreshVerificationContext
+            or type(self.work_key) is not str
+            or not _HEX64.fullmatch(self.work_key)
+        ):
+            raise FormalCliResolveError(_CODE_INPUT, 2)
+
+    def __reduce__(self) -> Any:
+        raise TypeError(_CODE_INPUT)
+
+
+@dataclass(frozen=True)
+class FormalTrackingCliResolution:
+    """Fresh evaluation/backtest inputs for one formal tracking CLI call."""
+
+    stage_root: Path
+    artifact_roots: Mapping[str, Path]
+    config: LoadedM3Config
+    evaluation: VerifiedEvaluationArtifact
+    backtest: VerifiedBacktestArtifact
+    fresh_context: FormalTrackingFreshVerificationContext
+    work_key: str
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.stage_root, Path)
+            or not isinstance(self.artifact_roots, Mapping)
+            or type(self.config) is not LoadedM3Config
+            or type(self.evaluation) is not VerifiedEvaluationArtifact
+            or type(self.backtest) is not VerifiedBacktestArtifact
+            or type(self.fresh_context) is not FormalTrackingFreshVerificationContext
             or type(self.work_key) is not str
             or not _HEX64.fullmatch(self.work_key)
         ):
@@ -285,6 +324,156 @@ def resolve_formal_reproducibility_cli_inputs(
         _fail(_CODE_CLOSURE, 5)
     except Exception:
         _fail(_CODE_CLOSURE, 5)
+
+
+def resolve_formal_tracking_cli_inputs(
+    *,
+    project_root: Path,
+    config: LoadedM3Config,
+    config_relative: PurePosixPath,
+    snapshot_id: str,
+    fold: str,
+    horizon: int,
+) -> FormalTrackingCliResolution:
+    """Resolve existing evaluation/backtest artifacts for one tracking wave."""
+    try:
+        backtest_resolution = resolve_formal_backtest_cli_inputs(
+            project_root=project_root,
+            config=config,
+            config_relative=config_relative,
+            snapshot_id=snapshot_id,
+            fold=fold,
+            horizon=horizon,
+        )
+        return _resolve_tracking_from_backtest(backtest_resolution)
+    except FormalCliResolveError:
+        raise
+    except M3RuntimeIdentityError:
+        _fail(_CODE_RUNTIME, 2)
+    except (ImportError, ModuleNotFoundError):
+        _fail(_CODE_DEPENDENCY, 4)
+    except (OSError, TypeError, ValueError, AttributeError, KeyError):
+        _fail(_CODE_CLOSURE, 5)
+    except Exception:
+        _fail(_CODE_CLOSURE, 5)
+
+
+def _resolve_tracking_from_backtest(
+    resolved: FormalBacktestCliResolution,
+) -> FormalTrackingCliResolution:
+    if type(resolved) is not FormalBacktestCliResolution:
+        raise ValueError
+    facts_context = resolved.fresh_context.facts_fresh_context
+    plan_context = facts_context.plan_fresh_context
+    target_paths = plan_context.target_upstream_paths
+    prediction_paths = target_paths.prediction_upstream_paths
+    model_paths = prediction_paths.model_upstream_paths
+    alignment_paths = model_paths.alignment_upstream_paths
+    minimum = resolved.config.section("evaluation")["minimum_ic_symbols"]
+    if type(minimum) is not int:
+        raise ValueError
+
+    evaluation_spec = EvaluationSpec(
+        experiment_key=resolved.experiment.manifest.experiment_key,
+        work_key=resolved.work_key,
+        fold=resolved.target.manifest.fold,
+        horizon_sessions=cast(Any, resolved.target.manifest.horizon_sessions),
+        minimum_ic_symbols=minimum,
+    )
+    evaluation_paths = EvaluationUpstreamPaths(
+        prediction_receipt_path=target_paths.prediction_receipt_path,
+        prediction_upstream_paths=prediction_paths,
+        label_receipt_path=alignment_paths.label_receipt_path,
+        feature_receipt_path=target_paths.feature_receipt_path,
+        fold_receipt_path=target_paths.fold_receipt_path,
+    )
+    evaluation_context = EvaluationFreshVerificationContext(
+        release=resolved.release,
+        snapshot=plan_context.snapshot,
+        snapshot_spec=plan_context.snapshot_spec,
+        provider=plan_context.provider,
+        provider_spec=plan_context.provider_spec,
+        experiment=resolved.experiment,
+        experiment_spec=plan_context.experiment_spec,
+        folds=facts_context.folds,
+        fold_spec=plan_context.fold_spec,
+        feature=plan_context.feature,
+        feature_spec=plan_context.feature_spec,
+        label=plan_context.label,
+        label_spec=plan_context.label_spec,
+        alignment=plan_context.alignment,
+        alignment_spec=plan_context.alignment_spec,
+        model=plan_context.model,
+        model_spec=plan_context.model_spec,
+        prediction=plan_context.prediction,
+        prediction_spec=plan_context.prediction_spec,
+        evaluation_spec=evaluation_spec,
+        evaluation_upstream_paths=evaluation_paths,
+    )
+    evaluation_root = resolved.stage_root / "work" / resolved.work_key / "evaluation"
+    evaluation_receipt = (
+        resolved.stage_root / "receipts" / "evaluation" / f"{resolved.work_key}.json"
+    )
+    evaluation = verify_evaluation_artifact(
+        root=evaluation_root,
+        receipt_path=evaluation_receipt,
+        release=evaluation_context.release,
+        snapshot=evaluation_context.snapshot,
+        snapshot_spec=evaluation_context.snapshot_spec,
+        provider=evaluation_context.provider,
+        provider_spec=evaluation_context.provider_spec,
+        experiment=evaluation_context.experiment,
+        experiment_spec=evaluation_context.experiment_spec,
+        folds=evaluation_context.folds,
+        fold_spec=evaluation_context.fold_spec,
+        feature=evaluation_context.feature,
+        feature_spec=evaluation_context.feature_spec,
+        label=evaluation_context.label,
+        label_spec=evaluation_context.label_spec,
+        alignment=evaluation_context.alignment,
+        alignment_spec=evaluation_context.alignment_spec,
+        model=evaluation_context.model,
+        model_spec=evaluation_context.model_spec,
+        prediction=evaluation_context.prediction,
+        prediction_spec=evaluation_context.prediction_spec,
+        config=resolved.config,
+        spec=evaluation_spec,
+        upstream_paths=evaluation_paths,
+        artifact_roots=resolved.artifact_roots,
+    )
+    backtest_receipt = (
+        resolved.stage_root / "receipts" / "backtest" / f"{resolved.work_key}.json"
+    )
+    backtest = verify_backtest_artifact(
+        root=resolved.stage_root / "work" / resolved.work_key / "backtest",
+        receipt_path=backtest_receipt,
+        target=resolved.target,
+        plan=resolved.plan,
+        release=resolved.release,
+        experiment=resolved.experiment,
+        config=resolved.config,
+        fresh_context=resolved.fresh_context,
+        artifact_roots=resolved.artifact_roots,
+    )
+    fresh_context = FormalTrackingFreshVerificationContext(
+        evaluation_context=evaluation_context,
+        evaluation_receipt_path=evaluation_receipt,
+        target=resolved.target,
+        plan=resolved.plan,
+        release=resolved.release,
+        experiment=resolved.experiment,
+        backtest_context=resolved.fresh_context,
+        backtest_receipt_path=backtest_receipt,
+    )
+    return FormalTrackingCliResolution(
+        stage_root=resolved.stage_root,
+        artifact_roots=resolved.artifact_roots,
+        config=resolved.config,
+        evaluation=evaluation,
+        backtest=backtest,
+        fresh_context=fresh_context,
+        work_key=resolved.work_key,
+    )
 
 
 def _resolve(

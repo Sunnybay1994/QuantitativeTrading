@@ -2038,8 +2038,8 @@ def main(argv: Sequence[str] | None = None) -> int: ...
 所有组合 key 必须调用其唯一具名函数；禁止把字段直接串接后 hash。规范数组编码必须覆盖
 `("ab","c")` 与 `("a","bc")` 不碰撞的反例。
 
-CLI 支持 `readiness`、`snapshot`、`train`、`evaluate`、`backtest`、`run-all`、
-`verify-reproducibility`、`acceptance-audit` 八个子命令；
+CLI 支持 `readiness`、`snapshot`、`train`、`evaluate`、`backtest`、`tracking`、`run-all`、
+`verify-reproducibility`、`acceptance-audit` 九个子命令；
 每步可重跑，已存在相同 snapshot 时必须校验后复用，不得覆盖不同内容。
 
 命令依赖闭包与停止点冻结如下；共同参数均含 `--config`：
@@ -2051,6 +2051,7 @@ CLI 支持 `readiness`、`snapshot`、`train`、`evaluate`、`backtest`、`run-a
 | `train` | `--snapshot-id --fold --horizon` | 自动验真/生成 provider/shared/features，止于 train |
 | `evaluate` | `--snapshot-id --fold --horizon` | 止于 evaluation |
 | `backtest` | `--snapshot-id --fold --horizon [--no-resume]` | 止于 backtest，不登记 MLflow |
+| `tracking` | `--snapshot-id --fold --horizon [--no-resume]` | fresh 验真既有 evaluation/backtest，止于单 work tracking |
 | `run-all` | `--g1-release-id` 或 `--snapshot-id` 二选一 | 所有 work 止于 tracking |
 | `verify-reproducibility` | `--snapshot-id --fold --horizon` | 两个冷启动 attempt 与 comparison receipt |
 | `acceptance-audit` | `--snapshot-id` | 重算 provider/experiment identity，执行固定质量命令与 G0–G9 审计；只在全通过时发布 acceptance receipt |
@@ -2060,10 +2061,11 @@ CLI 支持 `readiness`、`snapshot`、`train`、`evaluate`、`backtest`、`run-a
 context；它零写入、禁止扫描目录、禁止生成任何缺失 stage。C1 把 public `backtest` 接到
 `load_m3_config` → `resolve_formal_backtest_cli_inputs` → `run_formal_backtest_stage`，仅新增
 `--no-resume`，成功输出一行 canonical JSON（`reused`/`work_key`/`stop_stage=backtest`），失败走
-`CommandSummary` 稳定码；C1 R2 长链 FAIL 后 R3 完成一次透明诊断并 **FAIL**（exact 边界为已主验 G8 `M3StageRunnerError`/`STAGE_BUILD_FAILED`，非 C1 seam；未启动 Phase B，不得进入独立初验或自行宣布 Gate）。`train`、`evaluate`、
-`run-all`、`verify-reproducibility`、`acceptance-audit` 与 tracking/真实 MLflow handler 继续
-`M3_COMMAND_HANDLER_UNAVAILABLE`。C2 才能另行设计 tracking CLI；不得用 offline/fake production client 把
-tracking 偷渡进 C0/C1。任何跨进程执行都必须在新进程内重新 resolve，禁止 pickle 或传递 verified capability。
+`CommandSummary` 稳定码。C1 的 Windows honest 300 最终 revision 已完成同一次首发与 completed resume。
+C2 新增窄 `tracking` 命令：只在完整本地 fresh resolution 成功后从 config 的 canonical URI 惰性创建 production
+MLflow client，再调用 actual G8D-F1 StageRunner；caller 不能传 URI/client/path/capability。`train`、`evaluate`、
+`run-all`、`verify-reproducibility` 仍为 `M3_COMMAND_HANDLER_UNAVAILABLE`；`acceptance-audit` 已接 production
+read-only tracking verifier。任何跨进程执行都必须在新进程内重新 resolve，禁止 pickle 或传递 verified capability。
 
 提供 snapshot ID 时只验真/复用已有 snapshot，不回退 G1 构建；提供 G1 release 时按分段计划生成或复用。
 stdout 只输出一份规范 JSON，所有 warning/log 写 stderr。退出码：0 成功或验真复用；2 参数/配置/契约；
@@ -3967,17 +3969,15 @@ folds receipt 在各自发布前不可知的问题；每个 fold×horizon
 4. G4–G6 已按 G4A/G4B/G4C/G5A/G5B/G6A/G6B 七个 verified-artifact 边界冻结 FoldPlan、fold-shared
    FeatureArtifact、无标签 test inference、validation-l2 模型、全量 prediction 和 coverage ladder；七包均
    未实现，也没有兼容环境的真实 Qlib/LightGBM 验证。
-5. G7 已冻结 G7P0 与 G7A–G7F 七个 config/verified-artifact/纯状态边界，但当前仍只有 ETF 薄模拟器和
-   早期成本/规则零件；四个新增 config 字段、target、backtest plan、双-leg entitlement、execution、账户
-   循环和三场景 artifact 均未实现，仍需独立手算验收。
-6. G8A registry、G8B StageRunner、formal backtest 单 WORK wave与G8D-F1 formal tracking单WORK wave均已完成
-   工程实现、外部独立初验和主验；G8D-F1 R1 的FINISHED request-tag复用缺口已由R2闭合。G8C CLI须按
-   C0 identity resolver → C1 backtest命令 → C2 tracking命令串行推进；   C0 已于 2026-08-12 完成主验，C1
-   R3 外部实现 FAIL（根因属 G8 stage build，待主 Agent 冻结上游/R4），C2 尚未开始；现有除readiness/snapshot外的public handler继续 fail-closed。G8E
-   fresh-process reproducibility、G8F fake全DAG、真实MLflow
-   与Linux ext4 Gate也未验。
-7. G9 已按 G9A quality、G9B evidence plan、G9C G0–G4、G9D G5–G7、G9E G8–G9、G9F publish/CLI、
-   G9G fake integration 七个边界冻结；全部尚未实现，尚无跨 Gate 或真实 tracking 运行证据，G8/G9 未关闭。
+5. G7 formal target、backtest plan、八表 facts、公司行动状态机、开盘撮合、三场景账户回放与 29 文件
+   backtest artifact 已完成 Windows 工程闭包，并由 honest 300 public CLI 实际消费。
+6. G8A registry、G8B StageRunner、formal backtest/tracking 单 WORK wave、fresh-process reproducibility、fake
+   full DAG 与 C0/C1 已完成；C1 honest 300 在最终 revision 完成首发与 completed resume。C2 单 work
+   `tracking` public CLI 已接线并通过正常开发检查，尚未在 honest 300 retained tree 上登记真实 MLflow run。
+   `run-all` 仍未实现，Linux/ext4 Gate按当前项目阶段暂缓。
+7. G9A–G9G 的 quality、evidence plan、分层审计、PASS-only publication/CLI 与 fake integration 已完成 Windows
+   工程闭包；honest 300 backtest 证据已取得。真实 tracking markers/remote observations 与最终 acceptance
+   report 尚未生成，因此 M3 总 Gate 仍未关闭。
 
 ## 7. Agent 提交格式
 
