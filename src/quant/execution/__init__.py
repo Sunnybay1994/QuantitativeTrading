@@ -73,6 +73,17 @@ from quant.execution.ports import (
 )
 
 if TYPE_CHECKING:
+    from quant.execution.paper_formal_daily import (
+        FormalPaperCandidateTargetLoader,
+        FormalPaperDailyInputError,
+        FormalPaperDailyRunnerError,
+        FormalPaperDailySourcePlan,
+        FormalPaperPlanningLoader,
+        build_formal_paper_daily_dependencies,
+        load_formal_paper_daily_source_plan,
+        publish_formal_paper_opening_market_input,
+        run_formal_paper_daily_read_only,
+    )
     from quant.execution.paper_formal_ledger import (
         FormalPaperLedgerContextError,
         VerifiedFormalPaperLedgerContextProvider,
@@ -214,9 +225,27 @@ _FORMAL_SCHEDULE_EXPORTS = frozenset(
     }
 )
 
+_FORMAL_DAILY_EXPORTS = frozenset(
+    {
+        "FormalPaperCandidateTargetLoader",
+        "FormalPaperDailyInputError",
+        "FormalPaperDailyRunnerError",
+        "FormalPaperDailySourcePlan",
+        "FormalPaperPlanningLoader",
+        "build_formal_paper_daily_dependencies",
+        "load_formal_paper_daily_source_plan",
+        "publish_formal_paper_opening_market_input",
+        "run_formal_paper_daily_read_only",
+    }
+)
+
 
 def __getattr__(name: str) -> Any:
     """Resolve P8 exports without pulling reporting/backtest at package import."""
+    if name in _FORMAL_DAILY_EXPORTS:
+        value = getattr(import_module("quant.execution.paper_formal_daily"), name)
+        globals()[name] = value
+        return value
     if name in _FORMAL_SCHEDULE_EXPORTS:
         value = getattr(import_module("quant.execution.paper_formal_schedule"), name)
         globals()[name] = value
@@ -266,11 +295,16 @@ __all__ = [
     "FaultDrillReceipt",
     "FormalPaperBrokerSnapshotError",
     "FormalPaperBrokerStoreError",
+    "FormalPaperCandidateTargetLoader",
+    "FormalPaperDailyInputError",
+    "FormalPaperDailyRunnerError",
+    "FormalPaperDailySourcePlan",
     "FormalPaperExecutionStoreError",
     "FormalPaperGatewayError",
     "FormalPaperLedgerContextError",
     "FormalPaperServiceError",
     "FormalPaperScheduleError",
+    "FormalPaperPlanningLoader",
     "MarketDataRepository",
     "MoneyAmount",
     "OrderCommand",
@@ -308,6 +342,7 @@ __all__ = [
     "build_cash_balance_identity",
     "build_cancel_command",
     "build_cancel_command_identity",
+    "build_formal_paper_daily_dependencies",
     "build_execution_event",
     "build_execution_event_identity",
     "build_fee_component",
@@ -334,6 +369,7 @@ __all__ = [
     "build_verified_market_snapshot_identity",
     "build_verified_formal_paper_soak_schedule",
     "load_trading_config",
+    "load_formal_paper_daily_source_plan",
     "load_verified_formal_paper_ledger_context_provider",
     "initialize_verified_formal_paper_broker_store",
     "initialize_verified_formal_paper_execution_store",
@@ -342,6 +378,8 @@ __all__ = [
     "open_verified_formal_paper_gateway_factory",
     "open_verified_formal_paper_execution_store",
     "open_verified_formal_paper_service_composition",
+    "publish_formal_paper_opening_market_input",
+    "run_formal_paper_daily_read_only",
     "decide_soak_gate",
     "expected_schedule_identity",
     "trading_config_identity",
