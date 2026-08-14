@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from quant.backtest.costs import ExecutionCostSchedule, calculate_execution_cost
 from quant.backtest.fx import FxSnapshot
@@ -108,6 +108,21 @@ class PaperClock(Protocol):
         ...
 
 
+@runtime_checkable
+class _DispatchAnchoredPaperClock(Protocol):
+    """Clock whose event time is anchored to one explicit dispatch observation."""
+
+    def event_time_for_dispatch(
+        self,
+        *,
+        operation_id: str,
+        event_ordinal: int,
+        observed_at: dt.datetime,
+    ) -> dt.datetime:
+        """Return an event time derived from the caller-provided dispatch time."""
+        ...
+
+
 class PaperFillPolicy(Protocol):
     """Pure policy that describes submit fills and cancel/fill races."""
 
@@ -201,7 +216,7 @@ class PaperGateway:
 
         callbacks = self._submit_callbacks.get(command.command_id)
         if callbacks is None:
-            callbacks = self._build_submit_callbacks(command)
+            callbacks = self._build_submit_callbacks(command, observed_at=now)
             self._submit_callbacks[command.command_id] = callbacks
         visible = tuple(event for event in callbacks if event.occurred_at <= now)
         result = GatewayDispatchResult(
@@ -246,7 +261,9 @@ class PaperGateway:
 
         callbacks = self._cancel_callbacks.get(command.cancel_id)
         if callbacks is None:
-            callbacks = self._build_cancel_callbacks(source, command, snapshot)
+            callbacks = self._build_cancel_callbacks(
+                source, command, snapshot, observed_at=now
+            )
             self._cancel_callbacks[command.cancel_id] = callbacks
         visible = tuple(event for event in callbacks if event.occurred_at <= now)
         result = GatewayCancelResult(
@@ -317,7 +334,7 @@ class PaperGateway:
         return certainty
 
     def _build_submit_callbacks(
-        self, command: OrderCommand
+        self, command: OrderCommand, *, observed_at: dt.datetime
     ) -> tuple[ExecutionEvent, ...]:
         plan = self._submit_plan(command)
         callbacks: list[ExecutionEvent] = []
@@ -336,6 +353,7 @@ class PaperGateway:
                     fees=(),
                     reject_code=plan.reject_code,
                     not_before=command.intent.generated_at,
+                    observed_at=observed_at,
                 )
             )
         else:
@@ -353,6 +371,7 @@ class PaperGateway:
                     fees=(),
                     reject_code=None,
                     not_before=command.intent.generated_at,
+                    observed_at=observed_at,
                 )
             )
             cumulative = 0
@@ -377,6 +396,7 @@ class PaperGateway:
                         fees=self._fees(command, fill),
                         reject_code=None,
                         not_before=command.intent.generated_at,
+                        observed_at=observed_at,
                     )
                 )
         aggregate = self._prove_sequence(aggregate, command, tuple(callbacks))
@@ -388,6 +408,8 @@ class PaperGateway:
         source: OrderCommand,
         cancel: CancelCommand,
         snapshot: OrderAggregate,
+        *,
+        observed_at: dt.datetime,
     ) -> tuple[ExecutionEvent, ...]:
         plan = self._cancel_plan(source, cancel)
         callbacks: list[ExecutionEvent] = [
@@ -403,6 +425,7 @@ class PaperGateway:
                 fees=(),
                 reject_code=None,
                 not_before=cancel.as_of,
+                observed_at=observed_at,
             )
         ]
         cumulative = cancel.observed_filled_quantity
@@ -427,6 +450,7 @@ class PaperGateway:
                     fees=self._fees(source, fill),
                     reject_code=None,
                     not_before=cancel.as_of,
+                    observed_at=observed_at,
                 )
             )
         if plan.confirm_cancel and cumulative < source.intent.quantity:
@@ -443,6 +467,7 @@ class PaperGateway:
                     fees=(),
                     reject_code=None,
                     not_before=cancel.as_of,
+                    observed_at=observed_at,
                 )
             )
         self._prove_sequence(snapshot, source, tuple(callbacks))
@@ -498,8 +523,11 @@ class PaperGateway:
         fees: tuple[FeeComponent, ...],
         reject_code: str | None,
         not_before: dt.datetime,
+        observed_at: dt.datetime,
     ) -> ExecutionEvent:
-        occurred_at = self._event_time(operation_id, ordinal, not_before)
+        occurred_at = self._event_time(
+            operation_id, ordinal, not_before, observed_at
+        )
         invalid = False
         event: ExecutionEvent | None = None
         try:
@@ -521,14 +549,25 @@ class PaperGateway:
         return event
 
     def _event_time(
-        self, operation_id: str, ordinal: int, not_before: dt.datetime
+        self,
+        operation_id: str,
+        ordinal: int,
+        not_before: dt.datetime,
+        observed_at: dt.datetime,
     ) -> dt.datetime:
         invalid = False
         value: object = None
         try:
-            value = self._clock.event_time(
-                operation_id=operation_id, event_ordinal=ordinal
-            )
+            if isinstance(self._clock, _DispatchAnchoredPaperClock):
+                value = self._clock.event_time_for_dispatch(
+                    operation_id=operation_id,
+                    event_ordinal=ordinal,
+                    observed_at=observed_at,
+                )
+            else:
+                value = self._clock.event_time(
+                    operation_id=operation_id, event_ordinal=ordinal
+                )
             if (
                 type(value) is not dt.datetime
                 or value.tzinfo is None

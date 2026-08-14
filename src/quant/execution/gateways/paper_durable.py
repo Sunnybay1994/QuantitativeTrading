@@ -48,8 +48,13 @@ from quant.execution.paper_broker_store import (
     PaperBrokerPolicyDescriptor,
     PaperBrokerStore,
     PaperBrokerStoreError,
+    build_formal_paper_broker_policy_descriptor,
     build_paper_broker_policy_descriptor,
 )
+from quant.execution.paper_broker_binding import (
+    VerifiedFormalPaperBrokerPolicyBinding,
+)
+from quant.execution.paper_policy import VerifiedPaperExecutionPolicy
 from quant.execution.wire import (
     decode_execution_event,
     encode_cancel_command,
@@ -196,9 +201,6 @@ class DurablePaperGatewayFactory:
         clock: PaperClock, fill_policy: PaperFillPolicy, fault_plan: PaperFaultPlan,
         cost_schedule: ExecutionCostSchedule, fx_snapshot: FxSnapshot | None,
     ) -> None:
-        if type(store) is not PaperBrokerStore:
-            raise DurablePaperGatewayError("PAPER_BROKER_STORE_INVALID")
-        store.verify_fresh()
         expected = build_paper_broker_policy_descriptor(
             adapter_policy_version=policy.adapter_policy_version,
             fill_policy_version=policy.fill_policy_version,
@@ -206,7 +208,60 @@ class DurablePaperGatewayFactory:
             finality_policy_version=policy.finality_policy_version,
             cost_schedule=cost_schedule, fx_snapshot=fx_snapshot,
         )
-        if type(policy) is not PaperBrokerPolicyDescriptor or expected != policy or store.policy_identity != policy.descriptor_identity:
+        if type(policy) is not PaperBrokerPolicyDescriptor or expected != policy:
+            raise DurablePaperGatewayError("PAPER_BROKER_POLICY_INVALID")
+        self._bind(
+            store=store,
+            policy=policy,
+            clock=clock,
+            fill_policy=fill_policy,
+            fault_plan=fault_plan,
+            cost_schedule=cost_schedule,
+            fx_snapshot=fx_snapshot,
+        )
+
+    @classmethod
+    def _from_formal(
+        cls,
+        *,
+        store: PaperBrokerStore,
+        policy: VerifiedPaperExecutionPolicy,
+        binding: VerifiedFormalPaperBrokerPolicyBinding,
+        clock: PaperClock,
+        fill_policy: PaperFillPolicy,
+        fault_plan: PaperFaultPlan,
+    ) -> DurablePaperGatewayFactory:
+        """Construct from the sole B1-issued formal policy descriptor path."""
+        descriptor = build_formal_paper_broker_policy_descriptor(
+            policy=policy, binding=binding
+        )
+        result = cls.__new__(cls)
+        result._bind(
+            store=store,
+            policy=descriptor,
+            clock=clock,
+            fill_policy=fill_policy,
+            fault_plan=fault_plan,
+            cost_schedule=policy.execution_cost_schedule,
+            fx_snapshot=None,
+        )
+        return result
+
+    def _bind(
+        self,
+        *,
+        store: PaperBrokerStore,
+        policy: PaperBrokerPolicyDescriptor,
+        clock: PaperClock,
+        fill_policy: PaperFillPolicy,
+        fault_plan: PaperFaultPlan,
+        cost_schedule: ExecutionCostSchedule,
+        fx_snapshot: FxSnapshot | None,
+    ) -> None:
+        if type(store) is not PaperBrokerStore:
+            raise DurablePaperGatewayError("PAPER_BROKER_STORE_INVALID")
+        store.verify_fresh()
+        if store.policy_identity != policy.descriptor_identity:
             raise DurablePaperGatewayError("PAPER_BROKER_POLICY_INVALID")
         self._store = store
         self._policy = policy

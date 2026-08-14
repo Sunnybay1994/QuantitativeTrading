@@ -73,6 +73,10 @@ from quant.execution.ports import (
 )
 
 if TYPE_CHECKING:
+    from quant.execution.paper_formal_gateway import (
+        FormalPaperGatewayError,
+        open_verified_formal_paper_gateway_factory,
+    )
     from quant.execution.paper_formal_broker_snapshot import (
         FormalPaperBrokerSnapshotError,
         open_verified_formal_paper_broker_snapshot_port,
@@ -141,9 +145,20 @@ _FORMAL_SNAPSHOT_EXPORTS = frozenset(
     }
 )
 
+_FORMAL_GATEWAY_EXPORTS = frozenset(
+    {
+        "FormalPaperGatewayError",
+        "open_verified_formal_paper_gateway_factory",
+    }
+)
+
 
 def __getattr__(name: str) -> Any:
     """Resolve P8 exports without pulling reporting/backtest at package import."""
+    if name in _FORMAL_GATEWAY_EXPORTS:
+        value = getattr(import_module("quant.execution.paper_formal_gateway"), name)
+        globals()[name] = value
+        return value
     if name in _FORMAL_SNAPSHOT_EXPORTS:
         value = getattr(import_module("quant.execution.paper_formal_broker_snapshot"), name)
         globals()[name] = value
@@ -171,6 +186,7 @@ __all__ = [
     "FaultDrillReceipt",
     "FormalPaperBrokerSnapshotError",
     "FormalPaperBrokerStoreError",
+    "FormalPaperGatewayError",
     "MarketDataRepository",
     "MoneyAmount",
     "OrderCommand",
@@ -232,6 +248,7 @@ __all__ = [
     "initialize_verified_formal_paper_broker_store",
     "open_verified_formal_paper_broker_store",
     "open_verified_formal_paper_broker_snapshot_port",
+    "open_verified_formal_paper_gateway_factory",
     "decide_soak_gate",
     "expected_schedule_identity",
     "trading_config_identity",
