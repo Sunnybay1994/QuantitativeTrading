@@ -73,6 +73,18 @@ from quant.execution.ports import (
 )
 
 if TYPE_CHECKING:
+    from quant.execution.paper_formal_ledger import (
+        FormalPaperLedgerContextError,
+        VerifiedFormalPaperLedgerContextProvider,
+        load_verified_formal_paper_ledger_context_provider,
+        verify_existing_formal_paper_ledger_context_provider,
+    )
+    from quant.execution.paper_formal_service import (
+        FormalPaperServiceError,
+        VerifiedFormalPaperServiceComposition,
+        open_verified_formal_paper_service_composition,
+        verify_existing_formal_paper_service_composition,
+    )
     from quant.execution.paper_formal_execution_store import (
         FormalPaperExecutionStoreError,
         VerifiedFormalPaperExecutionStoreCapability,
@@ -169,9 +181,35 @@ _FORMAL_EXECUTION_STORE_EXPORTS = frozenset(
     }
 )
 
+_FORMAL_LEDGER_EXPORTS = frozenset(
+    {
+        "FormalPaperLedgerContextError",
+        "VerifiedFormalPaperLedgerContextProvider",
+        "load_verified_formal_paper_ledger_context_provider",
+        "verify_existing_formal_paper_ledger_context_provider",
+    }
+)
+
+_FORMAL_SERVICE_EXPORTS = frozenset(
+    {
+        "FormalPaperServiceError",
+        "VerifiedFormalPaperServiceComposition",
+        "open_verified_formal_paper_service_composition",
+        "verify_existing_formal_paper_service_composition",
+    }
+)
+
 
 def __getattr__(name: str) -> Any:
     """Resolve P8 exports without pulling reporting/backtest at package import."""
+    if name in _FORMAL_SERVICE_EXPORTS:
+        value = getattr(import_module("quant.execution.paper_formal_service"), name)
+        globals()[name] = value
+        return value
+    if name in _FORMAL_LEDGER_EXPORTS:
+        value = getattr(import_module("quant.execution.paper_formal_ledger"), name)
+        globals()[name] = value
+        return value
     if name in _FORMAL_EXECUTION_STORE_EXPORTS:
         value = getattr(
             import_module("quant.execution.paper_formal_execution_store"), name
@@ -211,6 +249,8 @@ __all__ = [
     "FormalPaperBrokerStoreError",
     "FormalPaperExecutionStoreError",
     "FormalPaperGatewayError",
+    "FormalPaperLedgerContextError",
+    "FormalPaperServiceError",
     "MarketDataRepository",
     "MoneyAmount",
     "OrderCommand",
@@ -233,6 +273,8 @@ __all__ = [
     "TradingConfigError",
     "VerifiedConnectMarketContext",
     "VerifiedFormalPaperExecutionStoreCapability",
+    "VerifiedFormalPaperLedgerContextProvider",
+    "VerifiedFormalPaperServiceComposition",
     "VerifiedDevelopmentSoakEvidence",
     "VerifiedFormalPaperBrokerStoreCapability",
     "VerifiedMarketSnapshot",
@@ -270,16 +312,20 @@ __all__ = [
     "build_verified_market_snapshot",
     "build_verified_market_snapshot_identity",
     "load_trading_config",
+    "load_verified_formal_paper_ledger_context_provider",
     "initialize_verified_formal_paper_broker_store",
     "initialize_verified_formal_paper_execution_store",
     "open_verified_formal_paper_broker_store",
     "open_verified_formal_paper_broker_snapshot_port",
     "open_verified_formal_paper_gateway_factory",
     "open_verified_formal_paper_execution_store",
+    "open_verified_formal_paper_service_composition",
     "decide_soak_gate",
     "expected_schedule_identity",
     "trading_config_identity",
     "verify_soak_evidence",
     "verify_existing_formal_paper_broker_store_capability",
     "verify_existing_formal_paper_execution_store_capability",
+    "verify_existing_formal_paper_ledger_context_provider",
+    "verify_existing_formal_paper_service_composition",
 ]

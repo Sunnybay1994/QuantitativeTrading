@@ -167,6 +167,7 @@ class _VerifiedFormalPaperGatewayFactory:
         self._binding = binding
         self._account = account
         self._now = now
+        self._opened: VerifiedPaperGateway | None = None
 
     def _fresh(
         self, now: dt.datetime
@@ -189,6 +190,9 @@ class _VerifiedFormalPaperGatewayFactory:
 
     def open(self) -> VerifiedPaperGateway:
         try:
+            if self._opened is not None:
+                self._fresh(self._now)
+                return self._opened
             from quant.execution.gateways.paper_durable import (
                 DurablePaperGatewayFactory,
             )
@@ -207,11 +211,13 @@ class _VerifiedFormalPaperGatewayFactory:
             transport = _FormalGatewayTransport(
                 factory=self, submit=durable.submit, cancel=durable.cancel
             )
-            return build_verified_paper_gateway(
+            opened = build_verified_paper_gateway(
                 gateway_identity=capability.gateway_identity,
                 submit=transport,
                 cancel=transport,
             )
+            self._opened = opened
+            return opened
         except Exception:
             pass
         raise FormalPaperGatewayError() from None

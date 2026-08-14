@@ -111,6 +111,7 @@ def test_formal_submit_is_full_limit_fill_dispatch_anchored_and_retained(
         now=NOW,
     )
     gateway = factory.open()
+    assert factory.open() is gateway
     command = _command()
     first = gateway.submit.submit(command=command, dispatch_attempt=1, now=NOW)
 
