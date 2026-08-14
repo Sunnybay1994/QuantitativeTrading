@@ -4,3 +4,6 @@ data/external/qlib/v0.9.7/dump_bin.py binary
 # Keep their checkout bytes stable on Windows and Linux.
 configs/research/m2_s2_minimum_breadth.toml text eol=lf
 configs/research/m2_s2_minimum_breadth_forward.toml text eol=lf
+
+# This registered Task Scheduler runner is bound by a physical SHA-256 receipt.
+scripts/run_m1_daily_streak_20260810_20260814.sh text eol=lf
