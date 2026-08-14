@@ -16,6 +16,7 @@ from quant.backtest import (
     simulate_etf_targets,
 )
 from quant.strategies import EqualWeightStrategy
+from quant.settings import resolve_data_root
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -23,16 +24,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--config", type=Path, default=Path("configs/research/m2_baseline.toml")
     )
-    parser.add_argument("--data-root", type=Path, default=Path("data"))
+    parser.add_argument("--data-root", type=Path)
     parser.add_argument("--artifact-root", type=Path, default=Path("artifacts"))
     args = parser.parse_args(argv)
+    data_root = resolve_data_root(args.data_root)
     with args.config.open("rb") as stream:
         config: dict[str, Any] = tomllib.load(stream)
     benchmark = config["benchmark"]["csi300"]
     start, end = config["data"]["start_date"], config["data"]["end_date"]
 
     all_bars = pl.read_parquet(
-        args.data_root / "clean" / "bar_1d" / "date=*" / "data.parquet"
+        data_root / "clean" / "bar_1d" / "date=*" / "data.parquet"
     ).filter(pl.col("source") == "baostock")
     index_bars = all_bars.filter(pl.col("symbol") == benchmark["symbol"]).sort(
         "trade_date"
@@ -42,7 +44,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         & pl.col("trade_date").is_between(start, end, closed="both")
     ).sort("trade_date")
     research = pl.read_parquet(
-        args.data_root / "clean" / "research_price_1d" / "date=*" / "data.parquet"
+        data_root / "clean" / "research_price_1d" / "date=*" / "data.parquet"
     ).filter(
         (pl.col("symbol") == benchmark["tracked_etf"])
         & (pl.col("adjustment_method") == "TOTAL_RETURN_DIVIDEND")
@@ -76,7 +78,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     signal_date = etf_bars.item(0, "trade_date")
     calendars = pl.concat([
         pl.read_parquet(
-            args.data_root / "clean" / "trade_calendar" / f"market={market}" / "data.parquet"
+            data_root / "clean" / "trade_calendar" / f"market={market}" / "data.parquet"
         )
         for market in ("SH", "SZ")
     ])
@@ -93,7 +95,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         calendars,
     )
     instrument = pl.read_parquet(
-        args.data_root / "clean" / "instrument" / "market=SH" / "data.parquet"
+        data_root / "clean" / "instrument" / "market=SH" / "data.parquet"
     ).filter(pl.col("symbol") == benchmark["tracked_etf"])
     cost_config = config["costs"]["etf"]
     costs = EtfCostModel(

@@ -40,6 +40,7 @@ from quant.strategies import (
     RegimeFilteredEtfRiskAdjustedMomentumStrategy,
     RegimeFilteredEtfTrendStrategy,
 )
+from quant.settings import resolve_data_root
 from quant.factors import compute_realized_volatility_factors_from_prices
 
 _HYPOTHESIS_ID = "s1-trend-v1"
@@ -99,13 +100,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--config", type=Path, default=Path("configs/research/m2_baseline.toml")
     )
-    parser.add_argument("--data-root", type=Path, default=Path("data"))
+    parser.add_argument("--data-root", type=Path)
     parser.add_argument("--artifact-root", type=Path, default=Path("artifacts"))
     parser.add_argument("--project-root", type=Path, default=Path("."))
     args = parser.parse_args(argv)
     project_root = args.project_root.resolve(strict=True)
     config_path = _inside(project_root, args.config)
-    data_root = _inside(project_root, args.data_root)
+    data_root = resolve_data_root(args.data_root, base=project_root)
     artifact_root = _inside(project_root, args.artifact_root, strict=False)
     config_payload = config_path.read_bytes()
     with config_path.open("rb") as stream:
