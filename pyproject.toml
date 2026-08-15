@@ -37,6 +37,7 @@ research = [
 qlib = [
     "pyqlib>=0.9.7",
 ]
+gui = ["streamlit>=1.48,<2"]
 dev = [
     "pytest>=8.0",
     "ruff>=0.4",
