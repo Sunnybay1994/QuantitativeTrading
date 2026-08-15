@@ -17,6 +17,7 @@ from typing import Any, cast
 
 import pytest
 
+import quant.research.m3.acceptance as acceptance_module
 import quant.research.m3.acceptance_stage as stage_module
 import quant.research.m3.acceptance_tracking as tracking_module
 import quant.research.m3.acceptance_work as work_module
@@ -68,6 +69,16 @@ _remote_run = cast(Any, getattr(_TRACKING, "_remote_run"))
 
 def _identity(label: str) -> str:
     return hashlib.sha256(label.encode("ascii")).hexdigest()
+
+
+def test_acceptance_repro_verifier_parameter_is_project_only(
+    tmp_path: Path,
+) -> None:
+    roots = acceptance_module._reproducibility_artifact_roots(tmp_path)
+
+    assert dict(roots) == {"PROJECT": tmp_path}
+    with pytest.raises(TypeError):
+        roots["G8"] = tmp_path / "stage"  # type: ignore[index]
 
 
 def _two_fold_bundle(tmp_path: Path) -> Any:

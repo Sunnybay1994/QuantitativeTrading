@@ -11,6 +11,7 @@ import pytest
 
 from quant.research.m3 import reproducibility as subject
 from quant.research.m3.config import load_m3_config
+from quant.research.m3.orchestration import M3StageRunnerError, StageRunner
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -199,22 +200,66 @@ def test_public_stage_publishes_two_attempts_and_resumes_without_workers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    project = Path(__file__).resolve().parents[2]
-    config = load_m3_config(project / "configs/research/m3_qlib_example.toml")
-    stage_root = tmp_path / "stage"
-    stage_root.mkdir()
+    source_project = Path(__file__).resolve().parents[2]
+    source_config = source_project / "configs/research/m3_qlib_example.toml"
+    config = load_m3_config(source_config)
+    project = tmp_path / "project"
+    project.mkdir()
+    config_relative = subject.PurePosixPath("configs/research/m3_qlib_example.toml")
+    config_path = project.joinpath(*config_relative.parts)
+    config_path.parent.mkdir(parents=True)
+    config_path.write_bytes(source_config.read_bytes())
+    (project / "pyproject.toml").write_bytes(
+        (source_project / "pyproject.toml").read_bytes()
+    )
+    source_path = project / "src/quant/example.py"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text("VALUE = 1\n", encoding="utf-8")
+
+    stage_root = project / "artifacts/research/m3/stage"
+    g1_root = project / "data/clean/m3_g1/releases/release"
+    qlib_root = project / "data/external/qlib/v0.9.7"
+    for directory in (stage_root, g1_root, qlib_root):
+        directory.mkdir(parents=True)
+    feature_root = stage_root / "features/example"
+    label_root = stage_root / "labels/example"
+    alignment_root = stage_root / "work/example/alignment"
+    feature_receipt = stage_root / "receipts/features/example.json"
+    label_receipt = stage_root / "receipts/labels/example.json"
+    alignment_receipt = stage_root / "receipts/alignment/example.json"
+    for path in (
+        feature_root / "feature_manifest.json",
+        label_root / "label_manifest.json",
+        alignment_root / "alignment_manifest.json",
+        feature_receipt,
+        label_receipt,
+        alignment_receipt,
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(path.name.encode("ascii"))
+
     resolution = SimpleNamespace(
         stage_root=stage_root,
-        artifact_roots={"G8": stage_root},
+        artifact_roots={
+            "G1_RELEASE": g1_root,
+            "G8": stage_root,
+            "EXTERNAL_QLIB": qlib_root,
+        },
         runtime=SimpleNamespace(
             code_version=_CODE_VERSION,
             dependency_fingerprint_sha256=_DEPENDENCY_SHA,
+            source_files=(SimpleNamespace(relative_path="src/quant/example.py"),),
         ),
+        feature=SimpleNamespace(root=feature_root),
+        feature_receipt_path=feature_receipt,
+        label=SimpleNamespace(root=label_root),
+        label_receipt_path=label_receipt,
+        alignment=SimpleNamespace(root=alignment_root),
+        alignment_receipt_path=alignment_receipt,
     )
     monkeypatch.setattr(
         subject, "resolve_formal_reproducibility_cli_inputs", lambda **_kwargs: resolution
     )
-    monkeypatch.setattr(subject, "_external_inputs", lambda **_kwargs: ())
     monkeypatch.setattr(subject, "_comparison_key", lambda **_kwargs: "c" * 64)
     calls: list[int] = []
 
@@ -233,19 +278,41 @@ def test_public_stage_publishes_two_attempts_and_resumes_without_workers(
     arguments = {
         "project_root": project,
         "config": config,
-        "config_relative": subject.PurePosixPath("configs/research/m3_qlib_example.toml"),
+        "config_relative": config_relative,
         "snapshot_id": "a" * 64,
         "fold": "fold_000",
         "horizon": 5,
         "python_executable": Path(sys.executable),
     }
 
+    with pytest.raises(M3StageRunnerError) as nested:
+        StageRunner(
+            stage_root=stage_root,
+            artifact_roots={**resolution.artifact_roots, "PROJECT": project},
+            config=config,
+        )
+    assert str(nested.value) == "STAGE_INPUT_INVALID"
+
     first = subject.run_formal_reproducibility_stage(**arguments)
     second = subject.run_formal_reproducibility_stage(**arguments)
+    verified = subject.verify_formal_reproducibility_artifact(
+        root=first.root,
+        receipt_path=first.receipt_path,
+        artifact_roots={"PROJECT": project},
+        comparison_key=first.comparison_key,
+        score_atol=1e-12,
+        metric_atol=1e-12,
+        code_version=_CODE_VERSION,
+        dependency_fingerprint_sha256=_DEPENDENCY_SHA,
+        python_executable_sha256=subject._file_sha256(Path(sys.executable)),
+    )
 
     assert calls == [1, 2]
     assert first.reused is False
     assert second.reused is True
-    assert first.receipt.inputs == ()
+    assert first.receipt.inputs
+    assert {item.root_alias for item in first.receipt.inputs} == {"PROJECT"}
+    assert {item.root_alias for item in first.receipt.outputs} == {"PROJECT"}
     assert len(first.receipt.outputs) == 15
     assert first.root == second.root
+    assert verified.root == first.root

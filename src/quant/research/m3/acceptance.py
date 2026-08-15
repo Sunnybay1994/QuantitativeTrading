@@ -10,6 +10,7 @@ import stat
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, TypeAlias, cast
 
 from quant.research.m3.config import LoadedM3Config
@@ -415,7 +416,7 @@ def resolve_acceptance_subject(
                 verified_repro = verify_formal_reproducibility_artifact(
                     root=repro_root,
                     receipt_path=repro_receipt,
-                    artifact_roots=first.artifact_roots,
+                    artifact_roots=_reproducibility_artifact_roots(project_root),
                     comparison_key=comparison_key,
                     score_atol=score_atol,
                     metric_atol=metric_atol,
@@ -494,6 +495,11 @@ def resolve_acceptance_subject(
     if failed or result is None:
         _plan_fail()
     return result
+
+
+def _reproducibility_artifact_roots(project_root: Path) -> Mapping[str, Path]:
+    """Return the project-only registry used by formal REPRO receipts."""
+    return MappingProxyType({"PROJECT": project_root})
 
 
 def build_acceptance_evidence_plan(
