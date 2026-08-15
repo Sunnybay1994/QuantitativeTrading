@@ -238,7 +238,7 @@ def build_diagnostic_factor_targets(
     execution_date_column: str = "execution_date_20",
     exit_date_column: str = "exit_date_20",
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """Build target weights and gross returns for an explicit holding-period label."""
+    """Build targets before validating their explicit holding-period outcomes."""
     if (
         factor not in panel.columns
         or type(return_column) is not str
@@ -259,20 +259,31 @@ def build_diagnostic_factor_targets(
         or not strategy_version
     ):
         raise ValueError("invalid diagnostic target request")
-    eligible = panel.filter(
+    test_panel = panel.filter(
         pl.col("trade_date").is_between(test_start, test_end, closed="both")
-        & (pl.col(exit_date_column) <= test_end)
-        & pl.col(factor).is_not_null()
-        & pl.col(return_column).is_not_null()
-        & pl.col(factor).is_finite()
-        & pl.col(return_column).is_finite()
     )
-    dates = eligible.get_column("trade_date").unique().sort().to_list()[::rebalance_every_sessions]
+    dates = test_panel.get_column("trade_date").unique().sort().to_list()[
+        ::rebalance_every_sessions
+    ]
+    evaluable_dates = set(
+        test_panel.filter(
+            pl.col(exit_date_column).is_not_null() & (pl.col(exit_date_column) <= test_end)
+        )
+        .get_column("trade_date")
+        .unique()
+        .to_list()
+    )
+    last_evaluable_date = max(evaluable_dates) if evaluable_dates else None
     target_rows: list[dict[str, object]] = []
     period_rows: list[dict[str, object]] = []
     for as_of in dates:
+        date_panel = test_panel.filter(pl.col("trade_date") == as_of)
+        if as_of not in evaluable_dates:
+            if last_evaluable_date is not None and as_of < last_evaluable_date:
+                raise ValueError("diagnostic target date plan is incomplete")
+            continue
         cross_section = (
-            eligible.filter(pl.col("trade_date") == as_of)
+            date_panel.filter(pl.col(factor).is_not_null() & pl.col(factor).is_finite())
             .with_columns((pl.col(factor) * direction).alias("_score"))
             .sort("_score", "symbol", descending=[True, False])
         )
@@ -281,8 +292,20 @@ def build_diagnostic_factor_targets(
         chosen = cross_section.head(top_k)
         execution_dates = chosen.get_column(execution_date_column).unique().to_list()
         exit_dates = chosen.get_column(exit_date_column).unique().to_list()
-        if len(execution_dates) != 1 or len(exit_dates) != 1:
-            raise ValueError("diagnostic target dates are inconsistent")
+        returns = chosen.get_column(return_column)
+        if (
+            len(execution_dates) != 1
+            or len(exit_dates) != 1
+            or execution_dates[0] is None
+            or exit_dates[0] is None
+            or type(execution_dates[0]) is not dt.date
+            or type(exit_dates[0]) is not dt.date
+            or exit_dates[0] < execution_dates[0]
+            or exit_dates[0] > test_end
+            or returns.null_count() > 0
+            or not returns.is_finite().all()
+        ):
+            raise ValueError("diagnostic selected target outcomes are invalid")
         weight = 1.0 / top_k
         strategy = f"{strategy_name}_{factor}_f{fold}"
         for symbol in chosen.get_column("symbol"):
