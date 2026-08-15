@@ -60,3 +60,12 @@
 真实不可变运行结论为 `REJECTED`：coverage、调仓日对账和冗余门禁通过，但 RankIC、跨 fold 方向稳定性和
 2 倍成本后收益不足。预注册方向是防御型低 beta/BAB 风格的 `-1`，并不冒充经典 downside-risk positive
 premium；没有生成 `PAPER_CANDIDATE`，也没有启动 PAPER。
+
+## Alpha158 第四批残差、时点与量能
+
+- [第四批残差、时点与量能假设卡](M2_经典因子第四批残差时点量能假设卡.md)
+- [第四批残差、时点与量能研究结果](M2_经典因子第四批残差时点量能研究结果.md)
+
+真实不可变运行结论为三个因子全部 `REJECTED`。coverage 和预注册调仓日对账全部通过，但 `IMXD20` 触发
+严格冗余线且成本后为负，`RESI20` 的 RankIC 和成本证据不足，`VSUMD20` 的方向、RankIC、折数和成本证据
+不足。没有生成 `PAPER_CANDIDATE`，也没有启动 PAPER。

@@ -11,6 +11,7 @@ import pytest
 from quant.research.lightweight_run import ResearchFoldV1
 from quant.research.run_classic_factors import (
     _validate_config,
+    apply_fourth_batch_admission_gates,
     apply_market_risk_admission_gates,
     evaluate_factor_coverage,
     evaluate_rebalance_schedule_alignment,
@@ -82,6 +83,7 @@ def test_all_classic_factor_batch_configs_are_exactly_frozen() -> None:
         PROJECT_ROOT / "configs/research/m2_classic_daily_factors_second_batch.toml",
         PROJECT_ROOT / "configs/research/m2_classic_daily_factors_third_batch.toml",
         PROJECT_ROOT / "configs/research/m2_classic_downside_beta_510300.toml",
+        PROJECT_ROOT / "configs/research/m2_classic_daily_factors_fourth_batch.toml",
     )
     configs = []
     for path in paths:
@@ -109,6 +111,20 @@ def test_all_classic_factor_batch_configs_are_exactly_frozen() -> None:
         changed[section][key] = value
         with pytest.raises(ValueError, match="invalid classic-factor config"):
             _validate_config(changed, threads=2)
+
+    for section, key, value in (
+        ("factors", "maximum_median_absolute_rank_correlation", 0.81),
+        ("coverage", "minimum_rebalance_symbols", 99),
+    ):
+        changed = deepcopy(configs[4])
+        changed[section][key] = value
+        with pytest.raises(ValueError, match="invalid classic-factor config"):
+            _validate_config(changed, threads=2)
+
+    changed = deepcopy(configs[4])
+    changed["factors"]["redundancy_reference_names"].reverse()
+    with pytest.raises(ValueError, match="invalid classic-factor config"):
+        _validate_config(changed, threads=2)
 
 
 def test_factor_coverage_and_rebalance_schedule_are_fail_closed() -> None:
@@ -273,6 +289,92 @@ def test_market_risk_gates_enforce_direction_redundancy_coverage_and_schedule() 
         apply(
             fold_metrics=folds.with_columns(pl.lit(1).alias("direction"))
         ).get_column("research_status").item()
+        == "REJECTED"
+    )
+    assert (
+        apply(
+            coverage_summary=coverage.with_columns(
+                pl.lit(False).alias("coverage_passed")
+            )
+        )
+        .get_column("research_status")
+        .item()
+        == "REJECTED"
+    )
+    assert (
+        apply(
+            schedule_alignment=schedule.with_columns(
+                pl.lit(False).alias("schedule_aligned")
+            )
+        )
+        .get_column("research_status")
+        .item()
+        == "REJECTED"
+    )
+
+
+def test_fourth_batch_gates_enforce_redundancy_coverage_and_schedule() -> None:
+    summary = pl.DataFrame(
+        {
+            "factor": ["alpha158_resi20"],
+            "mean_test_rank_ic": [0.02],
+            "positive_test_folds": [3],
+            "direction_consistent": [True],
+            "one_x_chained_return": [0.03],
+            "two_x_chained_return": [0.01],
+            "research_status": ["RESEARCH_ONLY"],
+            "max_median_abs_rank_corr": [0.79],
+            "combination_eligible": [True],
+        }
+    )
+    redundancy = pl.DataFrame(
+        {
+            "factor_a": ["alpha158_resi20"],
+            "factor_b": ["alpha158_beta20"],
+            "median_abs_rank_corr": [0.79],
+        }
+    )
+    coverage = pl.DataFrame(
+        {
+            "factor": ["alpha158_resi20"],
+            "dates": [100],
+            "scheduled_rebalance_dates": [10],
+            "minimum_rebalance_valid_rows": [100],
+            "median_coverage": [0.80],
+            "coverage_passed": [True],
+        }
+    )
+    schedule = pl.DataFrame(
+        {
+            "factor": ["alpha158_resi20"],
+            "fold": [1],
+            "schedule_aligned": [True],
+        }
+    )
+
+    def apply(
+        *,
+        redundancy_summary: pl.DataFrame = redundancy,
+        coverage_summary: pl.DataFrame = coverage,
+        schedule_alignment: pl.DataFrame = schedule,
+    ) -> pl.DataFrame:
+        return apply_fourth_batch_admission_gates(
+            summary,
+            redundancy_summary=redundancy_summary,
+            coverage_summary=coverage_summary,
+            schedule_alignment=schedule_alignment,
+            maximum_median_absolute_rank_correlation=0.80,
+        )
+
+    assert apply().get_column("research_status").item() == "RESEARCH_ONLY"
+    assert (
+        apply(
+            redundancy_summary=redundancy.with_columns(
+                pl.lit(0.80).alias("median_abs_rank_corr")
+            )
+        )
+        .get_column("research_status")
+        .item()
         == "REJECTED"
     )
     assert (
