@@ -183,5 +183,108 @@ def test_targets_validate_and_two_x_cost_cannot_improve_return() -> None:
     assert one_nav.tail(1).get_column("terminal_cost").item() > 0
 
 
+def _build_targets(panel: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
+    return build_diagnostic_factor_targets(
+        panel,
+        factor="factor_a",
+        direction=1,
+        fold=1,
+        test_start=dt.date(2025, 1, 1),
+        test_end=dt.date(2025, 1, 10),
+        top_k=2,
+        rebalance_every_sessions=2,
+        minimum_symbols=8,
+        strategy_name="classic",
+        strategy_version="v1",
+    )
+
+
+def _replace_selected_value(
+    panel: pl.DataFrame,
+    *,
+    column: str,
+    value: object,
+) -> pl.DataFrame:
+    selected = (pl.col("trade_date") == dt.date(2025, 1, 1)) & (
+        pl.col("symbol") == "600009.SH"
+    )
+    return panel.with_columns(
+        pl.when(selected).then(pl.lit(value)).otherwise(pl.col(column)).alias(column)
+    )
+
+
+def test_selected_missing_future_label_fails_without_substituting_next_symbol() -> None:
+    panel = _replace_selected_value(_panel(), column="label_20", value=None)
+
+    with pytest.raises(ValueError, match="diagnostic selected target outcomes are invalid"):
+        _build_targets(panel)
+
+
+def test_unselected_missing_future_label_does_not_change_targets() -> None:
+    baseline_targets, baseline_periods = _build_targets(_panel())
+    unselected = (pl.col("trade_date") == dt.date(2025, 1, 1)) & (
+        pl.col("symbol") == "600000.SH"
+    )
+    changed = _panel().with_columns(
+        pl.when(unselected)
+        .then(pl.lit(None, dtype=pl.Float64))
+        .otherwise(pl.col("label_20"))
+        .alias("label_20")
+    )
+
+    changed_targets, changed_periods = _build_targets(changed.reverse())
+
+    assert changed_targets.equals(baseline_targets)
+    assert changed_periods.equals(baseline_periods)
+
+
+def test_future_label_values_do_not_change_symbols_or_weights() -> None:
+    baseline_targets, baseline_periods = _build_targets(_panel())
+    changed_targets, changed_periods = _build_targets(
+        _panel().with_columns((-pl.col("label_20") + 0.25).alias("label_20"))
+    )
+
+    identity_columns = ["as_of", "strategy", "strategy_version", "symbol", "weight"]
+    assert changed_targets.select(identity_columns).equals(
+        baseline_targets.select(identity_columns)
+    )
+    assert changed_periods.get_column("gross_return").to_list() != pytest.approx(
+        baseline_periods.get_column("gross_return").to_list()
+    )
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("label_20", float("nan")),
+        ("label_20", float("inf")),
+        ("execution_date_20", None),
+        ("exit_date_20", None),
+        ("execution_date_20", dt.date(2025, 1, 3)),
+        ("exit_date_20", dt.date(2025, 1, 4)),
+    ],
+)
+def test_selected_invalid_outcome_fails_closed(column: str, value: object) -> None:
+    panel = _replace_selected_value(_panel(), column=column, value=value)
+
+    with pytest.raises(ValueError, match="diagnostic selected target outcomes are invalid"):
+        _build_targets(panel)
+
+
+def test_selected_exit_before_execution_fails_closed() -> None:
+    selected = (pl.col("trade_date") == dt.date(2025, 1, 1)) & (
+        pl.col("symbol").is_in(("600008.SH", "600009.SH"))
+    )
+    panel = _panel().with_columns(
+        pl.when(selected)
+        .then(pl.lit(dt.date(2025, 1, 1)))
+        .otherwise(pl.col("exit_date_20"))
+        .alias("exit_date_20")
+    )
+
+    with pytest.raises(ValueError, match="diagnostic selected target outcomes are invalid"):
+        _build_targets(panel)
+
+
 def math_is_finite(value: float) -> bool:
     return value == value and value not in {float("inf"), float("-inf")}
