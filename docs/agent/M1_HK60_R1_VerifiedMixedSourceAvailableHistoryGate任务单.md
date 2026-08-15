@@ -1,6 +1,6 @@
 # M1 HK60 R1 Verified Mixed-Source Available-History Gate 任务单
 
-状态：**设计冻结；允许在独立 worktree 实现与 fixture 自测；真实双 Route Gate 必须等待 HK60 v2b 8/8、唯一 `--finalize-v3` 与 fresh bundle 验真完成。**
+状态：**R3 实现与 Windows 定向自测完成；待全新外部独立复验。** R2 已关闭 mapping 外 bar 补足 missing；R3 已把 calendar parquet 与 DuckDB bar IO 的实际异常图改为离开 active `except` 后再抛稳定 `BarWindowQueryError`。真实双 Route Gate 必须等待 R3 独立复验与主验通过，以及包含最新 exact no-trade 集合的 HK60 v2c 8/8、唯一 `--finalize-v3` 与 fresh bundle 验真完成。
 
 日期：2026-08-15（Asia/Shanghai）  
 平台边界：Windows 工程闭环；不声明 Linux/ext4 Gate。  
@@ -18,7 +18,7 @@
 - 绝大多数有效键的 bar `source=tushare`；
 - `02983.HK@2026-07-10` 的正式补充 bar `source=hkex`；
 - 每个 `(symbol, trade_date)` 的唯一允许来源只从 fresh `VerifiedHkBarBundle.availability` 派生；
-- v2 plan 内嵌的 UA-M1-001/004 exact no-trade evidence 直接用于豁免，不发布第二份 evidence SSOT；
+- v2 plan 内嵌且已由 backfill loader 验真的 exact no-trade evidence 直接用于豁免，不发布第二份 evidence SSOT；当前真实恢复计划将包含 UA-M1-001/004/005；
 - 查询同时输出最近 N 行和 exact coverage；只有 source、session、instrument、route membership 和 fresh publication 全部闭合才允许写 `--output`。
 
 ### 1.2 非目标
@@ -232,7 +232,7 @@ verification_as_of=<canonical aware UTC>
 4. naive、非 UTC、错误日期的 verification-as-of；query as-of 与 plan 不等。
 5. 同语义键双源、同物理键重复。
 6. mapping 要 hkex 但只有 tushare（错源）；mapping 要 hkex 但两者皆无（missing）。
-7. mapping 外更早 bar 不得补足最近 N。
+7. mapping 外更早 bar 不得补足最近 N；mapping 外但落在 required session 的 bar 也不得满足 available-history missing。
 8. 01065/02402 exact 豁免；05-04 缺行仍 missing；豁免日出现 bar 为 unexpected。
 9. UA-M1-001-only plan 与 v2b journal 混配。
 10. no-trade raw/metadata 篡改。
@@ -242,6 +242,8 @@ verification_as_of=<canonical aware UTC>
 14. 第二次 verifier 期间 root/clean/availability 漂移，output 必须不存在。
 15. hostile OSError/ValueError 递归异常图完全脱敏。
 16. caller ambient Decimal/row physical input order 不影响结果（若实现无 Decimal，至少证明不访问）。
+17. required session 只有未映射 bar：必须 missing、AH incomplete、无 output；成员证券完全不在 availability 时，即使 clean 有 bar 亦同。
+18. 实际捕获 mixed AH 底层 Polars/IO 异常，`__cause__`/`__context__` 必须为空；不得用新构造异常代替被测异常。
 
 正向 fixture 必须通过 public `finalize_hk_history` + `load_verified_hk_bar_bundle` 的最小 v3 链签发 capability；禁止 `object.__new__`、seal/registry/attestation monkeypatch。
 
@@ -271,7 +273,7 @@ verification_as_of=<canonical aware UTC>
 
 真实 Gate 必须在主分支完成：
 
-1. v2b 8/8 零网络 recover PASS；
+1. 最新 v2c（UA-M1-001/004/005 exact）8/8 零网络 recover PASS；
 2. 唯一 `--finalize-v3` PASS；
 3. fresh bundle load PASS；
 4. SH_CONNECT、SZ_CONNECT 各运行一次 mixed CLI，`as_of=2026-07-10`、`observations=60`，显式同一 operator-bound verification_as_of；
@@ -289,9 +291,70 @@ verification_as_of=<canonical aware UTC>
 - availability 与 effective keys 不同，或 clean 与 mapping 错源/双源；
 - verification cutoff 需要从 query date、wall clock、mtime 或读后 max 自适应；
 - 正向 fixture 只能伪造 capability；
-- v2b plan/evidence 不再是 exact UA-M1-001 ∪ UA-M1-004；
+- plan/evidence 未通过 fresh backfill loader，或其 evidence 与 `effective_expected_dates` 不一致；
 - required STOCK Instrument 缺失；
 - 8/8/finalize 未完成却尝试真实 Gate；
 - 任何联网、采购、credential、正式 data/artifact 写入；
 - 需要弱化单源 API 或静默去重才能通过。
+
+---
+
+## 14. R1 独立初验 FAIL 与 R2 精确返工
+
+R1 报告：[`M1_HK60_R1_VerifiedMixedSourceAvailableHistoryGate独立初验报告.md`](M1_HK60_R1_VerifiedMixedSourceAvailableHistoryGate独立初验报告.md)。
+
+### 14.1 mapping 外 bar 错误补齐 missing
+
+- **现象**：research frame 已按 mapping exact join，但 available-history 用未 join mapping 的物理 last-N 同时计算 missing 与 unexpected；追加未映射 required-date bar 后，AH 可变成 complete 并写 output。
+- **根因**：同一 `observed_frame` 被用于两种不同证明。物理观察适合发现 unexpected，却不能证明 mapped source 的 required key 已存在。
+- **规则**：missing 只由 `(symbol, trade_date, source)` 与 fresh availability exact join 后的观察集满足；unexpected 仍由物理 last-N 观察集计算。两集合必须显式分离，不能以 sort/distinct/source priority 修复。
+- **最小复现**：availability 只有 07-10，required 还含 07-09；clean 追加未映射 07-09 bar。结果必须 missing≥1、incomplete、无 output。成员 `09999.HK` 完全不在 availability 但 clean 有 bar时亦同。
+- **新增测试**：上述两例，以及豁免日 unexpected/equal-count wrong-date 回归。
+- **通过条件**：禁止出现 `missing_symbols` 非空但 AH complete；未映射行永远不能满足 missing。
+
+### 14.2 mixed AH API 异常图未脱敏
+
+- **现象**：损坏 snapshot 后 `audit_available_history_mixed` 的稳定异常仍保留底层 Polars `ComputeError` 为 cause/context。
+- **根因**：`_load_official_connect_security_types` 使用 `raise ... from exc`，实现测试只检查了新构造异常。
+- **规则**：实际翻译必须在离开 active `except` 后以 `from None` 抛出，public `__cause__`/`__context__` 均为空。
+- **最小复现**：public v3 fixture 后损坏 snapshot parquet，捕获实际 mixed AH 异常并检查异常图。
+- **新增测试**：实际异常、repr/traceback hostile marker、CLI 无 output。
+- **通过条件**：API 与 CLI 均只暴露稳定码；实现者原定向测试全绿。
+
+---
+
+## 15. R2 独立复验 FAIL 与 R3 精确返工
+
+R2 报告：[`M1_HK60_R2_VerifiedMixedSourceAvailableHistoryGate独立复验报告.md`](M1_HK60_R2_VerifiedMixedSourceAvailableHistoryGate独立复验报告.md)。
+
+### 15.1 现象
+
+R2 已关闭 §14.1，并对损坏 snapshot/event parquet 的异常图完成脱敏；但独立复验对实际损坏
+calendar parquet 和 DuckDB bar IO 发起公共调用时，捕获的 `BarWindowQueryError` 仍分别保留底层
+Polars `ComputeError` / DuckDB `InvalidInputException` 为 `__context__`，其中 DuckDB 原始消息可含绝对路径。
+稳定 `str`/`repr` 与 CLI code 干净不能替代异常对象图闭包。
+
+### 15.2 根因
+
+calendar 与 DuckDB 两条翻译仍在 active `except` handler 内执行 `raise ... from None`。这只抑制展示链，
+不会把异常对象的隐式 `__context__` 变为 `None`。snapshot/event 路径已使用的“记录失败、退出 handler、再抛稳定异常”
+模式才满足 §9。
+
+### 15.3 应遵循规则
+
+所有 mixed available-history 公共边界对底层 Polars、DuckDB、IO、path 或 hostile 异常的翻译必须离开
+active `except` 后执行，并以 `from None` 抛出；public 异常的 `__cause__` 与 `__context__` 都必须为 `None`。
+不得通过清洗字符串、改 traceback 展示或只测新构造异常代替实际底层失败。
+
+### 15.4 最小复现与新增测试
+
+- public v3 fixture 后损坏 calendar parquet，调用 mixed AH API，断言稳定码且 cause/context 均空；
+- 让 DuckDB 读取实际损坏 bar parquet，同样断言 cause/context 均空，错误消息/traceback 不含绝对路径或 hostile marker；
+- 两条 CLI 路径均不得写 output；
+- snapshot/event 已绿用例、mapping 外 missing 三个独立控制组和旧单源 API 全部保持通过。
+
+### 15.5 通过条件
+
+只修改必要异常翻译与正式回归，不改变数据选择、排序、来源、时间、public API 或输出 Schema。Windows 73项定向、
+Ruff、mypy、cold import 通过后，必须由未参与 R3 实现的另一全新 Cursor 会话复验 calendar/DuckDB 实际异常图。
 

@@ -265,7 +265,7 @@ class HKNoTradeEvidenceSchema(pa.DataFrameModel):
     def user_approved_consensus_is_exactly_scoped(  # type: ignore[misc]
         cls, data: pa.PolarsData
     ) -> pl.LazyFrame:
-        """The user-approved consensus source is two exact audited exceptions."""
+        """The user-approved consensus source is three exact audited exceptions."""
         return data.lazyframe.select(
             (pl.col("source") != "USER_APPROVED_MULTI_SOURCE_CONSENSUS")
             | (
@@ -303,6 +303,33 @@ class HKNoTradeEvidenceSchema(pa.DataFrameModel):
                     "ua-m1-004-02402-2026-04-01-to-2026-05-04.record"
                 )
             )
+            | (
+                (pl.col("symbol") == "06110.HK")
+                & (pl.col("trade_date") == pl.date(2026, 6, 25))
+                & (pl.col("source_record_id") == "UA-M1-005")
+                & (
+                    pl.col("raw_selector")
+                    == "user-approved-consensus/"
+                    "ua-m1-005-06110-2026-06-25.record"
+                )
+            )
+        )
+
+    @pa.dataframe_check
+    def user_approved_identity_namespace_binds_source(  # type: ignore[misc]
+        cls, data: pa.PolarsData
+    ) -> pl.LazyFrame:
+        """UA-M1- records and user-approved-consensus/ selectors bind USER source."""
+        return data.lazyframe.select(
+            (
+                (~pl.col("source_record_id").str.starts_with("UA-M1-"))
+                & (
+                    ~pl.col("raw_selector").str.starts_with(
+                        "user-approved-consensus/"
+                    )
+                )
+            )
+            | (pl.col("source") == "USER_APPROVED_MULTI_SOURCE_CONSENSUS")
         )
 
 

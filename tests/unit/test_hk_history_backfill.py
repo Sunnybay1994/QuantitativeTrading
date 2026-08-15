@@ -22,6 +22,7 @@ from quant.data.hk_history_backfill import (
     HK_HISTORY_RAW_TABLE,
     HKHistoryBackfillError,
     HKHistorySeed,
+    HKNoTradeEvidence,
     build_hk_history_plan_v2,
     build_hk_history_plan,
     execute_next_hk_history_request,
@@ -235,37 +236,49 @@ def _user_approved_suspension_range_evidence(
     return path, raw_path, evidences
 
 
+_UA_M1_001_SELECTOR = (
+    "user-approved-consensus/ua-m1-001-01065-2026-05-05.record"
+)
+
+
 def _user_approved_evidence(
-    root: Path, *, symbol: str = "01065.HK", trade_date: dt.date = dt.date(2026, 5, 5)
+    root: Path,
+    *,
+    symbol: str = "01065.HK",
+    trade_date: dt.date = dt.date(2026, 5, 5),
+    source: str = "USER_APPROVED_MULTI_SOURCE_CONSENSUS",
+    source_record_id: str = "UA-M1-001",
+    selector: str = _UA_M1_001_SELECTOR,
+    raw: dict[str, object] | None = None,
 ):
-    selector = "user-approved-consensus/ua-m1-001-01065-2026-05-05.record"
     raw_path = root / selector
     raw_path.parent.mkdir(parents=True, exist_ok=True)
-    raw = {
-        "approval_id": "UA-M1-001",
-        "approved_on": "2026-08-15",
-        "decision": "NO_DAILY_TRADING_V1",
-        "evidence": [
-            {
-                "observation": "NO_DAILY_TRADING",
-                "source_kind": "USER_SECURITIES_SOFTWARE",
+    if raw is None:
+        raw = {
+            "approval_id": "UA-M1-001",
+            "approved_on": "2026-08-15",
+            "decision": "NO_DAILY_TRADING_V1",
+            "evidence": [
+                {
+                    "observation": "NO_DAILY_TRADING",
+                    "source_kind": "USER_SECURITIES_SOFTWARE",
+                },
+                {
+                    "observation": "ZERO_ROWS_ON_TARGETED_RETRY",
+                    "source_kind": "TUSHARE_HK_DAILY",
+                },
+            ],
+            "impact_assessment": {
+                "changes_cash": False,
+                "changes_corporate_actions": False,
+                "changes_positions": False,
+                "changes_real_orders": False,
+                "changes_strategy_signal": False,
             },
-            {
-                "observation": "ZERO_ROWS_ON_TARGETED_RETRY",
-                "source_kind": "TUSHARE_HK_DAILY",
-            },
-        ],
-        "impact_assessment": {
-            "changes_cash": False,
-            "changes_corporate_actions": False,
-            "changes_positions": False,
-            "changes_real_orders": False,
-            "changes_strategy_signal": False,
-        },
-        "schema_version": "hk-no-trade-user-approved-consensus-v1",
-        "symbol": symbol,
-        "trade_date": trade_date.isoformat(),
-    }
+            "schema_version": "hk-no-trade-user-approved-consensus-v1",
+            "symbol": symbol,
+            "trade_date": trade_date.isoformat(),
+        }
     raw_payload = _canonical(raw)
     raw_path.write_bytes(raw_payload)
     base = {
@@ -274,8 +287,8 @@ def _user_approved_evidence(
         "trade_date": trade_date.isoformat(),
         "market": "HK",
         "reason": "NO_DAILY_TRADING_V1",
-        "source": "USER_APPROVED_MULTI_SOURCE_CONSENSUS",
-        "source_record_id": "UA-M1-001",
+        "source": source,
+        "source_record_id": source_record_id,
         "source_as_of": "2026-08-15T00:00:00+00:00",
         "raw_selector": selector,
         "raw_file_sha256": hashlib.sha256(raw_payload).hexdigest(),
@@ -300,7 +313,137 @@ def _user_approved_evidence(
     }
     path = root / "user-approved-evidence.json"
     path.write_bytes(_canonical(evidence_set))
-    return path, raw_path
+    return path, raw_path, base
+
+
+_UA_M1_005_SELECTOR = (
+    "user-approved-consensus/ua-m1-005-06110-2026-06-25.record"
+)
+_UA_M1_005_HKEX_URL = (
+    "https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0625/2026062500129.htm"
+)
+_UA_M1_005_INDEPENDENT_URL = (
+    "https://www.etnet.com.hk/www/tc/news/news-article.php"
+    "?category=latest&newsid=2026062568&section=categorized"
+)
+_UA_M1_005_OBSERVATIONS = (
+    {
+        "observation": "TRADING_HALTED_FROM_09_00",
+        "source_kind": "HKEX_NEWS",
+        "url": _UA_M1_005_HKEX_URL,
+    },
+    {
+        "observation": "RETAINED_ZERO_ROW",
+        "source_kind": "TUSHARE_HK_DAILY",
+    },
+    {
+        "observation": "LISTED_AS_SUSPENDED",
+        "source_kind": "INDEPENDENT_PUBLIC_MARKET_NEWS",
+        "url": _UA_M1_005_INDEPENDENT_URL,
+    },
+)
+_UA_M1_005_IMPACT = {
+    "changes_cash": False,
+    "changes_corporate_actions": False,
+    "changes_positions": False,
+    "changes_real_orders": False,
+    "changes_strategy_signal": False,
+}
+
+
+def _user_approved_trading_halt_raw(
+    *,
+    observations: list[dict[str, str]] | None = None,
+    impact_assessment: dict[str, bool] | None = None,
+    extra: dict[str, object] | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "approval_id": "UA-M1-005",
+        "decision": "NO_DAILY_TRADING_V1",
+        "impact_assessment": dict(
+            impact_assessment if impact_assessment is not None else _UA_M1_005_IMPACT
+        ),
+        "observations": (
+            observations
+            if observations is not None
+            else [dict(item) for item in _UA_M1_005_OBSERVATIONS]
+        ),
+        "schema_version": "hk-no-trade-user-approved-trading-halt-v1",
+        "symbol": "06110.HK",
+        "trade_date": "2026-06-25",
+    }
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def _user_approved_trading_halt_evidence(
+    root: Path,
+    *,
+    symbol: str = "06110.HK",
+    trade_date: dt.date = dt.date(2026, 6, 25),
+    source: str = "USER_APPROVED_MULTI_SOURCE_CONSENSUS",
+    source_record_id: str = "UA-M1-005",
+    selector: str = _UA_M1_005_SELECTOR,
+    raw: dict[str, object] | None = None,
+    source_as_of: str = "2026-08-15T00:00:00+00:00",
+):
+    raw_path = root / selector
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_payload = _canonical(
+        raw if raw is not None else _user_approved_trading_halt_raw()
+    )
+    raw_path.write_bytes(raw_payload)
+    base = {
+        "schema_version": "hk-no-trade-evidence-v1",
+        "symbol": symbol,
+        "trade_date": trade_date.isoformat(),
+        "market": "HK",
+        "reason": "NO_DAILY_TRADING_V1",
+        "source": source,
+        "source_record_id": source_record_id,
+        "source_as_of": source_as_of,
+        "raw_selector": selector,
+        "raw_file_sha256": hashlib.sha256(raw_payload).hexdigest(),
+        "raw_metadata_sha256": "0" * 64,
+    }
+    metadata = {
+        "schema_version": "hk-no-trade-raw-metadata-v1",
+        "source": base["source"],
+        "source_record_id": base["source_record_id"],
+        "source_as_of": base["source_as_of"],
+        "raw_selector": selector,
+        "raw_file_sha256": base["raw_file_sha256"],
+    }
+    metadata_payload = _canonical(metadata)
+    raw_path.with_suffix(".json").write_bytes(metadata_payload)
+    base["raw_metadata_sha256"] = hashlib.sha256(metadata_payload).hexdigest()
+    base["evidence_sha256"] = hashlib.sha256(_canonical(base)).hexdigest()
+    evidence_set = {
+        "schema_version": "hk-no-trade-evidence-set-v1",
+        "evidences": [base],
+        "evidence_set_sha256": hashlib.sha256(_canonical([base])).hexdigest(),
+    }
+    path = root / "user-approved-trading-halt-evidence.json"
+    path.write_bytes(_canonical(evidence_set))
+    return path, raw_path, base
+
+
+def _evidence_item_identity(item: object) -> str:
+    payload = {
+        "market": item.market,  # type: ignore[attr-defined]
+        "raw_file_sha256": item.raw_file_sha256,  # type: ignore[attr-defined]
+        "raw_metadata_sha256": item.raw_metadata_sha256,  # type: ignore[attr-defined]
+        "raw_selector": item.raw_selector,  # type: ignore[attr-defined]
+        "reason": item.reason,  # type: ignore[attr-defined]
+        "schema_version": item.schema_version,  # type: ignore[attr-defined]
+        "source": item.source,  # type: ignore[attr-defined]
+        "source_as_of": item.source_as_of,  # type: ignore[attr-defined]
+        "source_record_id": item.source_record_id,  # type: ignore[attr-defined]
+        "symbol": item.symbol,  # type: ignore[attr-defined]
+        "trade_date": item.trade_date,  # type: ignore[attr-defined]
+    }
+    return hashlib.sha256(_canonical(payload)).hexdigest()
 
 
 def _raw(symbol_dates: dict[str, list[dt.date]]) -> pl.DataFrame:
@@ -1146,7 +1289,7 @@ def test_load_hk_no_trade_evidence_sanitizes_hostile_sites(
 
 def test_user_approved_no_trade_evidence_is_exactly_scoped(tmp_path: Path) -> None:
     raw_root = tmp_path / "consensus"
-    path, _ = _user_approved_evidence(raw_root)
+    path, _, _ = _user_approved_evidence(raw_root)
     evidence = load_hk_no_trade_evidence(path, raw_root=raw_root)
     item = evidence.evidences[0]
     assert [(item.symbol, item.trade_date, item.source) for item in evidence.evidences] == [
@@ -1179,7 +1322,7 @@ def test_user_approved_no_trade_evidence_is_exactly_scoped(tmp_path: Path) -> No
     ).hexdigest()
 
     other_root = tmp_path / "other"
-    other_path, _ = _user_approved_evidence(
+    other_path, _, _ = _user_approved_evidence(
         other_root, symbol="01066.HK", trade_date=dt.date(2026, 5, 5)
     )
     with pytest.raises(HKHistoryBackfillError, match="HK_HISTORY_REFERENCE_INVALID"):
@@ -1465,6 +1608,494 @@ def test_ua_m1_004_hostile_json_type_and_path_stay_sanitized(
     assert type_caught.value.__cause__ is None
     assert type_caught.value.__context__ is None
     assert "[" not in str(type_caught.value)
+
+
+def test_ua_m1_005_canonical_loader_and_plan_subtract_only_halt_day(
+    tmp_path: Path,
+) -> None:
+    raw_root = tmp_path / "halt"
+    path, raw_path, row = _user_approved_trading_halt_evidence(raw_root)
+    evidence = load_hk_no_trade_evidence(path, raw_root=raw_root)
+    item = evidence.evidences[0]
+    assert len(evidence.evidences) == 1
+    assert (item.symbol, item.trade_date, item.source_record_id) == (
+        "06110.HK",
+        "2026-06-25",
+        "UA-M1-005",
+    )
+    assert item.raw_selector == _UA_M1_005_SELECTOR
+    assert item.source == "USER_APPROVED_MULTI_SOURCE_CONSENSUS"
+    assert item.reason == "NO_DAILY_TRADING_V1"
+    assert item.raw_file_sha256 == hashlib.sha256(raw_path.read_bytes()).hexdigest()
+    assert item.evidence_sha256 == _evidence_item_identity(item)
+    assert item.evidence_sha256 == row["evidence_sha256"]
+    assert json.loads(raw_path.read_bytes()) == _user_approved_trading_halt_raw()
+
+    seed, fetched_at = _seed(raw_root, {"00001.HK": [dt.date(2026, 7, 10)]})
+    original_06110 = [
+        dt.date(2026, 6, 24),
+        dt.date(2026, 6, 25),
+        dt.date(2026, 6, 26),
+    ]
+    plan = build_hk_history_plan_v2(
+        expected_dates={
+            "00001.HK": [dt.date(2026, 7, 10)],
+            "06110.HK": original_06110,
+        },
+        seed=seed,
+        unresolved={},
+        evidence=evidence,
+        as_of=dt.date(2026, 7, 10),
+        window_start=dt.date(2026, 4, 14),
+    )
+    assert dict(plan.expected_dates)["06110.HK"] == (
+        "2026-06-24",
+        "2026-06-25",
+        "2026-06-26",
+    )
+    assert dict(plan.effective_expected_dates)["06110.HK"] == (
+        "2026-06-24",
+        "2026-06-26",
+    )
+    request = plan.requests[0]
+    assert request.symbols == ("06110.HK",)
+    assert dict(request.expected_dates)["06110.HK"] == (
+        "2026-06-24",
+        "2026-06-25",
+        "2026-06-26",
+    )
+    assert dict(request.effective_expected_dates)["06110.HK"] == (
+        "2026-06-24",
+        "2026-06-26",
+    )
+    RawStore(raw_root).write_request(
+        source="tushare",
+        table=HK_HISTORY_RAW_TABLE,
+        request_id=request.request_id,
+        frame=_raw(
+            {
+                "06110.HK": [dt.date(2026, 6, 24), dt.date(2026, 6, 26)],
+            }
+        ),
+        parameters=dict(request.parameters),
+        fetched_at=fetched_at,
+    )
+    recovered = recover_existing_hk_history_requests(
+        plan=plan,
+        raw_store=RawStore(raw_root),
+        journal_root=tmp_path / "journal-ua-m1-005",
+        seed_raw_root=raw_root,
+    )
+    assert recovered.completed_requests == recovered.total_requests == 1
+    assert recovered.is_complete is True
+    assert recovered.network_requests == 0
+
+
+def test_ua_m1_005_rejects_scope_payload_and_byte_drift(tmp_path: Path) -> None:
+    raw_root = tmp_path / "ok"
+    path, _, _ = _user_approved_trading_halt_evidence(raw_root)
+    load_hk_no_trade_evidence(path, raw_root=raw_root)
+
+    cases: list[tuple[str, object]] = [
+        ("other-symbol", {"symbol": "06111.HK"}),
+        ("date-06-24", {"trade_date": dt.date(2026, 6, 24)}),
+        ("date-06-26", {"trade_date": dt.date(2026, 6, 26)}),
+        ("other-selector", {"selector": "user-approved-consensus/other.record"}),
+        ("other-approval", {"source_record_id": "UA-M1-001"}),
+        (
+            "observation-removed",
+            {
+                "raw": _user_approved_trading_halt_raw(
+                    observations=[
+                        dict(_UA_M1_005_OBSERVATIONS[0]),
+                        dict(_UA_M1_005_OBSERVATIONS[1]),
+                    ]
+                )
+            },
+        ),
+        (
+            "observation-added",
+            {
+                "raw": _user_approved_trading_halt_raw(
+                    observations=[
+                        *[dict(item) for item in _UA_M1_005_OBSERVATIONS],
+                        {
+                            "observation": "EXTRA",
+                            "source_kind": "HKEX_NEWS",
+                            "url": _UA_M1_005_HKEX_URL,
+                        },
+                    ]
+                )
+            },
+        ),
+        (
+            "observation-reordered",
+            {
+                "raw": _user_approved_trading_halt_raw(
+                    observations=[
+                        dict(_UA_M1_005_OBSERVATIONS[2]),
+                        dict(_UA_M1_005_OBSERVATIONS[1]),
+                        dict(_UA_M1_005_OBSERVATIONS[0]),
+                    ]
+                )
+            },
+        ),
+        (
+            "hkex-url-drift",
+            {
+                "raw": _user_approved_trading_halt_raw(
+                    observations=[
+                        {
+                            **dict(_UA_M1_005_OBSERVATIONS[0]),
+                            "url": _UA_M1_005_HKEX_URL + "/drift",
+                        },
+                        dict(_UA_M1_005_OBSERVATIONS[1]),
+                        dict(_UA_M1_005_OBSERVATIONS[2]),
+                    ]
+                )
+            },
+        ),
+        (
+            "independent-url-drift",
+            {
+                "raw": _user_approved_trading_halt_raw(
+                    observations=[
+                        dict(_UA_M1_005_OBSERVATIONS[0]),
+                        dict(_UA_M1_005_OBSERVATIONS[1]),
+                        {
+                            **dict(_UA_M1_005_OBSERVATIONS[2]),
+                            "url": _UA_M1_005_INDEPENDENT_URL + "&drift=1",
+                        },
+                    ]
+                )
+            },
+        ),
+        (
+            "tushare-zero-row-drift",
+            {
+                "raw": _user_approved_trading_halt_raw(
+                    observations=[
+                        dict(_UA_M1_005_OBSERVATIONS[0]),
+                        {
+                            "observation": "ZERO_ROWS_ON_TARGETED_RETRY",
+                            "source_kind": "TUSHARE_HK_DAILY",
+                        },
+                        dict(_UA_M1_005_OBSERVATIONS[2]),
+                    ]
+                )
+            },
+        ),
+        *(
+            (
+                f"impact-{field}",
+                {
+                    "raw": _user_approved_trading_halt_raw(
+                        impact_assessment={**_UA_M1_005_IMPACT, field: True}
+                    )
+                },
+            )
+            for field in _UA_M1_005_IMPACT
+        ),
+        (
+            "extra-field",
+            {"raw": _user_approved_trading_halt_raw(extra={"note": "drift"})},
+        ),
+        (
+            "schema-version-drift",
+            {
+                "raw": _user_approved_trading_halt_raw(
+                    extra={
+                        "schema_version": "hk-no-trade-user-approved-consensus-v1",
+                    }
+                )
+            },
+        ),
+    ]
+    for name, kwargs in cases:
+        case_root = tmp_path / name
+        case_path, _, _ = _user_approved_trading_halt_evidence(
+            case_root, **kwargs  # type: ignore[arg-type]
+        )
+        with pytest.raises(
+            HKHistoryBackfillError, match="^HK_HISTORY_REFERENCE_INVALID$"
+        ) as caught:
+            load_hk_no_trade_evidence(case_path, raw_root=case_root)
+        assert caught.value.__cause__ is None
+        assert caught.value.__context__ is None
+
+    hash_root = tmp_path / "raw-hash"
+    hash_path, hash_raw, _ = _user_approved_trading_halt_evidence(hash_root)
+    hash_raw.write_bytes(hash_raw.read_bytes() + b"\n")
+    with pytest.raises(HKHistoryBackfillError, match="^HK_HISTORY_REFERENCE_INVALID$"):
+        load_hk_no_trade_evidence(hash_path, raw_root=hash_root)
+
+    meta_root = tmp_path / "meta-hash"
+    meta_path, meta_raw, _ = _user_approved_trading_halt_evidence(meta_root)
+    meta_raw.with_suffix(".json").write_bytes(
+        meta_raw.with_suffix(".json").read_bytes() + b" "
+    )
+    with pytest.raises(HKHistoryBackfillError, match="^HK_HISTORY_REFERENCE_INVALID$"):
+        load_hk_no_trade_evidence(meta_path, raw_root=meta_root)
+
+
+def test_ua_m1_005_does_not_drift_ua_m1_001_or_004_identity(tmp_path: Path) -> None:
+    first_root = tmp_path / "001"
+    first_path, _, _ = _user_approved_evidence(first_root)
+    first = load_hk_no_trade_evidence(first_path, raw_root=first_root)
+    first_identity = _evidence_item_identity(first.evidences[0])
+    assert first.evidences[0].evidence_sha256 == first_identity
+
+    range_root = tmp_path / "004"
+    range_path, _, range_rows = _user_approved_suspension_range_evidence(range_root)
+    ranged = load_hk_no_trade_evidence(range_path, raw_root=range_root)
+    range_identities = tuple(_evidence_item_identity(item) for item in ranged.evidences)
+    assert [item.evidence_sha256 for item in ranged.evidences] == list(range_identities)
+    assert [row["evidence_sha256"] for row in range_rows] == list(range_identities)
+
+    mix_root = tmp_path / "mix"
+    mix_001_path, _, _ = _user_approved_evidence(mix_root)
+    mix_004_path, _, _ = _user_approved_suspension_range_evidence(mix_root)
+    mix_005_path, _, _ = _user_approved_trading_halt_evidence(mix_root)
+    mixed_rows = [
+        *json.loads(mix_001_path.read_bytes())["evidences"],
+        *json.loads(mix_004_path.read_bytes())["evidences"],
+        *json.loads(mix_005_path.read_bytes())["evidences"],
+    ]
+    mixed_path = mix_root / "mixed-evidence.json"
+    mixed_path.write_bytes(
+        _canonical(
+            {
+                "schema_version": "hk-no-trade-evidence-set-v1",
+                "evidences": mixed_rows,
+                "evidence_set_sha256": hashlib.sha256(
+                    _canonical(mixed_rows)
+                ).hexdigest(),
+            }
+        )
+    )
+    mixed = load_hk_no_trade_evidence(mixed_path, raw_root=mix_root)
+    by_record = {item.source_record_id: item for item in mixed.evidences}
+    assert _evidence_item_identity(by_record["UA-M1-001"]) == first_identity
+    assert tuple(
+        _evidence_item_identity(item)
+        for item in mixed.evidences
+        if item.source_record_id == "UA-M1-004"
+    ) == range_identities
+    halt = by_record["UA-M1-005"]
+    assert (halt.symbol, halt.trade_date) == ("06110.HK", "2026-06-25")
+
+
+def test_ua_m1_005_hostile_json_stays_sanitized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, raw_path, _ = _user_approved_trading_halt_evidence(tmp_path / "ok")
+    marker = "HOSTILE_UA_M1_005_TOKEN"
+    absolute = str(raw_path.resolve())
+
+    def hostile() -> None:
+        _raise_hostile_graph(raw_path, marker)
+
+    monkeypatch.setattr(
+        hk_history_backfill,
+        "_strict_json",
+        lambda _payload: hostile(),
+    )
+    with pytest.raises(HKHistoryBackfillError) as caught:
+        load_hk_no_trade_evidence(path, raw_root=tmp_path / "ok")
+    assert str(caught.value) == "HK_HISTORY_REFERENCE_INVALID"
+    _assert_sanitized_exception(caught.value, marker)
+    _assert_sanitized_exception(caught.value, absolute)
+
+    type_root = tmp_path / "type"
+    type_path, type_raw, type_row = _user_approved_trading_halt_evidence(type_root)
+    list_payload = b"[1,2,3]"
+    type_raw.write_bytes(list_payload)
+    metadata = json.loads(type_raw.with_suffix(".json").read_bytes())
+    metadata["raw_file_sha256"] = hashlib.sha256(list_payload).hexdigest()
+    metadata_payload = _canonical(metadata)
+    type_raw.with_suffix(".json").write_bytes(metadata_payload)
+    item = dict(type_row)
+    item["raw_file_sha256"] = metadata["raw_file_sha256"]
+    item["raw_metadata_sha256"] = hashlib.sha256(metadata_payload).hexdigest()
+    item.pop("evidence_sha256")
+    item["evidence_sha256"] = hashlib.sha256(_canonical(item)).hexdigest()
+    type_path.write_bytes(
+        _canonical(
+            {
+                "schema_version": "hk-no-trade-evidence-set-v1",
+                "evidences": [item],
+                "evidence_set_sha256": hashlib.sha256(_canonical([item])).hexdigest(),
+            }
+        )
+    )
+    with pytest.raises(HKHistoryBackfillError) as type_caught:
+        load_hk_no_trade_evidence(type_path, raw_root=type_root)
+    assert str(type_caught.value) == "HK_HISTORY_REFERENCE_INVALID"
+    assert type_caught.value.__cause__ is None
+    assert type_caught.value.__context__ is None
+    assert "[" not in str(type_caught.value)
+
+
+def test_ua_m1_005_identity_cannot_ride_hkex_source(tmp_path: Path) -> None:
+    canonical_root = tmp_path / "canonical"
+    canonical_path, _, canonical_row = _user_approved_trading_halt_evidence(
+        canonical_root
+    )
+    canonical = load_hk_no_trade_evidence(canonical_path, raw_root=canonical_root)
+    assert canonical.evidences[0].source == "USER_APPROVED_MULTI_SOURCE_CONSENSUS"
+    assert canonical.evidences[0].source_record_id == "UA-M1-005"
+
+    impersonation_cases: list[tuple[str, dict[str, object]]] = [
+        (
+            "hkex-canonical-raw",
+            {"source": "HKEX_DAILY_QUOTATIONS"},
+        ),
+        (
+            "hkex-garbage-raw",
+            {"source": "HKEX_DAILY_QUOTATIONS", "raw": {"not": "halt"}},
+        ),
+        (
+            "hkex-record-only",
+            {
+                "source": "HKEX_DAILY_QUOTATIONS",
+                "selector": "hkex/daily/d260625e.html",
+            },
+        ),
+        (
+            "hkex-selector-only",
+            {
+                "source": "HKEX_DAILY_QUOTATIONS",
+                "source_record_id": "synthetic-fixture-record",
+            },
+        ),
+        ("record-drift", {"source_record_id": "UA-M1-001"}),
+        (
+            "selector-drift",
+            {"selector": "user-approved-consensus/ua-m1-001-01065-2026-05-05.record"},
+        ),
+    ]
+    for name, kwargs in impersonation_cases:
+        case_root = tmp_path / name
+        case_path, _, case_row = _user_approved_trading_halt_evidence(
+            case_root, **kwargs  # type: ignore[arg-type]
+        )
+        with pytest.raises(ValueError, match="no-trade evidence contract invalid"):
+            HKNoTradeEvidence(**case_row)
+        with pytest.raises(
+            HKHistoryBackfillError, match="^HK_HISTORY_REFERENCE_INVALID$"
+        ) as caught:
+            load_hk_no_trade_evidence(case_path, raw_root=case_root)
+        assert caught.value.__cause__ is None
+        assert caught.value.__context__ is None
+
+    ordinary, _, _ = _evidence(
+        tmp_path / "ordinary-hkex",
+        symbol="06110.HK",
+        trade_date=dt.date(2026, 6, 25),
+    )
+    ordinary_item = ordinary.evidences[0]
+    assert ordinary_item.source == "HKEX_DAILY_QUOTATIONS"
+    assert ordinary_item.source_record_id == "synthetic-fixture-record"
+    assert ordinary_item.raw_selector != _UA_M1_005_SELECTOR
+
+    first_path, _, _ = _user_approved_evidence(tmp_path / "ua-m1-001")
+    first = load_hk_no_trade_evidence(first_path, raw_root=tmp_path / "ua-m1-001")
+    assert first.evidences[0].source_record_id == "UA-M1-001"
+    range_path, _, _ = _user_approved_suspension_range_evidence(tmp_path / "ua-m1-004")
+    ranged = load_hk_no_trade_evidence(range_path, raw_root=tmp_path / "ua-m1-004")
+    assert {item.source_record_id for item in ranged.evidences} == {"UA-M1-004"}
+
+
+def test_user_approved_identity_namespace_cannot_ride_hkex_source(
+    tmp_path: Path,
+) -> None:
+    families: tuple[
+        tuple[str, str, str, object],
+        ...,
+    ] = (
+        (
+            "001",
+            "UA-M1-001",
+            "hkex/daily/d260505e.html",
+            lambda root, **kwargs: _user_approved_evidence(root, **kwargs),
+        ),
+        (
+            "004",
+            "UA-M1-004",
+            "hkex/daily/d260414e.html",
+            lambda root, **kwargs: _user_approved_suspension_range_evidence(
+                root, dates=(dt.date(2026, 4, 14),), **kwargs
+            ),
+        ),
+        (
+            "005",
+            "UA-M1-005",
+            "hkex/daily/d260625e.html",
+            lambda root, **kwargs: _user_approved_trading_halt_evidence(
+                root, **kwargs
+            ),
+        ),
+    )
+    impersonations: tuple[tuple[str, dict[str, object]], ...] = (
+        ("hkex-canonical-raw", {"source": "HKEX_DAILY_QUOTATIONS"}),
+        (
+            "hkex-garbage-raw",
+            {"source": "HKEX_DAILY_QUOTATIONS", "raw": {"not": "halt"}},
+        ),
+        ("hkex-record-only", {"source": "HKEX_DAILY_QUOTATIONS"}),
+        (
+            "hkex-selector-only",
+            {
+                "source": "HKEX_DAILY_QUOTATIONS",
+                "source_record_id": "synthetic-fixture-record",
+            },
+        ),
+    )
+    for label, record, hkex_selector, builder in families:
+        canonical_root = tmp_path / f"{label}-canonical"
+        canonical_path, _, _ = builder(canonical_root)
+        canonical = load_hk_no_trade_evidence(
+            canonical_path, raw_root=canonical_root
+        )
+        assert {item.source for item in canonical.evidences} == {
+            "USER_APPROVED_MULTI_SOURCE_CONSENSUS"
+        }
+        assert {item.source_record_id for item in canonical.evidences} == {record}
+        assert tuple(item.evidence_sha256 for item in canonical.evidences) == tuple(
+            _evidence_item_identity(item) for item in canonical.evidences
+        )
+
+        for name, kwargs in impersonations:
+            case_kwargs = dict(kwargs)
+            if name == "hkex-record-only":
+                case_kwargs["selector"] = hkex_selector
+            case_root = tmp_path / f"{label}-{name}"
+            case_path, _, case_third = builder(case_root, **case_kwargs)
+            case_row = case_third[0] if isinstance(case_third, list) else case_third
+            with pytest.raises(ValueError, match="no-trade evidence contract invalid"):
+                HKNoTradeEvidence(**case_row)
+            with pytest.raises(
+                HKHistoryBackfillError, match="^HK_HISTORY_REFERENCE_INVALID$"
+            ) as caught:
+                load_hk_no_trade_evidence(case_path, raw_root=case_root)
+            assert caught.value.__cause__ is None
+            assert caught.value.__context__ is None
+
+    for symbol, trade_date in (
+        ("01065.HK", dt.date(2026, 5, 5)),
+        ("02402.HK", dt.date(2026, 4, 14)),
+        ("06110.HK", dt.date(2026, 6, 25)),
+    ):
+        ordinary, _, _ = _evidence(
+            tmp_path / f"ordinary-hkex-{symbol}",
+            symbol=symbol,
+            trade_date=trade_date,
+        )
+        ordinary_item = ordinary.evidences[0]
+        assert ordinary_item.source == "HKEX_DAILY_QUOTATIONS"
+        assert ordinary_item.source_record_id == "synthetic-fixture-record"
+        assert not ordinary_item.raw_selector.startswith("user-approved-consensus/")
+        assert not ordinary_item.source_record_id.startswith("UA-M1-")
 
 
 def test_load_hk_history_plan_sanitizes_hostile_read_exception_graph(

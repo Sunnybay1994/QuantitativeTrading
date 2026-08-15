@@ -8,7 +8,6 @@
 | 文档 | 内容 |
 |---|---|
 | [AGENTS.md](AGENTS.md) | 智能体行为、代码协作、SSOT 与文档同步准则 |
-| [karpathy-guidelines.md](karpathy-guidelines.md) | 代码编写与任务执行的基础原则 |
 | [A股港股通个人量化投研交易系统调研.md](A股港股通个人量化投研交易系统调研.md) | 技术选型依据与模块设计("为什么") |
 | [项目实施路线图.md](项目实施路线图.md) | M0–M5 里程碑与验收标准("何时做、做到什么程度") |
 | [正式产物身份、数据溯源与可复现性方法论.md](正式产物身份、数据溯源与可复现性方法论.md) | 产物身份方法、能力边界与研究快线/formal 稳线的取舍 |
@@ -248,12 +247,14 @@ python -m quant.data.backfill_hk_history \
 ```
 
 API 异常留下的 attempt 在冷却后仍需显式 `--confirm-uncertain-retry`；完整 request raw/receipt 会直接复验，
-不会再次联网。8 批全部 PASS 前禁止 `--finalize`；finalize 只发布 Tushare 已闭合的 612 只股票，
-`02983.HK` 仍保持显式未解决，不能据此宣称全量 HK60 Gate 通过。
+不会再次联网。8 批全部 PASS 前禁止 `--finalize-v3`；v3 还必须绑定通过验真的 HKEX retained bundle，
+不能从单源 612 只结果冒充全量 HK60。
 
 v2 plan 可用 `--recover-existing-only` 在全新 journal 中离线复验并恢复既有 COMPLETE raw；该模式在
 connector 构造前分流，严格零网络、零 intent/attempt/failure/clean/finalize 写入，遇首个 ABSENT raw 返回
-`HK_HISTORY_INCOMPLETE`。权威 evidence 尚未形成前不得创建或运行正式 v2 plan。
+`HK_HISTORY_INCOMPLETE`。2026-08-15 已按用户精确裁决物化 UA-M1-005，新 v2c plan 先离线恢复前
+7 个 request，仅以一次网络请求完成 request 8，再由零网络 recover 证明 8/8 完整；旧 v2b plan/journal
+保持只读。
 
 Tushare `hk_basic` 只覆盖港股股票。HKEX 公共网站现行条款禁止未经书面许可的程序化/脚本化访问、
 系统性抓取和建库，因此 `hkex-etp` 公共网页连接器已 fail closed：
@@ -390,7 +391,7 @@ python -m quant.data.query_universe \
 
 正式完整窗口证据须加 `--require-full-window`：任一 eligible 缺失或观测数不足 N 时，
 以稳定错误码 `BAR_WINDOW_INCOMPLETE` 非零退出，且即使指定了 `--output` 也不写文件。
-该命令只提供查询与审计能力，不表示真实港股通 60 日全市场覆盖已经取得。
+上述旧单源命令只提供查询与审计能力；真实 HK60 Gate 使用下述 verified mixed-source 入口。
 
 新上市股票天然不足 N 个交易日时，可显式改用正交 Gate `--require-available-history`。它读取 clean HK
 `trade_calendar`、`instrument`、双 Route `connect_snapshot/connect_event`：优先用通过领域 Schema 的官方
@@ -400,6 +401,19 @@ N 个精确开市日；官方为 OTHER/缺失时才回退 Instrument 分类。�
 `BAR_WINDOW_AVAILABLE_HISTORY_INCOMPLETE`，两种失败都不会写 `--output`。当前没有逐日停牌历史 SSOT，
 所以 Instrument 的当前 `SUSPENDED` 状态不会自动豁免缺失日。该参数不改变 `--require-full-window` 的原语义；
 两者同时指定时必须同时通过。
+
+港股通 HK60 mixed-source 查询与 `--source` 互斥，改用 `--from-verified-hk-availability`，并显式区分两个时点：`--as-of` 是市场查询日/窗口终点，必须 exact 等于 v2 plan 的 `as_of`；`--verification-as-of` 是操作员冻结的 aware UTC 发布验真 cutoff，直接传给 `load_verified_hk_bar_bundle` 与第二次 `verify_hk_bar_bundle`，不得从查询日或 wall clock 推断。该路径只从 fresh `VerifiedHkBarBundle.availability` 派生唯一 `(symbol, trade_date) → source`，并用 plan 内嵌 no-trade evidence 做 available-history；不读取 `evidence.json`，失败不写 `--output`。
+
+```bash
+python -m quant.data.query_universe \
+  --universe SH_CONNECT --as-of 2026-07-10 \
+  --from-verified-hk-availability \
+  --plan <v2b-plan> --journal-root <v2b-journal> \
+  --verification-as-of 2026-08-16T00:00:00+00:00 \
+  --observations 60 --data-root data \
+  --require-available-history \
+  --output artifacts/queries/sh_connect_2026-07-10_verified.parquet
+```
 
 成员区间用于确定 `as_of` 时点的证券集合；为了计算滚动特征，返回的历史行情
 可以早于成员的 `effective_from`。回测中每个交易日是否仍具备买入资格必须由
@@ -421,13 +435,13 @@ N 个精确开市日；官方为 OTHER/缺失时才回退 Instrument 分类。�
 
 沪港通没有与深交所同等稳定的逐日机器接口，因此使用版本化、人工复核的上交所年度公告配置叠加沪市基础日历生成；配置保留公告 URL、文号、发布日期、全日及半日例外。深港通仍直接使用深交所机器接口，两条路由互不冒充。日历审计会检查双路由差异，以及港股通开通但内地或香港基础市场休市的非法状态。
 
-## 当前状态（2026-08-14）
+## 当前状态（2026-08-15）
 
-策略研究是当前前台主线。M3 的资源受限 honest 300 public CLI 已完整通过首发、completed resume、零写边界与 teardown。M4 已完成 Windows formal runtime/policy/account、broker/OMS store、只读 broker snapshot、gateway dispatch、ExecutionService composition 与 verified schedule；下一步按 [`UA-M4-004`](docs/用户待批示与参与事项.md) 生成首个 `PAPER_CANDIDATE` target 和当日 market snapshot。真实 PAPER 与28日 soak 尚未开始；Linux/ext4 按用户指示暂不纳入当前完成范围。
+策略研究是当前前台主线。M1 已完成 Windows A 股/ETF 与 HK60 不复权研究数据闭环：v2c journal 8/8、v3 发布 36,361 行，SH/SZ mixed available-history 均为 0 missing/0 unexpected；licensed 港股公司行动、复权/总回报和港股 PAPER 保留为第二波。M3 的资源受限 honest 300 public CLI 已完整通过首发、completed resume、零写边界与 teardown，并正在补两折 retained summary/reproducibility 证据。M4 已完成 Windows formal runtime/policy/account、broker/OMS store、只读 broker snapshot、gateway dispatch、ExecutionService composition、verified schedule 与 operator runner；真实 PAPER 与 28 日 soak 仍等待 `PAPER_CANDIDATE` 和当日 receipt-backed opening facts。Linux/ext4 按用户指示暂不纳入当前完成范围。
 
 下面保留 2026-08-13 的详细阶段快照供审计；其中关于 honest CLI 与 UA-M4-003 的停止点已由上段终态覆盖。
 
-M0 已通过验收；M1 已完成 A 股/ETF 数据、三地基础日历与股票主表、双路由港股通快照/事件/日历、基线后成员区间、“时点股票池 × 历史行情窗口”查询及五日自然调度终审，HK licensed provenance 仍开放。M2 的数据契约、策略接口、统一日频回测、walk-forward、成本压力、轻量不可覆盖 `run.json` 和目标缺口诊断已经达到**投研框架 MVP 完成**；策略研究已拆到独立 worktree，可与本集成线并行。Tushare 股票/基金日线及复权因子四类历史 raw 已闭合，逐行互斥的版本化 clean snapshot 已真实发布并完成 no-clobber 重放；它尚未自动替换任何策略或 PAPER source selector。研究、PAPER 和 formal 复用同一 Schema、市场规则、费用和账户计算；候选晋级时通过正式入口受控重跑，不能把轻量产物原地冒充正式产物。M3 已具备 Windows G1 正式发布物、G2–G7 formal artifact/fresh verifier、G8 StageRunner/tracking/reproducibility 与 fake full DAG，G9A–G9G 的 Windows fake 工程闭包已完成；honest 300 证券、三成本场景 public CLI 已在最终 revision 上完成同一次首发与 completed resume。M4 formal runtime/policy/binding/account/store、snapshot、gateway、service、schedule 和只读 daily runner 已完成 Windows 工程闭环；第一波 A 股/ETF PAPER 仍等待策略会话提供首个 `PAPER_CANDIDATE` 和真实 clean opening facts，任务注册、真实启动及 28 日 soak 受 `UA-M4-002` 控制。`py312` 已验收 Qlib 0.9.7 兼容性且 base 未变；Linux/ext4 当前按用户指示暂不实施。详见[路线图](项目实施路线图.md)、[方法论](正式产物身份、数据溯源与可复现性方法论.md)和[持续审批事项](docs/用户待批示与参与事项.md)。研究阶段可使用本地 ignored Tushare token，启用实盘前必须轮换。
+M0 已通过验收；M1 已完成 Windows A 股/ETF 主闭环、双路由港股通事实、五日自然调度和 HK60 mixed-source 不复权研究行情闭环；HK licensed 公司行动与复权/总回报属于未来 formal 第二波。M2 的数据契约、策略接口、统一日频回测、walk-forward、成本压力、轻量不可覆盖 `run.json` 和目标缺口诊断已经达到**投研框架 MVP 完成**；策略研究已拆到独立 worktree，可与本集成线并行。Tushare 股票/基金日线及复权因子四类历史 raw 已闭合，逐行互斥的版本化 clean snapshot 已真实发布并完成 no-clobber 重放；它尚未自动替换任何策略或 PAPER source selector。研究、PAPER 和 formal 复用同一 Schema、市场规则、费用和账户计算；候选晋级时通过正式入口受控重跑，不能把轻量产物原地冒充正式产物。M3 已具备 Windows G1 正式发布物、G2–G7 formal artifact/fresh verifier、G8 StageRunner/tracking/reproducibility 与 fake full DAG，G9A–G9G 的 Windows fake 工程闭包已完成；honest 300 证券、三成本场景 public CLI 已在最终 revision 上完成同一次首发与 completed resume。M4 formal runtime/policy/binding/account/store、snapshot、gateway、service、schedule 和 operator runner 已完成 Windows 工程闭环；第一波 A 股/ETF PAPER 仍等待策略会话提供首个 `PAPER_CANDIDATE` 和真实 clean opening facts，任务注册、真实启动及 28 日 soak 受 `UA-M4-002` 的既有授权与前置事实共同约束。`py312` 已验收 Qlib 0.9.7 兼容性且 base 未变；Linux/ext4 当前按用户指示暂不实施。详见[路线图](项目实施路线图.md)、[方法论](正式产物身份、数据溯源与可复现性方法论.md)和[持续审批事项](docs/用户待批示与参与事项.md)。研究阶段可使用本地 ignored Tushare token，启用实盘前必须轮换。
 
 ## M2 基线策略（工程闭环完成，策略有效性继续观察）
 

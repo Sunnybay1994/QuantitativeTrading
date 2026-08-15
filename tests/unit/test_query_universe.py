@@ -5,22 +5,35 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import traceback
 from pathlib import Path
 
 import polars as pl
+import pytest
 
+from quant.data.hk_history_backfill import (
+    HKHistoryBackfillError,
+    build_hk_history_plan_v2,
+    write_or_verify_plan,
+)
+from quant.data.query import BarQuery, BarWindowQueryError
 from quant.data.query_universe import main
+from tests.support.hk_history_v3 import (
+    AS_OF,
+    WINDOW_START,
+    load_combined_evidence,
+    publish_minimal_v3,
+    write_seed,
+)
 
 
 def _canonical(value: object) -> bytes:
-    return json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
 
 
-def _write_no_trade_evidence(
-    data_root: Path, *, symbol: str, trade_date: dt.date
-) -> Path:
+def _write_no_trade_evidence(data_root: Path, *, symbol: str, trade_date: dt.date) -> Path:
     selector = "hkex/daily/synthetic.html"
     raw_path = data_root / "raw" / selector
     raw_path.parent.mkdir(parents=True, exist_ok=True)
@@ -154,9 +167,7 @@ def _write_hk_references(
     ).write_parquet(instrument_path)
 
     types = (
-        official_types
-        if official_types is not None
-        else {row[0]: row[1] for row in instruments}
+        official_types if official_types is not None else {row[0]: row[1] for row in instruments}
     )
     snapshot_path = (
         data_root
@@ -190,13 +201,7 @@ def _write_hk_references(
         },
     ).write_parquet(snapshot_path)
 
-    event_path = (
-        data_root
-        / "clean"
-        / "connect_event"
-        / "route=SH_CONNECT"
-        / "data.parquet"
-    )
+    event_path = data_root / "clean" / "connect_event" / "route=SH_CONNECT" / "data.parquet"
     event_path.parent.mkdir(parents=True)
     pl.DataFrame(
         schema={
@@ -401,23 +406,27 @@ def test_cli_available_history_uses_exact_verified_no_trade_projection(
         calendar_rows=_small_calendar(),
         instruments=[(symbol, "STOCK", dt.date(2026, 3, 6), "LISTED")],
     )
-    raw_path = _write_no_trade_evidence(
-        data_root, symbol=symbol, trade_date=dt.date(2026, 3, 9)
-    )
+    raw_path = _write_no_trade_evidence(data_root, symbol=symbol, trade_date=dt.date(2026, 3, 9))
     for day in (dt.date(2026, 3, 6), dt.date(2026, 3, 10)):
         _ensure_bar(data_root / "clean" / "bar_1d", day, [(symbol, "tushare", 1.0)])
 
     args = [
-        "--universe", "SH_CONNECT", "--as-of", "2026-03-10",
-        "--source", "tushare", "--observations", "3",
-        "--data-root", str(data_root), "--require-available-history",
+        "--universe",
+        "SH_CONNECT",
+        "--as-of",
+        "2026-03-10",
+        "--source",
+        "tushare",
+        "--observations",
+        "3",
+        "--data-root",
+        str(data_root),
+        "--require-available-history",
     ]
     assert main(args) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["available_history"]["exempted_session_count"] == 1
-    assert payload["available_history"]["exemption_reason_counts"] == [
-        ["NO_DAILY_TRADING_V1", 1]
-    ]
+    assert payload["available_history"]["exemption_reason_counts"] == [["NO_DAILY_TRADING_V1", 1]]
     assert payload["available_history"]["missing_session_total"] == 0
 
     _ensure_bar(
@@ -522,9 +531,17 @@ def test_cli_official_etf_does_not_require_instrument_row(tmp_path: Path, capsys
 
     code = main(
         [
-            "--universe", "SH_CONNECT", "--as-of", "2026-03-10",
-            "--source", "tushare", "--observations", "3",
-            "--data-root", str(data_root), "--require-available-history",
+            "--universe",
+            "SH_CONNECT",
+            "--as-of",
+            "2026-03-10",
+            "--source",
+            "tushare",
+            "--observations",
+            "3",
+            "--data-root",
+            str(data_root),
+            "--require-available-history",
         ]
     )
 
@@ -549,9 +566,17 @@ def test_cli_official_etf_conflicting_stock_instrument_is_reference_invalid(
 
     code = main(
         [
-            "--universe", "SH_CONNECT", "--as-of", "2026-03-10",
-            "--source", "tushare", "--observations", "3",
-            "--data-root", str(data_root), "--require-available-history",
+            "--universe",
+            "SH_CONNECT",
+            "--as-of",
+            "2026-03-10",
+            "--source",
+            "tushare",
+            "--observations",
+            "3",
+            "--data-root",
+            str(data_root),
+            "--require-available-history",
         ]
     )
 
@@ -573,9 +598,17 @@ def test_cli_other_official_type_falls_back_to_instrument(tmp_path: Path, capsys
 
     code = main(
         [
-            "--universe", "SH_CONNECT", "--as-of", "2026-03-10",
-            "--source", "tushare", "--observations", "3",
-            "--data-root", str(data_root), "--require-available-history",
+            "--universe",
+            "SH_CONNECT",
+            "--as-of",
+            "2026-03-10",
+            "--source",
+            "tushare",
+            "--observations",
+            "3",
+            "--data-root",
+            str(data_root),
+            "--require-available-history",
         ]
     )
 
@@ -597,9 +630,7 @@ def test_cli_cross_route_official_type_conflict_is_reference_invalid(
         official_types={symbol: "ETF"},
     )
     sh_path = next(
-        (data_root / "clean" / "connect_snapshot" / "route=SH_CONNECT").rglob(
-            "data.parquet"
-        )
+        (data_root / "clean" / "connect_snapshot" / "route=SH_CONNECT").rglob("data.parquet")
     )
     sz_path = (
         data_root
@@ -618,9 +649,17 @@ def test_cli_cross_route_official_type_conflict_is_reference_invalid(
 
     code = main(
         [
-            "--universe", "SH_CONNECT", "--as-of", "2026-03-10",
-            "--source", "tushare", "--observations", "3",
-            "--data-root", str(data_root), "--require-available-history",
+            "--universe",
+            "SH_CONNECT",
+            "--as-of",
+            "2026-03-10",
+            "--source",
+            "tushare",
+            "--observations",
+            "3",
+            "--data-root",
+            str(data_root),
+            "--require-available-history",
         ]
     )
 
@@ -761,3 +800,730 @@ def test_cli_full_window_gate_keeps_priority_over_available_history(tmp_path: Pa
     assert code == 1
     assert captured.err == ""
     assert json.loads(captured.out)["code"] == "BAR_WINDOW_INCOMPLETE"
+
+
+def _july_calendar() -> list[tuple[dt.date, bool]]:
+    return [(AS_OF, True)]
+
+
+def _mixed_argv(
+    fixture,
+    *,
+    extra: list[str] | None = None,
+    output: Path | None = None,
+    as_of: str | None = None,
+    verification_as_of: str | None = None,
+    plan: Path | None = None,
+    journal: Path | None = None,
+) -> list[str]:
+    args = [
+        "--universe",
+        "SH_CONNECT",
+        "--as-of",
+        as_of or AS_OF.isoformat(),
+        "--from-verified-hk-availability",
+        "--plan",
+        str(plan or fixture.plan_path),
+        "--journal-root",
+        str(journal or fixture.journal_root),
+        "--verification-as-of",
+        verification_as_of or fixture.verification_as_of.isoformat(),
+        "--observations",
+        "1",
+        "--data-root",
+        str(fixture.data_root),
+        "--require-available-history",
+    ]
+    if output is not None:
+        args.extend(["--output", str(output)])
+    if extra:
+        args.extend(extra)
+    return args
+
+
+def _prepare_mixed_refs(
+    fixture,
+    symbols: list[str],
+    *,
+    calendar_rows: list[tuple[dt.date, bool]] | None = None,
+    instruments: list[tuple[str, str, dt.date, str]] | None = None,
+    official_types: dict[str, str] | None = None,
+) -> None:
+    _write_membership(fixture.data_root, symbols)
+    _write_hk_references(
+        fixture.data_root,
+        calendar_rows=calendar_rows or _july_calendar(),
+        instruments=instruments or [(symbol, "STOCK", AS_OF, "LISTED") for symbol in symbols],
+        official_types=official_types,
+    )
+
+
+def test_cli_mixed_conflicts_and_missing_required_flags(tmp_path: Path, capsys) -> None:
+    code = main(
+        [
+            "--universe",
+            "SH_CONNECT",
+            "--as-of",
+            "2026-07-10",
+            "--source",
+            "tushare",
+            "--from-verified-hk-availability",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.err.strip() == "BAR_WINDOW_INPUT_INVALID"
+
+    code = main(
+        [
+            "--universe",
+            "SH_CONNECT",
+            "--as-of",
+            "2026-07-10",
+            "--from-verified-hk-availability",
+            "--require-available-history",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.err.strip() == "BAR_WINDOW_INPUT_INVALID"
+
+
+def test_cli_mixed_rejects_naive_non_utc_and_mismatched_as_of(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    fixture = publish_minimal_v3(tmp_path, monkeypatch)
+    _prepare_mixed_refs(fixture, ["00001.HK", "00002.HK", "02983.HK"])
+    output = tmp_path / "out.parquet"
+    for verification in (
+        "2026-08-16T12:00:00",
+        "2026-08-16T12:00:00+08:00",
+        "not-a-datetime",
+    ):
+        code = main(_mixed_argv(fixture, output=output, verification_as_of=verification))
+        captured = capsys.readouterr()
+        assert code == 1
+        assert captured.err.strip() == "BAR_WINDOW_INPUT_INVALID"
+        assert not output.exists()
+    code = main(_mixed_argv(fixture, output=output, as_of="2026-07-09"))
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.err.strip() == "BAR_WINDOW_INPUT_INVALID"
+    assert not output.exists()
+    code = main(_mixed_argv(fixture, extra=["--require-full-window"], output=output))
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.err.strip() == "BAR_WINDOW_INPUT_INVALID"
+    assert not output.exists()
+
+
+def test_cli_mixed_complete_and_ignores_evidence_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    fixture = publish_minimal_v3(tmp_path, monkeypatch)
+    symbols = ["00001.HK", "00002.HK", "02983.HK", "01065.HK"]
+    _prepare_mixed_refs(fixture, symbols)
+    evidence_path = fixture.data_root / "clean" / "hk_no_trade_evidence" / "evidence.json"
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
+    evidence_path.write_text("hostile-not-a-plan-evidence", encoding="utf-8")
+    output = tmp_path / "out" / "window.parquet"
+    code = main(_mixed_argv(fixture, output=output))
+    captured = capsys.readouterr()
+    assert code == 0
+    payload = json.loads(captured.out)
+    assert payload["source"] == "verified-hk-availability-v1"
+    assert payload["plan_sha256"] == fixture.plan.plan_sha256
+    assert payload["publication_sha256"] == fixture.bundle.publication_sha256
+    assert payload["verification_as_of"] == fixture.verification_as_of.isoformat()
+    assert payload["available_history"]["is_available_history_complete"] is True
+    assert ["hkex", 1] in payload["source_row_counts"]
+    assert output.exists()
+
+
+def test_cli_single_source_still_marks_02983_hkex_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    fixture = publish_minimal_v3(tmp_path, monkeypatch)
+    _prepare_mixed_refs(fixture, ["02983.HK"])
+    code = main(
+        [
+            "--universe",
+            "SH_CONNECT",
+            "--as-of",
+            AS_OF.isoformat(),
+            "--source",
+            "tushare",
+            "--observations",
+            "1",
+            "--data-root",
+            str(fixture.data_root),
+            "--require-available-history",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 1
+    payload = json.loads(captured.out)
+    assert payload["source"] == "tushare"
+    assert payload["code"] == "BAR_WINDOW_AVAILABLE_HISTORY_INCOMPLETE"
+    assert payload["available_history"]["missing_session_total"] == 1
+
+
+def test_cli_mixed_second_verify_drift_does_not_write_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    fixture = publish_minimal_v3(tmp_path, monkeypatch)
+    _prepare_mixed_refs(fixture, ["00001.HK", "00002.HK", "02983.HK"])
+    output = tmp_path / "out.parquet"
+    import quant.data.query_universe as query_universe
+
+    real_verify = query_universe.verify_hk_bar_bundle
+
+    def drift(*args: object, **kwargs: object) -> None:
+        target = fixture.clean_root / f"date={AS_OF.isoformat()}" / "data.parquet"
+        changed = pl.read_parquet(target).with_columns(pl.col("close") + 0.01)
+        changed.write_parquet(target)
+        real_verify(*args, **kwargs)
+
+    monkeypatch.setattr(query_universe, "verify_hk_bar_bundle", drift)
+    code = main(_mixed_argv(fixture, output=output))
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.err.strip() == "HK_BAR_VERIFY_FAILED"
+    assert not output.exists()
+
+
+def test_cli_mixed_hostile_errors_are_sanitized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    fixture = publish_minimal_v3(tmp_path, monkeypatch)
+    _prepare_mixed_refs(fixture, ["00001.HK"])
+    import quant.data.query_universe as query_universe
+
+    marker = r"C:\secret\hostile-token"
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise OSError(marker)
+
+    monkeypatch.setattr(query_universe, "load_verified_hk_bar_bundle", boom)
+    code = main(_mixed_argv(fixture, output=tmp_path / "out.parquet"))
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.err.strip() == "BAR_WINDOW_REFERENCE_INVALID"
+    assert marker not in captured.err
+    assert marker not in captured.out
+
+    def boom_value(*_args: object, **_kwargs: object) -> None:
+        try:
+            raise ValueError(marker)
+        except ValueError as exc:
+            wrapped = HKHistoryBackfillError("HK_BAR_VERIFY_FAILED")
+            raise wrapped from exc
+
+    monkeypatch.setattr(query_universe, "load_hk_history_plan", boom_value)
+    code = main(_mixed_argv(fixture))
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.err.strip() == "HK_BAR_VERIFY_FAILED"
+    assert marker not in captured.err
+    assert marker not in "".join(
+        traceback.format_exception(
+            HKHistoryBackfillError, HKHistoryBackfillError("HK_BAR_VERIFY_FAILED"), None
+        )
+    )
+
+
+def test_cli_mixed_ua001_plan_rejects_v2b_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    fixture = publish_minimal_v3(tmp_path, monkeypatch)
+    _prepare_mixed_refs(fixture, ["00001.HK"])
+    ua_root = tmp_path / "ua-raw"
+    seed, _seed_time = write_seed(ua_root, {"00001.HK": [AS_OF]})
+    evidence = load_combined_evidence(ua_root, include_ua_m1_004=False)
+    plan_001 = build_hk_history_plan_v2(
+        expected_dates={
+            "00001.HK": [AS_OF],
+            "00002.HK": [AS_OF],
+            "01065.HK": [dt.date(2026, 5, 5), AS_OF],
+            "02983.HK": [AS_OF],
+        },
+        seed=seed,
+        unresolved={"02983.HK": [AS_OF]},
+        evidence=evidence,
+        as_of=AS_OF,
+        window_start=WINDOW_START,
+    )
+    plan_path = tmp_path / "plan-001.json"
+    write_or_verify_plan(plan_path, plan_001)
+    output = tmp_path / "out.parquet"
+    code = main(_mixed_argv(fixture, plan=plan_path, output=output))
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.err.strip() in {
+        "HK_HISTORY_FINALIZE_V3_INVALID",
+        "HK_BAR_VERIFY_FAILED",
+        "HK_HISTORY_PLAN_CONFLICT",
+    }
+    assert not output.exists()
+
+
+def test_cli_mixed_no_trade_raw_tamper_fails_bundle_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    fixture = publish_minimal_v3(tmp_path, monkeypatch)
+    _prepare_mixed_refs(fixture, ["00001.HK"])
+    raw_path = fixture.raw_root / "hkex" / "daily" / "d260710e.html"
+    raw_path.write_bytes(raw_path.read_bytes() + b"TAMPER")
+    output = tmp_path / "out.parquet"
+    code = main(_mixed_argv(fixture, output=output))
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.err.strip() in {
+        "HK_HISTORY_REFERENCE_INVALID",
+        "HK_BAR_VERIFY_FAILED",
+    }
+    assert not output.exists()
+
+
+def test_cli_mixed_stock_missing_instrument_and_etf_without_instrument(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    fixture = publish_minimal_v3(tmp_path, monkeypatch)
+    _write_membership(fixture.data_root, ["00001.HK"])
+    _write_hk_references(
+        fixture.data_root,
+        calendar_rows=_july_calendar(),
+        instruments=[],
+        official_types={"00001.HK": "STOCK"},
+    )
+    code = main(_mixed_argv(fixture))
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.err.strip() == "BAR_WINDOW_REFERENCE_INVALID"
+
+    fixture_etf = publish_minimal_v3(tmp_path / "etf", monkeypatch)
+    _write_membership(fixture_etf.data_root, ["02800.HK"])
+    _write_hk_references(
+        fixture_etf.data_root,
+        calendar_rows=_july_calendar(),
+        instruments=[],
+        official_types={"02800.HK": "ETF"},
+    )
+    code = main(_mixed_argv(fixture_etf))
+    captured = capsys.readouterr()
+    assert code == 0
+    payload = json.loads(captured.out)
+    assert payload["available_history"]["excluded_etf_symbols"] == ["02800.HK"]
+
+
+def test_cli_mixed_equal_count_wrong_date_and_exemption_unexpected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    fixture = publish_minimal_v3(tmp_path, monkeypatch)
+    _prepare_mixed_refs(
+        fixture,
+        ["00001.HK"],
+        calendar_rows=[
+            (dt.date(2026, 7, 8), False),
+            (dt.date(2026, 7, 9), True),
+            (AS_OF, True),
+        ],
+        instruments=[("00001.HK", "STOCK", dt.date(2026, 7, 9), "LISTED")],
+    )
+    extra_closed = fixture.clean_root / "date=2026-07-08" / "data.parquet"
+    extra_closed.parent.mkdir(parents=True, exist_ok=True)
+    pl.read_parquet(fixture.clean_root / f"date={AS_OF.isoformat()}" / "data.parquet").filter(
+        pl.col("symbol") == "00001.HK"
+    ).with_columns(pl.lit(dt.date(2026, 7, 8)).alias("trade_date")).write_parquet(extra_closed)
+    code = main(_mixed_argv(fixture, extra=["--observations", "2"]))
+    captured = capsys.readouterr()
+    assert code == 1
+    payload = json.loads(captured.out)
+    assert payload["code"] == "BAR_WINDOW_AVAILABLE_HISTORY_INCOMPLETE"
+    assert payload["available_history"]["missing_session_total"] >= 1
+    assert payload["available_history"]["unexpected_session_total"] >= 1
+
+    fixture_ex = publish_minimal_v3(tmp_path / "exempt", monkeypatch)
+    _prepare_mixed_refs(fixture_ex, ["01065.HK"])
+    _append = fixture_ex.clean_root / f"date={AS_OF.isoformat()}" / "data.parquet"
+    extra = (
+        pl.read_parquet(_append)
+        .filter(pl.col("symbol") == "00001.HK")
+        .with_columns(pl.lit("01065.HK").alias("symbol"))
+    )
+    pl.concat([pl.read_parquet(_append), extra], how="vertical_relaxed").write_parquet(_append)
+    code = main(_mixed_argv(fixture_ex))
+    captured = capsys.readouterr()
+    assert code == 1
+    payload = json.loads(captured.out)
+    assert payload["available_history"]["unexpected_session_total"] == 1
+
+
+def test_cli_mixed_physical_duplicate_key_on_mapped_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    fixture = publish_minimal_v3(tmp_path, monkeypatch)
+    _prepare_mixed_refs(fixture, ["00001.HK"])
+    output = tmp_path / "out.parquet"
+    import quant.data.query_universe as query_universe
+
+    real_load = query_universe.load_verified_hk_bar_bundle
+
+    def load_then_duplicate(**kwargs: object):
+        bundle = real_load(**kwargs)
+        target = fixture.clean_root / f"date={AS_OF.isoformat()}" / "data.parquet"
+        frame = pl.read_parquet(target)
+        row = frame.filter(pl.col("symbol") == "00001.HK")
+        pl.concat([frame, row], how="vertical_relaxed").write_parquet(target)
+        return bundle
+
+    monkeypatch.setattr(query_universe, "load_verified_hk_bar_bundle", load_then_duplicate)
+    code = main(_mixed_argv(fixture, output=output))
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.err.strip() == "BAR_WINDOW_DUPLICATE_KEY"
+    assert not output.exists()
+
+
+def test_cli_mixed_ua_exemptions_0504_missing_and_exempt_day_unexpected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    may4 = dt.date(2026, 5, 4)
+    may5 = dt.date(2026, 5, 5)
+    fixture = publish_minimal_v3(
+        tmp_path,
+        monkeypatch,
+        request_dates={
+            "00002.HK": [AS_OF],
+            "01065.HK": [may4, AS_OF],
+        },
+        extra_expected={"01065.HK": [may4, may5, AS_OF]},
+        evidence_mode="ua-001",
+    )
+    open_days = {may4, may5, AS_OF}
+    calendar_rows = []
+    day = may4
+    while day <= AS_OF:
+        calendar_rows.append((day, day in open_days))
+        day += dt.timedelta(days=1)
+    _prepare_mixed_refs(
+        fixture,
+        ["01065.HK"],
+        calendar_rows=calendar_rows,
+        instruments=[("01065.HK", "STOCK", may4, "LISTED")],
+    )
+    args = _mixed_argv(fixture, extra=["--observations", "3"])
+    assert main(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["available_history"]["is_available_history_complete"] is True
+    assert payload["available_history"]["exempted_session_count"] == 1
+
+    import quant.data.query as query_mod
+
+    query = query_mod.BarQuery(fixture.clean_root)
+    membership = (
+        fixture.data_root / "clean" / "universe_membership" / "universe=SH_CONNECT" / "data.parquet"
+    )
+    may4_path = fixture.clean_root / f"date={may4.isoformat()}" / "data.parquet"
+    may4_path.unlink()
+    audited = query.recent_for_universe_mixed_audited(
+        membership_path=membership,
+        universe="SH_CONNECT",
+        as_of=AS_OF,
+        observations=3,
+        bundle=fixture.bundle,
+        plan=fixture.plan,
+    )
+    available = query.audit_available_history_mixed(
+        audited=audited,
+        calendar_path=(
+            fixture.data_root / "clean" / "trade_calendar" / "market=HK" / "data.parquet"
+        ),
+        instrument_path=(fixture.data_root / "clean" / "instrument" / "market=HK" / "data.parquet"),
+        eligibility_snapshot_root=fixture.data_root / "clean" / "connect_snapshot",
+        eligibility_event_root=fixture.data_root / "clean" / "connect_event",
+        no_trade_evidences=fixture.plan.no_trade_evidence,
+        no_trade_evidence_sha256=fixture.plan.no_trade_evidence_sha256,
+    )
+    assert available.available_history.missing_sessions
+    extra = (
+        pl.read_parquet(fixture.clean_root / f"date={AS_OF.isoformat()}" / "data.parquet")
+        .filter(pl.col("symbol") == "01065.HK")
+        .with_columns(pl.lit(may5).alias("trade_date"))
+    )
+    may5_path = fixture.clean_root / f"date={may5.isoformat()}" / "data.parquet"
+    may5_path.parent.mkdir(parents=True, exist_ok=True)
+    extra.write_parquet(may5_path)
+    available_unexpected = query.audit_available_history_mixed(
+        audited=audited,
+        calendar_path=(
+            fixture.data_root / "clean" / "trade_calendar" / "market=HK" / "data.parquet"
+        ),
+        instrument_path=(fixture.data_root / "clean" / "instrument" / "market=HK" / "data.parquet"),
+        eligibility_snapshot_root=fixture.data_root / "clean" / "connect_snapshot",
+        eligibility_event_root=fixture.data_root / "clean" / "connect_event",
+        no_trade_evidences=fixture.plan.no_trade_evidence,
+        no_trade_evidence_sha256=fixture.plan.no_trade_evidence_sha256,
+    )
+    assert available_unexpected.available_history.unexpected_sessions
+    assert available_unexpected.available_history.missing_sessions
+
+
+def _append_symbol_bar(
+    clean_root: Path,
+    *,
+    symbol: str,
+    trade_date: dt.date,
+    template_symbol: str = "00001.HK",
+) -> None:
+    source = clean_root / f"date={AS_OF.isoformat()}" / "data.parquet"
+    extra = (
+        pl.read_parquet(source)
+        .filter(pl.col("symbol") == template_symbol)
+        .with_columns(
+            pl.lit(symbol).alias("symbol"),
+            pl.lit(trade_date).alias("trade_date"),
+        )
+    )
+    target = clean_root / f"date={trade_date.isoformat()}" / "data.parquet"
+    if target.exists():
+        extra = pl.concat([pl.read_parquet(target), extra], how="vertical_relaxed")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    extra.write_parquet(target)
+
+
+def _mixed_ah_paths(fixture) -> dict[str, Path]:
+    return {
+        "calendar_path": (
+            fixture.data_root / "clean" / "trade_calendar" / "market=HK" / "data.parquet"
+        ),
+        "instrument_path": (
+            fixture.data_root / "clean" / "instrument" / "market=HK" / "data.parquet"
+        ),
+        "eligibility_snapshot_root": fixture.data_root / "clean" / "connect_snapshot",
+        "eligibility_event_root": fixture.data_root / "clean" / "connect_event",
+    }
+
+
+def test_cli_mixed_unmapped_required_bar_does_not_complete_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    july9 = dt.date(2026, 7, 9)
+    fixture = publish_minimal_v3(tmp_path, monkeypatch)
+    _prepare_mixed_refs(
+        fixture,
+        ["00001.HK"],
+        calendar_rows=[(july9, True), (AS_OF, True)],
+        instruments=[("00001.HK", "STOCK", july9, "LISTED")],
+    )
+    _append_symbol_bar(fixture.clean_root, symbol="00001.HK", trade_date=july9)
+    membership = (
+        fixture.data_root / "clean" / "universe_membership" / "universe=SH_CONNECT" / "data.parquet"
+    )
+    audited = BarQuery(fixture.clean_root).recent_for_universe_mixed_audited(
+        membership_path=membership,
+        universe="SH_CONNECT",
+        as_of=AS_OF,
+        observations=2,
+        bundle=fixture.bundle,
+        plan=fixture.plan,
+    )
+    assert audited.frame.get_column("trade_date").to_list() == [AS_OF]
+    available = BarQuery(fixture.clean_root).audit_available_history_mixed(
+        audited=audited,
+        **_mixed_ah_paths(fixture),
+        no_trade_evidences=fixture.plan.no_trade_evidence,
+        no_trade_evidence_sha256=fixture.plan.no_trade_evidence_sha256,
+    )
+    assert available.available_history.is_available_history_complete is False
+    assert available.available_history.missing_sessions
+    output = tmp_path / "out.parquet"
+    code = main(_mixed_argv(fixture, extra=["--observations", "2"], output=output))
+    captured = capsys.readouterr()
+    assert code == 1
+    payload = json.loads(captured.out)
+    assert payload["code"] == "BAR_WINDOW_AVAILABLE_HISTORY_INCOMPLETE"
+    assert payload["available_history"]["missing_session_total"] >= 1
+    assert payload["available_history"]["is_available_history_complete"] is False
+    assert not output.exists()
+
+
+def test_cli_mixed_member_outside_availability_does_not_complete_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    fixture = publish_minimal_v3(tmp_path, monkeypatch)
+    _prepare_mixed_refs(fixture, ["00001.HK", "09999.HK"])
+    _append_symbol_bar(fixture.clean_root, symbol="09999.HK", trade_date=AS_OF)
+    output = tmp_path / "out.parquet"
+    code = main(_mixed_argv(fixture, output=output))
+    captured = capsys.readouterr()
+    assert code == 1
+    payload = json.loads(captured.out)
+    assert payload["code"] == "BAR_WINDOW_AVAILABLE_HISTORY_INCOMPLETE"
+    assert "09999.HK" in payload["missing_symbols"]
+    assert payload["available_history"]["is_available_history_complete"] is False
+    assert payload["available_history"]["missing_session_total"] >= 1
+    assert not (
+        payload["missing_symbols"] and payload["available_history"]["is_available_history_complete"]
+    )
+    assert not output.exists()
+
+
+def test_mixed_ah_actual_polars_error_has_empty_exception_graph(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    fixture = publish_minimal_v3(tmp_path, monkeypatch)
+    _prepare_mixed_refs(fixture, ["00001.HK"])
+    membership = (
+        fixture.data_root / "clean" / "universe_membership" / "universe=SH_CONNECT" / "data.parquet"
+    )
+    audited = BarQuery(fixture.clean_root).recent_for_universe_mixed_audited(
+        membership_path=membership,
+        universe="SH_CONNECT",
+        as_of=AS_OF,
+        observations=1,
+        bundle=fixture.bundle,
+        plan=fixture.plan,
+    )
+    marker = r"C:\secret\hostile-parquet-token"
+    snapshot = next(
+        (fixture.data_root / "clean" / "connect_snapshot").glob("route=*/date=*/data.parquet")
+    )
+    snapshot.write_bytes(b"NOT-A-PARQUET-FILE " + marker.encode("utf-8"))
+    with pytest.raises(BarWindowQueryError, match="^BAR_WINDOW_REFERENCE_INVALID$") as caught:
+        BarQuery(fixture.clean_root).audit_available_history_mixed(
+            audited=audited,
+            **_mixed_ah_paths(fixture),
+            no_trade_evidences=fixture.plan.no_trade_evidence,
+            no_trade_evidence_sha256=fixture.plan.no_trade_evidence_sha256,
+        )
+    exc = caught.value
+    assert exc.__cause__ is None
+    assert exc.__context__ is None
+    assert marker not in repr(exc)
+    assert marker not in "".join(traceback.format_exception(exc))
+    output = tmp_path / "out.parquet"
+    code = main(_mixed_argv(fixture, output=output))
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.err.strip() == "BAR_WINDOW_REFERENCE_INVALID"
+    assert marker not in captured.err
+    assert marker not in captured.out
+    assert not output.exists()
+
+
+def _assert_detached_reference_invalid(
+    exc: BaseException, *, marker: str, leaks: tuple[str, ...]
+) -> None:
+    assert str(exc) == "BAR_WINDOW_REFERENCE_INVALID"
+    assert exc.__cause__ is None
+    assert exc.__context__ is None
+    surfaces = (
+        repr(exc),
+        "".join(traceback.format_exception(exc)),
+        repr(exc.__context__),
+        repr(exc.__cause__),
+    )
+    for leak in (marker, *leaks):
+        for surface in surfaces:
+            assert leak not in surface
+
+
+def test_mixed_ah_actual_calendar_parquet_error_has_empty_exception_graph(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    fixture = publish_minimal_v3(tmp_path, monkeypatch)
+    _prepare_mixed_refs(fixture, ["00001.HK"])
+    membership = (
+        fixture.data_root / "clean" / "universe_membership" / "universe=SH_CONNECT" / "data.parquet"
+    )
+    audited = BarQuery(fixture.clean_root).recent_for_universe_mixed_audited(
+        membership_path=membership,
+        universe="SH_CONNECT",
+        as_of=AS_OF,
+        observations=1,
+        bundle=fixture.bundle,
+        plan=fixture.plan,
+    )
+    marker = r"C:\secret\hostile-calendar-token"
+    calendar_path = fixture.data_root / "clean" / "trade_calendar" / "market=HK" / "data.parquet"
+    calendar_path.write_bytes(b"NOT-A-PARQUET-FILE " + marker.encode("utf-8"))
+    with pytest.raises(BarWindowQueryError, match="^BAR_WINDOW_REFERENCE_INVALID$") as caught:
+        BarQuery(fixture.clean_root).audit_available_history_mixed(
+            audited=audited,
+            **_mixed_ah_paths(fixture),
+            no_trade_evidences=fixture.plan.no_trade_evidence,
+            no_trade_evidence_sha256=fixture.plan.no_trade_evidence_sha256,
+        )
+    _assert_detached_reference_invalid(
+        caught.value,
+        marker=marker,
+        leaks=(str(calendar_path), calendar_path.as_posix(), "ComputeError", "PAR1"),
+    )
+    output = tmp_path / "out.parquet"
+    code = main(_mixed_argv(fixture, output=output))
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.err.strip() == "BAR_WINDOW_REFERENCE_INVALID"
+    assert marker not in captured.err
+    assert marker not in captured.out
+    assert str(calendar_path) not in captured.err
+    assert str(calendar_path) not in captured.out
+    assert not output.exists()
+
+
+def test_mixed_actual_duckdb_bar_io_error_has_empty_exception_graph(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    fixture = publish_minimal_v3(tmp_path, monkeypatch)
+    _prepare_mixed_refs(fixture, ["00001.HK"])
+    membership = (
+        fixture.data_root / "clean" / "universe_membership" / "universe=SH_CONNECT" / "data.parquet"
+    )
+    query = BarQuery(fixture.clean_root)
+    audited = query.recent_for_universe_mixed_audited(
+        membership_path=membership,
+        universe="SH_CONNECT",
+        as_of=AS_OF,
+        observations=1,
+        bundle=fixture.bundle,
+        plan=fixture.plan,
+    )
+    marker = r"C:\secret\hostile-duckdb-token"
+    bar_path = fixture.clean_root / f"date={AS_OF.isoformat()}" / "data.parquet"
+    leaks = (
+        str(bar_path),
+        str(bar_path.resolve()),
+        bar_path.as_posix(),
+        "InvalidInputException",
+        "bar_1d",
+    )
+    bar_path.write_bytes(b"NOT-A-PARQUET-FILE " + marker.encode("utf-8"))
+    with pytest.raises(BarWindowQueryError, match="^BAR_WINDOW_REFERENCE_INVALID$") as physical:
+        query.audit_available_history_mixed(
+            audited=audited,
+            **_mixed_ah_paths(fixture),
+            no_trade_evidences=fixture.plan.no_trade_evidence,
+            no_trade_evidence_sha256=fixture.plan.no_trade_evidence_sha256,
+        )
+    _assert_detached_reference_invalid(physical.value, marker=marker, leaks=leaks)
+    with pytest.raises(BarWindowQueryError, match="^BAR_WINDOW_REFERENCE_INVALID$") as mapped:
+        query.recent_for_universe_mixed_audited(
+            membership_path=membership,
+            universe="SH_CONNECT",
+            as_of=AS_OF,
+            observations=1,
+            bundle=fixture.bundle,
+            plan=fixture.plan,
+        )
+    _assert_detached_reference_invalid(mapped.value, marker=marker, leaks=leaks)
+    output = tmp_path / "out.parquet"
+    code = main(_mixed_argv(fixture, output=output))
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.err.strip() in {"HK_BAR_VERIFY_FAILED", "BAR_WINDOW_REFERENCE_INVALID"}
+    assert marker not in captured.err
+    assert marker not in captured.out
+    assert str(bar_path) not in captured.err
+    assert str(bar_path) not in captured.out
+    assert not output.exists()
