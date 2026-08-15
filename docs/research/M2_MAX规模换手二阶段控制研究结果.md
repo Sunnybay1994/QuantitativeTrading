@@ -5,25 +5,25 @@
 > 配置：`configs/research/m2_max_daily_basic_controls.toml`
 > immutable run id：`30326191600e84cc0c94f9f040ecd5ed0ff9a944e6ed02a183ba5169d7a8e2cf`
 
+> **TARGET R11 INVALID ECONOMIC EVIDENCE（2026-08-16）**：immutable run 与 `REJECTED` 状态保持不变，
+> 不回写、不升级。RankIC、固定方向、coverage、调仓日和 OLS 数值闭包只保留为描述线索；targets、NAV、
+> 组合收益、换手及 0.5x/1x/2x 成本字段无效。由于本 run 的拒绝只由受影响的 2x 成本腿触发，
+> `-5.0079%` 不得继续表述为有效经济证伪；这也不授权重跑、翻案或恢复原始 MAX 的推进资格。当前处置见
+> [M2 执行路线图](../roadmaps/M2_策略与因子库并行建设路线图.md)。
+
 ## 1. 结论先行
 
 本轮是 canonical MAX 同一假设的确认性控制，不是新候选。`max_daily_return_20` 在同日总市值与自由流通
 换手率的横截面 average-rank OLS 控制后，残差信号仍有稳定的方向化 RankIC：三个 test folds 均为正，
 平均值为 `0.045705`。固定 `-1` 方向、coverage、预注册调仓日和全部 OLS 数值门禁也都通过。
 
-但预注册的 2 倍成本门禁没有通过：三折链式收益为 `-5.0079%`。因此唯一真实 run 按运行前合同落为
-`REJECTED`，没有事后修改方向、阈值、窗口或数值容差，也没有第二次真实 run。原始 MAX run 的历史
-`RESEARCH_ONLY` 标签仍是其自身不可变记录，但加入本轮确认性证据后，该假设不能向 S2、
-`PAPER_CANDIDATE` 或 PAPER 推进。
+历史产物按当时预注册合同因 2 倍成本腿 `-5.0079%` 落为 `REJECTED`，该不可变状态继续保留。TARGET R11
+现已确认该成本腿不是有效经济证据，因此本 run 不能再用于证明 MAX 在规模/换手控制后失效；原始 MAX
+同样继续 HOLD，二者均不得进入 forward、S2、`PAPER_CANDIDATE` 或 PAPER，也不得为求改变结论而批量重跑。
 
-机器产物当前暂存于短生命周期 worktree：
-
-`artifacts/research/runs/30326191600e84cc0c94f9f040ecd5ed0ff9a944e6ed02a183ba5169d7a8e2cf`
-
-目录含 15 个文件、307,425 bytes；`run.json` SHA256 为
-`339C8D44360816FBC827DE9AA77569BAAF513F1DFD89B4AF7BAB9EB7F8E9D3EA`，绑定两个 clean snapshot、
-配置、代码和 14 个输出摘要。JSON/报告/目录清单中没有 worktree 绝对路径。canonical retained 仍由
-统筹按 no-clobber、逐文件 size/SHA256 验真流程处置，本任务不移动、复制或重签产物。
+机器产物已由统筹按 no-clobber、逐文件 size/SHA256 验真后保留到项目级 canonical
+`artifacts/research/runs/30326191600e84cc0c94f9f040ecd5ed0ff9a944e6ed02a183ba5169d7a8e2cf/`；
+来源 worktree/branch 已 archive-first 退休。本页只记录历史 identity，不再描述来源 worktree 的当前状态。
 
 ## 2. 数据、公式与时间合同
 
@@ -41,6 +41,8 @@
 
 ## 3. 门禁证据
 
+下表保留历史产物原值用于审计；涉及目标、组合和成本的“通过/失败”均不是 R11 后可用的经济门禁证据。
+
 | 门禁 | 实际证据 | 结论 |
 |---|---:|---|
 | validation 原始方向全部为 `-1` | 3/3 folds | 通过 |
@@ -50,8 +52,8 @@
 | 全部信号日 coverage 中位数 `>= 80%` | 99.3548% | 通过 |
 | 每个预注册调仓日至少 100 个有效证券 | 最小 733 | 通过 |
 | 实际调仓日逐 fold 精确一致 | 12/12、12/12、7/7 | 通过 |
-| 1 倍成本后跨 fold 链式收益 | +1.8489% | 通过 |
-| 2 倍成本后跨 fold 链式收益严格 `> 0` | **-5.0079%** | **失败** |
+| 1 倍成本后跨 fold 链式收益 | +1.8489% | 历史记录；R11 后无效 |
+| 2 倍成本后跨 fold 链式收益严格 `> 0` | **-5.0079%** | **历史记录；R11 后无效** |
 
 三个 test folds 的方向化 RankIC 分别为 `0.033864 / 0.040846 / 0.062404`。2 倍成本下各 fold 组合收益
 分别为 `-19.6971% / +23.0587% / -3.8734%`；1 倍成本下分别为
@@ -63,8 +65,8 @@ normal-equation orthogonality error 为 `1.8987e-15`，均远在预注册的 `1,
 边界内。没有日期通过填充、伪逆、ridge 或删控制项获得结果。
 
 解释性每日 RankCorr 汇总为：残差对 raw MAX 的中位绝对值 `0.817659`，对规模 `0.009463`，对自由流通
-换手 `0.045092`。raw MAX 相关性较高只说明条件信号仍保留大量原始排序，不是本轮的自相关拒绝项；真正的
-否决来自事前冻结的 2 倍成本门禁。
+换手 `0.045092`。raw MAX 相关性较高只说明条件信号仍保留大量原始排序，不是本轮的自相关拒绝项；运行
+当时的拒绝由 2 倍成本门禁触发，但该经济腿在 R11 后无效，不能再作为确认性证伪。
 
 ## 4. 性能与开发反馈
 
@@ -82,11 +84,9 @@ normal-equation orthogonality error 为 `1.8987e-15`，均远在预注册的 `1,
 全部通过。由于没有阶段 profile，不能把 120 秒直接归因于 I/O、OLS 或发布，也不据此增加线程、GPU 或
 缓存。本次 immutable run 不为补性能指标而重跑。
 
-## 5. 后续处置
+## 5. 当前处置
 
-1. 由统筹按 no-clobber 与逐文件 SHA256 流程把本 run 保留到项目级 canonical research runs；
-2. 不向 S2 提交 admission，不生成 `PAPER_CANDIDATE`，不建立 PAPER 账户或订单；
-3. 不用原始 MAX 的历史 `RESEARCH_ONLY` 覆盖本轮失败，也不在相同历史窗口调阈值后重测；
-4. 财务 snapshot READY 后立即回到已冻结的 PIT 财务质量研究，优先验证与价格量能机制更正交的证据；
-5. 若未来重启 MAX 研究，只能作为全新预注册假设，使用 post-freeze forward、正式市场事件回放及独立
-   admission 证据，不能把本轮历史样本继续用作调参集。
+1. canonical run 与 `REJECTED` 状态保持不可变，不重签、不覆盖；
+2. 2x 成本腿标记为 invalid economic evidence，不用于确认性证伪；
+3. 原始 MAX 继续 HOLD，本控制 run 也不得进入 forward、S2/admission、`PAPER_CANDIDATE` 或 PAPER；
+4. 不在相同历史窗口重跑或调参；未来若研究 MAX，只能另立全新预注册假设并服从当前 M2 执行 SSOT。

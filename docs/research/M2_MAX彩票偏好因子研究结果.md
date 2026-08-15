@@ -17,19 +17,13 @@
 2 倍成本后的跨 fold 链式收益为正。因此不可变 run 诚实落为 `RESEARCH_ONLY`，没有事后改方向、窗口、阈值
 或 controls，也没有第二次真实 run。
 
-这不是 `PAPER_CANDIDATE`，更没有启动 PAPER。当前结果仍来自 2019 年冻结流动性股票池和 research
-diagnostics，缺历史动态 ST/行业/成分与正式市场事件回放；而且 1x/2x 组合在三个 folds 中各有两个 fold
-为负，正的链式总收益主要由 2024 test fold 贡献。进入 forward 前还必须用 `daily_basic` 对规模与换手做
-二阶段增量控制，并等待 post-freeze forward、统一回放与人工 admission。
+这不是 `PAPER_CANDIDATE`，更没有启动 PAPER。TARGET R11 后，历史正收益和成本通过字段均无效；原先
+“完成规模/换手控制后进入 forward”的路径已经暂停。MAX-control 的历史成本腿同样不是有效经济证伪，
+既不能解除本 run 的 HOLD，也不能证明本假设失效。
 
-机器产物当前暂存于短生命周期 worktree：
-
-`artifacts/research/runs/10dea14f1fcbbbeb78871cddb7b00cd06d77cf005c3a776c4713f5a4f4129bb3`
-
-目录含 14 个文件、463,198 bytes；`run.json` SHA256 为
-`8180D41472DD205EEC47C37E95C2CC4E18DDE0F344A701DFE85EAE684DB1EF8C`，绑定 clean snapshot、配置、
-代码和 13 个输出摘要。JSON 中没有 worktree 绝对路径。canonical retained 仍由统筹按 no-clobber、逐文件
-size/SHA256 验真流程处置，本任务不移动或重签产物。
+机器产物已由统筹按 no-clobber、逐文件 size/SHA256 验真后保留到项目级 canonical
+`artifacts/research/runs/10dea14f1fcbbbeb78871cddb7b00cd06d77cf005c3a776c4713f5a4f4129bb3/`；
+来源 worktree/branch 已 archive-first 退休。本页只保留历史 identity 和原始数值。
 
 ## 2. 数据、公式与时间合同
 
@@ -53,8 +47,8 @@ size/SHA256 验真流程处置，本任务不移动或重签产物。
 | 每个预注册调仓日至少 100 个有效证券 | 最小 733 | 通过 |
 | 实际调仓日逐 fold 精确一致 | 12/12、12/12、7/7 | 通过 |
 | 最大 median abs RankCorr `< 0.80` | 0.623254，对 `alpha158_std20` | 通过 |
-| 1 倍成本后跨 fold 链式收益 | 12.8549% | 通过 |
-| 2 倍成本后跨 fold 链式收益 `> 0` | 6.3409% | 通过 |
+| 1 倍成本后跨 fold 链式收益 | 12.8549% | 历史记录；R11 后无效 |
+| 2 倍成本后跨 fold 链式收益 `> 0` | 6.3409% | 历史记录；R11 后无效 |
 
 三个 test folds 的方向化 RankIC 分别为 `0.074663 / 0.062873 / 0.127066`。2 倍成本下各 fold 组合收益
 分别为 `-16.2771% / +36.0340% / -6.6297%`；1 倍成本下分别为
@@ -80,12 +74,11 @@ size/SHA256 验真流程处置，本任务不移动或重签产物。
 Alpha158 第四批约 93 秒 / 2.40 GiB 的基线同量级；由于仍无阶段 profile，不能据此归因 I/O 或计算热点，
 也不能直接引入 GPU/并行重写。本次 immutable run 不为补指标重跑。
 
-## 5. 后续处置
+## 5. 当前处置
 
-1. 按 no-clobber 和逐文件 SHA256 流程把本 run 保留到项目级 canonical research runs；
-2. 不自动提交 S2 admission，不建立 PAPER 账户，不生成订单；
-3. 财务 snapshot READY 后优先执行已冻结的 PIT 质量因子，不继续无界枚举 bar-only 公式；
-4. MAX 的下一步仅允许新预注册的 `daily_basic` 规模/换手增量控制与 post-freeze forward，不在当前历史窗口
-   内改变 20-session 窗口、`-1` 方向或 0.80 门禁；
-5. 只有二阶段控制、forward、统一市场事件回放和人工批准都成立时，才可另行评估
-   `PAPER_CANDIDATE`。
+1. immutable run 与历史 `RESEARCH_ONLY` 状态保持不变；
+2. targets、NAV、组合收益、换手和成本字段继续 HOLD；
+3. 不生成 forward observation，不提交 S2/admission，不建立 PAPER 账户或订单；
+4. MAX-control 的 invalid 成本腿不解除 HOLD，也不构成翻案依据；
+5. 只有当前 M2 执行 SSOT 另行批准新的 verified successor 和全新 forward 合同后，才可开展后续研究；
+   不得静默复用本 run。
