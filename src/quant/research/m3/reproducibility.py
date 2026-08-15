@@ -218,7 +218,7 @@ def _run_stage(
     ):
         raise ValueError
     root = _real_directory(project_root)
-    executable = _real_file(python_executable)
+    executable = _current_python_executable(python_executable)
     resolution = resolve_formal_reproducibility_cli_inputs(
         project_root=root,
         config=config,
@@ -231,14 +231,14 @@ def _run_stage(
     acceptance = config.section("acceptance")
     score_atol = _finite_nonnegative_float(acceptance["reproducibility_score_atol"])
     metric_atol = _finite_nonnegative_float(acceptance["reproducibility_metric_atol"])
+    python_executable_sha256 = _python_executable_sha256(executable)
     comparison_key = _comparison_key(
         resolution=resolution,
         params_sha256=training_params_sha256(model_spec),
         score_atol=score_atol,
         metric_atol=metric_atol,
-        python_executable_sha256=_file_sha256(executable),
+        python_executable_sha256=python_executable_sha256,
     )
-    python_executable_sha256 = _file_sha256(executable)
     artifact_roots = _project_only_artifact_roots(root)
     inputs = _external_inputs(
         resolution=resolution,
@@ -879,7 +879,9 @@ def _build_attempt(
         "dependency_fingerprint_sha256": (resolution.runtime.dependency_fingerprint_sha256),
         "python_implementation": resolution.runtime.python_implementation,
         "python_version": resolution.runtime.python_version,
-        "python_executable_sha256": _file_sha256(Path(sys.executable)),
+        "python_executable_sha256": _python_executable_sha256(
+            Path(sys.executable)
+        ),
         "read_paths_sha256": hashlib.sha256(_canonical_bytes(sorted(opened))).hexdigest(),
         "normal_work_outputs_read": False,
         "other_attempt_read": False,
@@ -1145,6 +1147,36 @@ def _finite_nonnegative_float(value: object) -> float:
 
 def _file_sha256(path: Path) -> str:
     return hashlib.sha256(_real_file(path).read_bytes()).hexdigest()
+
+
+def _python_executable_sha256(path: Path) -> str:
+    return hashlib.sha256(_current_python_executable(path).read_bytes()).hexdigest()
+
+
+def _current_python_executable(path: Path) -> Path:
+    """Accept only the exact current interpreter; Windows conda may be hardlinked."""
+    if not isinstance(path, Path) or not path.is_absolute():
+        raise ValueError
+    given = os.lstat(path)
+    if stat.S_ISLNK(given.st_mode) or bool(
+        getattr(given, "st_file_attributes", 0) & _REPARSE
+    ):
+        raise ValueError
+    resolved = path.resolve(strict=True)
+    current_resolved = Path(sys.executable).resolve(strict=True)
+    if resolved != current_resolved or not resolved.samefile(current_resolved):
+        raise ValueError
+    status = os.lstat(resolved)
+    nlink_ok = status.st_nlink >= 1 if os.name == "nt" else status.st_nlink == 1
+    if (
+        not stat.S_ISREG(status.st_mode)
+        or stat.S_ISLNK(status.st_mode)
+        or bool(getattr(status, "st_file_attributes", 0) & _REPARSE)
+        or status.st_size <= 0
+        or not nlink_ok
+    ):
+        raise ValueError
+    return resolved
 
 
 def _digest_for_path(path: Path, *, artifact_roots: Mapping[str, Path]) -> ArtifactDigest:
