@@ -5,6 +5,11 @@
 > 配置：`configs/research/m2_classic_daily_factors_fifth_batch.toml`
 > immutable run id：`10dea14f1fcbbbeb78871cddb7b00cd06d77cf005c3a776c4713f5a4f4129bb3`
 
+> **TARGET R11 HOLD（2026-08-16）**：历史 `RESEARCH_ONLY` 状态与 run 字节保持不变，但目标、NAV、
+> 组合收益、换手和 0.5x/1x/2x 成本证据当前无效，不得进入 forward、S2/admission 或 PAPER。
+> 不修改本页历史数值，也不为求翻案批量重跑；当前边界见
+> [M2 执行路线图](../roadmaps/M2_策略与因子库并行建设路线图.md)。
+
 ## 1. 结论先行
 
 预注册的 `max_daily_return_20` 通过了本轮全部历史初筛门禁：三个 validation folds 的原始方向均为冻结的

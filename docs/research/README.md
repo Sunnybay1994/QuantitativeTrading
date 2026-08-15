@@ -2,10 +2,19 @@
 
 本目录保存研究方法、假设卡、实际运行结论、否证记录和冻结的后续观察合同。
 
-- 本 session 的执行计划放在 `docs/roadmaps/`；项目级里程碑仍以根目录 `项目实施路线图.md` 为准；
+- 当前 M2 owner、执行顺序、TARGET R11 HOLD 与证据状态以
+  [M2 策略与因子库并行建设路线图](../roadmaps/M2_策略与因子库并行建设路线图.md) 为唯一执行 SSOT；
+  项目级里程碑仍以根目录 `项目实施路线图.md` 为准；
 - 单次 Agent 任务书和验收记录放在 `docs/agent/`；
 - 不可覆盖的机器可重放结果放在 `artifacts/research/runs/<run_id>/`；
 - 本目录只概述研究结论并链接机器产物，不复制完整输出，也不在此维护实时进程状态。
+
+> **TARGET R11 证据 HOLD（2026-08-16）**
+>
+> 13 个受影响 immutable run 的字节与原状态保持不变，`REJECTED` 不升级；四个历史
+> `RESEARCH_ONLY` 经济腿当前为 HOLD。受影响 run 的 targets、NAV、组合收益、换手和 0.5x/1x/2x
+> 成本字段不得作为当前通过、forward、S2/admission 或 PAPER 证据。完整 run 清单和处置边界见
+> [M2 执行路线图](../roadmaps/M2_策略与因子库并行建设路线图.md)。
 
 ## 方法论与行业调研
 
@@ -76,9 +85,9 @@ premium；没有生成 `PAPER_CANDIDATE`，也没有启动 PAPER。
 - [MAX 彩票偏好因子研究结果](M2_MAX彩票偏好因子研究结果.md)
 
 本轮 trial budget 固定为 1，研究过去 20 个严格连续 session 的最大单日复权收盘收益，并将经济方向预注册
-为低 MAX 优先的 `-1`。它不是 Qlib Alpha158 的 `Max(high,20)/close`。唯一真实不可变 run 通过历史
-初筛门禁，结论为 `RESEARCH_ONLY`；但组合收益有时期集中。规模/换手二阶段控制已完成并因 2x 成本为负而
-`REJECTED`；forward、统一回放和人工 admission 仍未完成，因此不得自动生成 `PAPER_CANDIDATE` 或启动 PAPER。
+为低 MAX 优先的 `-1`。它不是 Qlib Alpha158 的 `Max(high,20)/close`。原始 run 的历史状态仍为
+`RESEARCH_ONLY`，但其目标、组合与成本证据因 TARGET R11 进入 HOLD；规模/换手控制的不可变状态仍为
+`REJECTED`，其历史 2x 成本腿也不得继续作为有效经济证伪。forward、统一回放和人工 admission 仍暂停。
 
 ### MAX 规模与换手二阶段控制
 
@@ -87,6 +96,6 @@ premium；没有生成 `PAPER_CANDIDATE`，也没有启动 PAPER。
 
 该确认性控制沿用同一 canonical MAX 假设，以同日总市值和自由流通换手率的横截面 average-rank OLS 残差
 检验增量；不是新候选。数值闭包、`-1` 固定方向、coverage、预注册调仓日和成本门禁均已在真实运行前冻结。
-唯一真实 run 的 RankIC、方向、coverage、调仓日与 OLS 数值闭包均通过，但 2 倍成本后三折链式收益为
-`-5.0079%`，故确认性结论为 `REJECTED`。原始 run 的历史 `RESEARCH_ONLY` 标签仍是不可变记录，但当前
-综合证据不允许该假设进入 S2、`PAPER_CANDIDATE` 或 PAPER。
+唯一真实 run 的 RankIC、方向、coverage、调仓日与 OLS 数值闭包均通过；历史产物记录的 2 倍成本后三折
+链式收益为 `-5.0079%`。TARGET R11 表明该成本腿不能继续作为有效经济证伪；run 的 `REJECTED` 状态仍保持
+不可晋级，原始 run 的历史 `RESEARCH_ONLY` 标签也保持不可变，二者均不得进入 S2、`PAPER_CANDIDATE` 或 PAPER。

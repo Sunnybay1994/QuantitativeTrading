@@ -13,7 +13,11 @@
 - [`M3实施与Agent交接.md`](M3实施与Agent交接.md)：M3 权威契约与 Agent 交接入口。
 - M3 当前实际状态以代码、路线图和 [`CODEX_HANDOFF.md`](CODEX_HANDOFF.md) 顶部最新摘要为准；截至2026-07-31的旧总览已移入 [`archive/agent-history/`](archive/agent-history/README.md)。
 - [`M3_M4实施总规划.md`](M3_M4实施总规划.md)：M3 剩余工作与 M4 的分包、依赖和交接总图。
-- [`CODEX_HANDOFF.md`](CODEX_HANDOFF.md)：2026-07-17 目录迁移停止点的全项目状态、环境、验证和恢复建议。
+- [`CODEX_HANDOFF.md`](CODEX_HANDOFF.md)：顶部保存当前跨任务状态、环境、阻断与恢复入口；下文保留历次迁移和停止点快照。
+- [M2 策略与因子库并行建设路线图](roadmaps/M2_策略与因子库并行建设路线图.md)：当前 M2 owner、执行顺序、
+  TARGET R11 与 13-run/4-HOLD 证据状态的唯一执行 SSOT。
+- [M2 经典因子历史专题](roadmaps/M2_经典因子研究实现与回测路线图.md)：保留经典因子方法、运行与否证历史，
+  不承担当前恢复队列或并行 SSOT。
 
 ## 分类目录
 

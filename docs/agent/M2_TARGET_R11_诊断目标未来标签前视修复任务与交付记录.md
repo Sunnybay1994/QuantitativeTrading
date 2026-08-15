@@ -2,11 +2,15 @@
 
 ## 1. 状态与边界
 
-- 状态：实现与定向开发检查完成；待统筹合流、归档与来源 worktree 退休。
+- 状态：实现、定向开发检查、统筹合流、归档与来源线退休全部完成。
 - owner：策略开发 session。
 - branch：`codex/m2-target-label-leakage-fix`。
 - worktree：`artifacts/dev_worktrees/m2-target-label-leakage-fix`。
 - exact base：`532a067a0fb8ba8f1ac9a6ba1030d0bee29b5957`；不 rebase、merge 或 cherry-pick。
+- source commit：`77058981e5be656c941c73be0d7e52d74fcecbe5`；integration no-ff merge：
+  `864d254474a3cb050908c147e54bcc0c7d983167`。
+- archive：`archive/m2-target-label-leakage-fix-20260816` 精确指向 source commit；source worktree
+  与 branch 已 clean 退休。
 - 本包只修研究诊断目标的选择时序，不运行真实研究、不改写任何 immutable run，也不产生
   `PAPER_CANDIDATE` 或启动 PAPER。
 
@@ -133,5 +137,5 @@ CPU8—11 (`0xF00`)、数值线程不超过 2。没有真实 run，没有第二�
 7. fresh cold import：evaluator、classic/daily/PIT runner、composite/model 均从本 worktree `src` 导入，
    `R11_COLD_IMPORT_PASS`。
 
-最终还需在提交前执行 exact4 staged scope、`diff --cached --check`、临时目录和资源零残留核对；安全提交
-SHA 由提交后回报统筹并在 integration 状态文档登记。
+提交前 exact4 staged scope、`diff --cached --check`、临时目录和资源零残留核对均通过。安全提交、
+integration 合流与 archive-first 退出身份见本记录第 1 节。

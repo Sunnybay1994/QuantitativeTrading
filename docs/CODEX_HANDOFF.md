@@ -7,7 +7,8 @@
   `92de0d4`、downside beta `3c8c6c4`、Alpha158 `0f737ac` 与 MAX `0363b0f`。此后 `ba83ad7` 吸收
   R10 证据，`c2c8841` 吸收 MAX daily-basic 控制，`8427c83` 吸收 GUI D1，`086cae9` 吸收 PIT 首跑前置，
   `4745cb4` 吸收 FWD-R1，`936ffee` 吸收 PIT R2 维度审计，`7b377db` 吸收框架 owner 的 M3/M4 状态收口，
-  `9151d3f` 吸收 M3 root-topology 修复，`8991b0e` 吸收 Windows Conda Python hardlink forward-port；
+  `9151d3f` 吸收 M3 root-topology 修复，`8991b0e` 吸收 Windows Conda Python hardlink forward-port，
+  `864d254` 吸收 TARGET R11 未来标签前视修复；
   MAX-control 合流回归为 25 passed，GUI D1 为
   19 passed/2 skipped，PIT 前置为 32 passed，FWD-R1 为 17 passed/1 skipped，PIT R2 为 18 passed，五者定向
   Ruff、mypy、cold import 均通过，不把这些定向证据扩大表述为覆盖其它范围。
@@ -34,6 +35,12 @@
   当前 raw、snapshot 或真实 report-type 分布已经 READY。PIT R2 `cadff72` 的 audit schema v3、维度计数闭包和
   publisher 严格结构校验已进入 `936ffee`，来源线也已 archive-first 退出；本次只完成代码与 fixture 回归，未读取
   partial raw、未执行 integrated `--verify-bytes`、未选择 allowed values，也未发布 snapshot。
+- TARGET R11 已以 source `7705898`、integration merge `864d254` 和
+  `archive/m2-target-label-leakage-fix-20260816` 完成 archive-first 退出。修复强制先按当期 finite factor
+  冻结 Top-K，再验证 chosen execution/exit/return；不得用未来 label 可得性删除高分证券并由下一名递补。
+  13 个历史 immutable run 保持原字节与状态，`REJECTED` 不升级；四个原 `RESEARCH_ONLY` 经济腿为 HOLD，
+  其 targets/NAV/收益/换手/成本字段不得用于 forward、S2/admission 或 PAPER。完整清单与边界见
+  [`M2 策略与因子库并行建设路线图`](roadmaps/M2_策略与因子库并行建设路线图.md)。
 - M3 retained 两折链已进入显式失败终态，而不是运行中或成功 completion：四个 backtest 与 h5/h10 两份 summary
   已完成，但首个 reproducibility 组合 `fold_001/h5` 以 `M3_REPRODUCIBILITY_INVALID` fail closed，wrapper 随后
   `RETAINED_RESUME_FAILED`；evidence 为 `child_returncode=1 / outcome=FAILED / cleanup=REMOVED`，`completion.json`、
@@ -46,8 +53,9 @@
   与额外 hardlink 路径节点实际通过，mypy/cold import 通过；R2/R3 分别由
   `archive/m3-g8e-r2-windows-hardlink-20260816` 与
   `archive/m3-g8e-r3-windows-hardlink-forward-port-20260816` 留档后退出。上述两项只关闭确定性代码阻断，
-  actual worker/successor 仍未运行；detached `c9f2f36`、失败证据和两份 session 配置继续冻结，禁止自动恢复、
-  重跑、切换 revision 或清理现场。
+  actual worker/successor 仍未运行；detached `c9f2f36`、失败证据和两份 session 配置继续冻结，retained
+  worktree 已置为 `LOCKED`。除 owner 明确解除 lock 外，禁止写入、自动恢复、重跑、切换 revision、启动
+  successor 或清理现场。
 - M4 RUN-0D2 已以 `92de0d4` 合流，但没有启动 PAPER、订单或 28 日计时。正常 PAPER 启动仍须关闭
   UA-M4-005 durable approval 与 UA-M4-006 shared barrier，再按顺序完成 cross-day rotation；UA-M4-007 只约束
   正常窗口结束后的 actual fault drill，不冒充首日启动前置。框架 owner 的单文件状态提交 `c2b4829` 已通过
@@ -61,9 +69,10 @@
   本地作业编排仍仅有只读设计，当前不为一个运行按钮提前引入 SQLite worker/lease 平台。
 - M2-FWD-R1 `76b55cf` 已进入 `4745cb4`，R10 来源绑定与标准 LightweightResearchRun 发布路径的开发检查通过；
   没有执行真实 2026-08-31 发布或生成真实 forward artifact，来源线已 archive-first 退出。
-- `data/clean/tushare_financials` 仍不存在。PIT R2 已合流并退出，CPU8–11 当前未分配新的短任务。下一条 PIT
-  业务链保持串行：writer 权威终态 → integrated bytes audit 取得真实 report-type/comp-type 分布 → 窄
-  config-freeze → publisher/snapshot → 真实 PIT run；不得从 partial raw 提前选择 allowed values。后续短任务仍保持
+- `data/clean/tushare_financials` 仍不存在。TARGET R11 与 PIT R2 均已合流并退出，CPU8–11 当前未分配新的
+  短任务。下一条 PIT 业务链保持串行：writer 权威终态 → integrated bytes audit 取得真实
+  report-type/comp-type 分布 → R3 singleton/trial/fixed-direction/performance-sidecar freeze → publisher/snapshot
+  → 真实 PIT run；不得从 partial raw 提前选择 allowed values。后续短任务仍保持
   BelowNormal、CPU8–11、数值线程不超过 2。
   完整 branch/worktree 所有权、退出条件、artifact 保留条件和基础设施债
   见 [`项目结构与合流治理路线图`](roadmaps/项目结构与合流治理路线图.md)。项目初期继续以最小正确业务闭环
