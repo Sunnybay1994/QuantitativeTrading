@@ -17,6 +17,7 @@ from quant.domain import (
     CorporateActionReconciliationSchema,
     CorporateActionSchema,
     CorporateActionSelectionEvidenceSchema,
+    DailyBasic1dSchema,
     FactorValueSchema,
     HkCorporateActionImplementationEvidenceSchema,
     HkBarAvailabilityEvidenceSchema,
@@ -334,6 +335,72 @@ class TestBar1dSchema:
         Bar1dSchema.validate(
             pl.concat([make_bar(), make_bar().with_columns(pl.lit("check").alias("source"))])
         )
+
+
+def make_daily_basic(**overrides: object) -> pl.DataFrame:
+    row: dict[str, object] = {
+        "symbol": "000001.SZ",
+        "trade_date": dt.date(2026, 7, 10),
+        "close": 10.2,
+        "turnover_rate": 1.2,
+        "turnover_rate_free": 2.1,
+        "volume_ratio": None,
+        "pe": -12.0,
+        "pe_ttm": -10.0,
+        "pb": 1.1,
+        "ps": 2.0,
+        "ps_ttm": 1.9,
+        "dividend_yield": None,
+        "dividend_yield_ttm": 1.5,
+        "total_shares": 10_000_000.0,
+        "float_shares": 8_000_000.0,
+        "free_float_shares": 7_000_000.0,
+        "total_market_value": 102_000_000.0,
+        "circulating_market_value": 81_600_000.0,
+        "source": "tushare",
+    }
+    row.update(overrides)
+    return pl.DataFrame([row])
+
+
+class TestDailyBasic1dSchema:
+    def test_valid_row_accepts_nullable_fields_and_negative_pe(self) -> None:
+        DailyBasic1dSchema.validate(make_daily_basic())
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("symbol", "920001.BJ"),
+            ("close", 0.0),
+            ("turnover_rate", -0.1),
+            ("pb", float("inf")),
+            ("total_shares", 0.0),
+        ],
+    )
+    def test_invalid_domain_values_are_rejected(
+        self, field: str, value: object
+    ) -> None:
+        with pytest.raises(pandera.errors.SchemaError):
+            DailyBasic1dSchema.validate(make_daily_basic(**{field: value}))
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("float_shares", 11_000_000.0),
+            ("free_float_shares", 9_000_000.0),
+            ("circulating_market_value", 103_000_000.0),
+        ],
+    )
+    def test_share_and_market_value_relationships_are_enforced(
+        self, field: str, value: float
+    ) -> None:
+        with pytest.raises(pandera.errors.SchemaError):
+            DailyBasic1dSchema.validate(make_daily_basic(**{field: value}))
+
+    def test_duplicate_key_is_rejected(self) -> None:
+        row = make_daily_basic()
+        with pytest.raises(pandera.errors.SchemaError):
+            DailyBasic1dSchema.validate(pl.concat([row, row]))
 
 
 class TestTargetWeightSchema:

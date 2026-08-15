@@ -144,6 +144,89 @@ class Bar1dSchema(pa.DataFrameModel):
         return _rows_are_unique(data, ["symbol", "trade_date", "source"])
 
 
+class DailyBasic1dSchema(pa.DataFrameModel):
+    """A 股日频估值、换手、股本与市值 clean 表。
+
+    Tushare raw 的股本和市值字段单位均为万元/万股量级；进入本契约前必须
+    统一转换为股和人民币元。负市盈率等亏损公司估值是合法观测，因此估值
+    倍数只要求有限，不强制为正。
+    """
+
+    symbol: str = pa.Field(str_matches=r"^\d{6}\.(SH|SZ)$")
+    trade_date: pl.Date
+    close: float = pa.Field(gt=0)
+    turnover_rate: float = pa.Field(ge=0, nullable=True)
+    turnover_rate_free: float = pa.Field(ge=0, nullable=True)
+    volume_ratio: float = pa.Field(ge=0, nullable=True)
+    pe: float = pa.Field(nullable=True)
+    pe_ttm: float = pa.Field(nullable=True)
+    pb: float = pa.Field(nullable=True)
+    ps: float = pa.Field(nullable=True)
+    ps_ttm: float = pa.Field(nullable=True)
+    dividend_yield: float = pa.Field(ge=0, nullable=True)
+    dividend_yield_ttm: float = pa.Field(ge=0, nullable=True)
+    total_shares: float = pa.Field(gt=0)
+    float_shares: float = pa.Field(gt=0)
+    free_float_shares: float = pa.Field(gt=0, nullable=True)
+    total_market_value: float = pa.Field(gt=0)
+    circulating_market_value: float = pa.Field(gt=0)
+    source: str
+
+    class Config:
+        strict = True
+        coerce = True
+
+    @pa.dataframe_check
+    def values_are_finite_and_economically_consistent(  # type: ignore[misc]
+        cls, data: pa.PolarsData
+    ) -> pl.LazyFrame:
+        nullable_numeric = (
+            "turnover_rate",
+            "turnover_rate_free",
+            "volume_ratio",
+            "pe",
+            "pe_ttm",
+            "pb",
+            "ps",
+            "ps_ttm",
+            "dividend_yield",
+            "dividend_yield_ttm",
+            "free_float_shares",
+        )
+        required_numeric = (
+            "close",
+            "total_shares",
+            "float_shares",
+            "total_market_value",
+            "circulating_market_value",
+        )
+        finite = pl.all_horizontal(
+            *(pl.col(name).is_finite() for name in required_numeric),
+            *(
+                pl.col(name).is_null() | pl.col(name).is_finite()
+                for name in nullable_numeric
+            ),
+        )
+        shares = (
+            (pl.col("float_shares") <= pl.col("total_shares"))
+            & (
+                pl.col("free_float_shares").is_null()
+                | (pl.col("free_float_shares") <= pl.col("float_shares"))
+            )
+            & (
+                pl.col("circulating_market_value")
+                <= pl.col("total_market_value")
+            )
+        )
+        return data.lazyframe.select((finite & shares).all())
+
+    @pa.dataframe_check
+    def symbol_date_source_unique(  # type: ignore[misc]
+        cls, data: pa.PolarsData
+    ) -> pl.LazyFrame:
+        return _rows_are_unique(data, ["symbol", "trade_date", "source"])
+
+
 class HKNoTradeEvidenceSchema(pa.DataFrameModel):
     """Verified one-key HK no-daily-trading evidence projection.
 

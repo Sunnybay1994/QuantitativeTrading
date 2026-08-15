@@ -9,6 +9,13 @@
 
 from quant.data.base import BaseConnector
 from quant.data.comparison import CloseComparisonReport, compare_closes
+from quant.data.clean_snapshot_repository import (
+    TushareBulkCleanReadError,
+    TushareBulkFundBarQuery,
+    TushareBulkStockBarQuery,
+    read_tushare_bulk_clean_fund_bars,
+    read_tushare_bulk_clean_stock_bars,
+)
 from quant.data.adjustments import apply_adjustment_factors
 from quant.data.index_membership import (
     M3IndexMembershipError,
@@ -123,6 +130,11 @@ __all__ = [
     "BaostockInstrumentMapper",
     "CloseComparisonReport",
     "compare_closes",
+    "TushareBulkCleanReadError",
+    "TushareBulkFundBarQuery",
+    "TushareBulkStockBarQuery",
+    "read_tushare_bulk_clean_fund_bars",
+    "read_tushare_bulk_clean_stock_bars",
     "apply_adjustment_factors",
     "M3IndexMembershipError",
     "ObservedMembershipResult",
