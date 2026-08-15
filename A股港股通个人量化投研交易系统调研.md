@@ -739,7 +739,7 @@ quant/
 
 ## 8. 本项目目录盘点与归档附录（不参与路线选型）
 
-本节保留此前只读盘点结果及 2026-07-15 的整理去向；**其中任何代码、数据、实验结果都不作为当前绿地架构、工具选择或实施顺序的依据**。整理范围始终仅为 `G:\BaiduSyncdisk\wsl\Cursor\quant`，没有扫描父目录或其他磁盘。旧代码、历史数据和运行产物现已按 `archive/`、`data/legacy/`、`artifacts/legacy/` 分离，完整路径映射见 [`archive/archive_manifest.md`](archive/archive_manifest.md)。
+本节保留此前只读盘点结果及 2026-07-15 的整理去向；**其中任何代码、数据、实验结果都不作为当前绿地架构、工具选择或实施顺序的依据**。整理范围始终仅为 `G:\BaiduSyncdisk\wsl\Cursor\quant`，没有扫描父目录或其他磁盘。旧代码、历史数据和运行产物当时按 `archive/`、`data/legacy/`、`artifacts/legacy/` 分离；旧 checkout 曾使用 `archive/archive_manifest.md` 记录路径映射，但该文件未进入当前 tracked checkout，不能作为当前可复核证据。当前历史文档治理见 [`docs/archive/README.md`](docs/archive/README.md)。
 
 ### 8.1 现有资产
 
@@ -784,7 +784,7 @@ quant/
 1. 旧代码、Notebook 和上游仓库已移入 `archive/legacy_pre_greenfield/`；生产代码禁止引用。
 2. 历史数据已移入 `data/legacy/`；只有后续显式 `quant.data` inventory/migration 工具可以读取，普通运行不得扫描。
 3. 旧 MLflow 和 HTML 已移入 `artifacts/legacy/`；不作为当前实验或 Gate 证据。
-4. [`archive/archive_manifest.md`](archive/archive_manifest.md) 记录原路径、新路径和分类原因；本次未对大目录做逐文件哈希或内容验真。
+4. 旧 checkout 的 `archive/archive_manifest.md` 曾记录原路径、新路径和分类原因，但当前仓库未保留该文件；本条只描述历史动作，不构成可用清单。本次也未对大目录做逐文件哈希或内容验真。
 5. 后续若复用数据，工具必须生成来源、字段、日期覆盖、复权口径、文件数量、SHA256/抽样证据和质量报告，再发布到当前 raw/clean 层。
 6. 后续若复用旧策略，只提取可解释思想，在 `src/quant/` 按当前契约重新实现和测试，不运行归档 Notebook 作为生产流程。
 
