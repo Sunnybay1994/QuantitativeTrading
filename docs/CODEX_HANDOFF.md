@@ -21,8 +21,11 @@
 - 六条 M2 因子真实不可变 run 已用 no-clobber、逐文件 set/size/SHA-256 与 `run.json` 输出闭包验真后保留在根
   `artifacts/research/runs/<run_id>/`。Amihud、自由流通换手、downside beta、Alpha158 第四批与 MAX
   daily-basic 控制 `30326191…e2cf` 均为 `REJECTED`；原始 MAX `10dea14f…129bb3` 通过初筛但最高仅
-  `RESEARCH_ONLY`。控制实验因 2x 成本收益为负而拒绝，不能把原始 MAX 的结果升级为已排除规模/换手暴露；
-  forward、统一回放和人工 admission 仍未闭合。相关短期 worktree 已退出；统一 I/O/compute 分段仍是性能债，
+  `RESEARCH_ONLY`。控制实验的历史产物因 2x 成本收益为负而记录为 `REJECTED`，不能把原始 MAX 的结果
+  升级为已排除规模/换手暴露；
+  但 TARGET R11 后该历史成本腿不是有效经济证伪；控制 run 的 immutable `REJECTED` 状态保持不变，原始
+  MAX 与控制 run 均不得推进。forward、统一回放和人工 admission 仍未闭合。相关短期 worktree 已退出；
+  统一 I/O/compute 分段仍是性能债，
   当前证据不支持先上 GPU、并行或语言重写。
 - M2-SOURCE-R10 已发布同逻辑输入、同经济行为的 successor `e43da184…7a96f`，根 canonical 经 public verifier
   复验为 `RESEARCH_ONLY`；source/canonical 6 文件、60,597 bytes、逐文件 SHA-256 差异为 0。R10 证据已由
