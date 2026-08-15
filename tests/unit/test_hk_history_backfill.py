@@ -108,6 +108,74 @@ def _evidence(root: Path, *, symbol: str, trade_date: dt.date):
     return load_hk_no_trade_evidence(path, raw_root=root), path, raw_path
 
 
+def _user_approved_evidence(
+    root: Path, *, symbol: str = "01065.HK", trade_date: dt.date = dt.date(2026, 5, 5)
+):
+    selector = "user-approved-consensus/ua-m1-001-01065-2026-05-05.record"
+    raw_path = root / selector
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    raw = {
+        "approval_id": "UA-M1-001",
+        "approved_on": "2026-08-15",
+        "decision": "NO_DAILY_TRADING_V1",
+        "evidence": [
+            {
+                "observation": "NO_DAILY_TRADING",
+                "source_kind": "USER_SECURITIES_SOFTWARE",
+            },
+            {
+                "observation": "ZERO_ROWS_ON_TARGETED_RETRY",
+                "source_kind": "TUSHARE_HK_DAILY",
+            },
+        ],
+        "impact_assessment": {
+            "changes_cash": False,
+            "changes_corporate_actions": False,
+            "changes_positions": False,
+            "changes_real_orders": False,
+            "changes_strategy_signal": False,
+        },
+        "schema_version": "hk-no-trade-user-approved-consensus-v1",
+        "symbol": symbol,
+        "trade_date": trade_date.isoformat(),
+    }
+    raw_payload = _canonical(raw)
+    raw_path.write_bytes(raw_payload)
+    base = {
+        "schema_version": "hk-no-trade-evidence-v1",
+        "symbol": symbol,
+        "trade_date": trade_date.isoformat(),
+        "market": "HK",
+        "reason": "NO_DAILY_TRADING_V1",
+        "source": "USER_APPROVED_MULTI_SOURCE_CONSENSUS",
+        "source_record_id": "UA-M1-001",
+        "source_as_of": "2026-08-15T00:00:00+00:00",
+        "raw_selector": selector,
+        "raw_file_sha256": hashlib.sha256(raw_payload).hexdigest(),
+        "raw_metadata_sha256": "0" * 64,
+    }
+    metadata = {
+        "schema_version": "hk-no-trade-raw-metadata-v1",
+        "source": base["source"],
+        "source_record_id": base["source_record_id"],
+        "source_as_of": base["source_as_of"],
+        "raw_selector": selector,
+        "raw_file_sha256": base["raw_file_sha256"],
+    }
+    metadata_payload = _canonical(metadata)
+    raw_path.with_suffix(".json").write_bytes(metadata_payload)
+    base["raw_metadata_sha256"] = hashlib.sha256(metadata_payload).hexdigest()
+    base["evidence_sha256"] = hashlib.sha256(_canonical(base)).hexdigest()
+    evidence_set = {
+        "schema_version": "hk-no-trade-evidence-set-v1",
+        "evidences": [base],
+        "evidence_set_sha256": hashlib.sha256(_canonical([base])).hexdigest(),
+    }
+    path = root / "user-approved-evidence.json"
+    path.write_bytes(_canonical(evidence_set))
+    return path, raw_path
+
+
 def _raw(symbol_dates: dict[str, list[dt.date]]) -> pl.DataFrame:
     rows: list[dict[str, object]] = []
     for symbol, dates in symbol_dates.items():
@@ -947,6 +1015,26 @@ def test_load_hk_no_trade_evidence_sanitizes_hostile_sites(
     assert str(caught.value) == "HK_HISTORY_REFERENCE_INVALID"
     _assert_sanitized_exception(caught.value, marker)
     _assert_sanitized_exception(caught.value, absolute)
+
+
+def test_user_approved_no_trade_evidence_is_exactly_scoped(tmp_path: Path) -> None:
+    raw_root = tmp_path / "consensus"
+    path, _ = _user_approved_evidence(raw_root)
+    evidence = load_hk_no_trade_evidence(path, raw_root=raw_root)
+    assert [(item.symbol, item.trade_date, item.source) for item in evidence.evidences] == [
+        (
+            "01065.HK",
+            "2026-05-05",
+            "USER_APPROVED_MULTI_SOURCE_CONSENSUS",
+        )
+    ]
+
+    other_root = tmp_path / "other"
+    other_path, _ = _user_approved_evidence(
+        other_root, symbol="01066.HK", trade_date=dt.date(2026, 5, 5)
+    )
+    with pytest.raises(HKHistoryBackfillError, match="HK_HISTORY_REFERENCE_INVALID"):
+        load_hk_no_trade_evidence(other_path, raw_root=other_root)
 
 
 def test_load_hk_history_plan_sanitizes_hostile_read_exception_graph(

@@ -218,6 +218,40 @@ def test_hk_no_trade_evidence_schema_rejects_duplicate_key() -> None:
         "raw_metadata_sha256": "c" * 64,
     }
     HKNoTradeEvidenceSchema.validate(pl.DataFrame([row]))
+    HKNoTradeEvidenceSchema.validate(
+        pl.DataFrame(
+            [
+                {
+                    **row,
+                    "symbol": "01065.HK",
+                    "trade_date": dt.date(2026, 5, 5),
+                    "source": "USER_APPROVED_MULTI_SOURCE_CONSENSUS",
+                    "source_record_id": "UA-M1-001",
+                    "raw_selector": (
+                        "user-approved-consensus/"
+                        "ua-m1-001-01065-2026-05-05.record"
+                    ),
+                }
+            ]
+        )
+    )
+    with pytest.raises(pandera.errors.SchemaError):
+        HKNoTradeEvidenceSchema.validate(
+            pl.DataFrame(
+                [
+                    {
+                        **row,
+                        "symbol": "01066.HK",
+                        "source": "USER_APPROVED_MULTI_SOURCE_CONSENSUS",
+                        "source_record_id": "UA-M1-001",
+                        "raw_selector": (
+                            "user-approved-consensus/"
+                            "ua-m1-001-01065-2026-05-05.record"
+                        ),
+                    }
+                ]
+            )
+        )
     duplicate = dict(row)
     duplicate["evidence_sha256"] = "d" * 64
     with pytest.raises(pandera.errors.SchemaError):

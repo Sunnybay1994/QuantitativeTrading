@@ -45,6 +45,7 @@ HK_HISTORY_SCHEMA_VERSION = "hk-history-plan-v1"
 HK_HISTORY_STRATEGY_V2 = "MULTI_SYMBOL_RANGE_STRICT_V2"
 HK_HISTORY_SCHEMA_VERSION_V2 = "hk-history-plan-v2"
 HK_NO_TRADE_EVIDENCE_SET_VERSION = "hk-no-trade-evidence-set-v1"
+HK_NO_TRADE_USER_APPROVED_SOURCE = "USER_APPROVED_MULTI_SOURCE_CONSENSUS"
 HK_HISTORY_COOLDOWN_SECONDS = 3600
 HK_HISTORY_MAX_BATCH_SYMBOLS = 80
 HK_HISTORY_ROW_LIMIT = 5000
@@ -56,6 +57,11 @@ _HKEX_SUPPLEMENT_UNRESOLVED = (("02983.HK", ("2026-07-10",)),)
 _AVAILABILITY_FILE = "availability.json"
 _HKEX_RETAINED_RAW_FILE = "hkex-retained.raw"
 _HKEX_RETAINED_METADATA_FILE = "hkex-retained.metadata.json"
+_USER_APPROVED_NO_TRADE_KEY = ("01065.HK", "2026-05-05")
+_USER_APPROVED_NO_TRADE_RECORD = "UA-M1-001"
+_USER_APPROVED_NO_TRADE_SELECTOR = (
+    "user-approved-consensus/ua-m1-001-01065-2026-05-05.record"
+)
 _CAPABILITY_SECRET = os.urandom(32)
 _O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -131,7 +137,10 @@ class HKNoTradeEvidence:
             or not _HK_SYMBOL.fullmatch(self.symbol)
             or self.market != "HK"
             or self.reason != "NO_DAILY_TRADING_V1"
-            or self.source != "HKEX_DAILY_QUOTATIONS"
+            or self.source not in {
+                "HKEX_DAILY_QUOTATIONS",
+                HK_NO_TRADE_USER_APPROVED_SOURCE,
+            }
             or type(self.source_record_id) is not str
             or not self.source_record_id
             or not _HEX64.fullmatch(self.raw_file_sha256)
@@ -141,6 +150,12 @@ class HKNoTradeEvidence:
         _date(self.trade_date)
         _utc(dt.datetime.fromisoformat(self.source_as_of))
         _validate_selector(self.raw_selector, suffix=None)
+        if self.source == HK_NO_TRADE_USER_APPROVED_SOURCE and (
+            (self.symbol, self.trade_date) != _USER_APPROVED_NO_TRADE_KEY
+            or self.source_record_id != _USER_APPROVED_NO_TRADE_RECORD
+            or self.raw_selector != _USER_APPROVED_NO_TRADE_SELECTOR
+        ):
+            raise ValueError("no-trade evidence contract invalid")
         if self.evidence_sha256 != _evidence_identity(self):
             raise ValueError("no-trade evidence identity mismatch")
 
@@ -3331,6 +3346,8 @@ def _verify_evidence_projection(
                 or metadata_payload != _canonical_json(expected_metadata).encode("utf-8")
             ):
                 raise ValueError
+            if evidence.source == HK_NO_TRADE_USER_APPROVED_SOURCE:
+                _verify_user_approved_no_trade_raw(raw_payload, evidence=evidence)
             row = asdict(evidence)
             row["trade_date"] = _date(evidence.trade_date)
             row["source_as_of"] = dt.datetime.fromisoformat(evidence.source_as_of)
@@ -3346,6 +3363,40 @@ def _verify_evidence_projection(
         failure = "HK_HISTORY_REFERENCE_INVALID"
     if failure is not None:
         raise HKHistoryBackfillError(failure) from None
+
+
+def _verify_user_approved_no_trade_raw(
+    payload: bytes, *, evidence: HKNoTradeEvidence
+) -> None:
+    """Verify the one user-approved, non-HKEX consensus exception."""
+    value = _strict_json(payload)
+    expected = {
+        "approval_id": _USER_APPROVED_NO_TRADE_RECORD,
+        "approved_on": "2026-08-15",
+        "decision": "NO_DAILY_TRADING_V1",
+        "evidence": [
+            {
+                "observation": "NO_DAILY_TRADING",
+                "source_kind": "USER_SECURITIES_SOFTWARE",
+            },
+            {
+                "observation": "ZERO_ROWS_ON_TARGETED_RETRY",
+                "source_kind": "TUSHARE_HK_DAILY",
+            },
+        ],
+        "impact_assessment": {
+            "changes_cash": False,
+            "changes_corporate_actions": False,
+            "changes_positions": False,
+            "changes_real_orders": False,
+            "changes_strategy_signal": False,
+        },
+        "schema_version": "hk-no-trade-user-approved-consensus-v1",
+        "symbol": evidence.symbol,
+        "trade_date": evidence.trade_date,
+    }
+    if value != expected or payload != _canonical_json(expected).encode("utf-8"):
+        raise ValueError
 
 
 def _frame_hash(frame: pl.DataFrame) -> str:

@@ -157,7 +157,12 @@ class HKNoTradeEvidenceSchema(pa.DataFrameModel):
     trade_date: pl.Date
     market: str = pa.Field(isin=["HK"])
     reason: str = pa.Field(isin=["NO_DAILY_TRADING_V1"])
-    source: str = pa.Field(isin=["HKEX_DAILY_QUOTATIONS"])
+    source: str = pa.Field(
+        isin=[
+            "HKEX_DAILY_QUOTATIONS",
+            "USER_APPROVED_MULTI_SOURCE_CONSENSUS",
+        ]
+    )
     source_record_id: str
     source_as_of: pl.Datetime
     raw_selector: str
@@ -171,6 +176,24 @@ class HKNoTradeEvidenceSchema(pa.DataFrameModel):
     @pa.dataframe_check
     def evidence_key_unique(cls, data: pa.PolarsData) -> pl.LazyFrame:  # type: ignore[misc]
         return _rows_are_unique(data, ["symbol", "trade_date"])
+
+    @pa.dataframe_check
+    def user_approved_consensus_is_exactly_scoped(  # type: ignore[misc]
+        cls, data: pa.PolarsData
+    ) -> pl.LazyFrame:
+        """The user-approved consensus source is one exact audited exception."""
+        return data.lazyframe.select(
+            (pl.col("source") != "USER_APPROVED_MULTI_SOURCE_CONSENSUS")
+            | (
+                (pl.col("symbol") == "01065.HK")
+                & (pl.col("trade_date") == pl.date(2026, 5, 5))
+                & (pl.col("source_record_id") == "UA-M1-001")
+                & (
+                    pl.col("raw_selector")
+                    == "user-approved-consensus/ua-m1-001-01065-2026-05-05.record"
+                )
+            )
+        )
 
 
 class HkBarAvailabilityEvidenceSchema(pa.DataFrameModel):
