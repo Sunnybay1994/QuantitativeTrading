@@ -90,6 +90,18 @@ _USER_APPROVED_SUSPENSION_NOTICE_URL = (
 _USER_APPROVED_RESUMPTION_NOTICE_URL = (
     "https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0504/2026050400135.htm"
 )
+_USER_APPROVED_TRADING_HALT_KEY = ("06110.HK", "2026-06-25")
+_USER_APPROVED_TRADING_HALT_RECORD = "UA-M1-005"
+_USER_APPROVED_TRADING_HALT_SELECTOR = (
+    "user-approved-consensus/ua-m1-005-06110-2026-06-25.record"
+)
+_USER_APPROVED_TRADING_HALT_NOTICE_URL = (
+    "https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0625/2026062500129.htm"
+)
+_USER_APPROVED_TRADING_HALT_INDEPENDENT_URL = (
+    "https://www.etnet.com.hk/www/tc/news/news-article.php"
+    "?category=latest&newsid=2026062568&section=categorized"
+)
 _USER_APPROVED_SUSPENSION_OBSERVATION = (
     "H_SHARES_SUSPENDED_FROM_2026-04-01T01:00:00+00:00"
 )
@@ -188,6 +200,11 @@ class HKNoTradeEvidence:
         if self.source == HK_NO_TRADE_USER_APPROVED_SOURCE and not (
             _user_approved_no_trade_is_exact(self)
         ):
+            raise ValueError("no-trade evidence contract invalid")
+        if (
+            self.source_record_id == _USER_APPROVED_TRADING_HALT_RECORD
+            or self.raw_selector == _USER_APPROVED_TRADING_HALT_SELECTOR
+        ) and self.source != HK_NO_TRADE_USER_APPROVED_SOURCE:
             raise ValueError("no-trade evidence contract invalid")
         if self.evidence_sha256 != _evidence_identity(self):
             raise ValueError("no-trade evidence identity mismatch")
@@ -3410,6 +3427,11 @@ def _user_approved_no_trade_is_exact(evidence: HKNoTradeEvidence) -> bool:
             and evidence.trade_date in _USER_APPROVED_SUSPENSION_RANGE_DATES
             and evidence.raw_selector == _USER_APPROVED_SUSPENSION_RANGE_SELECTOR
         )
+    if evidence.source_record_id == _USER_APPROVED_TRADING_HALT_RECORD:
+        return (
+            (evidence.symbol, evidence.trade_date) == _USER_APPROVED_TRADING_HALT_KEY
+            and evidence.raw_selector == _USER_APPROVED_TRADING_HALT_SELECTOR
+        )
     return False
 
 
@@ -3440,10 +3462,43 @@ def _user_approved_suspension_range_payload() -> dict[str, Any]:
     }
 
 
+def _user_approved_trading_halt_payload() -> dict[str, Any]:
+    return {
+        "approval_id": _USER_APPROVED_TRADING_HALT_RECORD,
+        "decision": "NO_DAILY_TRADING_V1",
+        "impact_assessment": {
+            "changes_cash": False,
+            "changes_corporate_actions": False,
+            "changes_positions": False,
+            "changes_real_orders": False,
+            "changes_strategy_signal": False,
+        },
+        "observations": [
+            {
+                "observation": "TRADING_HALTED_FROM_09_00",
+                "source_kind": "HKEX_NEWS",
+                "url": _USER_APPROVED_TRADING_HALT_NOTICE_URL,
+            },
+            {
+                "observation": _USER_APPROVED_TUSHARE_ZERO_ROW_OBSERVATION,
+                "source_kind": "TUSHARE_HK_DAILY",
+            },
+            {
+                "observation": "LISTED_AS_SUSPENDED",
+                "source_kind": "INDEPENDENT_PUBLIC_MARKET_NEWS",
+                "url": _USER_APPROVED_TRADING_HALT_INDEPENDENT_URL,
+            },
+        ],
+        "schema_version": "hk-no-trade-user-approved-trading-halt-v1",
+        "symbol": _USER_APPROVED_TRADING_HALT_KEY[0],
+        "trade_date": _USER_APPROVED_TRADING_HALT_KEY[1],
+    }
+
+
 def _verify_user_approved_no_trade_raw(
     payload: bytes, *, evidence: HKNoTradeEvidence
 ) -> None:
-    """Verify one of the two exact user-approved, non-HKEX consensus records."""
+    """Verify one of the three exact user-approved, non-HKEX consensus records."""
     value = _strict_json(payload)
     if evidence.source_record_id == _USER_APPROVED_NO_TRADE_RECORD:
         expected: dict[str, Any] = {
@@ -3476,6 +3531,13 @@ def _verify_user_approved_no_trade_raw(
         if (
             evidence.symbol != expected["symbol"]
             or evidence.trade_date not in expected["no_trade_dates"]
+        ):
+            raise ValueError
+    elif evidence.source_record_id == _USER_APPROVED_TRADING_HALT_RECORD:
+        expected = _user_approved_trading_halt_payload()
+        if (
+            evidence.symbol != expected["symbol"]
+            or evidence.trade_date != expected["trade_date"]
         ):
             raise ValueError
     else:

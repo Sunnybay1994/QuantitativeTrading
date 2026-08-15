@@ -1,6 +1,6 @@
 # M1 HK-HISTORY R4：06110.HK 2026-06-25 停牌单日 No-Trade 证据任务单
 
-状态：**R3 返工合同已冻结；R2 独立初验 FAIL，允许全新外部实现会话按 §10 最小返工。** R1 发现 `HKNoTradeEvidenceSchema` exact allowlist 缺少 UA-M1-005；R2 虽补齐正向证据，但没有把 UA-M1-005 身份反向绑定到 `USER_APPROVED_MULTI_SOURCE_CONSENSUS`。真实 evidence/plan/journal 物化仍由主 Agent 在实现、独立复验和主验通过后执行。
+状态：**R3 实现与 Windows 定向自测完成；待全新外部独立复验。** R2 正向 exact 保留；本轮只关闭 UA-M1-005 record/selector 到 `USER_APPROVED_MULTI_SOURCE_CONSENSUS` 的反向来源绑定。真实 evidence/plan/journal 物化仍由主 Agent 在实现、独立复验和主验通过后执行。
 
 日期：2026-08-15（Asia/Shanghai）
 平台：Windows 工程闭环；不声明 Linux/ext4。

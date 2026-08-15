@@ -258,6 +258,111 @@ def test_hk_no_trade_evidence_schema_rejects_duplicate_key() -> None:
         HKNoTradeEvidenceSchema.validate(pl.DataFrame([row, duplicate]))
 
 
+def test_hk_no_trade_evidence_schema_accepts_exact_ua_m1_005_and_rejects_drift() -> None:
+    def user_approved_row(
+        *,
+        symbol: str,
+        trade_date: dt.date,
+        source_record_id: str,
+        raw_selector: str,
+        evidence_sha256: str = "a" * 64,
+    ) -> dict[str, object]:
+        return {
+            "schema_version": "hk-no-trade-evidence-v1",
+            "evidence_sha256": evidence_sha256,
+            "symbol": symbol,
+            "trade_date": trade_date,
+            "market": "HK",
+            "reason": "NO_DAILY_TRADING_V1",
+            "source": "USER_APPROVED_MULTI_SOURCE_CONSENSUS",
+            "source_record_id": source_record_id,
+            "source_as_of": dt.datetime(2026, 8, 15),
+            "raw_selector": raw_selector,
+            "raw_file_sha256": "b" * 64,
+            "raw_metadata_sha256": "c" * 64,
+        }
+
+    ua_m1_001 = user_approved_row(
+        symbol="01065.HK",
+        trade_date=dt.date(2026, 5, 5),
+        source_record_id="UA-M1-001",
+        raw_selector="user-approved-consensus/ua-m1-001-01065-2026-05-05.record",
+    )
+    ua_m1_004 = user_approved_row(
+        symbol="02402.HK",
+        trade_date=dt.date(2026, 4, 14),
+        source_record_id="UA-M1-004",
+        raw_selector=(
+            "user-approved-consensus/"
+            "ua-m1-004-02402-2026-04-01-to-2026-05-04.record"
+        ),
+        evidence_sha256="d" * 64,
+    )
+    ua_m1_005 = user_approved_row(
+        symbol="06110.HK",
+        trade_date=dt.date(2026, 6, 25),
+        source_record_id="UA-M1-005",
+        raw_selector="user-approved-consensus/ua-m1-005-06110-2026-06-25.record",
+        evidence_sha256="e" * 64,
+    )
+    HKNoTradeEvidenceSchema.validate(pl.DataFrame([ua_m1_001]))
+    HKNoTradeEvidenceSchema.validate(pl.DataFrame([ua_m1_004]))
+    HKNoTradeEvidenceSchema.validate(pl.DataFrame([ua_m1_005]))
+    HKNoTradeEvidenceSchema.validate(pl.DataFrame([ua_m1_001, ua_m1_004, ua_m1_005]))
+
+    with pytest.raises(pandera.errors.SchemaError):
+        HKNoTradeEvidenceSchema.validate(
+            pl.DataFrame(
+                [
+                    {
+                        **ua_m1_004,
+                        "trade_date": dt.date(2026, 5, 4),
+                    }
+                ]
+            )
+        )
+    for drifted in (
+        {**ua_m1_005, "symbol": "06111.HK"},
+        {**ua_m1_005, "trade_date": dt.date(2026, 6, 24)},
+        {**ua_m1_005, "trade_date": dt.date(2026, 6, 26)},
+        {**ua_m1_005, "source_record_id": "UA-M1-001"},
+        {
+            **ua_m1_005,
+            "raw_selector": "user-approved-consensus/ua-m1-001-01065-2026-05-05.record",
+        },
+        {**ua_m1_005, "source": "HKEX_DAILY_QUOTATIONS"},
+        {
+            **ua_m1_005,
+            "source": "HKEX_DAILY_QUOTATIONS",
+            "raw_selector": "hkex/d260625e.html",
+        },
+        {
+            **ua_m1_005,
+            "source": "HKEX_DAILY_QUOTATIONS",
+            "source_record_id": "synthetic-fixture",
+        },
+    ):
+        with pytest.raises(pandera.errors.SchemaError):
+            HKNoTradeEvidenceSchema.validate(pl.DataFrame([drifted]))
+
+    ordinary_hkex = {
+        "schema_version": "hk-no-trade-evidence-v1",
+        "evidence_sha256": "f" * 64,
+        "symbol": "06110.HK",
+        "trade_date": dt.date(2026, 6, 25),
+        "market": "HK",
+        "reason": "NO_DAILY_TRADING_V1",
+        "source": "HKEX_DAILY_QUOTATIONS",
+        "source_record_id": "synthetic-fixture",
+        "source_as_of": dt.datetime(2026, 7, 31),
+        "raw_selector": "hkex/d260625e.html",
+        "raw_file_sha256": "b" * 64,
+        "raw_metadata_sha256": "c" * 64,
+    }
+    HKNoTradeEvidenceSchema.validate(pl.DataFrame([ordinary_hkex]))
+    HKNoTradeEvidenceSchema.validate(pl.DataFrame([ua_m1_001, ua_m1_004, ordinary_hkex]))
+
+
 class TestSnapshotSessionCalendarSchema:
     def test_strictly_increasing_dates_pass(self) -> None:
         SnapshotSessionCalendarSchema.validate(pl.DataFrame({

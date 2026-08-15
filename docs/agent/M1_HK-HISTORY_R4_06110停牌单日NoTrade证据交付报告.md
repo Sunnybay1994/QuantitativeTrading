@@ -3,9 +3,9 @@
 日期：2026-08-15（Asia/Shanghai）
 实现模型：`cursor-grok-4.6-high`（如实记录；非底层模型名猜测）
 角色：外部实现 Agent
-状态：**阻塞 / 需要主 Agent 重新冻结任务**；未宣称实现完成、独立初验或 HK60 Gate。
+状态：**R3 实现与 Windows 定向自测完成；待全新外部独立复验。** R1 阻断与 R2 正向 exact 见下文历史章节。未宣称独立初验或 HK60 Gate。
 
-## 结果
+## R1 结果（历史；已关闭）
 
 - 按任务单停止条件与 `AGENTS.md` §11：发现任务单与现行 API/Schema 冲突，且修复必须修改禁区，**立即停止扩大实现**，不自行扩包、不伪 capability。
 - 未修改 `src/quant/data/hk_history_backfill.py`、`tests/unit/test_hk_history_backfill.py` 或任何禁区文件。
@@ -69,4 +69,108 @@ D:\Miniforge3\python.exe -c "<HKNoTradeEvidenceSchema.validate UA-M1-001 vs UA-M
 - 主 Agent 必须先改权威契约（白名单 + Schema 第三条 exact 或支），再开新的外部实现会话。本报告**不是**独立初验入口。
 - R3 已证明第三条 user-approved 例外必须同时改 `hk_history_backfill.py` 与 `HKNoTradeEvidenceSchema`；R4 任务单漏掉后者。
 - 正式 raw/metadata/plan/journal 物化与 HK60 恢复仍按任务单 §9，本会话未触碰。
-- 下一步：主 Agent 重冻 → 全新外部实现会话按修订后白名单实现 → 另一全新会话独立初验。
+- 下一步（当时）：主 Agent 重冻 → 全新外部实现会话按修订后白名单实现 → 另一全新会话独立初验。R2 已执行该实现步。
+
+---
+
+## R2 实现（关闭 R1 阻断）
+
+日期：2026-08-15（Asia/Shanghai）
+实现模型：`cursor-grok-4.6-high`（如实记录；非底层模型名猜测）
+角色：外部实现 Agent（全新 R2 会话；不复用 R1 上下文）
+状态：**R2 实现与 Windows 定向自测完成；待全新外部独立初验。** 不宣称独立初验、真实 plan/journal 物化或 HK60 Gate。
+
+R1 阻断已关闭：主 Agent 已把 `HKNoTradeEvidenceSchema` exact 析取纳入白名单。R2 只增加第三条 exact 或支
+`06110.HK ∧ 2026-06-25 ∧ UA-M1-005 ∧ user-approved-consensus/ua-m1-005-06110-2026-06-25.record`，
+公共 `load_hk_no_trade_evidence` / `build_hk_history_plan_v2` 正向经 Schema.validate，未使用
+`object.__new__`、私有 seal 或绕过 loader。
+
+### 修改文件
+
+| 文件 | 目的 |
+| --- | --- |
+| `src/quant/domain/schemas.py` | `user_approved_consensus_is_exactly_scoped` 增加 UA-M1-005 exact 析取；列/dtype/source/reason 未改。 |
+| `src/quant/data/hk_history_backfill.py` | 新增 UA-M1-005 常量、exact 判定与 canonical halt payload 逐字段/逐字节 verifier。 |
+| `tests/unit/test_hk_history_backfill.py` | §6 正向、plan 只减 06-25、request raw closure fixture、漂移/impact/单字节、001/004 identity、hostile。 |
+| `tests/unit/test_schemas.py` | UA-M1-005 exact 正向；symbol/date/record/selector 漂移拒绝；001/004 回归。 |
+| 本报告 | 追加 R2；保留 R1 为设计纠错证据。 |
+| 任务单状态 | 改为待全新外部独立初验。 |
+
+未修改：query、connector、clean store、配置、README、路线图、正式 `data/` / `artifacts`、DailyBasic 或其他 Schema。未联网、未真实回填、未 add/commit/push。
+
+### 冻结的 UA-M1-005 合同
+
+- `source_record_id=UA-M1-005`
+- `raw_selector=user-approved-consensus/ua-m1-005-06110-2026-06-25.record`
+- `schema_version=hk-no-trade-user-approved-trading-halt-v1`
+- exact key：`06110.HK@2026-06-25`；06-24/06-26 及其他证券拒绝
+- canonical observations 顺序固定：HKEX_NEWS `TRADING_HALTED_FROM_09_00` + 指定 HKEX URL；Tushare `RETAINED_ZERO_ROW`；独立来源 `LISTED_AS_SUSPENDED` + 指定 etnet URL
+- `impact_assessment` 五字段全部 `false`
+- UA-M1-001/004 payload、selector、record、identity 公式未改
+
+### 验证（Windows；`PYTHONPATH` 指向本 worktree `src`）
+
+主仓 editable `quant` 指向 `F:\AI_Coding\QuantitativeTrading\src`，定向命令必须覆盖 worktree，否则会测到未含 UA-M1-005 的主树。
+
+| 命令 | 结果 | 摘要 |
+| --- | --- | --- |
+| pytest `test_hk_history_backfill.py` + Schema 两节点 | 通过 | 135 passed, 2 skipped |
+| `ruff check` 四白名单文件 | 通过 | All checks passed |
+| `mypy` 两生产文件 | 通过 | no issues found in 2 source files |
+| cold import loader/plan/Schema | 通过 | 模块路径位于本 worktree |
+
+未运行 Linux/WSL Gate、全量 pytest、真实回填或联网。
+
+### 风险与交接
+
+- 本实现只改变 expected-key 证据闭包；不改 raw/mapper/OHLC/策略/现金/公司行动/订单语义。
+- 正式 raw/metadata、UA-M1-001 ∪ 004 ∪ 005 的新 v2 plan、journal 与 HK60 恢复仍按任务单 §9，由主 Agent 合流后执行；不得改写 v2b。
+- 下一步：未参与本 R2 实现的全新外部独立初验；PASS 后主 Agent 再物化业务产物。
+
+---
+
+## R3 实现（关闭 R2 独立初验反向来源绑定缺口）
+
+日期：2026-08-15（Asia/Shanghai）
+实现模型：`cursor-grok-4.6-high`（如实记录；非底层模型名猜测）
+角色：外部实现 Agent（全新 R3 会话；不复用 R1/R2 上下文）
+状态：**R3 实现与 Windows 定向自测完成；待全新外部独立复验。** 不宣称独立初验、真实 plan/journal 物化或 HK60 Gate。
+
+R2 正向 exact 保留：canonical `USER_APPROVED_MULTI_SOURCE_CONSENSUS` + UA-M1-005 仍经公共 loader / Schema.validate。本轮只补身份反向约束：`source_record_id=UA-M1-005` 或 exact selector 出现时，source 必须是 `USER_APPROVED_MULTI_SOURCE_CONSENSUS`，且 symbol/date/record/selector 构成唯一 exact key。未泛化 UA-M1-001/004，未收紧普通 HKEX quotations 通道。
+
+### 修改文件
+
+| 文件 | 目的 |
+| --- | --- |
+| `src/quant/data/hk_history_backfill.py` | `HKNoTradeEvidence.__post_init__` 对 UA-M1-005 record/selector 强制 USER_APPROVED source。 |
+| `src/quant/domain/schemas.py` | 新增 `ua_m1_005_identity_binds_user_approved_source`；列/dtype/001/004 析取未改。 |
+| `tests/unit/test_hk_history_backfill.py` | HKEX 伪组合（canonical/garbage/record-only/selector-only）、record/selector 漂移、001/004 与普通 HKEX 控制组。 |
+| `tests/unit/test_schemas.py` | Schema 直接拒绝相同伪组合；ordinary HKEX `06110@06-25` 控制组仍通过。 |
+| 本报告 | 追加 R3；保留 R1/R2 为设计纠错与正向实现证据。 |
+| 任务单状态 | 改为待全新外部独立复验。 |
+
+未修改：query、connector、clean store、配置、README、路线图、正式 `data/` / `artifacts`、R2 独立复验报告。未联网、未真实回填、未 add/commit/push。
+
+### 原因
+
+R2 只在 `source==USER_APPROVED` 时进入 exact/raw verifier；Schema 以“非 USER_APPROVED 或任一 exact 或支”为析取。因此 `HKEX_DAILY_QUOTATIONS` + UA-M1-005 identity（含 garbage raw）可跳过 halt payload 绑定。UA-M1-005 是用户批准共识身份，不是 HKEX daily quotations 证据。
+
+### 验证（Windows；`PYTHONPATH` 指向本 worktree `src`）
+
+解释器：`D:\Miniforge3\python.exe`。主仓 editable `quant` 指向主树，定向命令必须覆盖 worktree。
+
+| 命令 | 结果 | 摘要 |
+| --- | --- | --- |
+| focused：反向绑定 loader + Schema 节点 | 通过 | 2 passed |
+| pytest `test_hk_history_backfill.py` + Schema 两 HKNoTrade 节点 | 通过 | 136 passed, 2 skipped |
+| `ruff check` 四白名单文件 | 通过 | All checks passed |
+| `mypy` 两生产文件 | 通过 | no issues found in 2 source files |
+| cold import loader/plan/Schema | 通过 | 模块路径位于本 worktree |
+
+未运行 Linux/WSL Gate、全量 pytest、真实回填或联网。本会话自测不是独立复验。
+
+### 风险与交接
+
+- 反向约束仅绑定 UA-M1-005 record/selector；普通 HKEX（含 `06110.HK@2026-06-25` 且非 UA-M1-005 身份）与 UA-M1-001/004 行为保持原样。
+- 正式 raw/metadata、新 v2 plan、journal 与 HK60 恢复仍按任务单 §9，由主 Agent 在独立复验与主验通过后执行。
+- 下一步：未参与本 R3 实现的全新外部独立复验。
