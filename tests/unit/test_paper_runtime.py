@@ -36,7 +36,7 @@ def _write_config(
     actual_project = project_root or runtime._actual_project_root()
     selectors = (
         ("formal_account_v1", "formal_source_v1", "formal_policy_v1", "formal_schedule_v1")
-        if mode == "PAPER_REAL_TIME"
+        if mode in {"PAPER_REAL_TIME", "PAPER_REAL_TIME_WINDOWS"}
         else ("development_account", "development_source", "development_policy", "development_schedule")
     )
     config = config_parent / "runtime.toml"
@@ -206,6 +206,112 @@ def test_r2_windows_temp_reproduction_cannot_obtain_valid_formal_capability(
             forged, config_path=config_path.resolve(), now=UTC_NOW
         )
     _assert_sanitized(invalid.value, "PAPER_RUNTIME_PREFLIGHT_INVALID")
+
+
+def test_windows_mode_loads_as_exact_formal_and_binds_config_identity(
+    tmp_path: Path,
+) -> None:
+    config_path, _ = _write_config(tmp_path, mode="PAPER_REAL_TIME")
+    linux_config = runtime.load_paper_runtime_config(config_path.resolve())
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            'mode = "PAPER_REAL_TIME"',
+            'mode = "PAPER_REAL_TIME_WINDOWS"',
+        ),
+        encoding="utf-8",
+    )
+    windows_config = runtime.load_paper_runtime_config(config_path.resolve())
+
+    assert type(linux_config) is runtime.FormalPaperRuntimeConfig
+    assert type(windows_config) is runtime.FormalPaperRuntimeConfig
+    assert linux_config.mode == "PAPER_REAL_TIME"
+    assert windows_config.mode == "PAPER_REAL_TIME_WINDOWS"
+    assert linux_config.config_identity != windows_config.config_identity
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="actual NTFS proof is Windows-specific")
+def test_actual_windows_miniforge_base_ntfs_mints_and_fresh_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CONDA_PREFIX", r"D:\Miniforge3")
+    monkeypatch.setenv("CONDA_DEFAULT_ENV", "base")
+    monkeypatch.setattr(runtime, "_system_temp_root", lambda: tmp_path / "other-temp")
+    config_path, roots = _write_config(tmp_path, mode="PAPER_REAL_TIME_WINDOWS")
+    config = runtime.load_paper_runtime_config(config_path.resolve())
+
+    environment = runtime.verify_paper_runtime_environment(config=config, now=UTC_NOW)
+
+    assert type(environment) is runtime.VerifiedPaperRuntimeEnvironment
+    assert environment.config.mode == "PAPER_REAL_TIME_WINDOWS"
+    assert environment.platform.os_name == "Windows"
+    assert environment.platform.wsl_generation == "none"
+    assert environment.platform.filesystem_type == "ntfs"
+    assert environment.platform.mount_options == ("fixed-drive", "persistent-acls")
+    assert not any(root.exists() for root in roots)
+    runtime.verify_existing_paper_runtime_preflight(
+        environment, config_path=config_path.resolve(), now=UTC_NOW
+    )
+    roots[1].mkdir()
+    with pytest.raises(runtime.PaperRuntimeError) as stale_cold:
+        runtime.verify_existing_paper_runtime_preflight(
+            environment, config_path=config_path.resolve(), now=UTC_NOW
+        )
+    _assert_sanitized(stale_cold.value, "PAPER_RUNTIME_PREFLIGHT_INVALID")
+    materialized = runtime.verify_paper_runtime_environment(config=config, now=UTC_NOW)
+    assert materialized.layout.layout_identity != environment.layout.layout_identity
+    runtime.verify_existing_paper_runtime_preflight(
+        materialized, config_path=config_path.resolve(), now=UTC_NOW
+    )
+
+    linux_mode_projection = runtime._config_projection(
+        replace(config, mode="PAPER_REAL_TIME")  # type: ignore[arg-type]
+    )
+    windows_mode_projection = runtime._config_projection(config)
+    assert linux_mode_projection != windows_mode_projection
+    linux_payload = {
+        **runtime._environment_payload(
+            config,
+            environment.layout,
+            environment.platform,
+            environment.verified_at,
+        ),
+        "config": linux_mode_projection,
+    }
+    assert runtime._sha256(linux_payload) != environment.verification_identity
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="actual NTFS proof is Windows-specific")
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("os_name", "Linux"),
+        ("wsl_generation", "2"),
+        ("filesystem_type", "fat32"),
+        ("python_prefix", r"D:\Miniforge3\envs\py312"),
+        ("python_executable", r"D:\hostile\python.exe"),
+        ("conda_environment", "py312"),
+        ("conda_prefix", r"D:\Miniforge3\envs\py312"),
+        ("device_identity", "f" * 64),
+    ],
+)
+def test_windows_formal_platform_rejects_whole_rehashed_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: object,
+) -> None:
+    monkeypatch.setenv("CONDA_PREFIX", r"D:\Miniforge3")
+    monkeypatch.setenv("CONDA_DEFAULT_ENV", "base")
+    config_path, _ = _write_config(tmp_path, mode="PAPER_REAL_TIME_WINDOWS")
+    config = runtime.load_paper_runtime_config(config_path.resolve())
+    layout = runtime._build_layout(config, allow_system_temp=True)
+    proof = runtime._run_configured_platform_probe(
+        layout.parent, UTC_NOW, formal_mode="PAPER_REAL_TIME_WINDOWS"
+    )
+    forged = _rehash_platform(replace(proof, **{field: value}))
+
+    with pytest.raises(Exception, match="PAPER_RUNTIME_PLATFORM_UNSUPPORTED"):
+        runtime._run_windows_formal_platform_verifier(forged, layout.parent)
 
 
 @pytest.mark.parametrize("hostile", [{}, object()])

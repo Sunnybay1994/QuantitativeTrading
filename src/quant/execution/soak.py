@@ -91,6 +91,7 @@ class SoakError(ValueError):
 class SoakEvidenceKind(StrEnum):
     DEVELOPMENT_EXAMPLE = "development_example"
     PAPER_REAL_TIME = "paper_real_time"
+    PAPER_REAL_TIME_WINDOWS = "paper_real_time_windows"
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,7 +187,9 @@ class VerifiedPaperSoakEvidence:
 @dataclass(frozen=True, slots=True)
 class SoakGateDecision:
     decision_id: str
-    status: Literal["PASS", "WAITING_FOR_SOAK_EVIDENCE", "BLOCKED"]
+    status: Literal[
+        "PASS", "PASS_WINDOWS_SCOPE", "WAITING_FOR_SOAK_EVIDENCE", "BLOCKED"
+    ]
     run_id: str
     first_observed_at: dt.datetime | None
     last_observed_at: dt.datetime | None
@@ -220,7 +223,7 @@ def build_soak_run(
         _validate_anchor_roots(root, anchor_root)
         root_identity = _root_identity(root)
         anchor_root_identity = _root_identity(anchor_root)
-        if evidence_kind is SoakEvidenceKind.PAPER_REAL_TIME:
+        if _is_real_time_kind(evidence_kind):
             _require_formal_now(started_at)
         values: dict[str, object] = {
             "schema_version": _MANIFEST_SCHEMA,
@@ -359,7 +362,7 @@ def append_soak_session(
         facts_path = path / "facts.json"
         encoded = _encode_session(receipt)
         if (
-            checked_manifest.evidence_kind is SoakEvidenceKind.PAPER_REAL_TIME
+            _is_real_time_kind(checked_manifest.evidence_kind)
             and not path.exists()
         ):
             _require_formal_now(invocation_completed_at)
@@ -456,7 +459,7 @@ def append_fault_drill(
         _prove_fault(receipt, checked_manifest)
         path = _run_dir(root, checked_manifest.run_id) / "faults" / drill
         if (
-            checked_manifest.evidence_kind is SoakEvidenceKind.PAPER_REAL_TIME
+            _is_real_time_kind(checked_manifest.evidence_kind)
             and not path.exists()
         ):
             _require_formal_now(completed_at)
@@ -572,7 +575,7 @@ def decide_soak_gate(
         )
         if fresh != checked:
             raise ValueError
-        if manifest.evidence_kind is SoakEvidenceKind.PAPER_REAL_TIME:
+        if _is_real_time_kind(manifest.evidence_kind):
             _require_formal_now(as_of)
         sessions = checked.sessions
         faults = checked.fault_drills
@@ -596,8 +599,18 @@ def decide_soak_gate(
             codes.add("SOAK_MINIMUM_DURATION_PENDING")
         if missing:
             codes.add("SOAK_EXPECTED_SESSION_MISSING")
+        windows_scope = (
+            manifest.evidence_kind is SoakEvidenceKind.PAPER_REAL_TIME_WINDOWS
+        )
+        if windows_scope:
+            codes.add("SOAK_WINDOWS_NOT_FORMAL_GATE_ELIGIBLE")
         if type(checked) is VerifiedDevelopmentSoakEvidence:
-            status: Literal["PASS", "WAITING_FOR_SOAK_EVIDENCE", "BLOCKED"] = (
+            status: Literal[
+                "PASS",
+                "PASS_WINDOWS_SCOPE",
+                "WAITING_FOR_SOAK_EVIDENCE",
+                "BLOCKED",
+            ] = (
                 "BLOCKED" if "SOAK_SESSION_BLOCKED" in codes or "SOAK_FAULT_DRILL_BLOCKED" in codes
                 else "WAITING_FOR_SOAK_EVIDENCE"
             )
@@ -606,6 +619,8 @@ def decide_soak_gate(
             status = "BLOCKED"
         elif waiting or "SOAK_FAULT_DRILL_MISSING" in codes:
             status = "WAITING_FOR_SOAK_EVIDENCE"
+        elif windows_scope:
+            status = "PASS_WINDOWS_SCOPE"
         else:
             status = "PASS"
         values: dict[str, object] = {
@@ -621,7 +636,8 @@ def decide_soak_gate(
             "stable_codes": tuple(sorted(codes)),
         }
         decision_id = _identity("SoakGateDecision", _decision_payload_values(values))
-        return SoakGateDecision(decision_id=decision_id, **values)  # type: ignore[arg-type]
+        decision = SoakGateDecision(decision_id=decision_id, **values)  # type: ignore[arg-type]
+        return _prove_gate_decision(decision, manifest)
     except SoakError:
         raise
     except Exception:
@@ -645,6 +661,60 @@ def expected_schedule_identity(expected_sessions: tuple[dt.date, ...]) -> str:
         )
     except Exception:
         raise SoakError("SOAK_EXPECTED_SCHEDULE_INVALID") from None
+
+
+def _is_real_time_kind(kind: SoakEvidenceKind) -> bool:
+    return kind in {
+        SoakEvidenceKind.PAPER_REAL_TIME,
+        SoakEvidenceKind.PAPER_REAL_TIME_WINDOWS,
+    }
+
+
+def _prove_gate_decision(
+    value: object, manifest: SoakRunManifest
+) -> SoakGateDecision:
+    if type(value) is not SoakGateDecision:
+        raise ValueError
+    item = cast(SoakGateDecision, value)
+    values = {
+        name: getattr(item, name)
+        for name in item.__dataclass_fields__
+        if name != "decision_id"
+    }
+    windows_code = "SOAK_WINDOWS_NOT_FORMAL_GATE_ELIGIBLE"
+    windows_scope = (
+        manifest.evidence_kind is SoakEvidenceKind.PAPER_REAL_TIME_WINDOWS
+    )
+    if (
+        item.status
+        not in {
+            "PASS",
+            "PASS_WINDOWS_SCOPE",
+            "WAITING_FOR_SOAK_EVIDENCE",
+            "BLOCKED",
+        }
+        or item.run_id != manifest.run_id
+        or item.stable_codes != tuple(sorted(set(item.stable_codes)))
+        or item.decision_id
+        != _identity("SoakGateDecision", _decision_payload_values(values))
+        or windows_scope != (windows_code in item.stable_codes)
+        or (windows_scope and item.status == "PASS")
+        or (
+            not windows_scope
+            and item.status == "PASS_WINDOWS_SCOPE"
+        )
+    ):
+        raise ValueError
+    if item.status == "PASS_WINDOWS_SCOPE" and (
+        item.stable_codes != (windows_code,)
+        or item.missing_sessions
+        or item.first_observed_at is None
+        or item.last_observed_at is None
+        or item.last_observed_at - item.first_observed_at < _MINIMUM_SPAN
+        or len(item.fault_receipt_ids) != len(manifest.required_fault_drills)
+    ):
+        raise ValueError
+    return item
 
 
 def _prove_manifest(value: object) -> SoakRunManifest:
@@ -999,7 +1069,7 @@ def _append_anchor(
         anchors and anchored_at <= anchors[-1].anchored_at
     ):
         raise ValueError
-    if manifest.evidence_kind is SoakEvidenceKind.PAPER_REAL_TIME:
+    if _is_real_time_kind(manifest.evidence_kind):
         _require_formal_now(anchored_at)
     values: dict[str, object] = {
         "schema_version": _ANCHOR_SCHEMA,

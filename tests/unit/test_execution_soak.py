@@ -227,6 +227,100 @@ def _replace_closure_and_rehash_receipt(
     return forged
 
 
+def _paper_decision_evidence(
+    manifest,
+    *,
+    complete: bool,
+    blocked: bool = False,
+):
+    selected_dates = manifest.expected_sessions if complete else manifest.expected_sessions[:1]
+    sessions = []
+    for index, session_date in enumerate(selected_dates):
+        started_at = dt.datetime.combine(session_date, dt.time(8), tzinfo=UTC)
+        completed_at = started_at + dt.timedelta(minutes=1)
+        issue_codes = ("SOAK_TEST_SESSION_BLOCKED",) if blocked and index == 0 else ()
+        values = {
+            "schema_version": "m4-soak-session-v1",
+            "run_id": manifest.run_id,
+            "session_date": session_date,
+            "invocation_started_at": started_at,
+            "invocation_completed_at": completed_at,
+            "invocation_identity": soak_module._identity(
+                "SoakInvocation",
+                {
+                    "run_id": manifest.run_id,
+                    "session_date": session_date.isoformat(),
+                    "started_at": soak_module._time(started_at),
+                    "completed_at": soak_module._time(completed_at),
+                    "recovery_id": _hex(f"recovery:{session_date}"),
+                    "reconciliation_id": _hex(f"reconciliation:{session_date}"),
+                    "execution_report_id": _hex(f"report:{session_date}"),
+                    **_runtime_ids(manifest),
+                },
+            ),
+            "recovery_id": _hex(f"recovery:{session_date}"),
+            "reconciliation_id": _hex(f"reconciliation:{session_date}"),
+            "execution_report_id": _hex(f"report:{session_date}"),
+            "gate_passed": not issue_codes,
+            "command_ids_sha256": _hex(f"commands:{session_date}"),
+            "event_ids_sha256": _hex(f"events:{session_date}"),
+            "ledger_state_id": None,
+            "issue_codes": issue_codes,
+            "facts_sha256": _hex(f"facts:{session_date}"),
+        }
+        receipt_id = soak_module._identity(
+            "SoakSessionReceipt", soak_module._session_payload_values(values)
+        )
+        sessions.append(
+            soak_module.SoakSessionReceipt(receipt_id=receipt_id, **values)
+        )
+    faults = []
+    if complete:
+        for drill in sorted(manifest.required_fault_drills):
+            started_at = sessions[-1].invocation_completed_at + dt.timedelta(minutes=1)
+            completed_at = started_at + dt.timedelta(minutes=1)
+            values = {
+                "schema_version": "m4-fault-drill-v1",
+                "run_id": manifest.run_id,
+                "drill": drill,
+                "started_at": started_at,
+                "completed_at": completed_at,
+                "before_recovery_id": _hex(f"before:{drill}"),
+                "after_recovery_id": _hex(f"after:{drill}"),
+                "affected_subject_ids": (),
+                "economic_effect_ids_sha256": _hex(f"effects:{drill}"),
+                "outcome": "PASS",
+                "stable_codes": (),
+                "before_facts_sha256": _hex(f"before-facts:{drill}"),
+                "after_facts_sha256": _hex(f"after-facts:{drill}"),
+            }
+            receipt_id = soak_module._identity(
+                "FaultDrillReceipt", soak_module._fault_payload_values(values)
+            )
+            faults.append(
+                soak_module.FaultDrillReceipt(receipt_id=receipt_id, **values)
+            )
+    terminal_anchor_id = _hex(
+        f"terminal:{manifest.run_id}:{len(sessions)}:{len(faults)}"
+    )
+    evidence_id = soak_module._identity(
+        "VerifiedSoakEvidence",
+        {
+            "run_id": manifest.run_id,
+            "receipt_ids": tuple(item.receipt_id for item in sessions),
+            "fault_receipt_ids": tuple(item.receipt_id for item in faults),
+            "terminal_anchor_id": terminal_anchor_id,
+        },
+    )
+    return soak_module.VerifiedPaperSoakEvidence(
+        evidence_id,
+        manifest,
+        tuple(sessions),
+        tuple(faults),
+        terminal_anchor_id,
+    )
+
+
 def test_development_identity_path_and_manifest_are_unmistakable(tmp_path: Path) -> None:
     root = tmp_path / "artifacts" / "development_example" / "m4_p8"
     sessions = (dt.date(2026, 8, 3), dt.date(2026, 8, 4))
@@ -514,6 +608,143 @@ def test_formal_kind_still_waits_for_natural_span_and_fault_matrix(
     assert "SOAK_FAULT_DRILL_MISSING" in decision.stable_codes
 
 
+def test_windows_scope_manifest_wait_block_and_complete_decisions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = (tmp_path / "explicit-windows-formal-root").resolve()
+    started = dt.datetime(2026, 8, 1, 8, tzinfo=UTC)
+    dates = (dt.date(2026, 8, 2), dt.date(2026, 8, 31))
+    clock = [started]
+    monkeypatch.setattr(soak_module, "_production_utc_now", lambda: clock[0])
+    manifest = _manifest(
+        root,
+        dates,
+        kind=SoakEvidenceKind.PAPER_REAL_TIME_WINDOWS,
+        started_at=started,
+    )
+    assert manifest.evidence_kind is SoakEvidenceKind.PAPER_REAL_TIME_WINDOWS
+    assert manifest.formal_gate_eligible is False
+    assert json.loads((root / manifest.run_id / "manifest.json").read_bytes())[
+        "evidence_kind"
+    ] == "paper_real_time_windows"
+
+    incomplete = _paper_decision_evidence(manifest, complete=False)
+    monkeypatch.setattr(soak_module, "verify_soak_evidence", lambda **kwargs: incomplete)
+    clock[0] = incomplete.sessions[-1].invocation_completed_at
+    waiting = decide_soak_gate(
+        incomplete,
+        root=root,
+        anchor_root=_anchor_root(root),
+        as_of=clock[0],
+    )
+    assert waiting.status == "WAITING_FOR_SOAK_EVIDENCE"
+    assert "SOAK_WINDOWS_NOT_FORMAL_GATE_ELIGIBLE" in waiting.stable_codes
+
+    complete = _paper_decision_evidence(manifest, complete=True)
+    monkeypatch.setattr(soak_module, "verify_soak_evidence", lambda **kwargs: complete)
+    clock[0] = complete.sessions[-1].invocation_completed_at
+    passed = decide_soak_gate(
+        complete,
+        root=root,
+        anchor_root=_anchor_root(root),
+        as_of=clock[0],
+    )
+    assert passed.status == "PASS_WINDOWS_SCOPE"
+    assert passed.stable_codes == ("SOAK_WINDOWS_NOT_FORMAL_GATE_ELIGIBLE",)
+
+    blocked_evidence = _paper_decision_evidence(
+        manifest, complete=True, blocked=True
+    )
+    monkeypatch.setattr(
+        soak_module, "verify_soak_evidence", lambda **kwargs: blocked_evidence
+    )
+    blocked = decide_soak_gate(
+        blocked_evidence,
+        root=root,
+        anchor_root=_anchor_root(root),
+        as_of=clock[0],
+    )
+    assert blocked.status == "BLOCKED"
+    assert blocked.stable_codes == (
+        "SOAK_SESSION_BLOCKED",
+        "SOAK_WINDOWS_NOT_FORMAL_GATE_ELIGIBLE",
+    )
+
+    forged = replace(passed, status="PASS")
+    values = {
+        field: getattr(forged, field)
+        for field in forged.__dataclass_fields__
+        if field != "decision_id"
+    }
+    forged = replace(
+        forged,
+        decision_id=soak_module._identity(
+            "SoakGateDecision", soak_module._decision_payload_values(values)
+        ),
+    )
+    with pytest.raises(ValueError):
+        soak_module._prove_gate_decision(forged, manifest)
+
+
+def test_windows_manifest_rejects_rehashed_formal_eligibility_forgery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = dt.datetime(2026, 8, 16, 0, tzinfo=UTC)
+    monkeypatch.setattr(soak_module, "_production_utc_now", lambda: now)
+    root = (tmp_path / "windows-eligibility-forgery").resolve()
+    manifest = _manifest(
+        root,
+        (now.date(),),
+        kind=SoakEvidenceKind.PAPER_REAL_TIME_WINDOWS,
+        started_at=now,
+    )
+    forged = replace(manifest, formal_gate_eligible=True)
+    values = {
+        field: getattr(forged, field)
+        for field in forged.__dataclass_fields__
+        if field != "run_id"
+    }
+    forged = replace(
+        forged,
+        run_id=soak_module._identity(
+            "SoakRunManifest", soak_module._manifest_payload_values(values)
+        ),
+    )
+
+    with pytest.raises(ValueError):
+        soak_module._prove_manifest(forged)
+
+
+def test_linux_complete_decision_remains_exact_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = (tmp_path / "linux-formal-complete").resolve()
+    started = dt.datetime(2026, 8, 1, 8, tzinfo=UTC)
+    dates = (dt.date(2026, 8, 2), dt.date(2026, 8, 31))
+    clock = [started]
+    monkeypatch.setattr(soak_module, "_production_utc_now", lambda: clock[0])
+    manifest = _manifest(
+        root,
+        dates,
+        kind=SoakEvidenceKind.PAPER_REAL_TIME,
+        started_at=started,
+    )
+    complete = _paper_decision_evidence(manifest, complete=True)
+    monkeypatch.setattr(soak_module, "verify_soak_evidence", lambda **kwargs: complete)
+    clock[0] = complete.sessions[-1].invocation_completed_at
+
+    decision = decide_soak_gate(
+        complete,
+        root=root,
+        anchor_root=_anchor_root(root),
+        as_of=clock[0],
+    )
+
+    assert manifest.formal_gate_eligible is True
+    assert decision.status == "PASS"
+    assert decision.stable_codes == ()
+
+
 def test_corrupt_or_rehashed_receipt_is_rejected(tmp_path: Path) -> None:
     root = _dev_root(tmp_path, "corrupt")
     date = dt.date(2026, 8, 3)
@@ -617,8 +848,17 @@ def test_recovery_type_is_exact_not_subclass(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "kind",
+    (
+        SoakEvidenceKind.PAPER_REAL_TIME,
+        SoakEvidenceKind.PAPER_REAL_TIME_WINDOWS,
+    ),
+)
 def test_formal_clock_rejects_backdated_single_process_evidence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: SoakEvidenceKind,
 ) -> None:
     now = dt.datetime(2026, 8, 9, 8, tzinfo=UTC)
     monkeypatch.setattr(soak_module, "_production_utc_now", lambda: now)
@@ -628,7 +868,7 @@ def test_formal_clock_rejects_backdated_single_process_evidence(
         _manifest(
             root,
             dates,
-            kind=SoakEvidenceKind.PAPER_REAL_TIME,
+            kind=kind,
             started_at=now - dt.timedelta(days=29),
         )
     assert error.value.__cause__ is None and error.value.__context__ is None
