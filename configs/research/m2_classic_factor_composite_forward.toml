@@ -1,0 +1,37 @@
+[meta]
+config_version = "1.0.0"
+purpose = "Forward-only observation of the frozen M2 classic-factor 510300 risk candidate"
+
+[candidate]
+source_run_id = "4e5cba4577af43c27402e369ca8d2c0d1a6a64cdeb57fb1818cc1c86d662d148"
+hypothesis_id = "m2-classic-equal-rank-510300-vol-target-v1"
+frozen_at = 2026-08-15T00:00:00+08:00
+observation_start = 2026-08-17
+minimum_completed_periods = 3
+
+[signal]
+components = ["alpha158_std20", "alpha158_roc20", "alpha158_rsv20"]
+directions = [-1, 1, -1]
+method = "fixed_direction_equal_weight_cross_sectional_average_rank"
+top_k = 50
+rebalance_every_sessions = 20
+signal_timing = "close"
+execution_timing = "next_session_open"
+
+[risk_control]
+method = "unlevered_benchmark_volatility_target"
+benchmark = "510300.SH"
+lookback_observations = 60
+annualized_volatility = 0.12
+annualization_sessions = 252
+
+[cost]
+multipliers = [0.5, 1.0, 2.0]
+config_relative_path = "configs/research/m3_qlib_example.toml"
+
+[retention]
+minimum_2x_cumulative_return = 0.0
+minimum_2x_max_drawdown = -0.15
+require_zero_cash_period_fraction = true
+formal_backtest_only = true
+paper_candidate_allowed = false

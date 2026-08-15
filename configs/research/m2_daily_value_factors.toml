@@ -1,0 +1,80 @@
+[research]
+hypothesis_id = "m2-daily-basic-value-proxies-v1"
+hypothesis = "Positive daily EP, BP, SP and trailing dividend-yield proxies contain non-redundant cross-sectional information after next-open timing and A-share cost stress."
+strategy_name = "daily_value_factor_top50"
+strategy_version = "v1"
+random_seed = 20260815
+
+[data]
+bar_snapshot_id = "b79a7b5e66dee0ae439c030078414157ca6c1f3b6ce7fbe5e36ff3910c1089d2"
+warmup_start = 2019-01-01
+research_start = 2020-01-01
+research_end = 2026-08-13
+
+[universe]
+freeze_start = 2019-01-01
+freeze_end = 2019-12-31
+top_n = 800
+minimum_observations = 120
+minimum_average_amount = 20000000.0
+
+[factors]
+catalog = "tushare_daily_basic_value_proxy_v1"
+names = [
+  "daily_ep_ttm_positive",
+  "daily_bp_positive",
+  "daily_sp_ttm_positive",
+  "daily_dividend_yield_ttm",
+]
+horizons = [1, 5, 20]
+minimum_history_rows = 120
+minimum_daily_symbols = 100
+groups = 5
+redundancy_reference_names = [
+  "alpha101_033",
+  "alpha101_101",
+  "alpha158_roc20",
+  "alpha158_std20",
+  "alpha158_rsv20",
+  "alpha158_vma20",
+  "log_total_market_value",
+]
+maximum_median_absolute_rank_correlation = 0.80
+
+[portfolio]
+selection_horizon_sessions = 20
+rebalance_every_sessions = 20
+top_k = 50
+initial_cash = 1000000.0
+cost_multipliers = [0.5, 1.0, 2.0]
+cost_config_relative_path = "configs/research/m3_qlib_example.toml"
+
+[admission]
+minimum_mean_test_rank_ic = 0.01
+minimum_positive_test_folds = 2
+require_direction_consistency = true
+require_positive_2x_cost_return = true
+
+[[walk_forward.folds]]
+train_start = 2020-01-01
+train_end = 2020-12-31
+validation_start = 2021-01-01
+validation_end = 2021-12-31
+test_start = 2022-01-01
+test_end = 2022-12-31
+
+[[walk_forward.folds]]
+train_start = 2020-01-01
+train_end = 2022-12-31
+validation_start = 2023-01-01
+validation_end = 2023-12-31
+test_start = 2024-01-01
+test_end = 2024-12-31
+
+[[walk_forward.folds]]
+train_start = 2020-01-01
+train_end = 2024-12-31
+validation_start = 2025-01-01
+validation_end = 2025-12-31
+test_start = 2026-01-01
+test_end = 2026-08-13
