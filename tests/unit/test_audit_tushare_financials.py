@@ -10,6 +10,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+import quant.data.publish_tushare_financials as financial_publication
 from quant.data.audit_tushare_financials import audit_tushare_financials
 from quant.data.financial_pit import select_financial_revisions_as_of
 from quant.data.financial_repository import (
@@ -204,6 +205,7 @@ def _request_id(root: Path, dataset: str) -> str:
 def test_complete_four_table_fixture_is_ready_and_byte_bound(tmp_path: Path) -> None:
     fixture = _build_root(tmp_path)
     result = audit_tushare_financials(**_audit_kwargs(fixture), verify_bytes=True)
+    assert result["schema_version"] == "tushare-financial-raw-audit-v3"
     assert result["status"] == "READY"
     assert result["publication_allowed"] is True
     assert result["raw_closure"]["complete_request_count"] == 4
@@ -220,6 +222,146 @@ def test_complete_four_table_fixture_is_ready_and_byte_bound(tmp_path: Path) -> 
         assert report["quality"]["raw_rows"] == 1
         assert report["quality"]["eligible_rows"] == 1
         assert report["quality"]["quarantined_rows"] == 0
+        if dataset == "fina_indicator":
+            assert report["quality"]["report_type_counts"] == []
+            assert report["quality"]["comp_type_counts"] == []
+            assert report["quality"]["report_type_comp_type_counts"] == []
+        else:
+            assert report["quality"]["report_type_counts"] == [
+                {"value": "1", "rows": 1}
+            ]
+            assert report["quality"]["comp_type_counts"] == [
+                {"value": "1", "rows": 1}
+            ]
+            assert report["quality"]["report_type_comp_type_counts"] == [
+                {"report_type": "1", "comp_type": "1", "rows": 1}
+            ]
+
+
+def test_statement_dimension_counts_are_canonical_and_cross_reconciled(
+    tmp_path: Path,
+) -> None:
+    income = pl.concat(
+        [
+            _frame("income", report_type="1", comp_type="1"),
+            _frame("income", report_type="1", comp_type="1"),
+            _frame("income", report_type="1", comp_type="2"),
+            _frame("income", report_type="2", comp_type="1"),
+        ]
+    )
+    fixture = _build_root(tmp_path, income_frame=income)
+    quality = audit_tushare_financials(**_audit_kwargs(fixture), verify_bytes=True)[
+        "datasets"
+    ]["income"]["quality"]
+    assert quality["invalid_report_type_rows"] == 0
+    assert quality["invalid_comp_type_rows"] == 0
+    assert quality["report_type_counts"] == [
+        {"value": "1", "rows": 3},
+        {"value": "2", "rows": 1},
+    ]
+    assert quality["comp_type_counts"] == [
+        {"value": "1", "rows": 3},
+        {"value": "2", "rows": 1},
+    ]
+    assert quality["report_type_comp_type_counts"] == [
+        {"report_type": "1", "comp_type": "1", "rows": 2},
+        {"report_type": "1", "comp_type": "2", "rows": 1},
+        {"report_type": "2", "comp_type": "1", "rows": 1},
+    ]
+
+
+def test_blank_or_nondigit_statement_dimensions_block_ready(tmp_path: Path) -> None:
+    income = pl.concat(
+        [
+            _frame("income", report_type="", comp_type="1"),
+            _frame("income", report_type="2", comp_type="A"),
+            _frame("income", report_type="3", comp_type="3").with_columns(
+                pl.lit(None, dtype=pl.String).alias("report_type")
+            ),
+            _frame("income", report_type="١", comp_type="4"),
+        ]
+    )
+    fixture = _build_root(tmp_path, income_frame=income)
+    result = audit_tushare_financials(**_audit_kwargs(fixture), verify_bytes=True)
+    quality = result["datasets"]["income"]["quality"]
+    assert result["status"] == "BLOCKED"
+    assert result["publication_allowed"] is False
+    assert quality["invalid_report_type_rows"] == 3
+    assert quality["invalid_comp_type_rows"] == 1
+    assert {item["code"] for item in result["blocking_issues"]} >= {
+        "INCOME_REPORT_TYPE_INVALID",
+        "INCOME_COMP_TYPE_INVALID",
+    }
+
+
+def test_publisher_rejects_dimension_drift_before_snapshot_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    income = pl.concat(
+        [
+            _frame("income", report_type="1", comp_type="1"),
+            _frame("income", report_type="1", comp_type="2"),
+            _frame("income", report_type="2", comp_type="1"),
+        ]
+    )
+    fixture = _build_root(tmp_path, income_frame=income)
+    original = audit_tushare_financials(**_audit_kwargs(fixture), verify_bytes=True)
+    drifts = []
+
+    marginal = json.loads(json.dumps(original))
+    marginal["datasets"]["income"]["quality"]["report_type_counts"][0]["rows"] += 1
+    drifts.append(marginal)
+
+    reordered = json.loads(json.dumps(original))
+    pairs = reordered["datasets"]["income"]["quality"][
+        "report_type_comp_type_counts"
+    ]
+    reordered["datasets"]["income"]["quality"][
+        "report_type_comp_type_counts"
+    ] = list(reversed(pairs))
+    drifts.append(reordered)
+
+    missing_pair = json.loads(json.dumps(original))
+    missing_pair["datasets"]["income"]["quality"][
+        "report_type_comp_type_counts"
+    ].pop()
+    drifts.append(missing_pair)
+
+    zero_count = json.loads(json.dumps(original))
+    zero_count["datasets"]["income"]["quality"][
+        "report_type_comp_type_counts"
+    ][0]["rows"] = 0
+    drifts.append(zero_count)
+
+    unicode_digit = json.loads(json.dumps(original))
+    unicode_digit["datasets"]["income"]["quality"]["report_type_counts"][0][
+        "value"
+    ] = "١"
+    unicode_digit["datasets"]["income"]["quality"][
+        "report_type_comp_type_counts"
+    ][0]["report_type"] = "١"
+    drifts.append(unicode_digit)
+
+    fabricated = json.loads(json.dumps(original))
+    fabricated["datasets"]["fina_indicator"]["quality"]["report_type_counts"] = [
+        {"value": "1", "rows": 1}
+    ]
+    drifts.append(fabricated)
+
+    for drift in drifts:
+        monkeypatch.setattr(
+            financial_publication,
+            "audit_tushare_financials",
+            lambda _audit=drift, **_kwargs: _audit,
+        )
+        with pytest.raises(
+            TushareFinancialPublishError,
+            match="TUSHARE_FINANCIAL_PUBLISH_INVALID",
+        ):
+            financial_publication.publish_tushare_financial_snapshot(
+                **_audit_kwargs(fixture)
+            )
+        assert not (fixture.root / "clean" / "tushare_financials").exists()
 
 
 def test_pending_request_keeps_batch_collecting_and_forbids_publication(
