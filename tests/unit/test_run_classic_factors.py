@@ -8,8 +8,12 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from quant.research.lightweight_run import ResearchFoldV1
 from quant.research.run_classic_factors import (
     _validate_config,
+    apply_market_risk_admission_gates,
+    evaluate_factor_coverage,
+    evaluate_rebalance_schedule_alignment,
     select_frozen_liquid_universe,
     summarize_factors,
 )
@@ -77,6 +81,7 @@ def test_all_classic_factor_batch_configs_are_exactly_frozen() -> None:
         PROJECT_ROOT / "configs/research/m2_classic_daily_factors.toml",
         PROJECT_ROOT / "configs/research/m2_classic_daily_factors_second_batch.toml",
         PROJECT_ROOT / "configs/research/m2_classic_daily_factors_third_batch.toml",
+        PROJECT_ROOT / "configs/research/m2_classic_downside_beta_510300.toml",
     )
     configs = []
     for path in paths:
@@ -94,3 +99,199 @@ def test_all_classic_factor_batch_configs_are_exactly_frozen() -> None:
     changed["factors"]["redundancy_reference_names"].reverse()
     with pytest.raises(ValueError, match="invalid classic-factor config"):
         _validate_config(changed, threads=2)
+
+    for section, key, value in (
+        ("market_risk", "benchmark", "000300.SH"),
+        ("market_risk", "expected_direction", 1),
+        ("coverage", "minimum_rebalance_symbols", 99),
+    ):
+        changed = deepcopy(configs[3])
+        changed[section][key] = value
+        with pytest.raises(ValueError, match="invalid classic-factor config"):
+            _validate_config(changed, threads=2)
+
+
+def test_factor_coverage_and_rebalance_schedule_are_fail_closed() -> None:
+    trade_date = dt.date(2025, 1, 6)
+    rows = [
+        {
+            "symbol": f"{index:06d}.SH",
+            "trade_date": trade_date,
+            "exit_date_20": trade_date,
+            "downside_beta": float(index) if index < 80 else None,
+        }
+        for index in range(100)
+    ]
+    panel = pl.DataFrame(rows)
+    fold = ResearchFoldV1(
+        fold=1,
+        train_start=dt.date(2024, 1, 1),
+        train_end=dt.date(2024, 6, 30),
+        validation_start=dt.date(2024, 7, 1),
+        validation_end=dt.date(2024, 12, 31),
+        test_start=trade_date,
+        test_end=trade_date,
+    )
+    daily, summary = evaluate_factor_coverage(
+        panel,
+        factors=("downside_beta",),
+        start_date=trade_date,
+        end_date=trade_date,
+        folds=(fold,),
+        rebalance_every_sessions=20,
+        minimum_rebalance_symbols=80,
+        minimum_median_coverage=0.80,
+    )
+    assert daily.select("valid_rows", "coverage", "scheduled_rebalance").row(0) == (
+        80,
+        0.8,
+        True,
+    )
+    assert summary.get_column("coverage_passed").item() is True
+
+    changed = panel.with_columns(
+        pl.when(pl.col("symbol") == "000079.SH")
+        .then(None)
+        .otherwise(pl.col("downside_beta"))
+        .alias("downside_beta")
+    )
+    _, failed = evaluate_factor_coverage(
+        changed,
+        factors=("downside_beta",),
+        start_date=trade_date,
+        end_date=trade_date,
+        folds=(fold,),
+        rebalance_every_sessions=20,
+        minimum_rebalance_symbols=80,
+        minimum_median_coverage=0.80,
+    )
+    assert failed.get_column("coverage_passed").item() is False
+
+    targets = pl.DataFrame(
+        {"factor": ["downside_beta"], "fold": [1], "as_of": [trade_date]}
+    )
+    aligned = evaluate_rebalance_schedule_alignment(
+        panel,
+        targets,
+        factors=("downside_beta",),
+        folds=(fold,),
+        rebalance_every_sessions=20,
+    )
+    assert aligned.get_column("schedule_aligned").item() is True
+    shifted = targets.with_columns(
+        pl.lit(trade_date + dt.timedelta(days=1)).alias("as_of")
+    )
+    misaligned = evaluate_rebalance_schedule_alignment(
+        panel,
+        shifted,
+        factors=("downside_beta",),
+        folds=(fold,),
+        rebalance_every_sessions=20,
+    )
+    assert misaligned.select(
+        "missing_rebalance_dates", "unexpected_rebalance_dates", "schedule_aligned"
+    ).row(0) == (1, 1, False)
+    assert misaligned.get_column("missing_dates").to_list() == [[trade_date]]
+    assert misaligned.get_column("unexpected_dates").to_list() == [
+        [trade_date + dt.timedelta(days=1)]
+    ]
+
+
+def test_market_risk_gates_enforce_direction_redundancy_coverage_and_schedule() -> None:
+    summary = pl.DataFrame(
+        {
+            "factor": ["downside_beta"],
+            "mean_test_rank_ic": [0.02],
+            "positive_test_folds": [3],
+            "direction_consistent": [True],
+            "one_x_chained_return": [0.03],
+            "two_x_chained_return": [0.01],
+            "research_status": ["RESEARCH_ONLY"],
+        }
+    )
+    folds = pl.DataFrame(
+        {
+            "factor": ["downside_beta"] * 3,
+            "cost_multiplier": [1.0] * 3,
+            "direction": [-1] * 3,
+        }
+    )
+    redundancy = pl.DataFrame(
+        {
+            "factor_a": ["downside_beta"],
+            "factor_b": ["control"],
+            "median_abs_rank_corr": [0.79],
+        }
+    )
+    coverage = pl.DataFrame(
+        {
+            "factor": ["downside_beta"],
+            "dates": [100],
+            "scheduled_rebalance_dates": [10],
+            "minimum_rebalance_valid_rows": [100],
+            "median_coverage": [0.80],
+            "coverage_passed": [True],
+        }
+    )
+    schedule = pl.DataFrame(
+        {
+            "factor": ["downside_beta"],
+            "fold": [1],
+            "schedule_aligned": [True],
+        }
+    )
+
+    def apply(
+        *,
+        fold_metrics: pl.DataFrame = folds,
+        redundancy_summary: pl.DataFrame = redundancy,
+        coverage_summary: pl.DataFrame = coverage,
+        schedule_alignment: pl.DataFrame = schedule,
+    ) -> pl.DataFrame:
+        return apply_market_risk_admission_gates(
+            summary,
+            fold_metrics=fold_metrics,
+            redundancy_summary=redundancy_summary,
+            coverage_summary=coverage_summary,
+            schedule_alignment=schedule_alignment,
+            expected_direction=-1,
+            maximum_median_absolute_rank_correlation=0.80,
+        )
+
+    assert apply().get_column("research_status").item() == "RESEARCH_ONLY"
+    assert (
+        apply(
+            redundancy_summary=redundancy.with_columns(
+                pl.lit(0.80).alias("median_abs_rank_corr")
+            )
+        )
+        .get_column("research_status")
+        .item()
+        == "REJECTED"
+    )
+    assert (
+        apply(
+            fold_metrics=folds.with_columns(pl.lit(1).alias("direction"))
+        ).get_column("research_status").item()
+        == "REJECTED"
+    )
+    assert (
+        apply(
+            coverage_summary=coverage.with_columns(
+                pl.lit(False).alias("coverage_passed")
+            )
+        )
+        .get_column("research_status")
+        .item()
+        == "REJECTED"
+    )
+    assert (
+        apply(
+            schedule_alignment=schedule.with_columns(
+                pl.lit(False).alias("schedule_aligned")
+            )
+        )
+        .get_column("research_status")
+        .item()
+        == "REJECTED"
+    )

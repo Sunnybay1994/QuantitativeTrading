@@ -17,7 +17,9 @@ from typing import Any, cast
 import polars as pl
 
 from quant.data import (
+    TushareBulkFundBarQuery,
     TushareBulkStockBarQuery,
+    read_tushare_bulk_clean_fund_bars,
     read_tushare_bulk_clean_stock_bars,
 )
 from quant.data.publish_tushare_bulk_clean import verify_tushare_bulk_clean_snapshot
@@ -31,6 +33,12 @@ from quant.factors import (
     compute_classic_daily_factors,
     compute_second_batch_daily_factors,
     compute_third_batch_daily_factors,
+)
+from quant.factors.classic_market_risk import (
+    DOWNSIDE_BETA_FACTOR_NAMES,
+    DOWNSIDE_BETA_FACTOR_SPECS,
+    MARKET_RISK_CONTROL_NAMES,
+    compute_classic_market_risk_factors,
 )
 from quant.research.classic_factor_evaluation import (
     build_diagnostic_factor_targets,
@@ -50,7 +58,7 @@ from quant.research.lightweight_run import (
 from quant.research.m3.contracts import AShareCostPeriod
 from quant.settings import resolve_data_root
 
-_CODE_PATHS = (
+_CODE_PATHS: tuple[str, ...] = (
     "src/quant/data/clean_snapshot_repository.py",
     "src/quant/factors/classic.py",
     "src/quant/factors/classic_second_batch.py",
@@ -59,6 +67,9 @@ _CODE_PATHS = (
     "src/quant/research/factor_labels.py",
     "src/quant/research/lightweight_run.py",
     "src/quant/research/run_classic_factors.py",
+)
+_MARKET_RISK_CODE_PATHS: tuple[str, ...] = _CODE_PATHS + (
+    "src/quant/factors/classic_market_risk.py",
 )
 
 
@@ -117,6 +128,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     sessions = tuple(sorted(set(bars.get_column("trade_date").to_list())))
     factor_names = tuple(cast(list[str], factor_config["names"]))
     first_batch_values = compute_classic_daily_factors(bars)
+    include_fund_input = False
+    code_paths: tuple[str, ...] = _CODE_PATHS
     if factor_names == SECOND_BATCH_FACTOR_NAMES:
         second_batch_values = compute_second_batch_daily_factors(bars)
         factor_values = first_batch_values.join(
@@ -141,6 +154,40 @@ def main(argv: Sequence[str] | None = None) -> int:
             validate="1:1",
         )
         factor_specs = THIRD_BATCH_FACTOR_SPECS
+    elif factor_names == DOWNSIDE_BETA_FACTOR_NAMES:
+        market_risk = cast(Mapping[str, Any], config["market_risk"])
+        benchmark_symbol = cast(str, market_risk["benchmark"])
+        benchmark_bars = read_tushare_bulk_clean_fund_bars(
+            data_root=data_root,
+            query=TushareBulkFundBarQuery(
+                snapshot_id=snapshot_id,
+                start_date=cast(dt.date, data["warmup_start"]),
+                end_date=cast(dt.date, data["research_end"]),
+                symbols=(benchmark_symbol,),
+                threads=args.threads,
+            ),
+        )
+        market_risk_values = compute_classic_market_risk_factors(
+            bars,
+            benchmark_bars,
+            sessions=sessions,
+            benchmark_symbol=benchmark_symbol,
+            window_sessions=cast(int, market_risk["window_sessions"]),
+            minimum_down_market_observations=cast(
+                int, market_risk["minimum_down_market_observations"]
+            ),
+            annualization_sessions=cast(int, market_risk["annualization_sessions"]),
+            minimum_market_variance=float(market_risk["minimum_market_variance"]),
+        )
+        factor_values = first_batch_values.join(
+            market_risk_values,
+            on=["symbol", "trade_date"],
+            how="left",
+            validate="1:1",
+        )
+        factor_specs = DOWNSIDE_BETA_FACTOR_SPECS
+        include_fund_input = True
+        code_paths = _MARKET_RISK_CODE_PATHS
     else:
         factor_values = first_batch_values
         factor_specs = CLASSIC_FACTOR_SPECS
@@ -206,6 +253,48 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         results["redundancy_daily"] = redundancy_daily
         results["redundancy_summary"] = redundancy_summary
+    if factor_names == DOWNSIDE_BETA_FACTOR_NAMES:
+        coverage_config = cast(Mapping[str, Any], config["coverage"])
+        market_risk_config = cast(Mapping[str, Any], config["market_risk"])
+        coverage_daily, coverage_summary = evaluate_factor_coverage(
+            panel,
+            factors=factor_names,
+            start_date=cast(dt.date, data["research_start"]),
+            end_date=cast(dt.date, data["research_end"]),
+            folds=folds,
+            rebalance_every_sessions=cast(
+                int, portfolio_config["rebalance_every_sessions"]
+            ),
+            minimum_rebalance_symbols=cast(
+                int, coverage_config["minimum_rebalance_symbols"]
+            ),
+            minimum_median_coverage=float(
+                coverage_config["minimum_median_coverage"]
+            ),
+        )
+        schedule_alignment = evaluate_rebalance_schedule_alignment(
+            panel,
+            cast(pl.DataFrame, results["targets"]),
+            factors=factor_names,
+            folds=folds,
+            rebalance_every_sessions=cast(
+                int, portfolio_config["rebalance_every_sessions"]
+            ),
+        )
+        summary = apply_market_risk_admission_gates(
+            summary,
+            fold_metrics=cast(pl.DataFrame, results["fold_metrics"]),
+            redundancy_summary=cast(pl.DataFrame, results["redundancy_summary"]),
+            coverage_summary=coverage_summary,
+            schedule_alignment=schedule_alignment,
+            expected_direction=cast(int, market_risk_config["expected_direction"]),
+            maximum_median_absolute_rank_correlation=float(
+                factor_config["maximum_median_absolute_rank_correlation"]
+            ),
+        )
+        results["factor_coverage_daily"] = coverage_daily
+        results["factor_coverage_summary"] = coverage_summary
+        results["rebalance_schedule_alignment"] = schedule_alignment
     passing = summary.filter(pl.col("research_status") == "RESEARCH_ONLY")
     conclusion = "RESEARCH_ONLY" if passing.height else "REJECTED"
     report = _report(
@@ -245,6 +334,58 @@ def main(argv: Sequence[str] | None = None) -> int:
         outputs["redundancy_summary.parquet"] = _parquet(
             cast(pl.DataFrame, results["redundancy_summary"])
         )
+    if "factor_coverage_daily" in results:
+        outputs["factor_coverage_daily.parquet"] = _parquet(
+            cast(pl.DataFrame, results["factor_coverage_daily"])
+        )
+        outputs["factor_coverage_summary.parquet"] = _parquet(
+            cast(pl.DataFrame, results["factor_coverage_summary"])
+        )
+        outputs["rebalance_schedule_alignment.parquet"] = _parquet(
+            cast(pl.DataFrame, results["rebalance_schedule_alignment"])
+        )
+    input_digests: tuple[ResearchInputDigestV1, ...] = (
+        ResearchInputDigestV1(
+            name="tushare-stock-bars",
+            rows=snapshot.stock_rows,
+            min_date=cast(dt.date, data["warmup_start"]),
+            max_date=cast(dt.date, data["research_end"]),
+            content_sha256=snapshot.manifest_sha256,
+        ),
+    )
+    if include_fund_input:
+        input_digests = (
+            ResearchInputDigestV1(
+                name="tushare-fund-bars",
+                rows=snapshot.fund_rows,
+                min_date=cast(dt.date, data["warmup_start"]),
+                max_date=cast(dt.date, data["research_end"]),
+                content_sha256=snapshot.manifest_sha256,
+            ),
+            *input_digests,
+        )
+    aggregate_metrics: list[tuple[str, float | int]] = [
+        (
+            "best_mean_test_rank_ic",
+            cast(float, summary.get_column("mean_test_rank_ic").max()),
+        ),
+        ("candidate_symbols", len(candidates)),
+        ("factor_count", len(factor_names)),
+        ("passing_factor_count", passing.height),
+        (
+            "redundancy_eligible_count",
+            cast(int, summary.get_column("combination_eligible").sum())
+            if "combination_eligible" in summary.columns
+            else 0,
+        ),
+    ]
+    if "coverage_passed" in summary.columns:
+        aggregate_metrics.append(
+            (
+                "coverage_eligible_count",
+                cast(int, summary.get_column("coverage_passed").sum()),
+            )
+        )
     run = LightweightResearchRunV1(
         schema_version="lightweight-research-run-v1",
         run_id="",
@@ -256,7 +397,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         random_seed=cast(int, config["research"]["random_seed"]),
         config_relative_path=config_path.relative_to(project_root).as_posix(),
         config_sha256=hashlib.sha256(config_payload).hexdigest(),
-        code_sha256=compute_code_sha256(project_root=project_root, relative_paths=_CODE_PATHS),
+        code_sha256=compute_code_sha256(
+            project_root=project_root, relative_paths=code_paths
+        ),
         universe_name="tushare-2019-liquid-top800",
         universe_frozen_as_of=cast(dt.date, universe_config["freeze_end"]),
         candidate_symbols=candidates,
@@ -268,34 +411,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         folds=folds,
         cost_multipliers=tuple(float(value) for value in portfolio_config["cost_multipliers"]),
         selection_metric="walk_forward_rank_ic",
-        inputs=(
-            ResearchInputDigestV1(
-                name="tushare-stock-bars",
-                rows=snapshot.stock_rows,
-                min_date=cast(dt.date, data["warmup_start"]),
-                max_date=cast(dt.date, data["research_end"]),
-                content_sha256=snapshot.manifest_sha256,
-            ),
-        ),
+        inputs=input_digests,
         outputs=(),
-        aggregate_metrics=(
-            (
-                "best_mean_test_rank_ic",
-                cast(float, summary.get_column("mean_test_rank_ic").max()),
-            ),
-            ("candidate_symbols", len(candidates)),
-            ("factor_count", len(factor_names)),
-            ("passing_factor_count", passing.height),
-            (
-                "redundancy_eligible_count",
-                cast(
-                    int,
-                    summary.get_column("combination_eligible").sum(),
-                )
-                if "combination_eligible" in summary.columns
-                else 0,
-            ),
-        ),
+        aggregate_metrics=tuple(sorted(aggregate_metrics)),
         caveats=tuple(cast(list[str], report["caveats"])),
     )
     root, complete, reused = publish_lightweight_research_run(
@@ -549,6 +667,280 @@ def summarize_factors(
     return pl.DataFrame(rows).sort("factor")
 
 
+def evaluate_factor_coverage(
+    panel: pl.DataFrame,
+    *,
+    factors: tuple[str, ...],
+    start_date: dt.date,
+    end_date: dt.date,
+    folds: tuple[ResearchFoldV1, ...],
+    rebalance_every_sessions: int,
+    minimum_rebalance_symbols: int,
+    minimum_median_coverage: float,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Measure all-date and pre-registered rebalance-date factor coverage."""
+    if (
+        not isinstance(panel, pl.DataFrame)
+        or panel.is_empty()
+        or type(factors) is not tuple
+        or not factors
+        or any(type(name) is not str or name not in panel.columns for name in factors)
+        or type(start_date) is not dt.date
+        or type(end_date) is not dt.date
+        or end_date < start_date
+        or type(folds) is not tuple
+        or not folds
+        or any(type(fold) is not ResearchFoldV1 for fold in folds)
+        or type(rebalance_every_sessions) is not int
+        or rebalance_every_sessions <= 0
+        or type(minimum_rebalance_symbols) is not int
+        or minimum_rebalance_symbols < 2
+        or type(minimum_median_coverage) is not float
+        or not math.isfinite(minimum_median_coverage)
+        or not 0 < minimum_median_coverage <= 1
+        or "exit_date_20" not in panel.columns
+    ):
+        raise ValueError("invalid factor coverage request")
+    research = panel.filter(
+        pl.col("trade_date").is_between(start_date, end_date, closed="both")
+    )
+    if research.is_empty():
+        raise ValueError("factor coverage research window is empty")
+    scheduled_dates = tuple(
+        date
+        for fold in folds
+        for date in _scheduled_rebalance_dates(
+            research,
+            fold=fold,
+            rebalance_every_sessions=rebalance_every_sessions,
+        )
+    )
+    daily_frames: list[pl.DataFrame] = []
+    summary_rows: list[dict[str, object]] = []
+    for factor in factors:
+        valid = pl.col(factor).is_not_null() & pl.col(factor).is_finite()
+        daily = (
+            research.group_by("trade_date")
+            .agg(
+                pl.len().alias("eligible_rows"),
+                valid.fill_null(False).sum().alias("valid_rows"),
+            )
+            .with_columns(
+                (pl.col("valid_rows") / pl.col("eligible_rows")).alias("coverage"),
+                pl.lit(factor).alias("factor"),
+                pl.col("trade_date")
+                .is_in(scheduled_dates)
+                .alias("scheduled_rebalance"),
+            )
+            .select(
+                "factor",
+                "trade_date",
+                "eligible_rows",
+                "valid_rows",
+                "coverage",
+                "scheduled_rebalance",
+            )
+            .sort("factor", "trade_date")
+        )
+        scheduled = daily.filter(pl.col("scheduled_rebalance"))
+        minimum_valid_rows = (
+            cast(int, scheduled.get_column("valid_rows").min())
+            if not scheduled.is_empty()
+            else 0
+        )
+        median_coverage = cast(float, daily.get_column("coverage").median())
+        summary_rows.append(
+            {
+                "factor": factor,
+                "dates": daily.height,
+                "scheduled_rebalance_dates": len(scheduled_dates),
+                "minimum_rebalance_valid_rows": minimum_valid_rows,
+                "median_coverage": median_coverage,
+                "coverage_passed": minimum_valid_rows >= minimum_rebalance_symbols
+                and median_coverage >= minimum_median_coverage,
+            }
+        )
+        daily_frames.append(daily)
+    return (
+        pl.concat(daily_frames).sort("factor", "trade_date"),
+        pl.DataFrame(summary_rows).sort("factor"),
+    )
+
+
+def evaluate_rebalance_schedule_alignment(
+    panel: pl.DataFrame,
+    targets: pl.DataFrame,
+    *,
+    factors: tuple[str, ...],
+    folds: tuple[ResearchFoldV1, ...],
+    rebalance_every_sessions: int,
+) -> pl.DataFrame:
+    """Compare emitted target dates with the factor-independent frozen schedule."""
+    if (
+        not isinstance(panel, pl.DataFrame)
+        or panel.is_empty()
+        or "trade_date" not in panel.columns
+        or "exit_date_20" not in panel.columns
+        or not isinstance(targets, pl.DataFrame)
+        or targets.is_empty()
+        or not {"as_of", "factor", "fold"}.issubset(targets.columns)
+        or type(factors) is not tuple
+        or not factors
+        or any(type(name) is not str for name in factors)
+        or type(folds) is not tuple
+        or not folds
+        or any(type(fold) is not ResearchFoldV1 for fold in folds)
+        or type(rebalance_every_sessions) is not int
+        or rebalance_every_sessions <= 0
+    ):
+        raise ValueError("invalid rebalance schedule alignment request")
+    rows: list[dict[str, object]] = []
+    for factor in factors:
+        for fold in folds:
+            expected = _scheduled_rebalance_dates(
+                panel,
+                fold=fold,
+                rebalance_every_sessions=rebalance_every_sessions,
+            )
+            actual = tuple(
+                targets.filter(
+                    (pl.col("factor") == factor) & (pl.col("fold") == fold.fold)
+                )
+                .get_column("as_of")
+                .unique()
+                .sort()
+                .to_list()
+            )
+            expected_set = set(expected)
+            actual_set = set(actual)
+            missing_dates = tuple(sorted(expected_set - actual_set))
+            unexpected_dates = tuple(sorted(actual_set - expected_set))
+            rows.append(
+                {
+                    "factor": factor,
+                    "fold": fold.fold,
+                    "expected_rebalance_dates": len(expected),
+                    "actual_rebalance_dates": len(actual),
+                    "missing_rebalance_dates": len(missing_dates),
+                    "unexpected_rebalance_dates": len(unexpected_dates),
+                    "missing_dates": missing_dates,
+                    "unexpected_dates": unexpected_dates,
+                    "schedule_aligned": actual == expected,
+                }
+            )
+    return pl.DataFrame(rows).sort("factor", "fold")
+
+
+def apply_market_risk_admission_gates(
+    summary: pl.DataFrame,
+    *,
+    fold_metrics: pl.DataFrame,
+    redundancy_summary: pl.DataFrame,
+    coverage_summary: pl.DataFrame,
+    schedule_alignment: pl.DataFrame,
+    expected_direction: int,
+    maximum_median_absolute_rank_correlation: float,
+) -> pl.DataFrame:
+    """Apply expected-direction, coverage, and redundancy gates to market risk."""
+    if (
+        not isinstance(summary, pl.DataFrame)
+        or summary.is_empty()
+        or not isinstance(fold_metrics, pl.DataFrame)
+        or fold_metrics.is_empty()
+        or not isinstance(redundancy_summary, pl.DataFrame)
+        or redundancy_summary.is_empty()
+        or not isinstance(coverage_summary, pl.DataFrame)
+        or coverage_summary.is_empty()
+        or not isinstance(schedule_alignment, pl.DataFrame)
+        or schedule_alignment.is_empty()
+        or expected_direction not in {-1, 1}
+        or type(maximum_median_absolute_rank_correlation) is not float
+        or not 0 < maximum_median_absolute_rank_correlation < 1
+    ):
+        raise ValueError("invalid market-risk admission gate request")
+    directions = (
+        fold_metrics.filter(pl.col("cost_multiplier") == 1.0)
+        .group_by("factor")
+        .agg(
+            pl.col("direction").n_unique().alias("observed_direction_count"),
+            pl.col("direction").first().alias("observed_direction"),
+        )
+    )
+    redundancy = redundancy_summary.group_by("factor_a").agg(
+        pl.col("median_abs_rank_corr").max().alias("max_median_abs_rank_corr")
+    )
+    schedule = schedule_alignment.group_by("factor").agg(
+        pl.col("schedule_aligned").all().alias("schedule_alignment_passed")
+    )
+    drop_columns = [
+        column
+        for column in ("max_median_abs_rank_corr", "combination_eligible")
+        if column in summary.columns
+    ]
+    summary_base = summary.drop(drop_columns) if drop_columns else summary
+    joined = (
+        summary_base
+        .join(directions, on="factor", how="left", validate="1:1")
+        .join(
+            redundancy,
+            left_on="factor",
+            right_on="factor_a",
+            how="left",
+            validate="1:1",
+        )
+        .join(coverage_summary, on="factor", how="left", validate="1:1")
+        .join(schedule, on="factor", how="left", validate="1:1")
+        .with_columns(
+            pl.lit(expected_direction).alias("expected_direction"),
+            (
+                (pl.col("observed_direction_count") == 1)
+                & (pl.col("observed_direction") == expected_direction)
+            ).alias("expected_direction_passed"),
+            (
+                pl.col("max_median_abs_rank_corr").is_not_null()
+                & (
+                    pl.col("max_median_abs_rank_corr")
+                    < maximum_median_absolute_rank_correlation
+                )
+            ).alias("redundancy_passed"),
+        )
+        .with_columns(pl.col("redundancy_passed").alias("combination_eligible"))
+        .with_columns(
+            pl.when(
+                (pl.col("research_status") == "RESEARCH_ONLY")
+                & pl.col("expected_direction_passed")
+                & pl.col("redundancy_passed")
+                & pl.col("coverage_passed")
+                & pl.col("schedule_alignment_passed")
+            )
+            .then(pl.lit("RESEARCH_ONLY"))
+            .otherwise(pl.lit("REJECTED"))
+            .alias("research_status")
+        )
+    )
+    return joined.sort("factor")
+
+
+def _scheduled_rebalance_dates(
+    panel: pl.DataFrame,
+    *,
+    fold: ResearchFoldV1,
+    rebalance_every_sessions: int,
+) -> tuple[dt.date, ...]:
+    return tuple(
+        panel.filter(
+            pl.col("trade_date").is_between(
+                fold.test_start, fold.test_end, closed="both"
+            )
+            & (pl.col("exit_date_20") <= fold.test_end)
+        )
+        .get_column("trade_date")
+        .unique()
+        .sort()
+        .to_list()[::rebalance_every_sessions]
+    )
+
+
 def _with_evaluation_identity(
     frame: pl.DataFrame,
     *,
@@ -593,6 +985,8 @@ def _cost_periods(project_root: Path, portfolio: Mapping[str, Any]) -> tuple[ASh
 
 def _validate_config(config: Mapping[str, Any], *, threads: int) -> None:
     factor_config = cast(Mapping[str, Any], config["factors"])
+    market_risk = cast(Mapping[str, Any], config.get("market_risk", {}))
+    coverage = cast(Mapping[str, Any], config.get("coverage", {}))
     names = tuple(cast(list[str], factor_config["names"]))
     first_batch = names == CLASSIC_FACTOR_NAMES and "catalog" not in factor_config
     second_batch = (
@@ -609,8 +1003,23 @@ def _validate_config(config: Mapping[str, Any], *, threads: int) -> None:
         == CLASSIC_FACTOR_NAMES + SECOND_BATCH_FACTOR_NAMES
         and float(factor_config["maximum_median_absolute_rank_correlation"]) == 0.80
     )
+    downside_beta = (
+        names == DOWNSIDE_BETA_FACTOR_NAMES
+        and factor_config.get("catalog") == "downside_beta_60_vs_510300_v1"
+        and tuple(cast(list[str], factor_config["redundancy_reference_names"]))
+        == CLASSIC_FACTOR_NAMES + MARKET_RISK_CONTROL_NAMES
+        and float(factor_config["maximum_median_absolute_rank_correlation"]) == 0.80
+        and market_risk.get("benchmark") == "510300.SH"
+        and market_risk.get("window_sessions") == 60
+        and market_risk.get("minimum_down_market_observations") == 15
+        and market_risk.get("annualization_sessions") == 252
+        and float(market_risk.get("minimum_market_variance", 0.0)) == 1e-12
+        and market_risk.get("expected_direction") == -1
+        and coverage.get("minimum_rebalance_symbols") == 100
+        and float(coverage.get("minimum_median_coverage", 0.0)) == 0.80
+    )
     if (
-        not (first_batch or second_batch or third_batch)
+        not (first_batch or second_batch or third_batch or downside_beta)
         or tuple(cast(list[int], config["factors"]["horizons"])) != (1, 5, 20)
         or tuple(float(value) for value in config["portfolio"]["cost_multipliers"])
         != (0.5, 1.0, 2.0)
@@ -632,6 +1041,31 @@ def _report(
     summary: pl.DataFrame,
     conclusion: str,
 ) -> dict[str, object]:
+    caveats = [
+        "The 2019 liquid universe is PIT at its freeze date but is not an "
+        "evolving historical constituent universe.",
+        "Historical ST flags, industry membership and authoritative suspension "
+        "facts are unavailable in this snapshot.",
+        "Missing exact next-session opens produce null labels and are never forward-filled.",
+        "The non-overlapping 20-session portfolio is a factor diagnostic, not "
+        "the formal A-share account replay.",
+        "Minimum commission uses one million CNY; order-book impact and capacity "
+        "are not estimated.",
+        "Minute, L2 and fundamental factors are not approximated with daily bars.",
+        "No result from this run may exceed RESEARCH_ONLY without separate forward "
+        "and market-event admission evidence.",
+    ]
+    if "market_risk" in config:
+        caveats.extend(
+            [
+                "The registered negative direction is a defensive low-beta/BAB-style "
+                "hypothesis, not a claim that the classic downside-risk premium "
+                "predicts a negative return relation.",
+                "Downside-beta evidence is mixed in the literature; direction, "
+                "coverage, redundancy and exact rebalance-schedule gates are "
+                "therefore fail-closed.",
+            ]
+        )
     return {
         "schema_version": "m2-classic-factor-report-v1",
         "conclusion": conclusion,
@@ -646,20 +1080,23 @@ def _report(
         "redundancy_summary": (
             results["redundancy_summary"].to_dicts() if "redundancy_summary" in results else []
         ),
+        "factor_coverage_summary": (
+            results["factor_coverage_summary"].to_dicts()
+            if "factor_coverage_summary" in results
+            else []
+        ),
+        "rebalance_schedule_alignment": (
+            results["rebalance_schedule_alignment"].to_dicts()
+            if "rebalance_schedule_alignment" in results
+            else []
+        ),
+        "market_risk": config.get("market_risk", {}),
         "timing": {
             "signal": "close of as_of session",
             "execution": "next exchange session open",
             "label": "adjusted open(t+1+h)/adjusted open(t+1)-1",
         },
-        "caveats": [
-            "The 2019 liquid universe is PIT at its freeze date but is not an evolving historical constituent universe.",
-            "Historical ST flags, industry membership and authoritative suspension facts are unavailable in this snapshot.",
-            "Missing exact next-session opens produce null labels and are never forward-filled.",
-            "The non-overlapping 20-session portfolio is a factor diagnostic, not the formal A-share account replay.",
-            "Minimum commission uses one million CNY; order-book impact and capacity are not estimated.",
-            "Minute, L2 and fundamental factors are not approximated with daily bars.",
-            "No result from this run may exceed RESEARCH_ONLY without separate forward and market-event admission evidence.",
-        ],
+        "caveats": caveats,
     }
 
 
