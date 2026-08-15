@@ -1,6 +1,6 @@
 # M1 HK60 R1 Verified Mixed-Source Available-History Gate 任务单
 
-状态：**R3 返工合同已冻结；R2 独立初验 FAIL，允许全新外部实现会话按 §15 最小返工。** R2 已关闭 mapping 外 bar 补足 missing；calendar parquet 与 DuckDB bar IO 的实际异常图仍保留底层 `__context__`。真实双 Route Gate 必须等待 R3 独立复验与主验通过，以及包含最新 exact no-trade 集合的 HK60 v2c 8/8、唯一 `--finalize-v3` 与 fresh bundle 验真完成。
+状态：**R3 实现与 Windows 定向自测完成；待全新外部独立复验。** R2 已关闭 mapping 外 bar 补足 missing；R3 已把 calendar parquet 与 DuckDB bar IO 的实际异常图改为离开 active `except` 后再抛稳定 `BarWindowQueryError`。真实双 Route Gate 必须等待 R3 独立复验与主验通过，以及包含最新 exact no-trade 集合的 HK60 v2c 8/8、唯一 `--finalize-v3` 与 fresh bundle 验真完成。
 
 日期：2026-08-15（Asia/Shanghai）  
 平台边界：Windows 工程闭环；不声明 Linux/ext4 Gate。  

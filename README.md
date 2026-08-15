@@ -401,6 +401,19 @@ N 个精确开市日；官方为 OTHER/缺失时才回退 Instrument 分类。�
 所以 Instrument 的当前 `SUSPENDED` 状态不会自动豁免缺失日。该参数不改变 `--require-full-window` 的原语义；
 两者同时指定时必须同时通过。
 
+港股通 HK60 mixed-source 查询与 `--source` 互斥，改用 `--from-verified-hk-availability`，并显式区分两个时点：`--as-of` 是市场查询日/窗口终点，必须 exact 等于 v2 plan 的 `as_of`；`--verification-as-of` 是操作员冻结的 aware UTC 发布验真 cutoff，直接传给 `load_verified_hk_bar_bundle` 与第二次 `verify_hk_bar_bundle`，不得从查询日或 wall clock 推断。该路径只从 fresh `VerifiedHkBarBundle.availability` 派生唯一 `(symbol, trade_date) → source`，并用 plan 内嵌 no-trade evidence 做 available-history；不读取 `evidence.json`，失败不写 `--output`。
+
+```bash
+python -m quant.data.query_universe \
+  --universe SH_CONNECT --as-of 2026-07-10 \
+  --from-verified-hk-availability \
+  --plan <v2b-plan> --journal-root <v2b-journal> \
+  --verification-as-of 2026-08-16T00:00:00+00:00 \
+  --observations 60 --data-root data \
+  --require-available-history \
+  --output artifacts/queries/sh_connect_2026-07-10_verified.parquet
+```
+
 成员区间用于确定 `as_of` 时点的证券集合；为了计算滚动特征，返回的历史行情
 可以早于成员的 `effective_from`。回测中每个交易日是否仍具备买入资格必须由
 回测层按当日成员状态另行检查，不能把本查询结果直接当成持续可交易证明。

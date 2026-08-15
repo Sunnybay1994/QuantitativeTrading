@@ -3,18 +3,26 @@
 from __future__ import annotations
 
 import datetime as dt
+import inspect
+import pickle
 from pathlib import Path
+from types import SimpleNamespace
 
 import polars as pl
 import pytest
 
 from quant.data.eligibility import EligibilityHistoryError
+from quant.data.hk_history_backfill import HKHistoryBackfillError, VerifiedHkBarBundle
 from quant.data.query import (
     AuditedBarWindow,
+    AuditedMixedSourceBarWindow,
     BarQuery,
     BarWindowCoverage,
     BarWindowQueryError,
+    MixedSourceBarWindowCoverage,
+    VERIFIED_HK_AVAILABILITY_SOURCE,
 )
+from tests.support.hk_history_v3 import AS_OF, publish_minimal_v3
 
 
 def _membership(
@@ -113,12 +121,10 @@ def test_coverage_short_missing_and_legacy_compat(tmp_path: Path) -> None:
         "00700.HK",
     }
     assert legacy.height == audited.frame.height
-    assert legacy.select(sorted(legacy.columns)).sort(
-        ["symbol", "trade_date"]
-    ).equals(
-        audited.frame.select(sorted(audited.frame.columns)).sort(
-            ["symbol", "trade_date"]
-        )
+    assert (
+        legacy.select(sorted(legacy.columns))
+        .sort(["symbol", "trade_date"])
+        .equals(audited.frame.select(sorted(audited.frame.columns)).sort(["symbol", "trade_date"]))
     )
 
 
@@ -687,6 +693,246 @@ def test_audited_bar_window_accepts_empty_and_all_missing_bindings() -> None:
         )
     )
     assert AuditedBarWindow(frame=pl.DataFrame(), coverage=empty).frame.height == 0
-    assert (
-        AuditedBarWindow(frame=pl.DataFrame(), coverage=all_missing).frame.height == 0
+    assert AuditedBarWindow(frame=pl.DataFrame(), coverage=all_missing).frame.height == 0
+
+
+def _mixed_membership(path: Path, symbols: list[str]) -> Path:
+    return _membership(
+        path,
+        [("SH_CONNECT", symbol, dt.date(2026, 1, 1), None) for symbol in symbols],
     )
+
+
+def _append_clean_bar(
+    clean_root: Path,
+    *,
+    symbol: str,
+    trade_date: dt.date,
+    source: str,
+    close: float = 1.0,
+) -> None:
+    target = clean_root / f"date={trade_date.isoformat()}" / "data.parquet"
+    extra = pl.DataFrame(
+        {
+            "symbol": [symbol],
+            "trade_date": [trade_date],
+            "open": [close],
+            "high": [close],
+            "low": [close],
+            "close": [close],
+            "volume": [1.0],
+            "amount": [1.0],
+            "adj_factor": [1.0],
+            "source": [source],
+        }
+    )
+    if target.exists():
+        extra = pl.concat([pl.read_parquet(target), extra], how="vertical_relaxed")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    extra.write_parquet(target)
+
+
+def test_mixed_source_coverage_requires_verified_token_and_sorted_counts() -> None:
+    coverage = MixedSourceBarWindowCoverage(
+        universe="SH_CONNECT",
+        as_of=AS_OF,
+        source=VERIFIED_HK_AVAILABILITY_SOURCE,
+        requested_observations=1,
+        eligible_symbol_count=1,
+        returned_symbol_count=1,
+        missing_symbols=(),
+        short_symbol_counts=(),
+        min_observations=1,
+        max_observations=1,
+        plan_sha256="a" * 64,
+        publication_sha256="b" * 64,
+        availability_content_sha256="c" * 64,
+        source_row_counts=(("hkex", 1),),
+    )
+    assert coverage.is_full_window is True
+    with pytest.raises(BarWindowQueryError, match="BAR_WINDOW_INPUT_INVALID"):
+        MixedSourceBarWindowCoverage(
+            universe="SH_CONNECT",
+            as_of=AS_OF,
+            source="tushare",
+            requested_observations=1,
+            eligible_symbol_count=1,
+            returned_symbol_count=1,
+            missing_symbols=(),
+            short_symbol_counts=(),
+            min_observations=1,
+            max_observations=1,
+            plan_sha256="a" * 64,
+            publication_sha256="b" * 64,
+            availability_content_sha256="c" * 64,
+            source_row_counts=(("hkex", 1),),
+        )
+
+
+def test_mixed_query_uses_verified_mapping_and_rejects_forged_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = publish_minimal_v3(tmp_path, monkeypatch)
+    membership = _mixed_membership(
+        tmp_path / "membership.parquet",
+        ["00001.HK", "00002.HK", "02983.HK"],
+    )
+    query = BarQuery(fixture.clean_root)
+    audited = query.recent_for_universe_mixed_audited(
+        membership_path=membership,
+        universe="SH_CONNECT",
+        as_of=AS_OF,
+        observations=1,
+        bundle=fixture.bundle,
+        plan=fixture.plan,
+    )
+    assert isinstance(audited, AuditedMixedSourceBarWindow)
+    assert audited.coverage.source == VERIFIED_HK_AVAILABILITY_SOURCE
+    assert audited.coverage.plan_sha256 == fixture.plan.plan_sha256
+    assert audited.coverage.publication_sha256 == fixture.bundle.publication_sha256
+    sources = dict(audited.coverage.source_row_counts)
+    assert sources["hkex"] == 1
+    assert sources["tushare"] == 2
+    assert "02983.HK" in audited.frame.get_column("symbol").to_list()
+    hkex_rows = audited.frame.filter(
+        (pl.col("symbol") == "02983.HK") & (pl.col("source") == "hkex")
+    )
+    assert hkex_rows.height == 1
+    with pytest.raises(HKHistoryBackfillError, match="^HK_BAR_VERIFY_FAILED$"):
+        query.recent_for_universe_mixed_audited(
+            membership_path=membership,
+            universe="SH_CONNECT",
+            as_of=AS_OF,
+            observations=1,
+            bundle=SimpleNamespace(),  # type: ignore[arg-type]
+            plan=fixture.plan,
+        )
+    with pytest.raises(HKHistoryBackfillError, match="^HK_BAR_VERIFY_FAILED$"):
+        VerifiedHkBarBundle()
+    with pytest.raises(TypeError):
+        pickle.dumps(fixture.bundle)
+    with pytest.raises(TypeError, match="final"):
+
+        class ForgedBundle(VerifiedHkBarBundle):
+            pass
+
+
+def test_mixed_query_does_not_fill_from_unmapped_earlier_bars(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = publish_minimal_v3(tmp_path, monkeypatch)
+    membership = _mixed_membership(tmp_path / "membership.parquet", ["00001.HK"])
+    _append_clean_bar(
+        fixture.clean_root,
+        symbol="00001.HK",
+        trade_date=dt.date(2026, 7, 8),
+        source="tushare",
+    )
+    _append_clean_bar(
+        fixture.clean_root,
+        symbol="00001.HK",
+        trade_date=dt.date(2026, 7, 9),
+        source="tushare",
+    )
+    audited = BarQuery(fixture.clean_root).recent_for_universe_mixed_audited(
+        membership_path=membership,
+        universe="SH_CONNECT",
+        as_of=AS_OF,
+        observations=3,
+        bundle=fixture.bundle,
+        plan=fixture.plan,
+    )
+    dates = audited.frame.get_column("trade_date").to_list()
+    assert dates == [AS_OF]
+    assert audited.coverage.short_symbol_counts == (("00001.HK", 1),)
+
+
+def test_mixed_query_duplicate_and_wrong_source_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = publish_minimal_v3(tmp_path, monkeypatch)
+    membership = _mixed_membership(tmp_path / "membership.parquet", ["02983.HK"])
+    query = BarQuery(fixture.clean_root)
+    _append_clean_bar(
+        fixture.clean_root,
+        symbol="02983.HK",
+        trade_date=AS_OF,
+        source="tushare",
+        close=16.0,
+    )
+    with pytest.raises(BarWindowQueryError, match="BAR_WINDOW_DUPLICATE_KEY"):
+        query.recent_for_universe_mixed_audited(
+            membership_path=membership,
+            universe="SH_CONNECT",
+            as_of=AS_OF,
+            observations=1,
+            bundle=fixture.bundle,
+            plan=fixture.plan,
+        )
+
+    fixture_b = publish_minimal_v3(tmp_path / "wrong-source", monkeypatch)
+    target = fixture_b.clean_root / f"date={AS_OF.isoformat()}" / "data.parquet"
+    frame = pl.read_parquet(target)
+    replaced = frame.with_columns(
+        pl.when(pl.col("symbol") == "02983.HK")
+        .then(pl.lit("tushare"))
+        .otherwise(pl.col("source"))
+        .alias("source")
+    )
+    replaced.write_parquet(target)
+    with pytest.raises(BarWindowQueryError, match="BAR_WINDOW_REFERENCE_INVALID"):
+        BarQuery(fixture_b.clean_root).recent_for_universe_mixed_audited(
+            membership_path=_mixed_membership(
+                tmp_path / "wrong-source" / "membership.parquet", ["02983.HK"]
+            ),
+            universe="SH_CONNECT",
+            as_of=AS_OF,
+            observations=1,
+            bundle=fixture_b.bundle,
+            plan=fixture_b.plan,
+        )
+
+
+def test_mixed_query_missing_mapped_source_stays_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = publish_minimal_v3(tmp_path, monkeypatch)
+    target = fixture.clean_root / f"date={AS_OF.isoformat()}" / "data.parquet"
+    frame = pl.read_parquet(target).filter(pl.col("symbol") != "02983.HK")
+    frame.write_parquet(target)
+    audited = BarQuery(fixture.clean_root).recent_for_universe_mixed_audited(
+        membership_path=_mixed_membership(tmp_path / "membership.parquet", ["02983.HK"]),
+        universe="SH_CONNECT",
+        as_of=AS_OF,
+        observations=1,
+        bundle=fixture.bundle,
+        plan=fixture.plan,
+    )
+    assert audited.coverage.missing_symbols == ("02983.HK",)
+    assert audited.frame.height == 0
+
+
+def test_mixed_query_rejects_as_of_not_equal_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = publish_minimal_v3(tmp_path, monkeypatch)
+    with pytest.raises(BarWindowQueryError, match="BAR_WINDOW_INPUT_INVALID"):
+        BarQuery(fixture.clean_root).recent_for_universe_mixed_audited(
+            membership_path=_mixed_membership(tmp_path / "membership.parquet", ["00001.HK"]),
+            universe="SH_CONNECT",
+            as_of=dt.date(2026, 7, 9),
+            observations=1,
+            bundle=fixture.bundle,
+            plan=fixture.plan,
+        )
+
+
+def test_query_module_does_not_touch_decimal_or_sort_by_source() -> None:
+    import quant.data.query as query_module
+
+    source = inspect.getsource(query_module)
+    assert "Decimal" not in source
+    assert "decimal" not in source
+    assert "ORDER BY source" not in source
+    assert "DISTINCT ON" not in source
+    assert "priority" not in source.lower()
