@@ -12,9 +12,13 @@ import pytest
 from quant.factors import DAILY_VALUE_FACTOR_NAMES
 from quant.research.run_daily_value_factors import (
     _validate_config,
+    apply_coverage_gate,
+    apply_expected_direction_gate,
     apply_redundancy_gate,
     build_daily_value_coverage,
+    build_factor_coverage,
     build_daily_value_panel,
+    build_monthly_liquidity_panel,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -156,6 +160,139 @@ def test_redundancy_gate_rejects_only_near_duplicate_passing_factor() -> None:
     ]
 
 
+def test_redundancy_gate_is_symmetric_and_exact_threshold_rejects() -> None:
+    summary = pl.DataFrame(
+        {
+            "factor": ["left", "right"],
+            "research_status": ["RESEARCH_ONLY", "RESEARCH_ONLY"],
+        }
+    )
+    redundancy = pl.DataFrame(
+        {
+            "factor_a": ["left"],
+            "factor_b": ["right"],
+            "median_abs_rank_corr": [0.80],
+        }
+    )
+    result = apply_redundancy_gate(
+        summary,
+        redundancy_summary=redundancy,
+        maximum_median_absolute_rank_correlation=0.80,
+    )
+    assert result.select("factor", "research_status").rows() == [
+        ("left", "REJECTED"),
+        ("right", "REJECTED"),
+    ]
+
+
+def test_monthly_coverage_and_direction_gates_fail_closed() -> None:
+    summary = pl.DataFrame(
+        {
+            "factor": ["amihud", "turnover"],
+            "research_status": ["RESEARCH_ONLY", "RESEARCH_ONLY"],
+        }
+    )
+    dates = (dt.date(2024, 1, 31), dt.date(2024, 2, 29))
+    coverage = pl.DataFrame(
+        {
+            "factor": ["amihud", "amihud", "turnover", "turnover"],
+            "trade_date": [*dates, *dates],
+            "eligible_rows": [125, 125, 125, 125],
+            "valid_rows": [100, 100, 100, 99],
+            "coverage": [0.80, 0.80, 0.80, 0.792],
+        }
+    )
+    covered = apply_coverage_gate(
+        summary,
+        coverage=coverage,
+        minimum_signal_symbols=100,
+        minimum_median_coverage=0.80,
+    )
+    assert covered.select("factor", "coverage_passed", "research_status").rows() == [
+        ("amihud", True, "RESEARCH_ONLY"),
+        ("turnover", False, "REJECTED"),
+    ]
+
+    fold_metrics = pl.DataFrame(
+        {
+            "factor": ["amihud", "amihud", "turnover", "turnover"],
+            "cost_multiplier": [1.0, 1.0, 1.0, 1.0],
+            "direction": [1, 1, 1, 1],
+        }
+    )
+    directed = apply_expected_direction_gate(
+        summary,
+        fold_metrics=fold_metrics,
+        expected_directions={"amihud": 1, "turnover": -1},
+    )
+    assert directed.select(
+        "factor", "expected_direction_passed", "research_status"
+    ).rows() == [
+        ("amihud", True, "RESEARCH_ONLY"),
+        ("turnover", False, "REJECTED"),
+    ]
+
+
+def test_monthly_panel_uses_next_open_and_next_rebalance_dates() -> None:
+    symbols = ("000001.SZ", "600001.SH")
+    month_ordinals = tuple(range(1, 14))
+    rows: list[dict[str, object]] = []
+    daily_rows: list[dict[str, object]] = []
+    sessions: list[dt.date] = []
+    daily_template = _daily_basic().row(0, named=True)
+    for month_index, ordinal in enumerate(month_ordinals):
+        year = 2024 + (ordinal - 1) // 12
+        month = (ordinal - 1) % 12 + 1
+        for day in range(1, 17):
+            trade_date = dt.date(year, month, day)
+            sessions.append(trade_date)
+            for symbol_index, symbol in enumerate(symbols):
+                price = 10.0 + month_index + day / 100.0 + symbol_index
+                rows.append(
+                    {
+                        "symbol": symbol,
+                        "trade_date": trade_date,
+                        "open": price,
+                        "high": price + 0.1,
+                        "low": price - 0.1,
+                        "close": price,
+                        "volume": 1_000.0,
+                        "amount": 25_000_000.0,
+                        "adj_factor": 1.0,
+                        "source": "fixture",
+                    }
+                )
+                daily_rows.append(
+                    {
+                        **daily_template,
+                        "symbol": symbol,
+                        "trade_date": trade_date,
+                        "turnover_rate_free": float(month_index + 1),
+                    }
+                )
+    unique_sessions = tuple(sorted(set(sessions)))
+    signal_dates = tuple(
+        dt.date(2024 + (ordinal - 1) // 12, (ordinal - 1) % 12 + 1, 16)
+        for ordinal in month_ordinals
+    )
+    panel = build_monthly_liquidity_panel(
+        daily_basic=pl.DataFrame(daily_rows),
+        bars=pl.DataFrame(rows),
+        sessions=unique_sessions,
+        signal_dates=signal_dates,
+        candidate_symbols=symbols,
+    )
+    first = panel.filter(
+        (pl.col("symbol") == symbols[0]) & (pl.col("trade_date") == signal_dates[0])
+    )
+    assert first.select(
+        "execution_date_rebalance", "exit_date_rebalance"
+    ).row(0) == (dt.date(2024, 2, 1), dt.date(2024, 3, 1))
+    assert build_factor_coverage(
+        panel, factors=("amihud_illiquidity_monthly",)
+    ).get_column("coverage").drop_nulls().min() == pytest.approx(1.0)
+
+
 def test_daily_value_config_is_frozen_without_placeholder_snapshot() -> None:
     path = PROJECT_ROOT / "configs/research/m2_daily_value_factors.toml"
     with path.open("rb") as stream:
@@ -170,3 +307,22 @@ def test_daily_value_config_is_frozen_without_placeholder_snapshot() -> None:
 
     with pytest.raises(ValueError, match="invalid daily-value-factor config"):
         _validate_config(config, threads=5)
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["m2_amihud_illiquidity.toml", "m2_free_float_turnover.toml"],
+)
+def test_monthly_liquidity_configs_are_frozen(name: str) -> None:
+    path = PROJECT_ROOT / "configs/research" / name
+    with path.open("rb") as stream:
+        config = tomllib.load(stream)
+    _validate_config(config, threads=2)
+
+    wrong_coverage = deepcopy(config)
+    wrong_coverage["factors"]["minimum_median_coverage"] = 0.799
+    with pytest.raises(ValueError, match="invalid daily-value-factor config"):
+        _validate_config(wrong_coverage, threads=2)
+
+    with pytest.raises(ValueError, match="invalid daily-value-factor config"):
+        _validate_config(config, threads=3)
