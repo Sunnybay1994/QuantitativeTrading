@@ -3,7 +3,7 @@
 日期：2026-08-15（Asia/Shanghai）
 实现模型：`cursor-grok-4.6-high`（如实记录；非底层模型名猜测）
 角色：外部实现 Agent
-状态：**R3 实现与 Windows 定向自测完成；待全新外部独立复验。** R1 阻断与 R2 正向 exact 见下文历史章节。未宣称独立初验或 HK60 Gate。
+状态：**R4 实现与 Windows 定向自测完成；待全新外部独立复验。** R1 阻断、R2 正向 exact 与 R3 UA-M1-005 反向绑定见下文历史章节。未宣称独立初验或 HK60 Gate。
 
 ## R1 结果（历史；已关闭）
 
@@ -174,3 +174,53 @@ R2 只在 `source==USER_APPROVED` 时进入 exact/raw verifier；Schema 以“�
 - 反向约束仅绑定 UA-M1-005 record/selector；普通 HKEX（含 `06110.HK@2026-06-25` 且非 UA-M1-005 身份）与 UA-M1-001/004 行为保持原样。
 - 正式 raw/metadata、新 v2 plan、journal 与 HK60 恢复仍按任务单 §9，由主 Agent 在独立复验与主验通过后执行。
 - 下一步：未参与本 R3 实现的全新外部独立复验。
+
+---
+
+## R4 实现（关闭 user-approved 命名空间换源缺口）
+
+日期：2026-08-15（Asia/Shanghai）
+实现模型：`cursor-grok-4.6-high`（如实记录；非底层模型名猜测）
+角色：外部实现 Agent（全新 R4 会话；不复用 R1/R2/R3 上下文）
+状态：**R4 实现与 Windows 定向自测完成；待全新外部独立复验。** 不宣称独立初验、真实 plan/journal 物化或 HK60 Gate。
+
+R3 已关闭 UA-M1-005 反向绑定。主验同型检查与 R3 残余确认：合法 UA-M1-001/004 identity 改标 `HKEX_DAILY_QUOTATIONS` 后，public loader 仍可接受（`UA001_SPOOF_ACCEPTED`）。本轮把 R3 的 005-only dataclass/Schema 反向约束提升为命名空间规则：任何 `source_record_id` 以 `UA-M1-` 开头，或 `raw_selector` 以 `user-approved-consensus/` 开头，只能使用 exact `USER_APPROVED_MULTI_SOURCE_CONSENSUS`；随后仍由既有 001/004/005 exact allowlist 限定。未改合法 001/004/005 字段、identity 公式或 canonical raw；未实现或猜测 HKEX HTML parser。
+
+写生产代码前确认：现有普通 HKEX fixture 使用 `synthetic-fixture-record` 与 `hkex/...` selector，不落入该命名空间，无冲突。
+
+### 修改文件
+
+| 文件 | 目的 |
+| --- | --- |
+| `src/quant/data/hk_history_backfill.py` | `HKNoTradeEvidence.__post_init__` 对 `UA-M1-` record 与 `user-approved-consensus/` selector 强制 USER_APPROVED source。 |
+| `src/quant/domain/schemas.py` | 将 `ua_m1_005_identity_binds_user_approved_source` 提升为 `user_approved_identity_namespace_binds_source`；列/dtype/001/004/005 析取未改。 |
+| `tests/unit/test_hk_history_backfill.py` | 001/004/005 挂 HKEX：canonical/garbage/record-only/selector-only；普通 HKEX 三证券日控制组；001 helper 支持换源夹具。 |
+| `tests/unit/test_schemas.py` | Schema 拒绝 001/004/005 与未知 `UA-M1-006` / 未知 user-approved selector 挂 HKEX/Tushare；ordinary HKEX 控制组仍通过。 |
+| 本报告 | 追加 R4；保留 R1/R2/R3 为设计纠错与正向实现证据。 |
+| 任务单状态 | 改为待全新外部独立复验。 |
+
+未修改：query、connector、clean store、配置、README、路线图、正式 `data/` / `artifacts`、旧独立报告。未联网、未真实回填、未 add/commit/push。
+
+### 原因
+
+R3 反向约束只枚举 UA-M1-005。projection 对非 USER_APPROVED source 不调用 canonical user-approved raw verifier；Schema 的 exact 析取是 USER_APPROVED → exact 的单向约束。因此 `UA-M1-` record 或 `user-approved-consensus/` selector 可搭载 HKEX source。来源身份是整体合同，反向约束不得按最新记录逐条补丁。
+
+### 验证（Windows；`PYTHONPATH` 指向本 worktree `src`）
+
+解释器：`D:\Miniforge3\python.exe`。主仓 editable `quant` 指向主树，定向命令必须覆盖 worktree。
+
+| 命令 | 结果 | 摘要 |
+| --- | --- | --- |
+| focused：命名空间 loader + Schema 节点 | 通过 | 4 passed |
+| pytest `test_hk_history_backfill.py` + Schema 两 HKNoTrade 节点 | 通过 | 137 passed, 2 skipped（原 136 + 本轮 1 项） |
+| `ruff check` 四白名单文件 | 通过 | All checks passed |
+| `mypy` 两生产文件 | 通过 | no issues found in 2 source files |
+| cold import loader/plan/Schema | 通过 | 模块路径位于本 worktree |
+
+未运行 Linux/WSL Gate、全量 pytest、真实回填或联网。本会话自测不是独立复验。
+
+### 风险与交接
+
+- 命名空间规则覆盖未知 `UA-M1-*` 与未知 `user-approved-consensus/` selector；普通 HKEX（非 UA record、非 user-approved selector，含 01065/02402/06110 同日）仍通过，且仍不解析 quotations HTML。
+- 正式 raw/metadata、新 v2 plan、journal 与 HK60 恢复仍按任务单 §9，由主 Agent 在独立复验与主验通过后执行。
+- 下一步：未参与本 R4 实现的全新外部独立复验，须对 001/004/005 三条换源攻击独立复验。

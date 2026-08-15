@@ -341,6 +341,41 @@ def test_hk_no_trade_evidence_schema_accepts_exact_ua_m1_005_and_rejects_drift()
             "source": "HKEX_DAILY_QUOTATIONS",
             "source_record_id": "synthetic-fixture",
         },
+        {**ua_m1_001, "source": "HKEX_DAILY_QUOTATIONS"},
+        {
+            **ua_m1_001,
+            "source": "HKEX_DAILY_QUOTATIONS",
+            "raw_selector": "hkex/d260505e.html",
+        },
+        {
+            **ua_m1_001,
+            "source": "HKEX_DAILY_QUOTATIONS",
+            "source_record_id": "synthetic-fixture",
+        },
+        {**ua_m1_001, "source": "TUSHARE_HK_DAILY"},
+        {**ua_m1_004, "source": "HKEX_DAILY_QUOTATIONS"},
+        {
+            **ua_m1_004,
+            "source": "HKEX_DAILY_QUOTATIONS",
+            "raw_selector": "hkex/d260414e.html",
+        },
+        {
+            **ua_m1_004,
+            "source": "HKEX_DAILY_QUOTATIONS",
+            "source_record_id": "synthetic-fixture",
+        },
+        {
+            **ua_m1_001,
+            "source": "HKEX_DAILY_QUOTATIONS",
+            "source_record_id": "UA-M1-006",
+            "raw_selector": "hkex/d260505e.html",
+        },
+        {
+            **ua_m1_001,
+            "source": "HKEX_DAILY_QUOTATIONS",
+            "source_record_id": "synthetic-fixture",
+            "raw_selector": "user-approved-consensus/ua-m1-006-unknown.record",
+        },
     ):
         with pytest.raises(pandera.errors.SchemaError):
             HKNoTradeEvidenceSchema.validate(pl.DataFrame([drifted]))

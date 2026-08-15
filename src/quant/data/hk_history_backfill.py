@@ -57,6 +57,8 @@ _HKEX_SUPPLEMENT_UNRESOLVED = (("02983.HK", ("2026-07-10",)),)
 _AVAILABILITY_FILE = "availability.json"
 _HKEX_RETAINED_RAW_FILE = "hkex-retained.raw"
 _HKEX_RETAINED_METADATA_FILE = "hkex-retained.metadata.json"
+_USER_APPROVED_RECORD_NAMESPACE = "UA-M1-"
+_USER_APPROVED_SELECTOR_NAMESPACE = "user-approved-consensus/"
 _USER_APPROVED_NO_TRADE_KEY = ("01065.HK", "2026-05-05")
 _USER_APPROVED_NO_TRADE_RECORD = "UA-M1-001"
 _USER_APPROVED_NO_TRADE_SELECTOR = (
@@ -202,8 +204,8 @@ class HKNoTradeEvidence:
         ):
             raise ValueError("no-trade evidence contract invalid")
         if (
-            self.source_record_id == _USER_APPROVED_TRADING_HALT_RECORD
-            or self.raw_selector == _USER_APPROVED_TRADING_HALT_SELECTOR
+            self.source_record_id.startswith(_USER_APPROVED_RECORD_NAMESPACE)
+            or self.raw_selector.startswith(_USER_APPROVED_SELECTOR_NAMESPACE)
         ) and self.source != HK_NO_TRADE_USER_APPROVED_SOURCE:
             raise ValueError("no-trade evidence contract invalid")
         if self.evidence_sha256 != _evidence_identity(self):

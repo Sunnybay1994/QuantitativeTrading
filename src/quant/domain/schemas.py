@@ -233,30 +233,20 @@ class HKNoTradeEvidenceSchema(pa.DataFrameModel):
         )
 
     @pa.dataframe_check
-    def ua_m1_005_identity_binds_user_approved_source(  # type: ignore[misc]
+    def user_approved_identity_namespace_binds_source(  # type: ignore[misc]
         cls, data: pa.PolarsData
     ) -> pl.LazyFrame:
-        """UA-M1-005 record or selector identity cannot ride a non-approved source."""
+        """UA-M1- records and user-approved-consensus/ selectors bind USER source."""
         return data.lazyframe.select(
             (
-                (pl.col("source_record_id") != "UA-M1-005")
+                (~pl.col("source_record_id").str.starts_with("UA-M1-"))
                 & (
-                    pl.col("raw_selector")
-                    != "user-approved-consensus/"
-                    "ua-m1-005-06110-2026-06-25.record"
+                    ~pl.col("raw_selector").str.starts_with(
+                        "user-approved-consensus/"
+                    )
                 )
             )
-            | (
-                (pl.col("source") == "USER_APPROVED_MULTI_SOURCE_CONSENSUS")
-                & (pl.col("symbol") == "06110.HK")
-                & (pl.col("trade_date") == pl.date(2026, 6, 25))
-                & (pl.col("source_record_id") == "UA-M1-005")
-                & (
-                    pl.col("raw_selector")
-                    == "user-approved-consensus/"
-                    "ua-m1-005-06110-2026-06-25.record"
-                )
-            )
+            | (pl.col("source") == "USER_APPROVED_MULTI_SOURCE_CONSENSUS")
         )
 
 

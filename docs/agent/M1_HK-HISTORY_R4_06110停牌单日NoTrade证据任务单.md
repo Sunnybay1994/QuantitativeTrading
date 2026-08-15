@@ -1,6 +1,6 @@
 # M1 HK-HISTORY R4：06110.HK 2026-06-25 停牌单日 No-Trade 证据任务单
 
-状态：**R4 主验返工合同已冻结；R3 独立复验在 §10 范围内 PASS，但主 Agent 同型检查确认 UA-M1-001/004 仍可换标 HKEX source。允许全新外部实现会话按 §11 最小返工。** 真实 evidence/plan/journal 物化仍由主 Agent 在 R4 实现、独立复验和主验通过后执行。
+状态：**R4 实现与 Windows 定向自测完成；待全新外部独立复验。** 真实 evidence/plan/journal 物化仍由主 Agent 在独立复验和主验通过后执行。
 
 日期：2026-08-15（Asia/Shanghai）
 平台：Windows 工程闭环；不声明 Linux/ext4。
