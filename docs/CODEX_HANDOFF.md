@@ -6,8 +6,8 @@
   M1 `9004b6d`、S2 `4ac392a`、liquidity `ec506b6`、GUI G1/C4 `a5c63f7`/`18dc006`、M4 RUN-0D2
   `92de0d4`、downside beta `3c8c6c4`、Alpha158 `0f737ac` 与 MAX `0363b0f`。此后 `ba83ad7` 吸收
   R10 证据，`c2c8841` 吸收 MAX daily-basic 控制，`8427c83` 吸收 GUI D1，`086cae9` 吸收 PIT 首跑前置，
-  `4745cb4` 吸收 FWD-R1；MAX-control 合流回归为 25 passed，GUI D1 为 19 passed/2 skipped，PIT 前置为
-  32 passed，FWD-R1 为 17 passed/1 skipped，四者定向
+  `4745cb4` 吸收 FWD-R1，`936ffee` 吸收 PIT R2 维度审计；MAX-control 合流回归为 25 passed，GUI D1 为
+  19 passed/2 skipped，PIT 前置为 32 passed，FWD-R1 为 17 passed/1 skipped，PIT R2 为 18 passed，五者定向
   Ruff、mypy、cold import 均通过，不把这些定向证据扩大表述为覆盖其它范围。
 - 根 checkout 仍停在 `codex/m2-strategy-fastlane@4d569be`，由唯一 Tushare finance writer 使用；writer
   权威终态前禁止切换根分支或并发写源码。根只剩 `docs/quant_factor_research_v2/**` 25 个未跟踪资料文件，
@@ -29,7 +29,9 @@
   继续 fail-closed 等待 writer 终态、全量 bytes audit 与不可覆盖 snapshot。snapshot READY 时，PIT 优先于
   新的非财务研究包。PIT 首跑前置 `3b8857c` 已以 A1 `RECONSTRUCTED_CURRENT_INVENTORY_V1`、coverage gate、
   code-identity 与 `UNFROZEN/[]` pre-artifact STOP 进入 `086cae9`；来源线已 archive-first 退出，但这不等于
-  当前 raw、snapshot 或真实 report-type 分布已经 READY。
+  当前 raw、snapshot 或真实 report-type 分布已经 READY。PIT R2 `cadff72` 的 audit schema v3、维度计数闭包和
+  publisher 严格结构校验已进入 `936ffee`，来源线也已 archive-first 退出；本次只完成代码与 fixture 回归，未读取
+  partial raw、未执行 integrated `--verify-bytes`、未选择 allowed values，也未发布 snapshot。
 - M3 retained 两折链仍没有权威 `completion.json`，stderr 为空且 owned 进程仍在运行；detached
   `c9f2f36`、两份 session 配置、owned 解释器与 `codex/m3-g8e-r2-windows-hardlink@71dffa5` 继续冻结，
   不恢复、不重启、不清理，也不以旧 receipt 代替本轮 completion；新 owned child 证明 fold2 h10 仍在自然运行。
@@ -44,10 +46,10 @@
   本地作业编排仍仅有只读设计，当前不为一个运行按钮提前引入 SQLite worker/lease 平台。
 - M2-FWD-R1 `76b55cf` 已进入 `4745cb4`，R10 来源绑定与标准 LightweightResearchRun 发布路径的开发检查通过；
   没有执行真实 2026-08-31 发布或生成真实 forward artifact，来源线已 archive-first 退出。
-- `data/clean/tushare_financials` 仍不存在。CPU8–11 当前交给
-  `codex/m2-pit-r2-dimension-audit@086cae9` 做 report-type/comp-type 分布证据的定向开发检查；仍不选
-  allowed values、不读 partial raw、不运行 integrated bytes audit 或发布 snapshot。所有短任务保持 BelowNormal、
-  CPU8–11、数值线程不超过 2。
+- `data/clean/tushare_financials` 仍不存在。PIT R2 已合流并退出，CPU8–11 当前未分配新的短任务。下一条 PIT
+  业务链保持串行：writer 权威终态 → integrated bytes audit 取得真实 report-type/comp-type 分布 → 窄
+  config-freeze → publisher/snapshot → 真实 PIT run；不得从 partial raw 提前选择 allowed values。后续短任务仍保持
+  BelowNormal、CPU8–11、数值线程不超过 2。
   完整 branch/worktree 所有权、退出条件、artifact 保留条件和基础设施债
   见 [`项目结构与合流治理路线图`](roadmaps/项目结构与合流治理路线图.md)。项目初期继续以最小正确业务闭环
   为先；PIT、fail-closed、统一回放、OMS/风控/对账、人工准入和凭据安全不得作为“基础设施瑕疵”延期。
