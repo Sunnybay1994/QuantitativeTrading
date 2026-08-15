@@ -1,6 +1,6 @@
 # M1 HK-HISTORY R4：06110.HK 2026-06-25 停牌单日 No-Trade 证据任务单
 
-状态：**R3 实现与 Windows 定向自测完成；待全新外部独立复验。** R2 正向 exact 保留；本轮只关闭 UA-M1-005 record/selector 到 `USER_APPROVED_MULTI_SOURCE_CONSENSUS` 的反向来源绑定。真实 evidence/plan/journal 物化仍由主 Agent 在实现、独立复验和主验通过后执行。
+状态：**R4 主验返工合同已冻结；R3 独立复验在 §10 范围内 PASS，但主 Agent 同型检查确认 UA-M1-001/004 仍可换标 HKEX source。允许全新外部实现会话按 §11 最小返工。** 真实 evidence/plan/journal 物化仍由主 Agent 在 R4 实现、独立复验和主验通过后执行。
 
 日期：2026-08-15（Asia/Shanghai）
 平台：Windows 工程闭环；不声明 Linux/ext4。
@@ -216,3 +216,50 @@ UA-M1-005 是用户批准的多来源共识证据，不是 HKEX daily quotations
 
 只做上述反向来源绑定和相应定向回归；不得新增 source、列、dtype、public API 或正式数据写入。Windows focused、
 UA-M1-001/004/普通 HKEX 邻接、Ruff、mypy、cold import 通过后，由另一全新外部 Cursor 会话独立复验。
+
+---
+
+## 11. R3 独立复验 PASS 后的主 Agent 同型阻断与 R4 最小返工
+
+R3 报告：[`M1_HK-HISTORY_R4_06110停牌单日NoTrade证据R3独立复验报告.md`](M1_HK-HISTORY_R4_06110停牌单日NoTrade证据R3独立复验报告.md)。
+
+### 11.1 现象
+
+R3 已正确关闭 UA-M1-005 的反向来源绑定，并通过独立复验。主 Agent 随后以同一 public loader 对旧记录做同型检查：
+把合法 UA-M1-001 的 symbol/date/record/selector 保留，仅将 `source` 与 canonical metadata source 改为
+`HKEX_DAILY_QUOTATIONS`，raw 换成 `{"not":"halt"}`，再按公开字段重算 evidence 与 set identity，
+`load_hk_no_trade_evidence` 实际返回成功：
+
+```text
+UA001_SPOOF_ACCEPTED HKEX_DAILY_QUOTATIONS UA-M1-001
+```
+
+R3 独立报告也把“UA-M1-001/004 仍可挂 HKEX”列为残余。该问题阻断真实 v2c 物化。
+
+### 11.2 根因
+
+R3 反向约束只枚举 UA-M1-005 record/selector。旧 UA-M1-001/004 以及 `user-approved-consensus/` selector
+命名空间仍可搭载非 USER_APPROVED source；projection 对非 USER_APPROVED source 不调用 canonical user-approved
+raw verifier，而 Schema 的 existing exact 析取也只有 USER_APPROVED → exact 的单向约束。
+
+### 11.3 应遵循规则
+
+来源身份是整体合同：任何 `source_record_id` 以 `UA-M1-` 开头，或 `raw_selector` 位于
+`user-approved-consensus/` 命名空间，都只能属于 exact `USER_APPROVED_MULTI_SOURCE_CONSENSUS`；随后仍必须命中
+现有 UA-M1-001/004/005 exact allowlist。反向约束不得只按最新记录逐条补丁。普通 HKEX selector/record 不受影响，
+不得借此实现或猜测 HKEX HTML parser。
+
+### 11.4 最小实现与正式回归
+
+- 把 R3 的 UA-M1-005-only dataclass/Schema 反向约束提升为上述 user-approved identity namespace 约束；
+- public loader 与 Schema 分别拒绝 UA-M1-001、UA-M1-004、UA-M1-005 identity 挂 HKEX source；
+- 每条至少覆盖 canonical raw 与可解析 garbage raw；record-only、selector-only 均拒绝；
+- canonical USER_APPROVED 001/004/005 均保持通过，identity 字节不变；
+- 普通 HKEX source 使用非 UA record 与非 user-approved selector 的正向控制组保持通过；
+- 失败稳定为 `HK_HISTORY_REFERENCE_INVALID`，`cause/context=None`。
+
+### 11.5 通过条件
+
+不改列、dtype、public API、source/reason 集合、canonical payload、evidence identity 公式或正式数据。Windows focused、
+完整 136 项邻接、Ruff、mypy、cold import 通过后，由未参与 R4 实现的另一全新 Cursor 会话对 001/004/005 三条
+换源攻击独立复验；PASS 后才重新进入主验和真实物化。
