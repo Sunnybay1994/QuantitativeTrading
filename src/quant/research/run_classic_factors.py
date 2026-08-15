@@ -34,6 +34,11 @@ from quant.factors import (
     compute_second_batch_daily_factors,
     compute_third_batch_daily_factors,
 )
+from quant.factors.classic_fourth_batch import (
+    FOURTH_BATCH_FACTOR_NAMES,
+    FOURTH_BATCH_FACTOR_SPECS,
+    compute_fourth_batch_daily_factors,
+)
 from quant.factors.classic_market_risk import (
     DOWNSIDE_BETA_FACTOR_NAMES,
     DOWNSIDE_BETA_FACTOR_SPECS,
@@ -70,6 +75,9 @@ _CODE_PATHS: tuple[str, ...] = (
 )
 _MARKET_RISK_CODE_PATHS: tuple[str, ...] = _CODE_PATHS + (
     "src/quant/factors/classic_market_risk.py",
+)
+_FOURTH_BATCH_CODE_PATHS: tuple[str, ...] = _CODE_PATHS + (
+    "src/quant/factors/classic_fourth_batch.py",
 )
 
 
@@ -154,6 +162,39 @@ def main(argv: Sequence[str] | None = None) -> int:
             validate="1:1",
         )
         factor_specs = THIRD_BATCH_FACTOR_SPECS
+    elif factor_names == FOURTH_BATCH_FACTOR_NAMES:
+        second_batch_values = compute_second_batch_daily_factors(bars)
+        third_batch_values = compute_third_batch_daily_factors(bars)
+        fourth_batch_values = compute_fourth_batch_daily_factors(
+            bars,
+            sessions=sessions,
+        )
+        factor_values = (
+            first_batch_values.join(
+                second_batch_values.select(
+                    "symbol", "trade_date", *SECOND_BATCH_FACTOR_NAMES
+                ),
+                on=["symbol", "trade_date"],
+                how="inner",
+                validate="1:1",
+            )
+            .join(
+                third_batch_values.select(
+                    "symbol", "trade_date", *THIRD_BATCH_FACTOR_NAMES
+                ),
+                on=["symbol", "trade_date"],
+                how="inner",
+                validate="1:1",
+            )
+            .join(
+                fourth_batch_values,
+                on=["symbol", "trade_date"],
+                how="left",
+                validate="1:1",
+            )
+        )
+        factor_specs = FOURTH_BATCH_FACTOR_SPECS
+        code_paths = _FOURTH_BATCH_CODE_PATHS
     elif factor_names == DOWNSIDE_BETA_FACTOR_NAMES:
         market_risk = cast(Mapping[str, Any], config["market_risk"])
         benchmark_symbol = cast(str, market_risk["benchmark"])
@@ -288,6 +329,45 @@ def main(argv: Sequence[str] | None = None) -> int:
             coverage_summary=coverage_summary,
             schedule_alignment=schedule_alignment,
             expected_direction=cast(int, market_risk_config["expected_direction"]),
+            maximum_median_absolute_rank_correlation=float(
+                factor_config["maximum_median_absolute_rank_correlation"]
+            ),
+        )
+        results["factor_coverage_daily"] = coverage_daily
+        results["factor_coverage_summary"] = coverage_summary
+        results["rebalance_schedule_alignment"] = schedule_alignment
+    if factor_names == FOURTH_BATCH_FACTOR_NAMES:
+        coverage_config = cast(Mapping[str, Any], config["coverage"])
+        coverage_daily, coverage_summary = evaluate_factor_coverage(
+            panel,
+            factors=factor_names,
+            start_date=cast(dt.date, data["research_start"]),
+            end_date=cast(dt.date, data["research_end"]),
+            folds=folds,
+            rebalance_every_sessions=cast(
+                int, portfolio_config["rebalance_every_sessions"]
+            ),
+            minimum_rebalance_symbols=cast(
+                int, coverage_config["minimum_rebalance_symbols"]
+            ),
+            minimum_median_coverage=float(
+                coverage_config["minimum_median_coverage"]
+            ),
+        )
+        schedule_alignment = evaluate_rebalance_schedule_alignment(
+            panel,
+            cast(pl.DataFrame, results["targets"]),
+            factors=factor_names,
+            folds=folds,
+            rebalance_every_sessions=cast(
+                int, portfolio_config["rebalance_every_sessions"]
+            ),
+        )
+        summary = apply_fourth_batch_admission_gates(
+            summary,
+            redundancy_summary=cast(pl.DataFrame, results["redundancy_summary"]),
+            coverage_summary=coverage_summary,
+            schedule_alignment=schedule_alignment,
             maximum_median_absolute_rank_correlation=float(
                 factor_config["maximum_median_absolute_rank_correlation"]
             ),
@@ -921,6 +1001,75 @@ def apply_market_risk_admission_gates(
     return joined.sort("factor")
 
 
+def apply_fourth_batch_admission_gates(
+    summary: pl.DataFrame,
+    *,
+    redundancy_summary: pl.DataFrame,
+    coverage_summary: pl.DataFrame,
+    schedule_alignment: pl.DataFrame,
+    maximum_median_absolute_rank_correlation: float,
+) -> pl.DataFrame:
+    """Fail closed on coverage, redundancy and target-schedule alignment."""
+    if (
+        not isinstance(summary, pl.DataFrame)
+        or summary.is_empty()
+        or not isinstance(redundancy_summary, pl.DataFrame)
+        or redundancy_summary.is_empty()
+        or not isinstance(coverage_summary, pl.DataFrame)
+        or coverage_summary.is_empty()
+        or not isinstance(schedule_alignment, pl.DataFrame)
+        or schedule_alignment.is_empty()
+        or type(maximum_median_absolute_rank_correlation) is not float
+        or not 0 < maximum_median_absolute_rank_correlation < 1
+    ):
+        raise ValueError("invalid fourth-batch admission gate request")
+    redundancy = redundancy_summary.group_by("factor_a").agg(
+        pl.col("median_abs_rank_corr").max().alias("max_median_abs_rank_corr")
+    )
+    schedule = schedule_alignment.group_by("factor").agg(
+        pl.col("schedule_aligned").all().alias("schedule_alignment_passed")
+    )
+    drop_columns = [
+        column
+        for column in ("max_median_abs_rank_corr", "combination_eligible")
+        if column in summary.columns
+    ]
+    summary_base = summary.drop(drop_columns) if drop_columns else summary
+    return (
+        summary_base.join(
+            redundancy,
+            left_on="factor",
+            right_on="factor_a",
+            how="left",
+            validate="1:1",
+        )
+        .join(coverage_summary, on="factor", how="left", validate="1:1")
+        .join(schedule, on="factor", how="left", validate="1:1")
+        .with_columns(
+            (
+                pl.col("max_median_abs_rank_corr").is_not_null()
+                & (
+                    pl.col("max_median_abs_rank_corr")
+                    < maximum_median_absolute_rank_correlation
+                )
+            ).alias("redundancy_passed")
+        )
+        .with_columns(pl.col("redundancy_passed").alias("combination_eligible"))
+        .with_columns(
+            pl.when(
+                (pl.col("research_status") == "RESEARCH_ONLY")
+                & pl.col("redundancy_passed")
+                & pl.col("coverage_passed")
+                & pl.col("schedule_alignment_passed")
+            )
+            .then(pl.lit("RESEARCH_ONLY"))
+            .otherwise(pl.lit("REJECTED"))
+            .alias("research_status")
+        )
+        .sort("factor")
+    )
+
+
 def _scheduled_rebalance_dates(
     panel: pl.DataFrame,
     *,
@@ -1003,6 +1152,15 @@ def _validate_config(config: Mapping[str, Any], *, threads: int) -> None:
         == CLASSIC_FACTOR_NAMES + SECOND_BATCH_FACTOR_NAMES
         and float(factor_config["maximum_median_absolute_rank_correlation"]) == 0.80
     )
+    fourth_batch = (
+        names == FOURTH_BATCH_FACTOR_NAMES
+        and factor_config.get("catalog") == "alpha158_fourth_batch_v1"
+        and tuple(cast(list[str], factor_config["redundancy_reference_names"]))
+        == CLASSIC_FACTOR_NAMES + SECOND_BATCH_FACTOR_NAMES + THIRD_BATCH_FACTOR_NAMES
+        and float(factor_config["maximum_median_absolute_rank_correlation"]) == 0.80
+        and coverage.get("minimum_rebalance_symbols") == 100
+        and float(coverage.get("minimum_median_coverage", 0.0)) == 0.80
+    )
     downside_beta = (
         names == DOWNSIDE_BETA_FACTOR_NAMES
         and factor_config.get("catalog") == "downside_beta_60_vs_510300_v1"
@@ -1019,7 +1177,13 @@ def _validate_config(config: Mapping[str, Any], *, threads: int) -> None:
         and float(coverage.get("minimum_median_coverage", 0.0)) == 0.80
     )
     if (
-        not (first_batch or second_batch or third_batch or downside_beta)
+        not (
+            first_batch
+            or second_batch
+            or third_batch
+            or fourth_batch
+            or downside_beta
+        )
         or tuple(cast(list[int], config["factors"]["horizons"])) != (1, 5, 20)
         or tuple(float(value) for value in config["portfolio"]["cost_multipliers"])
         != (0.5, 1.0, 2.0)
@@ -1064,6 +1228,17 @@ def _report(
                 "Downside-beta evidence is mixed in the literature; direction, "
                 "coverage, redundancy and exact rebalance-schedule gates are "
                 "therefore fail-closed.",
+            ]
+        )
+    if cast(Mapping[str, Any], config["factors"]).get("catalog") == (
+        "alpha158_fourth_batch_v1"
+    ):
+        caveats.extend(
+            [
+                "RESI20, IMXD20 and VSUMD20 have no pre-registered permanent "
+                "cross-sectional sign; each fold freezes its sign on validation only.",
+                "Missing exchange-session observations invalidate rolling windows; "
+                "coverage, redundancy and exact rebalance-schedule gates are fail-closed.",
             ]
         )
     return {
