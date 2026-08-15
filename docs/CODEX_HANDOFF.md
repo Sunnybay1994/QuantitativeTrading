@@ -32,7 +32,8 @@
   `ba83ad7` 合流，重复 worktree 已移除，source branch 已由 `archive/m2-source-r10-successor-20260816` 保存后删除。
   历史混合 EOL 导致旧 code hash 不可由 commit 复算的 provenance 债仍开放，但不再阻塞 M2-FWD-R1。
 - finance writer 仍在根 checkout 单实例推进，`data/clean/tushare_financials` 尚未形成；真实 PIT quality run
-  继续 fail-closed 等待 writer 终态、全量 bytes audit、type1 累计流量语义 Gate 与不可覆盖 snapshot。
+  继续 fail-closed 等待 writer 终态、全量 bytes audit、type1 累计流量语义 Gate、`M2-EVAL-STOP-001`、R3
+  与不可覆盖 snapshot。
   snapshot READY 时，PIT 优先于新的非财务研究包。PIT 首跑前置 `3b8857c` 已以 A1
   `RECONSTRUCTED_CURRENT_INVENTORY_V1`、coverage gate、
   code-identity 与 `UNFROZEN/[]` pre-artifact STOP 进入 `086cae9`；来源线已 archive-first 退出，但这不等于
@@ -49,6 +50,10 @@
   13 个历史 immutable run 保持原字节与状态，`REJECTED` 不升级；四个原 `RESEARCH_ONLY` 经济腿为 HOLD，
   其 targets/NAV/收益/换手/成本字段不得用于 forward、S2/admission 或 PAPER。完整清单与边界见
   [`M2 策略与因子库并行建设路线图`](roadmaps/M2_策略与因子库并行建设路线图.md)。
+- TARGET R11 只关闭 Top-K 替补。后续只读审计确认 shared outcome cohort、持有期后漂移换手、pair 两侧
+  redundancy coverage、主 config/cost same-bytes identity、分组单调否证和 PIT version/comp-type 链仍未闭合，
+  统一登记为 `M2-EVAL-STOP-001`。同一 13 个 run 的 IC/group/direction/fold 与经济字段均不得作为 promotion
+  证据；当前无修复 worktree。audit-v4 或纯数据 snapshot READY 都不能代替该方法门禁。
 - M3 retained 两折链已进入显式失败终态，而不是运行中或成功 completion：四个 backtest 与 h5/h10 两份 summary
   已完成，但首个 reproducibility 组合 `fold_001/h5` 以 `M3_REPRODUCIBILITY_INVALID` fail closed，wrapper 随后
   `RETAINED_RESUME_FAILED`；evidence 为 `child_returncode=1 / outcome=FAILED / cleanup=REMOVED`，`completion.json`、
@@ -78,9 +83,10 @@
 - M2-FWD-R1 `76b55cf` 已进入 `4745cb4`，R10 来源绑定与标准 LightweightResearchRun 发布路径的开发检查通过；
   没有执行真实 2026-08-31 发布或生成真实 forward artifact，来源线已 archive-first 退出。
 - `data/clean/tushare_financials` 仍不存在。TARGET R11 与 PIT R2 均已合流并退出，CPU8–11 当前未分配新的
-  短任务。下一条 PIT 业务链保持串行：writer 权威终态 → integrated bytes audit 取得真实维度分布并完成
-  audit-v4 type1 累计流量语义 Gate → R3 singleton/trial/fixed-direction/signal-date coverage/
-  performance-sidecar freeze → publisher/snapshot → 真实 PIT run；不得从 partial raw 提前选择 allowed values，
+  短任务。PIT 有两条必须汇合的前置：writer 终态后的 integrated bytes audit/audit-v4 数据链，以及不依赖
+  partial raw 的 `M2-EVAL-STOP-001` 方法链；二者均关闭后才可封板 R3 singleton/trial/fixed-direction/
+  outcome-grid/monotonicity/version-chain/performance-sidecar，再进入 publisher/snapshot 与真实 PIT run。
+  不得从 partial raw 提前选择 allowed values，
   也不得用 v3 的维度计数冒充累计口径证据。后续短任务仍保持
   BelowNormal、CPU8–11、数值线程不超过 2。
   完整 branch/worktree 所有权、退出条件、artifact 保留条件和基础设施债

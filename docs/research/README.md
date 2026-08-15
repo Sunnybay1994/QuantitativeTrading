@@ -16,6 +16,12 @@
 > 成本字段不得作为当前通过、forward、S2/admission 或 PAPER 证据。完整 run 清单和处置边界见
 > [M2 执行路线图](../roadmaps/M2_策略与因子库并行建设路线图.md)。
 
+> **`M2-EVAL-STOP-001`（2026-08-16）**
+>
+> R11 只关闭 Top-K 替补；shared outcome cohort、漂移后换手、对称 redundancy coverage、same-bytes
+> config/cost identity、分组单调否证与 PIT version/comp-type 链仍未闭合。首个 PIT 与任何 corrective replay
+> 均暂停；历史 IC/group/direction/fold 与经济字段不得作为 promotion 证据。完整合同只见上述 M2 执行路线图。
+
 ## 方法论与行业调研
 
 - [量化机构投研与实盘基础设施调研](量化机构投研与实盘基础设施调研.md)
