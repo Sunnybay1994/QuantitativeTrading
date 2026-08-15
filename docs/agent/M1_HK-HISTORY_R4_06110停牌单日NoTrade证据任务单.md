@@ -1,6 +1,6 @@
 # M1 HK-HISTORY R4：06110.HK 2026-06-25 停牌单日 No-Trade 证据任务单
 
-状态：**R2 已重冻；允许全新外部实现会话继续。R1 发现 `HKNoTradeEvidenceSchema` exact allowlist 缺少 UA-M1-005，因此最小扩大至 Schema SSOT 与直接测试；真实 evidence/plan/journal 物化仍由主 Agent 在实现合流后执行。**
+状态：**R3 返工合同已冻结；R2 独立初验 FAIL，允许全新外部实现会话按 §10 最小返工。** R1 发现 `HKNoTradeEvidenceSchema` exact allowlist 缺少 UA-M1-005；R2 虽补齐正向证据，但没有把 UA-M1-005 身份反向绑定到 `USER_APPROVED_MULTI_SOURCE_CONSENSUS`。真实 evidence/plan/journal 物化仍由主 Agent 在实现、独立复验和主验通过后执行。
 
 日期：2026-08-15（Asia/Shanghai）
 平台：Windows 工程闭环；不声明 Linux/ext4。
@@ -109,6 +109,11 @@ R1 外部实现会话在写生产代码前用公共 loader 探针确认：即使
 加入现有 user-approved consensus 析取；不得改 Schema 列、dtype、其他 source/reason 或任何非 HKNoTrade 规则。
 `tests/unit/test_schemas.py` 只补 exact 正向和 symbol/date/record/selector 漂移拒绝，并回归 UA-M1-001/004。
 
+该 exact 析取必须是双向封闭的：只要 `source_record_id == "UA-M1-005"`，或
+`raw_selector == "user-approved-consensus/ua-m1-005-06110-2026-06-25.record"`，`source` 就必须精确等于
+`USER_APPROVED_MULTI_SOURCE_CONSENSUS`，且证券、日期、record id、selector 必须共同构成 §2 的唯一 exact key。
+不得允许 `HKEX_DAILY_QUOTATIONS` 或其他 source 携带 UA-M1-005 的 record/selector 身份进入公共 loader。
+
 禁止修改 query、connector、clean store、配置、正式 data/artifacts。
 
 ---
@@ -175,3 +180,39 @@ Windows：定向 `test_hk_history_backfill.py` 与 `test_schemas.py` 新增节�
 5. 8/8 后按既有顺序 recover → 一次 finalize-v3 → fresh bundle。
 
 任何 request id/参数漂移导致不能复用 raw、raw 除该键外仍不闭合、或 evidence 扩大到第二个键，立即停止。
+
+---
+
+## 10. R2 独立初验阻断与 R3 最小返工
+
+### 10.1 现象
+
+R2 独立初验确认：caller 可构造
+`source=HKEX_DAILY_QUOTATIONS`、`source_record_id=UA-M1-005`、UA-M1-005 canonical selector/key 的记录；
+即使 raw 内容为无关 JSON（例如 `{"not":"halt"}`），dataclass、Schema 和公共 loader 仍会接受。
+
+### 10.2 根因
+
+生产 verifier 只有在 `source == USER_APPROVED_MULTI_SOURCE_CONSENSUS` 时才调用
+`_verify_user_approved_no_trade_raw`；Schema 则以“非 USER_APPROVED 或任一 exact approved record”为析取，
+没有建立 UA-M1-005 record/selector 身份到 USER_APPROVED source 的反向约束。
+
+### 10.3 应遵循规则
+
+UA-M1-005 是用户批准的多来源共识证据，不是 HKEX daily quotations 证据。其 `source_record_id` 与
+`raw_selector` 都是来源身份的一部分；任一出现时必须强制 exact USER_APPROVED source 与整组 canonical key，
+不得通过更换 source 跳过 canonical raw 复核。不要借此收紧或重定义普通 HKEX quotations 通道。
+
+### 10.4 最小复现与新增测试
+
+- canonical UA-M1-005 + USER_APPROVED + canonical raw：继续通过；
+- canonical UA-M1-005 record/selector + `HKEX_DAILY_QUOTATIONS` + canonical raw：拒绝；
+- 同一伪 source + garbage raw：拒绝；
+- 只漂移 record 或 selector、source 仍 USER_APPROVED：拒绝；
+- UA-M1-001/004 与普通 HKEX quotations 正向行为、identity 均不漂移；
+- public 失败稳定为 `HK_HISTORY_REFERENCE_INVALID`，`cause/context=None`。
+
+### 10.5 通过条件
+
+只做上述反向来源绑定和相应定向回归；不得新增 source、列、dtype、public API 或正式数据写入。Windows focused、
+UA-M1-001/004/普通 HKEX 邻接、Ruff、mypy、cold import 通过后，由另一全新外部 Cursor 会话独立复验。
