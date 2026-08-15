@@ -15,7 +15,7 @@ import sys
 import tempfile
 import tomllib
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Literal, NoReturn, Protocol, SupportsIndex, TypeAlias, cast
 
@@ -24,11 +24,16 @@ _HASH_VERSION = "paper-runtime-hash-v2"
 _ENVIRONMENT_VERSION = "paper-runtime-environment-v2"
 _ATTESTATION_VERSION = "paper-runtime-environment-attestation-v1"
 _FORMAL_MODE: Literal["PAPER_REAL_TIME"] = "PAPER_REAL_TIME"
+_WINDOWS_FORMAL_MODE: Literal["PAPER_REAL_TIME_WINDOWS"] = "PAPER_REAL_TIME_WINDOWS"
+_FORMAL_MODES = frozenset({_FORMAL_MODE, _WINDOWS_FORMAL_MODE})
 _DEVELOPMENT_MODE: Literal["development-example"] = "development-example"
 _EXPECTED_WSL_BASE_PREFIX = PurePosixPath("/home/mabw/miniforge3")
+_EXPECTED_WINDOWS_BASE_PREFIX = Path(r"D:\Miniforge3")
 _SELECTOR = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _FORBIDDEN_FORMAL_SELECTOR_PARTS = ("development", "example", "fixture", "unknown")
 _REPARSE_POINT = 0x400
+_WINDOWS_DRIVE_FIXED = 3
+_WINDOWS_FILE_PERSISTENT_ACLS = 0x00000008
 
 
 class PaperRuntimeError(ValueError):
@@ -52,7 +57,7 @@ class FormalPaperRuntimeConfig:
     raw_sha256: str
     schema_version: str
     runtime_version: str
-    mode: Literal["PAPER_REAL_TIME"]
+    mode: Literal["PAPER_REAL_TIME", "PAPER_REAL_TIME_WINDOWS"]
     runtime_root: Path
     broker_root: Path
     evidence_root: Path
@@ -233,8 +238,12 @@ def _create_formal_environment_api() -> tuple[
             if type(fresh) is not FormalPaperRuntimeConfig or fresh != config:
                 raise _Failure("PAPER_RUNTIME_CONFIG_INVALID")
             parent = _syntactic_common_parent(config)
-            platform_proof = _run_platform_probe(parent, timestamp)
-            _run_formal_platform_verifier(platform_proof, parent)
+            platform_proof = _run_configured_platform_probe(
+                parent, timestamp, formal_mode=config.mode
+            )
+            _run_configured_formal_platform_verifier(
+                platform_proof, parent, mode=config.mode
+            )
             _after_platform_probe_hook(parent)
             layout = _run_layout_builder(config, allow_system_temp=False)
             _run_platform_layout_verifier(platform_proof, layout)
@@ -293,7 +302,7 @@ def load_paper_runtime_config(path: Path) -> PaperRuntimeConfig:
         failure = "PAPER_RUNTIME_CONFIG_INVALID"
     if failure is not None or parsed is None:
         raise PaperRuntimeError(failure or "PAPER_RUNTIME_CONFIG_INVALID") from None
-    if parsed.mode == _FORMAL_MODE:
+    if parsed.mode in _FORMAL_MODES:
         return _formal_config(parsed)
     return _development_config(parsed)
 
@@ -392,7 +401,9 @@ def _formal_config(parsed: _ParsedConfig) -> FormalPaperRuntimeConfig:
         raw_sha256=parsed.raw_sha256,
         schema_version=parsed.schema_version,
         runtime_version=parsed.runtime_version,
-        mode=_FORMAL_MODE,
+        mode=cast(
+            Literal["PAPER_REAL_TIME", "PAPER_REAL_TIME_WINDOWS"], parsed.mode
+        ),
         runtime_root=parsed.runtime_root,
         broker_root=parsed.broker_root,
         evidence_root=parsed.evidence_root,
@@ -468,9 +479,9 @@ def _load_config(path: Path) -> _ParsedConfig:
     if schema_version != _CONFIG_SCHEMA_VERSION:
         raise ValueError
     mode = _require_string(meta["mode"])
-    if mode not in {_FORMAL_MODE, _DEVELOPMENT_MODE}:
+    if mode not in {*_FORMAL_MODES, _DEVELOPMENT_MODE}:
         raise _ModeFailure
-    formal = mode == _FORMAL_MODE
+    formal = mode in _FORMAL_MODES
     runtime_version = _require_selector(meta["runtime_version"], formal=False)
     root_values = {
         name: _require_absolute_path(paths[name])
@@ -786,7 +797,7 @@ def _probe_root_identity(
         return _absent_root_identity(role, parent_identity, root)
     if not formal:
         raise _Failure("PAPER_RUNTIME_LAYOUT_INVALID")
-    if role not in {"broker", "runtime"}:
+    if role not in {"runtime", "broker", "evidence", "anchor", "log"}:
         raise _Failure("PAPER_RUNTIME_LAYOUT_INVALID")
     if stat.S_ISLNK(status.st_mode) or _is_reparse(status):
         raise _Failure("PAPER_RUNTIME_LAYOUT_INVALID")
@@ -921,6 +932,131 @@ def _run_platform_probe(parent: Path, now: dt.datetime) -> RuntimePlatformProof:
         raise _Failure("PAPER_RUNTIME_PLATFORM_UNSUPPORTED") from None
 
 
+def _run_configured_platform_probe(
+    parent: Path,
+    now: dt.datetime,
+    *,
+    formal_mode: Literal["PAPER_REAL_TIME", "PAPER_REAL_TIME_WINDOWS"],
+) -> RuntimePlatformProof:
+    proof = _run_platform_probe(parent, now)
+    if formal_mode == _WINDOWS_FORMAL_MODE:
+        try:
+            return _bind_windows_volume_proof(proof, parent)
+        except _Failure:
+            raise
+        except Exception:
+            raise _Failure("PAPER_RUNTIME_PLATFORM_UNSUPPORTED") from None
+    if formal_mode != _FORMAL_MODE:
+        raise _Failure("PAPER_RUNTIME_PLATFORM_UNSUPPORTED")
+    return proof
+
+
+def _bind_windows_volume_proof(
+    proof: RuntimePlatformProof, parent: Path
+) -> RuntimePlatformProof:
+    if proof.os_name != "Windows" or proof.wsl_generation != "none":
+        raise _Failure("PAPER_RUNTIME_PLATFORM_UNSUPPORTED")
+    mount_point, filesystem_type, device_identity, mount_options = (
+        _windows_volume_for(parent)
+    )
+    candidate = replace(
+        proof,
+        mount_point=mount_point,
+        mount_root="/",
+        filesystem_type=filesystem_type,
+        device_identity=device_identity,
+        mount_options=mount_options,
+        environment_identity="",
+        proof_digest="",
+    )
+    stable = _stable_platform_projection(candidate)
+    return replace(
+        candidate,
+        environment_identity=_sha256(stable),
+        proof_digest=_sha256(
+            {
+                **stable,
+                "probed_at": _canonical_datetime(candidate.probed_at),
+            }
+        ),
+    )
+
+
+def _windows_volume_for(parent: Path) -> tuple[str, str, str, tuple[str, ...]]:
+    """Return an actual fixed-NTFS volume projection without exposing its serial."""
+    if platform.system() != "Windows":
+        raise _Failure("PAPER_RUNTIME_PLATFORM_UNSUPPORTED")
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    get_volume_path = kernel32.GetVolumePathNameW
+    get_volume_path.argtypes = (wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD)
+    get_volume_path.restype = wintypes.BOOL
+    get_volume_information = kernel32.GetVolumeInformationW
+    get_volume_information.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+    )
+    get_volume_information.restype = wintypes.BOOL
+    get_drive_type = kernel32.GetDriveTypeW
+    get_drive_type.argtypes = (wintypes.LPCWSTR,)
+    get_drive_type.restype = wintypes.UINT
+
+    volume_path = ctypes.create_unicode_buffer(32768)
+    if not get_volume_path(
+        str(parent.resolve(strict=True)), volume_path, len(volume_path)
+    ):
+        raise _Failure("PAPER_RUNTIME_PLATFORM_UNSUPPORTED")
+    volume_root = volume_path.value
+    volume_name = ctypes.create_unicode_buffer(261)
+    filesystem_name = ctypes.create_unicode_buffer(261)
+    volume_serial = wintypes.DWORD()
+    maximum_component = wintypes.DWORD()
+    filesystem_flags = wintypes.DWORD()
+    if not get_volume_information(
+        volume_root,
+        volume_name,
+        len(volume_name),
+        ctypes.byref(volume_serial),
+        ctypes.byref(maximum_component),
+        ctypes.byref(filesystem_flags),
+        filesystem_name,
+        len(filesystem_name),
+    ):
+        raise _Failure("PAPER_RUNTIME_PLATFORM_UNSUPPORTED")
+    del maximum_component, volume_name
+    filesystem_type = filesystem_name.value.lower()
+    if (
+        filesystem_type != "ntfs"
+        or get_drive_type(volume_root) != _WINDOWS_DRIVE_FIXED
+        or not (filesystem_flags.value & _WINDOWS_FILE_PERSISTENT_ACLS)
+    ):
+        raise _Failure("PAPER_RUNTIME_PLATFORM_UNSUPPORTED")
+    parent_status = os.lstat(parent)
+    normalized_root = _path_key(Path(volume_root))
+    device_identity = _sha256(
+        {
+            "type": "paper-runtime-windows-volume-v1",
+            "volume_root": normalized_root,
+            "volume_serial": volume_serial.value,
+            "parent_device": parent_status.st_dev,
+        }
+    )
+    return (
+        normalized_root,
+        filesystem_type,
+        device_identity,
+        ("fixed-drive", "persistent-acls"),
+    )
+
+
 def _verify_formal_platform(proof: RuntimePlatformProof, parent: Path) -> None:
     _verify_platform_proof_digest(proof)
     expected_prefix = str(_EXPECTED_WSL_BASE_PREFIX)
@@ -944,6 +1080,39 @@ def _verify_formal_platform(proof: RuntimePlatformProof, parent: Path) -> None:
         raise _Failure("PAPER_RUNTIME_PLATFORM_UNSUPPORTED")
 
 
+def _verify_windows_formal_platform(
+    proof: RuntimePlatformProof, parent: Path
+) -> None:
+    _verify_platform_proof_digest(proof)
+    expected_prefix_path = _EXPECTED_WINDOWS_BASE_PREFIX.resolve(strict=True)
+    expected_executable_path = (expected_prefix_path / "python.exe").resolve(strict=True)
+    mount_point, filesystem_type, device_identity, mount_options = (
+        _windows_volume_for(parent)
+    )
+    if (
+        proof.os_name != "Windows"
+        or proof.wsl_generation != "none"
+        or proof.filesystem_type != filesystem_type
+        or proof.filesystem_type != "ntfs"
+        or proof.mount_point != mount_point
+        or proof.mount_root != "/"
+        or proof.mount_options != mount_options
+        or proof.python_prefix != str(expected_prefix_path)
+        or proof.conda_prefix != str(expected_prefix_path)
+        or proof.python_executable != str(expected_executable_path)
+        or proof.conda_environment != "base"
+        or proof.python_prefix_identity
+        != _directory_identity(expected_prefix_path, os.stat(expected_prefix_path))
+        or proof.python_executable_identity
+        != _regular_file_identity(
+            expected_executable_path, os.stat(expected_executable_path)
+        )
+        or proof.parent_identity != _directory_identity(parent, os.lstat(parent))
+        or proof.device_identity != device_identity
+    ):
+        raise _Failure("PAPER_RUNTIME_PLATFORM_UNSUPPORTED")
+
+
 def _run_formal_platform_verifier(proof: RuntimePlatformProof, parent: Path) -> None:
     try:
         _verify_formal_platform(proof, parent)
@@ -951,6 +1120,31 @@ def _run_formal_platform_verifier(proof: RuntimePlatformProof, parent: Path) -> 
         raise
     except Exception:
         raise _Failure("PAPER_RUNTIME_PLATFORM_UNSUPPORTED") from None
+
+
+def _run_windows_formal_platform_verifier(
+    proof: RuntimePlatformProof, parent: Path
+) -> None:
+    try:
+        _verify_windows_formal_platform(proof, parent)
+    except _Failure:
+        raise
+    except Exception:
+        raise _Failure("PAPER_RUNTIME_PLATFORM_UNSUPPORTED") from None
+
+
+def _run_configured_formal_platform_verifier(
+    proof: RuntimePlatformProof,
+    parent: Path,
+    *,
+    mode: Literal["PAPER_REAL_TIME", "PAPER_REAL_TIME_WINDOWS"],
+) -> None:
+    if mode == _FORMAL_MODE:
+        _run_formal_platform_verifier(proof, parent)
+    elif mode == _WINDOWS_FORMAL_MODE:
+        _run_windows_formal_platform_verifier(proof, parent)
+    else:
+        raise _Failure("PAPER_RUNTIME_PLATFORM_UNSUPPORTED")
 
 
 def _verify_platform_proof_digest(proof: RuntimePlatformProof) -> None:
@@ -987,10 +1181,22 @@ def _run_platform_layout_verifier(
     try:
         _verify_platform_proof_digest(proof)
         current_parent = _directory_identity(layout.parent, os.lstat(layout.parent))
+        if proof.os_name == "Windows" and proof.filesystem_type == "ntfs":
+            mount_point, filesystem_type, device_identity, mount_options = (
+                _windows_volume_for(layout.parent)
+            )
+            storage_matches = (
+                proof.mount_point == mount_point
+                and proof.filesystem_type == filesystem_type
+                and proof.device_identity == device_identity
+                and proof.mount_options == mount_options
+            )
+        else:
+            storage_matches = proof.device_identity == str(os.lstat(layout.parent).st_dev)
         if (
             proof.parent_identity != layout.parent_identity
             or proof.parent_identity != current_parent
-            or proof.device_identity != str(os.lstat(layout.parent).st_dev)
+            or not storage_matches
             or not _is_within(layout.parent, Path(proof.mount_point))
         ):
             raise _Failure("PAPER_RUNTIME_LAYOUT_INVALID")

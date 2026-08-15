@@ -317,6 +317,15 @@ def test_formal_snapshot_port_rejects_wrong_identity_and_hostile_fresh_error(
     capability.store.close()
 
 
+def test_exact_eod_mutation_helper_is_not_a_public_formal_api() -> None:
+    assert "_finalize_and_query_formal_paper_broker_eod" not in (
+        formal_snapshot.__all__
+    )
+    assert not hasattr(
+        formal_snapshot, "finalize_and_query_verified_formal_paper_broker_eod"
+    )
+
+
 def test_failed_initialization_removes_only_owned_empty_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

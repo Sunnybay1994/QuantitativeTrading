@@ -2,6 +2,10 @@
 schema_version = "paper-runtime-config-v2"
 runtime_version = "paper_runtime_v2"
 mode = "development-example"
+# Formal deployments must use a separate ignored config. Supported exact modes are:
+# - PAPER_REAL_TIME: Linux + WSL2 + ext4 + /home/mabw/miniforge3 base.
+# - PAPER_REAL_TIME_WINDOWS: Windows + local fixed NTFS + D:/Miniforge3 base.
+# Both formal modes require five sibling roots below one physical, non-reparse parent.
 
 [paths]
 runtime_root = "/absolute/development-paper-parent/runtime"
