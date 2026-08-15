@@ -1,0 +1,224 @@
+import datetime as dt
+import hashlib
+import io
+import json
+from pathlib import Path
+
+import polars as pl
+import pytest
+
+from quant.gui.research_runs import (
+    discover_research_runs,
+    load_nav_projection,
+    verify_research_run,
+)
+from quant.research.lightweight_run import (
+    LightweightResearchRunV1,
+    ResearchFoldV1,
+    ResearchInputDigestV1,
+    publish_lightweight_research_run,
+)
+
+
+def _sha(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _nav_payload(*, include_fold: bool = True) -> bytes:
+    values: dict[str, list[object]] = {
+        "strategy": ["s1", "s1", "s1"],
+        "date": [
+            dt.date(2026, 7, 8),
+            dt.date(2026, 7, 9),
+            dt.date(2026, 7, 9),
+        ],
+        "unit_nav": [1.0, 1.01, 1.005],
+        "cost_multiplier": [1.0, 1.0, 2.0],
+    }
+    if include_fold:
+        values["fold"] = [1, 1, 1]
+    buffer = io.BytesIO()
+    pl.DataFrame(values).write_parquet(buffer)
+    return buffer.getvalue()
+
+
+def _publish_run(
+    tmp_path: Path,
+    *,
+    nav_payload: bytes | None = None,
+) -> tuple[Path, Path]:
+    artifact_root = tmp_path / "artifacts"
+    run = LightweightResearchRunV1(
+        schema_version="lightweight-research-run-v1",
+        run_id="",
+        hypothesis_id="gui-g0-fixture",
+        hypothesis="A read-only GUI should project verified immutable evidence.",
+        strategy_name="fixture_strategy",
+        strategy_version="1.0.0",
+        conclusion="RESEARCH_ONLY",
+        random_seed=0,
+        config_relative_path="configs/research/gui_fixture.toml",
+        config_sha256=_sha(b"config"),
+        code_sha256=_sha(b"code"),
+        universe_name="GUI_G0_FIXTURE",
+        universe_frozen_as_of=dt.date(2026, 7, 7),
+        candidate_symbols=("510300.SH",),
+        data_start=dt.date(2025, 1, 1),
+        data_end=dt.date(2026, 7, 9),
+        signal_timing="close",
+        execution_timing="next_session_open",
+        valuation_timing="close",
+        folds=(
+            ResearchFoldV1(
+                1,
+                dt.date(2025, 1, 1),
+                dt.date(2025, 6, 30),
+                dt.date(2025, 7, 1),
+                dt.date(2025, 9, 30),
+                dt.date(2025, 10, 1),
+                dt.date(2026, 7, 9),
+            ),
+        ),
+        cost_multipliers=(0.5, 1.0, 2.0),
+        selection_metric="net_sharpe",
+        inputs=(
+            ResearchInputDigestV1(
+                name="prices",
+                rows=2,
+                min_date=dt.date(2026, 7, 8),
+                max_date=dt.date(2026, 7, 9),
+                content_sha256=_sha(b"prices"),
+            ),
+        ),
+        outputs=(),
+        aggregate_metrics=(("fold_count", 1), ("net_sharpe", 0.75)),
+        caveats=("Research-only fixture.",),
+    )
+    outputs = {
+        "report.json": b"{}",
+        "test_nav.parquet": nav_payload if nav_payload is not None else _nav_payload(),
+    }
+    run_root, _, _ = publish_lightweight_research_run(
+        artifact_root=artifact_root,
+        run=run,
+        output_payloads=outputs,
+    )
+    return artifact_root, run_root
+
+
+def _only_run(artifact_root: Path):  # type: ignore[no-untyped-def]
+    catalog = discover_research_runs(artifact_root)
+    assert catalog.issues == ()
+    assert len(catalog.runs) == 1
+    return catalog.runs[0]
+
+
+def test_missing_runs_root_is_a_visible_nonfatal_issue(tmp_path: Path) -> None:
+    catalog = discover_research_runs(tmp_path / "missing")
+
+    assert catalog.runs == ()
+    assert [issue.code for issue in catalog.issues] == ["RUNS_ROOT_MISSING"]
+
+
+def test_valid_run_requires_integrity_before_bounded_nav_projection(tmp_path: Path) -> None:
+    artifact_root, _ = _publish_run(tmp_path)
+    run = _only_run(artifact_root)
+
+    blocked = load_nav_projection(run)
+    assert blocked.status == "BLOCKED"
+    assert blocked.issue is not None
+    assert blocked.issue.code == "NAV_NOT_AVAILABLE"
+
+    integrity = verify_research_run(run)
+    assert integrity.status == "VERIFIED"
+    assert integrity.checked_files == 2
+
+    nav = load_nav_projection(integrity)
+    assert nav.status == "AVAILABLE"
+    assert nav.issue is None
+    assert nav.frame is not None
+    assert nav.frame.height == 2
+    assert nav.frame.get_column("cost_multiplier").to_list() == [1.0, 1.0]
+    assert nav.frame.get_column("series").to_list() == ["s1 / fold 1", "s1 / fold 1"]
+
+
+def test_noncanonical_manifest_is_rejected_without_breaking_catalog(tmp_path: Path) -> None:
+    artifact_root, run_root = _publish_run(tmp_path)
+    manifest_path = run_root / "run.json"
+    parsed = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_path.write_text(json.dumps(parsed, indent=2), encoding="utf-8")
+
+    catalog = discover_research_runs(artifact_root)
+
+    assert catalog.runs == ()
+    assert [issue.code for issue in catalog.issues] == ["RUN_MANIFEST_NONCANONICAL"]
+
+
+def test_directory_identity_mismatch_is_rejected(tmp_path: Path) -> None:
+    artifact_root, run_root = _publish_run(tmp_path)
+    other_id = "f" * 64 if run_root.name != "f" * 64 else "e" * 64
+    run_root.rename(run_root.with_name(other_id))
+
+    catalog = discover_research_runs(artifact_root)
+
+    assert catalog.runs == ()
+    assert [issue.code for issue in catalog.issues] == ["RUN_ID_MISMATCH"]
+
+
+def test_tampered_output_blocks_integrity_and_nav(tmp_path: Path) -> None:
+    artifact_root, run_root = _publish_run(tmp_path)
+    run = _only_run(artifact_root)
+    (run_root / "report.json").write_bytes(b"tampered")
+
+    integrity = verify_research_run(run)
+
+    assert integrity.status == "BLOCKED"
+    assert integrity.issue is not None
+    assert integrity.issue.code == "RUN_OUTPUT_DIGEST_MISMATCH"
+    nav = load_nav_projection(integrity)
+    assert nav.status == "BLOCKED"
+
+
+def test_extra_file_blocks_exact_output_tree(tmp_path: Path) -> None:
+    artifact_root, run_root = _publish_run(tmp_path)
+    run = _only_run(artifact_root)
+    (run_root / "unexpected.tmp").write_bytes(b"unexpected")
+
+    integrity = verify_research_run(run)
+
+    assert integrity.status == "BLOCKED"
+    assert integrity.issue is not None
+    assert integrity.issue.code == "RUN_TREE_MISMATCH"
+
+
+def test_linked_output_is_blocked_even_when_target_bytes_match(tmp_path: Path) -> None:
+    artifact_root, run_root = _publish_run(tmp_path)
+    run = _only_run(artifact_root)
+    output_path = run_root / "report.json"
+    target = tmp_path / "matching-report.json"
+    target.write_bytes(output_path.read_bytes())
+    output_path.unlink()
+    try:
+        output_path.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is not available: {exc}")
+
+    integrity = verify_research_run(run)
+
+    assert integrity.status == "BLOCKED"
+    assert integrity.issue is not None
+    assert integrity.issue.code == "RUN_OUTPUT_INVALID"
+
+
+def test_invalid_nav_schema_is_not_projected(tmp_path: Path) -> None:
+    artifact_root, _ = _publish_run(tmp_path, nav_payload=_nav_payload(include_fold=False))
+    run = _only_run(artifact_root)
+    integrity = verify_research_run(run)
+    assert integrity.status == "VERIFIED"
+
+    nav = load_nav_projection(integrity)
+
+    assert nav.status == "BLOCKED"
+    assert nav.frame is None
+    assert nav.issue is not None
+    assert nav.issue.code == "NAV_SCHEMA_INVALID"
