@@ -41,7 +41,8 @@
 - M4 RUN-0D2 已以 `92de0d4` 合流，但没有启动 PAPER、订单或 28 日计时。正常 PAPER 启动仍须关闭
   UA-M4-005 durable approval 与 UA-M4-006 shared barrier，再按顺序完成 cross-day rotation；UA-M4-007 只约束
   正常窗口结束后的 actual fault drill，不冒充首日启动前置。框架 owner 的单文件状态提交 `c2b4829` 已通过
-  `7b377db` 合流；A/B 代码在用户裁定前暂停。
+  `7b377db` 合流，并由 `archive/m4-windows-soak-runtime-20260816` 留档；来源 worktree/branch 已 clean 退休。
+  A/B 代码在用户裁定前暂停，未来 UA 包必须从当时最新 integration 新建，不能复用旧 M4 base。
 - GUI C4 `18dc006` 已合流：optional 依赖为 `streamlit>=1.49,<2`，12 处 dataframe 参数已迁移；真实 AppTest/browser
   功能 smoke 通过且 console error 为 0。GUI D1 `9f42b3c` 又以只读的 14 字段关系诊断进入 `8427c83`；来源环境
   AppTest 5 passed/0 skipped，integration 最小回归 19 passed/2 skipped，真实 canonical 字节派生的隔离篡改反例
