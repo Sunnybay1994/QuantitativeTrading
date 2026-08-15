@@ -10,8 +10,10 @@ import polars as pl
 import pytest
 
 from quant.factors import DAILY_VALUE_FACTOR_NAMES
+from quant.research.lightweight_run import ResearchFoldV1
 from quant.research.run_daily_value_factors import (
     _validate_config,
+    apply_max_control_admission_gates,
     apply_coverage_gate,
     apply_expected_direction_gate,
     apply_redundancy_gate,
@@ -19,6 +21,8 @@ from quant.research.run_daily_value_factors import (
     build_factor_coverage,
     build_daily_value_panel,
     build_monthly_liquidity_panel,
+    evaluate_max_control_coverage,
+    evaluate_max_control_schedule_alignment,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -323,6 +327,241 @@ def test_monthly_liquidity_configs_are_frozen(name: str) -> None:
     wrong_coverage["factors"]["minimum_median_coverage"] = 0.799
     with pytest.raises(ValueError, match="invalid daily-value-factor config"):
         _validate_config(wrong_coverage, threads=2)
+
+    with pytest.raises(ValueError, match="invalid daily-value-factor config"):
+        _validate_config(config, threads=3)
+
+
+def _max_fold() -> ResearchFoldV1:
+    return ResearchFoldV1(
+        fold=1,
+        train_start=dt.date(2023, 1, 1),
+        train_end=dt.date(2023, 12, 31),
+        validation_start=dt.date(2024, 1, 1),
+        validation_end=dt.date(2024, 12, 31),
+        test_start=dt.date(2025, 1, 1),
+        test_end=dt.date(2025, 1, 6),
+    )
+
+
+def _max_gate_evidence() -> tuple[
+    pl.DataFrame,
+    pl.DataFrame,
+    pl.DataFrame,
+    pl.DataFrame,
+    pl.DataFrame,
+]:
+    factor = "max_daily_return_20_size_turnover_residual"
+    summary = pl.DataFrame(
+        {"factor": [factor], "research_status": ["RESEARCH_ONLY"]}
+    )
+    folds = pl.DataFrame(
+        {
+            "factor": [factor] * 3,
+            "cost_multiplier": [1.0] * 3,
+            "direction": [-1] * 3,
+            "validation_observed_direction": [-1] * 3,
+        }
+    )
+    coverage = pl.DataFrame(
+        {
+            "factor": [factor],
+            "dates": [5],
+            "scheduled_rebalance_dates": [3],
+            "minimum_rebalance_valid_rows": [100],
+            "median_coverage": [0.80],
+            "coverage_passed": [True],
+        }
+    )
+    schedule = pl.DataFrame(
+        {
+            "factor": [factor],
+            "fold": [1],
+            "schedule_aligned": [True],
+        }
+    )
+    diagnostics = pl.DataFrame(
+        {
+            "trade_date": [dt.date(2025, 1, day) for day in range(1, 6)],
+            "regression_valid": [True] * 5,
+        }
+    )
+    return summary, folds, coverage, schedule, diagnostics
+
+
+def test_max_control_gate_keeps_raw_correlations_explanatory_and_fails_closed() -> None:
+    summary, folds, coverage, schedule, diagnostics = _max_gate_evidence()
+
+    passing = apply_max_control_admission_gates(
+        summary,
+        fold_metrics=folds,
+        coverage_summary=coverage,
+        schedule_alignment=schedule,
+        regression_diagnostics=diagnostics,
+        expected_direction=-1,
+    )
+    assert passing.get_column("research_status").item() == "RESEARCH_ONLY"
+    assert "redundancy_passed" not in passing.columns
+
+    wrong_validation = folds.with_columns(
+        pl.lit(1).alias("validation_observed_direction")
+    )
+    cases = (
+        {"fold_metrics": wrong_validation},
+        {
+            "coverage_summary": coverage.with_columns(
+                pl.lit(False).alias("coverage_passed")
+            )
+        },
+        {
+            "schedule_alignment": schedule.with_columns(
+                pl.lit(False).alias("schedule_aligned")
+            )
+        },
+        {
+            "regression_diagnostics": diagnostics.with_columns(
+                pl.when(pl.col("trade_date") == dt.date(2025, 1, 3))
+                .then(False)
+                .otherwise(pl.col("regression_valid"))
+                .alias("regression_valid")
+            )
+        },
+    )
+    base = {
+        "fold_metrics": folds,
+        "coverage_summary": coverage,
+        "schedule_alignment": schedule,
+        "regression_diagnostics": diagnostics,
+    }
+    for changed in cases:
+        evidence = {**base, **changed}
+        result = apply_max_control_admission_gates(
+            summary,
+            fold_metrics=evidence["fold_metrics"],
+            coverage_summary=evidence["coverage_summary"],
+            schedule_alignment=evidence["schedule_alignment"],
+            regression_diagnostics=evidence["regression_diagnostics"],
+            expected_direction=-1,
+        )
+        assert result.get_column("research_status").item() == "REJECTED"
+
+
+def test_max_control_coverage_and_rebalance_schedule_are_exact() -> None:
+    factor = "max_daily_return_20_size_turnover_residual"
+    dates = tuple(dt.date(2025, 1, day) for day in range(1, 6))
+    panel = pl.DataFrame(
+        [
+            {
+                "symbol": f"{600000 + symbol_index:06d}.SH",
+                "trade_date": trade_date,
+                "exit_date_20": dt.date(2025, 1, 6),
+                factor: float(symbol_index),
+            }
+            for trade_date in dates
+            for symbol_index in range(100)
+        ]
+    )
+    coverage, coverage_summary = evaluate_max_control_coverage(
+        panel,
+        factors=(factor,),
+        start_date=dates[0],
+        end_date=dates[-1],
+        folds=(_max_fold(),),
+        rebalance_every_sessions=2,
+        minimum_rebalance_symbols=100,
+        minimum_median_coverage=0.80,
+    )
+    assert coverage_summary.select(
+        "minimum_rebalance_valid_rows", "median_coverage", "coverage_passed"
+    ).row(0) == (100, 1.0, True)
+    assert coverage.filter(pl.col("scheduled_rebalance")).height == 3
+
+    targets = pl.DataFrame(
+        {
+            "factor": [factor] * 3,
+            "fold": [1] * 3,
+            "as_of": [dates[0], dates[2], dates[4]],
+        }
+    )
+    aligned = evaluate_max_control_schedule_alignment(
+        panel,
+        targets,
+        factors=(factor,),
+        folds=(_max_fold(),),
+        rebalance_every_sessions=2,
+    )
+    assert aligned.get_column("schedule_aligned").item()
+
+    shifted = targets.with_columns(
+        pl.when(pl.col("as_of") == dates[2])
+        .then(dates[3])
+        .otherwise(pl.col("as_of"))
+        .alias("as_of")
+    )
+    misaligned = evaluate_max_control_schedule_alignment(
+        panel,
+        shifted,
+        factors=(factor,),
+        folds=(_max_fold(),),
+        rebalance_every_sessions=2,
+    )
+    assert not misaligned.get_column("schedule_aligned").item()
+
+    insufficient = panel.with_columns(
+        pl.when(
+            (pl.col("trade_date") == dates[0])
+            & (pl.col("symbol") == "600000.SH")
+        )
+        .then(None)
+        .otherwise(pl.col(factor))
+        .alias(factor)
+    )
+    _, insufficient_summary = evaluate_max_control_coverage(
+        insufficient,
+        factors=(factor,),
+        start_date=dates[0],
+        end_date=dates[-1],
+        folds=(_max_fold(),),
+        rebalance_every_sessions=2,
+        minimum_rebalance_symbols=100,
+        minimum_median_coverage=0.80,
+    )
+    assert insufficient_summary.select(
+        "minimum_rebalance_valid_rows", "coverage_passed"
+    ).row(0) == (99, False)
+
+
+@pytest.mark.parametrize(
+    ("section", "key", "value"),
+    [
+        ("max_control", "rank_method", "dense"),
+        ("max_control", "raw_max_run_id", "0" * 64),
+        ("max_control", "daily_basic_snapshot_id", "0" * 64),
+        ("max_control", "minimum_regression_rows", 99),
+        ("max_control", "maximum_condition_number", 999_999.0),
+        (
+            "max_control",
+            "normal_equation_orthogonality_tolerance",
+            1.0001e-10,
+        ),
+        ("max_control", "singularity_rule", "determinant_only"),
+        ("max_control", "expected_direction", 1),
+        ("max_control", "trial_budget", 2),
+        ("coverage", "minimum_median_coverage", 0.7999),
+    ],
+)
+def test_max_control_config_locks_numeric_and_identity_contract(
+    section: str, key: str, value: object
+) -> None:
+    path = PROJECT_ROOT / "configs/research/m2_max_daily_basic_controls.toml"
+    with path.open("rb") as stream:
+        config = tomllib.load(stream)
+    _validate_config(config, threads=2)
+
+    changed = deepcopy(config)
+    changed[section][key] = value
+    with pytest.raises(ValueError, match="invalid daily-value-factor config"):
+        _validate_config(changed, threads=2)
 
     with pytest.raises(ValueError, match="invalid daily-value-factor config"):
         _validate_config(config, threads=3)
