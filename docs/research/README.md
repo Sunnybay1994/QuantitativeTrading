@@ -51,3 +51,12 @@
 - [自由流通换手因子研究结果](M2_自由流通换手因子研究结果.md)
 
 两项真实不可变运行均已完成；三个候选因子全部 `REJECTED`，未生成 `PAPER_CANDIDATE`，也未启动 PAPER。
+
+## Benchmark 条件市场风险因子
+
+- [510300 下行 Beta 因子假设卡](M2_510300下行Beta因子假设卡.md)
+- [510300 下行 Beta 因子研究结果](M2_510300下行Beta因子研究结果.md)
+
+真实不可变运行结论为 `REJECTED`：coverage、调仓日对账和冗余门禁通过，但 RankIC、跨 fold 方向稳定性和
+2 倍成本后收益不足。预注册方向是防御型低 beta/BAB 风格的 `-1`，并不冒充经典 downside-risk positive
+premium；没有生成 `PAPER_CANDIDATE`，也没有启动 PAPER。
