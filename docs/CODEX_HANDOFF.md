@@ -6,7 +6,7 @@
   M1 `9004b6d`、S2 `4ac392a`、liquidity `ec506b6`、GUI G1/C4 `a5c63f7`/`18dc006`、M4 RUN-0D2
   `92de0d4`、downside beta `3c8c6c4`、Alpha158 `0f737ac` 与 MAX `0363b0f`。此后 `ba83ad7` 吸收
   R10 证据，`c2c8841` 吸收 MAX daily-basic 控制，`8427c83` 吸收 GUI D1，`086cae9` 吸收 PIT 首跑前置，
-  `4745cb4` 吸收 FWD-R1，`936ffee` 吸收 PIT R2 维度审计；MAX-control 合流回归为 25 passed，GUI D1 为
+  `4745cb4` 吸收 FWD-R1，`936ffee` 吸收 PIT R2 维度审计，`7b377db` 吸收框架 owner 的 M3/M4 状态收口；MAX-control 合流回归为 25 passed，GUI D1 为
   19 passed/2 skipped，PIT 前置为 32 passed，FWD-R1 为 17 passed/1 skipped，PIT R2 为 18 passed，五者定向
   Ruff、mypy、cold import 均通过，不把这些定向证据扩大表述为覆盖其它范围。
 - 根 checkout 仍停在 `codex/m2-strategy-fastlane@4d569be`，由唯一 Tushare finance writer 使用；writer
@@ -32,12 +32,16 @@
   当前 raw、snapshot 或真实 report-type 分布已经 READY。PIT R2 `cadff72` 的 audit schema v3、维度计数闭包和
   publisher 严格结构校验已进入 `936ffee`，来源线也已 archive-first 退出；本次只完成代码与 fixture 回归，未读取
   partial raw、未执行 integrated `--verify-bytes`、未选择 allowed values，也未发布 snapshot。
-- M3 retained 两折链仍没有权威 `completion.json`，stderr 为空且 owned 进程仍在运行；detached
-  `c9f2f36`、两份 session 配置、owned 解释器与 `codex/m3-g8e-r2-windows-hardlink@71dffa5` 继续冻结，
-  不恢复、不重启、不清理，也不以旧 receipt 代替本轮 completion；新 owned child 证明 fold2 h10 仍在自然运行。
+- M3 retained 两折链已进入显式失败终态，而不是运行中或成功 completion：四个 backtest 与 h5/h10 两份 summary
+  已完成，但首个 reproducibility 组合 `fold_001/h5` 以 `M3_REPRODUCIBILITY_INVALID` fail closed，wrapper 随后
+  `RETAINED_RESUME_FAILED`；evidence 为 `child_returncode=1 / outcome=FAILED / cleanup=REMOVED`，`completion.json`、
+  reproducibility artifact/receipt 与 readiness evidence 均不存在，相关进程已退出。detached `c9f2f36`、失败证据、
+  两份 session 配置和 `codex/m3-g8e-r2-windows-hardlink@71dffa5` 继续冻结；当前只允许窄范围只读根因诊断，禁止
+  自动恢复、重跑、切换 revision 或清理现场。
 - M4 RUN-0D2 已以 `92de0d4` 合流，但没有启动 PAPER、订单或 28 日计时。正常 PAPER 启动仍须关闭
   UA-M4-005 durable approval 与 UA-M4-006 shared barrier，再按顺序完成 cross-day rotation；UA-M4-007 只约束
-  正常窗口结束后的 actual fault drill，不冒充首日启动前置。A/B 代码在用户裁定前暂停。
+  正常窗口结束后的 actual fault drill，不冒充首日启动前置。框架 owner 的单文件状态提交 `c2b4829` 已通过
+  `7b377db` 合流；A/B 代码在用户裁定前暂停。
 - GUI C4 `18dc006` 已合流：optional 依赖为 `streamlit>=1.49,<2`，12 处 dataframe 参数已迁移；真实 AppTest/browser
   功能 smoke 通过且 console error 为 0。GUI D1 `9f42b3c` 又以只读的 14 字段关系诊断进入 `8427c83`；来源环境
   AppTest 5 passed/0 skipped，integration 最小回归 19 passed/2 skipped，真实 canonical 字节派生的隔离篡改反例
