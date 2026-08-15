@@ -579,7 +579,7 @@ def test_development_evidence_never_returns_pass(tmp_path: Path) -> None:
     assert decision.last_observed_at - decision.first_observed_at >= dt.timedelta(days=28)
 
 
-def test_formal_kind_still_waits_for_natural_span_and_fault_matrix(
+def test_formal_empty_session_is_durably_blocked_without_order_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = (tmp_path / "explicit-formal-root").resolve()
@@ -603,9 +603,11 @@ def test_formal_kind_still_waits_for_natural_span_and_fault_matrix(
     decision = decide_soak_gate(
         verified, root=root, anchor_root=_anchor_root(root), as_of=clock[0]
     )
-    assert decision.status == "WAITING_FOR_SOAK_EVIDENCE"
-    assert "SOAK_MINIMUM_DURATION_PENDING" in decision.stable_codes
-    assert "SOAK_FAULT_DRILL_MISSING" in decision.stable_codes
+    assert decision.status == "BLOCKED"
+    assert verified.sessions[0].issue_codes == (
+        "SOAK_SESSION_ORDER_RECEIPT_MISSING",
+    )
+    assert "SOAK_SESSION_BLOCKED" in decision.stable_codes
 
 
 def test_windows_scope_manifest_wait_block_and_complete_decisions(
@@ -848,17 +850,9 @@ def test_recovery_type_is_exact_not_subclass(tmp_path: Path) -> None:
         )
 
 
-@pytest.mark.parametrize(
-    "kind",
-    (
-        SoakEvidenceKind.PAPER_REAL_TIME,
-        SoakEvidenceKind.PAPER_REAL_TIME_WINDOWS,
-    ),
-)
-def test_formal_clock_rejects_backdated_single_process_evidence(
+def test_linux_formal_clock_rejects_backdated_single_process_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    kind: SoakEvidenceKind,
 ) -> None:
     now = dt.datetime(2026, 8, 9, 8, tzinfo=UTC)
     monkeypatch.setattr(soak_module, "_production_utc_now", lambda: now)
@@ -868,10 +862,51 @@ def test_formal_clock_rejects_backdated_single_process_evidence(
         _manifest(
             root,
             dates,
-            kind=kind,
+            kind=SoakEvidenceKind.PAPER_REAL_TIME,
             started_at=now - dt.timedelta(days=29),
         )
     assert error.value.__cause__ is None and error.value.__context__ is None
+
+
+def test_exact_persisted_formal_manifest_reopens_after_clock_advance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = dt.datetime(2026, 8, 9, 8, tzinfo=UTC)
+    clock = [started]
+    monkeypatch.setattr(soak_module, "_production_utc_now", lambda: clock[0])
+    root = (tmp_path / "formal-manifest-reopen").resolve()
+    manifest = _manifest(
+        root,
+        (started.date(),),
+        kind=SoakEvidenceKind.PAPER_REAL_TIME_WINDOWS,
+        started_at=started,
+    )
+
+    clock[0] = started + dt.timedelta(days=7)
+    reopened = _manifest(
+        root,
+        (started.date(),),
+        kind=SoakEvidenceKind.PAPER_REAL_TIME_WINDOWS,
+        started_at=started,
+    )
+
+    assert reopened == manifest
+
+
+def test_session_order_receipt_identity_rejects_old_date(tmp_path: Path) -> None:
+    recovery, _, _ = _filled_inputs(tmp_path)
+    session_date = recovery.commands[0].intent.session_date
+
+    identity = soak_module._session_order_semantic_closure_identity(
+        recovery, session_date=session_date
+    )
+    assert len(identity) == 64
+    with pytest.raises(
+        SoakError, match="^SOAK_SESSION_ORDER_RECEIPT_MISSING$"
+    ):
+        soak_module._session_order_semantic_closure_identity(
+            recovery, session_date=session_date + DAY
+        )
 
 
 def test_manifest_is_bound_to_original_physical_root(tmp_path: Path) -> None:

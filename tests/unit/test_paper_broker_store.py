@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import json
 import os
 import shutil
 import sqlite3
@@ -162,6 +163,59 @@ def test_database_file_replacement_is_identity_drift(tmp_path: Path) -> None:
 def test_initial_store_is_not_eod_final(tmp_path: Path) -> None:
     store, _ = _store(tmp_path)
     assert store.evidence_finality() == "INTRADAY"
+
+
+def test_exact_zero_order_finality_is_bound_and_idempotent(tmp_path: Path) -> None:
+    store, _ = _store(tmp_path)
+    session_date = NOW.date()
+    finalized_at = NOW + dt.timedelta(minutes=5)
+    closure_identity = hashlib.sha256(b"exact-order-semantic-closure").hexdigest()
+
+    store.record_zero_broker_command_session_finality(
+        session_date=session_date,
+        finalized_at=finalized_at,
+        order_semantic_closure_identity=closure_identity,
+    )
+    store.record_zero_broker_command_session_finality(
+        session_date=session_date,
+        finalized_at=finalized_at,
+        order_semantic_closure_identity=closure_identity,
+    )
+
+    marker = store.read_session_finality(session_date=session_date)
+    assert marker is not None
+    assert marker.session_date == session_date
+    assert marker.finalized_at == finalized_at
+    assert marker.order_semantic_closure_identity == closure_identity
+    snapshot = store.read_evidence_snapshot(session_date=session_date)
+    assert snapshot[3] == NOW
+    assert snapshot[-1] == "END_OF_DAY"
+    assert store.evidence_finality() == "INTRADAY"
+
+    with pytest.raises(
+        PaperBrokerStoreError, match="^PAPER_BROKER_FINALITY_CONFLICT$"
+    ):
+        store.record_zero_broker_command_session_finality(
+            session_date=session_date,
+            finalized_at=NOW,
+            order_semantic_closure_identity="f" * 64,
+        )
+
+
+def test_zero_order_finality_decoder_rejects_numeric_identity() -> None:
+    payload = json.dumps(
+        {
+            "finalized_at": NOW.isoformat().replace("+00:00", "Z"),
+            "order_semantic_closure_identity": int("1" * 64),
+            "schema_version": "paper-zero-broker-command-session-finality-v1",
+            "session_date": NOW.date().isoformat(),
+        }
+    ).encode()
+
+    with pytest.raises(
+        PaperBrokerStoreError, match="^PAPER_BROKER_JOURNAL_INVALID$"
+    ):
+        broker_store_module._decode_finality_payload(payload)
 
 
 def test_explicit_close_maps_failure_but_attempts_every_handle(

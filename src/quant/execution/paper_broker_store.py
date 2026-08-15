@@ -120,6 +120,19 @@ class RetainedOperation:
     result_payload: bytes
 
 
+@dataclass(frozen=True, slots=True)
+class PaperSessionFinality:
+    """Exact durable EOD marker for one explicitly named broker session."""
+
+    schema_version: Literal[
+        "paper-session-finality-v1",
+        "paper-zero-broker-command-session-finality-v1",
+    ]
+    session_date: dt.date
+    finalized_at: dt.datetime
+    order_semantic_closure_identity: str | None
+
+
 def build_paper_account_descriptor(
     *, account_label: str, created_at: dt.datetime, base_currency: Currency,
     initial_snapshot: AccountSnapshot,
@@ -550,6 +563,8 @@ class PaperBrokerStore:
 
     def read_evidence_snapshot(
         self,
+        *,
+        session_date: dt.date | None = None,
     ) -> tuple[
         AccountSnapshot,
         tuple[BrokerOrderObservation, ...],
@@ -558,9 +573,12 @@ class PaperBrokerStore:
         str,
         Literal["INTRADAY", "END_OF_DAY"],
     ]:
-        """Rebuild one broker evidence bundle from one SQLite read snapshot."""
+        """Rebuild broker evidence, optionally bound to one exact session."""
         self.verify_fresh()
         try:
+            if session_date is not None and type(session_date) is not dt.date:
+                raise ValueError
+            finality_marker: PaperSessionFinality | None = None
             with self._connect() as conn:
                 conn.execute("BEGIN")
                 self._verify_database(conn)
@@ -583,19 +601,25 @@ class PaperBrokerStore:
                     str(row[0]): decode_order_command(bytes(row[1]))
                     for row in command_rows
                 }
-                latest = (
-                    None
-                    if not commands
-                    else max(item.intent.session_date for item in commands.values())
-                )
+                selected_session = session_date
+                if selected_session is None and commands:
+                    selected_session = max(
+                        item.intent.session_date for item in commands.values()
+                    )
                 finality_row = (
                     None
-                    if latest is None
+                    if selected_session is None
                     else conn.execute(
-                        "SELECT 1 FROM session_finality WHERE session_date=?",
-                        (latest.isoformat(),),
+                        "SELECT payload FROM session_finality WHERE session_date=?",
+                        (selected_session.isoformat(),),
                     ).fetchone()
                 )
+                if finality_row is not None:
+                    finality_marker = _decode_finality_payload(
+                        bytes(finality_row[0])
+                    )
+                    if finality_marker.session_date != selected_session:
+                        raise ValueError
                 conn.commit()
             if account_row is None or checkpoint is None:
                 raise ValueError
@@ -623,6 +647,105 @@ class PaperBrokerStore:
             raise
         except Exception:
             raise PaperBrokerStoreError("PAPER_BROKER_STATE_INVALID") from None
+
+    def read_session_finality(
+        self, *, session_date: dt.date
+    ) -> PaperSessionFinality | None:
+        """Read one exact durable finality marker without inferring a latest day."""
+        self.verify_fresh()
+        try:
+            if type(session_date) is not dt.date:
+                raise ValueError
+            with self._connect() as conn:
+                self._verify_database(conn)
+                row = conn.execute(
+                    "SELECT payload FROM session_finality WHERE session_date=?",
+                    (session_date.isoformat(),),
+                ).fetchone()
+            if row is None:
+                return None
+            result = _decode_finality_payload(bytes(row[0]))
+            if result.session_date != session_date:
+                raise ValueError
+            return result
+        except PaperBrokerStoreError:
+            raise
+        except Exception:
+            raise PaperBrokerStoreError("PAPER_BROKER_STATE_INVALID") from None
+
+    def record_zero_broker_command_session_finality(
+        self,
+        *,
+        session_date: dt.date,
+        finalized_at: dt.datetime,
+        order_semantic_closure_identity: str,
+    ) -> None:
+        """Append a low-level marker; this primitive proves no human authorization."""
+        if (
+            type(session_date) is not dt.date
+            or not _utc(finalized_at)
+            or type(order_semantic_closure_identity) is not str
+            or len(order_semantic_closure_identity) != 64
+            or not set(order_semantic_closure_identity) <= _HEX
+        ):
+            raise PaperBrokerStoreError("PAPER_BROKER_FINALITY_INVALID")
+        payload = canonical_json_bytes(
+            {
+                "finalized_at": utc_datetime_text(finalized_at),
+                "order_semantic_closure_identity": order_semantic_closure_identity,
+                "schema_version": "paper-zero-broker-command-session-finality-v1",
+                "session_date": session_date.isoformat(),
+            }
+        )
+        try:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                self._verify_database(conn)
+                existing = conn.execute(
+                    "SELECT payload FROM session_finality WHERE session_date=?",
+                    (session_date.isoformat(),),
+                ).fetchone()
+                if existing is not None:
+                    if bytes(existing[0]) == payload:
+                        conn.rollback()
+                        return
+                    raise PaperBrokerStoreError("PAPER_BROKER_FINALITY_CONFLICT")
+                command_rows = conn.execute(
+                    "SELECT payload FROM commands ORDER BY command_id"
+                ).fetchall()
+                if any(
+                    decode_order_command(bytes(row[0])).intent.session_date
+                    == session_date
+                    for row in command_rows
+                ):
+                    raise PaperBrokerStoreError("PAPER_BROKER_FINALITY_INVALID")
+                conn.execute(
+                    "INSERT INTO session_finality(session_date,payload) VALUES(?,?)",
+                    (session_date.isoformat(), payload),
+                )
+                self._append_journal(
+                    conn,
+                    kind="SESSION_FINALITY",
+                    subject=session_date.isoformat(),
+                    payload=payload,
+                )
+                conn.commit()
+            except sqlite3.OperationalError as exc:
+                conn.rollback()
+                if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+                    raise PaperBrokerStoreError("PAPER_BROKER_BUSY") from None
+                raise PaperBrokerStoreError("PAPER_BROKER_WRITE_FAILED") from None
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+            self.verify_fresh()
+        except PaperBrokerStoreError:
+            raise
+        except Exception:
+            raise PaperBrokerStoreError("PAPER_BROKER_FINALITY_INVALID") from None
 
     def finalize_session(self, *, session_date: dt.date, finalized_at: dt.datetime) -> None:
         """Append one EOD checkpoint only after the session is demonstrably terminal."""
@@ -1486,15 +1609,59 @@ def _verify_operation_closure(
         raise PaperBrokerStoreError("PAPER_BROKER_JOURNAL_INVALID") from None
 
 
+def _decode_finality_payload(payload: bytes) -> PaperSessionFinality:
+    try:
+        raw = json.loads(payload)
+        if type(raw) is not dict:
+            raise ValueError
+        schema = raw.get("schema_version")
+        closure_identity: str | None = None
+        if schema == "paper-session-finality-v1":
+            value = _exact_json(
+                payload, {"finalized_at", "schema_version", "session_date"}
+            )
+        elif schema == "paper-zero-broker-command-session-finality-v1":
+            value = _exact_json(
+                payload,
+                {
+                    "finalized_at",
+                    "order_semantic_closure_identity",
+                    "schema_version",
+                    "session_date",
+                },
+            )
+            raw_closure_identity = value["order_semantic_closure_identity"]
+            if type(raw_closure_identity) is not str:
+                raise ValueError
+            closure_identity = raw_closure_identity
+            if len(closure_identity) != 64 or not set(closure_identity) <= _HEX:
+                raise ValueError
+        else:
+            raise ValueError
+        session_date = dt.date.fromisoformat(str(value["session_date"]))
+        finalized_at = _parse_utc(value["finalized_at"])
+        return PaperSessionFinality(
+            schema_version=cast(
+                Literal[
+                    "paper-session-finality-v1",
+                    "paper-zero-broker-command-session-finality-v1",
+                ],
+                schema,
+            ),
+            session_date=session_date,
+            finalized_at=finalized_at,
+            order_semantic_closure_identity=closure_identity,
+        )
+    except PaperBrokerStoreError:
+        raise
+    except Exception:
+        raise PaperBrokerStoreError("PAPER_BROKER_JOURNAL_INVALID") from None
+
+
 def _verify_finality_payload(payload: bytes, session_text: str) -> None:
-    value = _exact_json(payload, {"finalized_at", "schema_version", "session_date"})
-    if (
-        value["schema_version"] != "paper-session-finality-v1"
-        or value["session_date"] != session_text
-    ):
+    value = _decode_finality_payload(payload)
+    if value.session_date.isoformat() != session_text:
         raise PaperBrokerStoreError("PAPER_BROKER_JOURNAL_INVALID")
-    dt.date.fromisoformat(session_text)
-    _parse_utc(value["finalized_at"])
 
 
 def _observation_wire(value: BrokerOrderObservation) -> bytes:

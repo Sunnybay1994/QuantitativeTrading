@@ -29,7 +29,12 @@ from quant.execution.reconcile import (
     ReconciliationDifference,
     ReconciliationResult,
 )
-from quant.execution.risk_wire import decode_risk_receipt, encode_risk_receipt
+from quant.execution.risk_wire import (
+    DurableOrderRiskDecision,
+    decode_risk_receipt,
+    encode_risk_receipt,
+    verify_risk_receipt_semantic_closure,
+)
 from quant.execution.store import (
     CancelOutboxDelivery,
     OutboxDelivery,
@@ -223,8 +228,6 @@ def build_soak_run(
         _validate_anchor_roots(root, anchor_root)
         root_identity = _root_identity(root)
         anchor_root_identity = _root_identity(anchor_root)
-        if _is_real_time_kind(evidence_kind):
-            _require_formal_now(started_at)
         values: dict[str, object] = {
             "schema_version": _MANIFEST_SCHEMA,
             "evidence_kind": evidence_kind,
@@ -248,7 +251,14 @@ def build_soak_run(
         manifest = SoakRunManifest(run_id=run_id, **values)  # type: ignore[arg-type]
         manifest = _prove_manifest(manifest)
         path = _run_dir(root, run_id) / "manifest.json"
-        _write_once(path, _encode_manifest(manifest))
+        encoded = _encode_manifest(manifest)
+        checked_path = _safe_path(path)
+        if checked_path.exists():
+            if not checked_path.is_file() or checked_path.read_bytes() != encoded:
+                raise ValueError
+        elif evidence_kind is SoakEvidenceKind.PAPER_REAL_TIME:
+            _require_formal_now(started_at)
+        _write_once(checked_path, encoded)
         return manifest
     except SoakError:
         raise
@@ -317,7 +327,11 @@ def append_soak_session(
             else _ledger_state_identity(checked_recovery)
         )
         issues = _session_issues(
-            checked_recovery, checked_reconciliation, checked_report
+            checked_recovery,
+            checked_reconciliation,
+            checked_report,
+            session_date=session_date,
+            evidence_kind=checked_manifest.evidence_kind,
         )
         gate_passed = not issues
         invocation_identity = _identity(
@@ -663,6 +677,65 @@ def expected_schedule_identity(expected_sessions: tuple[dt.date, ...]) -> str:
         raise SoakError("SOAK_EXPECTED_SCHEDULE_INVALID") from None
 
 
+def _session_order_semantic_closure_identity(
+    recovery: RecoveryResult, *, session_date: dt.date
+) -> str:
+    """Prove and identify the durable ORDER closure for one exact session."""
+    try:
+        checked = _prove_recovery(recovery)
+        if type(session_date) is not dt.date:
+            raise ValueError
+        verify_risk_receipt_semantic_closure(
+            receipts=checked.risk_receipts,
+            commands=checked.commands,
+            cancel_commands=checked.cancel_commands,
+        )
+        session_commands = tuple(
+            command
+            for command in checked.commands
+            if command.intent.session_date == session_date
+        )
+        if not session_commands:
+            raise SoakError("SOAK_SESSION_ORDER_RECEIPT_MISSING")
+        command_ids = tuple(command.command_id for command in session_commands)
+        command_set = set(command_ids)
+        session_receipts = []
+        owned_ids: set[str] = set()
+        for receipt in checked.risk_receipts:
+            if receipt.transition_kind != "ORDER":
+                continue
+            decision = receipt.decision
+            if type(decision) is not DurableOrderRiskDecision:
+                raise ValueError
+            decision_ids = set(decision.command_ids)
+            if not decision_ids & command_set:
+                continue
+            if (
+                not decision.accepted
+                or decision.requires_manual_approval
+                or decision.projected_counters.session_date != session_date
+                or not decision_ids
+                or not decision_ids <= command_set
+            ):
+                raise ValueError
+            session_receipts.append(receipt)
+            owned_ids.update(decision_ids)
+        if not session_receipts or owned_ids != command_set:
+            raise ValueError
+        return _identity(
+            "SoakSessionOrderSemanticClosure",
+            {
+                "command_ids": command_ids,
+                "receipt_ids": tuple(item.receipt_id for item in session_receipts),
+                "session_date": session_date.isoformat(),
+            },
+        )
+    except SoakError:
+        raise
+    except Exception:
+        raise SoakError("SOAK_SESSION_ORDER_RECEIPT_INVALID") from None
+
+
 def _is_real_time_kind(kind: SoakEvidenceKind) -> bool:
     return kind in {
         SoakEvidenceKind.PAPER_REAL_TIME,
@@ -854,6 +927,9 @@ def _session_issues(
     recovery: RecoveryResult,
     reconciliation: ReconciliationResult,
     report: ExecutionReport,
+    *,
+    session_date: dt.date,
+    evidence_kind: SoakEvidenceKind,
 ) -> tuple[str, ...]:
     codes = {_redacted_code(item.code) for item in recovery.issues}
     codes.update(_redacted_code(item.code) for item in reconciliation.differences)
@@ -870,6 +946,19 @@ def _session_issues(
         codes.add("SOAK_DELIVERY_UNKNOWN")
     if OutboxDeliveryState.LEASED in states:
         codes.add("SOAK_DELIVERY_LEASED")
+    if _is_real_time_kind(evidence_kind):
+        try:
+            _session_order_semantic_closure_identity(
+                recovery, session_date=session_date
+            )
+        except SoakError as exc:
+            code = str(exc)
+            if code not in {
+                "SOAK_SESSION_ORDER_RECEIPT_INVALID",
+                "SOAK_SESSION_ORDER_RECEIPT_MISSING",
+            }:
+                code = "SOAK_SESSION_ORDER_RECEIPT_INVALID"
+            codes.add(code)
     return tuple(sorted(codes))
 
 
@@ -1687,7 +1776,13 @@ def _verify_session_facts(
     command_hash = _ordered_hash(tuple(item.command_id for item in recovery.commands))
     event_hash = _ordered_hash(tuple(item.event_id for item in recovery.events))
     ledger_state_id = None if recovery.checkpoint is None else _ledger_state_identity(recovery)
-    issues = _session_issues_from_wire(recovery, reconciliation, report)
+    issues = _session_issues_from_wire(
+        recovery,
+        reconciliation,
+        report,
+        session_date=receipt.session_date,
+        evidence_kind=manifest.evidence_kind,
+    )
     if (
         receipt.recovery_id != recovery.recovery_id
         or receipt.reconciliation_id != reconciliation.reconciliation_id
@@ -1891,24 +1986,20 @@ def _validate_session_links_from_wire(
 
 
 def _session_issues_from_wire(
-    recovery: RecoveryResult, reconciliation: ReconciliationResult, report: ExecutionReport
+    recovery: RecoveryResult,
+    reconciliation: ReconciliationResult,
+    report: ExecutionReport,
+    *,
+    session_date: dt.date,
+    evidence_kind: SoakEvidenceKind,
 ) -> tuple[str, ...]:
-    codes = {_redacted_code(item.code) for item in recovery.issues}
-    codes.update(_redacted_code(item.code) for item in reconciliation.differences)
-    if recovery.disposition != "READY":
-        codes.add("SOAK_RECOVERY_NOT_READY")
-    if not reconciliation.gate_passed or reconciliation.disposition != "READY":
-        codes.add("SOAK_RECONCILIATION_BLOCKED")
-    if report.gate_passed is not True:
-        codes.add("SOAK_EXECUTION_REPORT_BLOCKED")
-    states = tuple(item.state for item in recovery.deliveries) + tuple(
-        item.state for item in recovery.cancel_deliveries
+    return _session_issues(
+        recovery,
+        reconciliation,
+        report,
+        session_date=session_date,
+        evidence_kind=evidence_kind,
     )
-    if OutboxDeliveryState.UNKNOWN in states:
-        codes.add("SOAK_DELIVERY_UNKNOWN")
-    if OutboxDeliveryState.LEASED in states:
-        codes.add("SOAK_DELIVERY_LEASED")
-    return tuple(sorted(codes))
 
 
 def _decode_delivery(

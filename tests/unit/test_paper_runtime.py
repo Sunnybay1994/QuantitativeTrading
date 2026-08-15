@@ -774,22 +774,14 @@ def test_development_rejects_materialized_broker_root(tmp_path: Path) -> None:
     _assert_sanitized(caught.value, "PAPER_RUNTIME_LAYOUT_INVALID")
 
 
-@pytest.mark.parametrize("index", [2, 3, 4])
-def test_formal_rejects_non_broker_root_materialization(tmp_path: Path, index: int) -> None:
-    _, config, roots = _formal_config_and_roots(tmp_path)
-    roots[index].mkdir()
-    with pytest.raises(Exception, match="PAPER_RUNTIME_LAYOUT_INVALID"):
-        runtime._run_layout_builder(config, allow_system_temp=True)
-
-
-@pytest.mark.parametrize("index", [0, 1])
-def test_formal_accepts_only_runtime_or_broker_root_materialization(
+@pytest.mark.parametrize("index", [0, 1, 2, 3, 4])
+def test_formal_accepts_plain_materialized_operational_roots(
     tmp_path: Path, index: int
 ) -> None:
     _, config, roots = _formal_config_and_roots(tmp_path)
     roots[index].mkdir()
     layout = runtime._run_layout_builder(config, allow_system_temp=True)
-    role = "runtime" if index == 0 else "broker"
+    role = ("runtime", "broker", "evidence", "anchor", "log")[index]
     assert dict(layout.root_identities)[role] == runtime._materialized_root_identity(
         role, layout.parent_identity, roots[index], os.lstat(roots[index])
     )
