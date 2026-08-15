@@ -9,6 +9,7 @@
 - 金额单位:人民币/港币元;成交量单位:股(不是手)。
 """
 
+import datetime as dt
 from typing import Annotated
 
 import pandera.polars as pa
@@ -181,7 +182,7 @@ class HKNoTradeEvidenceSchema(pa.DataFrameModel):
     def user_approved_consensus_is_exactly_scoped(  # type: ignore[misc]
         cls, data: pa.PolarsData
     ) -> pl.LazyFrame:
-        """The user-approved consensus source is one exact audited exception."""
+        """The user-approved consensus source is two exact audited exceptions."""
         return data.lazyframe.select(
             (pl.col("source") != "USER_APPROVED_MULTI_SOURCE_CONSENSUS")
             | (
@@ -191,6 +192,32 @@ class HKNoTradeEvidenceSchema(pa.DataFrameModel):
                 & (
                     pl.col("raw_selector")
                     == "user-approved-consensus/ua-m1-001-01065-2026-05-05.record"
+                )
+            )
+            | (
+                (pl.col("symbol") == "02402.HK")
+                & pl.col("trade_date").is_in(
+                    [
+                        dt.date(2026, 4, 14),
+                        dt.date(2026, 4, 15),
+                        dt.date(2026, 4, 16),
+                        dt.date(2026, 4, 17),
+                        dt.date(2026, 4, 20),
+                        dt.date(2026, 4, 21),
+                        dt.date(2026, 4, 22),
+                        dt.date(2026, 4, 23),
+                        dt.date(2026, 4, 24),
+                        dt.date(2026, 4, 27),
+                        dt.date(2026, 4, 28),
+                        dt.date(2026, 4, 29),
+                        dt.date(2026, 4, 30),
+                    ]
+                )
+                & (pl.col("source_record_id") == "UA-M1-004")
+                & (
+                    pl.col("raw_selector")
+                    == "user-approved-consensus/"
+                    "ua-m1-004-02402-2026-04-01-to-2026-05-04.record"
                 )
             )
         )

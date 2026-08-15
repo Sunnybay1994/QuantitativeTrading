@@ -62,6 +62,41 @@ _USER_APPROVED_NO_TRADE_RECORD = "UA-M1-001"
 _USER_APPROVED_NO_TRADE_SELECTOR = (
     "user-approved-consensus/ua-m1-001-01065-2026-05-05.record"
 )
+_USER_APPROVED_SUSPENSION_RANGE_RECORD = "UA-M1-004"
+_USER_APPROVED_SUSPENSION_RANGE_SELECTOR = (
+    "user-approved-consensus/ua-m1-004-02402-2026-04-01-to-2026-05-04.record"
+)
+_USER_APPROVED_SUSPENSION_RANGE_SYMBOL = "02402.HK"
+_USER_APPROVED_SUSPENSION_RANGE_DATES = (
+    "2026-04-14",
+    "2026-04-15",
+    "2026-04-16",
+    "2026-04-17",
+    "2026-04-20",
+    "2026-04-21",
+    "2026-04-22",
+    "2026-04-23",
+    "2026-04-24",
+    "2026-04-27",
+    "2026-04-28",
+    "2026-04-29",
+    "2026-04-30",
+)
+_USER_APPROVED_SUSPENSION_AT = "2026-04-01T01:00:00+00:00"
+_USER_APPROVED_RESUMPTION_AT = "2026-05-04T01:00:00+00:00"
+_USER_APPROVED_SUSPENSION_NOTICE_URL = (
+    "https://www.hkexnews.hk/listedco/listconews/sehk/2026/0401/2026040100185.htm"
+)
+_USER_APPROVED_RESUMPTION_NOTICE_URL = (
+    "https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0504/2026050400135.htm"
+)
+_USER_APPROVED_SUSPENSION_OBSERVATION = (
+    "H_SHARES_SUSPENDED_FROM_2026-04-01T01:00:00+00:00"
+)
+_USER_APPROVED_RESUMPTION_OBSERVATION = (
+    "H_SHARES_RESUMED_FROM_2026-05-04T01:00:00+00:00"
+)
+_USER_APPROVED_TUSHARE_ZERO_ROW_OBSERVATION = "RETAINED_ZERO_ROW"
 _CAPABILITY_SECRET = os.urandom(32)
 _O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -150,10 +185,8 @@ class HKNoTradeEvidence:
         _date(self.trade_date)
         _utc(dt.datetime.fromisoformat(self.source_as_of))
         _validate_selector(self.raw_selector, suffix=None)
-        if self.source == HK_NO_TRADE_USER_APPROVED_SOURCE and (
-            (self.symbol, self.trade_date) != _USER_APPROVED_NO_TRADE_KEY
-            or self.source_record_id != _USER_APPROVED_NO_TRADE_RECORD
-            or self.raw_selector != _USER_APPROVED_NO_TRADE_SELECTOR
+        if self.source == HK_NO_TRADE_USER_APPROVED_SOURCE and not (
+            _user_approved_no_trade_is_exact(self)
         ):
             raise ValueError("no-trade evidence contract invalid")
         if self.evidence_sha256 != _evidence_identity(self):
@@ -3365,36 +3398,88 @@ def _verify_evidence_projection(
         raise HKHistoryBackfillError(failure) from None
 
 
-def _verify_user_approved_no_trade_raw(
-    payload: bytes, *, evidence: HKNoTradeEvidence
-) -> None:
-    """Verify the one user-approved, non-HKEX consensus exception."""
-    value = _strict_json(payload)
-    expected = {
-        "approval_id": _USER_APPROVED_NO_TRADE_RECORD,
-        "approved_on": "2026-08-15",
-        "decision": "NO_DAILY_TRADING_V1",
-        "evidence": [
+def _user_approved_no_trade_is_exact(evidence: HKNoTradeEvidence) -> bool:
+    if evidence.source_record_id == _USER_APPROVED_NO_TRADE_RECORD:
+        return (
+            (evidence.symbol, evidence.trade_date) == _USER_APPROVED_NO_TRADE_KEY
+            and evidence.raw_selector == _USER_APPROVED_NO_TRADE_SELECTOR
+        )
+    if evidence.source_record_id == _USER_APPROVED_SUSPENSION_RANGE_RECORD:
+        return (
+            evidence.symbol == _USER_APPROVED_SUSPENSION_RANGE_SYMBOL
+            and evidence.trade_date in _USER_APPROVED_SUSPENSION_RANGE_DATES
+            and evidence.raw_selector == _USER_APPROVED_SUSPENSION_RANGE_SELECTOR
+        )
+    return False
+
+
+def _user_approved_suspension_range_payload() -> dict[str, Any]:
+    return {
+        "approval_id": _USER_APPROVED_SUSPENSION_RANGE_RECORD,
+        "no_trade_dates": list(_USER_APPROVED_SUSPENSION_RANGE_DATES),
+        "observations": [
             {
-                "observation": "NO_DAILY_TRADING",
-                "source_kind": "USER_SECURITIES_SOFTWARE",
+                "observation": _USER_APPROVED_SUSPENSION_OBSERVATION,
+                "source_kind": "HKEX_NEWS",
+                "url": _USER_APPROVED_SUSPENSION_NOTICE_URL,
             },
             {
-                "observation": "ZERO_ROWS_ON_TARGETED_RETRY",
+                "observation": _USER_APPROVED_RESUMPTION_OBSERVATION,
+                "source_kind": "HKEX_NEWS",
+                "url": _USER_APPROVED_RESUMPTION_NOTICE_URL,
+            },
+            {
+                "observation": _USER_APPROVED_TUSHARE_ZERO_ROW_OBSERVATION,
                 "source_kind": "TUSHARE_HK_DAILY",
             },
         ],
-        "impact_assessment": {
-            "changes_cash": False,
-            "changes_corporate_actions": False,
-            "changes_positions": False,
-            "changes_real_orders": False,
-            "changes_strategy_signal": False,
-        },
-        "schema_version": "hk-no-trade-user-approved-consensus-v1",
-        "symbol": evidence.symbol,
-        "trade_date": evidence.trade_date,
+        "resumption_at": _USER_APPROVED_RESUMPTION_AT,
+        "schema_version": "hk-no-trade-user-approved-suspension-range-v1",
+        "suspension_at": _USER_APPROVED_SUSPENSION_AT,
+        "symbol": _USER_APPROVED_SUSPENSION_RANGE_SYMBOL,
     }
+
+
+def _verify_user_approved_no_trade_raw(
+    payload: bytes, *, evidence: HKNoTradeEvidence
+) -> None:
+    """Verify one of the two exact user-approved, non-HKEX consensus records."""
+    value = _strict_json(payload)
+    if evidence.source_record_id == _USER_APPROVED_NO_TRADE_RECORD:
+        expected: dict[str, Any] = {
+            "approval_id": _USER_APPROVED_NO_TRADE_RECORD,
+            "approved_on": "2026-08-15",
+            "decision": "NO_DAILY_TRADING_V1",
+            "evidence": [
+                {
+                    "observation": "NO_DAILY_TRADING",
+                    "source_kind": "USER_SECURITIES_SOFTWARE",
+                },
+                {
+                    "observation": "ZERO_ROWS_ON_TARGETED_RETRY",
+                    "source_kind": "TUSHARE_HK_DAILY",
+                },
+            ],
+            "impact_assessment": {
+                "changes_cash": False,
+                "changes_corporate_actions": False,
+                "changes_positions": False,
+                "changes_real_orders": False,
+                "changes_strategy_signal": False,
+            },
+            "schema_version": "hk-no-trade-user-approved-consensus-v1",
+            "symbol": evidence.symbol,
+            "trade_date": evidence.trade_date,
+        }
+    elif evidence.source_record_id == _USER_APPROVED_SUSPENSION_RANGE_RECORD:
+        expected = _user_approved_suspension_range_payload()
+        if (
+            evidence.symbol != expected["symbol"]
+            or evidence.trade_date not in expected["no_trade_dates"]
+        ):
+            raise ValueError
+    else:
+        raise ValueError
     if value != expected or payload != _canonical_json(expected).encode("utf-8"):
         raise ValueError
 
