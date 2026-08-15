@@ -2,35 +2,37 @@
 
 ### 2026-08-16 当前续写摘要（覆盖下文旧停止点）
 
-- 当前隔离集成线为 `codex/m1-m2-integration@本文件所在提交`；本摘要写入前的治理同步点为 `9bc1f88`。
-  业务组合安全点 `93653a8` 保留原提交身份合入
-  M1 `9004b6d`、S2 `4ac392a` 与 M2 Wave B `ec506b6`；M1 合流定向集合为 277 passed/2 skipped，
-  S2 + Wave B 组合为 45 passed/1 skipped，相关 Ruff、mypy、cold import、diff/link check 均通过。
-  `751d02c`、`9bc1f88` 只同步中央治理文档，不改变上述业务验证结论。
+- 当前隔离集成线为 `codex/m1-m2-integration@本文件所在提交`；此前稳定点 `4986a8a` 已保留原提交身份吸收
+  M1 `9004b6d`、S2 `4ac392a`、liquidity `ec506b6`、GUI G1 `a5c63f7`、M4 RUN-0D2 `92de0d4`
+  与 downside beta `3c8c6c4`。最近 GUI+M4+downside 组合为 78 passed/36 skipped，Ruff、mypy、cold import
+  均通过；更早 M1 277 passed/2 skipped 与 S2+liquidity 45 passed/1 skipped 仍是各自范围证据。
 - 根 checkout 仍停在 `codex/m2-strategy-fastlane@4d569be`，由唯一 Tushare finance writer 使用；writer
   权威终态前禁止切换根分支或并发写源码。根只剩 `docs/quant_factor_research_v2/**` 25 个未跟踪资料文件，
   当前只读、不是 SSOT，未经用户决定不得删除、改写、提交或被运行时代码自动发现。
 - S2 admission 已形成 fail-closed 安全点：B8 metrics provenance 尚未绑定到 verified replay/metrics 时，
   完整证据只能是 `RESEARCH_ONLY / ADMISSION_METRICS_PROVENANCE_UNBOUND`，不得生成 `ELIGIBLE` 或
   `PAPER_CANDIDATE`。source binding、人工准入与真实 PAPER Gate 仍开放。
-- Wave B 新增 Amihud 与自由流通换手研究，但两条真实不可变 run 都因预注册 coverage 门禁诚实
-  `REJECTED`；2026-02 冻结快照只有 14 个交易 session，成交额和自由流通换手字段并不缺失，禁止事后把
-  “至少 15 日”改小后重跑。首个 wall/CPU/规模性能基线已记录，peak RSS 与 I/O/compute 分段仍是债务，
-  当前证据不支持先上 GPU、并行或语言重写。
+- Wave B 的 Amihud、自由流通换手和 downside beta 三条真实不可变 run 均诚实 `REJECTED`；对应 run 已经
+  no-clobber 与逐文件 SHA-256 验真后保留在根 `artifacts/research/runs/<run_id>/`，S2/liquidity/downside
+  与旧 GUI 四个短期 worktree 已移除。三条 run 有 wall/CPU 基线，downside 有 RSS 下界；统一 I/O/compute
+  分段仍是债务，当前证据不支持先上 GPU、并行或语言重写。
+- M2 Alpha158 第四批已在 `codex/m2-waveb-alpha158-shape-volume@0f737ac` 形成 clean 安全点，只扩展既有
+  classic runner，不新增 runner/Schema/IO/facade；11 passed、Ruff/mypy/py_compile/TOML 通过。唯一 run
+  `cfbdb09d…581e` 为 REJECTED/无 passing factor：coverage/schedule 通过，但 IMXD20 冗余 0.80127 严格失败，
+  RESI20/VSUMD20 经济门禁失败；wall 92.786s、CPU 48.219s、peak RSS 2,581,323,776 bytes。该 run 已
+  canonical retained，禁止调方向/阈值后重跑。
 - M3 retained 两折链仍没有权威 `completion.json`，stderr 为空且 owned 进程仍在运行；detached
   `c9f2f36`、两份 session 配置、owned 解释器与 `codex/m3-g8e-r2-windows-hardlink@71dffa5` 继续冻结，
-  不恢复、不重启、不清理，也不以旧 receipt 代替本轮 completion。
-- M4 RUN-0W 已安全提交 `bd97212`，未启动 PAPER 或订单；RUN-0D2 只做单日 session/EOD 闭包，当前仍在
-  定向验证。它要求非空 staged commands 与 exact durable ORDER risk receipt；完全空 plan fail-closed，
-  human-approval audit receipt 仍是实盘前不可跳过的开放项。
-- GUI G0 安全链为 `6640b79` / `75b6419`；两次隔离 venv 承载均由工具层以 `-1` 结束且无目录、日志、
-  base 变更或残留进程，禁止第三次盲试。G1 仍只读比较 2–4 个已验真的 immutable run，不排名、不重算、
-  不准入；纯逻辑已编码但尚未获得串行验证窗口，AppTest/browser 仍未验证。
-- 下一个 M2 研究包 `codex/m2-waveb-downside-beta@93653a8` 已在独立 clean worktree 预注册，只允许 9 项
-  白名单内编码；不新增 runner、facade、Schema、IO 或 `run_*` cross-import。其 Python/真实 run 排在
-  RUN-0D2、GUI G1 之后，最高仍为 `RESEARCH_ONLY`。
-- 当前唯一重型槽严格按 RUN-0D2 → GUI G1 → downside beta 串行，均使用 BelowNormal、CPU8–11、
-  数值线程不超过 2；M3 固定 CPU0–7。完整 branch/worktree 所有权、退出条件、artifact 保留条件和基础设施债
+  不恢复、不重启、不清理，也不以旧 receipt 代替本轮 completion；新 owned child 证明 fold2 h10 仍在自然运行。
+- M4 RUN-0D2 已以 `92de0d4` 安全提交并合流，但没有启动 PAPER、订单或 28 日计时。后续强制顺序为 durable
+  approval（含 approved no-op proof）→ shared barrier（含 terminal account snapshot successor）→
+  cross-day rotation → actual fault drill；UA-M4-005/006/007 待批示，相关代码与真实运行全部暂停。
+- GUI G1 `a5c63f7` 已合流且保持只读。G0-C4 在独立 Windows venv 中取得 AppTest 3 passed/0 skipped，真实
+  browser 的 overview/detail/comparison 与 NAV 都可见，0 console error；但 1.61.1 暴露 `use_container_width`
+  弃用告警和 Vega 初始化 warn，因此严格 zero-warning C4 未关闭。环境、PID、端口和缓存已清零；窄修复不
+  重写业务逻辑，Vega warning 作为 renderer 债单独记录。
+- 当前唯一重型槽由 GUI G0-C4 窄修复重验使用 BelowNormal、CPU8–11、数值线程不超过 2；M3 固定 CPU0–7。
+  完整 branch/worktree 所有权、退出条件、artifact 保留条件和基础设施债
   见 [`项目结构与合流治理路线图`](roadmaps/项目结构与合流治理路线图.md)。项目初期继续以最小正确业务闭环
   为先；PIT、fail-closed、统一回放、OMS/风控/对账、人工准入和凭据安全不得作为“基础设施瑕疵”延期。
 
