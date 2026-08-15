@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import sys
 from datetime import date
 from pathlib import Path
@@ -271,7 +273,7 @@ def test_public_stage_publishes_two_attempts_and_resumes_without_workers(
         _attempt(
             attempt_root.parent,
             attempt,
-            python_sha=subject._file_sha256(Path(sys.executable)),
+            python_sha=subject._python_executable_sha256(Path(sys.executable)),
         )
 
     monkeypatch.setattr(subject, "_launch_worker", launch)
@@ -304,7 +306,9 @@ def test_public_stage_publishes_two_attempts_and_resumes_without_workers(
         metric_atol=1e-12,
         code_version=_CODE_VERSION,
         dependency_fingerprint_sha256=_DEPENDENCY_SHA,
-        python_executable_sha256=subject._file_sha256(Path(sys.executable)),
+        python_executable_sha256=subject._python_executable_sha256(
+            Path(sys.executable)
+        ),
     )
 
     assert calls == [1, 2]
@@ -316,3 +320,167 @@ def test_public_stage_publishes_two_attempts_and_resumes_without_workers(
     assert len(first.receipt.outputs) == 15
     assert first.root == second.root
     assert verified.root == first.root
+
+
+def _windows_conda_hardlinked_python() -> Path | None:
+    if os.name != "nt":
+        return None
+    executable = Path(sys.executable).resolve(strict=True)
+    try:
+        status = os.lstat(executable)
+    except OSError:
+        return None
+    if not executable.is_absolute() or status.st_nlink < 2 or status.st_size <= 0:
+        return None
+    return executable
+
+
+def test_windows_current_conda_python_nlink2_passes_executable_gate() -> None:
+    executable = _windows_conda_hardlinked_python()
+    if executable is None:
+        pytest.skip("Windows conda hardlinked sys.executable (nlink>=2) required")
+
+    resolved = subject._current_python_executable(executable)
+    digest = subject._python_executable_sha256(executable)
+
+    assert resolved == executable
+    assert os.lstat(executable).st_nlink >= 2
+    assert digest == hashlib.sha256(executable.read_bytes()).hexdigest()
+    with pytest.raises(ValueError):
+        subject._real_file(executable)
+    with pytest.raises(ValueError):
+        subject._file_sha256(executable)
+
+
+def test_current_python_extra_hardlink_path_is_rejected() -> None:
+    executable = Path(sys.executable).resolve(strict=True)
+    baseline_nlink = os.lstat(executable).st_nlink
+    alias = executable.parent / f".m3_g8e_r3_python_alias_{os.getpid()}.exe"
+    if alias.exists():
+        alias.unlink()
+    try:
+        os.link(executable, alias)
+    except OSError:
+        pytest.skip("platform cannot create a hardlink to sys.executable")
+    try:
+        assert alias.resolve(strict=True) != executable
+        assert alias.samefile(executable)
+        with pytest.raises(ValueError):
+            subject._current_python_executable(alias)
+        with pytest.raises(ValueError):
+            subject._python_executable_sha256(alias)
+    finally:
+        alias.unlink(missing_ok=True)
+
+    assert not alias.exists()
+    assert os.lstat(executable).st_nlink == baseline_nlink
+
+
+def test_current_python_symlink_leaf_is_rejected(tmp_path: Path) -> None:
+    executable = Path(sys.executable).resolve(strict=True)
+    alias = tmp_path / "python-symlink.exe"
+    try:
+        alias.symlink_to(executable)
+    except OSError:
+        pytest.skip("platform cannot create a symlink to sys.executable")
+
+    with pytest.raises(ValueError):
+        subject._current_python_executable(alias)
+    with pytest.raises(ValueError):
+        subject._python_executable_sha256(alias)
+
+
+def test_ordinary_artifact_hardlink_remains_rejected(tmp_path: Path) -> None:
+    original = tmp_path / "artifact.bin"
+    original.write_bytes(b"artifact-payload")
+    alias = tmp_path / "artifact-alias.bin"
+    try:
+        os.link(original, alias)
+    except OSError:
+        pytest.skip("platform cannot create an artifact hardlink")
+
+    assert os.lstat(original).st_nlink == 2
+    assert os.lstat(alias).st_nlink == 2
+    with pytest.raises(ValueError):
+        subject._real_file(original)
+    with pytest.raises(ValueError):
+        subject._file_sha256(original)
+    with pytest.raises(ValueError):
+        subject._digest_for_path(original, artifact_roots={"TEST": tmp_path})
+    with pytest.raises(ValueError):
+        subject._regular_files(tmp_path)
+
+
+def test_windows_conda_nlink2_stage_reaches_mocked_resolver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = _windows_conda_hardlinked_python()
+    if executable is None:
+        pytest.skip("Windows conda hardlinked sys.executable (nlink>=2) required")
+    project = Path(__file__).resolve().parents[2]
+    config = load_m3_config(project / "configs/research/m3_qlib_example.toml")
+    reached = False
+
+    def fake_resolve(**_kwargs: object) -> object:
+        nonlocal reached
+        reached = True
+        raise RuntimeError("hostile-resolver")
+
+    monkeypatch.setattr(
+        subject, "resolve_formal_reproducibility_cli_inputs", fake_resolve
+    )
+    with pytest.raises(subject.M3ReproducibilityError) as caught:
+        subject.run_formal_reproducibility_stage(
+            project_root=project,
+            config=config,
+            config_relative=subject.PurePosixPath(
+                "configs/research/m3_qlib_example.toml"
+            ),
+            snapshot_id="a" * 64,
+            fold="fold_000",
+            horizon=5,
+            python_executable=executable,
+        )
+
+    assert reached is True
+    assert str(caught.value) == "M3_REPRODUCIBILITY_INVALID"
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+
+def test_non_current_executable_maps_to_redacted_invalid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = Path(__file__).resolve().parents[2]
+    config = load_m3_config(project / "configs/research/m3_qlib_example.toml")
+    fake = tmp_path / "python.exe"
+    fake.write_bytes(b"not-the-current-interpreter")
+    resolver_called = False
+
+    def unexpected_resolver(**_kwargs: object) -> object:
+        nonlocal resolver_called
+        resolver_called = True
+        raise AssertionError("resolver must not be called")
+
+    monkeypatch.setattr(
+        subject, "resolve_formal_reproducibility_cli_inputs", unexpected_resolver
+    )
+
+    with pytest.raises(subject.M3ReproducibilityError) as caught:
+        subject.run_formal_reproducibility_stage(
+            project_root=project,
+            config=config,
+            config_relative=subject.PurePosixPath(
+                "configs/research/m3_qlib_example.toml"
+            ),
+            snapshot_id="a" * 64,
+            fold="fold_000",
+            horizon=5,
+            python_executable=fake,
+        )
+
+    assert resolver_called is False
+    assert str(caught.value) == "M3_REPRODUCIBILITY_INVALID"
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
