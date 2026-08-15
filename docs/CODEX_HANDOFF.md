@@ -7,7 +7,8 @@
   `92de0d4`、downside beta `3c8c6c4`、Alpha158 `0f737ac` 与 MAX `0363b0f`。此后 `ba83ad7` 吸收
   R10 证据，`c2c8841` 吸收 MAX daily-basic 控制，`8427c83` 吸收 GUI D1，`086cae9` 吸收 PIT 首跑前置，
   `4745cb4` 吸收 FWD-R1，`936ffee` 吸收 PIT R2 维度审计，`7b377db` 吸收框架 owner 的 M3/M4 状态收口，
-  `9151d3f` 吸收 M3 root-topology 修复；MAX-control 合流回归为 25 passed，GUI D1 为
+  `9151d3f` 吸收 M3 root-topology 修复，`8991b0e` 吸收 Windows Conda Python hardlink forward-port；
+  MAX-control 合流回归为 25 passed，GUI D1 为
   19 passed/2 skipped，PIT 前置为 32 passed，FWD-R1 为 17 passed/1 skipped，PIT R2 为 18 passed，五者定向
   Ruff、mypy、cold import 均通过，不把这些定向证据扩大表述为覆盖其它范围。
 - 根 checkout 仍停在 `codex/m2-strategy-fastlane@4d569be`，由唯一 Tushare finance writer 使用；writer
@@ -39,8 +40,14 @@
   reproducibility artifact/receipt 与 readiness evidence 均不存在，相关进程已退出。根因是 StageRunner 同时收到
   `PROJECT` 与其下三个专业 root；最小修复 `020a04d` 已通过 `9151d3f` 合流，focused `32 passed, 1 skipped`，
   Ruff、mypy 与 cold import 通过，来源线已由 `archive/m3-g8e-r2-root-topology-20260816` 留档后退出。
-  这只关闭确定性代码阻断，actual worker/successor 未运行；detached `c9f2f36`、失败证据、两份 session 配置和
-  `codex/m3-g8e-r2-windows-hardlink@71dffa5` 继续冻结，禁止自动恢复、重跑、切换 revision 或清理现场。
+  历史 `71dffa5` 的 Windows Conda 当前解释器 hardlink 语义又由 `4d0be62` forward-port 到当前代码，并通过
+  `8991b0e` 合流：只放行 exact current interpreter 在 Windows 上的预期多链接身份，其他解释器、额外 hardlink
+  路径、symlink/reparse 与普通 artifact hardlink 继续拒绝。R3 focused `10 passed, 2 skipped`，关键 nlink>=2
+  与额外 hardlink 路径节点实际通过，mypy/cold import 通过；R2/R3 分别由
+  `archive/m3-g8e-r2-windows-hardlink-20260816` 与
+  `archive/m3-g8e-r3-windows-hardlink-forward-port-20260816` 留档后退出。上述两项只关闭确定性代码阻断，
+  actual worker/successor 仍未运行；detached `c9f2f36`、失败证据和两份 session 配置继续冻结，禁止自动恢复、
+  重跑、切换 revision 或清理现场。
 - M4 RUN-0D2 已以 `92de0d4` 合流，但没有启动 PAPER、订单或 28 日计时。正常 PAPER 启动仍须关闭
   UA-M4-005 durable approval 与 UA-M4-006 shared barrier，再按顺序完成 cross-day rotation；UA-M4-007 只约束
   正常窗口结束后的 actual fault drill，不冒充首日启动前置。框架 owner 的单文件状态提交 `c2b4829` 已通过
