@@ -32,12 +32,15 @@
   `ba83ad7` 合流，重复 worktree 已移除，source branch 已由 `archive/m2-source-r10-successor-20260816` 保存后删除。
   历史混合 EOL 导致旧 code hash 不可由 commit 复算的 provenance 债仍开放，但不再阻塞 M2-FWD-R1。
 - finance writer 仍在根 checkout 单实例推进，`data/clean/tushare_financials` 尚未形成；真实 PIT quality run
-  继续 fail-closed 等待 writer 终态、全量 bytes audit 与不可覆盖 snapshot。snapshot READY 时，PIT 优先于
-  新的非财务研究包。PIT 首跑前置 `3b8857c` 已以 A1 `RECONSTRUCTED_CURRENT_INVENTORY_V1`、coverage gate、
+  继续 fail-closed 等待 writer 终态、全量 bytes audit、type1 累计流量语义 Gate 与不可覆盖 snapshot。
+  snapshot READY 时，PIT 优先于新的非财务研究包。PIT 首跑前置 `3b8857c` 已以 A1
+  `RECONSTRUCTED_CURRENT_INVENTORY_V1`、coverage gate、
   code-identity 与 `UNFROZEN/[]` pre-artifact STOP 进入 `086cae9`；来源线已 archive-first 退出，但这不等于
   当前 raw、snapshot 或真实 report-type 分布已经 READY。PIT R2 `cadff72` 的 audit schema v3、维度计数闭包和
   publisher 严格结构校验已进入 `936ffee`，来源线也已 archive-first 退出；本次只完成代码与 fixture 回归，未读取
-  partial raw、未执行 integrated `--verify-bytes`、未选择 allowed values，也未发布 snapshot。
+  partial raw、未执行 integrated `--verify-bytes`、未选择 allowed values，也未发布 snapshot。v3 只能证明
+  report-type/comp-type 分布，不能证明 `report_type=1` 是 PIT 单季差分所需的累计流量；writer 终态后必须先
+  完成 audit-v4 type1/type2 对账，v4 未 `PASS` 时不得进入 R3 或 publisher。
 - TARGET R11 已以 source `7705898`、integration merge `864d254` 和
   `archive/m2-target-label-leakage-fix-20260816` 完成 archive-first 退出。修复强制先按当期 finite factor
   冻结 Top-K，再验证 chosen execution/exit/return；不得用未来 label 可得性删除高分证券并由下一名递补。
@@ -73,9 +76,10 @@
 - M2-FWD-R1 `76b55cf` 已进入 `4745cb4`，R10 来源绑定与标准 LightweightResearchRun 发布路径的开发检查通过；
   没有执行真实 2026-08-31 发布或生成真实 forward artifact，来源线已 archive-first 退出。
 - `data/clean/tushare_financials` 仍不存在。TARGET R11 与 PIT R2 均已合流并退出，CPU8–11 当前未分配新的
-  短任务。下一条 PIT 业务链保持串行：writer 权威终态 → integrated bytes audit 取得真实
-  report-type/comp-type 分布 → R3 singleton/trial/fixed-direction/performance-sidecar freeze → publisher/snapshot
-  → 真实 PIT run；不得从 partial raw 提前选择 allowed values。后续短任务仍保持
+  短任务。下一条 PIT 业务链保持串行：writer 权威终态 → integrated bytes audit 取得真实维度分布并完成
+  audit-v4 type1 累计流量语义 Gate → R3 singleton/trial/fixed-direction/signal-date coverage/
+  performance-sidecar freeze → publisher/snapshot → 真实 PIT run；不得从 partial raw 提前选择 allowed values，
+  也不得用 v3 的维度计数冒充累计口径证据。后续短任务仍保持
   BelowNormal、CPU8–11、数值线程不超过 2。
   完整 branch/worktree 所有权、退出条件、artifact 保留条件和基础设施债
   见 [`项目结构与合流治理路线图`](roadmaps/项目结构与合流治理路线图.md)。项目初期继续以最小正确业务闭环
