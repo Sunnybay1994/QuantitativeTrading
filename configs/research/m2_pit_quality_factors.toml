@@ -21,6 +21,8 @@ minimum_average_amount = 20000000.0
 
 [factors]
 catalog = "tushare_pit_quality_v1"
+report_type_freeze_status = "UNFROZEN"
+allowed_report_types = []
 names = [
   "pit_roe_ttm",
   "pit_roa_ttm",
@@ -47,6 +49,7 @@ redundancy_reference_names = [
 ]
 maximum_median_absolute_rank_correlation = 0.80
 minimum_redundancy_signal_coverage = 1.0
+minimum_median_signal_coverage = 0.80
 
 [portfolio]
 rebalance_every_signals = 1

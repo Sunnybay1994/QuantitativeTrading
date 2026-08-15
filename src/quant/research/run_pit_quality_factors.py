@@ -64,13 +64,21 @@ from quant.settings import resolve_data_root
 
 _REFERENCE_FACTORS = CLASSIC_FACTOR_NAMES + DAILY_VALUE_FACTOR_NAMES + ("log_total_market_value",)
 _CODE_PATHS = (
+    "src/quant/data/audit_tushare_bulk_clean.py",
+    "src/quant/data/audit_tushare_daily_basic.py",
+    "src/quant/data/audit_tushare_financials.py",
     "src/quant/data/clean_snapshot_repository.py",
     "src/quant/data/daily_basic_repository.py",
     "src/quant/data/financial_clean.py",
     "src/quant/data/financial_pit.py",
     "src/quant/data/financial_repository.py",
+    "src/quant/data/m3_release.py",
+    "src/quant/data/publish_tushare_bulk_clean.py",
     "src/quant/data/publish_tushare_daily_basic.py",
     "src/quant/data/publish_tushare_financials.py",
+    "src/quant/data/tushare_bulk.py",
+    "src/quant/data/tushare_bulk_ingest.py",
+    "src/quant/domain/schemas.py",
     "src/quant/factors/classic.py",
     "src/quant/factors/daily_value.py",
     "src/quant/factors/pit_quality.py",
@@ -208,6 +216,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         cash_history=cash,
         signal_dates=signal_dates,
         candidate_symbols=candidates,
+        allowed_report_types=tuple(cast(list[str], factors["allowed_report_types"])),
     )
     panel = build_pit_quality_panel(
         signal_values=signals.factors,
@@ -274,6 +283,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     results["redundancy_daily"] = redundancy_daily
     results["redundancy_summary"] = redundancy_summary
     coverage = build_pit_quality_coverage(signals.eligibility)
+    summary, coverage = apply_pit_quality_coverage_gate(
+        summary,
+        coverage=coverage,
+        signal_dates=signal_dates,
+        minimum_signal_symbols=cast(int, factors["minimum_signal_symbols"]),
+        minimum_median_signal_coverage=float(factors["minimum_median_signal_coverage"]),
+    )
     passing = summary.filter(pl.col("research_status") == "RESEARCH_ONLY")
     conclusion = "RESEARCH_ONLY" if passing.height else "REJECTED"
     report = _report(
@@ -512,6 +528,120 @@ def build_pit_quality_coverage(eligibility: pl.DataFrame) -> pl.DataFrame:
     return result.drop("_reconciled_rows")
 
 
+def apply_pit_quality_coverage_gate(
+    summary: pl.DataFrame,
+    *,
+    coverage: pl.DataFrame,
+    signal_dates: tuple[dt.date, ...],
+    minimum_signal_symbols: int,
+    minimum_median_signal_coverage: float,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Reject factors whose complete pre-registered signal calendar lacks usable rows."""
+    required = (
+        "factor",
+        "trade_date",
+        "eligible_rows",
+        "valid_rows",
+        "missing_chain_rows",
+        "non_industrial_rows",
+        "invalid_denominator_rows",
+        "quarantined_rows",
+        "coverage",
+        "min_period_end",
+        "max_period_end",
+    )
+    if (
+        not isinstance(summary, pl.DataFrame)
+        or summary.is_empty()
+        or not {"factor", "research_status"} <= set(summary.columns)
+        or summary.get_column("factor").n_unique() != summary.height
+        or not isinstance(coverage, pl.DataFrame)
+        or not set(required) <= set(coverage.columns)
+        or signal_dates != tuple(sorted(signal_dates))
+        or len(signal_dates) != len(set(signal_dates))
+        or not signal_dates
+        or any(type(value) is not dt.date for value in signal_dates)
+        or type(minimum_signal_symbols) is not int
+        or minimum_signal_symbols < 2
+        or type(minimum_median_signal_coverage) is not float
+        or not 0 < minimum_median_signal_coverage <= 1
+        or (
+            not coverage.is_empty()
+            and coverage.select(pl.struct("factor", "trade_date").is_duplicated().any()).item()
+        )
+    ):
+        raise ValueError("invalid PIT quality coverage gate")
+    factors = tuple(sorted(cast(list[str], summary.get_column("factor").to_list())))
+    if coverage.filter(
+        ~pl.col("factor").is_in(factors) | ~pl.col("trade_date").is_in(signal_dates)
+    ).height:
+        raise ValueError("PIT quality coverage is outside the pre-registered calendar")
+    expected = pl.DataFrame(
+        {
+            "factor": [factor for factor in factors for _ in signal_dates],
+            "trade_date": [date for _ in factors for date in signal_dates],
+        },
+        schema={"factor": pl.String(), "trade_date": pl.Date()},
+    )
+    count_columns = (
+        "eligible_rows",
+        "valid_rows",
+        "missing_chain_rows",
+        "non_industrial_rows",
+        "invalid_denominator_rows",
+        "quarantined_rows",
+    )
+    completed = (
+        expected.join(
+            coverage.select(*required),
+            on=["factor", "trade_date"],
+            how="left",
+            validate="1:1",
+        )
+        .with_columns(
+            *(pl.col(name).fill_null(0).alias(name) for name in count_columns),
+            pl.col("coverage").fill_null(0.0).alias("coverage"),
+            pl.lit(minimum_signal_symbols).alias("minimum_signal_symbols"),
+        )
+        .with_columns(
+            (pl.col("valid_rows") >= minimum_signal_symbols).alias(
+                "daily_minimum_signal_symbols_passed"
+            )
+        )
+        .sort("factor", "trade_date")
+    )
+    gate = (
+        completed.group_by("factor")
+        .agg(
+            pl.len().alias("expected_signal_dates"),
+            pl.col("valid_rows").min().alias("minimum_valid_signal_symbols"),
+            pl.col("coverage").median().alias("median_signal_coverage"),
+            pl.col("daily_minimum_signal_symbols_passed")
+            .all()
+            .alias("all_signal_dates_have_minimum_symbols"),
+        )
+        .with_columns(
+            (
+                pl.col("all_signal_dates_have_minimum_symbols")
+                & (pl.col("median_signal_coverage") >= minimum_median_signal_coverage)
+            ).alias("pit_signal_coverage_passed"),
+            pl.lit(minimum_median_signal_coverage).alias(
+                "minimum_median_signal_coverage"
+            ),
+        )
+    )
+    gated = summary.join(gate, on="factor", how="left", validate="1:1").with_columns(
+        pl.when(
+            (pl.col("research_status") == "RESEARCH_ONLY")
+            & pl.col("pit_signal_coverage_passed").fill_null(False)
+        )
+        .then(pl.lit("RESEARCH_ONLY"))
+        .otherwise(pl.lit("REJECTED"))
+        .alias("research_status")
+    )
+    return gated.sort("factor"), completed
+
+
 def attach_redundancy_signal_coverage(
     summary: pl.DataFrame,
     *,
@@ -601,9 +731,20 @@ def _validate_config(config: Mapping[str, Any], *, threads: int) -> None:
             <= cast(dt.date, data["research_end"])
             and tuple(cast(list[str], factors["names"])) == PIT_QUALITY_FACTOR_NAMES
             and factors["catalog"] == "tushare_pit_quality_v1"
+            and factors["report_type_freeze_status"] == "FROZEN"
+            and tuple(cast(list[str], factors["allowed_report_types"]))
+            == tuple(sorted(cast(list[str], factors["allowed_report_types"])))
+            and len(cast(list[str], factors["allowed_report_types"])) > 0
+            and len(set(cast(list[str], factors["allowed_report_types"])))
+            == len(cast(list[str], factors["allowed_report_types"]))
+            and all(
+                type(value) is str and value.isdigit()
+                for value in cast(list[object], factors["allowed_report_types"])
+            )
             and tuple(cast(list[str], factors["redundancy_reference_names"])) == _REFERENCE_FACTORS
             and float(factors["maximum_median_absolute_rank_correlation"]) == 0.80
             and float(factors["minimum_redundancy_signal_coverage"]) == 1.0
+            and float(factors["minimum_median_signal_coverage"]) == 0.80
             and tuple(cast(list[int], factors["horizons"])) == (1, 5, 20)
             and factors["newey_west_lag"] == 1
             and tuple(float(value) for value in portfolio["cost_multipliers"]) == (0.5, 1.0, 2.0)

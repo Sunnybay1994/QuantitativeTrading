@@ -104,6 +104,7 @@ def build_pit_quality_signal_values(
     cash_history: pl.DataFrame,
     signal_dates: tuple[dt.date, ...],
     candidate_symbols: tuple[str, ...],
+    allowed_report_types: tuple[str, ...],
 ) -> PITQualitySignalResult:
     """Build sparse cross-sections using only revisions known before each signal."""
     try:
@@ -113,6 +114,7 @@ def build_pit_quality_signal_values(
             cash_history=cash_history,
             signal_dates=signal_dates,
             candidate_symbols=candidate_symbols,
+            allowed_report_types=allowed_report_types,
         )
     except (PolarsError, TypeError, ValueError):
         pass
@@ -126,6 +128,7 @@ def _build(
     cash_history: pl.DataFrame,
     signal_dates: tuple[dt.date, ...],
     candidate_symbols: tuple[str, ...],
+    allowed_report_types: tuple[str, ...],
 ) -> PITQualitySignalResult:
     histories = {
         "income": income_history,
@@ -144,6 +147,10 @@ def _build(
         or any(type(symbol) is not str or not symbol for symbol in candidate_symbols)
         or candidate_symbols != tuple(sorted(candidate_symbols))
         or len(candidate_symbols) != len(set(candidate_symbols))
+        or not allowed_report_types
+        or allowed_report_types != tuple(sorted(allowed_report_types))
+        or len(allowed_report_types) != len(set(allowed_report_types))
+        or any(type(value) is not str or not value.isdigit() for value in allowed_report_types)
     ):
         raise ValueError
 
@@ -178,7 +185,7 @@ def _build(
                 income=income,
                 balance_sheet=balance,
                 cash_flow=cash,
-            ).filter(pl.col("report_type") == "1")
+            ).filter(pl.col("report_type").is_in(allowed_report_types))
             latest = (
                 diagnostics.sort(["symbol", "factor", "end_date"])
                 .group_by("symbol", "factor", maintain_order=True)

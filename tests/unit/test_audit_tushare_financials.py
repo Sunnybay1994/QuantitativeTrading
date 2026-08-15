@@ -4,6 +4,7 @@ import datetime as dt
 import hashlib
 import json
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 
 import polars as pl
@@ -22,8 +23,30 @@ from quant.data.publish_tushare_financials import (
     verify_tushare_financial_snapshot,
 )
 from quant.data.storage import RawStore
+from quant.data.tushare_bulk import (
+    REPORT_SCHEMA,
+    build_request_plan,
+    load_catalog,
+    write_run_document,
+)
+from quant.data.tushare_bulk_ingest import prepare_requests
 
 _DATASETS = ("balancesheet", "cashflow", "fina_indicator", "income")
+
+
+@dataclass(frozen=True, slots=True)
+class _FinancialFixture:
+    root: Path
+    plan_report: Path
+    catalog: Path
+
+
+def _audit_kwargs(fixture: _FinancialFixture) -> dict[str, Path]:
+    return {
+        "data_root": fixture.root,
+        "plan_report_path": fixture.plan_report,
+        "catalog_path": fixture.catalog,
+    }
 
 
 def _frame(dataset: str, **overrides: object) -> pl.DataFrame:
@@ -58,20 +81,98 @@ def _build_root(
     *,
     extra_pending: bool = False,
     income_frame: pl.DataFrame | None = None,
-) -> Path:
+) -> _FinancialFixture:
     root = tmp_path / "data"
-    root.mkdir()
-    ledger = root / "run_state" / "tushare_bulk" / "state.sqlite"
-    ledger.parent.mkdir(parents=True)
-    raw = RawStore(root / "raw")
-    records: list[tuple[object, ...]] = []
-    for index, dataset in enumerate(_DATASETS, start=1):
-        request_id = f"{index:064x}"
-        parameters = {
-            "ts_code": "000001.SZ",
-            "start_date": "20230101" if dataset == "fina_indicator" else "20240101",
-            "end_date": "20231231" if dataset == "fina_indicator" else "20241231",
+    root.mkdir(parents=True)
+    instrument = root / "clean" / "instrument" / "market=SZ" / "data.parquet"
+    instrument.parent.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["000001.SZ"],
+            "market": ["SZ"],
+            "instrument_type": ["STOCK"],
         }
+    ).write_parquet(instrument)
+    catalog_path = tmp_path / "catalog.toml"
+    dataset_rows = []
+    for dataset in _DATASETS:
+        history_start = "2023-01-01" if dataset == "fina_indicator" else "2024-01-01"
+        max_rows = 100 if dataset == "fina_indicator" else 6000
+        dataset_rows.append(
+            "[[datasets]]\n"
+            f'name = "{dataset}"\n'
+            f'api_name = "{dataset}"\n'
+            'category = "finance"\n'
+            'priority = "core"\n'
+            'probe_mode = "query"\n'
+            'probe_params = { ts_code = "000001.SZ", period = "20231231" }\n'
+            'request_unit = "per_symbol"\n'
+            'inventory = "stock"\n'
+            f"history_start = {history_start}\n"
+            f"max_rows = {max_rows}\n"
+            "chunk_days = 1825\n"
+            'partition = "report_year"\n'
+            "overlap_days = 500\n"
+        )
+    catalog_path.write_text(
+        "[meta]\n"
+        'schema_version = "tushare-bulk-catalog-v1"\n'
+        'catalog_version = "fixture-v1"\n'
+        'source_url = "https://example.invalid/tushare"\n'
+        "captured_on = 2026-08-15\n\n"
+        + "\n".join(dataset_rows),
+        encoding="utf-8",
+        newline="\n",
+    )
+    catalog = load_catalog(catalog_path)
+    permission_report: dict[str, object] = {
+        "schema_version": REPORT_SCHEMA,
+        "catalog_version": catalog.version,
+        "catalog_sha256": catalog.sha256,
+        "probed_at": "2026-08-15T00:00:00+00:00",
+        "requests_per_minute": 120,
+        "query_count": 4,
+        "results": [
+            {
+                "dataset": spec.name,
+                "api_name": spec.api_name,
+                "category": spec.category,
+                "priority": spec.priority,
+                "status": "ACCESSIBLE",
+                "rows": 1,
+            }
+            for spec in catalog.datasets
+        ],
+    }
+    write_run_document(data_root=root, kind="permission", value=permission_report)
+    plan = build_request_plan(
+        catalog=catalog,
+        permission_report=permission_report,
+        data_root=root,
+        as_of=dt.date(2024, 12, 31),
+        now=dt.datetime(2026, 8, 15, tzinfo=dt.timezone.utc),
+    )
+    plan_report = write_run_document(data_root=root, kind="plan", value=plan)
+    ledger = root / "run_state" / "tushare_bulk" / "state.sqlite"
+    prepare_requests(
+        catalog=catalog,
+        permission_report=permission_report,
+        data_root=root,
+        ledger_path=ledger,
+        datasets=frozenset(_DATASETS),
+        start=dt.date(2023, 1, 1),
+        end=dt.date(2024, 12, 31),
+    )
+    raw = RawStore(root / "raw")
+    with sqlite3.connect(ledger) as connection:
+        requests = connection.execute(
+            "SELECT request_id,dataset,parameters_json FROM requests ORDER BY dataset,request_id"
+        ).fetchall()
+    for request_id, dataset, parameters_json in requests:
+        parameters = json.loads(parameters_json)
+        is_pending = extra_pending and dataset == "income"
+        if is_pending:
+            continue
         frame = (
             income_frame if dataset == "income" and income_frame is not None else _frame(dataset)
         )
@@ -82,64 +183,37 @@ def _build_root(
             frame=frame,
             parameters=parameters,
         )
-        records.append(
-            (
-                request_id,
-                "a" * 64,
-                dataset,
-                dataset,
-                json.dumps(parameters, separators=(",", ":"), sort_keys=True),
-                100 if dataset == "fina_indicator" else 6000,
-                "COMPLETE",
-                1,
-                snapshot.row_count,
-                snapshot.checksum_sha256,
-                None,
-                "2026-08-15T00:00:00+00:00",
+        with sqlite3.connect(ledger) as connection:
+            connection.execute(
+                "UPDATE requests SET status='COMPLETE',attempts=1,rows=?,"
+                "checksum_sha256=?,error_code=NULL WHERE request_id=?",
+                (snapshot.row_count, snapshot.checksum_sha256, request_id),
             )
-        )
-    if extra_pending:
-        records.append(
-            (
-                "f" * 64,
-                "a" * 64,
-                "income",
-                "income",
-                json.dumps(
-                    {
-                        "ts_code": "000002.SZ",
-                        "start_date": "20240101",
-                        "end_date": "20241231",
-                    },
-                    separators=(",", ":"),
-                    sort_keys=True,
-                ),
-                6000,
-                "PENDING",
-                0,
-                None,
-                None,
-                None,
-                "2026-08-15T00:00:00+00:00",
-            )
-        )
-    with sqlite3.connect(ledger) as connection:
-        connection.execute(
-            "CREATE TABLE requests(request_id TEXT PRIMARY KEY,catalog_sha256 TEXT,"
-            "dataset TEXT,api_name TEXT,parameters_json TEXT,max_rows INTEGER,"
-            "status TEXT,attempts INTEGER,rows INTEGER,checksum_sha256 TEXT,"
-            "error_code TEXT,updated_at TEXT)"
-        )
-        connection.executemany("INSERT INTO requests VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", records)
-    return root
+    return _FinancialFixture(root=root, plan_report=plan_report, catalog=catalog_path)
+
+
+def _request_id(root: Path, dataset: str) -> str:
+    with sqlite3.connect(root / "run_state" / "tushare_bulk" / "state.sqlite") as connection:
+        row = connection.execute(
+            "SELECT request_id FROM requests WHERE dataset=?", (dataset,)
+        ).fetchone()
+    assert row is not None
+    return str(row[0])
 
 
 def test_complete_four_table_fixture_is_ready_and_byte_bound(tmp_path: Path) -> None:
-    result = audit_tushare_financials(data_root=_build_root(tmp_path), verify_bytes=True)
+    fixture = _build_root(tmp_path)
+    result = audit_tushare_financials(**_audit_kwargs(fixture), verify_bytes=True)
     assert result["status"] == "READY"
     assert result["publication_allowed"] is True
     assert result["raw_closure"]["complete_request_count"] == 4
-    assert result["raw_closure"]["catalog_sha256s"] == ["a" * 64]
+    assert result["raw_closure"]["catalog_sha256s"] == [
+        result["plan_closure"]["catalog_sha256"]
+    ]
+    assert result["plan_closure"]["provenance_model"] == (
+        "RECONSTRUCTED_CURRENT_INVENTORY_V1"
+    )
+    assert result["plan_closure"]["instrument_inventory"]["stock_count"] == 1
     for dataset in _DATASETS:
         report = result["datasets"][dataset]
         assert report["status_counts"] == {"COMPLETE": 1}
@@ -151,23 +225,84 @@ def test_complete_four_table_fixture_is_ready_and_byte_bound(tmp_path: Path) -> 
 def test_pending_request_keeps_batch_collecting_and_forbids_publication(
     tmp_path: Path,
 ) -> None:
-    result = audit_tushare_financials(data_root=_build_root(tmp_path, extra_pending=True))
+    fixture = _build_root(tmp_path, extra_pending=True)
+    result = audit_tushare_financials(**_audit_kwargs(fixture))
     assert result["status"] == "COLLECTING"
     assert result["publication_allowed"] is False
-    assert result["datasets"]["income"]["status_counts"] == {
-        "COMPLETE": 1,
-        "PENDING": 1,
-    }
+    assert result["datasets"]["income"]["status_counts"] == {"PENDING": 1}
+
+
+def test_plan_request_set_missing_or_reidentified_fails_closed(tmp_path: Path) -> None:
+    fixture = _build_root(tmp_path)
+    ledger = fixture.root / "run_state" / "tushare_bulk" / "state.sqlite"
+    with sqlite3.connect(ledger) as connection:
+        connection.execute("DELETE FROM requests WHERE dataset='income'")
+    with pytest.raises(ValueError, match="TUSHARE_FINANCIAL_AUDIT_INVALID"):
+        audit_tushare_financials(**_audit_kwargs(fixture))
+
+    second = _build_root(tmp_path / "second")
+    with sqlite3.connect(
+        second.root / "run_state" / "tushare_bulk" / "state.sqlite"
+    ) as connection:
+        connection.execute(
+            "UPDATE requests SET request_id=? WHERE dataset='income'", ("f" * 64,)
+        )
+    with pytest.raises(ValueError, match="TUSHARE_FINANCIAL_AUDIT_INVALID"):
+        audit_tushare_financials(**_audit_kwargs(second))
+
+
+def test_active_writer_lease_forbids_ready_without_corrupting_plan(tmp_path: Path) -> None:
+    fixture = _build_root(tmp_path)
+    with sqlite3.connect(
+        fixture.root / "run_state" / "tushare_bulk" / "state.sqlite"
+    ) as connection:
+        connection.execute(
+            "INSERT INTO lease(owner,expires_at) VALUES(?,?)", ("writer", 4_102_444_800.0)
+        )
+    result = audit_tushare_financials(**_audit_kwargs(fixture), verify_bytes=True)
+    assert result["status"] == "COLLECTING"
+    assert result["active_lease_count"] == 1
+    assert result["publication_allowed"] is False
+
+
+def test_plan_or_current_inventory_drift_is_not_treated_as_ready(tmp_path: Path) -> None:
+    fixture = _build_root(tmp_path)
+    plan = json.loads(fixture.plan_report.read_text(encoding="utf-8"))
+    plan["inventory"]["stock"] = 2
+    fixture.plan_report.write_text(
+        json.dumps(plan, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    with pytest.raises(ValueError, match="TUSHARE_FINANCIAL_AUDIT_INVALID"):
+        audit_tushare_financials(**_audit_kwargs(fixture))
+
+    second = _build_root(tmp_path / "second")
+    instrument = second.root / "clean" / "instrument" / "market=SZ" / "data.parquet"
+    pl.concat(
+        [
+            pl.read_parquet(instrument),
+            pl.DataFrame(
+                {
+                    "symbol": ["000002.SZ"],
+                    "market": ["SZ"],
+                    "instrument_type": ["STOCK"],
+                }
+            ),
+        ]
+    ).write_parquet(instrument)
+    with pytest.raises(ValueError, match="TUSHARE_FINANCIAL_AUDIT_INVALID"):
+        audit_tushare_financials(**_audit_kwargs(second))
 
 
 def test_parameter_window_mismatch_blocks_instead_of_silently_quarantining(
     tmp_path: Path,
 ) -> None:
-    root = _build_root(
+    fixture = _build_root(
         tmp_path,
         income_frame=_frame("income", ann_date="20250101", f_ann_date="20250102"),
     )
-    result = audit_tushare_financials(data_root=root)
+    result = audit_tushare_financials(**_audit_kwargs(fixture))
     assert result["status"] == "BLOCKED"
     assert result["datasets"]["income"]["quality"]["request_window_mismatches"] == 1
     assert {item["code"] for item in result["blocking_issues"]} >= {
@@ -176,8 +311,9 @@ def test_parameter_window_mismatch_blocks_instead_of_silently_quarantining(
 
 
 def test_per_request_physical_row_drift_is_detected(tmp_path: Path) -> None:
-    root = _build_root(tmp_path)
-    request_root = root / "raw" / "tushare" / "income" / f"request={4:064x}"
+    fixture = _build_root(tmp_path)
+    root = fixture.root
+    request_root = root / "raw" / "tushare" / "income" / f"request={_request_id(root, 'income')}"
     parquet = request_root / "data.parquet"
     frame = pl.read_parquet(parquet)
     pl.concat([frame, frame]).write_parquet(parquet)
@@ -196,7 +332,7 @@ def test_per_request_physical_row_drift_is_detected(tmp_path: Path) -> None:
             "UPDATE requests SET checksum_sha256=? WHERE dataset='income'",
             (checksum,),
         )
-    result = audit_tushare_financials(data_root=root)
+    result = audit_tushare_financials(**_audit_kwargs(fixture))
     assert result["status"] == "BLOCKED"
     assert result["datasets"]["income"]["quality"]["row_count_mismatch"] == 1
 
@@ -205,9 +341,8 @@ def test_latest_revision_collision_is_reported_for_clean_quarantine(
     tmp_path: Path,
 ) -> None:
     income = pl.concat([_frame("income", n_income=70.0), _frame("income", n_income=71.0)])
-    result = audit_tushare_financials(
-        data_root=_build_root(tmp_path, income_frame=income), verify_bytes=True
-    )
+    fixture = _build_root(tmp_path, income_frame=income)
+    result = audit_tushare_financials(**_audit_kwargs(fixture), verify_bytes=True)
     assert result["status"] == "READY"
     quality = result["datasets"]["income"]["quality"]
     assert quality["same_available_duplicate_groups"] == 1
@@ -217,10 +352,26 @@ def test_latest_revision_collision_is_reported_for_clean_quarantine(
 def test_ready_batch_publishes_and_strictly_reuses_typed_snapshot(
     tmp_path: Path,
 ) -> None:
-    root = _build_root(tmp_path)
-    first = publish_tushare_financial_snapshot(data_root=root)
+    fixture = _build_root(tmp_path)
+    root = fixture.root
+    first = publish_tushare_financial_snapshot(**_audit_kwargs(fixture))
     assert first.dataset_rows == tuple((dataset, 1) for dataset in _DATASETS)
     assert first.reused is False
+    manifest = json.loads((first.root / "manifest.json").read_text(encoding="utf-8"))
+    audit = json.loads((first.root / "audit.json").read_text(encoding="utf-8"))
+    assert manifest["plan_report_sha256"] == audit["plan_closure"]["plan_report_sha256"]
+    assert manifest["provenance_model"] == "RECONSTRUCTED_CURRENT_INVENTORY_V1"
+    assert manifest["provenance_limitation"] == audit["plan_closure"][
+        "provenance_limitation"
+    ]
+    assert manifest["instrument_file_set_sha256"] == audit["plan_closure"][
+        "instrument_inventory"
+    ]["file_set_sha256"]
+    assert manifest["request_set_sha256"] == audit["plan_closure"]["request_set_sha256"]
+    assert manifest["request_counts"] == audit["plan_closure"]["request_counts"]
+    assert manifest["instrument_logical_frame_sha256"] == audit["plan_closure"][
+        "instrument_inventory"
+    ]["logical_frame_sha256"]
     assert (
         verify_tushare_financial_snapshot(
             data_root=root, snapshot_id=first.snapshot_id
@@ -228,7 +379,7 @@ def test_ready_batch_publishes_and_strictly_reuses_typed_snapshot(
         == first.dataset_rows
     )
 
-    second = publish_tushare_financial_snapshot(data_root=root)
+    second = publish_tushare_financial_snapshot(**_audit_kwargs(fixture))
     assert second.snapshot_id == first.snapshot_id
     assert second.reused is True
     income = pl.read_parquet(second.root / "dataset=income" / "year=2023.parquet")
@@ -250,20 +401,22 @@ def test_ready_batch_publishes_and_strictly_reuses_typed_snapshot(
 def test_collecting_batch_cannot_create_partial_clean_snapshot(
     tmp_path: Path,
 ) -> None:
-    root = _build_root(tmp_path, extra_pending=True)
+    fixture = _build_root(tmp_path, extra_pending=True)
+    root = fixture.root
     with pytest.raises(
         TushareFinancialPublishError,
         match="TUSHARE_FINANCIAL_PUBLISH_INVALID",
     ):
-        publish_tushare_financial_snapshot(data_root=root)
-    assert not (root / "clean").exists()
+        publish_tushare_financial_snapshot(**_audit_kwargs(fixture))
+    assert not (root / "clean" / "tushare_financials").exists()
 
 
 def test_existing_snapshot_content_drift_is_rejected_not_overwritten(
     tmp_path: Path,
 ) -> None:
-    root = _build_root(tmp_path)
-    snapshot = publish_tushare_financial_snapshot(data_root=root)
+    fixture = _build_root(tmp_path)
+    root = fixture.root
+    snapshot = publish_tushare_financial_snapshot(**_audit_kwargs(fixture))
     path = snapshot.root / "dataset=income" / "year=2023.parquet"
     frame = pl.read_parquet(path).with_columns(pl.lit(999.0).alias("n_income"))
     frame.write_parquet(path)
@@ -271,7 +424,7 @@ def test_existing_snapshot_content_drift_is_rejected_not_overwritten(
     with pytest.raises(TushareFinancialPublishError):
         verify_tushare_financial_snapshot(data_root=root, snapshot_id=snapshot.snapshot_id)
     with pytest.raises(TushareFinancialPublishError):
-        publish_tushare_financial_snapshot(data_root=root)
+        publish_tushare_financial_snapshot(**_audit_kwargs(fixture))
 
 
 def test_bounded_history_read_feeds_typed_pit_revision_selection(
@@ -290,8 +443,9 @@ def test_bounded_history_read_feeds_typed_pit_revision_selection(
             ),
         ]
     )
-    root = _build_root(tmp_path, income_frame=income)
-    snapshot = publish_tushare_financial_snapshot(data_root=root)
+    fixture = _build_root(tmp_path, income_frame=income)
+    root = fixture.root
+    snapshot = publish_tushare_financial_snapshot(**_audit_kwargs(fixture))
     query = TushareFinancialHistoryQuery(
         snapshot_id=snapshot.snapshot_id,
         dataset="income",
@@ -311,8 +465,9 @@ def test_bounded_history_read_feeds_typed_pit_revision_selection(
 def test_bounded_history_read_allows_empty_period_and_rejects_bad_query(
     tmp_path: Path,
 ) -> None:
-    root = _build_root(tmp_path)
-    snapshot = publish_tushare_financial_snapshot(data_root=root)
+    fixture = _build_root(tmp_path)
+    root = fixture.root
+    snapshot = publish_tushare_financial_snapshot(**_audit_kwargs(fixture))
     empty = read_tushare_financial_history(
         data_root=root,
         query=TushareFinancialHistoryQuery(

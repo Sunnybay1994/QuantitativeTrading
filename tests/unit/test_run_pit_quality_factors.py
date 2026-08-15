@@ -11,6 +11,7 @@ import pytest
 from quant.factors import PIT_QUALITY_FACTOR_NAMES
 from quant.research.classic_factor_evaluation import build_diagnostic_factor_targets
 from quant.research.run_pit_quality_factors import (
+    apply_pit_quality_coverage_gate,
     apply_redundancy_signal_coverage_gate,
     attach_redundancy_signal_coverage,
     _validate_config,
@@ -215,18 +216,26 @@ def test_pit_quality_config_is_frozen_without_unpublished_snapshot_ids() -> None
     path = PROJECT_ROOT / "configs/research/m2_pit_quality_factors.toml"
     with path.open("rb") as stream:
         config = tomllib.load(stream)
-    _validate_config(config, threads=2)
+    with pytest.raises(ValueError, match="invalid PIT-quality-factor config"):
+        _validate_config(config, threads=2)
     assert "financial_snapshot_id" not in config["data"]
     assert "daily_basic_snapshot_id" not in config["data"]
     assert config["portfolio"]["rebalance_every_signals"] == 1
+    assert config["factors"]["report_type_freeze_status"] == "UNFROZEN"
+    assert config["factors"]["allowed_report_types"] == []
 
-    changed = deepcopy(config)
+    frozen = deepcopy(config)
+    frozen["factors"]["report_type_freeze_status"] = "FROZEN"
+    frozen["factors"]["allowed_report_types"] = ["1"]
+    _validate_config(frozen, threads=2)
+
+    changed = deepcopy(frozen)
     changed["factors"]["redundancy_reference_names"].reverse()
     with pytest.raises(ValueError, match="invalid PIT-quality-factor config"):
         _validate_config(changed, threads=2)
 
     with pytest.raises(ValueError, match="invalid PIT-quality-factor config"):
-        _validate_config(config, threads=3)
+        _validate_config(frozen, threads=3)
 
 
 def test_redundancy_calendar_coverage_fails_closed_for_one_missing_month() -> None:
@@ -259,3 +268,83 @@ def test_redundancy_calendar_coverage_fails_closed_for_one_missing_month() -> No
         redundancy_summary=covered,
     )
     assert gated.get_column("research_status").item() == "REJECTED"
+
+
+def _coverage_rows(
+    dates: tuple[dt.date, ...], *, valid_rows: int, eligible_rows: int
+) -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "factor": ["pit_roe_ttm"] * len(dates),
+            "trade_date": list(dates),
+            "eligible_rows": [eligible_rows] * len(dates),
+            "valid_rows": [valid_rows] * len(dates),
+            "missing_chain_rows": [eligible_rows - valid_rows] * len(dates),
+            "non_industrial_rows": [0] * len(dates),
+            "invalid_denominator_rows": [0] * len(dates),
+            "quarantined_rows": [0] * len(dates),
+            "coverage": [valid_rows / eligible_rows] * len(dates),
+            "min_period_end": [dt.date(2024, 12, 31)] * len(dates),
+            "max_period_end": [dt.date(2024, 12, 31)] * len(dates),
+        }
+    )
+
+
+def test_signal_coverage_gate_accepts_exactly_eighty_percent() -> None:
+    dates = tuple(dt.date(2025, month, 28) for month in range(1, 6))
+    summary = pl.DataFrame(
+        {"factor": ["pit_roe_ttm"], "research_status": ["RESEARCH_ONLY"]}
+    )
+    gated, completed = apply_pit_quality_coverage_gate(
+        summary,
+        coverage=_coverage_rows(dates, valid_rows=100, eligible_rows=125),
+        signal_dates=dates,
+        minimum_signal_symbols=100,
+        minimum_median_signal_coverage=0.80,
+    )
+    assert gated.select(
+        "median_signal_coverage", "pit_signal_coverage_passed", "research_status"
+    ).row(0) == (0.8, True, "RESEARCH_ONLY")
+    assert completed.get_column("daily_minimum_signal_symbols_passed").all()
+
+
+def test_signal_coverage_gate_rejects_799_percent_and_missing_schedule_date() -> None:
+    dates = tuple(dt.date(2025, month, 28) for month in range(1, 6))
+    summary = pl.DataFrame(
+        {"factor": ["pit_roe_ttm"], "research_status": ["RESEARCH_ONLY"]}
+    )
+    low, _ = apply_pit_quality_coverage_gate(
+        summary,
+        coverage=_coverage_rows(dates, valid_rows=799, eligible_rows=1000),
+        signal_dates=dates,
+        minimum_signal_symbols=100,
+        minimum_median_signal_coverage=0.80,
+    )
+    assert low.get_column("research_status").item() == "REJECTED"
+
+    missing, completed = apply_pit_quality_coverage_gate(
+        summary,
+        coverage=_coverage_rows(dates[:-1], valid_rows=800, eligible_rows=1000),
+        signal_dates=dates,
+        minimum_signal_symbols=100,
+        minimum_median_signal_coverage=0.80,
+    )
+    assert missing.get_column("research_status").item() == "REJECTED"
+    absent = completed.filter(pl.col("trade_date") == dates[-1])
+    assert absent.select("valid_rows", "coverage").row(0) == (0, 0.0)
+
+
+def test_signal_coverage_gate_rejects_shifted_schedule_date() -> None:
+    dates = (dt.date(2025, 1, 31), dt.date(2025, 2, 28))
+    shifted = (dates[0], dt.date(2025, 3, 3))
+    summary = pl.DataFrame(
+        {"factor": ["pit_roe_ttm"], "research_status": ["RESEARCH_ONLY"]}
+    )
+    with pytest.raises(ValueError, match="outside the pre-registered calendar"):
+        apply_pit_quality_coverage_gate(
+            summary,
+            coverage=_coverage_rows(shifted, valid_rows=100, eligible_rows=100),
+            signal_dates=dates,
+            minimum_signal_symbols=100,
+            minimum_median_signal_coverage=0.80,
+        )
