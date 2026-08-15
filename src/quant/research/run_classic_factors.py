@@ -39,6 +39,11 @@ from quant.factors.classic_fourth_batch import (
     FOURTH_BATCH_FACTOR_SPECS,
     compute_fourth_batch_daily_factors,
 )
+from quant.factors.classic_fifth_batch import (
+    FIFTH_BATCH_FACTOR_NAMES,
+    FIFTH_BATCH_FACTOR_SPECS,
+    compute_fifth_batch_daily_factors,
+)
 from quant.factors.classic_market_risk import (
     DOWNSIDE_BETA_FACTOR_NAMES,
     DOWNSIDE_BETA_FACTOR_SPECS,
@@ -78,6 +83,9 @@ _MARKET_RISK_CODE_PATHS: tuple[str, ...] = _CODE_PATHS + (
 )
 _FOURTH_BATCH_CODE_PATHS: tuple[str, ...] = _CODE_PATHS + (
     "src/quant/factors/classic_fourth_batch.py",
+)
+_FIFTH_BATCH_CODE_PATHS: tuple[str, ...] = _FOURTH_BATCH_CODE_PATHS + (
+    "src/quant/factors/classic_fifth_batch.py",
 )
 
 
@@ -138,6 +146,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     first_batch_values = compute_classic_daily_factors(bars)
     include_fund_input = False
     code_paths: tuple[str, ...] = _CODE_PATHS
+    fixed_direction: int | None = None
     if factor_names == SECOND_BATCH_FACTOR_NAMES:
         second_batch_values = compute_second_batch_daily_factors(bars)
         factor_values = first_batch_values.join(
@@ -195,6 +204,50 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         factor_specs = FOURTH_BATCH_FACTOR_SPECS
         code_paths = _FOURTH_BATCH_CODE_PATHS
+    elif factor_names == FIFTH_BATCH_FACTOR_NAMES:
+        second_batch_values = compute_second_batch_daily_factors(bars)
+        third_batch_values = compute_third_batch_daily_factors(bars)
+        fourth_batch_values = compute_fourth_batch_daily_factors(
+            bars,
+            sessions=sessions,
+        )
+        fifth_batch_values = compute_fifth_batch_daily_factors(
+            bars,
+            sessions=sessions,
+        )
+        factor_values = (
+            first_batch_values.join(
+                second_batch_values.select(
+                    "symbol", "trade_date", *SECOND_BATCH_FACTOR_NAMES
+                ),
+                on=["symbol", "trade_date"],
+                how="inner",
+                validate="1:1",
+            )
+            .join(
+                third_batch_values.select(
+                    "symbol", "trade_date", *THIRD_BATCH_FACTOR_NAMES
+                ),
+                on=["symbol", "trade_date"],
+                how="inner",
+                validate="1:1",
+            )
+            .join(
+                fourth_batch_values,
+                on=["symbol", "trade_date"],
+                how="left",
+                validate="1:1",
+            )
+            .join(
+                fifth_batch_values,
+                on=["symbol", "trade_date"],
+                how="left",
+                validate="1:1",
+            )
+        )
+        factor_specs = FIFTH_BATCH_FACTOR_SPECS
+        code_paths = _FIFTH_BATCH_CODE_PATHS
+        fixed_direction = cast(int, config["max_lottery"]["expected_direction"])
     elif factor_names == DOWNSIDE_BETA_FACTOR_NAMES:
         market_risk = cast(Mapping[str, Any], config["market_risk"])
         benchmark_symbol = cast(str, market_risk["benchmark"])
@@ -260,6 +313,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         costs=cost_periods,
         strategy_name=cast(str, config["research"]["strategy_name"]),
         strategy_version=cast(str, config["research"]["strategy_version"]),
+        fixed_direction=fixed_direction,
     )
     summary = summarize_factors(
         cast(pl.DataFrame, results["fold_metrics"]),
@@ -368,6 +422,48 @@ def main(argv: Sequence[str] | None = None) -> int:
             redundancy_summary=cast(pl.DataFrame, results["redundancy_summary"]),
             coverage_summary=coverage_summary,
             schedule_alignment=schedule_alignment,
+            maximum_median_absolute_rank_correlation=float(
+                factor_config["maximum_median_absolute_rank_correlation"]
+            ),
+        )
+        results["factor_coverage_daily"] = coverage_daily
+        results["factor_coverage_summary"] = coverage_summary
+        results["rebalance_schedule_alignment"] = schedule_alignment
+    if factor_names == FIFTH_BATCH_FACTOR_NAMES:
+        coverage_config = cast(Mapping[str, Any], config["coverage"])
+        lottery_config = cast(Mapping[str, Any], config["max_lottery"])
+        coverage_daily, coverage_summary = evaluate_factor_coverage(
+            panel,
+            factors=factor_names,
+            start_date=cast(dt.date, data["research_start"]),
+            end_date=cast(dt.date, data["research_end"]),
+            folds=folds,
+            rebalance_every_sessions=cast(
+                int, portfolio_config["rebalance_every_sessions"]
+            ),
+            minimum_rebalance_symbols=cast(
+                int, coverage_config["minimum_rebalance_symbols"]
+            ),
+            minimum_median_coverage=float(
+                coverage_config["minimum_median_coverage"]
+            ),
+        )
+        schedule_alignment = evaluate_rebalance_schedule_alignment(
+            panel,
+            cast(pl.DataFrame, results["targets"]),
+            factors=factor_names,
+            folds=folds,
+            rebalance_every_sessions=cast(
+                int, portfolio_config["rebalance_every_sessions"]
+            ),
+        )
+        summary = apply_fifth_batch_admission_gates(
+            summary,
+            fold_metrics=cast(pl.DataFrame, results["fold_metrics"]),
+            redundancy_summary=cast(pl.DataFrame, results["redundancy_summary"]),
+            coverage_summary=coverage_summary,
+            schedule_alignment=schedule_alignment,
+            expected_direction=cast(int, lottery_config["expected_direction"]),
             maximum_median_absolute_rank_correlation=float(
                 factor_config["maximum_median_absolute_rank_correlation"]
             ),
@@ -570,8 +666,13 @@ def evaluate_walk_forward(
     portfolio_exit_date_column: str = "exit_date_20",
     portfolio_annualization_periods: float = 252.0 / 20.0,
     ic_newey_west_lag: int | None = None,
+    fixed_direction: int | None = None,
 ) -> dict[str, pl.DataFrame]:
-    """Select direction on validation, then evaluate untouched test periods."""
+    """Evaluate untouched tests after validation or a pre-registered direction."""
+    if fixed_direction is not None and (
+        type(fixed_direction) is not int or fixed_direction not in {-1, 1}
+    ):
+        raise ValueError("invalid fixed factor direction")
     daily_frames: list[pl.DataFrame] = []
     group_frames: list[pl.DataFrame] = []
     metric_rows: list[dict[str, object]] = []
@@ -579,17 +680,44 @@ def evaluate_walk_forward(
     nav_frames: list[pl.DataFrame] = []
     for fold in folds:
         for factor in factors:
-            validation_daily, validation_groups, validation_metrics = evaluate_factor_period(
-                panel,
-                factor=factor,
-                horizon=20,
-                start_date=fold.validation_start,
-                end_date=fold.validation_end,
-                minimum_symbols=minimum_symbols,
-                groups=groups,
-                newey_west_lag=ic_newey_west_lag,
+            raw_validation_daily, raw_validation_groups, raw_validation_metrics = (
+                evaluate_factor_period(
+                    panel,
+                    factor=factor,
+                    horizon=20,
+                    start_date=fold.validation_start,
+                    end_date=fold.validation_end,
+                    minimum_symbols=minimum_symbols,
+                    groups=groups,
+                    newey_west_lag=ic_newey_west_lag,
+                )
             )
-            direction = 1 if validation_metrics["rank_ic_mean"] >= 0 else -1
+            validation_observed_direction = (
+                1 if raw_validation_metrics["rank_ic_mean"] >= 0 else -1
+            )
+            direction = (
+                validation_observed_direction
+                if fixed_direction is None
+                else fixed_direction
+            )
+            if direction == 1:
+                validation_daily = raw_validation_daily
+                validation_groups = raw_validation_groups
+                validation_metrics = raw_validation_metrics
+            else:
+                validation_daily, validation_groups, validation_metrics = (
+                    evaluate_factor_period(
+                        panel,
+                        factor=factor,
+                        horizon=20,
+                        start_date=fold.validation_start,
+                        end_date=fold.validation_end,
+                        minimum_symbols=minimum_symbols,
+                        groups=groups,
+                        direction=direction,
+                        newey_west_lag=ic_newey_west_lag,
+                    )
+                )
             daily_frames.append(
                 _with_evaluation_identity(
                     validation_daily,
@@ -680,18 +808,23 @@ def evaluate_walk_forward(
                         pl.lit(float(multiplier)).alias("cost_multiplier"),
                     )
                 )
-                metric_rows.append(
-                    {
-                        "factor": factor,
-                        "fold": fold.fold,
-                        "direction": direction,
-                        "cost_multiplier": float(multiplier),
-                        "validation_rank_ic": abs(float(validation_metrics["rank_ic_mean"])),
-                        "test_rank_ic": float(test20_metrics["rank_ic_mean"]),
-                        "test_ic_dates": int(test20_metrics["dates"]),
-                        **portfolio_metrics,
-                    }
-                )
+                metric_row: dict[str, object] = {
+                    "factor": factor,
+                    "fold": fold.fold,
+                    "direction": direction,
+                    "cost_multiplier": float(multiplier),
+                    "validation_rank_ic": abs(
+                        float(validation_metrics["rank_ic_mean"])
+                    ),
+                    "test_rank_ic": float(test20_metrics["rank_ic_mean"]),
+                    "test_ic_dates": int(test20_metrics["dates"]),
+                    **portfolio_metrics,
+                }
+                if fixed_direction is not None:
+                    metric_row["validation_observed_direction"] = (
+                        validation_observed_direction
+                    )
+                metric_rows.append(metric_row)
     return {
         "daily_ic": pl.concat(daily_frames).sort(
             "fold", "period", "factor", "horizon", "trade_date"
@@ -1070,6 +1203,105 @@ def apply_fourth_batch_admission_gates(
     )
 
 
+def apply_fifth_batch_admission_gates(
+    summary: pl.DataFrame,
+    *,
+    fold_metrics: pl.DataFrame,
+    redundancy_summary: pl.DataFrame,
+    coverage_summary: pl.DataFrame,
+    schedule_alignment: pl.DataFrame,
+    expected_direction: int,
+    maximum_median_absolute_rank_correlation: float,
+) -> pl.DataFrame:
+    """Apply fixed-direction, coverage, redundancy and schedule gates to MAX."""
+    if (
+        not isinstance(summary, pl.DataFrame)
+        or summary.is_empty()
+        or not isinstance(fold_metrics, pl.DataFrame)
+        or fold_metrics.is_empty()
+        or not {
+            "factor",
+            "cost_multiplier",
+            "direction",
+            "validation_observed_direction",
+        }.issubset(fold_metrics.columns)
+        or not isinstance(redundancy_summary, pl.DataFrame)
+        or redundancy_summary.is_empty()
+        or not isinstance(coverage_summary, pl.DataFrame)
+        or coverage_summary.is_empty()
+        or not isinstance(schedule_alignment, pl.DataFrame)
+        or schedule_alignment.is_empty()
+        or expected_direction not in {-1, 1}
+        or type(maximum_median_absolute_rank_correlation) is not float
+        or not 0 < maximum_median_absolute_rank_correlation < 1
+    ):
+        raise ValueError("invalid fifth-batch admission gate request")
+    directions = (
+        fold_metrics.filter(pl.col("cost_multiplier") == 1.0)
+        .group_by("factor")
+        .agg(
+            pl.col("direction").n_unique().alias("selected_direction_count"),
+            pl.col("direction").first().alias("selected_direction"),
+            (
+                pl.col("validation_observed_direction") == expected_direction
+            ).all().alias("validation_direction_passed"),
+        )
+    )
+    redundancy = redundancy_summary.group_by("factor_a").agg(
+        pl.col("median_abs_rank_corr").max().alias("max_median_abs_rank_corr")
+    )
+    schedule = schedule_alignment.group_by("factor").agg(
+        pl.col("schedule_aligned").all().alias("schedule_alignment_passed")
+    )
+    drop_columns = [
+        column
+        for column in ("max_median_abs_rank_corr", "combination_eligible")
+        if column in summary.columns
+    ]
+    summary_base = summary.drop(drop_columns) if drop_columns else summary
+    return (
+        summary_base.join(directions, on="factor", how="left", validate="1:1")
+        .join(
+            redundancy,
+            left_on="factor",
+            right_on="factor_a",
+            how="left",
+            validate="1:1",
+        )
+        .join(coverage_summary, on="factor", how="left", validate="1:1")
+        .join(schedule, on="factor", how="left", validate="1:1")
+        .with_columns(
+            pl.lit(expected_direction).alias("expected_direction"),
+            (
+                (pl.col("selected_direction_count") == 1)
+                & (pl.col("selected_direction") == expected_direction)
+            ).alias("fixed_direction_passed"),
+            (
+                pl.col("max_median_abs_rank_corr").is_not_null()
+                & (
+                    pl.col("max_median_abs_rank_corr")
+                    < maximum_median_absolute_rank_correlation
+                )
+            ).alias("redundancy_passed"),
+        )
+        .with_columns(pl.col("redundancy_passed").alias("combination_eligible"))
+        .with_columns(
+            pl.when(
+                (pl.col("research_status") == "RESEARCH_ONLY")
+                & pl.col("fixed_direction_passed")
+                & pl.col("validation_direction_passed")
+                & pl.col("redundancy_passed")
+                & pl.col("coverage_passed")
+                & pl.col("schedule_alignment_passed")
+            )
+            .then(pl.lit("RESEARCH_ONLY"))
+            .otherwise(pl.lit("REJECTED"))
+            .alias("research_status")
+        )
+        .sort("factor")
+    )
+
+
 def _scheduled_rebalance_dates(
     panel: pl.DataFrame,
     *,
@@ -1135,6 +1367,7 @@ def _cost_periods(project_root: Path, portfolio: Mapping[str, Any]) -> tuple[ASh
 def _validate_config(config: Mapping[str, Any], *, threads: int) -> None:
     factor_config = cast(Mapping[str, Any], config["factors"])
     market_risk = cast(Mapping[str, Any], config.get("market_risk", {}))
+    max_lottery = cast(Mapping[str, Any], config.get("max_lottery", {}))
     coverage = cast(Mapping[str, Any], config.get("coverage", {}))
     names = tuple(cast(list[str], factor_config["names"]))
     first_batch = names == CLASSIC_FACTOR_NAMES and "catalog" not in factor_config
@@ -1176,6 +1409,23 @@ def _validate_config(config: Mapping[str, Any], *, threads: int) -> None:
         and coverage.get("minimum_rebalance_symbols") == 100
         and float(coverage.get("minimum_median_coverage", 0.0)) == 0.80
     )
+    fifth_batch = (
+        names == FIFTH_BATCH_FACTOR_NAMES
+        and factor_config.get("catalog") == "max_lottery_fifth_batch_v1"
+        and tuple(cast(list[str], factor_config["redundancy_reference_names"]))
+        == CLASSIC_FACTOR_NAMES
+        + SECOND_BATCH_FACTOR_NAMES
+        + THIRD_BATCH_FACTOR_NAMES
+        + FOURTH_BATCH_FACTOR_NAMES
+        + ("liquidity_20",)
+        and float(factor_config["maximum_median_absolute_rank_correlation"]) == 0.80
+        and max_lottery.get("window_sessions") == 20
+        and max_lottery.get("return_type") == "simple_adjusted_close"
+        and max_lottery.get("expected_direction") == -1
+        and max_lottery.get("trial_budget") == 1
+        and coverage.get("minimum_rebalance_symbols") == 100
+        and float(coverage.get("minimum_median_coverage", 0.0)) == 0.80
+    )
     if (
         not (
             first_batch
@@ -1183,6 +1433,7 @@ def _validate_config(config: Mapping[str, Any], *, threads: int) -> None:
             or third_batch
             or fourth_batch
             or downside_beta
+            or fifth_batch
         )
         or tuple(cast(list[int], config["factors"]["horizons"])) != (1, 5, 20)
         or tuple(float(value) for value in config["portfolio"]["cost_multipliers"])
@@ -1241,6 +1492,19 @@ def _report(
                 "coverage, redundancy and exact rebalance-schedule gates are fail-closed.",
             ]
         )
+    if cast(Mapping[str, Any], config["factors"]).get("catalog") == (
+        "max_lottery_fifth_batch_v1"
+    ):
+        caveats.extend(
+            [
+                "MAX is the greatest signed daily adjusted-close return over twenty "
+                "sessions, not absolute return and not Qlib Alpha158 Max(high,20)/close.",
+                "The economic direction is pre-registered at -1; validation may reject "
+                "that direction but cannot reverse the tested portfolio.",
+                "A historical pass would still require daily-basic size and turnover "
+                "controls before forward observation.",
+            ]
+        )
     return {
         "schema_version": "m2-classic-factor-report-v1",
         "conclusion": conclusion,
@@ -1266,6 +1530,7 @@ def _report(
             else []
         ),
         "market_risk": config.get("market_risk", {}),
+        "max_lottery": config.get("max_lottery", {}),
         "timing": {
             "signal": "close of as_of session",
             "execution": "next exchange session open",

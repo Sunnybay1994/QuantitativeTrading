@@ -69,3 +69,13 @@ premium；没有生成 `PAPER_CANDIDATE`，也没有启动 PAPER。
 真实不可变运行结论为三个因子全部 `REJECTED`。coverage 和预注册调仓日对账全部通过，但 `IMXD20` 触发
 严格冗余线且成本后为负，`RESI20` 的 RankIC 和成本证据不足，`VSUMD20` 的方向、RankIC、折数和成本证据
 不足。没有生成 `PAPER_CANDIDATE`，也没有启动 PAPER。
+
+## MAX 彩票偏好因子
+
+- [MAX 彩票偏好因子假设卡](M2_MAX彩票偏好因子假设卡.md)
+- [MAX 彩票偏好因子研究结果](M2_MAX彩票偏好因子研究结果.md)
+
+本轮 trial budget 固定为 1，研究过去 20 个严格连续 session 的最大单日复权收盘收益，并将经济方向预注册
+为低 MAX 优先的 `-1`。它不是 Qlib Alpha158 的 `Max(high,20)/close`。唯一真实不可变 run 通过历史
+初筛门禁，结论为 `RESEARCH_ONLY`；但组合收益有时期集中，且规模/换手二阶段控制、forward、统一回放和
+人工 admission 尚未完成，因此不得自动生成 `PAPER_CANDIDATE` 或启动 PAPER。
