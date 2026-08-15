@@ -18,10 +18,10 @@
 | 负责任务 | 路线图 | 唯一维护者 | 状态 |
 | --- | --- | --- | --- |
 | 项目结构、文档、代码边界与分支合流 | [项目结构与合流治理路线图](项目结构与合流治理路线图.md) | 项目结构统筹任务 | 活跃 |
-| M2 策略与因子库 | [M2 策略与因子库并行建设路线图](M2_策略与因子库并行建设路线图.md) | 策略开发任务 | MAX 为 `RESEARCH_ONLY`；R10 successor 已 canonical retained；MAX daily-basic 控制包活跃，PIT 等待 financial clean snapshot |
+| M2 策略与因子库 | [M2 策略与因子库并行建设路线图](M2_策略与因子库并行建设路线图.md) | 策略开发任务 | 原始 MAX 为 `RESEARCH_ONLY`，daily-basic 控制为 `REJECTED` 且已合流；PIT 首跑前置包活跃，真实 PIT 仍等待 financial clean snapshot |
 | M2 经典因子研究子路线 | [M2 经典因子研究实现与回测路线图](M2_经典因子研究实现与回测路线图.md) | 策略开发任务 | fastlane B 安全点 `cb2a0eb` |
 | M1/M3/M4 框架开发与 S2 admission | [M1/M3/M4 框架开发总路线图](M1_M3_M4_框架开发总路线图.md) | 框架开发任务 | S2 `4ac392a`、RUN-0D2 `92de0d4` 已合流；M4 安全决策待批示 |
-| GUI 投研工作台 | [GUI 投研工作台路线图](GUI_投研工作台路线图.md) | GUI 任务 | C4 `18dc006` 已合流；D1 比较口径诊断 worktree 活跃但仅静态实现，等待 MAX 释放计算槽；Vega renderer 债仍开放 |
+| GUI 投研工作台 | [GUI 投研工作台路线图](GUI_投研工作台路线图.md) | GUI 任务 | C4 `18dc006` 与 D1 `9f42b3c` 已合流，D1 来源线已归档退出；GUI 继续只读，Vega renderer 债仍开放 |
 
 ## 每份任务路线图的固定内容
 

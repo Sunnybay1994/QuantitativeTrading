@@ -4,19 +4,21 @@
 
 - 当前隔离集成线为 `codex/m1-m2-integration@本文件所在提交`；业务合流稳定点 `46f8e1d` 已保留原提交身份吸收
   M1 `9004b6d`、S2 `4ac392a`、liquidity `ec506b6`、GUI G1/C4 `a5c63f7`/`18dc006`、M4 RUN-0D2
-  `92de0d4`、downside beta `3c8c6c4`、Alpha158 `0f737ac` 与 MAX `0363b0f`。最近 MAX+GUI 直接组合为
-  34 passed/2 skipped，Ruff、mypy、cold import 通过；后续 `ba83ad7` 仅 no-ff 吸收 R10 两份证据文档，
-  不把既有回归扩大表述为覆盖其它范围。
+  `92de0d4`、downside beta `3c8c6c4`、Alpha158 `0f737ac` 与 MAX `0363b0f`。此后 `ba83ad7` 吸收
+  R10 证据，`c2c8841` 吸收 MAX daily-basic 控制，`8427c83` 吸收 GUI D1；MAX-control 合流回归为
+  25 passed，GUI D1 合流回归为 19 passed/2 skipped，二者定向 Ruff、mypy、cold import 均通过，
+  不把这些定向证据扩大表述为覆盖其它范围。
 - 根 checkout 仍停在 `codex/m2-strategy-fastlane@4d569be`，由唯一 Tushare finance writer 使用；writer
   权威终态前禁止切换根分支或并发写源码。根只剩 `docs/quant_factor_research_v2/**` 25 个未跟踪资料文件，
   当前只读、不是 SSOT，未经用户决定不得删除、改写、提交或被运行时代码自动发现。
 - S2 admission 已形成 fail-closed 安全点：B8 metrics provenance 尚未绑定到 verified replay/metrics 时，
   完整证据只能是 `RESEARCH_ONLY / ADMISSION_METRICS_PROVENANCE_UNBOUND`，不得生成 `ELIGIBLE` 或
   `PAPER_CANDIDATE`。source binding、人工准入与真实 PAPER Gate 仍开放。
-- 五条 M2 因子真实不可变 run 已用 no-clobber、逐文件 set/size/SHA-256 与 `run.json` 输出闭包验真后保留在根
-  `artifacts/research/runs/<run_id>/`。Amihud、自由流通换手、downside beta 与 Alpha158 第四批均为
-  `REJECTED`；MAX `10dea14f…129bb3` 通过初筛但最高仅 `RESEARCH_ONLY`，三折 2x 收益分化仍需规模/换手控制、
-  forward、统一回放和人工 admission。相关短期 worktree 已退出；统一 I/O/compute 分段仍是性能债，
+- 六条 M2 因子真实不可变 run 已用 no-clobber、逐文件 set/size/SHA-256 与 `run.json` 输出闭包验真后保留在根
+  `artifacts/research/runs/<run_id>/`。Amihud、自由流通换手、downside beta、Alpha158 第四批与 MAX
+  daily-basic 控制 `30326191…e2cf` 均为 `REJECTED`；原始 MAX `10dea14f…129bb3` 通过初筛但最高仅
+  `RESEARCH_ONLY`。控制实验因 2x 成本收益为负而拒绝，不能把原始 MAX 的结果升级为已排除规模/换手暴露；
+  forward、统一回放和人工 admission 仍未闭合。相关短期 worktree 已退出；统一 I/O/compute 分段仍是性能债，
   当前证据不支持先上 GPU、并行或语言重写。
 - M2-SOURCE-R10 已发布同逻辑输入、同经济行为的 successor `e43da184…7a96f`，根 canonical 经 public verifier
   复验为 `RESEARCH_ONLY`；source/canonical 6 文件、60,597 bytes、逐文件 SHA-256 差异为 0。R10 证据已由
@@ -32,14 +34,16 @@
   UA-M4-005 durable approval 与 UA-M4-006 shared barrier，再按顺序完成 cross-day rotation；UA-M4-007 只约束
   正常窗口结束后的 actual fault drill，不冒充首日启动前置。A/B 代码在用户裁定前暂停。
 - GUI C4 `18dc006` 已合流：optional 依赖为 `streamlit>=1.49,<2`，12 处 dataframe 参数已迁移；真实 AppTest/browser
-  功能 smoke 通过且 console error 为 0，集成分支最小回归 23 passed/2 skipped。两类 Vega Infinite extent
-  warning 继续登记为 renderer 债，不宣称 zero-warning；C4 worktree、venv、端口和缓存均已清零。新的 GUI D1
-  worktree `codex/gui-g1-d1-comparison-diagnostics@2a37610` 只做只读比较口径诊断，当前仅允许 7 路径静态实现，
-  不占计算槽。G2 本地作业编排仅完成只读设计，当前不为一个运行按钮提前引入 SQLite worker/lease 平台。
-- `data/clean/tushare_financials` 仍不存在，因此 CPU8–11 当前交给
-  `codex/m2-max-daily-basic-controls@c2b4b01` 做单实例开发检查与唯一真实 run；每次真实运行前重新检查 snapshot，
-  READY 时由 PIT 抢占。MAX-control 完成后才轮到 GUI D1 检查；M2-FWD-R1 已解除 R10 前置阻塞，但须从届时最新
-  clean integration 安全点新建独立 worktree。所有短任务保持 BelowNormal、CPU8–11、数值线程不超过 2。
+  功能 smoke 通过且 console error 为 0。GUI D1 `9f42b3c` 又以只读的 14 字段关系诊断进入 `8427c83`；来源环境
+  AppTest 5 passed/0 skipped，integration 最小回归 19 passed/2 skipped，真实 canonical 字节派生的隔离篡改反例
+  证明 output digest 失败时不展示 mismatch 面板、metrics 或 NAV。D1 没有增加运行能力，来源 worktree/branch 已在
+  archive tag 留档后退出。两类 Vega Infinite extent warning 继续登记为 renderer 债，不宣称 zero-warning；G2
+  本地作业编排仍仅有只读设计，当前不为一个运行按钮提前引入 SQLite worker/lease 平台。
+- `data/clean/tushare_financials` 仍不存在。CPU8–11 当前交给
+  `codex/m2-pit-first-run-prereq@c2c8841` 做 A1 current-inventory 重构、plan/ledger exact-set、coverage 与 code-identity
+  前置闭包的开发检查；不得读取 partial raw、发布 snapshot 或启动真实 PIT。M2-FWD-R1 已解除 R10 前置阻塞，
+  `codex/m2-forward-r1@121b672` 仅做静态实现并排在 PIT 前置检查之后。所有短任务保持 BelowNormal、CPU8–11、
+  数值线程不超过 2。
   完整 branch/worktree 所有权、退出条件、artifact 保留条件和基础设施债
   见 [`项目结构与合流治理路线图`](roadmaps/项目结构与合流治理路线图.md)。项目初期继续以最小正确业务闭环
   为先；PIT、fail-closed、统一回放、OMS/风控/对账、人工准入和凭据安全不得作为“基础设施瑕疵”延期。
