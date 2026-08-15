@@ -82,6 +82,7 @@ if TYPE_CHECKING:
         build_formal_paper_daily_dependencies,
         load_formal_paper_daily_source_plan,
         publish_formal_paper_opening_market_input,
+        run_formal_paper_daily_operator,
         run_formal_paper_daily_read_only,
     )
     from quant.execution.paper_formal_ledger import (
@@ -235,6 +236,7 @@ _FORMAL_DAILY_EXPORTS = frozenset(
         "build_formal_paper_daily_dependencies",
         "load_formal_paper_daily_source_plan",
         "publish_formal_paper_opening_market_input",
+        "run_formal_paper_daily_operator",
         "run_formal_paper_daily_read_only",
     }
 )
@@ -379,6 +381,7 @@ __all__ = [
     "open_verified_formal_paper_execution_store",
     "open_verified_formal_paper_service_composition",
     "publish_formal_paper_opening_market_input",
+    "run_formal_paper_daily_operator",
     "run_formal_paper_daily_read_only",
     "decide_soak_gate",
     "expected_schedule_identity",

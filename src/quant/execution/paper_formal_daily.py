@@ -438,6 +438,14 @@ def build_formal_paper_daily_dependencies(
     raise FormalPaperDailyRunnerError() from None
 
 
+_OPERATOR_ACTIONS = frozenset(
+    {"inspect", "plan", "approve", "paper-submit", "cancel", "reconcile"}
+)
+_READ_ONLY_ACTIONS = frozenset({"inspect", "plan"})
+_NO_CONFIRM_ACTIONS = frozenset({"inspect", "plan", "reconcile"})
+_CONFIRM_WITHOUT_COMMAND = frozenset({"approve", "paper-submit"})
+
+
 def run_formal_paper_daily_read_only(
     *,
     action: Literal["inspect", "plan"],
@@ -448,18 +456,83 @@ def run_formal_paper_daily_read_only(
     now: dt.datetime,
 ) -> int:
     """Run exactly one non-dispatching daily PAPER CLI action."""
-    if action not in ("inspect", "plan"):
+    if type(action) is not str or action not in _READ_ONLY_ACTIONS:
         raise FormalPaperDailyRunnerError() from None
-    dependencies = build_formal_paper_daily_dependencies(
+    return run_formal_paper_daily_operator(
+        action=action,
         environment=environment,
         policy=policy,
         composition=composition,
         session_date=session_date,
         now=now,
     )
-    from quant.execution.cli import main
 
-    return main([action], dependencies=dependencies)
+
+def run_formal_paper_daily_operator(
+    *,
+    action: Literal[
+        "inspect", "plan", "approve", "paper-submit", "cancel", "reconcile"
+    ],
+    environment: VerifiedPaperRuntimeEnvironment,
+    policy: VerifiedPaperExecutionPolicy,
+    composition: VerifiedFormalPaperServiceComposition,
+    session_date: dt.date,
+    now: dt.datetime,
+    confirm_sha256: str | None = None,
+    command_id: str | None = None,
+) -> int:
+    """Run exactly one PAPER-only daily CLI action from one fresh composition."""
+    try:
+        argv = _formal_paper_operator_argv(
+            action=action,
+            confirm_sha256=confirm_sha256,
+            command_id=command_id,
+        )
+        dependencies = build_formal_paper_daily_dependencies(
+            environment=environment,
+            policy=policy,
+            composition=composition,
+            session_date=session_date,
+            now=now,
+        )
+        from quant.execution.cli import main
+
+        return main(argv, dependencies=dependencies)
+    except FormalPaperDailyRunnerError:
+        raise
+    except Exception:
+        raise FormalPaperDailyRunnerError() from None
+
+
+def _formal_paper_operator_argv(
+    *,
+    action: str,
+    confirm_sha256: str | None,
+    command_id: str | None,
+) -> list[str]:
+    if type(action) is not str or action not in _OPERATOR_ACTIONS:
+        raise FormalPaperDailyRunnerError() from None
+    if action in _NO_CONFIRM_ACTIONS:
+        if confirm_sha256 is not None or command_id is not None:
+            raise FormalPaperDailyRunnerError() from None
+        return [action]
+    if action in _CONFIRM_WITHOUT_COMMAND:
+        if command_id is not None:
+            raise FormalPaperDailyRunnerError() from None
+        argv = [action]
+        if confirm_sha256 is not None:
+            if type(confirm_sha256) is not str:
+                raise FormalPaperDailyRunnerError() from None
+            argv.extend(["--confirm-sha256", confirm_sha256])
+        return argv
+    if type(command_id) is not str or command_id == "":
+        raise FormalPaperDailyRunnerError() from None
+    argv = ["cancel", "--command-id", command_id]
+    if confirm_sha256 is not None:
+        if type(confirm_sha256) is not str:
+            raise FormalPaperDailyRunnerError() from None
+        argv.extend(["--confirm-sha256", confirm_sha256])
+    return argv
 
 
 def load_formal_paper_daily_source_plan(
@@ -1118,5 +1191,6 @@ __all__ = [
     "build_formal_paper_daily_dependencies",
     "load_formal_paper_daily_source_plan",
     "publish_formal_paper_opening_market_input",
+    "run_formal_paper_daily_operator",
     "run_formal_paper_daily_read_only",
 ]

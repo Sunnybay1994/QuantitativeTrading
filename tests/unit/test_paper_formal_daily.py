@@ -3,22 +3,28 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import io
+import sys
+import traceback
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import polars as pl
 import pytest
 
 from quant.domain.enums import Market
 from quant.execution import paper_formal_daily as daily
+from quant.execution.gateways.contracts import DispatchCertainty
+from quant.execution.reconcile import recover_local_state
+from quant.execution.store import OutboxDeliveryState
 from quant.research.lightweight_run import (
     LightweightResearchRunV1,
     ResearchFoldV1,
     ResearchInputDigestV1,
     publish_lightweight_research_run,
 )
+from tests.unit.test_execution_cli import _deps, _json
 
 NOW = dt.datetime(2026, 8, 14, 1, 31, tzinfo=dt.timezone.utc)
 SESSION = dt.date(2026, 8, 14)
@@ -278,15 +284,463 @@ def test_opening_market_publication_is_exact_and_no_clobber(tmp_path: Path) -> N
         )
 
 
-def test_read_only_runner_rejects_dispatch_actions_before_composition() -> None:
+def _dummy_operator_kwargs() -> dict[str, object]:
+    return {
+        "environment": object(),
+        "policy": object(),
+        "composition": object(),
+        "session_date": SESSION,
+        "now": NOW,
+    }
+
+
+def _assert_sanitized_runner_error(
+    error: daily.FormalPaperDailyRunnerError, *, hidden: str | None = None
+) -> None:
+    assert error.code == "PAPER_FORMAL_DAILY_RUNNER_INVALID"
+    assert str(error) == "PAPER_FORMAL_DAILY_RUNNER_INVALID"
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    if hidden is not None:
+        rendered = "".join(traceback.format_exception(error))
+        assert hidden not in str(error)
+        assert hidden not in repr(error)
+        assert hidden not in rendered
+
+
+def _hostile_exception_graph(marker: str) -> RuntimeError:
+    cause = ValueError(marker)
+    error = RuntimeError(marker)
+    error.__cause__ = cause
+    error.__context__ = cause
+    cause.__cause__ = error
+    cause.__context__ = error
+    return error
+
+
+def _forbid_deps_and_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom_deps(**_kwargs: object) -> object:
+        raise AssertionError("dependencies must not be built")
+
+    def boom_cli(*_args: object, **_kwargs: object) -> int:
+        raise AssertionError("CLI must not be called")
+
+    monkeypatch.setattr(daily, "build_formal_paper_daily_dependencies", boom_deps)
+    monkeypatch.setattr("quant.execution.cli.main", boom_cli)
+
+
+class _ActionStr(str):
+    pass
+
+
+class _UnhashableEq:
+    __hash__ = None
+
+    def __eq__(self, other: object) -> bool:
+        return False
+
+
+def _forbid_operator_deps_and_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom_operator(**_kwargs: object) -> int:
+        raise AssertionError("operator must not be called")
+
+    monkeypatch.setattr(daily, "run_formal_paper_daily_operator", boom_operator)
+    _forbid_deps_and_cli(monkeypatch)
+
+
+@pytest.mark.parametrize("action", ["approve", "paper-submit", "cancel", "reconcile"])
+def test_read_only_runner_rejects_dispatch_and_reconcile_actions_before_composition(
+    action: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _forbid_deps_and_cli(monkeypatch)
     with pytest.raises(daily.FormalPaperDailyRunnerError) as caught:
         daily.run_formal_paper_daily_read_only(
-            action="paper-submit",  # type: ignore[arg-type]
+            action=action,  # type: ignore[arg-type]
             environment=object(),  # type: ignore[arg-type]
             policy=object(),  # type: ignore[arg-type]
             composition=object(),  # type: ignore[arg-type]
             session_date=SESSION,
             now=NOW,
         )
-    assert caught.value.__cause__ is None
-    assert caught.value.__context__ is None
+    _assert_sanitized_runner_error(caught.value)
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        {"inspect": 1},
+        ["inspect"],
+        bytearray(b"inspect"),
+        _UnhashableEq(),
+        _ActionStr("inspect"),
+        _ActionStr("plan"),
+    ],
+)
+def test_read_only_runner_rejects_non_exact_str_action_before_operator(
+    action: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _forbid_operator_deps_and_cli(monkeypatch)
+    with pytest.raises(daily.FormalPaperDailyRunnerError) as caught:
+        daily.run_formal_paper_daily_read_only(
+            action=action,  # type: ignore[arg-type]
+            environment=object(),  # type: ignore[arg-type]
+            policy=object(),  # type: ignore[arg-type]
+            composition=object(),  # type: ignore[arg-type]
+            session_date=SESSION,
+            now=NOW,
+        )
+    _assert_sanitized_runner_error(caught.value)
+
+
+@pytest.mark.parametrize("action", ["inspect", "plan"])
+def test_read_only_runner_delegates_exact_str_inspect_and_plan_to_operator(
+    action: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def spy_operator(**kwargs: object) -> int:
+        calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(daily, "run_formal_paper_daily_operator", spy_operator)
+    environment = object()
+    policy = object()
+    composition = object()
+    result = daily.run_formal_paper_daily_read_only(
+        action=action,
+        environment=environment,  # type: ignore[arg-type]
+        policy=policy,  # type: ignore[arg-type]
+        composition=composition,  # type: ignore[arg-type]
+        session_date=SESSION,
+        now=NOW,
+    )
+    assert result == 0
+    assert calls == [
+        {
+            "action": action,
+            "environment": environment,
+            "policy": policy,
+            "composition": composition,
+            "session_date": SESSION,
+            "now": NOW,
+        }
+    ]
+
+
+@pytest.mark.parametrize("action", ["inspect", "plan", "reconcile"])
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"confirm_sha256": "a" * 64},
+        {"command_id": "b" * 64},
+        {"confirm_sha256": "a" * 64, "command_id": "b" * 64},
+    ],
+)
+def test_operator_rejects_inspect_plan_reconcile_confirm_or_command_id_before_deps(
+    action: str, extra: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _forbid_deps_and_cli(monkeypatch)
+    with pytest.raises(daily.FormalPaperDailyRunnerError) as caught:
+        daily.run_formal_paper_daily_operator(
+            action=action,  # type: ignore[arg-type]
+            **_dummy_operator_kwargs(),  # type: ignore[arg-type]
+            **extra,
+        )
+    _assert_sanitized_runner_error(caught.value)
+
+
+@pytest.mark.parametrize("action", ["approve", "paper-submit"])
+def test_operator_rejects_approve_and_submit_with_command_id_before_deps(
+    action: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _forbid_deps_and_cli(monkeypatch)
+    with pytest.raises(daily.FormalPaperDailyRunnerError) as caught:
+        daily.run_formal_paper_daily_operator(
+            action=action,  # type: ignore[arg-type]
+            **_dummy_operator_kwargs(),  # type: ignore[arg-type]
+            command_id="c" * 64,
+        )
+    _assert_sanitized_runner_error(caught.value)
+
+
+@pytest.mark.parametrize("command_id", [None, ""])
+def test_operator_rejects_cancel_without_command_id_before_deps(
+    command_id: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _forbid_deps_and_cli(monkeypatch)
+    with pytest.raises(daily.FormalPaperDailyRunnerError) as caught:
+        daily.run_formal_paper_daily_operator(
+            action="cancel",
+            **_dummy_operator_kwargs(),  # type: ignore[arg-type]
+            command_id=command_id,
+        )
+    _assert_sanitized_runner_error(caught.value)
+
+
+def test_operator_sanitizes_hostile_fresh_dependency_and_skips_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = "TOKEN C:/secret sqlite:///hostile-path"
+    cli_calls: list[object] = []
+
+    def hostile(**_kwargs: object) -> object:
+        raise RuntimeError(marker)
+
+    def spy_cli(*args: object, **kwargs: object) -> int:
+        cli_calls.append((args, kwargs))
+        return 0
+
+    monkeypatch.setattr(daily, "build_formal_paper_daily_dependencies", hostile)
+    monkeypatch.setattr("quant.execution.cli.main", spy_cli)
+    with pytest.raises(daily.FormalPaperDailyRunnerError) as caught:
+        daily.run_formal_paper_daily_operator(
+            action="inspect",
+            **_dummy_operator_kwargs(),  # type: ignore[arg-type]
+        )
+    _assert_sanitized_runner_error(caught.value, hidden=marker)
+    assert cli_calls == []
+
+
+@pytest.mark.parametrize(
+    "action",
+    [_ActionStr("inspect"), _ActionStr("plan"), b"inspect", 1, None, ["inspect"]],
+)
+def test_operator_rejects_non_exact_str_action_before_deps(
+    action: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _forbid_deps_and_cli(monkeypatch)
+    with pytest.raises(daily.FormalPaperDailyRunnerError) as caught:
+        daily.run_formal_paper_daily_operator(
+            action=action,  # type: ignore[arg-type]
+            **_dummy_operator_kwargs(),  # type: ignore[arg-type]
+        )
+    _assert_sanitized_runner_error(caught.value)
+
+
+def test_operator_sanitizes_hostile_cli_exception_graph(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = "TOKEN C:/secret sqlite:///hostile-path ACCOUNT-12345"
+    cli_calls: list[object] = []
+
+    def sentinel_deps(**_kwargs: object) -> object:
+        return object()
+
+    def hostile_cli(*args: object, **kwargs: object) -> int:
+        cli_calls.append((args, kwargs))
+        raise _hostile_exception_graph(marker)
+
+    monkeypatch.setattr(daily, "build_formal_paper_daily_dependencies", sentinel_deps)
+    monkeypatch.setattr("quant.execution.cli.main", hostile_cli)
+    with pytest.raises(daily.FormalPaperDailyRunnerError) as caught:
+        daily.run_formal_paper_daily_operator(
+            action="inspect",
+            **_dummy_operator_kwargs(),  # type: ignore[arg-type]
+        )
+    _assert_sanitized_runner_error(caught.value, hidden=marker)
+    assert len(cli_calls) == 1
+    assert type(caught.value) is daily.FormalPaperDailyRunnerError
+
+
+def test_operator_sanitizes_cli_import_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = "TOKEN C:/secret sqlite:///hostile-path ACCOUNT-12345"
+    fake = ModuleType("quant.execution.cli")
+    fake.__file__ = marker
+    monkeypatch.setattr(daily, "build_formal_paper_daily_dependencies", lambda **_kwargs: object())
+    monkeypatch.setitem(sys.modules, "quant.execution.cli", fake)
+    with pytest.raises(daily.FormalPaperDailyRunnerError) as caught:
+        daily.run_formal_paper_daily_operator(
+            action="inspect",
+            **_dummy_operator_kwargs(),  # type: ignore[arg-type]
+        )
+    _assert_sanitized_runner_error(caught.value, hidden=marker)
+
+
+@pytest.mark.parametrize("code", [0, 20, 30])
+def test_operator_returns_cli_int_exit_codes(
+    code: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        daily, "build_formal_paper_daily_dependencies", lambda **_kwargs: object()
+    )
+    monkeypatch.setattr("quant.execution.cli.main", lambda *_args, **_kwargs: code)
+    assert (
+        daily.run_formal_paper_daily_operator(
+            action="inspect",
+            **_dummy_operator_kwargs(),  # type: ignore[arg-type]
+        )
+        == code
+    )
+
+
+def test_operator_approve_submit_challenge_idempotence_and_wrong_confirm(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dependencies, store, gateway, _, _ = _deps(tmp_path)
+    builds: list[int] = []
+
+    def build_once(**_kwargs: object) -> object:
+        builds.append(1)
+        return dependencies
+
+    monkeypatch.setattr(daily, "build_formal_paper_daily_dependencies", build_once)
+    kwargs = _dummy_operator_kwargs()
+    try:
+        assert (
+            daily.run_formal_paper_daily_operator(action="approve", **kwargs)  # type: ignore[arg-type]
+            == 20
+        )
+        approval = _json(capsys)["content_identity"]
+        assert recover_local_state(store).commands == ()
+        assert gateway.calls == []
+
+        assert (
+            daily.run_formal_paper_daily_operator(
+                action="approve",
+                confirm_sha256="d" * 64,
+                **kwargs,  # type: ignore[arg-type]
+            )
+            == 20
+        )
+        assert capsys.readouterr().err == "CONFIRMATION_DRIFT\n"
+        assert recover_local_state(store).commands == ()
+        assert gateway.calls == []
+
+        assert (
+            daily.run_formal_paper_daily_operator(
+                action="approve",
+                confirm_sha256=approval,
+                **kwargs,  # type: ignore[arg-type]
+            )
+            == 0
+        )
+        staged = _json(capsys)
+        assert staged["code"] == "APPROVAL_STAGED"
+        recovered = recover_local_state(store)
+        assert len(recovered.commands) == 1
+        assert gateway.calls == []
+
+        assert (
+            daily.run_formal_paper_daily_operator(action="approve", **kwargs)  # type: ignore[arg-type]
+            == 20
+        )
+        replay = _json(capsys)["content_identity"]
+        assert (
+            daily.run_formal_paper_daily_operator(
+                action="approve",
+                confirm_sha256=replay,
+                **kwargs,  # type: ignore[arg-type]
+            )
+            == 0
+        )
+        assert _json(capsys)["code"] == "APPROVAL_STAGED_REPLAY"
+        assert len(recover_local_state(store).commands) == 1
+        assert gateway.calls == []
+
+        assert (
+            daily.run_formal_paper_daily_operator(action="paper-submit", **kwargs)  # type: ignore[arg-type]
+            == 20
+        )
+        submit = _json(capsys)["content_identity"]
+        assert gateway.calls == []
+        assert all(
+            item.state is OutboxDeliveryState.PENDING
+            for item in recover_local_state(store).deliveries
+        )
+
+        assert (
+            daily.run_formal_paper_daily_operator(
+                action="paper-submit",
+                confirm_sha256=approval,
+                **kwargs,  # type: ignore[arg-type]
+            )
+            == 20
+        )
+        assert capsys.readouterr().err == "CONFIRMATION_DRIFT\n"
+        assert gateway.calls == []
+        assert all(
+            item.state is OutboxDeliveryState.PENDING
+            for item in recover_local_state(store).deliveries
+        )
+
+        assert (
+            daily.run_formal_paper_daily_operator(
+                action="paper-submit",
+                confirm_sha256=submit,
+                **kwargs,  # type: ignore[arg-type]
+            )
+            == 0
+        )
+        assert _json(capsys)["code"] == "SUBMIT_COMPLETE"
+        assert len(gateway.calls) == 1
+        local = recover_local_state(store)
+        assert len(local.commands) == 1
+        assert local.deliveries[0].state is OutboxDeliveryState.SENT
+
+        assert (
+            daily.run_formal_paper_daily_operator(action="paper-submit", **kwargs)  # type: ignore[arg-type]
+            == 0
+        )
+        assert _json(capsys)["code"] == "SUBMIT_ALREADY_COMPLETE"
+        assert len(gateway.calls) == 1
+        assert len(recover_local_state(store).commands) == 1
+        assert len(builds) == 9
+    finally:
+        store.close()
+
+
+def test_operator_unknown_submit_does_not_auto_resend(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dependencies, store, gateway, _, _ = _deps(tmp_path)
+    gateway.certainty = DispatchCertainty.UNKNOWN
+    monkeypatch.setattr(
+        daily,
+        "build_formal_paper_daily_dependencies",
+        lambda **_kwargs: dependencies,
+    )
+    kwargs = _dummy_operator_kwargs()
+    try:
+        assert (
+            daily.run_formal_paper_daily_operator(action="approve", **kwargs)  # type: ignore[arg-type]
+            == 20
+        )
+        approval = _json(capsys)["content_identity"]
+        assert (
+            daily.run_formal_paper_daily_operator(
+                action="approve",
+                confirm_sha256=approval,
+                **kwargs,  # type: ignore[arg-type]
+            )
+            == 0
+        )
+        _json(capsys)
+        assert (
+            daily.run_formal_paper_daily_operator(action="paper-submit", **kwargs)  # type: ignore[arg-type]
+            == 20
+        )
+        submit = _json(capsys)["content_identity"]
+        assert (
+            daily.run_formal_paper_daily_operator(
+                action="paper-submit",
+                confirm_sha256=submit,
+                **kwargs,  # type: ignore[arg-type]
+            )
+            == 30
+        )
+        assert capsys.readouterr().err == "SUBMIT_QUERY_REQUIRED\n"
+        assert len(gateway.calls) == 1
+        assert recover_local_state(store).deliveries[0].state is OutboxDeliveryState.UNKNOWN
+
+        assert (
+            daily.run_formal_paper_daily_operator(action="paper-submit", **kwargs)  # type: ignore[arg-type]
+            == 30
+        )
+        assert capsys.readouterr().err == "SUBMIT_LOCAL_QUERY_REQUIRED\n"
+        assert len(gateway.calls) == 1
+        assert len(recover_local_state(store).commands) == 1
+        assert recover_local_state(store).deliveries[0].state is OutboxDeliveryState.UNKNOWN
+    finally:
+        store.close()
