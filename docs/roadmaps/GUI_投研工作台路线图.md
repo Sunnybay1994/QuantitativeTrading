@@ -30,7 +30,7 @@
 - 全部验证后按选择顺序并排展示 manifest 原有 metrics、hypothesis、caveats、input/output；
 - 只有每个运行的 NAV 都通过现有有界读取与 digest 复核时才叠加原始 1.0× 行；只增加显示标签。
 
-当前 G1-D1 范围：
+已交付 G1-D1 范围：
 
 - 严格比较精确返回 `COMPARISON_CONTRACT_MISMATCH` 时，增加只读比较口径关系诊断；
 - diagnosis 与 verifier 直接共享现有 `_comparison_contract` 的唯一 14 字段机器定义，并在内部生成全量
@@ -54,21 +54,21 @@
 
 ## 分支、worktree 与基线
 
-- 唯一 owner：GUI session（本任务）；其他 session 不在本 worktree 写入或提交。
-- 当前冻结基线：`2a376100a50fb0ad5040048e4ba2aae8c974ace9`。
-- 当前分支：`codex/gui-g1-d1-comparison-diagnostics`。
-- 当前独立 worktree：
-  `F:\AI_Coding\QuantitativeTrading\artifacts\dev_worktrees\gui-g1-d1-comparison-diagnostics`。
+- 唯一文档 owner：GUI session；当前没有活动 GUI worktree 或开放写白名单。
+- G1-D1 历史冻结基线：`2a376100a50fb0ad5040048e4ba2aae8c974ace9`；source
+  `9f42b3c81a3a5e4e70ec4a0c85e0c7695b9d1736` 已经 integration merge
+  `8427c83ddad62690b1f75d391ed1178fd3f6f415` 吸收，并以
+  `archive/gui-g1-d1-comparison-diagnostics-20260816` 留档。来源 branch 与 worktree 已 archive-first 退休。
 - 历史 G0-C4 冻结父提交：`4fa5d21a9c99c125ba0dadb8c732cca2681b34ba`。
 - 历史 G1 安全提交：`a5c63f7c8ca1d763b934c13330e793c65da27842`；已由统筹 no-ff 纳入后续
-  integration 历史，并已包含在当前 G1-D1 基线中。
+  integration 历史，并已包含在历史 G1-D1 基线中。
 - G0 代码与 optional 依赖安全点：`6640b791cf0fab6f996aea014293a618d2e5a22e`。
 - G0 smoke 环境失败记录安全点：`75b6419c3e0bcf5c1e1924ed02dd6fda87bd53b5`。
 - 根工作树：只读，GUI session 不在其中写入或合流。
 
 ## 文件与文档所有权
 
-当前 G1-D1 包的 exact 文件白名单为以下 7 个路径，任何实现、测试、文档和安全提交不得包含其他路径：
+历史 G1-D1 包的 exact 文件白名单为以下 7 个路径：
 
 ```text
 src/quant/gui/research_runs.py
@@ -80,9 +80,10 @@ docs/roadmaps/GUI_投研工作台路线图.md
 docs/agent/GUI_G1_D1_严格比较口径诊断任务与交付记录.md
 ```
 
-本次文档冻结只写上述白名单中的 3 个文档；生产代码和测试仍由同一 G1-D1 包在其余 4 路径内实现。
+该白名单已随 G1-D1 安全提交、合流与来源线退出关闭；当前不授权继续写这些路径。后续 GUI 窄包必须由
+统筹基于当时最新 integration 重新冻结 exact base、owner、白名单和资源窗口。
 
-以下为历史 G0/G1 owner 集合，不扩大当前 G1-D1 白名单：
+以下为历史 G0/G1 owner 集合，不构成当前写白名单：
 
 ```text
 src/quant/gui/__init__.py
@@ -214,30 +215,25 @@ stdout/stderr、真实退出码、BelowNormal、affinity `0xF00` 和数值线程
 | G1-C1 | 2–4 run 严格比较、整体完整性与 NAV fail-closed 纯逻辑 | G1 6 文件白名单与合同冻结 |
 | G1-C2 | “运行比较”薄页面、纯逻辑/条件 AppTest 与文档同步 | G1-C1 完成且不增加任何执行能力 |
 | G1-C3 | 定向 pytest/Ruff/mypy 与真实 immutable artifacts 只读探针 | 项目统一串行资源队列轮到 GUI |
-| G1-D1 | `COMPARISON_CONTRACT_MISMATCH` 只读 14 字段关系诊断 | 开发检查/AppTest/Probe A 与统筹冻结的 Probe B 等价派生反例 PASS；exact 7 安全提交可形成 |
+| G1-D1 | `COMPARISON_CONTRACT_MISMATCH` 只读 14 字段关系诊断 | 已完成：source `9f42b3c` → merge `8427c83`，archive-first 退出 |
 
-G0-C1 至 G0-C3、G1-C1 至 G1-C3 和 G0-C4 的既有提交与验证结果均作为历史证据保留；
-`GUI-DEBT-VEGA-001` 仍开放，因此不得宣称 strict zero-warning C4 关闭。当前 G1-D1 的 focused pytest、
+G0-C1 至 G0-C3、G1-C1 至 G1-C3、G0-C4 和 G1-D1 的既有提交与验证结果均作为历史证据保留；
+`GUI-DEBT-VEGA-001` 仍开放，因此不得宣称 strict zero-warning C4 关闭。G1-D1 的 focused pytest、
 Ruff、mypy、Streamlit AppTest 与真实 Probe A 已通过；Probe B 的 live fixture 因 29 个同口径候选 run 全部
 `VERIFIED` 而继续记录为 `BLOCKED_BY_FIXTURE_AVAILABILITY`。统筹随后冻结的一次
 `DERIVED_REAL_BYTES_OUTPUT_FAIL` 已用两个 fresh verified canonical run 的隔离逐文件副本通过：14 字段全部
 `REFERENCE/SAME`，第二个副本 output 末字节篡改后严格返回 `COMPARISON_RUN_UNVERIFIED`，canonical 源
-SHA 未变且临时资源已清理。因此等价验收闭合，可形成 exact 7 路径安全提交；这里的状态不代表项目级里程碑、
+SHA 未变且临时资源已清理。因此等价验收及 exact 7 路径安全提交已经闭合；这里的状态不代表项目级里程碑、
 browser 或 WSL Gate 完成，也不把派生反例称为既存坏 run。
 
-## G1-D1 安全提交、合流与 worktree 退出条件
+## G1-D1 历史合流与 worktree 退出闭环
 
-- **安全提交**：定向 pytest、Ruff、mypy、AppTest、Probe A 与统筹冻结的 Probe B 等价派生反例均已形成
-  证据；ignored basetemp、短生命周期环境、派生临时 root、PID tree 与 CPU 占用均已清理。真实 Probe B
-  live fixture 仍不存在，但等价路径已经实际通过；cached diff 严格为当前 exact 7 路径时可形成 G1-D1
-  安全提交。browser 未要求、未执行，不能写成通过。
-- **合流**：GUI session 只回报 G1-D1 commit SHA、冻结父提交、exact file list、实际验证结果和残余风险；
-  由项目统筹在独立 integration 分支执行冲突审计与合流。不得从本 session 写根 writer checkout、修改中央
-  SSOT 或自行宣称项目 Gate 完成。
-- **worktree 删除**：仅当 G1-D1 提交已被统筹确认纳入目标集成历史，分支无未提交改动，ignored
-  basetemp、GUI/Python 进程、短生命周期验证环境与端口均无本包残留，历史 G0/G1/C4 证据和开放债项仍在
-  路线图保留，且统筹明确批准退出后，才可删除当前 G1-D1 worktree。未满足任一条件时继续保留，不做目录
-  移动或根级清理。
+- **安全提交**：`9f42b3c81a3a5e4e70ec4a0c85e0c7695b9d1736`；定向 pytest、Ruff、mypy、
+  AppTest、Probe A 与统筹冻结的 Probe B 等价派生反例均已形成证据。browser 未要求、未执行，不能写成通过。
+- **合流**：integration merge `8427c83ddad62690b1f75d391ed1178fd3f6f415` 已吸收 source；没有从 GUI
+  session 写根 writer checkout，也没有据此宣称项目 Gate 完成。
+- **退出**：archive tag 已建立，来源 branch/worktree、ignored basetemp、短生命周期环境、派生临时 root、
+  PID tree、端口与 CPU 占用均已清理。后续任务不得复用已退休 worktree 或旧 base。
 
 ## G0 验收标准
 
@@ -278,10 +274,10 @@ browser 或 WSL Gate 完成，也不把派生反例称为既存坏 run。
   mismatch 时不得读取或哈希输出；
 - 重新选择运行会清除旧诊断；严格比较的 2–4 唯一选择、128 MiB 输出上限、250,000 NAV 行上限和
   all-or-nothing 证据门禁均不改变；
-- 当前 focused pytest、Ruff、mypy、AppTest 与真实 3-run mismatch Probe A 已通过；真实同口径 output-fail
+- focused pytest、Ruff、mypy、AppTest 与真实 3-run mismatch Probe A 已通过；真实同口径 output-fail
   live fixture 因不存在而保留 `BLOCKED_BY_FIXTURE_AVAILABILITY`。统筹冻结的等价验收已由一次真实 canonical
   字节派生的隔离篡改反例通过：14 字段全 `REFERENCE/SAME`、output fail 精确闭合、无部分 evidence/NAV，
-  canonical SHA 不变且临时资源清零；它不是既存坏 run。cached exact 7 闭合后可形成安全提交。
+  canonical SHA 不变且临时资源清零；它不是既存坏 run。exact 7 安全提交、合流与来源线退出均已完成。
 
 ## 后续队列
 
