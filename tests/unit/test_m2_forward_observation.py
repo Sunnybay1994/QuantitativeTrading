@@ -14,6 +14,9 @@ from quant.research.run_s2_forward_observation import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = PROJECT_ROOT / "configs/research/m2_s2_minimum_breadth_forward.toml"
+VOLATILITY_CONFIG_PATH = (
+    PROJECT_ROOT / "configs/research/m2_s2_volatility_target_forward.toml"
+)
 
 
 def _config() -> tuple[dict[str, object], bytes]:
@@ -50,6 +53,18 @@ def _prices(candidates: list[str], as_of: dt.date) -> pl.DataFrame:
             "source": "forward-test",
         } for index, date in enumerate(dates))
     return pl.DataFrame(rows)
+
+
+def _volatile_prices(candidates: list[str], as_of: dt.date) -> pl.DataFrame:
+    frame = _prices(candidates, as_of)
+    return frame.with_columns(
+        (
+            pl.col("adjusted_close")
+            * pl.when(pl.int_range(pl.len()) % 2 == 0)
+            .then(0.98)
+            .otherwise(1.02)
+        ).alias("adjusted_close")
+    )
 
 
 def _calendars() -> pl.DataFrame:
@@ -124,6 +139,32 @@ def test_forward_observation_publishes_research_only_target_no_clobber(
     )
     assert reused
     assert (same_root, same_id) == (root, observation_id)
+
+
+def test_forward_observation_applies_frozen_unlevered_volatility_target(
+    tmp_path: Path,
+) -> None:
+    payload = VOLATILITY_CONFIG_PATH.read_bytes()
+    config = tomllib.loads(payload.decode("utf-8"))
+    as_of = dt.date(2026, 8, 31)
+    candidates = _candidates(config)
+
+    root, _observation_id, reused = publish_forward_observation(
+        project_root=PROJECT_ROOT,
+        artifact_root=tmp_path / "artifacts",
+        config_path=VOLATILITY_CONFIG_PATH,
+        config_payload=payload,
+        config=config,
+        as_of=as_of,
+        prices=_volatile_prices(candidates, as_of),
+        calendars=_calendars(),
+    )
+
+    targets = pl.read_parquet(root / "target_weights.parquet")
+    invested = targets.get_column("weight").sum()
+    assert not reused
+    assert 0 < invested < 0.9
+    assert targets.filter(pl.col("weight") > 0).height == 2
 
 
 def test_forward_observation_rejects_pre_freeze_or_partial_month(

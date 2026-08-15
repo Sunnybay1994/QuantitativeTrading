@@ -19,6 +19,7 @@ import polars as pl
 from quant.backtest import schedule_next_trading_day
 from quant.domain import TargetWeightSchema, TradeCalendarSchema
 from quant.factors import compute_trend_factors_from_prices
+from quant.portfolio import scale_target_weights_to_volatility
 from quant.research.lightweight_run import (
     canonical_json_bytes,
     compute_code_sha256,
@@ -33,6 +34,7 @@ _EXPECTED_CONCLUSION = "RESEARCH_ONLY"
 _CODE_PATHS = (
     "src/quant/backtest/timing.py",
     "src/quant/factors/trend.py",
+    "src/quant/portfolio/selection.py",
     "src/quant/research/lightweight_run.py",
     "src/quant/research/run_s2_forward_observation.py",
     "src/quant/strategies/baselines.py",
@@ -324,9 +326,30 @@ def _build_targets(
         name=config["research"]["hypothesis_id"].replace("-", "_"),
         version=config["research"]["strategy_version"],
     )
-    targets = TargetWeightSchema.validate(
+    targets: pl.DataFrame = TargetWeightSchema.validate(
         strategy.target_weights(as_of, factors).sort("symbol")
     )
+    volatility_target = strategy_config.get("volatility_target")
+    if volatility_target is not None:
+        if (
+            not isinstance(volatility_target, dict)
+            or set(volatility_target)
+            != {
+                "lookback_observations",
+                "annualized_volatility",
+                "annualization_sessions",
+            }
+        ):
+            raise ValueError("volatility_target 配置无效")
+        targets = scale_target_weights_to_volatility(
+            targets=targets,
+            prices=prices,
+            lookback_observations=volatility_target["lookback_observations"],
+            annualized_target_volatility=volatility_target[
+                "annualized_volatility"
+            ],
+            annualization_sessions=volatility_target["annualization_sessions"],
+        ).sort("symbol")
     scheduled = schedule_next_trading_day(targets, calendars)
     if scheduled.height != targets.height:
         raise ValueError("日历没有覆盖所有目标的下一开市日")

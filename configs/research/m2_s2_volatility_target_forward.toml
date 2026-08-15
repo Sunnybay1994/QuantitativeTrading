@@ -1,0 +1,80 @@
+[meta]
+config_version = "1.0.0"
+purpose = "Forward-only observation of the frozen M2 unlevered volatility-target candidate"
+
+[research]
+hypothesis_id = "s2-monthly-volatility-target-v1"
+hypothesis = "Using only a 60-observation 12% annualized unlevered volatility target on the monthly regime-filtered ETF portfolio can reduce maximum drawdown while preserving positive economic value."
+strategy_kind = "etf_regime_trend"
+strategy_version = "1.2.0"
+conclusion = "RESEARCH_ONLY"
+random_seed = 0
+
+[forward_observation]
+artifact_kind = "non_deploying_forward_observation"
+candidate_source_run_id = "05eee8780e8eb7679d4b5f33405ff45c4addaadbefeb449ac8d77ab7ba2bb965"
+candidate_source_config_relative_path = "configs/research/m2_s2_volatility_target.toml"
+candidate_source_config_sha256 = "51755c1e581deb475868105ece9a1de9e1a73efe0d481ae7b61adffacfea8053"
+candidate_frozen_date = 2026-08-14
+first_eligible_signal_date = 2026-08-31
+selected_top_k = 2
+selected_regression_window = 60
+
+[data]
+historical_raw_price_source = "akshare_sina"
+incremental_raw_price_source = "baostock"
+dividend_source = "akshare_sina"
+adjustment = "total_return_dividend"
+start_date = 2023-01-01
+end_date = 2026-07-10
+minimum_history_observations = 121
+
+[universe]
+name = "ETF_POOL_M2_V1"
+frozen_as_of = 2026-07-12
+wide = ["510300.SH", "159919.SZ", "510500.SH", "159922.SZ"]
+industry = ["512880.SH", "512170.SH", "515790.SH"]
+hong_kong_theme = ["513060.SH", "513330.SH", "513180.SH", "159920.SZ"]
+
+[strategy.etf_regime_trend]
+regime_symbol = "510300.SH"
+momentum_windows = [20, 60, 120]
+regression_window = 60
+top_k = 2
+cash_buffer = 0.10
+factor_version = "trend_v1"
+signal_timing = "close"
+execution_timing = "next_session_open"
+
+[strategy.etf_regime_trend.volatility_target]
+lookback_observations = 60
+annualized_volatility = 0.12
+annualization_sessions = 252
+
+[backtest]
+initial_cash = 1000000.0
+valuation_timing = "close"
+execution_timing = "next_session_open"
+
+[walk_forward]
+enabled = true
+train_months = 24
+validation_months = 6
+test_months = 6
+step_months = 6
+selection_metric = "net_sharpe"
+cost_multipliers = [0.5, 1.0, 2.0]
+
+[costs.a_share]
+commission_rate = 0.00025
+commission_min = 5.0
+stamp_tax_sell = 0.0005
+transfer_fee = 0.00001
+slippage = 0.001
+effective_from = 2026-01-01
+
+[costs.etf]
+commission_rate = 0.00025
+commission_min = 5.0
+slippage = 0.001
+effective_from = 2023-01-01
