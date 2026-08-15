@@ -25,6 +25,12 @@ from quant.factors.daily_value import (
     DailyValueFactorSpec,
     compute_daily_value_factors,
 )
+from quant.factors.pit_quality import (
+    PIT_QUALITY_FACTOR_NAMES,
+    PIT_QUALITY_FACTOR_SPECS,
+    PITQualityFactorSpec,
+    compute_pit_quality_factors,
+)
 from quant.factors.risk import compute_realized_volatility_factors_from_prices
 from quant.factors.trend import compute_trend_factors, compute_trend_factors_from_prices
 
@@ -37,12 +43,16 @@ __all__ = [
     "THIRD_BATCH_FACTOR_SPECS",
     "DAILY_VALUE_FACTOR_NAMES",
     "DAILY_VALUE_FACTOR_SPECS",
+    "PIT_QUALITY_FACTOR_NAMES",
+    "PIT_QUALITY_FACTOR_SPECS",
     "ClassicFactorSpec",
     "DailyValueFactorSpec",
+    "PITQualityFactorSpec",
     "compute_classic_daily_factors",
     "compute_second_batch_daily_factors",
     "compute_third_batch_daily_factors",
     "compute_daily_value_factors",
+    "compute_pit_quality_factors",
     "compute_realized_volatility_factors_from_prices",
     "compute_trend_factors",
     "compute_trend_factors_from_prices",
