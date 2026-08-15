@@ -13,27 +13,31 @@ from quant.gui.research_runs import (
     ResearchRunSummary,
     conclusion_counts,
     discover_research_runs,
+    load_comparison_nav_projection,
     load_nav_projection,
     verify_research_run,
+    verify_research_run_comparison,
 )
 
 
 def main() -> None:
-    """Render the G0 read-only research cockpit."""
+    """Render the read-only research cockpit."""
     st = importlib.import_module("streamlit")
     st.set_page_config(page_title="Quant 投研工作台", layout="wide")
     st.title("Quant 投研工作台")
-    st.caption("G0 只读研究驾驶舱 · 无 PAPER/LIVE 权限 · 不运行或修改研究产物")
+    st.caption("G1 只读研究驾驶舱 · 无 PAPER/LIVE 权限 · 不运行或修改研究产物")
 
     artifact_root = Path(
         os.environ.get(ARTIFACT_ROOT_ENV, str(Path.cwd() / "artifacts"))
     ).absolute()
     catalog = discover_research_runs(artifact_root)
 
-    page = st.sidebar.radio("页面", ("运行总览", "运行详情"))
+    page = st.sidebar.radio("页面", ("运行总览", "运行详情", "运行比较"))
     st.sidebar.caption("所有内容来自固定 research/runs 目录；页面不接受任意路径。")
     if page == "运行详情":
         _render_detail(st, catalog)
+    elif page == "运行比较":
+        _render_comparison(st, catalog)
     else:
         _render_overview(st, catalog)
 
@@ -208,6 +212,174 @@ def _render_detail(st: Any, catalog: ResearchRunCatalog) -> None:
         return
     st.line_chart(nav.frame, x="date", y="unit_nav", color="series")
     st.dataframe(nav.frame.tail(100), use_container_width=True, hide_index=True)
+
+
+def _render_comparison(st: Any, catalog: ResearchRunCatalog) -> None:
+    _render_issues(st, catalog)
+    st.subheader("运行比较")
+    st.caption(
+        "只允许 2–4 个同一数据、universe、时间、fold、成本、指标和输入口径的运行；"
+        "比较不产生排名、差值、聚合指标或准入结论。"
+    )
+    if len(catalog.runs) < 2:
+        st.info("至少需要两个自洽运行才能进入只读比较。")
+        return
+
+    by_id = {run.manifest.run_id: run for run in catalog.runs}
+    selected_ids = st.multiselect(
+        "选择 2–4 个运行",
+        tuple(by_id),
+        default=(),
+        max_selections=4,
+        format_func=lambda run_id: _run_label(by_id[run_id]),
+    )
+    if not 2 <= len(selected_ids) <= 4:
+        st.info("请选择 2–4 个唯一运行；页面不会自动替研究员选择比较对象。")
+        return
+
+    selected = tuple(by_id[run_id] for run_id in selected_ids)
+    st.warning(
+        "清单自洽仍不足以比较。只有全部运行的身份、口径和输出完整性都闭合后，"
+        "页面才会显示逐 run 证据与 NAV。"
+    )
+    if not st.button("校验输出并生成只读比较", type="primary"):
+        st.info("尚未验证所选运行；比较证据和 NAV 保持锁定。")
+        return
+
+    with st.spinner("正在核对比较口径、精确输出树、字节数与 SHA-256…"):
+        comparison = verify_research_run_comparison(selected)
+    if comparison.status != "VERIFIED" or comparison.issue is not None:
+        issue = comparison.issue
+        st.error(
+            f"BLOCKED · {issue.code} · {issue.detail}"
+            if issue is not None
+            else "BLOCKED · 比较未提供完整、可解释的证据。"
+        )
+        return
+
+    st.success(f"{len(comparison.runs)} 个运行的比较口径与输出完整性已验证。")
+    _render_comparison_evidence(st, comparison.runs)
+
+    st.markdown("#### 已验证 1.0× NAV")
+    st.caption(
+        "仅拼接逐 run 已验证原始行并增加显示标签；不重采样、不归一化、不重算收益或风险指标。"
+    )
+    nav = load_comparison_nav_projection(comparison)
+    if nav.status != "AVAILABLE" or nav.frame is None or nav.issue is not None:
+        issue = nav.issue
+        st.error(
+            f"BLOCKED · {issue.code} · {issue.detail}"
+            if issue is not None
+            else "BLOCKED · 所选运行没有完整、同口径的 NAV 证据。"
+        )
+        return
+    st.line_chart(nav.frame, x="date", y="unit_nav", color="comparison_series")
+    st.dataframe(
+        nav.frame.tail(200),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def _render_comparison_evidence(
+    st: Any,
+    runs: tuple[ResearchRunSummary, ...],
+) -> None:
+    reference = runs[0].manifest
+    st.markdown("#### 已验证比较口径")
+    st.table(
+        [
+            {
+                "data_window": f"{reference.data_start} → {reference.data_end}",
+                "universe": reference.universe_name,
+                "universe_frozen_as_of": reference.universe_frozen_as_of,
+                "timing": (
+                    f"{reference.signal_timing} → {reference.execution_timing}"
+                    f" → {reference.valuation_timing}"
+                ),
+                "folds": len(reference.folds),
+                "cost_multipliers": ", ".join(map(str, reference.cost_multipliers)),
+                "selection_metric": reference.selection_metric,
+            }
+        ]
+    )
+
+    metric_names = tuple(name for name, _ in reference.aggregate_metrics)
+    st.markdown("#### 逐 run 清单指标")
+    st.dataframe(
+        [
+            {
+                "selection_order": order,
+                "run_id": run.manifest.run_id,
+                "hypothesis_id": run.manifest.hypothesis_id,
+                "strategy": run.manifest.strategy_name,
+                "strategy_version": run.manifest.strategy_version,
+                "conclusion": run.manifest.conclusion,
+                "random_seed": run.manifest.random_seed,
+                "config_relative_path": run.manifest.config_relative_path,
+                "config_sha256": run.manifest.config_sha256,
+                "code_sha256": run.manifest.code_sha256,
+                **{
+                    f"metric · {name}": dict(run.manifest.aggregate_metrics)[name]
+                    for name in metric_names
+                },
+            }
+            for order, run in enumerate(runs, start=1)
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.markdown("#### 假设与 caveats")
+    st.dataframe(
+        [
+            {
+                "selection_order": order,
+                "run_id": run.manifest.run_id,
+                "hypothesis": run.manifest.hypothesis,
+                "caveats": "\n".join(run.manifest.caveats) or "—",
+            }
+            for order, run in enumerate(runs, start=1)
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    with st.expander("逐 run 输入与输出证据", expanded=False):
+        st.markdown("**Inputs**")
+        st.dataframe(
+            [
+                {
+                    "selection_order": order,
+                    "run_id": run.manifest.run_id,
+                    "name": item.name,
+                    "rows": item.rows,
+                    "min_date": item.min_date,
+                    "max_date": item.max_date,
+                    "content_sha256": item.content_sha256,
+                }
+                for order, run in enumerate(runs, start=1)
+                for item in run.manifest.inputs
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Outputs**")
+        st.dataframe(
+            [
+                {
+                    "selection_order": order,
+                    "run_id": run.manifest.run_id,
+                    "relative_path": item.relative_path,
+                    "size_bytes": item.size_bytes,
+                    "sha256": item.sha256,
+                }
+                for order, run in enumerate(runs, start=1)
+                for item in run.manifest.outputs
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
 
 
 def _render_issues(st: Any, catalog: ResearchRunCatalog) -> None:

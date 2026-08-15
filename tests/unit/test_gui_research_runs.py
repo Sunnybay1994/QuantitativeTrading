@@ -8,9 +8,12 @@ import polars as pl
 import pytest
 
 from quant.gui.research_runs import (
+    ResearchRunSummary,
     discover_research_runs,
+    load_comparison_nav_projection,
     load_nav_projection,
     verify_research_run,
+    verify_research_run_comparison,
 )
 from quant.research.lightweight_run import (
     LightweightResearchRunV1,
@@ -45,26 +48,37 @@ def _nav_payload(*, include_fold: bool = True) -> bytes:
 def _publish_run(
     tmp_path: Path,
     *,
+    artifact_root: Path | None = None,
+    case: str = "base",
+    strategy_name: str = "fixture_strategy",
+    universe_name: str = "GUI_G0_FIXTURE",
+    data_end: dt.date = dt.date(2026, 7, 9),
+    input_digest: str | None = None,
+    aggregate_metrics: tuple[tuple[str, int | float], ...] = (
+        ("fold_count", 1),
+        ("net_sharpe", 0.75),
+    ),
     nav_payload: bytes | None = None,
+    include_nav: bool = True,
 ) -> tuple[Path, Path]:
-    artifact_root = tmp_path / "artifacts"
+    target_root = artifact_root if artifact_root is not None else tmp_path / "artifacts"
     run = LightweightResearchRunV1(
         schema_version="lightweight-research-run-v1",
         run_id="",
-        hypothesis_id="gui-g0-fixture",
+        hypothesis_id=f"gui-g1-{case}",
         hypothesis="A read-only GUI should project verified immutable evidence.",
-        strategy_name="fixture_strategy",
+        strategy_name=strategy_name,
         strategy_version="1.0.0",
         conclusion="RESEARCH_ONLY",
         random_seed=0,
-        config_relative_path="configs/research/gui_fixture.toml",
-        config_sha256=_sha(b"config"),
-        code_sha256=_sha(b"code"),
-        universe_name="GUI_G0_FIXTURE",
+        config_relative_path=f"configs/research/gui_{case}.toml",
+        config_sha256=_sha(f"config-{case}".encode()),
+        code_sha256=_sha(f"code-{case}".encode()),
+        universe_name=universe_name,
         universe_frozen_as_of=dt.date(2026, 7, 7),
         candidate_symbols=("510300.SH",),
         data_start=dt.date(2025, 1, 1),
-        data_end=dt.date(2026, 7, 9),
+        data_end=data_end,
         signal_timing="close",
         execution_timing="next_session_open",
         valuation_timing="close",
@@ -76,7 +90,7 @@ def _publish_run(
                 dt.date(2025, 7, 1),
                 dt.date(2025, 9, 30),
                 dt.date(2025, 10, 1),
-                dt.date(2026, 7, 9),
+                data_end,
             ),
         ),
         cost_multipliers=(0.5, 1.0, 2.0),
@@ -87,23 +101,24 @@ def _publish_run(
                 rows=2,
                 min_date=dt.date(2026, 7, 8),
                 max_date=dt.date(2026, 7, 9),
-                content_sha256=_sha(b"prices"),
+                content_sha256=input_digest or _sha(b"prices"),
             ),
         ),
         outputs=(),
-        aggregate_metrics=(("fold_count", 1), ("net_sharpe", 0.75)),
+        aggregate_metrics=aggregate_metrics,
         caveats=("Research-only fixture.",),
     )
-    outputs = {
-        "report.json": b"{}",
-        "test_nav.parquet": nav_payload if nav_payload is not None else _nav_payload(),
-    }
+    outputs = {"report.json": b"{}"}
+    if include_nav:
+        outputs["test_nav.parquet"] = (
+            nav_payload if nav_payload is not None else _nav_payload()
+        )
     run_root, _, _ = publish_lightweight_research_run(
-        artifact_root=artifact_root,
+        artifact_root=target_root,
         run=run,
         output_payloads=outputs,
     )
-    return artifact_root, run_root
+    return target_root, run_root
 
 
 def _only_run(artifact_root: Path):  # type: ignore[no-untyped-def]
@@ -111,6 +126,43 @@ def _only_run(artifact_root: Path):  # type: ignore[no-untyped-def]
     assert catalog.issues == ()
     assert len(catalog.runs) == 1
     return catalog.runs[0]
+
+
+def _publish_comparison_runs(
+    tmp_path: Path,
+    *,
+    second_data_end: dt.date = dt.date(2026, 7, 9),
+    second_universe_name: str = "GUI_G0_FIXTURE",
+    second_input_digest: str | None = None,
+    second_metrics: tuple[tuple[str, int | float], ...] = (
+        ("fold_count", 1),
+        ("net_sharpe", 0.5),
+    ),
+    second_include_nav: bool = True,
+) -> tuple[Path, tuple[ResearchRunSummary, ...], tuple[Path, Path]]:
+    artifact_root = tmp_path / "artifacts"
+    _, first_root = _publish_run(
+        tmp_path,
+        artifact_root=artifact_root,
+        case="comparison-a",
+        strategy_name="fixture_strategy_a",
+    )
+    _, second_root = _publish_run(
+        tmp_path,
+        artifact_root=artifact_root,
+        case="comparison-b",
+        strategy_name="fixture_strategy_b",
+        universe_name=second_universe_name,
+        data_end=second_data_end,
+        input_digest=second_input_digest,
+        aggregate_metrics=second_metrics,
+        include_nav=second_include_nav,
+    )
+    catalog = discover_research_runs(artifact_root)
+    assert catalog.issues == ()
+    by_id = {run.manifest.run_id: run for run in catalog.runs}
+    selected = (by_id[first_root.name], by_id[second_root.name])
+    return artifact_root, selected, (first_root, second_root)
 
 
 def test_missing_runs_root_is_a_visible_nonfatal_issue(tmp_path: Path) -> None:
@@ -222,3 +274,171 @@ def test_invalid_nav_schema_is_not_projected(tmp_path: Path) -> None:
     assert nav.frame is None
     assert nav.issue is not None
     assert nav.issue.code == "NAV_SCHEMA_INVALID"
+
+
+def test_comparison_requires_two_to_four_unique_runs(tmp_path: Path) -> None:
+    artifact_root, _ = _publish_run(tmp_path)
+    run = _only_run(artifact_root)
+
+    invalid_selections = ((), (run,), (run, run), (run, run, run, run, run))
+    for selected in invalid_selections:
+        comparison = verify_research_run_comparison(selected)
+
+        assert comparison.status == "BLOCKED"
+        assert comparison.integrities == ()
+        assert comparison.issue is not None
+        assert comparison.issue.code == "COMPARISON_SELECTION_INVALID"
+
+
+def test_verified_comparison_preserves_selection_and_nav_rows(tmp_path: Path) -> None:
+    _, runs, _ = _publish_comparison_runs(tmp_path)
+    selected = (runs[1], runs[0])
+
+    comparison = verify_research_run_comparison(selected)
+
+    assert comparison.status == "VERIFIED"
+    assert comparison.issue is None
+    assert comparison.runs == selected
+    assert tuple(item.run for item in comparison.integrities) == selected
+    assert selected[0].manifest.strategy_name != selected[1].manifest.strategy_name
+    assert [dict(run.manifest.aggregate_metrics)["net_sharpe"] for run in selected] == [
+        0.5,
+        0.75,
+    ]
+
+    nav = load_comparison_nav_projection(comparison)
+
+    assert nav.status == "AVAILABLE"
+    assert nav.issue is None
+    assert nav.frame is not None
+    assert nav.frame.height == 4
+    assert nav.frame.get_column("selection_order").to_list() == [1, 1, 2, 2]
+    assert list(dict.fromkeys(nav.frame.get_column("run_id").to_list())) == [
+        selected[0].manifest.run_id,
+        selected[1].manifest.run_id,
+    ]
+    assert nav.frame.get_column("unit_nav").to_list() == [1.0, 1.01, 1.0, 1.01]
+    assert "rank" not in nav.frame.columns
+    assert "delta" not in nav.frame.columns
+
+
+@pytest.mark.parametrize(
+    (
+        "second_data_end",
+        "second_universe_name",
+        "second_input_digest",
+        "second_metrics",
+        "mismatched_field",
+    ),
+    [
+        (
+            dt.date(2026, 7, 10),
+            "GUI_G0_FIXTURE",
+            None,
+            (("fold_count", 1), ("net_sharpe", 0.5)),
+            "data_end",
+        ),
+        (
+            dt.date(2026, 7, 9),
+            "OTHER_UNIVERSE",
+            None,
+            (("fold_count", 1), ("net_sharpe", 0.5)),
+            "universe_name",
+        ),
+        (
+            dt.date(2026, 7, 9),
+            "GUI_G0_FIXTURE",
+            _sha(b"revised-prices"),
+            (("fold_count", 1), ("net_sharpe", 0.5)),
+            "inputs",
+        ),
+        (
+            dt.date(2026, 7, 9),
+            "GUI_G0_FIXTURE",
+            None,
+            (("fold_count", 1), ("sortino", 0.5)),
+            "aggregate_metric_names",
+        ),
+    ],
+)
+def test_comparison_contract_mismatch_fails_closed(
+    tmp_path: Path,
+    second_data_end: dt.date,
+    second_universe_name: str,
+    second_input_digest: str | None,
+    second_metrics: tuple[tuple[str, int | float], ...],
+    mismatched_field: str,
+) -> None:
+    _, runs, _ = _publish_comparison_runs(
+        tmp_path,
+        second_data_end=second_data_end,
+        second_universe_name=second_universe_name,
+        second_input_digest=second_input_digest,
+        second_metrics=second_metrics,
+    )
+
+    comparison = verify_research_run_comparison(runs)
+
+    assert comparison.status == "BLOCKED"
+    assert comparison.integrities == ()
+    assert comparison.issue is not None
+    assert comparison.issue.code == "COMPARISON_CONTRACT_MISMATCH"
+    assert mismatched_field in comparison.issue.detail
+
+
+def test_one_tampered_run_blocks_all_comparison_evidence(tmp_path: Path) -> None:
+    _, runs, (_, second_root) = _publish_comparison_runs(tmp_path)
+    (second_root / "report.json").write_bytes(b"tampered")
+
+    comparison = verify_research_run_comparison(runs)
+
+    assert comparison.status == "BLOCKED"
+    assert comparison.integrities == ()
+    assert comparison.issue is not None
+    assert comparison.issue.code == "COMPARISON_RUN_UNVERIFIED"
+    assert "RUN_OUTPUT_DIGEST_MISMATCH" in comparison.issue.detail
+    nav = load_comparison_nav_projection(comparison)
+    assert nav.status == "BLOCKED"
+    assert nav.frame is None
+
+
+def test_comparison_declared_output_total_is_bounded_before_hashing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, runs, _ = _publish_comparison_runs(tmp_path)
+    monkeypatch.setattr("quant.gui.research_runs._MAX_INTEGRITY_BYTES", 1)
+
+    comparison = verify_research_run_comparison(runs)
+
+    assert comparison.status == "BLOCKED"
+    assert comparison.integrities == ()
+    assert comparison.issue is not None
+    assert comparison.issue.code == "COMPARISON_OUTPUT_LIMIT"
+
+
+def test_one_missing_nav_blocks_the_combined_nav_only(tmp_path: Path) -> None:
+    _, runs, _ = _publish_comparison_runs(tmp_path, second_include_nav=False)
+    comparison = verify_research_run_comparison(runs)
+    assert comparison.status == "VERIFIED"
+
+    nav = load_comparison_nav_projection(comparison)
+
+    assert nav.status == "BLOCKED"
+    assert nav.frame is None
+    assert nav.issue is not None
+    assert nav.issue.code == "COMPARISON_NAV_UNAVAILABLE"
+    assert "NAV_NOT_AVAILABLE" in nav.issue.detail
+
+
+def test_combined_nav_row_limit_fails_closed(tmp_path: Path) -> None:
+    _, runs, _ = _publish_comparison_runs(tmp_path)
+    comparison = verify_research_run_comparison(runs)
+    assert comparison.status == "VERIFIED"
+
+    nav = load_comparison_nav_projection(comparison, max_rows=3)
+
+    assert nav.status == "BLOCKED"
+    assert nav.frame is None
+    assert nav.issue is not None
+    assert nav.issue.code == "COMPARISON_NAV_LIMIT"

@@ -29,6 +29,8 @@ _MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 _MAX_INTEGRITY_BYTES = 128 * 1024 * 1024
 _MAX_NAV_BYTES = 64 * 1024 * 1024
 _DEFAULT_MAX_NAV_ROWS = 250_000
+_MIN_COMPARISON_RUNS = 2
+_MAX_COMPARISON_RUNS = 4
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x0400)
 
 _Conclusion = Literal["REJECTED", "RESEARCH_ONLY", "PAPER_CANDIDATE"]
@@ -79,6 +81,25 @@ class ResearchNavProjection:
     """A bounded, validated 1.0x-cost NAV projection for display only."""
 
     status: Literal["AVAILABLE", "NOT_AVAILABLE", "BLOCKED"]
+    frame: pl.DataFrame | None
+    issue: CatalogIssue | None
+
+
+@dataclass(frozen=True)
+class ResearchRunComparison:
+    """All-or-nothing evidence for one strict 2-4 run comparison."""
+
+    status: Literal["VERIFIED", "BLOCKED"]
+    runs: tuple[ResearchRunSummary, ...]
+    integrities: tuple[ResearchRunIntegrity, ...]
+    issue: CatalogIssue | None
+
+
+@dataclass(frozen=True)
+class ResearchRunComparisonNav:
+    """A display-only NAV projection for a fully verified comparison."""
+
+    status: Literal["AVAILABLE", "BLOCKED"]
     frame: pl.DataFrame | None
     issue: CatalogIssue | None
 
@@ -376,6 +397,217 @@ def load_nav_projection(
         ["strategy", "fold", "date"]
     )
     return ResearchNavProjection("AVAILABLE", projected, None)
+
+
+def verify_research_run_comparison(
+    runs: Sequence[ResearchRunSummary],
+) -> ResearchRunComparison:
+    """Verify one strict comparison without ranking or recomputing its evidence."""
+    selected = tuple(runs)
+    run_ids = tuple(run.manifest.run_id for run in selected)
+    if not _MIN_COMPARISON_RUNS <= len(selected) <= _MAX_COMPARISON_RUNS:
+        return _comparison_problem(
+            selected,
+            "COMPARISON_SELECTION_INVALID",
+            "comparison",
+            "A comparison requires between two and four runs.",
+        )
+    if len(set(run_ids)) != len(run_ids):
+        return _comparison_problem(
+            selected,
+            "COMPARISON_SELECTION_INVALID",
+            "comparison",
+            "Every selected comparison run must have a unique run id.",
+        )
+
+    reference = _comparison_contract(selected[0])
+    mismatched_fields = {
+        field
+        for run in selected[1:]
+        for field, value in _comparison_contract(run).items()
+        if value != reference[field]
+    }
+    if mismatched_fields:
+        return _comparison_problem(
+            selected,
+            "COMPARISON_CONTRACT_MISMATCH",
+            "comparison",
+            "Selected runs have incompatible comparison fields: "
+            + ", ".join(sorted(mismatched_fields))
+            + ".",
+        )
+
+    declared_output_bytes = sum(
+        output.size_bytes
+        for run in selected
+        for output in run.manifest.outputs
+    )
+    if declared_output_bytes > _MAX_INTEGRITY_BYTES:
+        return _comparison_problem(
+            selected,
+            "COMPARISON_OUTPUT_LIMIT",
+            "comparison",
+            "The selected output set exceeds the bounded comparison limit.",
+        )
+
+    verified: list[ResearchRunIntegrity] = []
+    for run in selected:
+        integrity = verify_research_run(run)
+        if integrity.status != "VERIFIED" or integrity.issue is not None:
+            underlying = integrity.issue
+            detail = (
+                f"{underlying.code}: {underlying.detail}"
+                if underlying is not None
+                else "The run did not provide complete output-integrity evidence."
+            )
+            return _comparison_problem(
+                selected,
+                "COMPARISON_RUN_UNVERIFIED",
+                run.manifest.run_id,
+                detail,
+            )
+        verified.append(integrity)
+    return ResearchRunComparison("VERIFIED", selected, tuple(verified), None)
+
+
+def load_comparison_nav_projection(
+    comparison: ResearchRunComparison,
+    *,
+    max_rows: int = _DEFAULT_MAX_NAV_ROWS,
+) -> ResearchRunComparisonNav:
+    """Join labels onto verified NAV rows without computing business metrics."""
+    if type(max_rows) is not int or max_rows <= 0:
+        raise ValueError("max_rows must be a positive integer")
+    if (
+        comparison.status != "VERIFIED"
+        or comparison.issue is not None
+        or len(comparison.integrities) != len(comparison.runs)
+    ):
+        return _comparison_nav_problem(
+            "comparison",
+            "COMPARISON_NAV_UNAVAILABLE",
+            "Every selected run must pass the comparison and output checks first.",
+        )
+
+    frames: list[pl.DataFrame] = []
+    remaining_rows = max_rows
+    for selection_order, (run, integrity) in enumerate(
+        zip(comparison.runs, comparison.integrities, strict=True),
+        start=1,
+    ):
+        if (
+            integrity.status != "VERIFIED"
+            or integrity.issue is not None
+            or integrity.run != run
+        ):
+            return _comparison_nav_problem(
+                run.manifest.run_id,
+                "COMPARISON_NAV_UNAVAILABLE",
+                "Comparison integrity evidence no longer matches the selected run.",
+            )
+        if remaining_rows <= 0:
+            return _comparison_nav_problem(
+                run.manifest.run_id,
+                "COMPARISON_NAV_LIMIT",
+                "The combined NAV projection exceeds the bounded row limit.",
+            )
+        nav = load_nav_projection(integrity, max_rows=max_rows)
+        if nav.status != "AVAILABLE" or nav.frame is None or nav.issue is not None:
+            underlying = nav.issue
+            detail = (
+                f"{underlying.code}: {underlying.detail}"
+                if underlying is not None
+                else "The run has no complete bounded NAV evidence."
+            )
+            return _comparison_nav_problem(
+                run.manifest.run_id,
+                "COMPARISON_NAV_UNAVAILABLE",
+                detail,
+            )
+        if nav.frame.height > remaining_rows:
+            return _comparison_nav_problem(
+                run.manifest.run_id,
+                "COMPARISON_NAV_LIMIT",
+                "The combined NAV projection exceeds the bounded row limit.",
+            )
+        if frames and nav.frame.schema != frames[0].select(nav.frame.columns).schema:
+            return _comparison_nav_problem(
+                run.manifest.run_id,
+                "COMPARISON_NAV_UNAVAILABLE",
+                "Selected NAV projections do not share one exact display schema.",
+            )
+        comparison_series = [
+            f"{run.manifest.strategy_name} · {run.manifest.run_id[:12]} · {series}"
+            for series in nav.frame.get_column("series").to_list()
+        ]
+        frames.append(
+            nav.frame.with_columns(
+                pl.lit(selection_order).alias("selection_order"),
+                pl.lit(run.manifest.run_id).alias("run_id"),
+                pl.Series("comparison_series", comparison_series),
+            )
+        )
+        remaining_rows -= nav.frame.height
+
+    if not frames:
+        return _comparison_nav_problem(
+            "comparison",
+            "COMPARISON_NAV_UNAVAILABLE",
+            "The comparison did not produce any bounded NAV evidence.",
+        )
+    return ResearchRunComparisonNav(
+        status="AVAILABLE",
+        frame=pl.concat(frames, how="vertical"),
+        issue=None,
+    )
+
+
+def _comparison_contract(run: ResearchRunSummary) -> dict[str, object]:
+    manifest = run.manifest
+    return {
+        "schema_version": manifest.schema_version,
+        "data_start": manifest.data_start,
+        "data_end": manifest.data_end,
+        "universe_name": manifest.universe_name,
+        "universe_frozen_as_of": manifest.universe_frozen_as_of,
+        "candidate_symbols": manifest.candidate_symbols,
+        "signal_timing": manifest.signal_timing,
+        "execution_timing": manifest.execution_timing,
+        "valuation_timing": manifest.valuation_timing,
+        "folds": manifest.folds,
+        "cost_multipliers": manifest.cost_multipliers,
+        "selection_metric": manifest.selection_metric,
+        "aggregate_metric_names": tuple(
+            name for name, _ in manifest.aggregate_metrics
+        ),
+        "inputs": manifest.inputs,
+    }
+
+
+def _comparison_problem(
+    runs: tuple[ResearchRunSummary, ...],
+    code: str,
+    entry: str,
+    detail: str,
+) -> ResearchRunComparison:
+    return ResearchRunComparison(
+        status="BLOCKED",
+        runs=runs,
+        integrities=(),
+        issue=CatalogIssue(code, entry, detail),
+    )
+
+
+def _comparison_nav_problem(
+    entry: str,
+    code: str,
+    detail: str,
+) -> ResearchRunComparisonNav:
+    return ResearchRunComparisonNav(
+        status="BLOCKED",
+        frame=None,
+        issue=CatalogIssue(code, entry, detail),
+    )
 
 
 def _load_summary(run_root: Path) -> tuple[ResearchRunSummary | None, CatalogIssue | None]:
@@ -810,10 +1042,14 @@ __all__ = [
     "CatalogIssue",
     "ResearchNavProjection",
     "ResearchRunCatalog",
+    "ResearchRunComparison",
+    "ResearchRunComparisonNav",
     "ResearchRunIntegrity",
     "ResearchRunSummary",
     "conclusion_counts",
     "discover_research_runs",
+    "load_comparison_nav_projection",
     "load_nav_projection",
     "verify_research_run",
+    "verify_research_run_comparison",
 ]

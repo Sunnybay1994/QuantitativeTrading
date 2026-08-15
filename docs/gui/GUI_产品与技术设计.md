@@ -15,13 +15,16 @@ G0 的核心来源只有不可变 `run.json` 及其列出的精确输出。目�
 
 ## 2. 研究员信息架构
 
-### G0 页面
+### G0 / G1 页面
 
 - **运行总览**：运行数、结论分布、最大 `data_end`、异常条目数；提供结论和策略两个高信号筛选器，以及
   运行明细表。
 - **运行详情**：展示假设、策略/版本、universe、数据窗口、`close → next_session_open → close`、fold、
   成本倍数、聚合指标、caveat、input/output 摘要。
 - **证据钻取**：用户显式触发输出完整性校验；只有通过后才加载 1.0× 成本 NAV 曲线和有限明细。
+- **运行比较（G1）**：研究员显式选择 2–4 个运行。只有全部运行的 manifest 比较口径、内容身份、精确
+  输出树和 digest 都闭合后，才按用户选择顺序显示逐 run 指标、假设、caveat、input/output 与叠加 NAV。
+  页面不产生排名、差值、均值、胜负判断或准入结论。
 
 ### 后续候选页面
 
@@ -37,8 +40,13 @@ flowchart LR
     B --> D["显式输出完整性校验"]
     D -->|"VERIFIED"| E["受限 NAV 投影"]
     D -->|"BLOCKED"| F["安全错误与证据"]
+    C --> H["严格比较口径"]
+    D --> H
+    H -->|"全部闭合"| I["逐 run 证据与 NAV 标签拼接"]
+    H -->|"任一不闭合"| F
     C --> G["Streamlit 薄 UI"]
     E --> G
+    I --> G
     F --> G
     G -. "永不反向写入" .-> A
 ```
@@ -59,6 +67,7 @@ flowchart LR
 | Manifest valid | 清单自洽 | 规范 JSON、V1 dataclass、目录/内容身份一致 | 输出仍存在且未篡改 |
 | Outputs verified | 输出完整性已验证 | 无链接/重解析点、精确文件树、size/SHA-256 匹配 | formal/PAPER 准入 |
 | NAV projected | 已显示受限 NAV | 完整性通过、必要列/类型/有限正数通过 | GUI 重算或认可研究结论 |
+| Comparison verified | 2–4 个运行可并排投影 | 同口径且每个运行的 identity/output 全部验证 | 排名、优胜策略或准入建议 |
 
 异常必须显式显示 `partial` / `blocked` / `not available`，不能退化为空图或静默跳过。catalog 中一个坏运行
 不能拖垮全部列表，但坏运行绝不能进入可信摘要。
@@ -72,16 +81,38 @@ flowchart LR
 - JSON 必须与项目 canonical encoder 的字节结果一致；run identity 按现有轻量研究合同计算，不自创弱化版本。
 - NAV 读取只在完整性通过后发生；限定文件名、所需列和最大投影行数，避免 UI 意外加载任意或无限数据。
 - G0 同步完整性校验总量固定为 128 MiB；超限保持 `BLOCKED`，未来由外置 verifier 处理。
+- G1 比较仍以 128 MiB 作为所选运行的**合计**声明输出上限；最多选择 4 个运行，合并 NAV 最多
+  250,000 行。超限不采样、不放宽，整体对应证据保持 `BLOCKED`。
+
+## 5.1 G1 严格比较合同
+
+输入只能来自当前 catalog 的 canonical `ResearchRunSummary`，页面不接受路径或上传清单。选择必须是 2–4 个
+唯一 run，并保留研究员的选择顺序。以下字段必须逐字一致：
+
+- `schema_version`、`data_start`、`data_end`；
+- `universe_name`、`universe_frozen_as_of`、完整 `candidate_symbols`；
+- `signal_timing`、`execution_timing`、`valuation_timing`；
+- 完整 `folds`、`cost_multipliers`、`selection_metric`；
+- `aggregate_metrics` 的名称序列；
+- 完整 inputs（name、rows、日期边界、content digest）。
+
+策略/版本、hypothesis、seed、config/code identity、conclusion、指标数值、caveats 和 output inventories 是允许
+不同且需要逐 run 展示的实验维度。允许它们不同不代表 GUI 认可哪一个更好。
+
+点击比较按钮前不显示比较证据。点击后先按选择顺序重新核对每个 manifest identity 和全部输出；任一运行
+失败，逐 run 指标和 NAV 都不显示。全部输出验证后才展示 manifest 原值。NAV 还要对每个运行再次读取同一
+精确字节并复核 digest；任一 NAV 缺失、非法、漂移或合计超限时，整张 NAV 图不显示，但已经闭合的 manifest
+证据不被错误降级。拼接只增加选择序号、run id 与曲线标签，不重采样、归一化或计算任何业务指标。
 
 ## 6. UI 与运行安全
 
 - 页面持续显示“只读、无 PAPER/LIVE 权限”；不出现暗示可晋级或交易的主按钮。
 - 普通筛选器只改变投影；完整性校验是显式动作，但仍无外部写副作用。
-- 不用 `st.session_state`、缓存或 MLflow tag 保存权威运行状态；G0 不启用缓存。
+- 不用 `st.session_state`、缓存或 MLflow tag 保存权威运行状态；G0/G1 不启用缓存。
 - Streamlit rerun 只重做有界只读操作；长数据任务、训练和回测未来必须提交到外置、持久化 worker。
-- G0 不 import 任一 M2 `run_*` 私有 helper，也不复制策略、回测或准入逻辑；后续运行入口只接另行冻结的
+- G0/G1 不 import 任一 M2 `run_*` 私有 helper，也不复制策略、回测或准入逻辑；后续运行入口只接另行冻结的
   公共应用服务。
-- G0 不建设 catalog 数据库、任务队列、权限框架或 orchestration 抽象；公共运行边界未关闭前不出现发起
+- G0/G1 不建设 catalog 数据库、任务队列、权限框架或 orchestration 抽象；公共运行边界未关闭前不出现发起
   运行能力。性能优化必须由真实 manifest 规模下的可重现延迟/内存证据触发，先基准、后最小优化。
 - `artifact_root` 只能由运维侧进程环境/启动参数确定，不接受 URL/query 参数或页面文本框提供任意路径。
 - 默认只绑定 `127.0.0.1`；远程共享、鉴权、TLS 和反向代理必须另做安全任务。
