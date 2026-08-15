@@ -1,6 +1,6 @@
 # M1 HK-HISTORY R4：06110.HK 2026-06-25 停牌单日 No-Trade 证据任务单
 
-状态：**设计冻结；允许外部实现与 fixture 自测；真实 evidence/plan/journal 物化由主 Agent在实现合流后执行。**
+状态：**R2 已重冻；允许全新外部实现会话继续。R1 发现 `HKNoTradeEvidenceSchema` exact allowlist 缺少 UA-M1-005，因此最小扩大至 Schema SSOT 与直接测试；真实 evidence/plan/journal 物化仍由主 Agent 在实现合流后执行。**
 
 日期：2026-08-15（Asia/Shanghai）
 平台：Windows 工程闭环；不声明 Linux/ext4。
@@ -45,7 +45,7 @@ raw_selector = user-approved-consensus/ua-m1-005-06110-2026-06-25.record
 raw schema = hk-no-trade-user-approved-trading-halt-v1
 ```
 
-它必须与 UA-M1-001（01065 单日）和 UA-M1-004（02402 13 日范围）并存，旧 identity/验证行为不变。不得改 Schema、不得增加通配证券/日期、不得把该记录标作 `HKEX_DAILY_QUOTATIONS`。
+它必须与 UA-M1-001（01065 单日）和 UA-M1-004（02402 13 日范围）并存，旧 identity/验证行为不变。`HKNoTradeEvidenceSchema` 只允许增加这一条 exact 析取，列、dtype 和其他规则不变；不得增加通配证券/日期，不得把该记录标作 `HKEX_DAILY_QUOTATIONS`。
 
 ---
 
@@ -90,9 +90,13 @@ JSON 字节仍用项目既有 canonical `ensure_ascii=False, sort_keys=True, sep
 
 ---
 
-## 4. 最小生产改动
+## 4. R1 阻断与最小生产改动
 
-只在 `src/quant/data/hk_history_backfill.py`：
+R1 外部实现会话在写生产代码前用公共 loader 探针确认：即使 backfill verifier 接受 UA-M1-005，现行
+`HKNoTradeEvidenceSchema.user_approved_consensus_is_exactly_scoped` 仍只允许 UA-M1-001/004，公共正向必然失败。
+绕过 Schema、改 source 或泛化规则均不诚实。R1 因此停止且未留下半实现；报告保留为本轮设计纠错证据。
+
+在 `src/quant/data/hk_history_backfill.py`：
 
 - 新增 UA-M1-005 exact record/key/selector/notice URL 常量；
 - 扩展 `_user_approved_no_trade_is_exact`；
@@ -100,7 +104,12 @@ JSON 字节仍用项目既有 canonical `ensure_ascii=False, sort_keys=True, sep
 - 复用现有 `HKNoTradeEvidence` / `HKNoTradeEvidenceSet` / `_verify_evidence_projection` / v2 plan builder；
 - 不改 public API、不新增 CLI、不改通用 source/reason 集合。
 
-禁止修改 `schemas.py`、query、connector、clean store、配置、正式 data/artifacts。
+在 `src/quant/domain/schemas.py` 只把 exact UA-M1-005
+`06110.HK ∧ 2026-06-25 ∧ source_record_id=UA-M1-005 ∧ 指定 raw_selector`
+加入现有 user-approved consensus 析取；不得改 Schema 列、dtype、其他 source/reason 或任何非 HKNoTrade 规则。
+`tests/unit/test_schemas.py` 只补 exact 正向和 symbol/date/record/selector 漂移拒绝，并回归 UA-M1-001/004。
+
+禁止修改 query、connector、clean store、配置、正式 data/artifacts。
 
 ---
 
@@ -135,19 +144,21 @@ JSON 字节仍用项目既有 canonical `ensure_ascii=False, sort_keys=True, sep
 ## 7. 实现白名单
 
 - `src/quant/data/hk_history_backfill.py`
+- `src/quant/domain/schemas.py`（仅 `HKNoTradeEvidenceSchema` exact 析取）
 - `tests/unit/test_hk_history_backfill.py`
+- `tests/unit/test_schemas.py`（仅该 Schema 直接测试）
 - 本任务单状态
 - 唯一交付报告 `docs/agent/M1_HK-HISTORY_R4_06110停牌单日NoTrade证据交付报告.md`
 
 独立初验只读生产与实现测试，唯一可写其复验报告。
 
-不得修改 `src/quant/domain/schemas.py`、query 文件、README、路线图、用户待批示清单、正式 data/artifacts；主 Agent在合流后另行物化与同步 SSOT。
+不得修改 query 文件、README、路线图、用户待批示清单、正式 data/artifacts；主 Agent在合流后另行物化与同步 SSOT。
 
 ---
 
 ## 8. 实现验证
 
-Windows：定向 `test_hk_history_backfill.py` 新增节点与 UA-M1-001/004 邻接、Ruff、mypy、cold import。不得联网、不得真实回填、不得跑全量测试。
+Windows：定向 `test_hk_history_backfill.py` 与 `test_schemas.py` 新增节点、UA-M1-001/004 邻接、Ruff、mypy、cold import。不得联网、不得真实回填、不得跑全量测试。
 
 实现完成后更新状态为“实现与 Windows 定向自测完成；待全新外部独立初验”，不宣称真实 plan/HK60 Gate。
 
