@@ -26,7 +26,8 @@
 ## 每份任务路线图的固定内容
 
 - 目标、范围和明确非目标；
-- 当前 branch、worktree 和唯一 owner；
+- 当前 branch、worktree 和唯一 owner；若没有活动工作面，必须明确写“无”，并记录最近 source、merge 与
+  archive-first 退出证据，不得保留已退休路径冒充当前入口；
 - 生产代码、测试、配置和文档写入白名单；
 - 上游依赖、阻塞条件和共享 SSOT 锁；
 - 最近安全提交点、验证证据和未验证事项；
@@ -38,7 +39,8 @@
 ## 写入所有权
 
 - 本索引由项目结构统筹任务单写；业务任务通过跨任务消息提交索引增量。
-- 每份工作流路线图只由表中唯一维护者写。
+- 每份工作流路线图的业务范围、合同和队列只由表中唯一维护者写；项目结构统筹任务可在验证 Git 事实后同步
+  已完成的 merge/archive/worktree 退出状态，并通知对应维护者，不借此改写业务结论或 Gate。
 - 根 README、根项目路线图、`docs/README.md`、`CODEX_HANDOFF.md`、
   `用户待批示与参与事项.md` 及本 `docs/roadmaps/README.md` 由项目结构统筹任务协调写入；
   `docs/research/README.md`、`docs/data/README.md`、`docs/gui/README.md` 由对应 namespace owner 维护。
