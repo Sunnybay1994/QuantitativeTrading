@@ -37,6 +37,7 @@ _Conclusion = Literal["REJECTED", "RESEARCH_ONLY", "PAPER_CANDIDATE"]
 _SignalTiming = Literal["close"]
 _ExecutionTiming = Literal["next_session_open"]
 _ValuationTiming = Literal["close"]
+_ComparisonRelation = Literal["REFERENCE", "SAME", "DIFFERENT"]
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,25 @@ class ResearchRunIntegrity:
     run: ResearchRunSummary
     checked_files: int
     nav_path: Path | None
+    issue: CatalogIssue | None
+
+
+@dataclass(frozen=True)
+class ComparisonFieldRelation:
+    """Per-run equality relations for one strict manifest contract field."""
+
+    field: str
+    relations: tuple[_ComparisonRelation, ...]
+
+
+@dataclass(frozen=True)
+class ResearchRunComparisonDiagnosis:
+    """Manifest-only explanation of one strict comparison contract decision."""
+
+    runs: tuple[ResearchRunSummary, ...]
+    selection_valid: bool
+    contract_compatible: bool
+    fields: tuple[ComparisonFieldRelation, ...]
     issue: CatalogIssue | None
 
 
@@ -399,42 +419,82 @@ def load_nav_projection(
     return ResearchNavProjection("AVAILABLE", projected, None)
 
 
-def verify_research_run_comparison(
+def diagnose_research_run_comparison(
     runs: Sequence[ResearchRunSummary],
-) -> ResearchRunComparison:
-    """Verify one strict comparison without ranking or recomputing its evidence."""
+) -> ResearchRunComparisonDiagnosis:
+    """Describe exact manifest-field relations without reading any run output."""
     selected = tuple(runs)
     run_ids = tuple(run.manifest.run_id for run in selected)
     if not _MIN_COMPARISON_RUNS <= len(selected) <= _MAX_COMPARISON_RUNS:
-        return _comparison_problem(
-            selected,
-            "COMPARISON_SELECTION_INVALID",
-            "comparison",
-            "A comparison requires between two and four runs.",
+        return ResearchRunComparisonDiagnosis(
+            runs=selected,
+            selection_valid=False,
+            contract_compatible=False,
+            fields=(),
+            issue=CatalogIssue(
+                "COMPARISON_SELECTION_INVALID",
+                "comparison",
+                "A comparison requires between two and four runs.",
+            ),
         )
     if len(set(run_ids)) != len(run_ids):
-        return _comparison_problem(
-            selected,
-            "COMPARISON_SELECTION_INVALID",
-            "comparison",
-            "Every selected comparison run must have a unique run id.",
+        return ResearchRunComparisonDiagnosis(
+            runs=selected,
+            selection_valid=False,
+            contract_compatible=False,
+            fields=(),
+            issue=CatalogIssue(
+                "COMPARISON_SELECTION_INVALID",
+                "comparison",
+                "Every selected comparison run must have a unique run id.",
+            ),
         )
 
-    reference = _comparison_contract(selected[0])
-    mismatched_fields = {
-        field
-        for run in selected[1:]
-        for field, value in _comparison_contract(run).items()
-        if value != reference[field]
-    }
+    contracts = tuple(_comparison_contract(run) for run in selected)
+    reference = contracts[0]
+    fields: list[ComparisonFieldRelation] = []
+    mismatched_fields: set[str] = set()
+    for field, reference_value in reference.items():
+        relations: list[_ComparisonRelation] = ["REFERENCE"]
+        for contract in contracts[1:]:
+            relation: _ComparisonRelation = (
+                "SAME" if contract[field] == reference_value else "DIFFERENT"
+            )
+            relations.append(relation)
+            if relation == "DIFFERENT":
+                mismatched_fields.add(field)
+        fields.append(ComparisonFieldRelation(field, tuple(relations)))
+
+    issue: CatalogIssue | None = None
     if mismatched_fields:
-        return _comparison_problem(
-            selected,
+        issue = CatalogIssue(
             "COMPARISON_CONTRACT_MISMATCH",
             "comparison",
             "Selected runs have incompatible comparison fields: "
             + ", ".join(sorted(mismatched_fields))
             + ".",
+        )
+    return ResearchRunComparisonDiagnosis(
+        runs=selected,
+        selection_valid=True,
+        contract_compatible=not mismatched_fields,
+        fields=tuple(fields),
+        issue=issue,
+    )
+
+
+def verify_research_run_comparison(
+    runs: Sequence[ResearchRunSummary],
+) -> ResearchRunComparison:
+    """Verify one strict comparison without ranking or recomputing its evidence."""
+    diagnosis = diagnose_research_run_comparison(runs)
+    selected = diagnosis.runs
+    if diagnosis.issue is not None:
+        return _comparison_problem(
+            selected,
+            diagnosis.issue.code,
+            diagnosis.issue.entry,
+            diagnosis.issue.detail,
         )
 
     declared_output_bytes = sum(
@@ -1040,13 +1100,16 @@ def conclusion_counts(runs: Sequence[ResearchRunSummary]) -> dict[str, int]:
 
 __all__ = [
     "CatalogIssue",
+    "ComparisonFieldRelation",
     "ResearchNavProjection",
     "ResearchRunCatalog",
     "ResearchRunComparison",
+    "ResearchRunComparisonDiagnosis",
     "ResearchRunComparisonNav",
     "ResearchRunIntegrity",
     "ResearchRunSummary",
     "conclusion_counts",
+    "diagnose_research_run_comparison",
     "discover_research_runs",
     "load_comparison_nav_projection",
     "load_nav_projection",

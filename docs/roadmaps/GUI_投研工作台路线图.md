@@ -13,7 +13,7 @@
 策略和证据判断上。GUI 只做薄控制面与不可变结果投影，领域计算仍由现有 `quant.data`、`quant.factors`、
 `quant.strategies`、`quant.backtest`、`quant.execution` 和 `quant.reporting` 边界负责。
 
-当前 G0 范围：
+已交付 G0 范围：
 
 - 只读发现 `artifacts/research/runs/<run_id>/run.json`；
 - 展示运行数量、研究结论、策略、数据窗口、核心指标、时间语义、fold、caveat 与输出清单；
@@ -21,7 +21,7 @@
 - 提供受控本地启动器，依赖缺失时给出明确、无副作用的失败信息；
 - 用聚焦单元测试覆盖路径逃逸、重解析点、清单篡改、输出篡改和空目录。
 
-当前 G1 范围：
+已交付 G1 范围：
 
 - 从 G0 canonical catalog 中显式选择 2–4 个唯一运行；
 - 只有数据窗口、universe 身份、时间语义、fold、成本倍数、选模指标、聚合指标名称和完整 input 证据逐项
@@ -30,6 +30,16 @@
 - 全部验证后按选择顺序并排展示 manifest 原有 metrics、hypothesis、caveats、input/output；
 - 只有每个运行的 NAV 都通过现有有界读取与 digest 复核时才叠加原始 1.0× 行；只增加显示标签。
 
+当前 G1-D1 范围：
+
+- 严格比较精确返回 `COMPARISON_CONTRACT_MISMATCH` 时，增加只读比较口径关系诊断；
+- diagnosis 与 verifier 直接共享现有 `_comparison_contract` 的唯一 14 字段机器定义，并在内部生成全量
+  14 字段关系；
+- UI 只渲染至少含一个 `DIFFERENT` 的字段行；用户选择第一项只作为 `REFERENCE`，其余项按选择顺序
+  显示 `SAME` 或 `DIFFERENT`；
+- 不显示合同字段原值、部分 metric/NAV、兼容子集、推荐、排名或准入，不改变既有 fail-closed 门禁与
+  output-hash 前失败顺序。
+
 ## 明确非目标
 
 - 不遍历或修补 `data/`，不下载数据，不计算因子、策略、成交或准入结论；
@@ -37,6 +47,7 @@
 - 不修改任何不可变研究产物，不提供重试覆盖、任意路径、任意 SQL、shell 或动态 import；
 - 不提供 PAPER/LIVE、下单、撤单、自动确认或自动晋级入口；
 - 不计算跨 run 排名、差值、均值、胜负、收益/风险指标或准入结论，不解析其他报告补齐指标；
+- 不在 G1-D1 展示合同字段原值、摘要、长度、digest 或差异内容，不计算相似度，不寻找或推荐兼容子集；
 - 不 import 任一 M2 `run_*` 私有 helper，不复制策略、回测或准入逻辑；运行能力以后只通过另行冻结的
   公共应用服务接口接入；
 - 不替换项目级路线图、Schema、枚举、配置或依赖 SSOT。
@@ -44,18 +55,34 @@
 ## 分支、worktree 与基线
 
 - 唯一 owner：GUI session（本任务）；其他 session 不在本 worktree 写入或提交。
-- 当前 G0-C4 分支：`codex/gui-g0-c4-smoke`
-- 当前独立 worktree：`F:\AI_Coding\QuantitativeTrading\artifacts\dev_worktrees\gui-g0-c4-smoke`
-- G0-C4 冻结父提交：`4fa5d21a9c99c125ba0dadb8c732cca2681b34ba`。
-- G1 安全提交：`a5c63f7c8ca1d763b934c13330e793c65da27842`；已由统筹 no-ff 纳入后续 integration 历史，
-  当前 G0-C4 基线已包含该提交。
+- 当前冻结基线：`2a376100a50fb0ad5040048e4ba2aae8c974ace9`。
+- 当前分支：`codex/gui-g1-d1-comparison-diagnostics`。
+- 当前独立 worktree：
+  `F:\AI_Coding\QuantitativeTrading\artifacts\dev_worktrees\gui-g1-d1-comparison-diagnostics`。
+- 历史 G0-C4 冻结父提交：`4fa5d21a9c99c125ba0dadb8c732cca2681b34ba`。
+- 历史 G1 安全提交：`a5c63f7c8ca1d763b934c13330e793c65da27842`；已由统筹 no-ff 纳入后续
+  integration 历史，并已包含在当前 G1-D1 基线中。
 - G0 代码与 optional 依赖安全点：`6640b791cf0fab6f996aea014293a618d2e5a22e`。
 - G0 smoke 环境失败记录安全点：`75b6419c3e0bcf5c1e1924ed02dd6fda87bd53b5`。
 - 根工作树：只读，GUI session 不在其中写入或合流。
 
 ## 文件与文档所有权
 
-本 session 仅拥有以下独占新文件：
+当前 G1-D1 包的 exact 文件白名单为以下 7 个路径，任何实现、测试、文档和安全提交不得包含其他路径：
+
+```text
+src/quant/gui/research_runs.py
+src/quant/gui/app.py
+tests/unit/test_gui_research_runs.py
+tests/gui/test_streamlit_app.py
+docs/gui/GUI_产品与技术设计.md
+docs/roadmaps/GUI_投研工作台路线图.md
+docs/agent/GUI_G1_D1_严格比较口径诊断任务与交付记录.md
+```
+
+本次文档冻结只写上述白名单中的 3 个文档；生产代码和测试仍由同一 G1-D1 包在其余 4 路径内实现。
+
+以下为历史 G0/G1 owner 集合，不扩大当前 G1-D1 白名单：
 
 ```text
 src/quant/gui/__init__.py
@@ -80,7 +107,7 @@ docs/agent/GUI_G0_只读研究驾驶舱交付记录.md
 `pyproject.toml` 在 G0-C4 只临时释放唯一 hunk：把 optional group 的 Streamlit 下限从 1.48 提高到 1.49；
 不得修改其他依赖、工具配置或锁文件，安全提交后重新锁定。
 
-G1 获准只修改上述已有文件中的以下 6 个，不新增文件：
+历史 G1 获准修改以下 6 个既有文件：
 
 ```text
 src/quant/gui/research_runs.py
@@ -91,7 +118,7 @@ docs/roadmaps/GUI_投研工作台路线图.md
 docs/gui/GUI_产品与技术设计.md
 ```
 
-G0-C4 当前安全提交严格限定为以下 6 个既有路径：
+历史 G0-C4 安全提交严格限定为以下 6 个既有路径：
 
 ```text
 pyproject.toml
@@ -116,11 +143,12 @@ docs/agent/GUI_G0_只读研究驾驶舱交付记录.md
   安装、不启动子进程，以稳定退出码 2 说明缺少 optional group。
 - 测试只运行定向目标、单进程、线程不超过 2；不运行全量 Gate，不启动外部 Agent，不占用项目长任务的
   专用资源。
-- G1 编码与验证分离：编码可在独立 worktree 进行；pytest/Ruff/mypy 与真实 artifacts 探针等待项目统一串行
-  资源队列，轮到时仅用 BelowNormal、CPU8–11（mask `0xF00`）、数值线程不超过 2。项目级 basetemp 必须
-  位于本 worktree 的 ignored `artifacts/` 下并在完成后精确清理；本机只有 CPU0–11，不使用无效 mask。
+- G1-D1 已在项目统一串行槽用 BelowNormal、CPU8–11（mask `0xF00`）、数值线程不超过 2 完成开发检查、
+  AppTest 与两个真实 probe 的可用性核验。项目级 basetemp 位于当前 worktree 的 ignored `artifacts/` 下；
+  验证后 venv、basetemp、目标 PID tree、`0xF00` 和 18501 listener 均已精确清理。本机只有 CPU0–11，未使用
+  无效 mask，也未启动 browser 或外部 Agent。
 
-## 已形成的 G0 安全证据
+## 已形成的历史 G0 安全证据
 
 | 证据 | 结果 | 边界 |
 | --- | --- | --- |
@@ -131,7 +159,7 @@ docs/agent/GUI_G0_只读研究驾驶舱交付记录.md
 | 真实 artifacts 只读探针 | 30 个自洽 run、0 issue；最小 run 输出 `VERIFIED`，NAV `AVAILABLE` | 当时快照，只读证据，不硬编码到 UI，不代表项目 Gate |
 | Windows smoke 环境创建（历史） | 两次旧承载均以 `-1`、无环境/日志/残留终止 | 记录于 `75b6419`；后续 G0-C4 使用新冻结的 .NET carrier，不复用旧失败承载 |
 
-## G1 定向验证证据
+## 历史 G1 定向验证证据
 
 全部检查均在统筹正式释放 CPU8–11 后串行执行，carrier 为 BelowNormal、affinity `0xF00`，数值线程不超过 2；
 没有创建或安装 Streamlit 环境。
@@ -145,7 +173,7 @@ docs/agent/GUI_G0_只读研究驾驶舱交付记录.md
 | 已验证 NAV 拼接 | `AVAILABLE`，484 行，selection order `[1, 2]` | 只拼接已有 1.0× 行与显示标签，不重算业务指标 |
 | 项目级 basetemp | pytest 结束后不存在 | 精确目标为 ignored `artifacts/test_tmp/gui-g1-basetemp` |
 
-## G0-C4 Windows 功能 smoke 证据
+## 历史 G0-C4 Windows 功能 smoke 证据
 
 G0-C4 在统筹独占释放 CPU8–11 后，用 .NET `System.Diagnostics.Process`、`ArgumentList`、异步
 stdout/stderr、真实退出码、BelowNormal、affinity `0xF00` 和数值线程上限 2 串行执行。目标环境为
@@ -186,24 +214,30 @@ stdout/stderr、真实退出码、BelowNormal、affinity `0xF00` 和数值线程
 | G1-C1 | 2–4 run 严格比较、整体完整性与 NAV fail-closed 纯逻辑 | G1 6 文件白名单与合同冻结 |
 | G1-C2 | “运行比较”薄页面、纯逻辑/条件 AppTest 与文档同步 | G1-C1 完成且不增加任何执行能力 |
 | G1-C3 | 定向 pytest/Ruff/mypy 与真实 immutable artifacts 只读探针 | 项目统一串行资源队列轮到 GUI |
+| G1-D1 | `COMPARISON_CONTRACT_MISMATCH` 只读 14 字段关系诊断 | 开发检查/AppTest/Probe A 与统筹冻结的 Probe B 等价派生反例 PASS；exact 7 安全提交可形成 |
 
-当前 G0-C1 至 G0-C3 与 G1-C1 至 G1-C3 已形成安全提交并被统筹纳入后续基线。G0-C4 的 Windows
-functional smoke 已通过，依赖/API 弃用修复与证据文档组成当前最多 6 路径安全提交；
-`GUI-DEBT-VEGA-001` 仍开放，因此不得宣称 strict zero-warning C4 关闭。这里的状态只描述本 session
-队列，不代表项目级里程碑或 WSL Gate 完成。
+G0-C1 至 G0-C3、G1-C1 至 G1-C3 和 G0-C4 的既有提交与验证结果均作为历史证据保留；
+`GUI-DEBT-VEGA-001` 仍开放，因此不得宣称 strict zero-warning C4 关闭。当前 G1-D1 的 focused pytest、
+Ruff、mypy、Streamlit AppTest 与真实 Probe A 已通过；Probe B 的 live fixture 因 29 个同口径候选 run 全部
+`VERIFIED` 而继续记录为 `BLOCKED_BY_FIXTURE_AVAILABILITY`。统筹随后冻结的一次
+`DERIVED_REAL_BYTES_OUTPUT_FAIL` 已用两个 fresh verified canonical run 的隔离逐文件副本通过：14 字段全部
+`REFERENCE/SAME`，第二个副本 output 末字节篡改后严格返回 `COMPARISON_RUN_UNVERIFIED`，canonical 源
+SHA 未变且临时资源已清理。因此等价验收闭合，可形成 exact 7 路径安全提交；这里的状态不代表项目级里程碑、
+browser 或 WSL Gate 完成，也不把派生反例称为既存坏 run。
 
-## G1 安全提交、合流与 worktree 退出条件
+## G1-D1 安全提交、合流与 worktree 退出条件
 
-- **安全提交**：只有统一资源队列轮到 GUI，定向 pytest、Ruff、mypy、真实 immutable artifacts 只读探针
-  实际完成，ignored basetemp 精确清理，且 cached diff 仍严格为获批 6 文件时，才形成 G1 提交。Streamlit
-  AppTest/browser 未验必须继续写在提交交付口径中，不能因纯逻辑绿测被抹去。
-- **合流**：GUI session 只回报 G1 commit SHA、父提交、exact file list、验证结果和残余风险；由项目统筹在
-  独立 integration 分支执行冲突审计与合流。不得从本 session 直接写根 writer checkout、修改中央 SSOT
-  或自行宣称项目 Gate 完成。
-- **worktree 删除**：仅当 G0/G1/G0-C4 提交均已被统筹确认纳入目标集成历史、分支无未提交改动、ignored
-  basetemp/GUI 进程/短生命周期 smoke venv/18501 端口均无残留、`GUI-DEBT-VEGA-001` 已在后续 owner 与
-  路线图中保留，且统筹明确批准退出后，才可删除本 worktree。未满足任一条件时继续保留，不做目录移动或
-  根级清理。
+- **安全提交**：定向 pytest、Ruff、mypy、AppTest、Probe A 与统筹冻结的 Probe B 等价派生反例均已形成
+  证据；ignored basetemp、短生命周期环境、派生临时 root、PID tree 与 CPU 占用均已清理。真实 Probe B
+  live fixture 仍不存在，但等价路径已经实际通过；cached diff 严格为当前 exact 7 路径时可形成 G1-D1
+  安全提交。browser 未要求、未执行，不能写成通过。
+- **合流**：GUI session 只回报 G1-D1 commit SHA、冻结父提交、exact file list、实际验证结果和残余风险；
+  由项目统筹在独立 integration 分支执行冲突审计与合流。不得从本 session 写根 writer checkout、修改中央
+  SSOT 或自行宣称项目 Gate 完成。
+- **worktree 删除**：仅当 G1-D1 提交已被统筹确认纳入目标集成历史，分支无未提交改动，ignored
+  basetemp、GUI/Python 进程、短生命周期验证环境与端口均无本包残留，历史 G0/G1/C4 证据和开放债项仍在
+  路线图保留，且统筹明确批准退出后，才可删除当前 G1-D1 worktree。未满足任一条件时继续保留，不做目录
+  移动或根级清理。
 
 ## G0 验收标准
 
@@ -229,6 +263,25 @@ functional smoke 已通过，依赖/API 弃用修复与证据文档组成当前�
   `BLOCKED`，不退化为部分曲线；
 - Windows Streamlit AppTest 与 overview/detail/comparison 浏览器 functional smoke 已按 G0-C4 证据通过；
   `GUI-DEBT-VEGA-001`、独立依赖闭包和 WSL Gate 仍未关闭，不得扩大表述。
+
+## G1-D1 验收标准
+
+- 诊断关系只在 issue code 精确为 `COMPARISON_CONTRACT_MISMATCH` 时可用；选择错误、输出上限、逐 run
+  完整性或 NAV 问题不显示关系表；
+- verifier 与 diagnose 直接复用同一 `_comparison_contract` 14 字段映射；diagnose 在内部覆盖全部 14 字段，
+  不复制字段白名单；
+- UI 只显示内部关系中至少含一个 `DIFFERENT` 的字段行；用户选择第一项在这些行仅显示 `REFERENCE`，
+  其余项仅显示 exact `SAME` / `DIFFERENT`；REFERENCE 不含 baseline、winner、benchmark、推荐或准入
+  语义；
+- 页面不展示合同字段原值、摘要、长度、hash/digest、逐 run metric、部分 NAV、兼容子集或建议；
+- mismatch 的错误码、entry、按字段名排序的 detail 集合及其早于 output size/hash 校验的失败顺序保持兼容；
+  mismatch 时不得读取或哈希输出；
+- 重新选择运行会清除旧诊断；严格比较的 2–4 唯一选择、128 MiB 输出上限、250,000 NAV 行上限和
+  all-or-nothing 证据门禁均不改变；
+- 当前 focused pytest、Ruff、mypy、AppTest 与真实 3-run mismatch Probe A 已通过；真实同口径 output-fail
+  live fixture 因不存在而保留 `BLOCKED_BY_FIXTURE_AVAILABILITY`。统筹冻结的等价验收已由一次真实 canonical
+  字节派生的隔离篡改反例通过：14 字段全 `REFERENCE/SAME`、output fail 精确闭合、无部分 evidence/NAV，
+  canonical SHA 不变且临时资源清零；它不是既存坏 run。cached exact 7 闭合后可形成安全提交。
 
 ## 后续队列
 

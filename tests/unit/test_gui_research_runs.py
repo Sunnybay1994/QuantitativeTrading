@@ -9,6 +9,7 @@ import pytest
 
 from quant.gui.research_runs import (
     ResearchRunSummary,
+    diagnose_research_run_comparison,
     discover_research_runs,
     load_comparison_nav_projection,
     load_nav_projection,
@@ -282,20 +283,34 @@ def test_comparison_requires_two_to_four_unique_runs(tmp_path: Path) -> None:
 
     invalid_selections = ((), (run,), (run, run), (run, run, run, run, run))
     for selected in invalid_selections:
+        diagnosis = diagnose_research_run_comparison(selected)
         comparison = verify_research_run_comparison(selected)
 
+        assert diagnosis.selection_valid is False
+        assert diagnosis.contract_compatible is False
+        assert diagnosis.fields == ()
+        assert diagnosis.issue is not None
+        assert diagnosis.issue.code == "COMPARISON_SELECTION_INVALID"
         assert comparison.status == "BLOCKED"
         assert comparison.integrities == ()
-        assert comparison.issue is not None
-        assert comparison.issue.code == "COMPARISON_SELECTION_INVALID"
+        assert comparison.issue == diagnosis.issue
 
 
 def test_verified_comparison_preserves_selection_and_nav_rows(tmp_path: Path) -> None:
     _, runs, _ = _publish_comparison_runs(tmp_path)
     selected = (runs[1], runs[0])
 
+    diagnosis = diagnose_research_run_comparison(selected)
     comparison = verify_research_run_comparison(selected)
 
+    assert diagnosis.runs == selected
+    assert diagnosis.selection_valid is True
+    assert diagnosis.contract_compatible is True
+    assert diagnosis.issue is None
+    assert len(diagnosis.fields) == 14
+    assert diagnosis.fields[0].field == "schema_version"
+    assert diagnosis.fields[-1].field == "inputs"
+    assert all(item.relations == ("REFERENCE", "SAME") for item in diagnosis.fields)
     assert comparison.status == "VERIFIED"
     assert comparison.issue is None
     assert comparison.runs == selected
@@ -377,21 +392,97 @@ def test_comparison_contract_mismatch_fails_closed(
         second_metrics=second_metrics,
     )
 
+    diagnosis = diagnose_research_run_comparison(runs)
+    comparison = verify_research_run_comparison(runs)
+
+    assert diagnosis.selection_valid is True
+    assert diagnosis.contract_compatible is False
+    assert diagnosis.issue is not None
+    assert diagnosis.issue.code == "COMPARISON_CONTRACT_MISMATCH"
+    relation_by_field = {item.field: item.relations for item in diagnosis.fields}
+    assert relation_by_field[mismatched_field] == ("REFERENCE", "DIFFERENT")
+    assert comparison.status == "BLOCKED"
+    assert comparison.integrities == ()
+    assert comparison.issue == diagnosis.issue
+    assert comparison.issue is not None
+    assert mismatched_field in comparison.issue.detail
+
+
+def test_three_run_diagnosis_preserves_field_and_selection_order(tmp_path: Path) -> None:
+    artifact_root, runs, _ = _publish_comparison_runs(tmp_path)
+    _, third_root = _publish_run(
+        tmp_path,
+        artifact_root=artifact_root,
+        case="comparison-c",
+        strategy_name="fixture_strategy_c",
+        universe_name="OTHER_UNIVERSE",
+        input_digest=_sha(b"third-prices"),
+    )
+    catalog = discover_research_runs(artifact_root)
+    assert catalog.issues == ()
+    by_id = {run.manifest.run_id: run for run in catalog.runs}
+    selected = (runs[1], runs[0], by_id[third_root.name])
+
+    diagnosis = diagnose_research_run_comparison(selected)
+
+    assert diagnosis.runs == selected
+    assert diagnosis.selection_valid is True
+    assert diagnosis.contract_compatible is False
+    assert diagnosis.issue is not None
+    assert diagnosis.issue.detail == (
+        "Selected runs have incompatible comparison fields: inputs, universe_name."
+    )
+    assert tuple(
+        item.field for item in diagnosis.fields if "DIFFERENT" in item.relations
+    ) == ("universe_name", "inputs")
+    relation_by_field = {item.field: item.relations for item in diagnosis.fields}
+    assert relation_by_field["universe_name"] == (
+        "REFERENCE",
+        "SAME",
+        "DIFFERENT",
+    )
+    assert relation_by_field["inputs"] == ("REFERENCE", "SAME", "DIFFERENT")
+    assert all(
+        relation_by_field[field] == ("REFERENCE", "SAME", "SAME")
+        for field in relation_by_field.keys() - {"universe_name", "inputs"}
+    )
+
+
+def test_contract_mismatch_stops_before_output_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, runs, _ = _publish_comparison_runs(
+        tmp_path,
+        second_universe_name="OTHER_UNIVERSE",
+    )
+
+    def fail_on_call(_: ResearchRunSummary) -> None:
+        raise AssertionError(
+            "output verification must not run for a contract mismatch"
+        )
+
+    monkeypatch.setattr("quant.gui.research_runs.verify_research_run", fail_on_call)
+
     comparison = verify_research_run_comparison(runs)
 
     assert comparison.status == "BLOCKED"
     assert comparison.integrities == ()
     assert comparison.issue is not None
     assert comparison.issue.code == "COMPARISON_CONTRACT_MISMATCH"
-    assert mismatched_field in comparison.issue.detail
 
 
 def test_one_tampered_run_blocks_all_comparison_evidence(tmp_path: Path) -> None:
     _, runs, (_, second_root) = _publish_comparison_runs(tmp_path)
     (second_root / "report.json").write_bytes(b"tampered")
 
+    diagnosis = diagnose_research_run_comparison(runs)
     comparison = verify_research_run_comparison(runs)
 
+    assert diagnosis.selection_valid is True
+    assert diagnosis.contract_compatible is True
+    assert diagnosis.issue is None
+    assert all(item.relations == ("REFERENCE", "SAME") for item in diagnosis.fields)
     assert comparison.status == "BLOCKED"
     assert comparison.integrities == ()
     assert comparison.issue is not None
