@@ -277,7 +277,16 @@ def _requests_for_spec(
     else:
         symbols = _inventory_symbols(data_root, spec.inventory)
         base = _without_dates(params)
-        variants = [base | {"ts_code": symbol} for symbol in symbols]
+        variants = [
+            base
+            | {
+                "ts_code": symbol,
+                "start_date": first.strftime("%Y%m%d"),
+                "end_date": last.strftime("%Y%m%d"),
+            }
+            for symbol in symbols
+            for first, last in _date_windows(start, end, days=spec.chunk_days)
+        ]
     return [_request(catalog, spec, item) for item in variants]
 
 
@@ -335,6 +344,20 @@ def _months(start: dt.date, end: dt.date) -> list[tuple[dt.date, dt.date]]:
         following = (cursor.replace(day=28) + dt.timedelta(days=4)).replace(day=1)
         result.append((max(cursor, start), min(following - dt.timedelta(days=1), end)))
         cursor = following
+    return result
+
+
+def _date_windows(
+    start: dt.date, end: dt.date, *, days: int
+) -> list[tuple[dt.date, dt.date]]:
+    if start > end or type(days) is not int or days <= 0:
+        raise ValueError("TUSHARE_INGEST_PLAN_INVALID")
+    result: list[tuple[dt.date, dt.date]] = []
+    cursor = start
+    while cursor <= end:
+        last = min(end, cursor + dt.timedelta(days=days - 1))
+        result.append((cursor, last))
+        cursor = last + dt.timedelta(days=1)
     return result
 
 

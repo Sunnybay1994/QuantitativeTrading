@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import sqlite3
 from pathlib import Path
 
@@ -50,6 +51,34 @@ def _data_root(path: Path) -> Path:
         "is_open": [True, False],
     }).write_parquet(calendar / "data.parquet")
     return path
+
+
+def _per_symbol_catalog(path: Path) -> Path:
+    path.write_text(
+        '''datasets = [
+  { name = "income", api_name = "income", category = "finance", priority = "core", probe_mode = "query", probe_params = { ts_code = "000001.SZ", period = "20231231" }, request_unit = "per_symbol", inventory = "stock", history_start = 2026-01-01, max_rows = 6000, chunk_days = 2, partition = "report_year", overlap_days = 500 },
+]
+[meta]
+schema_version = "tushare-bulk-catalog-v1"
+catalog_version = "test-v1"
+source_url = "https://example.invalid"
+captured_on = 2026-08-14
+''',
+        encoding="utf-8",
+    )
+    return path
+
+
+def _stock_inventory(root: Path) -> None:
+    target = root / "clean" / "instrument" / "market=SH"
+    target.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600001.SH", "600002.SH"],
+            "market": ["SH", "SH"],
+            "instrument_type": ["STOCK", "STOCK"],
+        }
+    ).write_parquet(target / "data.parquet")
 
 
 def test_prepare_and_run_write_deterministic_raw_and_resume(tmp_path: Path) -> None:
@@ -129,3 +158,50 @@ def test_row_cap_fails_closed_without_writing_raw(tmp_path: Path) -> None:
     assert result == {"completed": 0, "retryable": 0, "failed": 1}
     assert ledger_summary(ledger) == {"SPLIT_REQUIRED": 1}
     assert len(list((root / "raw").rglob("data.parquet"))) == 1
+
+
+def test_per_symbol_requests_match_planned_non_overlapping_time_chunks(
+    tmp_path: Path,
+) -> None:
+    catalog = load_catalog(_per_symbol_catalog(tmp_path / "catalog.toml"))
+    report = probe_permissions(
+        catalog=catalog,
+        client=_Client(),
+        now=dt.datetime(2026, 8, 14, tzinfo=dt.timezone.utc),
+        sleeper=lambda _: None,
+    )
+    root = tmp_path / "data"
+    _stock_inventory(root)
+    ledger = root / "run_state" / "state.sqlite"
+    prepared = prepare_requests(
+        catalog=catalog,
+        permission_report=report,
+        data_root=root,
+        ledger_path=ledger,
+        datasets=frozenset({"income"}),
+        start=dt.date(2026, 1, 1),
+        end=dt.date(2026, 1, 5),
+    )
+    assert prepared == {"planned": 6, "inserted": 6, "existing": 0}
+    with sqlite3.connect(ledger) as conn:
+        parameters = [
+            json.loads(row[0])
+            for row in conn.execute(
+                "SELECT parameters_json FROM requests"
+            )
+        ]
+    parameters.sort(key=lambda row: (row["ts_code"], row["start_date"]))
+    assert parameters == [
+        {
+            "end_date": end,
+            "start_date": start,
+            "ts_code": symbol,
+        }
+        for symbol in ("600001.SH", "600002.SH")
+        for start, end in (
+            ("20260101", "20260102"),
+            ("20260103", "20260104"),
+            ("20260105", "20260105"),
+        )
+    ]
+    assert all("period" not in row for row in parameters)

@@ -217,3 +217,29 @@ def test_versioned_catalog_covers_all_supported_market_categories() -> None:
         "stock",
     }
     assert {item.priority for item in catalog.datasets} == {"core", "extended", "archive"}
+
+
+def test_versioned_catalog_keeps_finance_fallback_bounded_and_vip_manual() -> None:
+    catalog = load_catalog(Path("configs/data/tushare_bulk_v1.toml"))
+    assert catalog.version == "2026-08-15-v2"
+    by_name = {item.name: item for item in catalog.datasets}
+
+    for name in ("income", "balancesheet", "cashflow", "fina_indicator"):
+        spec = by_name[name]
+        assert spec.request_unit == "per_symbol"
+        assert spec.inventory == "stock"
+        assert spec.history_start == dt.date(1990, 1, 1)
+        assert spec.chunk_days == 1825
+    assert by_name["fina_indicator"].max_rows == 100
+
+    for name in (
+        "income_vip",
+        "balancesheet_vip",
+        "cashflow_vip",
+        "fina_indicator_vip",
+    ):
+        spec = by_name[name]
+        assert spec.probe_mode == "query"
+        assert spec.probe_params == {"period": "20231231"}
+        assert spec.request_unit == "manual"
+        assert spec.inventory == "none"
