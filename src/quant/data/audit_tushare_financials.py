@@ -30,7 +30,7 @@ from quant.data.tushare_bulk import (
 )
 from quant.settings import resolve_data_root
 
-SCHEMA_VERSION = "tushare-financial-raw-audit-v2"
+SCHEMA_VERSION = "tushare-financial-raw-audit-v3"
 _RAW_CLOSURE_SCHEMA = "tushare-financial-raw-closure-v1"
 PLAN_CLOSURE_SCHEMA = "tushare-financial-plan-closure-v1"
 INVENTORY_CLOSURE_SCHEMA = "tushare-financial-current-inventory-v1"
@@ -45,6 +45,7 @@ _STATEMENTS = frozenset({"balancesheet", "cashflow", "income"})
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _SYMBOL = re.compile(r"^[0-9]{6}\.(SH|SZ)$")
 _DATE = re.compile(r"^[0-9]{8}$")
+_DIMENSION_CODE = re.compile(r"^[0-9]+$")
 _STRUCTURAL_COLUMNS: dict[str, frozenset[str]] = {
     "balancesheet": frozenset(
         {
@@ -206,6 +207,8 @@ def _audit(
             ("end_after_available_rows", "END_AFTER_AVAILABLE"),
             ("required_numeric_parse_rows", "REQUIRED_NUMERIC_PARSE_INVALID"),
             ("required_numeric_nonfinite_rows", "REQUIRED_NUMERIC_NONFINITE"),
+            ("invalid_report_type_rows", "REPORT_TYPE_INVALID"),
+            ("invalid_comp_type_rows", "COMP_TYPE_INVALID"),
         ):
             if quality[field]:
                 blocking.append(
@@ -733,6 +736,8 @@ def _quality_summary(
         "end_after_available_rows": 0,
         "required_numeric_parse_rows": 0,
         "required_numeric_nonfinite_rows": 0,
+        "invalid_report_type_rows": 0,
+        "invalid_comp_type_rows": 0,
         "same_available_duplicate_groups": 0,
         "required_economic_conflict_groups": 0,
         "revision_chain_groups": 0,
@@ -741,6 +746,9 @@ def _quality_summary(
         "column_set_count": 0,
         "column_set_sha256s": [],
         "required_numeric_union_types": {},
+        "report_type_counts": [],
+        "comp_type_counts": [],
+        "report_type_comp_type_counts": [],
     }
     if not complete:
         return empty
@@ -810,6 +818,24 @@ def _quality_summary(
         )
         numeric_parse = _numeric_condition(dataset, parse_failure=True)
         numeric_nonfinite = _numeric_condition(dataset, parse_failure=False)
+        report_type_invalid = (
+            "count(*) FILTER (WHERE report_type IS NULL OR NOT regexp_matches("
+            "CAST(report_type AS VARCHAR),'^[0-9]+$'))"
+            if dataset in _STATEMENTS
+            else "0"
+        )
+        comp_type_invalid = (
+            "count(*) FILTER (WHERE comp_type IS NULL OR NOT regexp_matches("
+            "CAST(comp_type AS VARCHAR),'^[0-9]+$'))"
+            if dataset in _STATEMENTS
+            else "0"
+        )
+        valid_dimensions = (
+            "regexp_matches(CAST(report_type AS VARCHAR),'^[0-9]+$') AND "
+            "regexp_matches(CAST(comp_type AS VARCHAR),'^[0-9]+$')"
+            if dataset in _STATEMENTS
+            else "true"
+        )
         summary = connection.execute(
             f"""
             SELECT count(*),
@@ -829,20 +855,23 @@ def _quality_summary(
                                   > {available}),
               count(*) FILTER (WHERE {numeric_parse}),
               count(*) FILTER (WHERE {numeric_nonfinite}),
+              {report_type_invalid},
+              {comp_type_invalid},
               count(*) FILTER (WHERE NOT ({critical})
                                   AND regexp_matches(CAST(ts_code AS VARCHAR),'^[0-9]{{6}}\\.(SH|SZ)$')
                                   AND try_strptime(CAST(ann_date AS VARCHAR),'%Y%m%d') IS NOT NULL
                                   AND try_strptime(CAST(end_date AS VARCHAR),'%Y%m%d') IS NOT NULL
                                   AND try_strptime(CAST(end_date AS VARCHAR),'%Y%m%d') <= {available}
                                   AND CAST({date_field} AS VARCHAR) BETWEEN _start_date AND _window_end
-                                  AND NOT ({numeric_parse}) AND NOT ({numeric_nonfinite}))
+                                  AND NOT ({numeric_parse}) AND NOT ({numeric_nonfinite})
+                                  AND {valid_dimensions})
             FROM base
             """
         ).fetchone()
         if summary is None:
             raise ValueError
         raw_rows = cast(int, summary[0])
-        eligible = cast(int, summary[12])
+        eligible = cast(int, summary[14])
         quarantined = raw_rows - eligible
         key = (
             "ts_code,end_date,report_type,comp_type"
@@ -879,7 +908,8 @@ def _quality_summary(
             ).hexdigest()
             for item in complete
         }
-        return {
+        dimensions = _dimension_counts(connection=connection, dataset=dataset)
+        result: dict[str, Any] = {
             "raw_rows": raw_rows,
             "row_count_mismatch": row_count_mismatch,
             "missing_request_rows": missing_request_rows,
@@ -893,6 +923,8 @@ def _quality_summary(
             "end_after_available_rows": cast(int, summary[9]),
             "required_numeric_parse_rows": cast(int, summary[10]),
             "required_numeric_nonfinite_rows": cast(int, summary[11]),
+            "invalid_report_type_rows": cast(int, summary[12]),
+            "invalid_comp_type_rows": cast(int, summary[13]),
             "same_available_duplicate_groups": cast(int, duplicates[0]),
             "required_economic_conflict_groups": cast(int, economic_conflicts[0]),
             "revision_chain_groups": cast(int, chains[0]),
@@ -903,9 +935,109 @@ def _quality_summary(
             "required_numeric_union_types": {
                 name: description[name] for name in _NUMERIC_COLUMNS[dataset]
             },
+            **dimensions,
         }
+        _validate_dimension_evidence(dataset=dataset, quality=result)
+        return result
     finally:
         connection.close()
+
+
+def _dimension_counts(*, connection: Any, dataset: str) -> dict[str, Any]:
+    if dataset not in _STATEMENTS:
+        return {
+            "report_type_counts": [],
+            "comp_type_counts": [],
+            "report_type_comp_type_counts": [],
+        }
+    rows = connection.execute(
+        "SELECT CAST(report_type AS VARCHAR),CAST(comp_type AS VARCHAR),count(*) "
+        "FROM base GROUP BY 1,2 ORDER BY 1,2"
+    ).fetchall()
+    report_counts: Counter[str] = Counter()
+    comp_counts: Counter[str] = Counter()
+    pair_counts: list[dict[str, Any]] = []
+    for raw_report_type, raw_comp_type, raw_count in rows:
+        count = cast(int, raw_count)
+        report_type = raw_report_type if type(raw_report_type) is str else None
+        comp_type = raw_comp_type if type(raw_comp_type) is str else None
+        report_valid = (
+            report_type is not None
+            and _DIMENSION_CODE.fullmatch(report_type) is not None
+        )
+        comp_valid = (
+            comp_type is not None and _DIMENSION_CODE.fullmatch(comp_type) is not None
+        )
+        if type(count) is not int or count <= 0:
+            raise ValueError
+        if report_valid:
+            report_counts[cast(str, report_type)] += count
+        if comp_valid:
+            comp_counts[cast(str, comp_type)] += count
+        if report_valid and comp_valid:
+            pair_counts.append(
+                {
+                    "report_type": cast(str, report_type),
+                    "comp_type": cast(str, comp_type),
+                    "rows": count,
+                }
+            )
+    return {
+        "report_type_counts": [
+            {"value": value, "rows": count}
+            for value, count in sorted(report_counts.items())
+        ],
+        "comp_type_counts": [
+            {"value": value, "rows": count}
+            for value, count in sorted(comp_counts.items())
+        ],
+        "report_type_comp_type_counts": pair_counts,
+    }
+
+
+def _validate_dimension_evidence(*, dataset: str, quality: Mapping[str, Any]) -> None:
+    report_counts = quality["report_type_counts"]
+    comp_counts = quality["comp_type_counts"]
+    pair_counts = quality["report_type_comp_type_counts"]
+    invalid_report = quality["invalid_report_type_rows"]
+    invalid_comp = quality["invalid_comp_type_rows"]
+    raw_rows = quality["raw_rows"]
+    if dataset not in _STATEMENTS:
+        if (
+            invalid_report != 0
+            or invalid_comp != 0
+            or report_counts != []
+            or comp_counts != []
+            or pair_counts != []
+        ):
+            raise ValueError
+        return
+    if invalid_report != 0 or invalid_comp != 0:
+        return
+    report_marginal = {
+        cast(str, item["value"]): cast(int, item["rows"])
+        for item in cast(list[dict[str, object]], report_counts)
+    }
+    comp_marginal = {
+        cast(str, item["value"]): cast(int, item["rows"])
+        for item in cast(list[dict[str, object]], comp_counts)
+    }
+    pair_report: Counter[str] = Counter()
+    pair_comp: Counter[str] = Counter()
+    pair_total = 0
+    for item in cast(list[dict[str, object]], pair_counts):
+        count = cast(int, item["rows"])
+        pair_report[cast(str, item["report_type"])] += count
+        pair_comp[cast(str, item["comp_type"])] += count
+        pair_total += count
+    if (
+        sum(report_marginal.values()) != raw_rows
+        or sum(comp_marginal.values()) != raw_rows
+        or pair_total != raw_rows
+        or dict(pair_report) != report_marginal
+        or dict(pair_comp) != comp_marginal
+    ):
+        raise ValueError
 
 
 def _numeric_condition(dataset: str, *, parse_failure: bool) -> str:

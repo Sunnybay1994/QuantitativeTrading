@@ -488,6 +488,87 @@ def _validate_audit(value: Mapping[str, Any]) -> None:
             or quality.get("quarantined_rows") != 0
         ):
             raise ValueError
+        _validate_dimension_evidence(dataset=dataset, quality=quality)
+
+
+def _validate_dimension_evidence(*, dataset: str, quality: Mapping[str, Any]) -> None:
+    invalid_report = quality.get("invalid_report_type_rows")
+    invalid_comp = quality.get("invalid_comp_type_rows")
+    report_counts = _validated_counts(
+        quality.get("report_type_counts"), keys=("value",)
+    )
+    comp_counts = _validated_counts(quality.get("comp_type_counts"), keys=("value",))
+    pair_counts = _validated_counts(
+        quality.get("report_type_comp_type_counts"),
+        keys=("report_type", "comp_type"),
+    )
+    if type(invalid_report) is not int or type(invalid_comp) is not int:
+        raise ValueError
+    if dataset not in _STATEMENTS:
+        if (
+            invalid_report != 0
+            or invalid_comp != 0
+            or report_counts
+            or comp_counts
+            or pair_counts
+        ):
+            raise ValueError
+        return
+    if invalid_report != 0 or invalid_comp != 0:
+        raise ValueError
+    raw_rows = quality.get("raw_rows")
+    if type(raw_rows) is not int or raw_rows < 0:
+        raise ValueError
+    report_marginal = {key[0]: count for key, count in report_counts.items()}
+    comp_marginal = {key[0]: count for key, count in comp_counts.items()}
+    pair_report: dict[str, int] = {}
+    pair_comp: dict[str, int] = {}
+    for (report_type, comp_type), count in pair_counts.items():
+        pair_report[report_type] = pair_report.get(report_type, 0) + count
+        pair_comp[comp_type] = pair_comp.get(comp_type, 0) + count
+    if (
+        sum(report_marginal.values()) != raw_rows
+        or sum(comp_marginal.values()) != raw_rows
+        or sum(pair_counts.values()) != raw_rows
+        or pair_report != report_marginal
+        or pair_comp != comp_marginal
+    ):
+        raise ValueError
+
+
+def _validated_counts(
+    value: object, *, keys: tuple[str, ...]
+) -> dict[tuple[str, ...], int]:
+    if type(value) is not list:
+        raise ValueError
+    result: dict[tuple[str, ...], int] = {}
+    previous: tuple[str, ...] | None = None
+    expected = {*keys, "rows"}
+    for raw_item in cast(list[object], value):
+        if type(raw_item) is not dict or set(raw_item) != expected:
+            raise ValueError
+        item = cast(dict[str, Any], raw_item)
+        dimension = tuple(item.get(key) for key in keys)
+        rows = item.get("rows")
+        if (
+            any(not _is_dimension_code(part) for part in dimension)
+            or type(rows) is not int
+            or rows <= 0
+            or (previous is not None and dimension <= previous)
+        ):
+            raise ValueError
+        typed_dimension = cast(tuple[str, ...], dimension)
+        result[typed_dimension] = rows
+        previous = typed_dimension
+    return result
+
+
+def _is_dimension_code(value: object) -> bool:
+    return (
+        type(value) is str
+        and bool(value)
+        and all("0" <= character <= "9" for character in value)
+    )
 
 
 def _source_identity(audit: Mapping[str, Any]) -> str:
