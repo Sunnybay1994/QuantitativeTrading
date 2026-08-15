@@ -18,9 +18,9 @@
 | 负责任务 | 路线图 | 唯一维护者 | 状态 |
 | --- | --- | --- | --- |
 | 项目结构、文档、代码边界与分支合流 | [项目结构与合流治理路线图](项目结构与合流治理路线图.md) | 项目结构统筹任务 | 活跃 |
-| M2 策略与因子库 | `docs/roadmaps/M2_策略与因子库并行建设路线图.md` | 策略开发任务 | fastlane D 安全点 `979c0de` |
+| M2 策略与因子库 | `docs/roadmaps/M2_策略与因子库并行建设路线图.md` | 策略开发任务 | Wave B 安全点 `ec506b6`；downside beta 编码中 |
 | M2 经典因子研究子路线 | `docs/roadmaps/M2_经典因子研究实现与回测路线图.md` | 策略开发任务 | fastlane B 安全点 `cb2a0eb` |
-| M1/M3/M4 框架开发与 S2 admission | `docs/roadmaps/M1_M3_M4_框架开发总路线图.md` | 框架开发任务 | M4 RUN-0W 安全点 `bd97212`，S2/RUN-0D2 活跃 |
+| M1/M3/M4 框架开发与 S2 admission | `docs/roadmaps/M1_M3_M4_框架开发总路线图.md` | 框架开发任务 | S2 安全点 `4ac392a`；M4 RUN-0D2 验证中 |
 | GUI 投研工作台 | `docs/roadmaps/GUI_投研工作台路线图.md` | GUI 任务 | G0 安全点 `75b6419`，G1 编码完成待验证 |
 
 “待提交”路径先以代码样式登记，合流后再改为链接，避免主分支索引产生断链。
