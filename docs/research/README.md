@@ -79,3 +79,14 @@ premium；没有生成 `PAPER_CANDIDATE`，也没有启动 PAPER。
 为低 MAX 优先的 `-1`。它不是 Qlib Alpha158 的 `Max(high,20)/close`。唯一真实不可变 run 通过历史
 初筛门禁，结论为 `RESEARCH_ONLY`；但组合收益有时期集中，且规模/换手二阶段控制、forward、统一回放和
 人工 admission 尚未完成，因此不得自动生成 `PAPER_CANDIDATE` 或启动 PAPER。
+
+### MAX 规模与换手二阶段控制
+
+- [MAX 规模与换手二阶段控制假设卡](M2_MAX规模换手二阶段控制假设卡.md)
+- [MAX 规模与换手二阶段控制研究结果](M2_MAX规模换手二阶段控制研究结果.md)
+
+该确认性控制沿用同一 canonical MAX 假设，以同日总市值和自由流通换手率的横截面 average-rank OLS 残差
+检验增量；不是新候选。数值闭包、`-1` 固定方向、coverage、预注册调仓日和成本门禁均已在真实运行前冻结。
+唯一真实 run 的 RankIC、方向、coverage、调仓日与 OLS 数值闭包均通过，但 2 倍成本后三折链式收益为
+`-5.0079%`，故确认性结论为 `REJECTED`。原始 run 的历史 `RESEARCH_ONLY` 标签仍是不可变记录，但当前
+综合证据不允许该假设进入 S2、`PAPER_CANDIDATE` 或 PAPER。
