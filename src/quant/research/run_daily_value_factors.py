@@ -22,14 +22,22 @@ from quant.data.daily_basic_repository import (
 from quant.data.publish_tushare_bulk_clean import verify_tushare_bulk_clean_snapshot
 from quant.data.publish_tushare_daily_basic import verify_tushare_daily_basic_snapshot
 from quant.factors import (
+    AMIHUD_FACTOR_NAMES,
     CLASSIC_FACTOR_NAMES,
     DAILY_VALUE_FACTOR_NAMES,
     DAILY_VALUE_FACTOR_SPECS,
+    LIQUIDITY_FACTOR_SPECS,
+    TURNOVER_FACTOR_NAMES,
     compute_classic_daily_factors,
     compute_daily_value_factors,
+    compute_monthly_amihud_illiquidity,
+    compute_monthly_free_float_turnover_factors,
 )
 from quant.research.classic_factor_evaluation import evaluate_factor_redundancy
-from quant.research.factor_labels import build_next_open_factor_labels
+from quant.research.factor_labels import (
+    build_next_open_factor_labels,
+    build_next_rebalance_open_labels,
+)
 from quant.research.lightweight_run import (
     LightweightResearchRunV1,
     ResearchInputDigestV1,
@@ -46,10 +54,21 @@ from quant.research.run_classic_factors import (
     select_frozen_liquid_universe,
     summarize_factors,
 )
+from quant.research.pit_quality_research import monthly_signal_sessions
 from quant.settings import resolve_data_root
 
+_DAILY_VALUE_CATALOG = "tushare_daily_basic_value_proxy_v1"
+_AMIHUD_CATALOG = "tushare_monthly_amihud_v1"
+_TURNOVER_CATALOG = "tushare_monthly_free_float_turnover_v1"
 _REFERENCE_FACTORS = CLASSIC_FACTOR_NAMES + ("log_total_market_value",)
-_CODE_PATHS = (
+_AMIHUD_REFERENCE_FACTORS = _REFERENCE_FACTORS + DAILY_VALUE_FACTOR_NAMES + TURNOVER_FACTOR_NAMES
+_TURNOVER_REFERENCE_FACTORS = _REFERENCE_FACTORS + DAILY_VALUE_FACTOR_NAMES + AMIHUD_FACTOR_NAMES
+_AMIHUD_EXPECTED_DIRECTIONS = {"amihud_illiquidity_monthly": 1}
+_TURNOVER_EXPECTED_DIRECTIONS = {
+    "free_float_turnover_level_monthly": -1,
+    "free_float_turnover_abnormal_12m": -1,
+}
+_BASE_CODE_PATHS = (
     "src/quant/data/clean_snapshot_repository.py",
     "src/quant/data/daily_basic_repository.py",
     "src/quant/data/publish_tushare_daily_basic.py",
@@ -60,6 +79,10 @@ _CODE_PATHS = (
     "src/quant/research/lightweight_run.py",
     "src/quant/research/run_classic_factors.py",
     "src/quant/research/run_daily_value_factors.py",
+)
+_LIQUIDITY_CODE_PATHS = _BASE_CODE_PATHS + (
+    "src/quant/factors/liquidity.py",
+    "src/quant/research/pit_quality_research.py",
 )
 
 
@@ -93,6 +116,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     universe = cast(Mapping[str, Any], config["universe"])
     factors = cast(Mapping[str, Any], config["factors"])
     portfolio = cast(Mapping[str, Any], config["portfolio"])
+    factor_names, factor_specs, reference_factors, monthly = _study_contract(config)
     bar_snapshot_id = cast(str, data["bar_snapshot_id"])
     bar_snapshot = verify_tushare_bulk_clean_snapshot(
         data_root=data_root, snapshot_id=bar_snapshot_id
@@ -137,12 +161,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     sessions = tuple(sorted(set(bars.get_column("trade_date").to_list())))
-    panel = build_daily_value_panel(
-        daily_basic=daily_basic,
-        bars=bars,
-        sessions=sessions,
-        horizons=tuple(cast(list[int], factors["horizons"])),
-    ).filter(
+    if monthly:
+        signal_dates = monthly_signal_sessions(
+            sessions,
+            start=cast(dt.date, data["warmup_start"]),
+            end=cast(dt.date, data["research_end"]),
+        )
+        panel = build_monthly_liquidity_panel(
+            daily_basic=daily_basic,
+            bars=bars,
+            sessions=sessions,
+            signal_dates=signal_dates,
+            candidate_symbols=candidates,
+            horizons=tuple(cast(list[int], factors["horizons"])),
+            minimum_valid_days=cast(int, factors["minimum_valid_days"]),
+            turnover_history_months=cast(int, factors["turnover_history_months"]),
+        )
+    else:
+        panel = build_daily_value_panel(
+            daily_basic=daily_basic,
+            bars=bars,
+            sessions=sessions,
+            horizons=tuple(cast(list[int], factors["horizons"])),
+        )
+    panel = panel.filter(
         (pl.col("trade_date") >= cast(dt.date, data["research_start"]))
         & (pl.col("history_rows") >= cast(int, factors["minimum_history_rows"]))
         & (pl.col("liquidity_20") >= float(universe["minimum_average_amount"]))
@@ -152,13 +194,22 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     results = evaluate_walk_forward(
         panel=panel,
-        factors=DAILY_VALUE_FACTOR_NAMES,
+        factors=factor_names,
         horizons=tuple(cast(list[int], factors["horizons"])),
         folds=_folds(config),
-        minimum_symbols=cast(int, factors["minimum_daily_symbols"]),
+        minimum_symbols=cast(
+            int,
+            factors[
+                "minimum_signal_symbols" if monthly else "minimum_daily_symbols"
+            ],
+        ),
         groups=cast(int, factors["groups"]),
         top_k=cast(int, portfolio["top_k"]),
-        rebalance_every=cast(int, portfolio["rebalance_every_sessions"]),
+        rebalance_every=(
+            cast(int, portfolio["rebalance_every_signals"])
+            if monthly
+            else cast(int, portfolio["rebalance_every_sessions"])
+        ),
         initial_cash=Decimal(str(portfolio["initial_cash"])),
         cost_multipliers=tuple(
             Decimal(str(value)) for value in portfolio["cost_multipliers"]
@@ -166,19 +217,43 @@ def main(argv: Sequence[str] | None = None) -> int:
         costs=_cost_periods(project_root, portfolio),
         strategy_name=cast(str, config["research"]["strategy_name"]),
         strategy_version=cast(str, config["research"]["strategy_version"]),
+        portfolio_return_column=("label_rebalance" if monthly else "label_20"),
+        portfolio_execution_date_column=(
+            "execution_date_rebalance" if monthly else "execution_date_20"
+        ),
+        portfolio_exit_date_column=(
+            "exit_date_rebalance" if monthly else "exit_date_20"
+        ),
+        portfolio_annualization_periods=(
+            float(portfolio["annualization_periods"]) if monthly else 252.0 / 20.0
+        ),
+        ic_newey_west_lag=(cast(int, factors["ic_newey_west_lag"]) if monthly else None),
     )
     summary = summarize_factors(
         cast(pl.DataFrame, results["fold_metrics"]),
-        factors=DAILY_VALUE_FACTOR_NAMES,
+        factors=factor_names,
         admission=cast(Mapping[str, Any], config["admission"]),
     )
+    if monthly:
+        summary = apply_expected_direction_gate(
+            summary,
+            fold_metrics=cast(pl.DataFrame, results["fold_metrics"]),
+            expected_directions=cast(
+                Mapping[str, Any], factors["expected_directions"]
+            ),
+        )
     redundancy_daily, redundancy_summary = evaluate_factor_redundancy(
         panel,
-        factors=DAILY_VALUE_FACTOR_NAMES,
-        reference_factors=_REFERENCE_FACTORS,
+        factors=factor_names,
+        reference_factors=reference_factors,
         start_date=cast(dt.date, data["research_start"]),
         end_date=cast(dt.date, data["research_end"]),
-        minimum_symbols=cast(int, factors["minimum_daily_symbols"]),
+        minimum_symbols=cast(
+            int,
+            factors[
+                "minimum_signal_symbols" if monthly else "minimum_daily_symbols"
+            ],
+        ),
     )
     summary = apply_redundancy_gate(
         summary,
@@ -189,7 +264,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     results["redundancy_daily"] = redundancy_daily
     results["redundancy_summary"] = redundancy_summary
-    coverage = build_daily_value_coverage(panel)
+    coverage = build_factor_coverage(panel, factors=factor_names)
+    if monthly:
+        summary = apply_coverage_gate(
+            summary,
+            coverage=coverage,
+            minimum_signal_symbols=cast(int, factors["minimum_signal_symbols"]),
+            minimum_median_coverage=float(factors["minimum_median_coverage"]),
+        )
     passing = summary.filter(pl.col("research_status") == "RESEARCH_ONLY")
     conclusion = "RESEARCH_ONLY" if passing.height else "REJECTED"
     report = _report(
@@ -203,10 +285,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         results=results,
         summary=summary,
         conclusion=conclusion,
+        monthly=monthly,
     )
     outputs = {
         "daily_ic.parquet": _parquet(cast(pl.DataFrame, results["daily_ic"])),
-        "daily_value_coverage.parquet": _parquet(coverage),
+        (
+            "monthly_signal_coverage.parquet"
+            if monthly
+            else "daily_value_coverage.parquet"
+        ): _parquet(coverage),
         "factor_catalog.json": canonical_json_bytes(
             [
                 {
@@ -215,7 +302,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "name": spec.name,
                     "source": spec.source,
                 }
-                for spec in DAILY_VALUE_FACTOR_SPECS
+                for spec in factor_specs
             ]
         ),
         "factor_summary.parquet": _parquet(summary),
@@ -246,7 +333,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         config_relative_path=config_path.relative_to(project_root).as_posix(),
         config_sha256=hashlib.sha256(config_payload).hexdigest(),
         code_sha256=compute_code_sha256(
-            project_root=project_root, relative_paths=_CODE_PATHS
+            project_root=project_root,
+            relative_paths=_LIQUIDITY_CODE_PATHS if monthly else _BASE_CODE_PATHS,
         ),
         universe_name="tushare-2019-liquid-top800",
         universe_frozen_as_of=cast(dt.date, universe["freeze_end"]),
@@ -258,7 +346,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         valuation_timing="close",
         folds=folds,
         cost_multipliers=tuple(float(value) for value in portfolio["cost_multipliers"]),
-        selection_metric="walk_forward_rank_ic_with_redundancy_gate",
+        selection_metric=(
+            "monthly_walk_forward_rank_ic_with_coverage_and_redundancy_gates"
+            if monthly
+            else "walk_forward_rank_ic_with_redundancy_gate"
+        ),
         inputs=(
             ResearchInputDigestV1(
                 name="tushare-daily-basic",
@@ -282,7 +374,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 cast(float, summary.get_column("mean_test_rank_ic").max()),
             ),
             ("candidate_symbols", len(candidates)),
-            ("factor_count", len(DAILY_VALUE_FACTOR_NAMES)),
+            ("factor_count", len(factor_names)),
             ("panel_rows", panel.height),
             ("passing_factor_count", passing.height),
         ),
@@ -348,12 +440,108 @@ def build_daily_value_panel(
     )
 
 
+def build_monthly_liquidity_panel(
+    *,
+    daily_basic: pl.DataFrame,
+    bars: pl.DataFrame,
+    sessions: tuple[dt.date, ...],
+    signal_dates: tuple[dt.date, ...],
+    candidate_symbols: tuple[str, ...],
+    horizons: tuple[int, ...] = (1, 5, 20),
+    minimum_valid_days: int = 15,
+    turnover_history_months: int = 12,
+) -> pl.DataFrame:
+    """Join monthly liquidity signals to controls and next-open labels."""
+    amihud = compute_monthly_amihud_illiquidity(
+        bars,
+        sessions=sessions,
+        signal_dates=signal_dates,
+        candidate_symbols=candidate_symbols,
+        minimum_valid_days=minimum_valid_days,
+    )
+    turnover = compute_monthly_free_float_turnover_factors(
+        daily_basic,
+        signal_dates=signal_dates,
+        candidate_symbols=candidate_symbols,
+        minimum_valid_days=minimum_valid_days,
+        history_months=turnover_history_months,
+    )
+    daily_values = compute_daily_value_factors(daily_basic).filter(
+        pl.col("trade_date").is_in(signal_dates)
+    )
+    bar_values = compute_classic_daily_factors(bars).filter(
+        pl.col("trade_date").is_in(signal_dates)
+    )
+    factor_values = (
+        amihud.join(
+            turnover,
+            on=["symbol", "trade_date"],
+            how="inner",
+            validate="1:1",
+        )
+        .join(
+            daily_values.select(
+                "symbol",
+                "trade_date",
+                *DAILY_VALUE_FACTOR_NAMES,
+                "log_total_market_value",
+            ),
+            on=["symbol", "trade_date"],
+            how="left",
+            validate="1:1",
+        )
+        .join(
+            bar_values.select(
+                "symbol",
+                "trade_date",
+                "history_rows",
+                "liquidity_20",
+                *CLASSIC_FACTOR_NAMES,
+            ),
+            on=["symbol", "trade_date"],
+            how="inner",
+            validate="1:1",
+        )
+    )
+    if factor_values.is_empty():
+        raise ValueError("monthly liquidity and bar snapshots do not overlap")
+    if tuple(
+        factor_values.get_column("trade_date").unique().sort().to_list()
+    ) != signal_dates:
+        raise ValueError("monthly liquidity panel is missing a signal date")
+    fixed_horizon = build_next_open_factor_labels(
+        factor_values=factor_values,
+        bars=bars,
+        sessions=sessions,
+        horizons=horizons,
+    )
+    return build_next_rebalance_open_labels(
+        factor_values=fixed_horizon,
+        bars=bars,
+        sessions=sessions,
+    )
+
+
 def build_daily_value_coverage(panel: pl.DataFrame) -> pl.DataFrame:
     """Return deterministic per-date coverage for every pre-registered proxy."""
+    return build_factor_coverage(panel, factors=DAILY_VALUE_FACTOR_NAMES)
+
+
+def build_factor_coverage(
+    panel: pl.DataFrame, *, factors: tuple[str, ...]
+) -> pl.DataFrame:
+    """Return deterministic per-signal coverage for the requested factors."""
     if not isinstance(panel, pl.DataFrame) or panel.is_empty():
-        raise ValueError("daily-value coverage panel is empty")
+        raise ValueError("factor coverage panel is empty")
+    if (
+        type(factors) is not tuple
+        or not factors
+        or len(factors) != len(set(factors))
+        or any(name not in panel.columns for name in factors)
+    ):
+        raise ValueError("invalid factor coverage request")
     frames: list[pl.DataFrame] = []
-    for factor in DAILY_VALUE_FACTOR_NAMES:
+    for factor in factors:
         frames.append(
             panel.group_by("trade_date")
             .agg(
@@ -371,6 +559,142 @@ def build_daily_value_coverage(panel: pl.DataFrame) -> pl.DataFrame:
     return pl.concat(frames).sort("factor", "trade_date")
 
 
+def apply_coverage_gate(
+    summary: pl.DataFrame,
+    *,
+    coverage: pl.DataFrame,
+    minimum_signal_symbols: int,
+    minimum_median_coverage: float,
+) -> pl.DataFrame:
+    """Reject factors that fail any signal-date or median coverage threshold."""
+    if (
+        not isinstance(summary, pl.DataFrame)
+        or summary.is_empty()
+        or not isinstance(coverage, pl.DataFrame)
+        or coverage.is_empty()
+        or type(minimum_signal_symbols) is not int
+        or minimum_signal_symbols < 2
+        or not 0 < minimum_median_coverage <= 1
+    ):
+        raise ValueError("invalid factor coverage gate")
+    factor_names = tuple(summary.get_column("factor").to_list())
+    required_columns = {
+        "factor",
+        "trade_date",
+        "eligible_rows",
+        "valid_rows",
+        "coverage",
+    }
+    if not required_columns <= set(coverage.columns):
+        raise ValueError("coverage factors do not match summary")
+    signal_dates = coverage.get_column("trade_date").unique().to_list()
+    if (
+        coverage.select(
+            pl.struct("factor", "trade_date").is_duplicated().any()
+        ).item()
+        or set(coverage.get_column("factor").unique().to_list())
+        != set(factor_names)
+        or coverage.height != len(factor_names) * len(signal_dates)
+        or coverage.filter(
+            (pl.col("eligible_rows") <= 0)
+            | (pl.col("valid_rows") < 0)
+            | (pl.col("valid_rows") > pl.col("eligible_rows"))
+            | ~pl.col("coverage").is_finite()
+            | ~pl.col("coverage").is_between(0.0, 1.0, closed="both")
+            | (
+                pl.col("coverage")
+                != pl.col("valid_rows").cast(pl.Float64)
+                / pl.col("eligible_rows").cast(pl.Float64)
+            )
+        ).height
+        > 0
+    ):
+        raise ValueError("coverage factors do not match summary")
+    coverage_summary = coverage.group_by("factor").agg(
+        pl.col("valid_rows").min().alias("minimum_valid_rows"),
+        pl.col("coverage").median().alias("median_coverage"),
+    )
+    return (
+        summary.join(coverage_summary, on="factor", how="left", validate="1:1")
+        .with_columns(
+            (
+                (pl.col("minimum_valid_rows") >= minimum_signal_symbols)
+                & (pl.col("median_coverage") >= minimum_median_coverage)
+            ).alias("coverage_passed")
+        )
+        .with_columns(
+            pl.when(
+                (pl.col("research_status") == "RESEARCH_ONLY")
+                & pl.col("coverage_passed")
+            )
+            .then(pl.lit("RESEARCH_ONLY"))
+            .otherwise(pl.lit("REJECTED"))
+            .alias("research_status")
+        )
+        .sort("factor")
+    )
+
+
+def apply_expected_direction_gate(
+    summary: pl.DataFrame,
+    *,
+    fold_metrics: pl.DataFrame,
+    expected_directions: Mapping[str, Any],
+) -> pl.DataFrame:
+    """Reject factors whose validation-selected direction violates the prior."""
+    if (
+        not isinstance(summary, pl.DataFrame)
+        or summary.is_empty()
+        or not isinstance(fold_metrics, pl.DataFrame)
+        or fold_metrics.is_empty()
+        or not isinstance(expected_directions, Mapping)
+    ):
+        raise ValueError("invalid expected-direction gate")
+    factor_names = tuple(summary.get_column("factor").to_list())
+    if set(expected_directions) != set(factor_names) or any(
+        type(expected_directions[name]) is not int
+        or cast(int, expected_directions[name]) not in {-1, 1}
+        for name in factor_names
+    ):
+        raise ValueError("expected directions do not match summary")
+    observed = (
+        fold_metrics.filter(pl.col("cost_multiplier") == 1.0)
+        .group_by("factor")
+        .agg(
+            pl.col("direction").n_unique().alias("observed_direction_count"),
+            pl.col("direction").first().alias("observed_direction"),
+        )
+    )
+    expected = pl.DataFrame(
+        {
+            "factor": factor_names,
+            "expected_direction": [
+                cast(int, expected_directions[name]) for name in factor_names
+            ],
+        }
+    )
+    return (
+        summary.join(observed, on="factor", how="left", validate="1:1")
+        .join(expected, on="factor", how="left", validate="1:1")
+        .with_columns(
+            (
+                (pl.col("observed_direction_count") == 1)
+                & (pl.col("observed_direction") == pl.col("expected_direction"))
+            ).alias("expected_direction_passed")
+        )
+        .with_columns(
+            pl.when(
+                (pl.col("research_status") == "RESEARCH_ONLY")
+                & pl.col("expected_direction_passed")
+            )
+            .then(pl.lit("RESEARCH_ONLY"))
+            .otherwise(pl.lit("REJECTED"))
+            .alias("research_status")
+        )
+        .sort("factor")
+    )
+
+
 def apply_redundancy_gate(
     summary: pl.DataFrame,
     *,
@@ -386,14 +710,33 @@ def apply_redundancy_gate(
         or not 0 < maximum_median_absolute_rank_correlation < 1
     ):
         raise ValueError("invalid daily-value redundancy gate")
-    maxima = redundancy_summary.group_by("factor_a").agg(
-        pl.col("median_abs_rank_corr").max().alias("max_median_abs_rank_corr")
+    candidate_factors = summary.get_column("factor").to_list()
+    maxima = (
+        pl.concat(
+            [
+                redundancy_summary.select(
+                    pl.col("factor_a").alias("factor"),
+                    "median_abs_rank_corr",
+                ),
+                redundancy_summary.filter(
+                    pl.col("factor_b").is_in(candidate_factors)
+                ).select(
+                    pl.col("factor_b").alias("factor"),
+                    "median_abs_rank_corr",
+                ),
+            ]
+        )
+        .group_by("factor")
+        .agg(
+            pl.col("median_abs_rank_corr")
+            .max()
+            .alias("max_median_abs_rank_corr")
+        )
     )
     return (
         summary.join(
             maxima,
-            left_on="factor",
-            right_on="factor_a",
+            on="factor",
             how="left",
             validate="1:1",
         )
@@ -419,29 +762,84 @@ def apply_redundancy_gate(
     )
 
 
+def _study_contract(
+    config: Mapping[str, Any],
+) -> tuple[tuple[str, ...], tuple[Any, ...], tuple[str, ...], bool]:
+    catalog = cast(str, cast(Mapping[str, Any], config["factors"])["catalog"])
+    if catalog == _DAILY_VALUE_CATALOG:
+        return (
+            DAILY_VALUE_FACTOR_NAMES,
+            DAILY_VALUE_FACTOR_SPECS,
+            _REFERENCE_FACTORS,
+            False,
+        )
+    if catalog == _AMIHUD_CATALOG:
+        return (
+            AMIHUD_FACTOR_NAMES,
+            tuple(
+                spec for spec in LIQUIDITY_FACTOR_SPECS if spec.name in AMIHUD_FACTOR_NAMES
+            ),
+            _AMIHUD_REFERENCE_FACTORS,
+            True,
+        )
+    if catalog == _TURNOVER_CATALOG:
+        return (
+            TURNOVER_FACTOR_NAMES,
+            tuple(
+                spec
+                for spec in LIQUIDITY_FACTOR_SPECS
+                if spec.name in TURNOVER_FACTOR_NAMES
+            ),
+            _TURNOVER_REFERENCE_FACTORS,
+            True,
+        )
+    raise ValueError("invalid daily-value-factor config")
+
+
 def _validate_config(config: Mapping[str, Any], *, threads: int) -> None:
     try:
         data = cast(Mapping[str, Any], config["data"])
         factors = cast(Mapping[str, Any], config["factors"])
         portfolio = cast(Mapping[str, Any], config["portfolio"])
-        valid = (
+        factor_names, _, reference_names, monthly = _study_contract(config)
+        common = (
             type(data["bar_snapshot_id"]) is str
             and len(cast(str, data["bar_snapshot_id"])) == 64
             and set(cast(str, data["bar_snapshot_id"]))
             <= set("0123456789abcdef")
-            and tuple(cast(list[str], factors["names"]))
-            == DAILY_VALUE_FACTOR_NAMES
-            and factors["catalog"] == "tushare_daily_basic_value_proxy_v1"
+            and tuple(cast(list[str], factors["names"])) == factor_names
             and tuple(cast(list[str], factors["redundancy_reference_names"]))
-            == _REFERENCE_FACTORS
+            == reference_names
             and float(factors["maximum_median_absolute_rank_correlation"]) == 0.80
             and tuple(cast(list[int], factors["horizons"])) == (1, 5, 20)
             and tuple(float(value) for value in portfolio["cost_multipliers"])
             == (0.5, 1.0, 2.0)
             and portfolio["selection_horizon_sessions"] == 20
             and type(threads) is int
-            and 1 <= threads <= 4
         )
+        if monthly:
+            expected = (
+                _AMIHUD_EXPECTED_DIRECTIONS
+                if factors["catalog"] == _AMIHUD_CATALOG
+                else _TURNOVER_EXPECTED_DIRECTIONS
+            )
+            valid = (
+                common
+                and dict(cast(Mapping[str, Any], factors["expected_directions"]))
+                == expected
+                and factors["signal_frequency"] == "calendar_month_end"
+                and factors["portfolio_label"] == "next_rebalance_open"
+                and factors["minimum_valid_days"] == 15
+                and factors["turnover_history_months"] == 12
+                and factors["minimum_signal_symbols"] == 100
+                and float(factors["minimum_median_coverage"]) == 0.80
+                and factors["ic_newey_west_lag"] == 1
+                and portfolio["rebalance_every_signals"] == 1
+                and portfolio["annualization_periods"] == 12
+                and 1 <= threads <= 2
+            )
+        else:
+            valid = common and 1 <= threads <= 4
     except (KeyError, TypeError, ValueError):
         valid = False
     if not valid:
@@ -460,9 +858,14 @@ def _report(
     results: Mapping[str, pl.DataFrame],
     summary: pl.DataFrame,
     conclusion: str,
+    monthly: bool,
 ) -> dict[str, object]:
     return {
-        "schema_version": "m2-daily-value-factor-report-v1",
+        "schema_version": (
+            "m2-monthly-liquidity-factor-report-v1"
+            if monthly
+            else "m2-daily-value-factor-report-v1"
+        ),
         "conclusion": conclusion,
         "hypothesis": config["research"]["hypothesis"],
         "bar_snapshot_id": bar_snapshot_id,
@@ -476,20 +879,42 @@ def _report(
         "factor_summary": summary.to_dicts(),
         "redundancy_summary": results["redundancy_summary"].to_dicts(),
         "timing": {
-            "signal": "daily_basic row available after close of as_of session",
+            "signal": (
+                "proven calendar-month-end close using only rows available by as_of"
+                if monthly
+                else "daily_basic row available after close of as_of session"
+            ),
             "execution": "next exchange session open from verified stock bars",
-            "label": "adjusted open(t+1+h)/adjusted open(t+1)-1",
+            "label": (
+                "fixed 1/5/20 next-open IC labels; portfolio exits at the next signal's next open"
+                if monthly
+                else "adjusted open(t+1+h)/adjusted open(t+1)-1"
+            ),
         },
-        "caveats": [
-            "Daily-basic ratios are vendor daily proxies, not reconstructed PIT financial-statement factors.",
-            "The 2019 liquid universe is PIT only at its freeze date and is not an evolving constituent universe.",
-            "Daily-basic close is never used as the bar, label, execution or valuation authority.",
-            "Loss-making and non-positive denominator observations are null by the frozen factor formulas.",
-            "Historical ST flags, industries and full market-event replay are not available in this diagnostic.",
-            "The twenty-session portfolio is a factor diagnostic, not the formal A-share account replay.",
-            "No result may exceed RESEARCH_ONLY without separate financial PIT, forward and market-event evidence.",
-        ],
+        "caveats": _report_caveats(monthly=monthly),
     }
+
+
+def _report_caveats(*, monthly: bool) -> list[str]:
+    shared = [
+        "The 2019 liquid universe is PIT only at its freeze date and is not an evolving constituent universe.",
+        "Daily-basic close is never used as the bar, label, execution or valuation authority.",
+        "Historical ST flags, industries and full market-event replay are not available in this diagnostic.",
+        "No result may exceed RESEARCH_ONLY without separate forward and market-event evidence.",
+    ]
+    if monthly:
+        return [
+            "Amihud and free-float turnover are daily-data liquidity proxies, not order-book impact or executable capacity estimates.",
+            "A month requires at least fifteen valid observations; missing sessions are not forward-filled.",
+            "The monthly next-rebalance portfolio is a research diagnostic, not the formal A-share account replay.",
+            *shared,
+        ]
+    return [
+        "Daily-basic ratios are vendor daily proxies, not reconstructed PIT financial-statement factors.",
+        "Loss-making and non-positive denominator observations are null by the frozen factor formulas.",
+        "The twenty-session portfolio is a factor diagnostic, not the formal A-share account replay.",
+        *shared,
+    ]
 
 
 if __name__ == "__main__":
