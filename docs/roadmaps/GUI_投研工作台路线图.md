@@ -44,10 +44,11 @@
 ## 分支、worktree 与基线
 
 - 唯一 owner：GUI session（本任务）；其他 session 不在本 worktree 写入或提交。
-- 分支：`codex/gui-research-workbench`
-- 独立 worktree：`F:\AI_Coding\QuantitativeTrading\artifacts\dev_worktrees\gui-research-workbench`
-- 冻结基线：`9fc08ba382e491cfcfeebb7b0c14ef06085bf013`
-- G1 父提交 HEAD：`75b6419c3e0bcf5c1e1924ed02dd6fda87bd53b5`；G1 已完成定向验证并形成本文所在的安全提交，完整 SHA 以 Git 记录为准。
+- 当前 G0-C4 分支：`codex/gui-g0-c4-smoke`
+- 当前独立 worktree：`F:\AI_Coding\QuantitativeTrading\artifacts\dev_worktrees\gui-g0-c4-smoke`
+- G0-C4 冻结父提交：`4fa5d21a9c99c125ba0dadb8c732cca2681b34ba`。
+- G1 安全提交：`a5c63f7c8ca1d763b934c13330e793c65da27842`；已由统筹 no-ff 纳入后续 integration 历史，
+  当前 G0-C4 基线已包含该提交。
 - G0 代码与 optional 依赖安全点：`6640b791cf0fab6f996aea014293a618d2e5a22e`。
 - G0 smoke 环境失败记录安全点：`75b6419c3e0bcf5c1e1924ed02dd6fda87bd53b5`。
 - 根工作树：只读，GUI session 不在其中写入或合流。
@@ -74,9 +75,10 @@ docs/agent/GUI_G0_只读研究驾驶舱交付记录.md
 ```
 
 共享 SSOT 均保持锁定，包括 `AGENTS.md`、`README.md`、`项目实施路线图.md`、`docs/README.md`、
-`docs/用户待批示与参与事项.md`、`pyproject.toml`、`src/quant/domain/schemas.py`、各层已有
+`docs/用户待批示与参与事项.md`、`src/quant/domain/schemas.py`、各层已有
 `__init__.py` 与技术调研文档。`docs/roadmaps/README.md` 及项目结构治理路线图由统筹任务维护。
-其中 `pyproject.toml` 的唯一批准 hunk 已随 G0 提交；当前状态是**重新锁定且不得继续修改**，不是尚未声明。
+`pyproject.toml` 在 G0-C4 只临时释放唯一 hunk：把 optional group 的 Streamlit 下限从 1.48 提高到 1.49；
+不得修改其他依赖、工具配置或锁文件，安全提交后重新锁定。
 
 G1 获准只修改上述已有文件中的以下 6 个，不新增文件：
 
@@ -89,18 +91,29 @@ docs/roadmaps/GUI_投研工作台路线图.md
 docs/gui/GUI_产品与技术设计.md
 ```
 
+G0-C4 当前安全提交严格限定为以下 6 个既有路径：
+
+```text
+pyproject.toml
+src/quant/gui/app.py
+tests/gui/test_streamlit_app.py
+docs/roadmaps/GUI_投研工作台路线图.md
+docs/gui/GUI_安装启动与运维手册.md
+docs/agent/GUI_G0_只读研究驾驶舱交付记录.md
+```
+
 ## 依赖、阻塞与资源边界
 
 - G0 适配层只使用 Python 标准库、项目已有 Polars 与轻量研究清单合同。
-- 已获统筹批准在依赖 SSOT 声明 `gui = ["streamlit>=1.48,<2"]`；必要性是提供项目技术调研触发条件下的
-  统一 Python 只读审核界面，同时保持 Streamlit 不进入核心/交易运行时依赖。该声明已经提交在
-  `6640b791`，随后共享依赖 SSOT 重新锁定；依赖仍未安装，不启动 GUI 服务。
+- 依赖 SSOT 当前声明 `gui = ["streamlit>=1.49,<2"]`；1.49 是 `st.dataframe(width="stretch")` 的
+  官方支持下限。Streamlit 仍只属于 optional GUI 反馈环，不进入核心/交易运行时依赖。
 - 许可证核对：[Streamlit 官方仓库](https://github.com/streamlit/streamlit)和包元数据均标记 Apache-2.0；
   它是宽松许可证，无 GPL 类传播要求，未来分发仍需保留其许可证/NOTICE 等适用义务。安装后再核对解析
   到的传递依赖清单。
-- 未安装时的降级语义：catalog、完整性、NAV 与启动器单测继续可用；`python -m quant.gui` 不自动安装、
-  不启动子进程，以稳定退出码 2 说明缺少 optional group。
-- UI 测试在 Streamlit 缺失时显式跳过；这不代表真实 UI 已验收。
+- G0-C4 使用唯一 Windows venv 和 `--system-site-packages` 完成功能 smoke 后已精确删除环境。借用
+  system site packages 的反馈环不证明独立依赖闭包，也不能替代 WSL `base` Gate。
+- 未安装时的降级语义不变：catalog、完整性、NAV 与启动器单测继续可用；`python -m quant.gui` 不自动
+  安装、不启动子进程，以稳定退出码 2 说明缺少 optional group。
 - 测试只运行定向目标、单进程、线程不超过 2；不运行全量 Gate，不启动外部 Agent，不占用项目长任务的
   专用资源。
 - G1 编码与验证分离：编码可在独立 worktree 进行；pytest/Ruff/mypy 与真实 artifacts 探针等待项目统一串行
@@ -116,7 +129,7 @@ docs/gui/GUI_产品与技术设计.md
 | 定向 mypy | `Success: no issues found in 8 source files` | 只覆盖 G0 获批源码/测试范围 |
 | 缺依赖启动器 | 稳定退出码 2、无子进程 | 证明降级语义，不证明真实 UI 可启动 |
 | 真实 artifacts 只读探针 | 30 个自洽 run、0 issue；最小 run 输出 `VERIFIED`，NAV `AVAILABLE` | 当时快照，只读证据，不硬编码到 UI，不代表项目 Gate |
-| Windows smoke 环境创建 | 两次受控承载均以 `-1`、无环境/日志/残留终止 | 记录于 `75b6419`；pip/AppTest/browser 未运行，禁止第三次重试 |
+| Windows smoke 环境创建（历史） | 两次旧承载均以 `-1`、无环境/日志/残留终止 | 记录于 `75b6419`；后续 G0-C4 使用新冻结的 .NET carrier，不复用旧失败承载 |
 
 ## G1 定向验证证据
 
@@ -132,6 +145,23 @@ docs/gui/GUI_产品与技术设计.md
 | 已验证 NAV 拼接 | `AVAILABLE`，484 行，selection order `[1, 2]` | 只拼接已有 1.0× 行与显示标签，不重算业务指标 |
 | 项目级 basetemp | pytest 结束后不存在 | 精确目标为 ignored `artifacts/test_tmp/gui-g1-basetemp` |
 
+## G0-C4 Windows 功能 smoke 证据
+
+G0-C4 在统筹独占释放 CPU8–11 后，用 .NET `System.Diagnostics.Process`、`ArgumentList`、异步
+stdout/stderr、真实退出码、BelowNormal、affinity `0xF00` 和数值线程上限 2 串行执行。目标环境为
+`artifacts/dev_envs/gui-g0-c4-win-py313`，验证结束后已删除。
+
+| 证据 | 结果 | 边界 |
+| --- | --- | --- |
+| 依赖与解释器 | Python `3.13.13`、Streamlit `1.61.1`、pytest `9.1.1`；editable `[gui]` 安装成功；`pip check` 无 broken requirements | venv 借用 `D:\Miniforge3` system site packages；不是独立依赖闭包或 WSL Gate |
+| AppTest | `3 passed, 3 warnings in 12.99s`；旧 `use_container_width` 告警 `0` | 3 条 warning 来自 `importlib.metadata`，不是 GUI API；只覆盖 Windows UI 反馈环 |
+| 运行总览 | 34 个可读 run、22 `RESEARCH_ONLY`、12 `REJECTED`、0 `PAPER_CANDIDATE`、0 issue；最大 `data_end=2026-08-13` | 只读当时快照，不改变结论或准入 |
+| 固定详情 | `36b3dd917281…` 在校验前锁定 NAV；校验后 4 个输出 `VERIFIED`，真实 NAV 曲线和表格可见 | 完整性动作有界，只读 |
+| 固定比较 | `36b3dd917281…` + `03e6131b4617…` 在校验前锁定；校验后 2 run 口径/输出 `VERIFIED`，484 行、4 个 run+fold series 可见 | 只拼接原始 1.0× 行，不排名、不重算业务指标 |
+| 浏览器控制台 | `0` error；18 条 warn、2 类唯一 Vega `Infinite extent` | 登记 `GUI-DEBT-VEGA-001`；functional smoke PASS，但 strict zero-warning 未关闭 |
+| 服务日志 | 正确入口 `python -m quant.gui`；旧参数弃用告警 `0`，Traceback/Exception/Error `0` | 一次误用定义模块 `python -m quant.gui.launcher` 仅 exit 0、未绑定端口；随即改用正式入口 |
+| 清理 | 目标 env、PID tree、18501 端口、ignored basetemp/log/temp、browser tab 均为 0 残留 | 服务叶进程精确停止后 carrier 的 `-1` 是预期停止终态，不是应用崩溃 |
+
 ## 可控基础设施债登记
 
 当前以闭合只读业务路径为主。以下债项不放宽安全、PIT、fail-closed、统一回放、OMS/风控/对账或人工准入：
@@ -139,7 +169,7 @@ docs/gui/GUI_产品与技术设计.md
 | 债项与 owner | 当前影响 | 延期理由 | 触发条件 | 通过标准 | 临时处置 |
 | --- | --- | --- | --- | --- | --- |
 | 公共 orchestration 应用服务边界；GUI session 提接缝需求，项目统筹裁决共享接口 | GUI 不得发起研究运行 | G0 只读闭环不需要任务执行；私有 runner helper 不是稳定公共接口 | 用户要求从 GUI 发起运行或进入对应项目 Gate | 类型化公共用例、幂等 JobSpec、持久化状态、资源/恢复/取消和失败语义由权威后端冻结并测试；GUI 只提交请求 | 不显示运行按钮，不 import `run_*`，只投影不可变结果 |
-| Streamlit 安装与真实 AppTest；GUI session + 环境资源 owner | optional group 已声明；批准的 Windows venv 创建承载两次以 `-1`、无日志终止，目标环境未产生，真实 UI 仍不可启动 | 已按停止条件结束尝试并释放 CPU8–11；根因尚无证据，禁止第三次盲试；不得改变任何 base | 统筹冻结新的可观测创建机制或确认承载层根因与恢复条件 | 唯一批准环境创建成功，解析后许可证清单核对，`pip check`、AppTest 及本地浏览器 overview/detail/chart 路径通过，且无残留进程 | 启动器缺依赖稳定退出；UI 测试显式 skip/blocked；安全代码提交保持 clean |
+| `GUI-DEBT-VEGA-001`；GUI session | 功能页面与最终 484 行/4 series 曲线可见、console error 为 0，但初始化累计 18 条、2 类 `Infinite extent` warn；strict zero-warning 未关闭 | 消警告可能诱导连接 fold、重算或改变已验证证据；当前无空图或业务错误，不为 renderer 噪声扩大实现 | Streamlit/Altair 升级，或出现空图、console error、曲线缺失 | 用显式输入形态实验定位并消除 warn，同时保持原始行、fold 边界、digest 和曲线语义；AppTest/browser 回归通过 | 如实记录 warn；不把 functional PASS 写成 zero-warning PASS，不连接 fold、不重算 NAV |
 | 大规模 manifest 性能；GUI session | 未来运行数量或输出哈希量增长时可能变慢 | 目前没有真实可复现瓶颈，提前缓存/索引会增加第二事实来源风险 | 真实 manifest 规模下出现可重现延迟或内存超标，并有基准数据 | 先记录数据量、延迟、内存与热点，再做保持身份/失败语义的最小优化和回归基准 | 直接、有界、无缓存权威地扫描固定 runs 根；同步校验上限 128 MiB |
 | 远程共享、认证与 RBAC；未来独立安全任务 owner | G0 仅本机使用，不能安全开放给多人 | 本机只读闭环不需要网络暴露，提前建设权限框架超出当前业务目标 | 明确多人/远程访问需求 | 鉴权、RBAC、TLS/反代、审计、秘密处理和威胁模型通过独立安全验收 | 启动器强制 loopback；无远程部署说明或绕过开关 |
 
@@ -157,10 +187,10 @@ docs/gui/GUI_产品与技术设计.md
 | G1-C2 | “运行比较”薄页面、纯逻辑/条件 AppTest 与文档同步 | G1-C1 完成且不增加任何执行能力 |
 | G1-C3 | 定向 pytest/Ruff/mypy 与真实 immutable artifacts 只读探针 | 项目统一串行资源队列轮到 GUI |
 
-当前 G0-C1 至 G0-C3 已形成安全提交；G0-C4 已完成依赖声明，但批准环境的创建承载失败，阻塞于新的恢复
-裁决。G1-C1 至 G1-C3 已在获批的 6 个已有文件内完成并取得上述定向证据，本文所在 G1 安全提交等待统筹合流。这里的状态只描述
-本 session 的工作队列，
-不代表项目级里程碑完成。
+当前 G0-C1 至 G0-C3 与 G1-C1 至 G1-C3 已形成安全提交并被统筹纳入后续基线。G0-C4 的 Windows
+functional smoke 已通过，依赖/API 弃用修复与证据文档组成当前最多 6 路径安全提交；
+`GUI-DEBT-VEGA-001` 仍开放，因此不得宣称 strict zero-warning C4 关闭。这里的状态只描述本 session
+队列，不代表项目级里程碑或 WSL Gate 完成。
 
 ## G1 安全提交、合流与 worktree 退出条件
 
@@ -170,9 +200,10 @@ docs/gui/GUI_产品与技术设计.md
 - **合流**：GUI session 只回报 G1 commit SHA、父提交、exact file list、验证结果和残余风险；由项目统筹在
   独立 integration 分支执行冲突审计与合流。不得从本 session 直接写根 writer checkout、修改中央 SSOT
   或自行宣称项目 Gate 完成。
-- **worktree 删除**：仅当 G0/G1 提交均已被统筹确认纳入目标集成历史、分支无未提交改动、ignored
-  basetemp/GUI 进程/批准但失败的 smoke venv 均无残留、G0 真实 UI smoke 债项已在后续 owner/路线图中保留，
-  且统筹明确批准退出后，才可删除本 worktree。未满足任一条件时继续保留，不做目录移动或根级清理。
+- **worktree 删除**：仅当 G0/G1/G0-C4 提交均已被统筹确认纳入目标集成历史、分支无未提交改动、ignored
+  basetemp/GUI 进程/短生命周期 smoke venv/18501 端口均无残留、`GUI-DEBT-VEGA-001` 已在后续 owner 与
+  路线图中保留，且统筹明确批准退出后，才可删除本 worktree。未满足任一条件时继续保留，不做目录移动或
+  根级清理。
 
 ## G0 验收标准
 
@@ -196,11 +227,11 @@ docs/gui/GUI_产品与技术设计.md
 - 指标只展示 manifest 原值，不排序、不排名、不求差值/均值，也不从 NAV 或 `report.json` 重算；
 - NAV 仅在所有运行输出验证后逐一重新复核，合并上限 250,000 行；任一缺失、非法、漂移或超限时整图
   `BLOCKED`，不退化为部分曲线；
-- pytest、Ruff、mypy 和真实 artifacts 探针只有在统一资源队列轮到 GUI 后运行；Streamlit AppTest/browser
-  因批准环境未创建继续明确未验证，不得用源码测试表述为真实 UI smoke 通过。
+- Windows Streamlit AppTest 与 overview/detail/comparison 浏览器 functional smoke 已按 G0-C4 证据通过；
+  `GUI-DEBT-VEGA-001`、独立依赖闭包和 WSL Gate 仍未关闭，不得扩大表述。
 
 ## 后续队列
 
-在 G0 证据闭合并获得新的文件/依赖授权后，再依次评估：持久化 Job/Run repository、外置 worker、数据质量
-中心、受控因子/策略注册表、运行比较、报告中心、晋级只读视图、运维与审计。任何交易写操作都需要单独任务
+在 G0/G1 只读证据闭合并获得新的文件/依赖授权后，再依次评估：持久化 Job/Run repository、外置 worker、
+数据质量中心、受控因子/策略注册表、报告中心、晋级只读视图、运维与审计。任何交易写操作都需要单独任务
 书、权限模型、人工确认和既有执行服务接缝，不由本路线图预先授权。

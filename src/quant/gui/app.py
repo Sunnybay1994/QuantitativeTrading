@@ -82,7 +82,7 @@ def _render_overview(st: Any, catalog: ResearchRunCatalog) -> None:
         return
     st.dataframe(
         [_summary_row(run) for run in filtered],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -137,13 +137,13 @@ def _render_detail(st: Any, catalog: ResearchRunCatalog) -> None:
             }
             for fold in manifest.folds
         ],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
     st.markdown("#### 聚合指标")
     st.dataframe(
         [{"metric": name, "value": value} for name, value in manifest.aggregate_metrics],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
     st.markdown("#### Caveats")
@@ -166,7 +166,7 @@ def _render_detail(st: Any, catalog: ResearchRunCatalog) -> None:
                 }
                 for item in manifest.inputs
             ],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
         st.markdown("**Outputs**")
@@ -179,7 +179,7 @@ def _render_detail(st: Any, catalog: ResearchRunCatalog) -> None:
                 }
                 for item in manifest.outputs
             ],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -211,7 +211,7 @@ def _render_detail(st: Any, catalog: ResearchRunCatalog) -> None:
             )
         return
     st.line_chart(nav.frame, x="date", y="unit_nav", color="series")
-    st.dataframe(nav.frame.tail(100), use_container_width=True, hide_index=True)
+    st.dataframe(nav.frame.tail(100), width="stretch", hide_index=True)
 
 
 def _render_comparison(st: Any, catalog: ResearchRunCatalog) -> None:
@@ -276,7 +276,7 @@ def _render_comparison(st: Any, catalog: ResearchRunCatalog) -> None:
     st.line_chart(nav.frame, x="date", y="unit_nav", color="comparison_series")
     st.dataframe(
         nav.frame.tail(200),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -326,7 +326,7 @@ def _render_comparison_evidence(
             }
             for order, run in enumerate(runs, start=1)
         ],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -341,7 +341,7 @@ def _render_comparison_evidence(
             }
             for order, run in enumerate(runs, start=1)
         ],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -361,7 +361,7 @@ def _render_comparison_evidence(
                 for order, run in enumerate(runs, start=1)
                 for item in run.manifest.inputs
             ],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
         st.markdown("**Outputs**")
@@ -377,7 +377,7 @@ def _render_comparison_evidence(
                 for order, run in enumerate(runs, start=1)
                 for item in run.manifest.outputs
             ],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -392,7 +392,7 @@ def _render_issues(st: Any, catalog: ResearchRunCatalog) -> None:
                 {"code": issue.code, "entry": issue.entry, "detail": issue.detail}
                 for issue in catalog.issues
             ],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
