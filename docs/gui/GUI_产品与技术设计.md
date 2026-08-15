@@ -25,6 +25,10 @@ G0 的核心来源只有不可变 `run.json` 及其列出的精确输出。目�
 - **运行比较（G1）**：研究员显式选择 2–4 个运行。只有全部运行的 manifest 比较口径、内容身份、精确
   输出树和 digest 都闭合后，才按用户选择顺序显示逐 run 指标、假设、caveat、input/output 与叠加 NAV。
   页面不产生排名、差值、均值、胜负判断或准入结论。
+- **比较口径诊断（G1-D1）**：内部 diagnosis 对共享 14 个已发布合同字段生成相对用户第一项选择的
+  `REFERENCE` / `SAME` / `DIFFERENT` 全量关系；仅当严格比较精确返回
+  `COMPARISON_CONTRACT_MISMATCH` 时，UI 才显示其中至少含一个 `DIFFERENT` 的字段行。页面不显示字段
+  原值，不改变阻断状态，也不解锁逐 run metric 或 NAV。
 
 ### 后续候选页面
 
@@ -43,7 +47,9 @@ flowchart LR
     C --> H["严格比较口径"]
     D --> H
     H -->|"全部闭合"| I["逐 run 证据与 NAV 标签拼接"]
-    H -->|"任一不闭合"| F
+    H -->|"合同不兼容"| J["只读字段关系诊断"]
+    H -->|"其他任一不闭合"| F
+    J --> F
     C --> G["Streamlit 薄 UI"]
     E --> G
     I --> G
@@ -68,6 +74,7 @@ flowchart LR
 | Outputs verified | 输出完整性已验证 | 无链接/重解析点、精确文件树、size/SHA-256 匹配 | formal/PAPER 准入 |
 | NAV projected | 已显示受限 NAV | 完整性通过、必要列/类型/有限正数通过 | GUI 重算或认可研究结论 |
 | Comparison verified | 2–4 个运行可并排投影 | 同口径且每个运行的 identity/output 全部验证 | 排名、优胜策略或准入建议 |
+| Contract diagnostic | 严格比较因已发布合同字段不兼容而阻断 | 精确 `COMPARISON_CONTRACT_MISMATCH`；内部共享 14 字段全量关系，UI 只投影不匹配字段行 | 字段原值、兼容子集、放宽门禁或运行优劣 |
 
 异常必须显式显示 `partial` / `blocked` / `not available`，不能退化为空图或静默跳过。catalog 中一个坏运行
 不能拖垮全部列表，但坏运行绝不能进入可信摘要。
@@ -103,6 +110,42 @@ flowchart LR
 失败，逐 run 指标和 NAV 都不显示。全部输出验证后才展示 manifest 原值。NAV 还要对每个运行再次读取同一
 精确字节并复核 digest；任一 NAV 缺失、非法、漂移或合计超限时，整张 NAV 图不显示，但已经闭合的 manifest
 证据不被错误降级。拼接只增加选择序号、run id 与曲线标签，不重采样、归一化或计算任何业务指标。
+
+## 5.2 G1-D1 严格比较口径诊断合同
+
+G1-D1 只解释现有严格比较为何因合同不兼容而阻断，不建立第二套比较器。诊断与
+`verify_research_run_comparison` 必须直接共享 `research_runs.py` 现有 `_comparison_contract`。该映射是当前
+14 个字段的唯一机器定义，字段职责沿用 §5.1；诊断代码、UI 和本节都不复制第二份字段集合。
+
+内部 diagnosis 对共享 14 字段映射逐字段生成全量关系。UI 关系表只在本次严格比较的 issue code
+**精确等于** `COMPARISON_CONTRACT_MISMATCH` 时出现，不按 detail 文本猜测，也不用于
+`COMPARISON_SELECTION_INVALID`、`COMPARISON_OUTPUT_LIMIT`、`COMPARISON_RUN_UNVERIFIED` 或 NAV
+阶段问题。UI 只保留内部关系中至少有一个非参照运行为 `DIFFERENT` 的字段行；全为 `SAME` 的字段不渲染。
+列保持用户选择顺序：
+
+- 第一项在内部 14 字段关系中均为 `REFERENCE`，并在每个被 UI 保留的字段行显示 `REFERENCE`。它只是
+  本次关系展示的参照，不是 benchmark、baseline、winner、推荐策略或准入候选；
+- 其余项只按与第一项的 Python exact equality 显示 `SAME` 或 `DIFFERENT`；不得排序、归一化、转集合、
+  使用数值容差或建立别名等价；
+- 关系表只显示 run identity、合同字段名和上述三个关系值，不显示原始值、规范化值、摘要、长度、首个差异、
+  hash、digest 或可反推出原值的派生内容；
+- 诊断不展示 hypothesis、metric、caveat、output inventory 或 NAV，不计算差值、相似度、兼容度、排名，
+  不推荐可比较子集，也不自动增删研究员选择。
+
+原有错误与失败顺序保持兼容：数量/唯一性先于合同；合同 mismatch 仍以
+`COMPARISON_CONTRACT_MISMATCH`、entry `comparison` 和按字段名排序的 mismatch detail 集合整体返回；该
+失败发生在声明输出总量检查及任何逐 run output identity/size/SHA-256 校验之前。诊断只消费已经选中的
+canonical `ResearchRunSummary` 与共享合同映射，不读取输出、不触发 hash，不改变
+`ResearchRunComparison(status="BLOCKED", integrities=())`。重新选择运行后旧关系立即失效，必须重新执行
+严格比较。
+
+G1-D1 当前开发检查、Streamlit AppTest 与真实 3-run mismatch Probe A 已通过。真实 Probe B live fixture 因
+catalog 中 29 个同口径候选 output 全部 `VERIFIED`，仍如实记录为
+`BLOCKED_BY_FIXTURE_AVAILABILITY`；统筹冻结的一次 `DERIVED_REAL_BYTES_OUTPUT_FAIL` 等价验收也已通过：两个
+fresh `VERIFIED` canonical run 的隔离逐文件副本保持 14 字段全 `REFERENCE/SAME`，仅翻转第二个副本的一个
+manifest output 末字节后精确 fail-closed，且不产生关系面板资格、部分 metric 或 NAV。canonical 源前后逐
+文件 SHA-256 未变，临时根和进程已清理，因此 G1-D1 验收闭合并可形成 exact 7 路径安全提交。该证据不是
+既存坏 run；浏览器、全量回归与 WSL Gate 仍未运行。
 
 ## 6. UI 与运行安全
 

@@ -26,7 +26,12 @@ def _digest(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
-def _publish_fixture(tmp_path: Path, *, count: int = 1) -> Path:
+def _publish_fixture(
+    tmp_path: Path,
+    *,
+    count: int = 1,
+    mismatched_data_end_index: int | None = None,
+) -> Path:
     buffer = io.BytesIO()
     pl.DataFrame(
         {
@@ -39,6 +44,11 @@ def _publish_fixture(tmp_path: Path, *, count: int = 1) -> Path:
     ).write_parquet(buffer)
     artifact_root = tmp_path / "artifacts"
     for index in range(count):
+        data_end = (
+            dt.date(2026, 7, 10)
+            if index == mismatched_data_end_index
+            else dt.date(2026, 7, 9)
+        )
         run = LightweightResearchRunV1(
             schema_version="lightweight-research-run-v1",
             run_id="",
@@ -55,7 +65,7 @@ def _publish_fixture(tmp_path: Path, *, count: int = 1) -> Path:
             universe_frozen_as_of=dt.date(2026, 7, 7),
             candidate_symbols=("510300.SH",),
             data_start=dt.date(2025, 1, 1),
-            data_end=dt.date(2026, 7, 9),
+            data_end=data_end,
             signal_timing="close",
             execution_timing="next_session_open",
             valuation_timing="close",
@@ -67,7 +77,7 @@ def _publish_fixture(tmp_path: Path, *, count: int = 1) -> Path:
                     dt.date(2025, 7, 1),
                     dt.date(2025, 9, 30),
                     dt.date(2025, 10, 1),
-                    dt.date(2026, 7, 9),
+                    data_end,
                 ),
             ),
             cost_multipliers=(0.5, 1.0, 2.0),
@@ -102,7 +112,7 @@ def test_default_empty_state_is_safe_and_explains_the_source_blocker(
 ) -> None:
     app_source = _app_path().read_text(encoding="utf-8")
     assert "use_container_width" not in app_source
-    assert app_source.count('width="stretch"') == 12
+    assert app_source.count('width="stretch"') == 13
 
     monkeypatch.setenv(ARTIFACT_ROOT_ENV, str(tmp_path / "missing-artifacts"))
 
@@ -152,4 +162,71 @@ def test_comparison_requires_explicit_verification_before_rendering_evidence(
     assert not app.exception
     assert any(
         "比较口径与输出完整性已验证" in message.value for message in app.success
+    )
+
+
+def test_comparison_contract_mismatch_renders_relation_only_in_selection_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact_root = _publish_fixture(
+        tmp_path,
+        count=2,
+        mismatched_data_end_index=1,
+    )
+    monkeypatch.setenv(ARTIFACT_ROOT_ENV, str(artifact_root))
+    selected_ids = sorted(
+        path.name for path in (artifact_root / "research" / "runs").iterdir()
+    )
+    app = AppTest.from_file(str(_app_path())).run(timeout=10)
+
+    app.sidebar.radio[0].set_value("运行比较").run(timeout=10)
+    app.multiselect[0].set_value(selected_ids).run(timeout=10)
+    app.button[0].click().run(timeout=10)
+
+    assert not app.exception
+    assert any(
+        "COMPARISON_CONTRACT_MISMATCH" in message.value for message in app.error
+    )
+    assert not app.success
+    assert len(app.dataframe) == 1
+    relation_frame = app.dataframe[0].value
+    assert list(relation_frame.columns) == [
+        "field",
+        f"Run 1 · {selected_ids[0][:12]}",
+        f"Run 2 · {selected_ids[1][:12]}",
+    ]
+    assert relation_frame["field"].tolist() == ["data_end", "folds"]
+    assert relation_frame.iloc[:, 1].tolist() == ["REFERENCE", "REFERENCE"]
+    assert relation_frame.iloc[:, 2].tolist() == ["DIFFERENT", "DIFFERENT"]
+    assert any(
+        "REFERENCE 仅表示用户本次选择顺序中的第一项" in caption.value
+        for caption in app.caption
+    )
+
+
+def test_output_failure_does_not_render_contract_diagnosis(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact_root = _publish_fixture(tmp_path, count=2)
+    monkeypatch.setenv(ARTIFACT_ROOT_ENV, str(artifact_root))
+    selected_ids = sorted(
+        path.name for path in (artifact_root / "research" / "runs").iterdir()
+    )
+    (artifact_root / "research" / "runs" / selected_ids[1] / "report.json").write_bytes(
+        b"tampered"
+    )
+    app = AppTest.from_file(str(_app_path())).run(timeout=10)
+
+    app.sidebar.radio[0].set_value("运行比较").run(timeout=10)
+    app.multiselect[0].set_value(selected_ids).run(timeout=10)
+    app.button[0].click().run(timeout=10)
+
+    assert not app.exception
+    assert any("COMPARISON_RUN_UNVERIFIED" in message.value for message in app.error)
+    assert not app.success
+    assert len(app.dataframe) == 0
+    assert not any(
+        "严格比较口径诊断" in str(markdown.value) for markdown in app.markdown
     )

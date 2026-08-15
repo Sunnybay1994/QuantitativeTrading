@@ -10,8 +10,10 @@ from typing import Any
 from quant.gui.launcher import ARTIFACT_ROOT_ENV
 from quant.gui.research_runs import (
     ResearchRunCatalog,
+    ResearchRunComparisonDiagnosis,
     ResearchRunSummary,
     conclusion_counts,
+    diagnose_research_run_comparison,
     discover_research_runs,
     load_comparison_nav_projection,
     load_nav_projection,
@@ -246,8 +248,14 @@ def _render_comparison(st: Any, catalog: ResearchRunCatalog) -> None:
         st.info("尚未验证所选运行；比较证据和 NAV 保持锁定。")
         return
 
+    diagnosis: ResearchRunComparisonDiagnosis | None = None
     with st.spinner("正在核对比较口径、精确输出树、字节数与 SHA-256…"):
         comparison = verify_research_run_comparison(selected)
+        if (
+            comparison.issue is not None
+            and comparison.issue.code == "COMPARISON_CONTRACT_MISMATCH"
+        ):
+            diagnosis = diagnose_research_run_comparison(selected)
     if comparison.status != "VERIFIED" or comparison.issue is not None:
         issue = comparison.issue
         st.error(
@@ -255,6 +263,12 @@ def _render_comparison(st: Any, catalog: ResearchRunCatalog) -> None:
             if issue is not None
             else "BLOCKED · 比较未提供完整、可解释的证据。"
         )
+        if (
+            issue is not None
+            and issue.code == "COMPARISON_CONTRACT_MISMATCH"
+            and diagnosis is not None
+        ):
+            _render_comparison_diagnosis(st, diagnosis)
         return
 
     st.success(f"{len(comparison.runs)} 个运行的比较口径与输出完整性已验证。")
@@ -279,6 +293,36 @@ def _render_comparison(st: Any, catalog: ResearchRunCatalog) -> None:
         width="stretch",
         hide_index=True,
     )
+
+
+def _render_comparison_diagnosis(
+    st: Any,
+    diagnosis: ResearchRunComparisonDiagnosis,
+) -> None:
+    issue = diagnosis.issue
+    if issue is None or issue.code != "COMPARISON_CONTRACT_MISMATCH":
+        return
+
+    rows: list[dict[str, object]] = []
+    for field_relation in diagnosis.fields:
+        if "DIFFERENT" not in field_relation.relations:
+            continue
+        row: dict[str, object] = {"field": field_relation.field}
+        for order, (run, relation) in enumerate(
+            zip(diagnosis.runs, field_relation.relations, strict=True),
+            start=1,
+        ):
+            row[f"Run {order} · {run.manifest.run_id[:12]}"] = relation
+        rows.append(row)
+    if not rows:
+        return
+
+    st.markdown("#### 严格比较口径诊断")
+    st.caption(
+        "REFERENCE 仅表示用户本次选择顺序中的第一项，不代表基准、优胜或建议；"
+        "关系只来自已发布 manifest，不能证明任何输出完整性。"
+    )
+    st.dataframe(rows, width="stretch", hide_index=True)
 
 
 def _render_comparison_evidence(
