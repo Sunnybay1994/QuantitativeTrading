@@ -224,9 +224,11 @@ python -m quant.data.publish_tushare_bulk_clean --data-root data --threads 2
 输出固定在 `data/clean/tushare_bulk/snapshots/<snapshot_id>/`，包含按资产/年份分区的 `Bar1dSchema`
 Parquet、逐行 `quarantine.parquet`、canonical audit 与 manifest。重复运行只完整验真并返回 `reused=true`。
 
-Tushare 港股的开盘竞价价可能落在供应商所报日内 high/low 之外。raw 始终保留供应商原值；mapper 仅在
-原 high/low 自洽且 close 位于原区间时扩展 canonical high/low 以包含 open。A 股开盘越界、港股收盘
-越界、`high < low` 或非正价格仍由 `Bar1dSchema` 拒绝。
+Tushare 港股的开盘/收市竞价价可能落在供应商所报日内 high/low 之外。raw 始终保留供应商原值；mapper
+仅在原 high/low 自洽时：若 close 位于原区间则扩展 canonical high/low 以包含 open；若全部 OHLC
+有限为正、open 已在原区间且 close 仅一侧越界、相对最近正边界偏离不超过 5%，则扩展以包含 close。
+A 股 OHLC 越界、港股 open 与 close 同时越界、close 偏离超过 5%、`high < low` 或非正/非有限价格
+仍由 `Bar1dSchema` 拒绝。
 
 `hk_daily` 当前实测可用逗号分隔两代码返回完整 60 日区间，但港股接口官方文档没有明确承诺这一语法。
 批量历史回填只能通过逐批精确覆盖、5000 行截断、重复键和目标集合 Gate 的可恢复 manifest 使用；任何

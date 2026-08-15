@@ -103,12 +103,41 @@ def test_hk_open_below_vendor_low_expands_canonical_range() -> None:
     Bar1dSchema.validate(clean)
 
 
+def test_hk_close_above_vendor_high_expands_canonical_range() -> None:
+    raw = _raw_ohlc(market="HK", open_=4.37, high=4.38, low=4.35, close=4.39)
+    clean = TushareBarMapper().map(raw)
+
+    assert raw.row(0, named=True)["high"] == 4.38
+    assert clean.row(0, named=True)["high"] == 4.39
+    assert clean.row(0, named=True)["close"] == 4.39
+    assert clean.row(0, named=True)["low"] == 4.35
+    Bar1dSchema.validate(clean)
+
+
+def test_hk_close_below_vendor_low_expands_canonical_range() -> None:
+    raw = _raw_ohlc(market="HK", open_=3.00, high=3.06, low=2.92, close=2.90)
+    clean = TushareBarMapper().map(raw)
+
+    assert raw.row(0, named=True)["low"] == 2.92
+    assert clean.row(0, named=True)["low"] == 2.90
+    assert clean.row(0, named=True)["close"] == 2.90
+    assert clean.row(0, named=True)["high"] == 3.06
+    Bar1dSchema.validate(clean)
+
+
 @pytest.mark.parametrize(
     "market, open_, high, low, close",
     [
         ("SZ", 10.6, 10.5, 9.8, 10.2),
-        ("HK", 3.00, 3.06, 2.92, 3.08),
+        ("SZ", 10.2, 10.5, 9.8, 10.6),
         ("HK", 3.00, 2.90, 3.10, 3.00),
+        ("HK", 4.37, 4.38, 4.35, 10.00),
+        ("HK", 3.08, 3.06, 2.92, 3.10),
+        ("HK", 3.00, 3.06, 2.92, 0.0),
+        ("HK", 3.00, 3.06, 2.92, -1.0),
+        ("HK", 3.00, 3.06, 2.92, float("nan")),
+        ("HK", 3.00, 3.06, 2.92, float("inf")),
+        ("HK", 3.00, 3.06, 2.92, float("-inf")),
     ],
 )
 def test_mapper_does_not_hide_non_hk_open_only_ohlc_errors(

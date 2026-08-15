@@ -271,12 +271,18 @@ class BaostockAdjustmentFactorMapper:
         )
 
 
+_HK_CLOSE_ENVELOPE_MAX_RELATIVE_DEVIATION = 0.05
+
+
 class TushareBarMapper:
     """映射 Tushare A/H 不复权日线并统一成交量、成交额单位。
 
-    港股开盘竞价价与供应商日内 high/low 可能采用不同口径。仅当原 high/low
-    自洽且 close 位于原区间内时，把 canonical 区间扩展至包含 open；raw 值
-    保持不变。A 股以及其他 OHLC 冲突继续交由 Schema fail closed。
+    港股开盘/收市竞价价与供应商日内 high/low 可能采用不同口径。仅当原
+    high/low 自洽时：若 close 位于原区间内，把 canonical 区间扩展至包含
+    open；若全部 OHLC 有限为正、open 已在原区间、close 恰在一侧之外且
+    相对最近正边界偏离不超过 5%，则扩展至包含 close。raw 值保持不变。
+    A 股以及其他 OHLC 冲突继续交由 Schema fail closed。5% 只是脏数据
+    防护上限，不是港交所价位表或 CAS 成交证明。
     """
 
     source = "tushare"
@@ -300,16 +306,51 @@ class TushareBarMapper:
             & (close_price <= high_price)
             & (close_price >= low_price)
         )
+        ohlc_finite_positive = (
+            open_price.is_finite()
+            & high_price.is_finite()
+            & low_price.is_finite()
+            & close_price.is_finite()
+            & (open_price > 0)
+            & (high_price > 0)
+            & (low_price > 0)
+            & (close_price > 0)
+        )
+        close_outside_high = close_price > high_price
+        close_outside_low = close_price < low_price
+        close_nearest_boundary_rel_dev = (
+            pl.when(close_outside_high)
+            .then((close_price - high_price) / high_price)
+            .when(close_outside_low)
+            .then((low_price - close_price) / low_price)
+            .otherwise(pl.lit(float("inf")))
+        )
+        hk_close_only_mismatch = (
+            (pl.col("_market") == "HK")
+            & ohlc_finite_positive
+            & (high_price >= low_price)
+            & (open_price <= high_price)
+            & (open_price >= low_price)
+            & (close_outside_high | close_outside_low)
+            & (
+                close_nearest_boundary_rel_dev
+                <= _HK_CLOSE_ENVELOPE_MAX_RELATIVE_DEVIATION
+            )
+        )
         return raw.select(
             pl.col("_request_symbol").alias("symbol"),
             pl.col("trade_date").str.to_date("%Y%m%d").alias("trade_date"),
             open_price.alias("open"),
             pl.when(hk_open_only_mismatch)
             .then(pl.max_horizontal(high_price, open_price))
+            .when(hk_close_only_mismatch)
+            .then(pl.max_horizontal(high_price, close_price))
             .otherwise(high_price)
             .alias("high"),
             pl.when(hk_open_only_mismatch)
             .then(pl.min_horizontal(low_price, open_price))
+            .when(hk_close_only_mismatch)
+            .then(pl.min_horizontal(low_price, close_price))
             .otherwise(low_price)
             .alias("low"),
             close_price.alias("close"),
