@@ -77,8 +77,8 @@ premium；没有生成 `PAPER_CANDIDATE`，也没有启动 PAPER。
 
 本轮 trial budget 固定为 1，研究过去 20 个严格连续 session 的最大单日复权收盘收益，并将经济方向预注册
 为低 MAX 优先的 `-1`。它不是 Qlib Alpha158 的 `Max(high,20)/close`。唯一真实不可变 run 通过历史
-初筛门禁，结论为 `RESEARCH_ONLY`；但组合收益有时期集中，且规模/换手二阶段控制、forward、统一回放和
-人工 admission 尚未完成，因此不得自动生成 `PAPER_CANDIDATE` 或启动 PAPER。
+初筛门禁，结论为 `RESEARCH_ONLY`；但组合收益有时期集中。规模/换手二阶段控制已完成并因 2x 成本为负而
+`REJECTED`；forward、统一回放和人工 admission 仍未完成，因此不得自动生成 `PAPER_CANDIDATE` 或启动 PAPER。
 
 ### MAX 规模与换手二阶段控制
 
