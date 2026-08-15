@@ -1,7 +1,7 @@
 # M2 PIT 财务质量因子首批假设卡
 
 日期：2026-08-15
-状态：研究合同与四因子纯函数已实现；等待全量财务 raw、clean snapshot 与真实 walk-forward
+状态：研究合同与四因子纯函数已实现；首跑前置闭包实现中；真实 `report_type` 仍未冻结
 晋级上限：`RESEARCH_ONLY`；本假设卡不生成 `PAPER_CANDIDATE`、不启动 PAPER
 
 ## 1. 目标与范围
@@ -66,7 +66,9 @@
 5. TTM 等于连续四个已闭合单季值之和；缺任一期、跨公司口径或相减后出现无法解释的修订冲突均记 null。
 
 首批 canonical 输入只使用合并口径累计报表，不混用母公司报表或供应商单季表。真实 raw 到位后先确认
-`report_type` 分布并冻结允许集合；在此之前不把某个数值代码硬写进生产实现。历史修订可以使前期累计值
+`report_type` 分布并冻结允许集合；在此之前版本化配置必须保持 `UNFROZEN` 与空集合，runner 在读取
+snapshot 或创建 artifact 目录前停止。研究函数只消费已冻结的显式允许 tuple，不硬编码某个数值代码。
+历史修订可以使前期累计值
 发生变化；每个 `as_of` 必须用当时已知版本重建，不能用今天下载到的“最新一版”回填过去。
 
 ## 5. Point-in-Time 与修订链
@@ -94,7 +96,9 @@ raw 必须保留所有版本，不覆盖修订。对每个信号 `as_of`：
 
 - 信号遵守 `as_of` 收盘到下一开市日开盘，输出 `target_weight`；
 - 使用与日频经典因子相同的冻结 walk-forward 折和 0.5x/1x/2x 成本压力；
-- 每个因子报告 coverage、因缺失链/非金融过滤/分母非法/冲突 quarantine 导致的 null 占比；
+- 每个因子报告 coverage、因缺失链/非金融过滤/分母非法/冲突 quarantine 导致的 null 占比；覆盖率以
+  独立预注册的完整信号日历为分母，缺失日期补零且不得顺延，每日有效证券至少 100、日期覆盖率中位数
+  至少 80%（恰好 80% 通过，低于即拒绝），并直接参与最终研究结论；
 - 训练/验证期确定方向、winsorization 和组合方式，测试期只打开一次；
 - 同时报告与规模、行业、`daily_basic` 价值代理和既有价量因子的相关性与增量 RankIC；
 - 不可覆盖 `run.json` 必须绑定 bar、财务 clean snapshot、公式版本、PIT selector、股票池、fold、成本和代码身份。
@@ -115,11 +119,12 @@ raw 必须保留所有版本，不覆盖修订。对每个信号 `as_of`：
 
 实现前必须依次完成：
 
-1. 当前 `daily_basic` writer 自然退出，避免并发写 ledger；
+1. 当前财务 regular writer 自然退出，避免并发写 ledger；
 2. 重新探测 `income_vip/balancesheet_vip/cashflow_vip/fina_indicator_vip`；
 3. 用代表季度核对全市场证券覆盖、行数上限、字段、重复业务键和修订样本；
 4. 决定采用按报告期 VIP 方案，或已修正的逐证券五年窗口 regular fallback；
-5. 发布绑定完整 raw request 集合的不可覆盖财务 clean snapshot；
+5. 用冻结 plan-report、当前 canonical instrument inventory 和现有 catalog/chunk/request-id 逻辑重构完整
+   request 集合，确认四表集合等价、零 incomplete/active lease 后，发布不可覆盖财务 clean snapshot；
 6. 在 `quant.factors` 中实现纯函数，并由同一个 PIT repository 提供截至 `as_of` 的窄数据视图。
 
 其中 PIT 修订选择的纯函数已由 `quant.data.financial_pit` 实现，累计转单季、连续四季 TTM 与本卡四个
@@ -131,6 +136,11 @@ canonical 公式已由 `quant.factors.pit_quality` 实现；首批 raw 到 PIT f
 覆盖、金融公司过滤、亏损分母和重复业务键。这些函数都不读取
 共享目录，也不把 partial raw 升级为 clean。其余前置条件仍保持开放，尤其是全量字段类型、报表类型允许
 集合、公告日覆盖、raw Schema drift 和不可覆盖 clean snapshot；纯函数通过不代表财务数据已经可用于回测。
+
+现有 planner 的 2026-08-15 plan-report 只保存 inventory count，不保存当时成员字节或 request-set digest。
+首跑采用显式 `RECONSTRUCTED_CURRENT_INVENTORY_V1` 来源模型：绑定当前 instrument 的物理与逻辑摘要并
+重构精确 request 集合，但不得把它描述为恢复了 planner 当时的成员字节。下一次启动任何新 bulk plan/writer
+前，planner 必须原生持久化 inventory 与 request-set digest。
 
 终态发布与读取代码已经完成 fixture 闭环，但尚无真实财务 snapshot id。真实 walk-forward 只能消费
 `verify_tushare_financial_snapshot` 验真的 snapshot，并通过 bounded repository 一次读取所需报告期修订

@@ -3,22 +3,43 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hashlib
 import json
+import os
 import re
 import sqlite3
+import stat
+import time
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
 import duckdb
+import polars as pl
 
+import quant.data.tushare_bulk_ingest as _bulk_ingest
+from quant.data.tushare_bulk import (
+    PLAN_SCHEMA,
+    Catalog,
+    DatasetSpec,
+    build_request_plan,
+    load_catalog,
+)
 from quant.settings import resolve_data_root
 
-SCHEMA_VERSION = "tushare-financial-raw-audit-v1"
+SCHEMA_VERSION = "tushare-financial-raw-audit-v2"
 _RAW_CLOSURE_SCHEMA = "tushare-financial-raw-closure-v1"
+PLAN_CLOSURE_SCHEMA = "tushare-financial-plan-closure-v1"
+INVENTORY_CLOSURE_SCHEMA = "tushare-financial-current-inventory-v1"
+PROVENANCE_MODEL = "RECONSTRUCTED_CURRENT_INVENTORY_V1"
+PROVENANCE_LIMITATION = (
+    "The source plan stores inventory counts, not the planner-time membership bytes or "
+    "request-set digest; this closure reconstructs the exact request set from the current "
+    "canonical clean instrument inventory and does not prove planner-time member identity."
+)
 _DATASETS = ("balancesheet", "cashflow", "fina_indicator", "income")
 _STATEMENTS = frozenset({"balancesheet", "cashflow", "income"})
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -89,29 +110,67 @@ class _CompleteRequest:
     parquet_path: Path
 
 
+@dataclass(frozen=True, slots=True)
+class _VerifiedPlan:
+    closure: Mapping[str, Any]
+    expected_requests: tuple[_bulk_ingest.Request, ...]
+
+
 def audit_tushare_financials(
-    *, data_root: Path, threads: int = 2, verify_bytes: bool = False
+    *,
+    data_root: Path,
+    plan_report_path: Path,
+    catalog_path: Path,
+    threads: int = 2,
+    verify_bytes: bool = False,
 ) -> dict[str, Any]:
     """Audit completed financial requests without publishing or mutating state."""
     try:
-        return _audit(data_root=data_root, threads=threads, verify_bytes=verify_bytes)
+        return _audit(
+            data_root=data_root,
+            plan_report_path=plan_report_path,
+            catalog_path=catalog_path,
+            threads=threads,
+            verify_bytes=verify_bytes,
+        )
     except Exception:
         pass
     raise ValueError("TUSHARE_FINANCIAL_AUDIT_INVALID") from None
 
 
-def _audit(*, data_root: Path, threads: int, verify_bytes: bool) -> dict[str, Any]:
+def _audit(
+    *,
+    data_root: Path,
+    plan_report_path: Path,
+    catalog_path: Path,
+    threads: int,
+    verify_bytes: bool,
+) -> dict[str, Any]:
     if (
         not isinstance(data_root, Path)
+        or not isinstance(plan_report_path, Path)
+        or not isinstance(catalog_path, Path)
         or type(threads) is not int
         or not 1 <= threads <= 8
         or type(verify_bytes) is not bool
     ):
         raise ValueError
     root = data_root.resolve(strict=True)
-    rows = _read_ledger(root / "run_state" / "tushare_bulk" / "state.sqlite")
+    plan = _verify_plan(
+        root=root,
+        plan_report_path=plan_report_path,
+        catalog_path=catalog_path,
+    )
+    rows, active_lease_count = _read_ledger(
+        root / "run_state" / "tushare_bulk" / "state.sqlite"
+    )
     if not rows:
         raise ValueError
+    _verify_ledger_plan(
+        rows=rows,
+        expected=plan.expected_requests,
+        expected_catalog_sha256=cast(str, plan.closure["catalog_sha256"]),
+    )
     complete = _load_complete(root=root, rows=rows, verify_bytes=verify_bytes)
     by_dataset: dict[str, list[_CompleteRequest]] = {name: [] for name in _DATASETS}
     for item in complete:
@@ -119,7 +178,7 @@ def _audit(*, data_root: Path, threads: int, verify_bytes: bool) -> dict[str, An
 
     dataset_reports: dict[str, dict[str, Any]] = {}
     blocking: list[dict[str, Any]] = []
-    total_incomplete = 0
+    total_incomplete = active_lease_count
     for dataset in _DATASETS:
         dataset_rows = [row for row in rows if row[1] == dataset]
         statuses = Counter(cast(str, row[2]) for row in dataset_rows)
@@ -175,27 +234,346 @@ def _audit(*, data_root: Path, threads: int, verify_bytes: bool) -> dict[str, An
     else:
         status = "BLOCKED"
         blocking.append({"code": "LEDGER_STATE_INVALID", "count": 1})
-    return {
+    result = {
         "schema_version": SCHEMA_VERSION,
         "status": status,
         "verify_bytes": verify_bytes,
+        "plan_closure": dict(plan.closure),
+        "active_lease_count": active_lease_count,
         "raw_closure": _raw_closure(complete),
         "datasets": dataset_reports,
         "blocking_issues": blocking,
         "publication_allowed": status == "READY" and verify_bytes,
     }
+    after = _verify_plan(
+        root=root,
+        plan_report_path=plan_report_path,
+        catalog_path=catalog_path,
+    )
+    after_rows, after_active_lease_count = _read_ledger(
+        root / "run_state" / "tushare_bulk" / "state.sqlite"
+    )
+    if (
+        after != plan
+        or after_rows != rows
+        or after_active_lease_count != active_lease_count
+    ):
+        raise ValueError
+    return result
 
 
-def _read_ledger(ledger: Path) -> list[tuple[Any, ...]]:
+def _verify_plan(
+    *, root: Path, plan_report_path: Path, catalog_path: Path
+) -> _VerifiedPlan:
+    plan_root = root / "run_state" / "tushare_bulk" / "plan_reports"
+    _require_plain_directory(plan_root)
+    plan_path = _require_plain_regular(plan_report_path)
+    if plan_path.parent != plan_root.resolve(strict=True):
+        raise ValueError
+    plan, plan_raw = _read_canonical_object(plan_path)
+    plan_sha256 = hashlib.sha256(plan_raw).hexdigest()
+    if not plan_path.name.endswith(f"-{plan_sha256[:12]}.json"):
+        raise ValueError
+
+    catalog_file = _require_plain_regular(catalog_path)
+    catalog = load_catalog(catalog_file)
+    permission_sha256 = plan.get("permission_report_sha256")
+    if type(permission_sha256) is not str or _HEX64.fullmatch(permission_sha256) is None:
+        raise ValueError
+    permission_report = _permission_report(root=root, expected_sha256=permission_sha256)
+    planned_at = _utc_datetime(plan.get("planned_at"))
+    as_of = _iso_date(plan.get("as_of"))
+
+    inventory_before = _instrument_inventory_closure(root)
+    rebuilt = build_request_plan(
+        catalog=catalog,
+        permission_report=permission_report,
+        data_root=root,
+        as_of=as_of,
+        now=planned_at,
+    )
+    if rebuilt != plan or plan.get("schema_version") != PLAN_SCHEMA:
+        raise ValueError
+    inventory = plan.get("inventory")
+    if (
+        type(inventory) is not dict
+        or inventory.get("stock") != inventory_before["stock_count"]
+    ):
+        raise ValueError
+
+    expected = _expected_financial_requests(catalog=catalog, root=root, as_of=as_of)
+    dataset_rows = plan.get("datasets")
+    if type(dataset_rows) is not list:
+        raise ValueError
+    estimates = {
+        row.get("dataset"): row.get("estimated_requests")
+        for row in dataset_rows
+        if type(row) is dict and row.get("dataset") in _DATASETS
+    }
+    counts = Counter(request.dataset for request in expected)
+    if (
+        set(estimates) != set(_DATASETS)
+        or any(estimates[name] != counts[name] or counts[name] <= 0 for name in _DATASETS)
+    ):
+        raise ValueError
+    request_ids = tuple(request.request_id for request in expected)
+    if len(request_ids) != len(set(request_ids)):
+        raise ValueError
+    request_payload = _canonical_json(
+        [
+            PLAN_CLOSURE_SCHEMA,
+            [[request.dataset, request.request_id] for request in expected],
+        ]
+    )
+    inventory_after = _instrument_inventory_closure(root)
+    if inventory_after != inventory_before:
+        raise ValueError
+    closure = {
+        "schema_version": PLAN_CLOSURE_SCHEMA,
+        "provenance_model": PROVENANCE_MODEL,
+        "provenance_limitation": PROVENANCE_LIMITATION,
+        "plan_report_sha256": plan_sha256,
+        "plan_schema_version": PLAN_SCHEMA,
+        "planned_as_of": as_of.isoformat(),
+        "catalog_version": catalog.version,
+        "catalog_sha256": catalog.sha256,
+        "permission_report_sha256": permission_sha256,
+        "instrument_inventory": inventory_before,
+        "request_counts": {name: counts[name] for name in _DATASETS},
+        "request_set_sha256": hashlib.sha256(request_payload).hexdigest(),
+    }
+    return _VerifiedPlan(closure=closure, expected_requests=expected)
+
+
+def _permission_report(*, root: Path, expected_sha256: str) -> dict[str, object]:
+    directory = root / "run_state" / "tushare_bulk" / "permission_reports"
+    _require_plain_directory(directory)
+    matches: list[dict[str, object]] = []
+    for candidate in sorted(directory.glob("*.json")):
+        path = _require_plain_regular(candidate)
+        raw = path.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != expected_sha256:
+            continue
+        value, canonical = _read_canonical_object(path)
+        if canonical != raw or not path.name.endswith(f"-{expected_sha256[:12]}.json"):
+            raise ValueError
+        matches.append(cast(dict[str, object], value))
+    if not matches or any(value != matches[0] for value in matches[1:]):
+        raise ValueError
+    return matches[0]
+
+
+def _expected_financial_requests(
+    *, catalog: Catalog, root: Path, as_of: dt.date
+) -> tuple[_bulk_ingest.Request, ...]:
+    by_name = {spec.name: spec for spec in catalog.datasets}
+    if not set(_DATASETS) <= set(by_name):
+        raise ValueError
+    result: list[_bulk_ingest.Request] = []
+    for dataset in _DATASETS:
+        spec = cast(DatasetSpec, by_name[dataset])
+        if (
+            spec.api_name != dataset
+            or spec.request_unit != "per_symbol"
+            or spec.inventory != "stock"
+            or spec.history_start is None
+        ):
+            raise ValueError
+        result.extend(
+            _bulk_ingest._requests_for_spec(
+                catalog=catalog,
+                spec=spec,
+                data_root=root,
+                start=spec.history_start,
+                end=as_of,
+            )
+        )
+    return tuple(sorted(result, key=lambda request: (request.dataset, request.request_id)))
+
+
+def _instrument_inventory_closure(root: Path) -> dict[str, Any]:
+    directory = root / "clean" / "instrument"
+    resolved_directory = _require_plain_directory(directory)
+    paths = tuple(sorted(directory.glob("market=*/data.parquet")))
+    if not paths:
+        raise ValueError
+    entries: list[dict[str, Any]] = []
+    resolved: set[Path] = set()
+    frames: list[pl.DataFrame] = []
+    for candidate in paths:
+        resolved_parent = _require_plain_directory(candidate.parent)
+        path = _require_plain_regular(candidate)
+        if (
+            resolved_parent.parent != resolved_directory
+            or resolved_parent != candidate.parent
+            or path.parent != resolved_parent
+            or path != candidate
+            or path in resolved
+        ):
+            raise ValueError
+        resolved.add(path)
+        relative = path.relative_to(root).as_posix()
+        before = path.stat()
+        raw_sha256 = _sha256(path)
+        after = path.stat()
+        if not os.path.samestat(before, after) or before.st_size != after.st_size:
+            raise ValueError
+        entries.append(
+            {
+                "relative_path": relative,
+                "size_bytes": after.st_size,
+                "sha256": raw_sha256,
+            }
+        )
+        frames.append(pl.read_parquet(path))
+    frame = pl.concat(frames, how="vertical_relaxed")
+    required = {"symbol", "market", "instrument_type"}
+    if not required <= set(frame.columns):
+        raise ValueError
+    stock = (
+        frame.select(
+            pl.col("symbol").cast(pl.String),
+            pl.col("market").cast(pl.String),
+            pl.col("instrument_type").cast(pl.String),
+        )
+        .filter(
+            pl.col("market").is_in(["SH", "SZ"])
+            & (pl.col("instrument_type") == "STOCK")
+        )
+        .sort("symbol", "market", "instrument_type")
+    )
+    if (
+        stock.is_empty()
+        or stock.null_count().row(0) != (0, 0, 0)
+        or stock.get_column("symbol").n_unique() != stock.height
+        or any(_SYMBOL.fullmatch(value) is None for value in stock.get_column("symbol"))
+    ):
+        raise ValueError
+    logical_rows = [list(row) for row in stock.iter_rows()]
+    file_set_sha256 = hashlib.sha256(
+        _canonical_json([INVENTORY_CLOSURE_SCHEMA, entries])
+    ).hexdigest()
+    logical_sha256 = hashlib.sha256(
+        _canonical_json([INVENTORY_CLOSURE_SCHEMA, logical_rows])
+    ).hexdigest()
+    return {
+        "schema_version": INVENTORY_CLOSURE_SCHEMA,
+        "files": entries,
+        "file_set_sha256": file_set_sha256,
+        "logical_frame_sha256": logical_sha256,
+        "stock_count": stock.height,
+    }
+
+
+def _verify_ledger_plan(
+    *,
+    rows: list[tuple[Any, ...]],
+    expected: tuple[_bulk_ingest.Request, ...],
+    expected_catalog_sha256: str,
+) -> None:
+    expected_by_id = {request.request_id: request for request in expected}
+    observed: set[str] = set()
+    for row in rows:
+        request_id = row[0]
+        request = expected_by_id.get(request_id)
+        if request is None or request_id in observed:
+            raise ValueError
+        observed.add(request_id)
+        parameters_json = json.dumps(
+            dict(request.parameters), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        if (
+            row[1] != request.dataset
+            or row[5] != parameters_json
+            or row[6] != request.max_rows
+            or row[8] != expected_catalog_sha256
+            or row[9] != request.api_name
+        ):
+            raise ValueError
+    if observed != set(expected_by_id):
+        raise ValueError
+
+
+def _read_ledger(ledger: Path) -> tuple[list[tuple[Any, ...]], int]:
     uri = f"file:{ledger.resolve(strict=True).as_posix()}?mode=ro"
     placeholders = ",".join("?" for _ in _DATASETS)
     with sqlite3.connect(uri, uri=True) as connection:
-        return connection.execute(
+        rows = connection.execute(
             "SELECT request_id,dataset,status,rows,checksum_sha256,parameters_json,"
-            "max_rows,error_code,catalog_sha256 FROM requests "
+            "max_rows,error_code,catalog_sha256,api_name FROM requests "
             f"WHERE dataset IN ({placeholders}) ORDER BY dataset,request_id",
             _DATASETS,
         ).fetchall()
+        leases = connection.execute("SELECT owner,expires_at FROM lease ORDER BY owner").fetchall()
+    now = time.time()
+    if any(
+        type(owner) is not str
+        or not owner
+        or type(expires_at) not in {int, float}
+        for owner, expires_at in leases
+    ):
+        raise ValueError
+    active = sum(float(expires_at) >= now for _, expires_at in leases)
+    return rows, active
+
+
+def _read_canonical_object(path: Path) -> tuple[dict[str, Any], bytes]:
+    raw = path.read_bytes()
+    value = json.loads(raw.decode("utf-8"))
+    if type(value) is not dict or raw != _canonical_json(value):
+        raise ValueError
+    return cast(dict[str, Any], value), raw
+
+
+def _utc_datetime(value: object) -> dt.datetime:
+    if type(value) is not str:
+        raise ValueError
+    parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None or parsed.utcoffset() != dt.timedelta(0):
+        raise ValueError
+    return parsed
+
+
+def _iso_date(value: object) -> dt.date:
+    if type(value) is not str:
+        raise ValueError
+    parsed = dt.date.fromisoformat(value)
+    if parsed.isoformat() != value:
+        raise ValueError
+    return parsed
+
+
+def _canonical_json(value: object) -> bytes:
+    return (
+        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+
+
+def _require_plain_directory(path: Path) -> Path:
+    resolved = path.resolve(strict=True)
+    info = path.stat(follow_symlinks=False)
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    if (
+        path.is_symlink()
+        or not stat.S_ISDIR(info.st_mode)
+        or bool(getattr(info, "st_file_attributes", 0) & reparse)
+    ):
+        raise ValueError
+    return resolved
+
+
+def _require_plain_regular(path: Path) -> Path:
+    resolved = path.resolve(strict=True)
+    info = path.stat(follow_symlinks=False)
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    if (
+        path.is_symlink()
+        or not stat.S_ISREG(info.st_mode)
+        or info.st_nlink != 1
+        or bool(getattr(info, "st_file_attributes", 0) & reparse)
+    ):
+        raise ValueError
+    return resolved
 
 
 def _load_complete(
@@ -225,6 +603,7 @@ def _load_complete(
         max_rows,
         _,
         catalog_sha256,
+        _api_name,
     ) in rows:
         if status != "COMPLETE":
             continue
@@ -565,11 +944,15 @@ def _sha256(path: Path) -> str:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="审计 Tushare 财务四表 raw 闭包")
     parser.add_argument("--data-root", type=Path)
+    parser.add_argument("--plan-report", type=Path, required=True)
+    parser.add_argument("--catalog", type=Path, required=True)
     parser.add_argument("--threads", type=int, default=2)
     parser.add_argument("--verify-bytes", action="store_true")
     args = parser.parse_args(argv)
     result = audit_tushare_financials(
         data_root=resolve_data_root(args.data_root),
+        plan_report_path=args.plan_report,
+        catalog_path=args.catalog,
         threads=args.threads,
         verify_bytes=args.verify_bytes,
     )
@@ -581,4 +964,11 @@ if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
 
 
-__all__ = ["SCHEMA_VERSION", "audit_tushare_financials"]
+__all__ = [
+    "INVENTORY_CLOSURE_SCHEMA",
+    "PLAN_CLOSURE_SCHEMA",
+    "PROVENANCE_LIMITATION",
+    "PROVENANCE_MODEL",
+    "SCHEMA_VERSION",
+    "audit_tushare_financials",
+]

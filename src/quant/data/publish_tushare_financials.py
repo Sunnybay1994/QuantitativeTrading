@@ -19,13 +19,18 @@ import duckdb
 import polars as pl
 
 from quant.data.audit_tushare_financials import (
+    INVENTORY_CLOSURE_SCHEMA,
+    PLAN_CLOSURE_SCHEMA,
+    PROVENANCE_LIMITATION,
+    PROVENANCE_MODEL,
     SCHEMA_VERSION as _AUDIT_SCHEMA_VERSION,
     audit_tushare_financials,
 )
 from quant.data.m3_release import M3ReleaseError, commit_directory_noreplace
+from quant.data.tushare_bulk import PLAN_SCHEMA
 from quant.settings import resolve_data_root
 
-_SNAPSHOT_SCHEMA = "tushare-financial-clean-snapshot-v1"
+_SNAPSHOT_SCHEMA = "tushare-financial-clean-snapshot-v2"
 _PROJECTION_VERSION = "tushare-financial-clean-projection-v1"
 _DATASETS = ("balancesheet", "cashflow", "fina_indicator", "income")
 _STATEMENTS = frozenset({"balancesheet", "cashflow", "income"})
@@ -57,11 +62,16 @@ class TushareFinancialSnapshot:
 
 
 def publish_tushare_financial_snapshot(
-    *, data_root: Path, threads: int = 2
+    *, data_root: Path, plan_report_path: Path, catalog_path: Path, threads: int = 2
 ) -> TushareFinancialSnapshot:
     """Publish only when the complete raw batch passes full byte verification."""
     try:
-        return _publish(data_root=data_root, threads=threads)
+        return _publish(
+            data_root=data_root,
+            plan_report_path=plan_report_path,
+            catalog_path=catalog_path,
+            threads=threads,
+        )
     except Exception:
         pass
     raise TushareFinancialPublishError() from None
@@ -85,11 +95,19 @@ def verify_tushare_financial_snapshot(
     raise TushareFinancialPublishError() from None
 
 
-def _publish(*, data_root: Path, threads: int) -> TushareFinancialSnapshot:
+def _publish(
+    *, data_root: Path, plan_report_path: Path, catalog_path: Path, threads: int
+) -> TushareFinancialSnapshot:
     root = _resolved_data_root(data_root)
     if type(threads) is not int or not 1 <= threads <= 2:
         raise ValueError
-    audit = audit_tushare_financials(data_root=root, threads=threads, verify_bytes=True)
+    audit = audit_tushare_financials(
+        data_root=root,
+        plan_report_path=plan_report_path,
+        catalog_path=catalog_path,
+        threads=threads,
+        verify_bytes=True,
+    )
     _validate_audit(audit)
     snapshot_id = _source_identity(audit)
     snapshots = root / "clean" / "tushare_financials" / "snapshots"
@@ -109,7 +127,13 @@ def _publish(*, data_root: Path, threads: int) -> TushareFinancialSnapshot:
             raw_paths=_raw_paths(root, audit=audit),
             threads=threads,
         )
-        post = audit_tushare_financials(data_root=root, threads=threads, verify_bytes=True)
+        post = audit_tushare_financials(
+            data_root=root,
+            plan_report_path=plan_report_path,
+            catalog_path=catalog_path,
+            threads=threads,
+            verify_bytes=True,
+        )
         if post != audit:
             raise ValueError
         _write_exclusive(temp / "manifest.json", _canonical(manifest))
@@ -192,6 +216,17 @@ def _build_temp_snapshot(
         "source_identity": snapshot_id,
         "audit_schema_version": audit["schema_version"],
         "audit_sha256": _sha(audit_raw),
+        "provenance_model": audit["plan_closure"]["provenance_model"],
+        "provenance_limitation": audit["plan_closure"]["provenance_limitation"],
+        "plan_report_sha256": audit["plan_closure"]["plan_report_sha256"],
+        "instrument_file_set_sha256": audit["plan_closure"]["instrument_inventory"][
+            "file_set_sha256"
+        ],
+        "instrument_logical_frame_sha256": audit["plan_closure"]["instrument_inventory"][
+            "logical_frame_sha256"
+        ],
+        "request_set_sha256": audit["plan_closure"]["request_set_sha256"],
+        "request_counts": audit["plan_closure"]["request_counts"],
         "request_count": cast(Mapping[str, Any], audit["raw_closure"])["complete_request_count"],
         "dataset_rows": dataset_rows,
         "files": entries,
@@ -207,6 +242,25 @@ def _verify_snapshot(
     dataset_rows = manifest.get("dataset_rows") if type(manifest) is dict else None
     if (
         type(manifest) is not dict
+        or set(manifest)
+        != {
+            "schema_version",
+            "projection_version",
+            "snapshot_id",
+            "source_identity",
+            "audit_schema_version",
+            "audit_sha256",
+            "provenance_model",
+            "provenance_limitation",
+            "plan_report_sha256",
+            "instrument_file_set_sha256",
+            "instrument_logical_frame_sha256",
+            "request_set_sha256",
+            "request_counts",
+            "request_count",
+            "dataset_rows",
+            "files",
+        }
         or manifest_raw != _canonical(manifest)
         or manifest.get("schema_version") != _SNAPSHOT_SCHEMA
         or manifest.get("projection_version") != _PROJECTION_VERSION
@@ -214,6 +268,14 @@ def _verify_snapshot(
         or manifest.get("source_identity") != expected_snapshot_id
         or manifest.get("audit_schema_version") != _AUDIT_SCHEMA_VERSION
         or not _is_hex64(manifest.get("audit_sha256"))
+        or manifest.get("provenance_model") != PROVENANCE_MODEL
+        or manifest.get("provenance_limitation") != PROVENANCE_LIMITATION
+        or not _is_hex64(manifest.get("plan_report_sha256"))
+        or not _is_hex64(manifest.get("instrument_file_set_sha256"))
+        or not _is_hex64(manifest.get("instrument_logical_frame_sha256"))
+        or not _is_hex64(manifest.get("request_set_sha256"))
+        or type(manifest.get("request_counts")) is not dict
+        or set(cast(dict[str, Any], manifest.get("request_counts"))) != set(_DATASETS)
         or type(manifest.get("request_count")) is not int
         or type(dataset_rows) is not dict
         or set(dataset_rows) != set(_DATASETS)
@@ -257,6 +319,21 @@ def _verify_snapshot(
             _validate_audit(audit)
             if _source_identity(audit) != expected_snapshot_id:
                 raise ValueError
+            plan_closure = cast(Mapping[str, Any], audit["plan_closure"])
+            inventory = cast(Mapping[str, Any], plan_closure["instrument_inventory"])
+            if (
+                manifest["provenance_model"] != plan_closure["provenance_model"]
+                or manifest["provenance_limitation"]
+                != plan_closure["provenance_limitation"]
+                or manifest["plan_report_sha256"] != plan_closure["plan_report_sha256"]
+                or manifest["instrument_file_set_sha256"]
+                != inventory["file_set_sha256"]
+                or manifest["instrument_logical_frame_sha256"]
+                != inventory["logical_frame_sha256"]
+                or manifest["request_set_sha256"] != plan_closure["request_set_sha256"]
+                or manifest["request_counts"] != plan_closure["request_counts"]
+            ):
+                raise ValueError
             continue
         dataset, year = _partition_selector(selector)
         frame = pl.read_parquet(path)
@@ -285,13 +362,115 @@ def _verify_snapshot(
 
 def _validate_audit(value: Mapping[str, Any]) -> None:
     if (
-        value.get("schema_version") != _AUDIT_SCHEMA_VERSION
+        set(value)
+        != {
+            "schema_version",
+            "status",
+            "verify_bytes",
+            "plan_closure",
+            "active_lease_count",
+            "raw_closure",
+            "datasets",
+            "blocking_issues",
+            "publication_allowed",
+        }
+        or value.get("schema_version") != _AUDIT_SCHEMA_VERSION
         or value.get("status") != "READY"
         or value.get("verify_bytes") is not True
         or value.get("publication_allowed") is not True
         or value.get("blocking_issues") != []
+        or value.get("active_lease_count") != 0
+        or type(value.get("plan_closure")) is not dict
         or type(value.get("datasets")) is not dict
         or type(value.get("raw_closure")) is not dict
+    ):
+        raise ValueError
+    plan = cast(Mapping[str, Any], value["plan_closure"])
+    inventory = plan.get("instrument_inventory") if type(plan) is dict else None
+    counts = plan.get("request_counts") if type(plan) is dict else None
+    if (
+        set(plan)
+        != {
+            "schema_version",
+            "provenance_model",
+            "provenance_limitation",
+            "plan_report_sha256",
+            "plan_schema_version",
+            "planned_as_of",
+            "catalog_version",
+            "catalog_sha256",
+            "permission_report_sha256",
+            "instrument_inventory",
+            "request_counts",
+            "request_set_sha256",
+        }
+        or plan.get("schema_version") != PLAN_CLOSURE_SCHEMA
+        or plan.get("provenance_model") != PROVENANCE_MODEL
+        or plan.get("provenance_limitation") != PROVENANCE_LIMITATION
+        or plan.get("plan_schema_version") != PLAN_SCHEMA
+        or type(plan.get("planned_as_of")) is not str
+        or type(plan.get("catalog_version")) is not str
+        or not cast(str, plan.get("catalog_version"))
+        or any(
+            not _is_hex64(plan.get(name))
+            for name in (
+                "plan_report_sha256",
+                "catalog_sha256",
+                "permission_report_sha256",
+                "request_set_sha256",
+            )
+        )
+        or type(inventory) is not dict
+        or inventory.get("schema_version") != INVENTORY_CLOSURE_SCHEMA
+        or not _is_hex64(inventory.get("file_set_sha256"))
+        or not _is_hex64(inventory.get("logical_frame_sha256"))
+        or type(inventory.get("stock_count")) is not int
+        or inventory.get("stock_count", 0) <= 0
+        or type(inventory.get("files")) is not list
+        or type(counts) is not dict
+        or set(counts) != set(_DATASETS)
+        or any(type(counts[name]) is not int or counts[name] <= 0 for name in _DATASETS)
+    ):
+        raise ValueError
+    inventory_files = cast(list[object], inventory["files"])
+    previous = ""
+    for raw_entry in inventory_files:
+        if type(raw_entry) is not dict or set(raw_entry) != {
+            "relative_path",
+            "size_bytes",
+            "sha256",
+        }:
+            raise ValueError
+        entry = cast(dict[str, Any], raw_entry)
+        relative_path = entry.get("relative_path")
+        if (
+            type(relative_path) is not str
+            or relative_path <= previous
+            or not relative_path.startswith("clean/instrument/market=")
+            or not relative_path.endswith("/data.parquet")
+            or type(entry.get("size_bytes")) is not int
+            or entry.get("size_bytes", 0) <= 0
+            or not _is_hex64(entry.get("sha256"))
+        ):
+            raise ValueError
+        previous = relative_path
+    if not inventory_files or _sha(
+        _canonical([INVENTORY_CLOSURE_SCHEMA, inventory_files])
+    ) != inventory["file_set_sha256"]:
+        raise ValueError
+    raw_closure = cast(Mapping[str, Any], value["raw_closure"])
+    if (
+        set(raw_closure)
+        != {
+            "schema_version",
+            "complete_request_count",
+            "catalog_sha256s",
+            "request_set_sha256",
+        }
+        or raw_closure.get("schema_version") != "tushare-financial-raw-closure-v1"
+        or raw_closure.get("complete_request_count") != sum(counts.values())
+        or raw_closure.get("catalog_sha256s") != [plan["catalog_sha256"]]
+        or not _is_hex64(raw_closure.get("request_set_sha256"))
     ):
         raise ValueError
     reports = cast(Mapping[str, Any], value["datasets"])
@@ -302,7 +481,8 @@ def _validate_audit(value: Mapping[str, Any]) -> None:
         quality = report.get("quality") if type(report) is dict else None
         if (
             type(quality) is not dict
-            or report.get("request_count") != report.get("status_counts", {}).get("COMPLETE")
+            or report.get("status_counts") != {"COMPLETE": counts[dataset]}
+            or report.get("request_count") != counts[dataset]
             or report.get("request_count", 0) <= 0
             or quality.get("eligible_rows") != quality.get("raw_rows")
             or quality.get("quarantined_rows") != 0
@@ -580,10 +760,15 @@ def _sha(raw: bytes) -> str:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="发布 Tushare 财务四表不可覆盖 clean snapshot")
     parser.add_argument("--data-root", type=Path)
+    parser.add_argument("--plan-report", type=Path, required=True)
+    parser.add_argument("--catalog", type=Path, required=True)
     parser.add_argument("--threads", type=int, default=2)
     args = parser.parse_args(argv)
     result = publish_tushare_financial_snapshot(
-        data_root=args.data_root or resolve_data_root(), threads=args.threads
+        data_root=args.data_root or resolve_data_root(),
+        plan_report_path=args.plan_report,
+        catalog_path=args.catalog,
+        threads=args.threads,
     )
     print(
         _canonical(

@@ -109,6 +109,7 @@ def test_same_day_announcement_is_excluded_then_enters_next_signal() -> None:
         cash_history=cash,
         signal_dates=(dt.date(2024, 4, 22), dt.date(2024, 4, 23)),
         candidate_symbols=("000001.SZ",),
+        allowed_report_types=("1",),
     )
     same_day = result.factors.filter(pl.col("trade_date") == dt.date(2024, 4, 22))
     next_day = result.factors.filter(pl.col("trade_date") == dt.date(2024, 4, 23))
@@ -129,6 +130,7 @@ def test_latest_income_conflict_is_quarantined_without_older_period_fallback() -
         cash_history=cash,
         signal_dates=(dt.date(2024, 4, 23),),
         candidate_symbols=("000001.SZ",),
+        allowed_report_types=("1",),
     )
     assert result.factors.select(PIT_QUALITY_FACTOR_NAMES).row(0) == (
         None,
@@ -158,6 +160,7 @@ def test_cash_conflict_only_quarantines_cash_dependent_factors() -> None:
         cash_history=pl.concat([cash, conflict]),
         signal_dates=(dt.date(2024, 4, 23),),
         candidate_symbols=("000001.SZ",),
+        allowed_report_types=("1",),
     )
     statuses = dict(result.eligibility.select("factor", "status").iter_rows())
     assert statuses == {
@@ -176,6 +179,7 @@ def test_signal_result_is_independent_of_history_row_order() -> None:
         cash_history=cash,
         signal_dates=(dt.date(2024, 4, 23),),
         candidate_symbols=("000001.SZ",),
+        allowed_report_types=("1",),
     )
     second = build_pit_quality_signal_values(
         income_history=income.reverse(),
@@ -183,6 +187,7 @@ def test_signal_result_is_independent_of_history_row_order() -> None:
         cash_history=cash.reverse(),
         signal_dates=(dt.date(2024, 4, 23),),
         candidate_symbols=("000001.SZ",),
+        allowed_report_types=("1",),
     )
     assert first.factors.equals(second.factors)
     assert first.eligibility.equals(second.eligibility)
@@ -197,6 +202,7 @@ def test_eligibility_keeps_missing_candidates_in_the_frozen_denominator() -> Non
         cash_history=cash,
         signal_dates=(dt.date(2024, 4, 23),),
         candidate_symbols=("000001.SZ", "000002.SZ"),
+        allowed_report_types=("1",),
     )
     missing = result.eligibility.filter(pl.col("symbol") == "000002.SZ")
     assert missing.height == len(PIT_QUALITY_FACTOR_NAMES)
@@ -213,6 +219,34 @@ def test_invalid_signal_contract_is_sanitized() -> None:
             cash_history=cash,
             signal_dates=(dt.date(2024, 4, 23), dt.date(2024, 4, 22)),
             candidate_symbols=("000001.SZ",),
+            allowed_report_types=("1",),
         )
     assert exc.value.__cause__ is None
     assert exc.value.__context__ is None
+
+
+def test_report_type_must_be_pre_frozen_and_is_not_hard_coded() -> None:
+    income, balance, cash = _histories()
+    with pytest.raises(ValueError):
+        build_pit_quality_signal_values(
+            income_history=income,
+            balance_history=balance,
+            cash_history=cash,
+            signal_dates=(dt.date(2024, 4, 23),),
+            candidate_symbols=("000001.SZ",),
+            allowed_report_types=(),
+        )
+
+    type_two = tuple(
+        frame.with_columns(pl.lit("2").alias("report_type"))
+        for frame in (income, balance, cash)
+    )
+    result = build_pit_quality_signal_values(
+        income_history=type_two[0],
+        balance_history=type_two[1],
+        cash_history=type_two[2],
+        signal_dates=(dt.date(2024, 4, 23),),
+        candidate_symbols=("000001.SZ",),
+        allowed_report_types=("2",),
+    )
+    assert result.factors.get_column("pit_roe_ttm").item() == pytest.approx(56.0 / 55.0)
