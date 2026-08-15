@@ -2,13 +2,15 @@
 
 ## 当前可用性
 
-G0 当前处于“依赖已声明、安装待统筹确认”阶段。`pyproject.toml` 已获准声明
-`gui = ["streamlit>=1.48,<2"]`，但当前批准环境尚未安装 Streamlit，因此：
+G0 当前处于“依赖已声明、批准环境创建阻塞”阶段。`pyproject.toml` 已声明
+`gui = ["streamlit>=1.48,<2"]`，但唯一批准的 Windows smoke venv 两次创建承载均以 `-1`、无日志终止，
+目标目录和解释器均未产生，因此：
 
 - 可以运行纯 Python catalog、完整性、NAV 与启动器聚焦测试；
 - `python -m quant.gui` 在缺少 Streamlit 时应以退出码 2 明确失败；
 - 不得修改 WSL `base`，也不得在统筹确认解释器/命令前抢占项目在途任务资源；
 - 真实 AppTest、本地浏览器 smoke 和常驻服务运维仍是待安装验收项。
+- 不进行第三次盲试，不改用其他全局解释器；下一次环境操作必须由统筹重新冻结可观测创建机制或恢复条件。
 
 Streamlit 的必要性是以纯 Python 提供统一只读审核界面，且只作为 optional `gui` 依赖，不进入核心/交易
 运行时。官方仓库与包元数据标记 Apache-2.0；分发时需保留适用许可证/NOTICE。未安装时启动器稳定退出码
@@ -27,13 +29,19 @@ python -m pytest tests/gui/test_streamlit_app.py -q
 
 ## 依赖解锁后的安装与启动
 
-只有在统筹确认具体解释器、资源窗口和安装命令后，才使用已经声明的 `gui` optional group。候选本地开发
-命令如下，当前尚未获安装执行授权：
+已批准但尚未成功执行的 smoke 环境路径和候选命令如下；它们是失败留痕，不构成再次执行授权：
 
 ```powershell
-python -m pip install -e ".[gui,dev]"
-python -m quant.gui --artifact-root F:\AI_Coding\QuantitativeTrading\artifacts
+D:\Miniforge3\python.exe -m venv --system-site-packages F:\AI_Coding\QuantitativeTrading\artifacts\dev_envs\gui-g0-win-py313
+F:\AI_Coding\QuantitativeTrading\artifacts\dev_envs\gui-g0-win-py313\Scripts\python.exe -m pip install -e "F:\AI_Coding\QuantitativeTrading\artifacts\dev_worktrees\gui-research-workbench[gui]"
+F:\AI_Coding\QuantitativeTrading\artifacts\dev_envs\gui-g0-win-py313\Scripts\python.exe -m quant.gui --artifact-root F:\AI_Coding\QuantitativeTrading\artifacts
 ```
+
+2026-08-16 的实际尝试使用基础解释器 `D:\Miniforge3\python.exe`（Python 3.13.13）、Hidden
+`Start-Process`、BelowNormal、affinity `0xF00` 和线程上限 2。两次承载会话均非零 `-1` 且没有 stdout/stderr；
+终态审计确认 `artifacts/dev_envs`、目标 venv、`Scripts/python.exe`、`pyvenv.cfg`、匹配日志和 `0xF00`
+Python 均不存在。上面第一条 venv 命令通过受限 wrapper 尝试两次；第二、三条命令从未执行。Windows/WSL
+base 未修改，pip 安装、AppTest 和浏览器均未开始，CPU8–11 已释放。
 
 默认监听 `127.0.0.1:8501`，仅本机可访问。可用参数：
 

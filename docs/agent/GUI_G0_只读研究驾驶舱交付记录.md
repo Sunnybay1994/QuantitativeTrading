@@ -2,7 +2,7 @@
 
 ## 结果
 
-- 状态：**源码、只读适配层与 optional 依赖声明已交付；真实 Streamlit UI 验收阻塞于安装环境确认**。
+- 状态：**源码、只读适配层与 optional 依赖声明已交付；真实 Streamlit UI 验收阻塞于批准环境创建失败**。
 - 分支：`codex/gui-research-workbench`
 - worktree：`F:\AI_Coding\QuantitativeTrading\artifacts\dev_worktrees\gui-research-workbench`
 - 基线 / 当前 HEAD：`9fc08ba382e491cfcfeebb7b0c14ef06085bf013`
@@ -58,10 +58,17 @@
 | worktree 身份 | 通过 | 分支 `codex/gui-research-workbench`，HEAD 为冻结基线 |
 | 全量 pytest / WSL Gate | 未运行 | 本任务获批只做定向、单进程验证；不宣称项目 Gate 通过 |
 | Streamlit AppTest / 浏览器 smoke | 阻塞 | optional group 已声明；当前环境无 Streamlit，解释器/安装命令待统筹确认 |
+| Windows smoke venv 创建 | 失败并停止 | 批准路径 `artifacts/dev_envs/gui-g0-win-py313`；两次 Hidden/BelowNormal/`0xF00` 承载会话均以 `-1`、无日志终止，根因未确认；按停止条件不再重试 |
+| 失败后残留审计 | 通过 | `artifacts/dev_envs`、目标 venv、venv Python、`pyvenv.cfg`、匹配日志与 affinity `0xF00` Python 均不存在；Windows/WSL base 未改，pip/AppTest/browser 未启动，CPU8–11 已释放 |
 
 说明：第一次 pytest 收集解析到了根工作树的 editable 安装，随后定向命令以当前 worktree `src` 为
 `PYTHONPATH`；共享 pytest 临时根还存在权限问题，因此每次测试使用全新的系统临时 `--basetemp`。这些是
 环境承载修正，没有修改安装状态、共享依赖或项目代码合同。
+
+smoke 环境实际尝试命令为
+`D:\Miniforge3\python.exe -m venv --system-site-packages F:\AI_Coding\QuantitativeTrading\artifacts\dev_envs\gui-g0-win-py313`，
+由 Hidden `Start-Process` wrapper 设置 BelowNormal、`0xF00` 和线程上限 2。该命令两次均未形成可观测
+venv 终态；editable `[gui]` 安装、`pip check`、AppTest 和浏览器命令均未执行。
 
 ## 清理与范围审查
 
@@ -75,13 +82,14 @@
 
 ## 已知限制、债项与下一步
 
-- 当前不能把 GUI 表述为已安装或可运维启动；真实 AppTest、浏览器 overview/detail/chart smoke 待统筹确认
-  解释器与安装窗口。
+- 当前不能把 GUI 表述为已安装或可运维启动；批准的 Windows venv 创建承载已按停止条件结束。真实 AppTest、
+  浏览器 overview/detail/chart smoke 等待统筹冻结新的可观测恢复机制，不进行第三次盲试。
 - Windows symlink 对抗性测试因账号权限跳过；实现按 `lstat` 与 reparse attribute fail-closed，仍需在允许创建
   symlink 的 WSL/Linux 定向环境执行该反例后才能形成跨平台证据。
 - G0 同步完整性总量上限 128 MiB，NAV 输入上限 64 MiB/25 万行；超限明确 `BLOCKED`，以后交给外置
   verifier，不在 Web session 放宽。
 - 公共 orchestration 边界未关闭前不得增加运行按钮；性能优化只有在真实规模可复现、已测量瓶颈后进入。
-- 本次安全提交包含 `pyproject.toml` 唯一依赖 hunk及 G0 文件；提交后立即回报 SHA 并释放共享文件锁。下一
-  队列是向统筹回报候选解释器/安装命令，获批后再安装、核对解析依赖许可证、运行 AppTest 与本地浏览器
-  smoke 并更新本记录。远程共享、鉴权、任务 worker 和交易动作均需独立任务书。
+- 代码安全提交 `6640b791cf0fab6f996aea014293a618d2e5a22e` 包含 `pyproject.toml` 唯一依赖 hunk 及
+  G0 文件，共享锁已释放。下一队列是由统筹决定环境承载根因诊断或新的可观测创建机制；只有新授权生效后
+  才能安装、核对解析依赖许可证、运行 `pip check`、AppTest 与本地浏览器 smoke。远程共享、鉴权、任务
+  worker 和交易动作均需独立任务书。
