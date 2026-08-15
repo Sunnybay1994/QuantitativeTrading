@@ -180,6 +180,10 @@ def verify_formal_reproducibility_artifact(
             or receipt.stage != "reproducibility"
             or receipt.scope != "REPRO"
             or receipt.scope_key != comparison_key
+            or any(
+                item.root_alias != "PROJECT"
+                for item in (*receipt.inputs, *receipt.outputs)
+            )
         ):
             raise ValueError
         result = FormalReproducibilityResult(
@@ -235,7 +239,7 @@ def _run_stage(
         python_executable_sha256=_file_sha256(executable),
     )
     python_executable_sha256 = _file_sha256(executable)
-    artifact_roots = MappingProxyType({**dict(resolution.artifact_roots), "PROJECT": root})
+    artifact_roots = _project_only_artifact_roots(root)
     inputs = _external_inputs(
         resolution=resolution,
         project_root=root,
@@ -411,6 +415,11 @@ def _external_inputs(
         ExternalInput(_digest_for_path(path, artifact_roots=artifact_roots))
         for path in sorted(paths, key=lambda item: str(item).casefold())
     )
+
+
+def _project_only_artifact_roots(project_root: Path) -> Mapping[str, Path]:
+    """Return the one non-overlapping root used by the REPRO receipt."""
+    return MappingProxyType({"PROJECT": project_root})
 
 
 def _launch_worker(
