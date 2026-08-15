@@ -1,10 +1,14 @@
 import datetime as dt
 import hashlib
+import json
+import os
 from dataclasses import replace
+from pathlib import Path
 
 import polars as pl
 import pytest
 
+import quant.research.lightweight_run as lightweight_module
 from quant.research import (
     LightweightResearchRunV1,
     ResearchFoldV1,
@@ -12,6 +16,10 @@ from quant.research import (
     compute_code_sha256,
     dataframe_input_digest,
     publish_lightweight_research_run,
+)
+from quant.research.lightweight_run import (
+    LightweightResearchRunError,
+    verify_lightweight_research_run,
 )
 
 
@@ -148,3 +156,128 @@ def test_lightweight_run_identity_rejects_single_field_drift(tmp_path) -> None:
     )
     with pytest.raises(ValueError, match="identity mismatch"):
         replace(published, random_seed=1)
+
+
+def _published_bundle(
+    tmp_path: Path, *, payloads: dict[str, bytes] | None = None
+) -> tuple[Path, LightweightResearchRunV1]:
+    source = tmp_path / "source.py"
+    source.write_text("pass\n", encoding="utf-8")
+    code_sha256 = compute_code_sha256(
+        project_root=tmp_path, relative_paths=("source.py",)
+    )
+    frame = pl.DataFrame({
+        "symbol": ["510300.SH"],
+        "trade_date": [dt.date(2026, 7, 10)],
+        "close": [4.1],
+    })
+    digest = dataframe_input_digest(
+        name="prices",
+        frame=frame,
+        sort_by=("trade_date", "symbol"),
+        date_column="trade_date",
+    )
+    root, run, _ = publish_lightweight_research_run(
+        artifact_root=tmp_path / "artifacts",
+        run=_run(digest, code_sha256),
+        output_payloads=payloads or {"nested/report.json": b"{}"},
+    )
+    return root, run
+
+
+def _assert_invalid(root: Path) -> None:
+    with pytest.raises(
+        LightweightResearchRunError, match="^LIGHTWEIGHT_RESEARCH_RUN_INVALID$"
+    ) as caught:
+        verify_lightweight_research_run(run_root=root)
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+
+
+def test_public_verifier_reconstructs_and_freshly_hashes_exact_tree(tmp_path) -> None:
+    root, published = _published_bundle(tmp_path)
+    assert verify_lightweight_research_run(run_root=root) == published
+
+    (root / "nested" / "report.json").write_bytes(b"tampered")
+    _assert_invalid(root)
+
+
+@pytest.mark.parametrize("mutation", ["missing", "extra", "noncanonical", "root_name"])
+def test_public_verifier_rejects_tree_manifest_and_root_drift(
+    tmp_path, mutation: str
+) -> None:
+    root, _ = _published_bundle(tmp_path)
+    if mutation == "missing":
+        (root / "nested" / "report.json").unlink()
+    elif mutation == "extra":
+        (root / "extra.bin").write_bytes(b"extra")
+    elif mutation == "noncanonical":
+        manifest = json.loads((root / "run.json").read_text(encoding="utf-8"))
+        (root / "run.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    else:
+        moved = root.with_name("0" * 64)
+        root.rename(moved)
+        root = moved
+    _assert_invalid(root)
+
+
+def test_public_verifier_rejects_output_hardlink_alias(tmp_path) -> None:
+    root, _ = _published_bundle(
+        tmp_path, payloads={"left.bin": b"same", "right.bin": b"same"}
+    )
+    (root / "right.bin").unlink()
+    os.link(root / "left.bin", root / "right.bin")
+    _assert_invalid(root)
+
+
+def test_public_verifier_rejects_link_or_reparse_output(tmp_path) -> None:
+    root, _ = _published_bundle(tmp_path, payloads={"report.json": b"{}"})
+    outside = tmp_path / "outside.json"
+    outside.write_bytes(b"{}")
+    (root / "report.json").unlink()
+    try:
+        (root / "report.json").symlink_to(outside)
+    except OSError:
+        pytest.skip("symbolic links are unavailable on this host")
+    _assert_invalid(root)
+
+
+def test_public_verifier_rejects_entity_replacement_during_read(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _ = _published_bundle(tmp_path, payloads={"report.json": b"{}"})
+    original = lightweight_module._read_stable_file
+    replaced = False
+
+    def replacing_read(path: Path, *, expected: os.stat_result):
+        nonlocal replaced
+        result = original(path, expected=expected)
+        if path.name == "report.json" and not replaced:
+            replaced = True
+            payload = path.read_bytes()
+            path.unlink()
+            path.write_bytes(payload)
+        return result
+
+    monkeypatch.setattr(lightweight_module, "_read_stable_file", replacing_read)
+    _assert_invalid(root)
+
+
+def test_public_verifier_detaches_hostile_exception_graph(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _ = _published_bundle(tmp_path)
+
+    class HostileError(Exception):
+        pass
+
+    hostile = HostileError(str(root / "secret-token"))
+    hostile.__cause__ = hostile
+    hostile.__context__ = hostile
+
+    def fail(_: Path) -> LightweightResearchRunV1:
+        raise hostile
+
+    monkeypatch.setattr(lightweight_module, "_verify_lightweight_research_run", fail)
+    _assert_invalid(root)
