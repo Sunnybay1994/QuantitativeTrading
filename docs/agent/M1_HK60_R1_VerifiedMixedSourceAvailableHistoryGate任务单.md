@@ -1,6 +1,6 @@
 # M1 HK60 R1 Verified Mixed-Source Available-History Gate 任务单
 
-状态：**R2 返工已冻结；R1 独立初验 FAIL。** 必须关闭 mapping 外 bar 补足 required session 与 API 异常图泄漏后，再由全新外部会话复验。真实双 Route Gate 必须等待包含最新 exact no-trade 集合的 HK60 v2c 8/8、唯一 `--finalize-v3` 与 fresh bundle 验真完成。
+状态：**R3 返工合同已冻结；R2 独立初验 FAIL，允许全新外部实现会话按 §15 最小返工。** R2 已关闭 mapping 外 bar 补足 missing；calendar parquet 与 DuckDB bar IO 的实际异常图仍保留底层 `__context__`。真实双 Route Gate 必须等待 R3 独立复验与主验通过，以及包含最新 exact no-trade 集合的 HK60 v2c 8/8、唯一 `--finalize-v3` 与 fresh bundle 验真完成。
 
 日期：2026-08-15（Asia/Shanghai）  
 平台边界：Windows 工程闭环；不声明 Linux/ext4 Gate。  
@@ -320,4 +320,41 @@ R1 报告：[`M1_HK60_R1_VerifiedMixedSourceAvailableHistoryGate独立初验报�
 - **最小复现**：public v3 fixture 后损坏 snapshot parquet，捕获实际 mixed AH 异常并检查异常图。
 - **新增测试**：实际异常、repr/traceback hostile marker、CLI 无 output。
 - **通过条件**：API 与 CLI 均只暴露稳定码；实现者原定向测试全绿。
+
+---
+
+## 15. R2 独立复验 FAIL 与 R3 精确返工
+
+R2 报告：[`M1_HK60_R2_VerifiedMixedSourceAvailableHistoryGate独立复验报告.md`](M1_HK60_R2_VerifiedMixedSourceAvailableHistoryGate独立复验报告.md)。
+
+### 15.1 现象
+
+R2 已关闭 §14.1，并对损坏 snapshot/event parquet 的异常图完成脱敏；但独立复验对实际损坏
+calendar parquet 和 DuckDB bar IO 发起公共调用时，捕获的 `BarWindowQueryError` 仍分别保留底层
+Polars `ComputeError` / DuckDB `InvalidInputException` 为 `__context__`，其中 DuckDB 原始消息可含绝对路径。
+稳定 `str`/`repr` 与 CLI code 干净不能替代异常对象图闭包。
+
+### 15.2 根因
+
+calendar 与 DuckDB 两条翻译仍在 active `except` handler 内执行 `raise ... from None`。这只抑制展示链，
+不会把异常对象的隐式 `__context__` 变为 `None`。snapshot/event 路径已使用的“记录失败、退出 handler、再抛稳定异常”
+模式才满足 §9。
+
+### 15.3 应遵循规则
+
+所有 mixed available-history 公共边界对底层 Polars、DuckDB、IO、path 或 hostile 异常的翻译必须离开
+active `except` 后执行，并以 `from None` 抛出；public 异常的 `__cause__` 与 `__context__` 都必须为 `None`。
+不得通过清洗字符串、改 traceback 展示或只测新构造异常代替实际底层失败。
+
+### 15.4 最小复现与新增测试
+
+- public v3 fixture 后损坏 calendar parquet，调用 mixed AH API，断言稳定码且 cause/context 均空；
+- 让 DuckDB 读取实际损坏 bar parquet，同样断言 cause/context 均空，错误消息/traceback 不含绝对路径或 hostile marker；
+- 两条 CLI 路径均不得写 output；
+- snapshot/event 已绿用例、mapping 外 missing 三个独立控制组和旧单源 API 全部保持通过。
+
+### 15.5 通过条件
+
+只修改必要异常翻译与正式回归，不改变数据选择、排序、来源、时间、public API 或输出 Schema。Windows 73项定向、
+Ruff、mypy、cold import 通过后，必须由未参与 R3 实现的另一全新 Cursor 会话复验 calendar/DuckDB 实际异常图。
 
