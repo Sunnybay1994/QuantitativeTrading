@@ -100,6 +100,10 @@ def test_default_empty_state_is_safe_and_explains_the_source_blocker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    app_source = _app_path().read_text(encoding="utf-8")
+    assert "use_container_width" not in app_source
+    assert app_source.count('width="stretch"') == 12
+
     monkeypatch.setenv(ARTIFACT_ROOT_ENV, str(tmp_path / "missing-artifacts"))
 
     app = AppTest.from_file(str(_app_path())).run(timeout=10)
