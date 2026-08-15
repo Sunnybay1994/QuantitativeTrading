@@ -5,9 +5,9 @@
 - 当前隔离集成线为 `codex/m1-m2-integration@本文件所在提交`；业务合流稳定点 `46f8e1d` 已保留原提交身份吸收
   M1 `9004b6d`、S2 `4ac392a`、liquidity `ec506b6`、GUI G1/C4 `a5c63f7`/`18dc006`、M4 RUN-0D2
   `92de0d4`、downside beta `3c8c6c4`、Alpha158 `0f737ac` 与 MAX `0363b0f`。此后 `ba83ad7` 吸收
-  R10 证据，`c2c8841` 吸收 MAX daily-basic 控制，`8427c83` 吸收 GUI D1；MAX-control 合流回归为
-  25 passed，GUI D1 合流回归为 19 passed/2 skipped，二者定向 Ruff、mypy、cold import 均通过，
-  不把这些定向证据扩大表述为覆盖其它范围。
+  R10 证据，`c2c8841` 吸收 MAX daily-basic 控制，`8427c83` 吸收 GUI D1，`086cae9` 吸收 PIT 首跑前置；
+  MAX-control 合流回归为 25 passed，GUI D1 为 19 passed/2 skipped，PIT 前置为 32 passed，三者定向
+  Ruff、mypy、cold import 均通过，不把这些定向证据扩大表述为覆盖其它范围。
 - 根 checkout 仍停在 `codex/m2-strategy-fastlane@4d569be`，由唯一 Tushare finance writer 使用；writer
   权威终态前禁止切换根分支或并发写源码。根只剩 `docs/quant_factor_research_v2/**` 25 个未跟踪资料文件，
   当前只读、不是 SSOT，未经用户决定不得删除、改写、提交或被运行时代码自动发现。
@@ -26,7 +26,9 @@
   历史混合 EOL 导致旧 code hash 不可由 commit 复算的 provenance 债仍开放，但不再阻塞 M2-FWD-R1。
 - finance writer 仍在根 checkout 单实例推进，`data/clean/tushare_financials` 尚未形成；真实 PIT quality run
   继续 fail-closed 等待 writer 终态、全量 bytes audit 与不可覆盖 snapshot。snapshot READY 时，PIT 优先于
-  新的非财务研究包。
+  新的非财务研究包。PIT 首跑前置 `3b8857c` 已以 A1 `RECONSTRUCTED_CURRENT_INVENTORY_V1`、coverage gate、
+  code-identity 与 `UNFROZEN/[]` pre-artifact STOP 进入 `086cae9`；来源线已 archive-first 退出，但这不等于
+  当前 raw、snapshot 或真实 report-type 分布已经 READY。
 - M3 retained 两折链仍没有权威 `completion.json`，stderr 为空且 owned 进程仍在运行；detached
   `c9f2f36`、两份 session 配置、owned 解释器与 `codex/m3-g8e-r2-windows-hardlink@71dffa5` 继续冻结，
   不恢复、不重启、不清理，也不以旧 receipt 代替本轮 completion；新 owned child 证明 fold2 h10 仍在自然运行。
@@ -39,11 +41,10 @@
   证明 output digest 失败时不展示 mismatch 面板、metrics 或 NAV。D1 没有增加运行能力，来源 worktree/branch 已在
   archive tag 留档后退出。两类 Vega Infinite extent warning 继续登记为 renderer 债，不宣称 zero-warning；G2
   本地作业编排仍仅有只读设计，当前不为一个运行按钮提前引入 SQLite worker/lease 平台。
-- `data/clean/tushare_financials` 仍不存在。CPU8–11 当前交给
-  `codex/m2-pit-first-run-prereq@c2c8841` 做 A1 current-inventory 重构、plan/ledger exact-set、coverage 与 code-identity
-  前置闭包的开发检查；不得读取 partial raw、发布 snapshot 或启动真实 PIT。M2-FWD-R1 已解除 R10 前置阻塞，
-  `codex/m2-forward-r1@121b672` 仅做静态实现并排在 PIT 前置检查之后。所有短任务保持 BelowNormal、CPU8–11、
-  数值线程不超过 2。
+- `data/clean/tushare_financials` 仍不存在。CPU8–11 当前交给 `codex/m2-forward-r1@121b672` 做正常开发检查；
+  R10 是其唯一业务前置且已关闭，PIT 只曾具有资源调度优先级。真实 2026-08-31 发布与真实 artifact 仍未授权。
+  `codex/m2-pit-r2-dimension-audit@086cae9` 仅在互斥 6 路径内静态实现 report-type/comp-type 分布证据，
+  不选 allowed values、不读 partial raw、不运行 Python。所有短任务保持 BelowNormal、CPU8–11、数值线程不超过 2。
   完整 branch/worktree 所有权、退出条件、artifact 保留条件和基础设施债
   见 [`项目结构与合流治理路线图`](roadmaps/项目结构与合流治理路线图.md)。项目初期继续以最小正确业务闭环
   为先；PIT、fail-closed、统一回放、OMS/风控/对账、人工准入和凭据安全不得作为“基础设施瑕疵”延期。
