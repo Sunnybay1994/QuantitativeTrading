@@ -8,7 +8,7 @@
 
 ## 0. 审计边界与查询时刻
 
-- 只读：AGENTS.md、`.ai/README.md`、U0C/U0C-R3 任务单与注册报告、`audit_daily_streak`/`scheduled_daily`/`run_scheduled_daily`/runner/测试、主树 `docs/agent/用户待批示与参与事项.md` 之 UA-M1-003、五任务状态、既有正式日证据与 registration 产物。
+- 只读：AGENTS.md、`.ai/README.md`、U0C/U0C-R3 任务单与注册报告、`audit_daily_streak`/`scheduled_daily`/`run_scheduled_daily`/runner/测试、主树 `docs/用户待批示与参与事项.md` 之 UA-M1-003、五任务状态、既有正式日证据与 registration 产物。
 - 严禁：手工触发、重注册、改任务、补跑、写 `data/`/`run_state/`/`artifacts/`（除本报告）、联网、`git add/commit/push`。
 - **查询时刻（权威）**：`2026-08-12 14:08:47 +08:00`。
 - **当前仅允许记 2/5**：仅 `2026-08-10`、`2026-08-11`。`2026-08-12` 仍为 `Ready`，`NextRunTime=2026-08-12 21:30:30 +08:00`（相对查询时刻为未来），不得预计。

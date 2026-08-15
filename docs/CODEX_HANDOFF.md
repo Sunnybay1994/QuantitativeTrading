@@ -120,7 +120,7 @@
 > `/home/mabw/AI_Coding_win/QuantitativeTrading` 解析到同一目录。Git 已有 `master` 与初始提交
 > `ed77978`；当前工作树含本轮未提交文档/实现变更，必须用 `git status` 逐项保护。
 > 本文是迁移快照，不取代 SSOT。里程碑以 [`../项目实施路线图.md`](../项目实施路线图.md) 为准，当前验收以
-> [`M3当前验收与返工总览.md`](M3当前验收与返工总览.md) 为准，架构理由以
+> 截至2026-07-31的旧状态见 [`M3当前验收与返工总览`](archive/agent-history/M3当前验收与返工总览_截至2026-07-31.md)，当前状态以本文件顶部最新摘要、代码和路线图为准，架构理由以
 > [`../A股港股通个人量化投研交易系统调研.md`](../A股港股通个人量化投研交易系统调研.md) 为准。
 
 ### 2026-07-22 最新续写摘要（覆盖下文旧流程与停止点）
@@ -334,8 +334,7 @@ evidence，禁止删除或覆盖；后续只处理 G1 契约/发布阻塞，不�
 - [`../AGENTS.md`](../AGENTS.md)、[`../.ai/README.md`](../.ai/README.md)：Agent、SSOT、验证、环境和交易安全规则。
 - [`../A股港股通个人量化投研交易系统调研.md`](../A股港股通个人量化投研交易系统调研.md)：完整技术选型和 pipeline 定位。
 - [`../项目实施路线图.md`](../项目实施路线图.md)：M0–M5 状态与 Gate。
-- [`M3实施与Agent交接.md`](M3实施与Agent交接.md)、[`M3_M4实施总规划.md`](M3_M4实施总规划.md)、
-  [`M3当前验收与返工总览.md`](M3当前验收与返工总览.md)：M3/M4 契约、依赖和状态。
+- [`M3实施与Agent交接.md`](M3实施与Agent交接.md)、[`M3_M4实施总规划.md`](M3_M4实施总规划.md)：M3/M4 契约与依赖；当前状态以本文件顶部摘要和路线图为准。
 - `configs/research/m3_qlib_example.toml`、`configs/trading/example.toml`、`configs/calendars/*.toml`。
 - `configs/tushare.local.toml`：本地秘密文件，必须安全手工迁移且继续忽略。
 

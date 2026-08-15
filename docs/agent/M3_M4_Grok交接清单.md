@@ -7,7 +7,7 @@
 
 1. [`../../AGENTS.md`](../../AGENTS.md)
 2. [`../../karpathy-guidelines.md`](../../karpathy-guidelines.md)
-3. [`../M3当前验收与返工总览.md`](../M3当前验收与返工总览.md)
+3. [`M3当前验收与返工总览（历史快照）`](../archive/agent-history/M3当前验收与返工总览_截至2026-07-31.md)
 4. [`../M3实施与Agent交接.md`](../M3实施与Agent交接.md) 中当前包章节
 5. 本清单
 6. 当前包的详细任务书和直接目标源码/测试

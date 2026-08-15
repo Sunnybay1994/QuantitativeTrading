@@ -8,10 +8,9 @@
 - [`../A股港股通个人量化投研交易系统调研.md`](../A股港股通个人量化投研交易系统调研.md)：技术选型、架构理由与候选方案 SSOT。
 - [`../项目实施路线图.md`](../项目实施路线图.md)：里程碑、实施顺序与验收标准 SSOT。
 - [`M3实施与Agent交接.md`](M3实施与Agent交接.md)：M3 权威契约与 Agent 交接入口。
-- [`M3当前验收与返工总览.md`](M3当前验收与返工总览.md)：M3 当前实际验收状态。
+- M3 当前实际状态以代码、路线图和 [`CODEX_HANDOFF.md`](CODEX_HANDOFF.md) 顶部最新摘要为准；截至2026-07-31的旧总览已移入 [`archive/agent-history/`](archive/agent-history/README.md)。
 - [`M3_M4实施总规划.md`](M3_M4实施总规划.md)：M3 剩余工作与 M4 的分包、依赖和交接总图。
 - [`CODEX_HANDOFF.md`](CODEX_HANDOFF.md)：2026-07-17 目录迁移停止点的全项目状态、环境、验证和恢复建议。
-- [`agent/CURSOR_GROK_M3_M4总执行Prompt.md`](agent/CURSOR_GROK_M3_M4总执行Prompt.md)：可直接粘贴给 Cursor Grok 4.5 High 的完整执行 Prompt。
 
 ## 文档治理
 

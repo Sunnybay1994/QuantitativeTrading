@@ -156,7 +156,7 @@ src/quant/domain/__init__.py
 src/quant/research/m3/__init__.py
 tests/unit/test_m3_snapshot.py
 tests/unit/test_schemas.py
-docs/M3_G2A快照Artifact交付报告.md
+docs/agent/M3_G2A快照Artifact交付报告.md
 docs/M3_G2A快照Artifact独立初验报告.md
 ```
 
@@ -361,7 +361,7 @@ src/quant/research/m3/provider.py
 src/quant/research/m3/__init__.py
 tests/unit/test_m3_fetch_qlib_tool.py
 tests/unit/test_m3_provider_materialization.py
-docs/M3_G2BProvider构建与静态验真交付报告.md
+docs/agent/M3_G2BProvider构建与静态验真交付报告.md
 docs/M3_G2BProvider构建与静态验真独立初验报告.md
 ```
 
@@ -502,7 +502,7 @@ src/quant/research/m3/qlib_adapter.py
 src/quant/research/m3/__init__.py             # 只导出 provider parent API，禁止 import qlib_adapter
 tests/unit/test_m3_provider_validation.py
 tests/unit/test_m3_qlib_worker_protocol.py
-docs/M3_G2CProvider公共API验真交付报告.md
+docs/agent/M3_G2CProvider公共API验真交付报告.md
 docs/M3_G2CProvider公共API验真独立初验报告.md
 ```
 
@@ -683,7 +683,7 @@ src/quant/research/m3/labels.py
 src/quant/research/m3/__init__.py
 tests/unit/test_m3_labels.py
 tests/unit/test_m3_label_artifact.py
-docs/M3_G3A标签Artifact交付报告.md
+docs/agent/M3_G3A标签Artifact交付报告.md
 docs/M3_G3A标签Artifact独立初验报告.md
 ```
 
@@ -1056,13 +1056,13 @@ process、独立 benchmark、Float32 口径或 verified bundle 降为“小问�
 固定报告：
 
 ```text
-docs/M3_G2A快照Artifact交付报告.md
+docs/agent/M3_G2A快照Artifact交付报告.md
 docs/M3_G2A快照Artifact独立初验报告.md
-docs/M3_G2BProvider构建与静态验真交付报告.md
+docs/agent/M3_G2BProvider构建与静态验真交付报告.md
 docs/M3_G2BProvider构建与静态验真独立初验报告.md
-docs/M3_G2CProvider公共API验真交付报告.md
+docs/agent/M3_G2CProvider公共API验真交付报告.md
 docs/M3_G2CProvider公共API验真独立初验报告.md
-docs/M3_G3A标签Artifact交付报告.md
+docs/agent/M3_G3A标签Artifact交付报告.md
 docs/M3_G3A标签Artifact独立初验报告.md
 docs/M3_G3B标签全量对账交付报告.md
 docs/M3_G3B标签全量对账独立初验报告.md

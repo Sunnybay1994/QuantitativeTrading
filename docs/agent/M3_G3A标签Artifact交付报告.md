@@ -21,7 +21,7 @@
 src/quant/research/m3/{labels.py,contracts.py,__init__.py,development_example.py,run_state.py}
 tests/unit/{test_m3_labels.py,test_m3_label_artifact.py,test_m3_run_state.py}
 docs/agent/M3_G2_G3快照Provider标签分包骨架与外部闭环任务单.md
-docs/M3_G3A标签Artifact交付报告.md
+docs/agent/M3_G3A标签Artifact交付报告.md
 artifacts/formal_g3a_wsl/**  # ignored，只读正式闭包脚本/输出
 ```
 

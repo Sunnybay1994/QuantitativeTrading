@@ -7,7 +7,7 @@ G2B、G2C、G3A、G3B、G4A，并通过 G4B parent/fresh-worker/receipt 与 G4C 
 阶段验收；development 结果不升级为 formal verified artifact，也不关闭真实 Qlib、正式 G2–G9 或性能
 Gate。正式 G1 Windows 发布物已通过磁盘验收；正式 G2A 与 development G5A 为两条互不阻塞的推进线，
 Linux/ext4 Gate 仍单独保留。
-当前验收与返工顺序见 [`M3当前验收与返工总览.md`](M3当前验收与返工总览.md)。
+当前状态与返工顺序以代码、根 [`项目实施路线图.md`](../项目实施路线图.md) 和 [`CODEX_HANDOFF.md`](CODEX_HANDOFF.md) 顶部最新摘要为准；截至2026-07-31的旧总览仅保留在 [`archive/agent-history/`](archive/agent-history/README.md) 供审计。
 本文是 **M3 实现契约的 SSOT**；技术选型理由仍以
 [`../A股港股通个人量化投研交易系统调研.md`](../A股港股通个人量化投研交易系统调研.md)
 为准，里程碑状态以 [`../项目实施路线图.md`](../项目实施路线图.md) 为准。
