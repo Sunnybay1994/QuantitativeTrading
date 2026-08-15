@@ -40,7 +40,9 @@
   publisher 严格结构校验已进入 `936ffee`，来源线也已 archive-first 退出；本次只完成代码与 fixture 回归，未读取
   partial raw、未执行 integrated `--verify-bytes`、未选择 allowed values，也未发布 snapshot。v3 只能证明
   report-type/comp-type 分布，不能证明 `report_type=1` 是 PIT 单季差分所需的累计流量；writer 终态后必须先
-  完成 audit-v4 type1/type2 对账，v4 未 `PASS` 时不得进入 R3 或 publisher。
+  完成 audit-v4 type1/type2 对账。只有 terminal + `verify_bytes=true` + 基础 quality 可用时才执行 flow CTE；
+  否则 v4=`NOT_EVALUATED`，不得用 partial evidence 下结论。publisher 只接受 terminal bytes-verified `PASS`，
+  其余状态不得进入 R3 或发布 snapshot。
 - TARGET R11 已以 source `7705898`、integration merge `864d254` 和
   `archive/m2-target-label-leakage-fix-20260816` 完成 archive-first 退出。修复强制先按当期 finite factor
   冻结 Top-K，再验证 chosen execution/exit/return；不得用未来 label 可得性删除高分证券并由下一名递补。
