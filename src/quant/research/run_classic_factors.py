@@ -792,10 +792,16 @@ def evaluate_walk_forward(
                 exit_date_column=portfolio_exit_date_column,
             )
             target_frames.append(targets)
+            holding_outcomes = panel.select(
+                pl.col("trade_date").alias("as_of"),
+                "symbol",
+                pl.col(portfolio_return_column).alias("holding_return"),
+            )
             for multiplier in cost_multipliers:
                 nav, portfolio_metrics = simulate_diagnostic_factor_portfolio(
                     targets=targets,
                     periods=periods,
+                    holding_outcomes=holding_outcomes,
                     costs=costs,
                     multiplier=multiplier,
                     initial_cash=initial_cash,

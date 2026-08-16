@@ -365,10 +365,16 @@ def evaluate_composite_walk_forward(
         )
         target_frames.append(targets)
         period_frames.append(periods.with_columns(pl.lit(fold.fold).alias("fold")))
+        holding_outcomes = scored.select(
+            pl.col("trade_date").alias("as_of"),
+            "symbol",
+            pl.col("label_20").alias("holding_return"),
+        )
         for multiplier in cost_multipliers:
             nav, portfolio_metrics = simulate_diagnostic_factor_portfolio(
                 targets=targets,
                 periods=periods,
+                holding_outcomes=holding_outcomes,
                 costs=costs,
                 multiplier=multiplier,
                 initial_cash=initial_cash,
