@@ -14,6 +14,9 @@ from quant.domain import TargetWeightSchema
 from quant.research.m3.contracts import AShareCostPeriod
 
 
+_GROSS_RETURN_TOLERANCE = Decimal("1e-12")
+
+
 def evaluate_factor_period(
     panel: pl.DataFrame,
     *,
@@ -46,14 +49,54 @@ def evaluate_factor_period(
         or (newey_west_lag is not None and (type(newey_west_lag) is not int or newey_west_lag < 0))
     ):
         raise ValueError("invalid factor evaluation request")
-    selected = (
-        panel.filter(
-            pl.col("trade_date").is_between(start_date, end_date, closed="both")
-            & (pl.col(exit_date) <= end_date)
+    window = panel.filter(
+        pl.col("trade_date").is_between(start_date, end_date, closed="both")
+    ).select("trade_date", "symbol", factor, label, exit_date)
+    if window.is_empty():
+        raise ValueError("factor period has no planned dates")
+
+    date_plan = (
+        window.group_by("trade_date")
+        .agg(
+            pl.len().alias("_rows"),
+            pl.col(exit_date).null_count().alias("_exit_nulls"),
+            pl.col(exit_date).drop_nulls().n_unique().alias("_exit_values"),
+            pl.col(exit_date).drop_nulls().first().alias("_exit_date"),
+        )
+        .sort("trade_date")
+    )
+    evaluable_dates: list[dt.date] = []
+    boundary_started = False
+    for row in date_plan.iter_rows(named=True):
+        trade_date = cast(dt.date, row["trade_date"])
+        row_count = cast(int, row["_rows"])
+        null_count = cast(int, row["_exit_nulls"])
+        value_count = cast(int, row["_exit_values"])
+        planned_exit = cast(dt.date | None, row["_exit_date"])
+        if null_count not in {0, row_count} or value_count > 1:
+            raise ValueError("factor period exit-date plan is inconsistent")
+        is_boundary = null_count == row_count or (
+            planned_exit is not None and planned_exit > end_date
+        )
+        if is_boundary:
+            boundary_started = True
+            continue
+        if (
+            boundary_started
+            or planned_exit is None
+            or type(planned_exit) is not dt.date
+            or planned_exit < trade_date
+        ):
+            raise ValueError("factor period exit-date plan is inconsistent")
+        evaluable_dates.append(trade_date)
+    if not evaluable_dates:
+        raise ValueError("factor period has no computable IC dates")
+
+    cohort = (
+        window.filter(
+            pl.col("trade_date").is_in(evaluable_dates)
             & pl.col(factor).is_not_null()
-            & pl.col(label).is_not_null()
             & pl.col(factor).is_finite()
-            & pl.col(label).is_finite()
         )
         .select(
             "trade_date",
@@ -63,31 +106,136 @@ def evaluate_factor_period(
         )
         .sort("trade_date", "symbol")
     )
-    ranked = selected.with_columns(
-        pl.len().over("trade_date").alias("n_symbols"),
-        pl.col("score").rank("average").over("trade_date").alias("score_rank"),
-        pl.col("label").rank("average").over("trade_date").alias("label_rank"),
-    ).filter(pl.col("n_symbols") >= minimum_symbols)
-    ranked = ranked.with_columns(
-        (
-            ((pl.col("score_rank") - 1.0) * groups / pl.col("n_symbols")).floor().cast(pl.Int64) + 1
-        ).alias("group")
+    factor_counts = (
+        cohort.group_by("trade_date").agg(pl.len().alias("factor_count")).sort("trade_date")
+    )
+    if (
+        factor_counts.height != len(evaluable_dates)
+        or cast(int, factor_counts.get_column("factor_count").min())
+        < minimum_symbols
+    ):
+        raise ValueError("factor period signal cohort is incomplete")
+    cohort = (
+        cohort.join(factor_counts, on="trade_date", how="left", validate="m:1")
+        .with_columns(
+            pl.col("score").rank("average").over("trade_date").alias("score_rank")
+        )
+        .with_columns(
+            (
+                (
+                    (pl.col("score_rank") - 1.0)
+                    * groups
+                    / pl.col("factor_count")
+                )
+                .floor()
+                .cast(pl.Int64)
+                + 1
+            ).alias("group")
+        )
+    )
+    paired = cohort.filter(pl.col("label").is_not_null() & pl.col("label").is_finite())
+    paired_counts = paired.group_by("trade_date").agg(pl.len().alias("paired_count"))
+    coverage = (
+        factor_counts.join(paired_counts, on="trade_date", how="left", validate="1:1")
+        .with_columns(pl.col("paired_count").fill_null(0).cast(pl.UInt32))
+        .sort("trade_date")
+    )
+    if cast(int, coverage.get_column("paired_count").min()) < minimum_symbols:
+        raise ValueError("factor period paired outcomes are incomplete")
+    paired = (
+        paired.join(
+            coverage.select("trade_date", "paired_count"),
+            on="trade_date",
+            how="left",
+            validate="m:1",
+        )
+        .with_columns(
+            pl.col("score").rank("average").over("trade_date").alias("paired_score_rank"),
+            pl.col("label").rank("average").over("trade_date").alias("label_rank"),
+        )
     )
     daily = (
-        ranked.group_by("trade_date")
+        paired.group_by("trade_date")
         .agg(
             pl.len().alias("n_symbols"),
             pl.corr("score", "label").alias("pearson_ic"),
-            pl.corr("score_rank", "label_rank").alias("rank_ic"),
+            pl.corr("paired_score_rank", "label_rank").alias("rank_ic"),
         )
-        .filter(pl.col("pearson_ic").is_finite() & pl.col("rank_ic").is_finite())
+        .join(coverage, on="trade_date", how="left", validate="1:1")
+        .with_columns(
+            pl.col("paired_count").alias("coverage_numerator"),
+            pl.col("factor_count").alias("coverage_denominator"),
+            pl.lit("PASS").alias("coverage_status"),
+        )
+        .select(
+            "trade_date",
+            "n_symbols",
+            "pearson_ic",
+            "rank_ic",
+            "factor_count",
+            "paired_count",
+            "coverage_numerator",
+            "coverage_denominator",
+            "coverage_status",
+        )
         .sort("trade_date")
     )
-    if daily.is_empty():
-        raise ValueError("factor period has no computable IC dates")
+    if (
+        daily.height != len(evaluable_dates)
+        or daily.get_column("trade_date").to_list() != evaluable_dates
+        or not daily.get_column("pearson_ic").is_finite().all()
+        or not daily.get_column("rank_ic").is_finite().all()
+    ):
+        raise ValueError("factor period has a non-computable planned date")
+
+    group_grid = pl.DataFrame({"trade_date": evaluable_dates}).join(
+        pl.DataFrame({"group": range(1, groups + 1)}), how="cross"
+    )
+    cohort_groups = cohort.group_by("trade_date", "group").agg(
+        pl.len().alias("factor_count")
+    )
+    paired_groups = paired.group_by("trade_date", "group").agg(
+        pl.len().alias("paired_count"), pl.col("label").mean().alias("mean_return")
+    )
     group_returns = (
-        ranked.group_by("trade_date", "group")
-        .agg(pl.len().alias("n_symbols"), pl.col("label").mean().alias("mean_return"))
+        group_grid.join(
+            cohort_groups,
+            on=["trade_date", "group"],
+            how="left",
+            validate="1:1",
+        )
+        .join(
+            paired_groups,
+            on=["trade_date", "group"],
+            how="left",
+            validate="1:1",
+        )
+        .with_columns(
+            pl.col("factor_count").fill_null(0).cast(pl.UInt32),
+            pl.col("paired_count").fill_null(0).cast(pl.UInt32),
+        )
+        .with_columns(
+            pl.col("paired_count").alias("n_symbols"),
+            pl.col("paired_count").alias("coverage_numerator"),
+            pl.col("factor_count").alias("coverage_denominator"),
+            pl.when(pl.col("factor_count") == 0)
+            .then(pl.lit("EMPTY_FACTOR_GROUP"))
+            .when(pl.col("paired_count") == 0)
+            .then(pl.lit("NO_PAIRED_LABELS"))
+            .otherwise(pl.lit("PASS"))
+            .alias("coverage_status"),
+        )
+        .select(
+            "trade_date",
+            "group",
+            "n_symbols",
+            "mean_return",
+            "factor_count",
+            "paired_count",
+            "coverage_numerator",
+            "coverage_denominator",
+            "coverage_status",
+        )
         .sort("trade_date", "group")
     )
     rank_values = [float(value) for value in daily.get_column("rank_ic")]
@@ -343,6 +491,7 @@ def simulate_diagnostic_factor_portfolio(
     *,
     targets: pl.DataFrame,
     periods: pl.DataFrame,
+    holding_outcomes: pl.DataFrame,
     costs: tuple[AShareCostPeriod, ...],
     multiplier: Decimal,
     initial_cash: Decimal,
@@ -354,6 +503,14 @@ def simulate_diagnostic_factor_portfolio(
         or targets.is_empty()
         or not isinstance(periods, pl.DataFrame)
         or periods.is_empty()
+        or not isinstance(holding_outcomes, pl.DataFrame)
+        or holding_outcomes.is_empty()
+        or holding_outcomes.columns != ["as_of", "symbol", "holding_return"]
+        or holding_outcomes.schema != {
+            "as_of": pl.Date,
+            "symbol": pl.String,
+            "holding_return": pl.Float64,
+        }
         or type(costs) is not tuple
         or not costs
         or any(type(item) is not AShareCostPeriod for item in costs)
@@ -368,20 +525,72 @@ def simulate_diagnostic_factor_portfolio(
         or annualization_periods <= 0
     ):
         raise ValueError("invalid diagnostic portfolio inputs")
+    if (
+        targets.select(pl.struct("as_of", "symbol").is_duplicated().any()).item()
+        or periods.get_column("as_of").n_unique() != periods.height
+        or set(targets.get_column("as_of").to_list())
+        != set(periods.get_column("as_of").to_list())
+    ):
+        raise ValueError("diagnostic portfolio keys are not unique")
     equity = initial_cash
     previous: dict[str, Decimal] = {}
+    previous_exit_date: dt.date | None = None
     rows: list[dict[str, object]] = []
     period_returns: list[float] = []
+    last_period_start_equity = initial_cash
     with localcontext() as context:
         context.prec = 50
-        for period_row in periods.iter_rows(named=True):
+        for period_row in periods.sort("as_of").iter_rows(named=True):
             as_of = period_row["as_of"]
             execution_date = period_row["execution_date"]
+            exit_date_value = period_row["exit_date"]
+            if (
+                type(as_of) is not dt.date
+                or type(execution_date) is not dt.date
+                or type(exit_date_value) is not dt.date
+                or exit_date_value < execution_date
+                or (
+                    previous_exit_date is not None
+                    and previous_exit_date != execution_date
+                )
+            ):
+                raise ValueError("diagnostic holding periods are not contiguous")
             current_frame = targets.filter(pl.col("as_of") == as_of)
+            if current_frame.is_empty():
+                raise ValueError("diagnostic target period is missing")
             current = {
                 symbol: Decimal(str(weight))
                 for symbol, weight in current_frame.select("symbol", "weight").iter_rows()
             }
+            if (
+                len(current) != current_frame.height
+                or any(not weight.is_finite() or weight < 0 for weight in current.values())
+                or sum(current.values()) > Decimal(1)
+            ):
+                raise ValueError("diagnostic target weights are invalid")
+            selected_outcomes = holding_outcomes.filter(
+                (pl.col("as_of") == as_of)
+                & pl.col("symbol").is_in(current_frame.get_column("symbol").implode())
+            ).sort("symbol")
+            if (
+                selected_outcomes.height != current_frame.height
+                or selected_outcomes.select(
+                    pl.struct("as_of", "symbol").is_duplicated().any()
+                ).item()
+                or selected_outcomes.get_column("holding_return").null_count()
+                or not selected_outcomes.get_column("holding_return").is_finite().all()
+            ):
+                raise ValueError("diagnostic holding outcomes are incomplete")
+            returns = {
+                symbol: Decimal(str(value))
+                for symbol, value in selected_outcomes.select(
+                    "symbol", "holding_return"
+                ).iter_rows()
+            }
+            if set(returns) != set(current) or any(
+                value < Decimal(-1) for value in returns.values()
+            ):
+                raise ValueError("diagnostic holding outcomes are invalid")
             start_equity = equity
             cost = _target_change_cost(
                 previous,
@@ -391,8 +600,26 @@ def simulate_diagnostic_factor_portfolio(
                 multiplier=multiplier,
                 costs=costs,
             )
-            gross_return = Decimal(str(period_row["gross_return"]))
-            equity = (equity - cost) * (Decimal(1) + gross_return)
+            if cost >= equity:
+                raise ValueError("diagnostic portfolio costs exhaust equity")
+            gross_return = sum(
+                current[symbol] * returns[symbol] for symbol in current
+            )
+            recorded_value = period_row["gross_return"]
+            if type(recorded_value) not in {int, float} or not math.isfinite(
+                float(recorded_value)
+            ):
+                raise ValueError("diagnostic gross return does not match outcomes")
+            recorded_gross = Decimal(str(recorded_value))
+            if (
+                not recorded_gross.is_finite()
+                or abs(recorded_gross - gross_return) > _GROSS_RETURN_TOLERANCE
+            ):
+                raise ValueError("diagnostic gross return does not match outcomes")
+            gross_factor = Decimal(1) + gross_return
+            if gross_factor <= 0:
+                raise ValueError("diagnostic holding return exhausts equity")
+            equity = (equity - cost) * gross_factor
             net_return = equity / start_equity - Decimal(1)
             turnover = sum(
                 abs(current.get(symbol, Decimal(0)) - previous.get(symbol, Decimal(0)))
@@ -403,7 +630,7 @@ def simulate_diagnostic_factor_portfolio(
                 {
                     "as_of": as_of,
                     "execution_date": execution_date,
-                    "exit_date": period_row["exit_date"],
+                    "exit_date": exit_date_value,
                     "gross_return": float(gross_return),
                     "net_return": float(net_return),
                     "turnover": float(turnover),
@@ -412,8 +639,16 @@ def simulate_diagnostic_factor_portfolio(
                     "terminal_cost": 0.0,
                 }
             )
-            previous = current
-        terminal_date = periods.get_column("exit_date").tail(1).item()
+            previous = {
+                symbol: current[symbol] * (Decimal(1) + returns[symbol]) / gross_factor
+                for symbol in current
+                if current[symbol] * (Decimal(1) + returns[symbol]) > 0
+            }
+            previous_exit_date = exit_date_value
+            last_period_start_equity = start_equity
+        if previous_exit_date is None:
+            raise ValueError("diagnostic holding periods are empty")
+        terminal_date = previous_exit_date
         terminal_cost = _target_change_cost(
             previous,
             {},
@@ -422,11 +657,12 @@ def simulate_diagnostic_factor_portfolio(
             multiplier=multiplier,
             costs=costs,
         )
+        if terminal_cost >= equity:
+            raise ValueError("diagnostic terminal costs exhaust equity")
         equity -= terminal_cost
     rows[-1]["terminal_cost"] = float(terminal_cost)
     rows[-1]["equity"] = float(equity)
-    prior_equity = Decimal(str(rows[-2]["equity"])) if len(rows) > 1 else initial_cash
-    period_returns[-1] = float(equity / prior_equity - Decimal(1))
+    period_returns[-1] = float(equity / last_period_start_equity - Decimal(1))
     rows[-1]["net_return"] = period_returns[-1]
     nav = pl.DataFrame(rows)
     mean = sum(period_returns) / len(period_returns)
