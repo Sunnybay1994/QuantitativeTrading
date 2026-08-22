@@ -46,12 +46,13 @@ from quant.research.lightweight_run import (
     compute_code_sha256,
     publish_lightweight_research_run,
 )
+from quant.research.m3.contracts import AShareCostPeriod
 from quant.research.pit_quality_research import (
     build_pit_quality_signal_values,
     monthly_signal_sessions,
 )
 from quant.research.run_classic_factors import (
-    _cost_periods,
+    _cost_schedule_binding,
     _folds,
     _inside,
     _parquet,
@@ -113,14 +114,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     artifact_root = _inside(project_root, args.artifact_root, strict=False)
     data_root = resolve_data_root(args.data_root, base=project_root)
     config_payload = config_path.read_bytes()
-    with config_path.open("rb") as stream:
-        config = cast(dict[str, Any], tomllib.load(stream))
+    config = cast(dict[str, Any], tomllib.loads(config_payload.decode("utf-8")))
     _validate_config(config, threads=args.threads)
 
     data = cast(Mapping[str, Any], config["data"])
     universe = cast(Mapping[str, Any], config["universe"])
     factors = cast(Mapping[str, Any], config["factors"])
     portfolio = cast(Mapping[str, Any], config["portfolio"])
+    cost_periods, cost_semantic_sha256 = _cost_schedule_binding(project_root, portfolio)
+    if cost_semantic_sha256 != portfolio["cost_schedule_semantic_sha256"]:
+        raise ValueError("PIT cost schedule semantic identity mismatch")
     bar_snapshot_id = cast(str, data["bar_snapshot_id"])
     bar_snapshot = verify_tushare_bulk_clean_snapshot(
         data_root=data_root, snapshot_id=bar_snapshot_id
@@ -242,7 +245,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         rebalance_every=cast(int, portfolio["rebalance_every_signals"]),
         initial_cash=Decimal(str(portfolio["initial_cash"])),
         cost_multipliers=tuple(Decimal(str(value)) for value in portfolio["cost_multipliers"]),
-        costs=_cost_periods(project_root, portfolio),
+        costs=cost_periods,
         strategy_name=cast(str, config["research"]["strategy_name"]),
         strategy_version=cast(str, config["research"]["strategy_version"]),
         portfolio_return_column="label_rebalance",
@@ -361,6 +364,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         cost_multipliers=tuple(float(value) for value in portfolio["cost_multipliers"]),
         selection_metric="monthly_pit_walk_forward_rank_ic_with_redundancy_gate",
         inputs=(
+            _cost_schedule_input_digest(cost_periods, cost_semantic_sha256),
             ResearchInputDigestV1(
                 name="tushare-daily-basic",
                 rows=daily_snapshot.rows,
@@ -748,6 +752,10 @@ def _validate_config(config: Mapping[str, Any], *, threads: int) -> None:
             and tuple(cast(list[int], factors["horizons"])) == (1, 5, 20)
             and factors["newey_west_lag"] == 1
             and tuple(float(value) for value in portfolio["cost_multipliers"]) == (0.5, 1.0, 2.0)
+            and type(portfolio["cost_schedule_semantic_sha256"]) is str
+            and len(cast(str, portfolio["cost_schedule_semantic_sha256"])) == 64
+            and set(cast(str, portfolio["cost_schedule_semantic_sha256"]))
+            <= set("0123456789abcdef")
             and portfolio["rebalance_every_signals"] == 1
             and float(portfolio["annualization_periods"]) == 12.0
             and type(threads) is int
@@ -757,6 +765,18 @@ def _validate_config(config: Mapping[str, Any], *, threads: int) -> None:
         valid = False
     if not valid:
         raise ValueError("invalid PIT-quality-factor config")
+
+
+def _cost_schedule_input_digest(
+    periods: tuple[AShareCostPeriod, ...], semantic_sha256: str
+) -> ResearchInputDigestV1:
+    return ResearchInputDigestV1(
+        name="a-share-cost-schedule",
+        rows=len(periods),
+        min_date=None,
+        max_date=None,
+        content_sha256=semantic_sha256,
+    )
 
 
 def _report(
