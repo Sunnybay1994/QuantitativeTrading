@@ -8,18 +8,81 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+import quant.research.run_pit_quality_factors as pit_runner
 from quant.factors import PIT_QUALITY_FACTOR_NAMES
 from quant.research.classic_factor_evaluation import build_diagnostic_factor_targets
+from quant.research.lightweight_run import (
+    LightweightResearchRunV1,
+    ResearchFoldV1,
+    ResearchInputDigestV1,
+    publish_lightweight_research_run,
+    verify_lightweight_research_run,
+)
+from quant.research.run_classic_factors import _cost_schedule_binding_from_payload
 from quant.research.run_pit_quality_factors import (
+    _cost_schedule_input_digest,
     apply_pit_quality_coverage_gate,
     apply_redundancy_signal_coverage_gate,
     attach_redundancy_signal_coverage,
     _validate_config,
     build_pit_quality_coverage,
     build_pit_quality_panel,
+    main,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_COST_SEMANTIC_SHA256 = "b2041d8495aa408de0bd264d6c03eb7e4d174e03f120289bc8471cbb5ea0a959"
+
+
+def _frozen_config_payload() -> bytes:
+    payload = (
+        PROJECT_ROOT / "configs/research/m2_pit_quality_factors.toml"
+    ).read_bytes().replace(b"\r\n", b"\n")
+    return payload.replace(
+        b'report_type_freeze_status = "UNFROZEN"',
+        b'report_type_freeze_status = "FROZEN"',
+    ).replace(b"allowed_report_types = []", b'allowed_report_types = ["1"]')
+
+
+def _pit_project(tmp_path: Path, *, config_payload: bytes) -> tuple[Path, Path, Path, Path]:
+    project_root = tmp_path / "project"
+    config_path = project_root / "configs/research/m2_pit_quality_factors.toml"
+    cost_path = project_root / "configs/research/m3_qlib_example.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_bytes(config_payload)
+    cost_path.write_bytes(
+        (PROJECT_ROOT / "configs/research/m3_qlib_example.toml").read_bytes()
+    )
+    data_root = project_root / "data"
+    data_root.mkdir()
+    return project_root, config_path, cost_path, data_root
+
+
+def _main_args(project_root: Path, data_root: Path) -> list[str]:
+    return [
+        "--config",
+        "configs/research/m2_pit_quality_factors.toml",
+        "--daily-basic-snapshot-id",
+        "a" * 64,
+        "--financial-snapshot-id",
+        "b" * 64,
+        "--data-root",
+        str(data_root),
+        "--artifact-root",
+        "artifacts-test",
+        "--project-root",
+        str(project_root),
+    ]
+
+
+def _replace_expected_cost_sha(payload: bytes, replacement: str | None) -> bytes:
+    line = f'cost_schedule_semantic_sha256 = "{_COST_SEMANTIC_SHA256}"\n'.encode()
+    if replacement is None:
+        return payload.replace(line, b"")
+    return payload.replace(
+        line,
+        f'cost_schedule_semantic_sha256 = "{replacement}"\n'.encode(),
+    )
 
 
 def _bars() -> pl.DataFrame:
@@ -221,6 +284,7 @@ def test_pit_quality_config_is_frozen_without_unpublished_snapshot_ids() -> None
     assert "financial_snapshot_id" not in config["data"]
     assert "daily_basic_snapshot_id" not in config["data"]
     assert config["portfolio"]["rebalance_every_signals"] == 1
+    assert config["portfolio"]["cost_schedule_semantic_sha256"] == _COST_SEMANTIC_SHA256
     assert config["factors"]["report_type_freeze_status"] == "UNFROZEN"
     assert config["factors"]["allowed_report_types"] == []
 
@@ -236,6 +300,155 @@ def test_pit_quality_config_is_frozen_without_unpublished_snapshot_ids() -> None
 
     with pytest.raises(ValueError, match="invalid PIT-quality-factor config"):
         _validate_config(frozen, threads=3)
+
+
+@pytest.mark.parametrize(
+    ("replacement", "message"),
+    (
+        (None, "invalid PIT-quality-factor config"),
+        ("f" * 63, "invalid PIT-quality-factor config"),
+        (_COST_SEMANTIC_SHA256.upper(), "invalid PIT-quality-factor config"),
+        ("0" * 64, "PIT cost schedule semantic identity mismatch"),
+    ),
+)
+def test_cost_identity_rejects_before_data_or_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replacement: str | None,
+    message: str,
+) -> None:
+    payload = _replace_expected_cost_sha(_frozen_config_payload(), replacement)
+    project_root, _, _, data_root = _pit_project(tmp_path, config_payload=payload)
+    verifier_calls: list[str] = []
+
+    def unexpected_verifier(**_: object) -> object:
+        verifier_calls.append("called")
+        raise AssertionError("data verifier must not run")
+
+    monkeypatch.setattr(pit_runner, "verify_tushare_bulk_clean_snapshot", unexpected_verifier)
+    monkeypatch.setattr(pit_runner, "verify_tushare_daily_basic_snapshot", unexpected_verifier)
+    monkeypatch.setattr(pit_runner, "verify_tushare_financial_snapshot", unexpected_verifier)
+    with pytest.raises(ValueError, match=message):
+        main(_main_args(project_root, data_root))
+    assert verifier_calls == []
+    assert not (project_root / "artifacts-test").exists()
+
+
+def test_main_and_cost_config_each_use_one_stable_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root, config_path, cost_path, data_root = _pit_project(
+        tmp_path, config_payload=_frozen_config_payload()
+    )
+    original_read_bytes = Path.read_bytes
+    reads = {config_path.resolve(): 0, cost_path.resolve(): 0}
+
+    def read_then_drift(path: Path) -> bytes:
+        payload = original_read_bytes(path)
+        resolved = path.resolve()
+        if resolved == config_path.resolve():
+            reads[resolved] += 1
+            config_path.write_bytes(
+                _replace_expected_cost_sha(payload, "0" * 64)
+            )
+        elif resolved == cost_path.resolve():
+            reads[resolved] += 1
+            cost_path.write_bytes(
+                payload.replace(
+                    b'scaled_components = ["commission_rate", "commission_min", "slippage"]',
+                    b'scaled_components = ["commission_rate", "commission_min", "slippage"]\nunexpected = 1',
+                )
+            )
+        return payload
+
+    def stop_at_first_verifier(**_: object) -> object:
+        raise RuntimeError("SNAPSHOT_SENTINEL")
+
+    def unexpected_verifier(**_: object) -> object:
+        raise AssertionError("later verifier must not run")
+
+    monkeypatch.setattr(Path, "read_bytes", read_then_drift)
+    monkeypatch.setattr(
+        pit_runner, "verify_tushare_bulk_clean_snapshot", stop_at_first_verifier
+    )
+    monkeypatch.setattr(pit_runner, "verify_tushare_daily_basic_snapshot", unexpected_verifier)
+    monkeypatch.setattr(pit_runner, "verify_tushare_financial_snapshot", unexpected_verifier)
+    with pytest.raises(RuntimeError, match="SNAPSHOT_SENTINEL"):
+        main(_main_args(project_root, data_root))
+    assert reads == {config_path.resolve(): 1, cost_path.resolve(): 1}
+    assert not (project_root / "artifacts-test").exists()
+
+
+def test_cost_input_is_canonical_and_freshly_verifiable(tmp_path: Path) -> None:
+    periods, semantic_sha256 = _cost_schedule_binding_from_payload(
+        (PROJECT_ROOT / "configs/research/m3_qlib_example.toml").read_bytes()
+    )
+    cost_input = _cost_schedule_input_digest(periods, semantic_sha256)
+    inputs = (
+        cost_input,
+        ResearchInputDigestV1("tushare-daily-basic", 1, None, None, "1" * 64),
+        ResearchInputDigestV1("tushare-financials", 1, None, None, "2" * 64),
+        ResearchInputDigestV1("tushare-stock-bars", 1, None, None, "3" * 64),
+    )
+    assert cost_input == ResearchInputDigestV1(
+        name="a-share-cost-schedule",
+        rows=3,
+        min_date=None,
+        max_date=None,
+        content_sha256=_COST_SEMANTIC_SHA256,
+    )
+    run = LightweightResearchRunV1(
+        schema_version="lightweight-research-run-v1",
+        run_id="",
+        hypothesis_id="cost-semantic-test",
+        hypothesis="Cost semantics are explicitly bound.",
+        strategy_name="pit_quality_test",
+        strategy_version="v1",
+        conclusion="RESEARCH_ONLY",
+        random_seed=1,
+        config_relative_path="configs/research/test.toml",
+        config_sha256="a" * 64,
+        code_sha256="b" * 64,
+        universe_name="test-universe",
+        universe_frozen_as_of=dt.date(2019, 12, 31),
+        candidate_symbols=("000001.SZ",),
+        data_start=dt.date(2020, 1, 1),
+        data_end=dt.date(2022, 12, 31),
+        signal_timing="close",
+        execution_timing="next_session_open",
+        valuation_timing="close",
+        folds=(
+            ResearchFoldV1(
+                fold=1,
+                train_start=dt.date(2020, 1, 1),
+                train_end=dt.date(2020, 6, 30),
+                validation_start=dt.date(2020, 7, 1),
+                validation_end=dt.date(2020, 12, 31),
+                test_start=dt.date(2021, 1, 1),
+                test_end=dt.date(2021, 12, 31),
+            ),
+        ),
+        cost_multipliers=(0.5, 1.0, 2.0),
+        selection_metric="cost-semantic-test",
+        inputs=inputs,
+        outputs=(),
+        aggregate_metrics=(("factor_count", 1),),
+        caveats=("test fixture",),
+    )
+    root, published, reused = publish_lightweight_research_run(
+        artifact_root=tmp_path,
+        run=run,
+        output_payloads={"report.json": b"{}"},
+    )
+    assert reused is False
+    verified = verify_lightweight_research_run(run_root=root)
+    assert verified == published
+    assert tuple(item.name for item in verified.inputs) == (
+        "a-share-cost-schedule",
+        "tushare-daily-basic",
+        "tushare-financials",
+        "tushare-stock-bars",
+    )
 
 
 def test_redundancy_calendar_coverage_fails_closed_for_one_missing_month() -> None:

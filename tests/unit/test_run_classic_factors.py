@@ -10,6 +10,9 @@ import pytest
 
 from quant.research.lightweight_run import ResearchFoldV1
 from quant.research.run_classic_factors import (
+    _cost_periods,
+    _cost_schedule_binding,
+    _cost_schedule_binding_from_payload,
     _validate_config,
     apply_fifth_batch_admission_gates,
     apply_fourth_batch_admission_gates,
@@ -21,6 +24,117 @@ from quant.research.run_classic_factors import (
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_COST_SEMANTIC_SHA256 = "b2041d8495aa408de0bd264d6c03eb7e4d174e03f120289bc8471cbb5ea0a959"
+
+
+def _cost_payload() -> bytes:
+    return (PROJECT_ROOT / "configs/research/m3_qlib_example.toml").read_bytes().replace(
+        b"\r\n", b"\n"
+    )
+
+
+def test_cost_schedule_semantic_digest_ignores_non_cost_serialization_only() -> None:
+    periods, digest = _cost_schedule_binding_from_payload(_cost_payload())
+    assert len(periods) == 3
+    assert digest == _COST_SEMANTIC_SHA256
+
+    equivalent = (
+        _cost_payload()
+        .decode("utf-8")
+        .replace("commission_min = 5.0", "commission_min = 5.0000")
+        .replace("commission_rate = 0.00025", "commission_rate = 2.5e-4")
+        .replace("log_model = true", "log_model = false")
+        .replace("\n", "\r\n")
+        .encode("utf-8")
+    )
+    assert _cost_schedule_binding_from_payload(equivalent) == (periods, digest)
+
+    for changed in (
+        _cost_payload().replace(
+            b'a_share_research_cost_schedule_v1', b'a_share_research_cost_schedule_v2'
+        ),
+        _cost_payload().replace(b"www.mof.gov.cn", b"example.invalid"),
+        _cost_payload().replace(b"commission_rate = 0.00025", b"commission_rate = 0.00026", 1),
+    ):
+        assert _cost_schedule_binding_from_payload(changed)[1] != digest
+
+    changed_scaled_components = _cost_payload().replace(
+        b'scaled_components = ["commission_rate", "commission_min", "slippage"]',
+        b'scaled_components = ["commission_rate", "slippage"]',
+    )
+    with pytest.raises(ValueError, match="invalid A-share cost schedule"):
+        _cost_schedule_binding_from_payload(changed_scaled_components)
+
+
+@pytest.mark.parametrize(
+    "changed",
+    (
+        _cost_payload().replace(
+            b'scaled_components = ["commission_rate", "commission_min", "slippage"]',
+            b'scaled_components = ["commission_rate", "commission_min", "slippage"]\nunexpected = 1',
+        ),
+        _cost_payload().replace(
+            b'schedule_version = "a_share_research_cost_schedule_v1"\n', b"", 1
+        ),
+        _cost_payload().replace(
+            b"commission_rate = 0.00025",
+            b"commission_rate = 0.00025\nunexpected = 1",
+            1,
+        ),
+        _cost_payload().replace(b"commission_rate = 0.00025\n", b"", 1),
+        _cost_payload().replace(b"effective_from = 2022-04-29", b"effective_from = 2022-04-30"),
+        _cost_payload().replace(b"effective_from = 2022-04-29", b"effective_from = 2022-04-28"),
+        _cost_payload().replace(b"effective_to = 2022-04-28\n", b"", 1),
+        _cost_payload().replace(b"commission_min = 5.0", b"commission_min = true", 1),
+    ),
+    ids=(
+        "cost-root-extra-key",
+        "cost-root-missing-key",
+        "period-extra-key",
+        "period-missing-key",
+        "period-gap",
+        "period-overlap",
+        "non-final-open-period",
+        "boolean-decimal",
+    ),
+)
+def test_cost_schedule_rejects_structural_and_numeric_drift(changed: bytes) -> None:
+    with pytest.raises(ValueError, match="invalid A-share cost schedule"):
+        _cost_schedule_binding_from_payload(changed)
+
+
+def test_cost_periods_compatibility_and_single_payload_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    portfolio = {"cost_config_relative_path": "configs/cost.toml"}
+    cost_path = tmp_path / "configs/cost.toml"
+    cost_path.parent.mkdir(parents=True)
+    original_payload = _cost_payload()
+    cost_path.write_bytes(original_payload)
+    expected = _cost_schedule_binding_from_payload(original_payload)
+    original_read_bytes = Path.read_bytes
+    reads = 0
+
+    def read_then_drift(path: Path) -> bytes:
+        nonlocal reads
+        payload = original_read_bytes(path)
+        if path.resolve() == cost_path.resolve():
+            reads += 1
+            cost_path.write_bytes(
+                payload.replace(
+                    b'scaled_components = ["commission_rate", "commission_min", "slippage"]',
+                    b'scaled_components = ["commission_rate", "commission_min", "slippage"]\nunexpected = 1',
+                )
+            )
+        return payload
+
+    monkeypatch.setattr(Path, "read_bytes", read_then_drift)
+    assert _cost_schedule_binding(tmp_path, portfolio) == expected
+    assert reads == 1
+
+    cost_path.write_bytes(original_payload)
+    monkeypatch.undo()
+    assert _cost_periods(tmp_path, portfolio) == expected[0]
 
 
 def test_frozen_universe_uses_only_ranked_pre_research_liquidity() -> None:

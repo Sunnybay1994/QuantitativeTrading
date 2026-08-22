@@ -87,6 +87,34 @@ _FOURTH_BATCH_CODE_PATHS: tuple[str, ...] = _CODE_PATHS + (
 _FIFTH_BATCH_CODE_PATHS: tuple[str, ...] = _FOURTH_BATCH_CODE_PATHS + (
     "src/quant/factors/classic_fifth_batch.py",
 )
+_COST_SECTION_KEYS = frozenset(
+    {
+        "schedule_version",
+        "stamp_tax_source",
+        "transfer_fee_source",
+        "scaled_components",
+        "a_share_periods",
+    }
+)
+_COST_PERIOD_REQUIRED_KEYS = frozenset(
+    {
+        "effective_from",
+        "commission_rate",
+        "commission_min",
+        "stamp_tax_sell",
+        "transfer_fee",
+        "slippage",
+    }
+)
+_COST_PERIOD_KEYS = _COST_PERIOD_REQUIRED_KEYS | {"effective_to"}
+_COST_DECIMAL_FIELDS = (
+    "commission_rate",
+    "commission_min",
+    "stamp_tax_sell",
+    "transfer_fee",
+    "slippage",
+)
+_COST_SCALED_COMPONENTS = ("commission_rate", "commission_min", "slippage")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1352,22 +1380,125 @@ def _folds(config: Mapping[str, Any]) -> tuple[ResearchFoldV1, ...]:
 
 
 def _cost_periods(project_root: Path, portfolio: Mapping[str, Any]) -> tuple[AShareCostPeriod, ...]:
-    path = _inside(project_root, Path(cast(str, portfolio["cost_config_relative_path"])))
-    with path.open("rb") as stream:
-        config = tomllib.load(stream)
-    rows = cast(list[Mapping[str, Any]], config["costs"]["a_share_periods"])
-    return tuple(
-        AShareCostPeriod(
-            effective_from=cast(dt.date, row["effective_from"]),
-            effective_to=cast(dt.date | None, row.get("effective_to")),
-            commission_rate=Decimal(str(row["commission_rate"])),
-            commission_min=Decimal(str(row["commission_min"])),
-            stamp_tax_sell=Decimal(str(row["stamp_tax_sell"])),
-            transfer_fee=Decimal(str(row["transfer_fee"])),
-            slippage=Decimal(str(row["slippage"])),
-        )
-        for row in rows
-    )
+    return _cost_schedule_binding(project_root, portfolio)[0]
+
+
+def _cost_schedule_binding(
+    project_root: Path, portfolio: Mapping[str, Any]
+) -> tuple[tuple[AShareCostPeriod, ...], str]:
+    relative_path = portfolio.get("cost_config_relative_path")
+    if type(relative_path) is not str or not relative_path:
+        raise ValueError("invalid A-share cost schedule")
+    path = _inside(project_root, Path(relative_path))
+    return _cost_schedule_binding_from_payload(path.read_bytes())
+
+
+def _cost_schedule_binding_from_payload(
+    payload: bytes,
+) -> tuple[tuple[AShareCostPeriod, ...], str]:
+    if type(payload) is not bytes:
+        raise ValueError("invalid A-share cost schedule")
+    try:
+        config = tomllib.loads(payload.decode("utf-8"), parse_float=Decimal)
+        costs = config["costs"]
+        if type(costs) is not dict or frozenset(costs) != _COST_SECTION_KEYS:
+            raise ValueError
+        if (
+            type(costs["schedule_version"]) is not str
+            or not costs["schedule_version"]
+            or type(costs["stamp_tax_source"]) is not str
+            or not costs["stamp_tax_source"]
+            or type(costs["transfer_fee_source"]) is not str
+            or not costs["transfer_fee_source"]
+            or type(costs["scaled_components"]) is not list
+            or tuple(costs["scaled_components"]) != _COST_SCALED_COMPONENTS
+            or type(costs["a_share_periods"]) is not list
+            or not costs["a_share_periods"]
+        ):
+            raise ValueError
+
+        periods: list[AShareCostPeriod] = []
+        canonical_periods: list[dict[str, str | None]] = []
+        for row in costs["a_share_periods"]:
+            if (
+                type(row) is not dict
+                or not _COST_PERIOD_REQUIRED_KEYS <= frozenset(row)
+                or not frozenset(row) <= _COST_PERIOD_KEYS
+                or type(row["effective_from"]) is not dt.date
+                or (
+                    "effective_to" in row
+                    and type(row["effective_to"]) is not dt.date
+                )
+            ):
+                raise ValueError
+            decimals = {
+                name: _cost_decimal(row[name]) for name in _COST_DECIMAL_FIELDS
+            }
+            period = AShareCostPeriod(
+                effective_from=row["effective_from"],
+                effective_to=row.get("effective_to"),
+                commission_rate=decimals["commission_rate"],
+                commission_min=decimals["commission_min"],
+                stamp_tax_sell=decimals["stamp_tax_sell"],
+                transfer_fee=decimals["transfer_fee"],
+                slippage=decimals["slippage"],
+            )
+            periods.append(period)
+            canonical_periods.append(
+                {
+                    "effective_from": period.effective_from.isoformat(),
+                    "effective_to": (
+                        None
+                        if period.effective_to is None
+                        else period.effective_to.isoformat()
+                    ),
+                    **{
+                        name: _cost_decimal_text(decimals[name])
+                        for name in _COST_DECIMAL_FIELDS
+                    },
+                }
+            )
+        for current, following in zip(periods, periods[1:], strict=False):
+            if (
+                current.effective_to is None
+                or current.effective_to.toordinal() + 1
+                != following.effective_from.toordinal()
+            ):
+                raise ValueError
+
+        semantic_payload = {
+            "schema_version": "m2-a-share-cost-semantic-v1",
+            "schedule_version": costs["schedule_version"],
+            "sources": {
+                "stamp_tax": costs["stamp_tax_source"],
+                "transfer_fee": costs["transfer_fee_source"],
+            },
+            "scaled_components": list(_COST_SCALED_COMPONENTS),
+            "periods": canonical_periods,
+        }
+    except (KeyError, TypeError, UnicodeDecodeError, ValueError, tomllib.TOMLDecodeError):
+        raise ValueError("invalid A-share cost schedule") from None
+    semantic_sha256 = hashlib.sha256(canonical_json_bytes(semantic_payload)).hexdigest()
+    return tuple(periods), semantic_sha256
+
+
+def _cost_decimal(value: object) -> Decimal:
+    if type(value) is int:
+        result = Decimal(cast(int, value))
+    elif type(value) is Decimal:
+        result = cast(Decimal, value)
+    else:
+        raise ValueError
+    if not result.is_finite() or result < 0:
+        raise ValueError
+    return result
+
+
+def _cost_decimal_text(value: Decimal) -> str:
+    if value == 0:
+        return "0"
+    text = format(value, "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
 
 
 def _validate_config(config: Mapping[str, Any], *, threads: int) -> None:
