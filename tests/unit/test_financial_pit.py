@@ -8,6 +8,7 @@ import pytest
 from quant.data.financial_pit import (
     FinancialPITError,
     select_financial_revisions_as_of,
+    select_pit_quality_revisions_as_of,
 )
 
 
@@ -25,6 +26,54 @@ def _statement(**overrides: object) -> dict[str, object]:
     }
     row.update(overrides)
     return row
+
+
+def _flow_chain_rows() -> list[dict[str, object]]:
+    return [
+        _statement(
+            ann_date="20230320",
+            f_ann_date="20230320",
+            end_date="20221231",
+            n_income=60.0,
+            n_income_attr_p=48.0,
+        ),
+        _statement(
+            ann_date="20230420",
+            f_ann_date="20230420",
+            end_date="20230331",
+            n_income=10.0,
+            n_income_attr_p=8.0,
+        ),
+        _statement(
+            ann_date="20230901",
+            f_ann_date="20230901",
+            end_date="20230331",
+            update_flag="1",
+            n_income=11.0,
+            n_income_attr_p=9.0,
+        ),
+        _statement(
+            ann_date="20230820",
+            f_ann_date="20230820",
+            end_date="20230630",
+            n_income=25.0,
+            n_income_attr_p=20.0,
+        ),
+        _statement(
+            ann_date="20231020",
+            f_ann_date="20231020",
+            end_date="20230930",
+            n_income=45.0,
+            n_income_attr_p=36.0,
+        ),
+        _statement(
+            ann_date="20240422",
+            f_ann_date="20240422",
+            end_date="20231231",
+            n_income=70.0,
+            n_income_attr_p=56.0,
+        ),
+    ]
 
 
 def test_latest_known_statement_revision_is_selected_without_same_day_lookahead() -> None:
@@ -188,3 +237,84 @@ def test_typed_clean_snapshot_contract_selects_without_string_round_trip() -> No
     assert result.selected.get_column("n_income").item() == 110.0
     assert result.selected.get_column("end_date").item() == dt.date(2023, 12, 31)
     assert result.quarantined.is_empty()
+
+
+def test_pit_quality_chain_binds_predecessor_revision_to_successor_cutoff() -> None:
+    result = select_pit_quality_revisions_as_of(
+        pl.DataFrame(_flow_chain_rows()),
+        dataset="income",
+        as_of=dt.date(2024, 5, 1),
+        allowed_report_types=("1",),
+    )
+    march = result.selected.filter(pl.col("end_date") == "20230331")
+    assert result.selected.height == 5
+    assert march.get_column("n_income").item() == 10.0
+    assert march.get_column("available_date").item() == dt.date(2023, 4, 20)
+
+
+def test_pit_quality_filter_precedes_latest_selection_for_report_and_company_type() -> None:
+    rows = [
+        *_flow_chain_rows(),
+        _statement(
+            ann_date="20240430",
+            f_ann_date="20240430",
+            end_date="20231231",
+            report_type="2",
+            n_income=700.0,
+            n_income_attr_p=560.0,
+        ),
+        _statement(
+            ann_date="20240429",
+            f_ann_date="20240429",
+            end_date="20231231",
+            comp_type="2",
+            n_income=900.0,
+            n_income_attr_p=800.0,
+        ),
+    ]
+    result = select_pit_quality_revisions_as_of(
+        pl.DataFrame(rows),
+        dataset="income",
+        as_of=dt.date(2024, 5, 1),
+        allowed_report_types=("1",),
+    )
+    assert result.selected.get_column("report_type").unique().to_list() == ["1"]
+    assert result.selected.get_column("comp_type").unique().to_list() == ["1"]
+    assert result.selected.filter(pl.col("end_date") == "20231231").get_column(
+        "n_income"
+    ).item() == 70.0
+
+
+def test_pit_quality_missing_chain_does_not_fall_back_to_an_older_endpoint() -> None:
+    rows = [row for row in _flow_chain_rows() if row["end_date"] != "20230630"]
+    result = select_pit_quality_revisions_as_of(
+        pl.DataFrame(rows),
+        dataset="income",
+        as_of=dt.date(2024, 5, 1),
+        allowed_report_types=("1",),
+    )
+    assert result.selected.is_empty()
+
+
+def test_pit_quality_predecessor_conflict_quarantines_chain_without_fallback() -> None:
+    rows = _flow_chain_rows()
+    rows.append(
+        _statement(
+            ann_date="20230820",
+            f_ann_date="20230820",
+            end_date="20230630",
+            n_income=26.0,
+            n_income_attr_p=20.0,
+        )
+    )
+    result = select_pit_quality_revisions_as_of(
+        pl.DataFrame(rows),
+        dataset="income",
+        as_of=dt.date(2024, 5, 1),
+        allowed_report_types=("1",),
+    )
+    assert result.selected.get_column("end_date").max() == "20231231"
+    assert result.selected.filter(pl.col("end_date") == "20230630").is_empty()
+    assert result.quarantined.filter(
+        pl.col("quarantine_reason") == "REVISION_CHAIN_CONFLICT"
+    ).height == 2
