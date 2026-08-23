@@ -24,7 +24,9 @@
 - 框架开发、投研、GUI 开发三个领域经理分别维护自己的详细路线图，把目标拆成最小任务包，冻结业务合同，
   向统筹申请 exact base/worktree/资源后再向 Worker 派发；
 - 实现 Worker 只执行冻结任务。当前默认使用本地 Luna Worker；Luna 顶层 session 负责调度，每个具体任务
-  必须创建隔离 subagent 实现，以支持上下文隔离和经批准的互斥并行；
+  必须创建隔离 subagent 实现，以支持上下文隔离和经批准的互斥并行。Luna 采用事件驱动 dispatcher：收到
+  任务后只完成校验、spawn、路由登记和简短 ACK，即结束当前 turn 并恢复 idle；不得在顶层等待某个实现
+  subagent 完整结束。subagent 独立向领域经理与统筹推送阶段结果，后续任务可随到随派；
 - 外部 `cursor-agent` 是可选 Worker。未特别指定模型时使用 `auto`；用户或统筹可按风险和能力需要显式指定
   其他模型。实现和独立审查必须使用不同的新会话或隔离上下文；
 - 领域经理不得直接写 integration 或抢占资源，Worker 不得自行扩大白名单、改变业务路线、合流或宣布 Gate
@@ -184,7 +186,9 @@ branch/worktree、写白名单、只读输入、资源需求、失败语义、�
 不得创建 worktree、写文件、启动真实运行或占用共享资源。
 
 当前默认实现通道为本地 Luna Worker。Luna 顶层 session 不混做多个实现；它必须为每个具体任务创建隔离
-subagent，收集交付后关闭子节点。改用外部 `cursor-agent` 时，未指定模型使用 `auto`。无论使用哪种 Worker，
+subagent，并采用短 turn 的事件驱动 dispatcher 模式，不用持续 `wait` 阻塞前台。每个 dispatch turn 在返回
+task/agent 映射后立即结束；subagent 自行推送 `STATIC_DONE / RESOURCE_REQUEST / DELIVERED / STOP`，需要资源
+授权或返工时再由短 turn 路由到原 subagent。改用外部 `cursor-agent` 时，未指定模型使用 `auto`。无论使用哪种 Worker，
 实现者自测都不能代替领域验收或统筹终验。
 
 高风险合同、复杂里程碑和用户指定任务必须由未参与实现的独立上下文初验。初验不通过时，领域经理形成最小

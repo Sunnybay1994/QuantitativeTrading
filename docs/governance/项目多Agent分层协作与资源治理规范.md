@@ -70,10 +70,35 @@ Worker 只执行已经冻结的具体任务，不决定业务路线或扩大架�
 当前默认使用本地 Luna Worker。除非用户明确指定其他方式：
 
 - 领域经理把完整任务包发给 Luna Worker session；
-- Luna Worker 的顶层 session 只负责任务编排、上下文隔离和结果汇总；
+- Luna Worker 的顶层 session 是事件驱动 dispatcher，只负责任务校验、subagent 创建、路由登记和异常协调；
 - Luna Worker 收到每个具体任务后必须创建独立 subagent 执行，不能在顶层 session 直接混做多个实现；
 - 多个任务只有在依赖已满足、写路径互斥且资源窗口允许时才可并行；否则顺序执行；
-- 每个 subagent 完成后必须返回精简交付报告并退出，不长期保持 `active`。
+- dispatch turn 在返回 `task_id → agent_id → manager_thread_id/worktree` 映射后立即结束并恢复 idle，不等待
+  subagent 完整结束；新任务到达时再开启一个短 dispatch turn，因此任务可以分时到达、随到随派；
+- subagent 自行向领域经理和统筹推送阶段结果；每个 subagent 完成后必须返回精简交付报告并退出，不长期
+  保持 `active`。
+
+#### 2.4.1 Luna 事件驱动 Dispatcher 协议
+
+Luna session 的 idle 状态就是“监听态”，不需要用长期 active turn 或高频 heartbeat 模拟常驻进程。每个领域
+任务使用以下事件流：
+
+1. `DISPATCH_REQUEST`：领域经理发送冻结任务包，并附 `task_id`、manager/root thread id、exact base、
+   worktree、白名单、依赖和资源级别；
+2. `DISPATCH_ACK`：Luna 校验边界、创建或复用该任务唯一 subagent，返回 `agent_id` 和当前状态，然后立即
+   结束顶层 turn；
+3. `STATIC_DONE`：subagent 完成静态实现与文本检查后直接通知领域经理和统筹；若工具不能跨 task 发送，
+   则写入 Luna mailbox，由下一个短 turn 转发；
+4. `RESOURCE_REQUEST`：需要 pytest、Ruff、mypy、真实 I/O、browser、端口或其他共享资源时，subagent 先
+   停在安全边界并请求资源，不自行占槽；
+5. `RESOURCE_GRANT / REWORK`：统筹或领域经理用新消息唤醒 Luna，Luna 将事件路由给原 subagent 后立即
+   回到 idle；不得新建第二实现者覆盖同一现场；
+6. `DELIVERED / STOP`：subagent 直接发送压缩交付或阻断报告，Luna 只维护映射和异常升级，不等待全部任务
+   成批完成。
+
+Dispatcher 不维护新的数据库、队列服务或常驻后台进程。任务书、worktree、agent tree 和压缩消息构成当前
+轻量任务账本；只有直接回调不可靠且用户另行批准时，才增加低频 watchdog。不得以 UI `items=0` 单独判断
+任务未启动，须同时核对 agent tree、worktree diff/mtime、进程和资源租约。
 
 外部 `cursor-agent` 是可选 Worker。未特别指定模型时使用 `auto`；用户或统筹可针对高风险、复杂实现或能力
 需求显式指定其他模型。实现与独立审查必须使用不同的新会话或隔离上下文。
@@ -122,6 +147,9 @@ Worker 只执行已经冻结的具体任务，不决定业务路线或扩大架�
 - 发现合同矛盾、真实数据反例或依赖缺失时立即停止扩大并回报；
 - 执行与风险相称的定向测试、Ruff、mypy、cold import 或真实探针；
 - 不自行合流、rebase、修改 integration 或宣布项目 Gate 通过。
+
+Luna dispatcher 收到任务后不得把顶层 turn 变成长时间实现或等待循环。它必须返回 `DISPATCH_ACK` 后恢复
+idle，让后续分时到达的任务继续触发短 turn；实际实现、阶段回报和资源等待都由对应隔离 subagent 承担。
 
 ### 4.4 审查、返工和领域验收
 
