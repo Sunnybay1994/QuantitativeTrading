@@ -6,7 +6,7 @@
 > **TARGET R11 HOLD（2026-08-16）**：本页绑定的 immutable run 与历史状态不回写，但其
 > `targets.parquet`、`portfolio_nav.parquet`、组合收益、换手和成本字段由受影响的诊断目标 helper 生成，
 > 当前不得作为通过、forward、S2/admission 或 PAPER 证据。RankIC、coverage 等只保留为描述线索；
-> 后续处置以 [M2 执行路线图](../roadmaps/M2_策略与因子库并行建设路线图.md) 为准。
+> 后续处置以 [M2 执行路线图](roadmaps/M2_策略与因子库并行建设路线图.md) 为准。
 
 ## 1. 可重放身份
 

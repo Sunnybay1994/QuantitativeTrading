@@ -16,9 +16,9 @@
 
 参考输入：
 
-- [`00_因子体系与评估框架.md`](../quant_factor_research_v2/00_因子体系与评估框架.md)；
-- [`04_QIML_2024/02_二月.md`](../quant_factor_research_v2/04_QIML_2024/02_二月.md) 的账面市值比；
-- [`04_QIML_2024/08_八月.md`](../quant_factor_research_v2/04_QIML_2024/08_八月.md) 的盈利市值比。
+- [`00_因子体系与评估框架.md`](references/quant_factor_research_v2/00_因子体系与评估框架.md)；
+- [`04_QIML_2024/02_二月.md`](references/quant_factor_research_v2/04_QIML_2024/02_二月.md) 的账面市值比；
+- [`04_QIML_2024/08_八月.md`](references/quant_factor_research_v2/04_QIML_2024/08_八月.md) 的盈利市值比。
 
 ## 2. 冻结因子
 

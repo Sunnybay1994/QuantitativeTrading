@@ -15,7 +15,7 @@
 1. `AGENTS.md`
 2. `.ai/README.md`、`.ai/coding_rules.md`、`.ai/workflows/multi_agent_delivery.md`
 3. `docs/M3当前验收与返工总览.md`
-4. `docs/M3_M4实施总规划.md`
+4. `docs/framework/M3_M4实施总规划.md`
 5. `docs/archive/agent-history/2026-08-external-batch/M3_M4后续外部总执行任务书.md`（本轮唯一总调度合同，现已归档）
 
 启动前先确认现有 `R1C-B INDEX 身份合同返工` Cursor 进程及其 WSL pytest 子进程已经退出。不要高频轮询；若仍
@@ -33,7 +33,7 @@
 执行规则：
 
 1. 最多并发十个会话，其中六个代码写、四个代码只读；只在前置满足且生产/测试/报告/data/identity I/O 完全
-   互斥时并行。每次派发前更新 `docs/agent/外部Agent并发调度台账.md`。
+   互斥时并行。每次派发前更新 `docs/governance/外部Agent并发调度台账.md`。
 2. 只有骨架的高风险包先做“精确任务书 → 独立设计审查 → 修订通过”，再编码。实现和验收必须是不同全新会话。
 3. 初验失败必须返回实现会话返工，再由新的独立会话复验，循环至通过。不要把实现者自测当独立初验。
 4. 开发只跑最小定向 pytest、Ruff、mypy；长测试/真实 I/O 按预计窗口或下次唤醒检查，禁止频繁轮询。全量 pytest

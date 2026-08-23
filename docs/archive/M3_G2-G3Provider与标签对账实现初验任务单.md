@@ -2,9 +2,9 @@
 
 日期：2026-07-13  
 状态：**历史合并任务；不再按 P0–P4 一次性交付**  
-现行执行入口：[`M3_G2_G3快照Provider标签分包骨架与外部闭环任务单.md`](../agent/M3_G2_G3快照Provider标签分包骨架与外部闭环任务单.md)  
-设计 SSOT：[`M3实施与Agent交接.md`](../M3实施与Agent交接.md) 4.2、4.3、4.5、4.9  
-审查记录：[`M3_G2-G3设计审查与修订记录.md`](../agent/M3_G2-G3设计审查与修订记录.md)
+现行执行入口：[`M3_G2_G3快照Provider标签分包骨架与外部闭环任务单.md`](../framework/agent/M3_G2_G3快照Provider标签分包骨架与外部闭环任务单.md)
+设计 SSOT：[`M3实施与Agent交接.md`](../framework/M3实施与Agent交接.md) 4.2、4.3、4.5、4.9
+审查记录：[`M3_G2-G3设计审查与修订记录.md`](../framework/agent/M3_G2-G3设计审查与修订记录.md)
 
 ## 1. 目标、边界与流程
 

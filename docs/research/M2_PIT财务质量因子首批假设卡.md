@@ -15,9 +15,9 @@
 
 参考输入：
 
-- [`00_因子体系与评估框架.md`](../quant_factor_research_v2/00_因子体系与评估框架.md)；
-- [`04_QIML_2024/03_三月.md`](../quant_factor_research_v2/04_QIML_2024/03_三月.md) 的规模调整 ROE 与盈利质量讨论；
-- [`04_QIML_2024/05_五月.md`](../quant_factor_research_v2/04_QIML_2024/05_五月.md) 的应计、毛利和复合质量讨论；
+- [`00_因子体系与评估框架.md`](references/quant_factor_research_v2/00_因子体系与评估框架.md)；
+- [`04_QIML_2024/03_三月.md`](references/quant_factor_research_v2/04_QIML_2024/03_三月.md) 的规模调整 ROE 与盈利质量讨论；
+- [`04_QIML_2024/05_五月.md`](references/quant_factor_research_v2/04_QIML_2024/05_五月.md) 的应计、毛利和复合质量讨论；
 - Tushare 官方[利润表](https://tushare.pro/document/2?doc_id=33)、
   [资产负债表](https://tushare.pro/document/2?doc_id=36)、
   [现金流量表](https://tushare.pro/document/2?doc_id=44)和

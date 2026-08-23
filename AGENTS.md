@@ -17,7 +17,7 @@
 
 本项目采用“用户 → 项目架构与统筹 Agent → 领域经理 Agent → 实现 Worker”的分层管理架构。详细职责、
 任务状态、资源租约、下发模板和 worktree 生命周期见
-[`docs/agent/项目多Agent分层协作与资源治理规范.md`](docs/agent/项目多Agent分层协作与资源治理规范.md)。
+[`docs/governance/项目多Agent分层协作与资源治理规范.md`](docs/governance/项目多Agent分层协作与资源治理规范.md)。
 
 - 项目架构与统筹 Agent 类似架构师，负责总体架构、跨领域边界、integration、资源冲突、共享文件锁和项目树
   整洁，不承担常规业务功能实现；
@@ -77,7 +77,7 @@ agent tree、进程、worktree、锁和任务状态共同构成权威运行现�
 | 技术选型、架构理由和备选方案 | `A股港股通个人量化投研交易系统调研.md` | 路线图和 README 只引用结论，不重复长篇选型比较 |
 | 里程碑、实施顺序和验收标准 | `项目实施路线图.md` | README 只显示当前阶段并链接路线图 |
 | 项目入口、目录职责和开发命令 | `README.md` | 其他文档避免重复快速开始和目录树 |
-| 智能体权限、角色边界与强制 Gate | 本 `AGENTS.md` | 操作细则只在 `docs/agent/项目多Agent分层协作与资源治理规范.md` 维护，并服从本文件 |
+| 智能体权限、角色边界与强制 Gate | 本 `AGENTS.md` | 操作细则只在 `docs/governance/项目多Agent分层协作与资源治理规范.md` 维护，并服从本文件 |
 | 实际实现状态 | 代码、测试和可重现产物 | 路线图勾选项必须与代码和验证结果一致，不能以计划代替实现 |
 
 若发现两处内容冲突，先根据上表确定权威来源，修改权威来源，再同步修正引用方。不要通过增加第三份说明来“调和”冲突。
@@ -153,7 +153,7 @@ agent tree、进程、worktree、锁和任务状态共同构成权威运行现�
 - 平台特有发布终验、Gate 关闭与交易运行时仍以 WSL Miniforge `base` 为准；不得为了某个依赖改变 `base`，也不得用版本隔离环境或 Windows 反馈环跳过 base 核心回归。
 - Windows 原生 Miniforge（当前开发机示例：`D:\Miniforge3\python.exe`）可用作普通开发与定向测试的快速反馈环；journal writer lock 等已显式双平台实现的模块应在两平台均可导入与自测。Windows 与 Linux 文件系统原语并不完全等价（例如 `flock`/`O_NOFOLLOW`/dir-fd 与 `msvcrt` 字节区间锁、junction/reparse 校验），不得把 Windows 绿测表述为 Linux Gate 已通过。
 - 优先在已进入 WSL Miniforge `base` 环境的终端中执行 Linux/Gate 命令；非交互环境未加载 conda 时，使用 `/home/mabw/miniforge3/bin/conda run -n base <command>`。Windows 反馈环命令由具体任务书指定解释器路径。
-- 某个第三方工具存在明确 Python 版本兼容问题时，经具体任务书冻结真实兼容证据和任务边界后，可在 WSL Miniforge 创建命名清晰的版本隔离环境，并只在其中运行受约束工具及其直接测试或探针。当前实例为已验收的 Python 3.12 环境 `py312`，首先用于 Qlib G0；证据见 [`docs/agent/M3_G0_py312环境创建与兼容探针主Agent最终验收报告.md`](docs/agent/M3_G0_py312环境创建与兼容探针主Agent最终验收报告.md)。非交互调用固定为 `/home/mabw/miniforge3/bin/conda run -n <env> <command>`；环境创建、Python 版本、用途、依赖安装和验证证据必须由具体任务书和报告记录。
+- 某个第三方工具存在明确 Python 版本兼容问题时，经具体任务书冻结真实兼容证据和任务边界后，可在 WSL Miniforge 创建命名清晰的版本隔离环境，并只在其中运行受约束工具及其直接测试或探针。当前实例为已验收的 Python 3.12 环境 `py312`，首先用于 Qlib G0；证据见 [`docs/framework/agent/M3_G0_py312环境创建与兼容探针主Agent最终验收报告.md`](docs/framework/agent/M3_G0_py312环境创建与兼容探针主Agent最终验收报告.md)。非交互调用固定为 `/home/mabw/miniforge3/bin/conda run -n <env> <command>`；环境创建、Python 版本、用途、依赖安装和验证证据必须由具体任务书和报告记录。
 - 不得从 WSL 调用 Windows 的 `conda.exe`；亦不得用 Windows Python 代替 WSL base 做平台特有终验。
 - 不手工伪造 conda 环境变量或硬编码 conda 的 PATH 快照。
 - 若未来接入只能运行于 Windows 的 QMT/MiniQMT 等券商组件，应将其作为项目外部的隔离 Gateway，通过明确的数据或网络协议通信；不得因此把主项目改为 Windows 兼容运行时。
@@ -219,4 +219,4 @@ archive tag、worktree/branch 退休和残留核对。只有代码、测试、�
 - 上下文压缩不改变第 1.1 节和第 11 节的分层职责。领域经理、Luna Worker、实现 subagent、Cursor Worker 和
   独立审查者不得因压缩而合并角色或丢失 frozen task packet。
 - Worker 只返回压缩后的交付报告和必要证据，不回传完整搜索、测试或安装日志；具体角色、消息格式和退出
-  条件见 `docs/agent/项目多Agent分层协作与资源治理规范.md`。
+  条件见 `docs/governance/项目多Agent分层协作与资源治理规范.md`。

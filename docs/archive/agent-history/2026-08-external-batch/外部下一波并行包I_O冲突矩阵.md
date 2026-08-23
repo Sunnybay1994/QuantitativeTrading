@@ -93,4 +93,4 @@
 - **不得**因本文件勾选任何 Gate、路线图或宣称 M3/M4/G1 完成。  
 - **本文件不是授权**：不授权 HISTORY/REFERENCE/PREPARE/PUBLISH，不放宽 data/身份/原子发布合同。  
 - 外部报告仅可写「外部闭环通过、待主 Agent 整体验收」。  
-- 派发前仍须在 `docs/agent/外部Agent并发调度台账.md` 登记会话角色、模型、白名单与互斥原因。
+- 派发前仍须在 `docs/governance/外部Agent并发调度台账.md` 登记会话角色、模型、白名单与互斥原因。
