@@ -3,7 +3,10 @@
 ### 2026-08-16 当前续写摘要（覆盖下文旧停止点）
 
 - 当前项目集成线为 `codex/project-integration@本文件所在提交`；物理 worktree 目录仍沿用历史名称
-  `artifacts/dev_worktrees/m1-hk60-integration`，此前在 Windows 上尝试改名因目录权限被拒绝，未强制修改 ACL；
+  `artifacts/dev_worktrees/m1-hk60-integration`。2026-08-23 已确认 ACL 与同级目录改名能力正常，当前改名阻断
+  是受保护的 Tushare finance writer 进程把该目录作为 CWD 持有。不得为目录整洁中断或重启 writer；收到
+  `[TUSHARE_FINANCE_TERMINAL_NOTIFIED]` 且再次核对进程、Git 与目录状态后，才由统筹执行
+  `git worktree move` 到 `artifacts/dev_worktrees/project-integration`；
   业务合流稳定点 `46f8e1d` 已保留原提交身份吸收
   M1 `9004b6d`、S2 `4ac392a`、liquidity `ec506b6`、GUI G1/C4 `a5c63f7`/`18dc006`、M4 RUN-0D2
   `92de0d4`、downside beta `3c8c6c4`、Alpha158 `0f737ac` 与 MAX `0363b0f`。此后 `ba83ad7` 吸收
@@ -14,7 +17,10 @@
   MAX-control 合流回归为 25 passed，GUI D1 为
   19 passed/2 skipped，PIT 前置为 32 passed，FWD-R1 为 17 passed/1 skipped，PIT R2 为 18 passed，五者定向
   Ruff、mypy、cold import 均通过，不把这些定向证据扩大表述为覆盖其它范围。
-- 根 checkout 仍由受保护的 Tushare finance writer 使用；writer 权威终态前禁止切换根分支或并发写源码。
+- 根 checkout 仍由受保护的 Tushare finance writer 使用；writer 继续自然采集，writer 权威终态前禁止切换
+  根分支、结束进程或并发写源码。投研 session 以 30 分钟 heartbeat 只读监测；只有
+  `COMPLETE=177184`、其他请求状态为 0、active lease 为 0 且 writer 自然退出时，才向统筹发送一次性终态
+  通知并暂停自动化。
   用户提供的 `quant_factor_research_v2` 资料包已按批示迁入
   `docs/research/references/quant_factor_research_v2/`：共 25 个文件、1,562,345 bytes，迁移前后相对路径、
   长度与 SHA-256 全量一致，根目录原未跟踪副本已移除。该资料包是版本化知识输入，不是项目 SSOT，
@@ -35,9 +41,11 @@
   复验为 `RESEARCH_ONLY`；source/canonical 6 文件、60,597 bytes、逐文件 SHA-256 差异为 0。R10 证据已由
   `ba83ad7` 合流，重复 worktree 已移除，source branch 已由 `archive/m2-source-r10-successor-20260816` 保存后删除。
   历史混合 EOL 导致旧 code hash 不可由 commit 复算的 provenance 债仍开放，但不再阻塞 M2-FWD-R1。
-- finance writer 仍在根 checkout 单实例推进，`data/clean/tushare_financials` 尚未形成；真实 PIT quality run
-  继续 fail-closed 等待 writer 终态、全量 bytes audit、type1 累计流量语义 Gate、`M2-EVAL-STOP-001`、R3
-  与不可覆盖 snapshot。
+- finance writer 仍在根 checkout 单实例推进，`data/clean/tushare_financials` 尚未形成。用户已裁定投研主线
+  不因采集等待而整体暂停，但恢复期间只能消费既有、已验证、冻结且不可变的 clean snapshot；禁止读取或使用
+  partial financial raw、采集中 ledger 或未发布的 financial clean。财务接入顺序保持
+  `writer terminal → audit-v4 → R3 → publisher/不可覆盖 snapshot → PIT`，任何前置未闭合都不得启动真实 PIT
+  quality run。
   snapshot READY 时，PIT 优先于新的非财务研究包。PIT 首跑前置 `3b8857c` 已以 A1
   `RECONSTRUCTED_CURRENT_INVENTORY_V1`、coverage gate、
   code-identity 与 `UNFROZEN/[]` pre-artifact STOP 进入 `086cae9`；来源线已 archive-first 退出，但这不等于
