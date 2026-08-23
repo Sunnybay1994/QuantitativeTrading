@@ -191,6 +191,11 @@ task/agent 映射后立即结束；subagent 自行推送 `STATIC_DONE / RESOURCE
 授权或返工时再由短 turn 路由到原 subagent。改用外部 `cursor-agent` 时，未指定模型使用 `auto`。无论使用哪种 Worker，
 实现者自测都不能代替领域验收或统筹终验。
 
+Dispatcher 的成功映射必须同时具备可验证的 ACK 和项目 ignored 目录下按任务隔离的 durable mapping；只看到
+空 turn、`items=0`、worktree dirty 或新增源码都不能替代映射证据。映射未证实时必须保持现有现场并禁止重复
+派发，直到原 Worker 写出 mapping 或明确 `STOP`。durable mapping 只保存任务路由和状态，不保存凭据、业务数据、
+长日志或模型推理内容，也不得提交 Git。
+
 高风险合同、复杂里程碑和用户指定任务必须由未参与实现的独立上下文初验。初验不通过时，领域经理形成最小
 返工任务，交回实现链，再由独立上下文复验；审查者不得顺手修改生产代码。主验发现问题也回到同一闭环，
 不能由统筹直接修补后跳过职责分离。

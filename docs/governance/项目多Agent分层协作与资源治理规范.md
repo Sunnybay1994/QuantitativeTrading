@@ -86,7 +86,8 @@ Luna session 的 idle 状态就是“监听态”，不需要用长期 active tu
 1. `DISPATCH_REQUEST`：领域经理发送冻结任务包，并附 `task_id`、manager/root thread id、exact base、
    worktree、白名单、依赖和资源级别；
 2. `DISPATCH_ACK`：Luna 校验边界、创建或复用该任务唯一 subagent，返回 `agent_id` 和当前状态，然后立即
-   结束顶层 turn；
+   结束顶层 turn；ACK 必须直接推送给领域经理，并在 `artifacts/agent_dispatch/<task_id>/mapping.json` 建立
+   no-clobber durable mapping；任一通道不可用时必须明确 `STOP`，不得默认为成功；
 3. `STATIC_DONE`：subagent 完成静态实现与文本检查后直接通知领域经理和统筹；若工具不能跨 task 发送，
    则写入 Luna mailbox，由下一个短 turn 转发；
 4. `RESOURCE_REQUEST`：需要 pytest、Ruff、mypy、真实 I/O、browser、端口或其他共享资源时，subagent 先
@@ -96,9 +97,28 @@ Luna session 的 idle 状态就是“监听态”，不需要用长期 active tu
 6. `DELIVERED / STOP`：subagent 直接发送压缩交付或阻断报告，Luna 只维护映射和异常升级，不等待全部任务
    成批完成。
 
-Dispatcher 不维护新的数据库、队列服务或常驻后台进程。任务书、worktree、agent tree 和压缩消息构成当前
-轻量任务账本；只有直接回调不可靠且用户另行批准时，才增加低频 watchdog。不得以 UI `items=0` 单独判断
-任务未启动，须同时核对 agent tree、worktree diff/mtime、进程和资源租约。
+Dispatcher 不维护新的数据库、队列服务或常驻后台进程。任务书、worktree、agent tree、压缩消息和按 task
+隔离的 ignored mapping 构成当前轻量任务账本；只有直接回调与 mapping 都不可靠且用户另行批准时，才增加
+低频 watchdog。不得以 UI `items=0` 单独判断任务未启动，须同时核对 durable mapping、agent tree、worktree
+diff/mtime、进程和资源租约。
+
+#### 2.4.2 双通道映射与恢复
+
+每个任务使用独立目录 `artifacts/agent_dispatch/<task_id>/`，避免多个 subagent 争写同一 registry：
+
+- `mapping.json` 由 Luna dispatcher 唯一写入且 no-clobber；至少包含 schema version、task id、稳定 logical
+  agent id、可用时的 runtime agent reference、manager/root task id、exact worktree、角色、创建时间和初始状态；
+- `status.json` 由该任务唯一 subagent 以临时文件加原子替换更新；只允许 `RUNNING / STATIC_DONE /
+  RESOURCE_WAIT / DELIVERED / STOP`，并记录最后事件时间与压缩证据定位；
+- 两文件均为运行协调状态，命中项目 ignore，不进入 Git，不保存提示全文、思维链、凭据、业务原始数据或长日志；
+- 直接消息是低延迟主通道，durable mapping 是恢复通道。领域经理收到 ACK 后必须核对两者 task id、agent id、
+  worktree 一致；不一致时按 `DISPATCH_IDENTITY_MISMATCH` 停止；
+- 若 turn 完成但消息不可见，只有已存在且身份一致的 mapping 才允许认定已派发；只有 worktree 变脏不足以推断
+  agent 身份。映射未证实时冻结现场、禁止重派，由统筹发起一次 status-only 恢复；恢复仍无 mapping/STOP 时标记
+  `MAPPING_UNCONFIRMED` 并等待人工或 Worker 通道恢复。
+
+对采用本协议前已经启动、无法取得 runtime agent reference 的现场，可由原 Luna 在确认其内部唯一实现者后写入
+`adopted=true` 的 mapping；不得由领域经理或统筹仅凭文件时间代写或猜测 agent id。
 
 外部 `cursor-agent` 是可选 Worker。未特别指定模型时使用 `auto`；用户或统筹可针对高风险、复杂实现或能力
 需求显式指定其他模型。实现与独立审查必须使用不同的新会话或隔离上下文。
@@ -149,7 +169,8 @@ Dispatcher 不维护新的数据库、队列服务或常驻后台进程。任务
 - 不自行合流、rebase、修改 integration 或宣布项目 Gate 通过。
 
 Luna dispatcher 收到任务后不得把顶层 turn 变成长时间实现或等待循环。它必须返回 `DISPATCH_ACK` 后恢复
-idle，让后续分时到达的任务继续触发短 turn；实际实现、阶段回报和资源等待都由对应隔离 subagent 承担。
+idle，让后续分时到达的任务继续触发短 turn；ACK 同时要求直接消息与 durable mapping 身份一致。实际实现、
+阶段回报和资源等待都由对应隔离 subagent 承担。
 
 ### 4.4 审查、返工和领域验收
 
