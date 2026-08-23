@@ -51,6 +51,7 @@ window_sessions = 20
 return_type = "simple_adjusted_close"
 expected_direction = -1
 trial_budget = 1
+trial_delta = 0
 
 [coverage]
 minimum_rebalance_symbols = 100
@@ -63,6 +64,7 @@ top_k = 50
 initial_cash = 1000000.0
 cost_multipliers = [0.5, 1.0, 2.0]
 cost_config_relative_path = "configs/research/m3_qlib_example.toml"
+cost_schedule_semantic_sha256 = "b2041d8495aa408de0bd264d6c03eb7e4d174e03f120289bc8471cbb5ea0a959"
 
 [admission]
 minimum_mean_test_rank_ic = 0.01

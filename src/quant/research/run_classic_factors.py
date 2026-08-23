@@ -134,14 +134,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     artifact_root = _inside(project_root, args.artifact_root, strict=False)
     data_root = resolve_data_root(args.data_root, base=project_root)
     config_payload = config_path.read_bytes()
-    with config_path.open("rb") as stream:
-        config = cast(dict[str, Any], tomllib.load(stream))
+    config = cast(dict[str, Any], tomllib.loads(config_payload.decode("utf-8")))
     _validate_config(config, threads=args.threads)
 
     data = cast(Mapping[str, Any], config["data"])
     universe_config = cast(Mapping[str, Any], config["universe"])
     factor_config = cast(Mapping[str, Any], config["factors"])
     portfolio_config = cast(Mapping[str, Any], config["portfolio"])
+    cost_periods, cost_semantic_sha256 = _cost_schedule_binding(
+        project_root, portfolio_config
+    )
+    expected_cost_semantic_sha256 = portfolio_config.get(
+        "cost_schedule_semantic_sha256"
+    )
+    if (
+        expected_cost_semantic_sha256 is not None
+        and cost_semantic_sha256 != expected_cost_semantic_sha256
+    ):
+        raise ValueError("classic cost schedule semantic identity mismatch")
     snapshot_id = cast(str, data["snapshot_id"])
     snapshot = verify_tushare_bulk_clean_snapshot(data_root=data_root, snapshot_id=snapshot_id)
     freeze_bars = read_tushare_bulk_clean_stock_bars(
@@ -324,7 +334,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         & (pl.col("liquidity_20") >= float(universe_config["minimum_average_amount"]))
     )
     folds = _folds(config)
-    cost_periods = _cost_periods(project_root, portfolio_config)
     results = evaluate_walk_forward(
         panel=panel,
         factors=factor_names,
@@ -485,6 +494,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 int, portfolio_config["rebalance_every_sessions"]
             ),
         )
+        primary_group_monotonicity = evaluate_primary_group_monotonicity(
+            cast(pl.DataFrame, results["group_returns"]),
+            panel=panel,
+            factor=factor_names[0],
+            folds=folds,
+            minimum_symbols=cast(int, factor_config["minimum_daily_symbols"]),
+            expected_direction=cast(int, lottery_config["expected_direction"]),
+        )
         summary = apply_fifth_batch_admission_gates(
             summary,
             fold_metrics=cast(pl.DataFrame, results["fold_metrics"]),
@@ -495,7 +512,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             maximum_median_absolute_rank_correlation=float(
                 factor_config["maximum_median_absolute_rank_correlation"]
             ),
+            primary_group_monotonicity=primary_group_monotonicity,
         )
+        results["primary_group_monotonicity"] = primary_group_monotonicity
         results["factor_coverage_daily"] = coverage_daily
         results["factor_coverage_summary"] = coverage_summary
         results["rebalance_schedule_alignment"] = schedule_alignment
@@ -548,7 +567,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         outputs["rebalance_schedule_alignment.parquet"] = _parquet(
             cast(pl.DataFrame, results["rebalance_schedule_alignment"])
         )
-    input_digests: tuple[ResearchInputDigestV1, ...] = (
+    if "primary_group_monotonicity" in results:
+        outputs["primary_group_monotonicity.parquet"] = _parquet(
+            cast(pl.DataFrame, results["primary_group_monotonicity"])
+        )
+    market_input_digests: tuple[ResearchInputDigestV1, ...] = (
         ResearchInputDigestV1(
             name="tushare-stock-bars",
             rows=snapshot.stock_rows,
@@ -558,7 +581,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     if include_fund_input:
-        input_digests = (
+        market_input_digests = (
             ResearchInputDigestV1(
                 name="tushare-fund-bars",
                 rows=snapshot.fund_rows,
@@ -566,8 +589,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 max_date=cast(dt.date, data["research_end"]),
                 content_sha256=snapshot.manifest_sha256,
             ),
-            *input_digests,
+            *market_input_digests,
         )
+    input_digests = (
+        _cost_schedule_input_digest(cost_periods, cost_semantic_sha256),
+        *market_input_digests,
+    )
     aggregate_metrics: list[tuple[str, float | int]] = [
         (
             "best_mean_test_rank_ic",
@@ -588,6 +615,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             (
                 "coverage_eligible_count",
                 cast(int, summary.get_column("coverage_passed").sum()),
+            )
+        )
+    if "primary_monotonicity_passed" in summary.columns:
+        aggregate_metrics.append(
+            (
+                "primary_monotonicity_passed_count",
+                cast(int, summary.get_column("primary_monotonicity_passed").sum()),
             )
         )
     run = LightweightResearchRunV1(
@@ -1237,6 +1271,326 @@ def apply_fourth_batch_admission_gates(
     )
 
 
+def _planned_test_signal_dates(
+    panel: pl.DataFrame, *, fold: ResearchFoldV1, horizon: int
+) -> tuple[dt.date, ...] | None:
+    exit_date_column = f"exit_date_{horizon}"
+    if (
+        exit_date_column not in panel.columns
+        or "trade_date" not in panel.columns
+        or panel.is_empty()
+    ):
+        return None
+    window = panel.filter(
+        pl.col("trade_date").is_between(
+            fold.test_start, fold.test_end, closed="both"
+        )
+    )
+    if window.is_empty():
+        return None
+    date_plan = (
+        window.group_by("trade_date")
+        .agg(
+            pl.len().alias("_rows"),
+            pl.col(exit_date_column).null_count().alias("_exit_nulls"),
+            pl.col(exit_date_column).drop_nulls().n_unique().alias("_exit_values"),
+            pl.col(exit_date_column).drop_nulls().first().alias("_exit_date"),
+        )
+        .sort("trade_date")
+    )
+    dates: list[dt.date] = []
+    boundary_started = False
+    for row in date_plan.iter_rows(named=True):
+        trade_date = row["trade_date"]
+        row_count = row["_rows"]
+        null_count = row["_exit_nulls"]
+        value_count = row["_exit_values"]
+        planned_exit = row["_exit_date"]
+        if (
+            type(trade_date) is not dt.date
+            or type(row_count) is not int
+            or type(null_count) is not int
+            or type(value_count) is not int
+            or null_count not in {0, row_count}
+            or value_count > 1
+        ):
+            return None
+        is_boundary = null_count == row_count or (
+            planned_exit is not None and planned_exit > fold.test_end
+        )
+        if is_boundary:
+            boundary_started = True
+            continue
+        if (
+            boundary_started
+            or planned_exit is None
+            or type(planned_exit) is not dt.date
+            or planned_exit < trade_date
+        ):
+            return None
+        dates.append(trade_date)
+    return tuple(dates) if dates else None
+
+
+def _primary_monotonicity_row(
+    *,
+    factor: str,
+    fold: int,
+    signal_dates: int,
+    means: Mapping[int, float] | None,
+    invalid_reason: str | None,
+    expected_direction: int,
+) -> dict[str, object]:
+    values: tuple[float | None, float | None, float | None, float | None, float | None]
+    if means is None:
+        values = (None, None, None, None, None)
+        comparisons = (False, False, False, False)
+    else:
+        values = cast(
+            tuple[float | None, float | None, float | None, float | None, float | None],
+            tuple(means.get(group) for group in range(1, 6)),
+        )
+        comparison_values: list[bool] = []
+        for index in range(4):
+            left = values[index]
+            right = values[index + 1]
+            comparison_values.append(
+                left >= right if left is not None and right is not None else False
+            )
+        comparisons = cast(
+            tuple[bool, bool, bool, bool], tuple(comparison_values)
+        )
+    return {
+        "factor": factor,
+        "fold": fold,
+        "period": "test",
+        "horizon": 20,
+        "expected_direction": expected_direction,
+        "signal_dates": signal_dates,
+        "group_1_mean_return": values[0],
+        "group_2_mean_return": values[1],
+        "group_3_mean_return": values[2],
+        "group_4_mean_return": values[3],
+        "group_5_mean_return": values[4],
+        "group_1_ge_group_2": comparisons[0],
+        "group_2_ge_group_3": comparisons[1],
+        "group_3_ge_group_4": comparisons[2],
+        "group_4_ge_group_5": comparisons[3],
+        "monotonicity_passed": invalid_reason is None and all(comparisons),
+        "invalid_reason": invalid_reason,
+    }
+
+
+def evaluate_primary_group_monotonicity(
+    group_returns: pl.DataFrame,
+    *,
+    panel: pl.DataFrame,
+    factor: str,
+    folds: tuple[ResearchFoldV1, ...],
+    minimum_symbols: int,
+    expected_direction: int,
+) -> pl.DataFrame:
+    """Validate and aggregate the frozen MAX test horizon-20 five-group gate."""
+    required_columns = {
+        "factor",
+        "fold",
+        "period",
+        "horizon",
+        "direction",
+        "trade_date",
+        "group",
+        "n_symbols",
+        "mean_return",
+        "factor_count",
+        "paired_count",
+        "coverage_numerator",
+        "coverage_denominator",
+        "coverage_status",
+    }
+    if (
+        not isinstance(group_returns, pl.DataFrame)
+        or not isinstance(panel, pl.DataFrame)
+        or type(factor) is not str
+        or not factor
+        or type(folds) is not tuple
+        or len(folds) != 3
+        or any(type(item) is not ResearchFoldV1 for item in folds)
+        or tuple(item.fold for item in folds) != (1, 2, 3)
+        or type(minimum_symbols) is not int
+        or minimum_symbols < 2
+        or expected_direction != -1
+        or not required_columns.issubset(group_returns.columns)
+    ):
+        raise ValueError("invalid primary group monotonicity request")
+
+    valid_rows: list[dict[str, object]] = []
+    result_rows: list[dict[str, object]] = []
+    for fold in folds:
+        expected_dates = _planned_test_signal_dates(panel, fold=fold, horizon=20)
+        planned_dates = () if expected_dates is None else expected_dates
+        selected = group_returns.filter(
+            (pl.col("factor") == factor)
+            & (pl.col("fold") == fold.fold)
+            & (pl.col("period") == "test")
+            & (pl.col("horizon") == 20)
+        )
+        actual_rows = selected.to_dicts()
+        invalid_reason: str | None = None
+        if expected_dates is None:
+            invalid_reason = "missing_planned_test_dates"
+        elif any(type(row.get("trade_date")) is not dt.date for row in actual_rows):
+            invalid_reason = "test_signal_date_grid_mismatch"
+        elif (
+            tuple(
+                sorted({cast(dt.date, row["trade_date"]) for row in actual_rows})
+            )
+            != planned_dates
+        ):
+            invalid_reason = "test_signal_date_grid_mismatch"
+        elif any(type(row.get("group")) is not int for row in actual_rows):
+            invalid_reason = "group_label_type_mismatch"
+        elif {row.get("group") for row in actual_rows} != set(range(1, 6)):
+            invalid_reason = "test_group_grid_mismatch"
+        else:
+            key_counts: dict[tuple[object, object], int] = {}
+            for row in actual_rows:
+                key = (row.get("trade_date"), row.get("group"))
+                key_counts[key] = key_counts.get(key, 0) + 1
+            if any(count != 1 for count in key_counts.values()):
+                invalid_reason = "duplicate_test_group_row"
+            elif len(actual_rows) != len(planned_dates) * 5:
+                invalid_reason = "test_group_grid_mismatch"
+
+        date_totals: dict[object, dict[str, int]] = {}
+        means_by_group: dict[int, list[float]] = {group: [] for group in range(1, 6)}
+        if invalid_reason is None:
+            for row in actual_rows:
+                if (
+                    row.get("direction") != expected_direction
+                    or row.get("coverage_status") != "PASS"
+                ):
+                    invalid_reason = "coverage_or_direction_failed"
+                    break
+                count_values = (
+                    row.get("n_symbols"),
+                    row.get("factor_count"),
+                    row.get("paired_count"),
+                    row.get("coverage_numerator"),
+                    row.get("coverage_denominator"),
+                )
+                mean_return = row.get("mean_return")
+                if any(type(value) is not int for value in count_values) or (
+                    type(mean_return) not in {int, float}
+                    or isinstance(mean_return, bool)
+                    or not math.isfinite(float(cast(int | float, mean_return)))
+                ):
+                    invalid_reason = "non_finite_or_invalid_group_value"
+                    break
+                if (
+                    int(row["n_symbols"]) <= 0
+                    or int(row["factor_count"]) <= 0
+                    or int(row["paired_count"]) <= 0
+                    or int(row["coverage_numerator"]) != int(row["paired_count"])
+                    or int(row["coverage_denominator"]) != int(row["factor_count"])
+                ):
+                    invalid_reason = "group_coverage_incomplete"
+                    break
+                date = row.get("trade_date")
+                if date not in date_totals:
+                    date_totals[date] = {
+                        "n_symbols": 0,
+                        "factor_count": 0,
+                        "paired_count": 0,
+                    }
+                date_totals[date]["n_symbols"] += int(row["n_symbols"])
+                date_totals[date]["factor_count"] += int(row["factor_count"])
+                date_totals[date]["paired_count"] += int(row["paired_count"])
+                means_by_group[int(row["group"])].append(
+                    float(cast(int | float, mean_return))
+                )
+            if invalid_reason is None and any(
+                totals["n_symbols"] < minimum_symbols
+                or totals["factor_count"] < minimum_symbols
+                or totals["paired_count"] < minimum_symbols
+                for totals in date_totals.values()
+            ):
+                invalid_reason = "minimum_symbol_contract_failed"
+            if invalid_reason is None and any(
+                len(values) != len(planned_dates)
+                or not all(math.isfinite(value) for value in values)
+                for values in means_by_group.values()
+            ):
+                invalid_reason = "non_finite_or_missing_group_return"
+
+        if invalid_reason is None:
+            means = {
+                group: sum(values) / len(values)
+                for group, values in means_by_group.items()
+            }
+            fold_rows = [
+                row
+                for row in actual_rows
+                if row.get("trade_date") in set(planned_dates)
+            ]
+            valid_rows.extend(fold_rows)
+        else:
+            means = None
+        result_rows.append(
+            _primary_monotonicity_row(
+                factor=factor,
+                fold=fold.fold,
+                signal_dates=0 if expected_dates is None else len(expected_dates),
+                means=means,
+                invalid_reason=invalid_reason,
+                expected_direction=expected_direction,
+            )
+        )
+
+    pooled_invalid_reason: str | None = None
+    pooled_means: Mapping[int, float] | None = None
+    if any(row["invalid_reason"] is not None for row in result_rows):
+        pooled_invalid_reason = "fold_monotonicity_input_invalid"
+    else:
+        pooled_signal_keys = {
+            (row.get("fold"), row.get("trade_date")) for row in valid_rows
+        }
+        pooled_dates = [date for _, date in pooled_signal_keys]
+        if len(set(pooled_dates)) != len(pooled_signal_keys):
+            pooled_invalid_reason = "pooled_signal_date_duplicate"
+        else:
+            pooled_values: dict[int, list[float]] = {group: [] for group in range(1, 6)}
+            for row in valid_rows:
+                group = row.get("group")
+                if type(group) is not int or group not in pooled_values:
+                    pooled_invalid_reason = "pooled_group_grid_mismatch"
+                    break
+                value = row.get("mean_return")
+                if (
+                    type(value) not in {int, float}
+                    or isinstance(value, bool)
+                    or not math.isfinite(float(cast(int | float, value)))
+                ):
+                    pooled_invalid_reason = "pooled_non_finite_group_return"
+                    break
+                pooled_values[group].append(float(cast(int | float, value)))
+            if pooled_invalid_reason is None:
+                pooled_means = {
+                    group: sum(values) / len(values)
+                    for group, values in pooled_values.items()
+                }
+    result_rows.append(
+        _primary_monotonicity_row(
+            factor=factor,
+            fold=0,
+            signal_dates=len(valid_rows) // 5 if pooled_invalid_reason is None else 0,
+            means=pooled_means,
+            invalid_reason=pooled_invalid_reason,
+            expected_direction=expected_direction,
+        )
+    )
+    return pl.DataFrame(result_rows).sort("fold")
+
+
 def apply_fifth_batch_admission_gates(
     summary: pl.DataFrame,
     *,
@@ -1246,8 +1600,17 @@ def apply_fifth_batch_admission_gates(
     schedule_alignment: pl.DataFrame,
     expected_direction: int,
     maximum_median_absolute_rank_correlation: float,
+    primary_group_monotonicity: pl.DataFrame,
 ) -> pl.DataFrame:
     """Apply fixed-direction, coverage, redundancy and schedule gates to MAX."""
+    monotonicity_columns = {
+        "factor",
+        "fold",
+        "period",
+        "horizon",
+        "expected_direction",
+        "monotonicity_passed",
+    }
     if (
         not isinstance(summary, pl.DataFrame)
         or summary.is_empty()
@@ -1265,7 +1628,11 @@ def apply_fifth_batch_admission_gates(
         or coverage_summary.is_empty()
         or not isinstance(schedule_alignment, pl.DataFrame)
         or schedule_alignment.is_empty()
+        or not isinstance(primary_group_monotonicity, pl.DataFrame)
+        or primary_group_monotonicity.is_empty()
+        or not monotonicity_columns.issubset(primary_group_monotonicity.columns)
         or expected_direction not in {-1, 1}
+        or expected_direction != -1
         or type(maximum_median_absolute_rank_correlation) is not float
         or not 0 < maximum_median_absolute_rank_correlation < 1
     ):
@@ -1287,6 +1654,39 @@ def apply_fifth_batch_admission_gates(
     schedule = schedule_alignment.group_by("factor").agg(
         pl.col("schedule_aligned").all().alias("schedule_alignment_passed")
     )
+    monotonicity_rows: list[dict[str, object]] = []
+    for factor in summary.get_column("factor").to_list():
+        one = primary_group_monotonicity.filter(
+            (pl.col("factor") == factor)
+            & (pl.col("period") == "test")
+            & (pl.col("horizon") == 20)
+            & (pl.col("expected_direction") == expected_direction)
+        )
+        fold_rows = one.filter(pl.col("fold") > 0)
+        pooled_rows = one.filter(pl.col("fold") == 0)
+        fold_ids = tuple(sorted(fold_rows.get_column("fold").to_list()))
+        fold_passed = sum(
+            bool(value) for value in fold_rows.get_column("monotonicity_passed").to_list()
+        )
+        pooled_passed = (
+            pooled_rows.height == 1
+            and bool(pooled_rows.get_column("monotonicity_passed").item())
+        )
+        monotonicity_rows.append(
+            {
+                "factor": factor,
+                "primary_monotonicity_fold_count": fold_rows.height,
+                "primary_monotonicity_passed_folds": fold_passed,
+                "primary_monotonicity_required_folds": 2,
+                "primary_monotonicity_pooled_passed": pooled_passed,
+                "primary_monotonicity_passed": (
+                    fold_ids == (1, 2, 3)
+                    and fold_passed >= 2
+                    and pooled_passed
+                ),
+            }
+        )
+    monotonicity = pl.DataFrame(monotonicity_rows)
     drop_columns = [
         column
         for column in ("max_median_abs_rank_corr", "combination_eligible")
@@ -1304,6 +1704,7 @@ def apply_fifth_batch_admission_gates(
         )
         .join(coverage_summary, on="factor", how="left", validate="1:1")
         .join(schedule, on="factor", how="left", validate="1:1")
+        .join(monotonicity, on="factor", how="left", validate="1:1")
         .with_columns(
             pl.lit(expected_direction).alias("expected_direction"),
             (
@@ -1327,6 +1728,7 @@ def apply_fifth_batch_admission_gates(
                 & pl.col("redundancy_passed")
                 & pl.col("coverage_passed")
                 & pl.col("schedule_alignment_passed")
+                & pl.col("primary_monotonicity_passed")
             )
             .then(pl.lit("RESEARCH_ONLY"))
             .otherwise(pl.lit("REJECTED"))
@@ -1501,11 +1903,32 @@ def _cost_decimal_text(value: Decimal) -> str:
     return text.rstrip("0").rstrip(".") if "." in text else text
 
 
+def _cost_schedule_input_digest(
+    periods: tuple[AShareCostPeriod, ...], semantic_sha256: str
+) -> ResearchInputDigestV1:
+    return ResearchInputDigestV1(
+        name="a-share-cost-schedule",
+        rows=len(periods),
+        min_date=None,
+        max_date=None,
+        content_sha256=semantic_sha256,
+    )
+
+
+def _is_lower_hex64(value: object) -> bool:
+    return (
+        type(value) is str
+        and len(cast(str, value)) == 64
+        and all(character in "0123456789abcdef" for character in cast(str, value))
+    )
+
+
 def _validate_config(config: Mapping[str, Any], *, threads: int) -> None:
     factor_config = cast(Mapping[str, Any], config["factors"])
     market_risk = cast(Mapping[str, Any], config.get("market_risk", {}))
     max_lottery = cast(Mapping[str, Any], config.get("max_lottery", {}))
     coverage = cast(Mapping[str, Any], config.get("coverage", {}))
+    portfolio = cast(Mapping[str, Any], config["portfolio"])
     names = tuple(cast(list[str], factor_config["names"]))
     first_batch = names == CLASSIC_FACTOR_NAMES and "catalog" not in factor_config
     second_batch = (
@@ -1560,8 +1983,10 @@ def _validate_config(config: Mapping[str, Any], *, threads: int) -> None:
         and max_lottery.get("return_type") == "simple_adjusted_close"
         and max_lottery.get("expected_direction") == -1
         and max_lottery.get("trial_budget") == 1
+        and max_lottery.get("trial_delta") == 0
         and coverage.get("minimum_rebalance_symbols") == 100
         and float(coverage.get("minimum_median_coverage", 0.0)) == 0.80
+        and _is_lower_hex64(portfolio.get("cost_schedule_semantic_sha256"))
     )
     if (
         not (
@@ -1573,11 +1998,11 @@ def _validate_config(config: Mapping[str, Any], *, threads: int) -> None:
             or fifth_batch
         )
         or tuple(cast(list[int], config["factors"]["horizons"])) != (1, 5, 20)
-        or tuple(float(value) for value in config["portfolio"]["cost_multipliers"])
+        or tuple(float(value) for value in portfolio["cost_multipliers"])
         != (0.5, 1.0, 2.0)
-        or config["portfolio"]["selection_horizon_sessions"] != 20
+        or portfolio["selection_horizon_sessions"] != 20
         or type(threads) is not int
-        or not 1 <= threads <= 4
+        or not 1 <= threads <= (2 if fifth_batch else 4)
     ):
         raise ValueError("invalid classic-factor config")
 
@@ -1640,6 +2065,8 @@ def _report(
                 "that direction but cannot reverse the tested portfolio.",
                 "A historical pass would still require daily-basic size and turnover "
                 "controls before forward observation.",
+                "This primary MAX gate does not close PIT symmetric redundancy coverage, "
+                "audit-v4, R3 or any trading Gate.",
             ]
         )
     return {
@@ -1648,6 +2075,9 @@ def _report(
         "hypothesis": config["research"]["hypothesis"],
         "snapshot_id": snapshot_id,
         "snapshot_manifest_sha256": snapshot_manifest_sha256,
+        "cost_schedule_semantic_sha256": cast(Mapping[str, Any], config["portfolio"]).get(
+            "cost_schedule_semantic_sha256"
+        ),
         "candidate_symbol_count": len(candidates),
         "panel_rows": panel.height,
         "daily_ic_rows": results["daily_ic"].height,
@@ -1664,6 +2094,11 @@ def _report(
         "rebalance_schedule_alignment": (
             results["rebalance_schedule_alignment"].to_dicts()
             if "rebalance_schedule_alignment" in results
+            else []
+        ),
+        "primary_group_monotonicity": (
+            results["primary_group_monotonicity"].to_dicts()
+            if "primary_group_monotonicity" in results
             else []
         ),
         "market_risk": config.get("market_risk", {}),
