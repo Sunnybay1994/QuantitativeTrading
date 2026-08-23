@@ -5,16 +5,13 @@ from __future__ import annotations
 import datetime as dt
 import calendar
 from dataclasses import dataclass
-from typing import cast
-
 import polars as pl
 from polars.exceptions import PolarsError
 
 from quant.data.financial_clean import project_selected_financial_factor_frame
 from quant.data.financial_pit import (
-    FinancialDataset,
     FinancialPITSelection,
-    select_financial_revisions_as_of,
+    select_pit_quality_revisions_as_of,
 )
 from quant.factors.pit_quality import (
     PIT_QUALITY_ELIGIBILITY_STATUSES,
@@ -159,10 +156,13 @@ def _build(
     quarantine_frames: list[pl.DataFrame] = []
     for as_of in signal_dates:
         selections = {
-            dataset: select_financial_revisions_as_of(
-                frame, dataset=cast(FinancialDataset, dataset), as_of=as_of
+            dataset: select_pit_quality_revisions_as_of(
+                histories[dataset],
+                dataset=dataset,
+                as_of=as_of,
+                allowed_report_types=allowed_report_types,
             )
-            for dataset, frame in histories.items()
+            for dataset in ("income", "balancesheet", "cashflow")
         }
         for dataset, selection in selections.items():
             if not selection.quarantined.is_empty():
@@ -185,7 +185,7 @@ def _build(
                 income=income,
                 balance_sheet=balance,
                 cash_flow=cash,
-            ).filter(pl.col("report_type").is_in(allowed_report_types))
+            )
             latest = (
                 diagnostics.sort(["symbol", "factor", "end_date"])
                 .group_by("symbol", "factor", maintain_order=True)
@@ -228,17 +228,20 @@ def _build(
                 )
                 .with_columns(
                     pl.when(
-                        pl.col("_conflict_end").is_not_null()
-                        & (
-                            pl.col("financial_period_end").is_null()
-                            | (pl.col("_conflict_end") >= pl.col("financial_period_end"))
+                        pl.col("_chain_conflict").fill_null(False)
+                        | (
+                            pl.col("_conflict_end").is_not_null()
+                            & (
+                                pl.col("financial_period_end").is_null()
+                                | (pl.col("_conflict_end") >= pl.col("financial_period_end"))
+                            )
                         )
                     )
                     .then(pl.lit("QUARANTINED"))
                     .otherwise(pl.col("status"))
                     .alias("status")
                 )
-                .drop("_conflict_end")
+                .drop("_conflict_end", "_chain_conflict")
             )
         eligibility_frames.append(eligibility.select(_ELIGIBILITY_COLUMNS))
         factor_frames.append(_factor_values(eligibility=eligibility, latest=latest))
@@ -294,7 +297,11 @@ def _factor_conflicts(selections: dict[str, FinancialPITSelection]) -> pl.DataFr
         if quarantined.is_empty():
             continue
         symbol = "symbol" if "symbol" in quarantined.columns else "ts_code"
-        conflicts = quarantined.filter(pl.col("quarantine_reason") == "LATEST_REVISION_CONFLICT")
+        conflicts = quarantined.filter(
+            pl.col("quarantine_reason").is_in(
+                ["LATEST_REVISION_CONFLICT", "REVISION_CHAIN_CONFLICT"]
+            )
+        )
         if conflicts.is_empty():
             continue
         for factor in factors:
@@ -303,6 +310,9 @@ def _factor_conflicts(selections: dict[str, FinancialPITSelection]) -> pl.DataFr
                     pl.col(symbol).alias("symbol"),
                     pl.lit(factor).alias("factor"),
                     pl.col("end_date").alias("_conflict_end"),
+                    (pl.col("quarantine_reason") == "REVISION_CHAIN_CONFLICT").alias(
+                        "_chain_conflict"
+                    ),
                 )
             )
     if not frames:
@@ -311,12 +321,16 @@ def _factor_conflicts(selections: dict[str, FinancialPITSelection]) -> pl.DataFr
                 "symbol": pl.String(),
                 "factor": pl.String(),
                 "_conflict_end": pl.Date(),
+                "_chain_conflict": pl.Boolean(),
             }
         )
     return (
         pl.concat(frames)
         .group_by("symbol", "factor")
-        .agg(pl.col("_conflict_end").max())
+        .agg(
+            pl.col("_conflict_end").max(),
+            pl.col("_chain_conflict").any(),
+        )
         .sort("symbol", "factor")
     )
 

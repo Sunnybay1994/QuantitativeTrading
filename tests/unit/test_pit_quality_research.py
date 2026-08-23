@@ -14,20 +14,24 @@ from quant.research.pit_quality_research import (
 
 def _histories() -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     periods = [
+        dt.date(2022, 9, 30),
+        dt.date(2022, 12, 31),
         dt.date(2023, 3, 31),
         dt.date(2023, 6, 30),
         dt.date(2023, 9, 30),
         dt.date(2023, 12, 31),
     ]
     available = [
+        dt.date(2022, 10, 20),
+        dt.date(2023, 3, 20),
         dt.date(2023, 4, 20),
         dt.date(2023, 8, 20),
         dt.date(2023, 10, 20),
         dt.date(2024, 4, 22),
     ]
-    income_values = [10.0, 25.0, 45.0, 70.0]
-    parent_values = [8.0, 20.0, 36.0, 56.0]
-    cash_values = [12.0, 22.0, 40.0, 68.0]
+    income_values = [45.0, 60.0, 10.0, 25.0, 45.0, 70.0]
+    parent_values = [36.0, 48.0, 8.0, 20.0, 36.0, 56.0]
+    cash_values = [40.0, 60.0, 12.0, 22.0, 40.0, 68.0]
 
     def common(index: int) -> dict[str, object]:
         return {
@@ -49,16 +53,16 @@ def _histories() -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
                 "n_income": income_values[index],
                 "n_income_attr_p": parent_values[index],
             }
-            for index in range(4)
+            for index in range(6)
         ]
     )
     cash = pl.DataFrame(
-        [common(index) | {"n_cashflow_act": cash_values[index]} for index in range(4)]
+        [common(index) | {"n_cashflow_act": cash_values[index]} for index in range(6)]
     )
     balance = pl.DataFrame(
         [
             {
-                **common(3),
+                **common(5),
                 "ann_date": dt.date(2023, 4, 20),
                 "f_ann_date": dt.date(2023, 4, 20),
                 "available_date": dt.date(2023, 4, 20),
@@ -67,7 +71,7 @@ def _histories() -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
                 "total_hldr_eqy_exc_min_int": 50.0,
             },
             {
-                **common(3),
+                **common(5),
                 "total_assets": 120.0,
                 "total_hldr_eqy_exc_min_int": 60.0,
             },
@@ -250,3 +254,98 @@ def test_report_type_must_be_pre_frozen_and_is_not_hard_coded() -> None:
         allowed_report_types=("2",),
     )
     assert result.factors.get_column("pit_roe_ttm").item() == pytest.approx(56.0 / 55.0)
+
+
+def test_later_predecessor_revision_cannot_rewrite_an_already_published_successor() -> None:
+    income, balance, cash = _histories()
+    later_q1 = income.filter(pl.col("end_date") == dt.date(2023, 3, 31)).with_columns(
+        pl.lit(dt.date(2023, 9, 1)).alias("ann_date"),
+        pl.lit(dt.date(2023, 9, 1)).alias("f_ann_date"),
+        pl.lit(dt.date(2023, 9, 1)).alias("available_date"),
+        pl.lit("1").alias("update_flag"),
+        pl.lit(11.0).alias("n_income"),
+    )
+    baseline = build_pit_quality_signal_values(
+        income_history=income,
+        balance_history=balance,
+        cash_history=cash,
+        signal_dates=(dt.date(2024, 4, 23),),
+        candidate_symbols=("000001.SZ",),
+        allowed_report_types=("1",),
+    )
+    revised = build_pit_quality_signal_values(
+        income_history=pl.concat([income, later_q1]),
+        balance_history=balance,
+        cash_history=cash,
+        signal_dates=(dt.date(2024, 4, 23),),
+        candidate_symbols=("000001.SZ",),
+        allowed_report_types=("1",),
+    )
+    assert revised.factors.equals(baseline.factors)
+    assert revised.eligibility.equals(baseline.eligibility)
+
+
+def test_company_type_is_filtered_before_latest_selection() -> None:
+    income, balance, cash = _histories()
+    non_industrial = tuple(
+        frame.tail(1).with_columns(
+            pl.lit("2").alias("comp_type"),
+            pl.lit(dt.date(2024, 4, 30)).alias("ann_date"),
+            pl.lit(dt.date(2024, 4, 30)).alias("f_ann_date"),
+            pl.lit(dt.date(2024, 4, 30)).alias("available_date"),
+        )
+        for frame in (income, balance, cash)
+    )
+    baseline = build_pit_quality_signal_values(
+        income_history=income,
+        balance_history=balance,
+        cash_history=cash,
+        signal_dates=(dt.date(2024, 5, 1),),
+        candidate_symbols=("000001.SZ",),
+        allowed_report_types=("1",),
+    )
+    filtered = build_pit_quality_signal_values(
+        income_history=pl.concat([income, non_industrial[0]], how="diagonal_relaxed"),
+        balance_history=pl.concat([balance, non_industrial[1]], how="diagonal_relaxed"),
+        cash_history=pl.concat([cash, non_industrial[2]], how="diagonal_relaxed"),
+        signal_dates=(dt.date(2024, 5, 1),),
+        candidate_symbols=("000001.SZ",),
+        allowed_report_types=("1",),
+    )
+    assert filtered.factors.equals(baseline.factors)
+    assert filtered.eligibility.equals(baseline.eligibility)
+
+
+def test_missing_predecessor_chain_rejects_latest_endpoint_without_fallback() -> None:
+    income, balance, cash = _histories()
+    income = income.filter(pl.col("end_date") != dt.date(2023, 6, 30))
+    result = build_pit_quality_signal_values(
+        income_history=income,
+        balance_history=balance,
+        cash_history=cash,
+        signal_dates=(dt.date(2024, 4, 23),),
+        candidate_symbols=("000001.SZ",),
+        allowed_report_types=("1",),
+    )
+    assert result.factors.select(PIT_QUALITY_FACTOR_NAMES).row(0) == (None, None, None, None)
+    assert set(result.eligibility.get_column("status").to_list()) == {"MISSING_CHAIN"}
+
+
+def test_predecessor_conflict_quarantines_the_bound_chain_without_fallback() -> None:
+    income, balance, cash = _histories()
+    conflict = income.filter(pl.col("end_date") == dt.date(2023, 6, 30)).with_columns(
+        pl.lit(26.0).alias("n_income")
+    )
+    result = build_pit_quality_signal_values(
+        income_history=pl.concat([income, conflict]),
+        balance_history=balance,
+        cash_history=cash,
+        signal_dates=(dt.date(2024, 4, 23),),
+        candidate_symbols=("000001.SZ",),
+        allowed_report_types=("1",),
+    )
+    assert result.factors.select(PIT_QUALITY_FACTOR_NAMES).row(0) == (None, None, None, None)
+    assert set(result.eligibility.get_column("status").to_list()) == {"QUARANTINED"}
+    assert result.quarantined.filter(
+        pl.col("quarantine_reason") == "REVISION_CHAIN_CONFLICT"
+    ).height == 1
