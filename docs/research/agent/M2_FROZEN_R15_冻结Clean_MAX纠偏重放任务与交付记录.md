@@ -60,10 +60,11 @@
 2. 每个预注册 test signal date 必须精确存在 group 1..5 五行，且每行 coverage 为 `PASS`、观测数满足既有
    minimum-symbol 合同、收益为 finite；缺日期、缺组、重复组、非有限或 coverage 非 PASS 均整次 fail-closed；
 3. 每个日期内先使用既有固定组成员的等权 holding return；fold 内每组再对全部预注册日期等权平均；
-4. 对固定方向 `-1`，fold 通过条件为 `group1 >= group2 >= group3 >= group4 >= group5`；禁止容差、平滑、
-   事后重排或选择子区间；
+4. classic score 为 `factor * direction`，group 按 score 升序；固定方向 `-1` 时 group1 为高 MAX、
+   group5 为低 MAX，低 MAX 优胜的 fold 通过条件为 `group1 <= group2 <= group3 <= group4 <= group5`；
+   禁止容差、平滑、事后重排或选择子区间；证据字段使用 `*_le_*`。
 5. 三个 test folds 至少 `2/3` 通过；同时把三个 fold 的全部预注册 test 日期合并后，按同一“日期等权”口径
-   计算 pooled group 1..5，pooled 也必须非递增；
+   计算 pooled group 1..5，pooled 也必须非递减；
 6. fold 与 pooled 的五组均值、逐相邻比较和 pass 状态进入可验证输出/summary；最终 admission 必须真实消费该
    gate，不能只生成诊断表。
 
@@ -92,7 +93,7 @@
 4. MAX 在 redundancy pair 的任一侧都不得绕过本包自身既有门禁；本包不宣称关闭 PIT 对称 coverage；
 5. 任一 test fold 的任一预注册日期缺 group、重复 group、coverage 非 PASS、收益非有限，最终结果稳定拒绝；
 6. 只有 1/3 folds 单调、2/3 folds 单调但 pooled 不单调、pooled 单调但少于 2 folds 单调，均拒绝；
-7. 恰好 2/3 folds 且 pooled 非递增通过单调门禁；相邻组相等允许通过；
+7. 恰好 2/3 folds 且 pooled 非递减通过单调门禁；相邻组相等允许通过；
 8. horizon 1/5 结果变化不改变 primary gate；未选中证券 outcome 变化不得改变固定 group membership；
 9. 历史 run 目录存在时不得覆盖；新 run 只能发布到新的不可覆盖 lineage。
 
@@ -119,16 +120,18 @@
 
 ## 8. 交付记录
 
-### Worker 实现交付（开发检查完成）
+### Worker 实现交付（P0 返工开发检查完成）
 
-- 状态：`IMPLEMENTED / SELF-VERIFIED`，等待未参与实现的独立初验；结论上限仍为
+- 状态：`DELIVERED / SELF-VERIFIED`，等待未参与实现的独立初验；结论上限仍为
   `RESEARCH_ONLY`，本记录不宣称任何 Gate 已最终关闭。
-- parent：`39f7969e5a066a0b333b192c5a02ee28800c5349`；source commit 为本次唯一 source commit，full
-  SHA 由 Worker 最终交付报告给出，不在本记录中自引用。
+- parent：旧安全点 `09601eb9c602dd22025523e9feb8a1678f74450d`；source commit 为本次返工唯一 source
+  commit，full SHA 由 Worker 最终交付报告给出，不在本记录中自引用。
 - 实现：主配置与成本配置各以单一 bytes payload 完成 parse/hash；expected cost semantic SHA 在
   snapshot verifier 与 artifact mkdir 前 fail-closed；`run.inputs` 首项为标准
-  `a-share-cost-schedule`；primary 仅消费 `test`/`horizon=20`，按预注册日期等权固定五组，固定方向
-  `-1`，要求至少 2/3 folds 且 pooled 单调通过，并把 fold/pooled 均值、相邻比较和状态写入输出与 summary。
+  `a-share-cost-schedule`；primary 仅消费 `test`/`horizon=20`，按预注册日期等权固定五组；score 为
+  `factor * direction` 且 group 按 score 升序，固定方向 `-1` 时 group1 为高 MAX、group5 为低 MAX，
+  使用 `group1 <= ... <= group5`、至少 2/3 folds 且 pooled 单调通过，并把 `*_le_*` 比较、均值和状态
+  写入输出与 summary。
 - 精确变更路径：`src/quant/research/run_classic_factors.py`、
   `configs/research/m2_classic_daily_factors_fifth_batch.toml`、
   `tests/unit/test_run_classic_factors.py`、`docs/research/M2_MAX彩票偏好因子假设卡.md`、
@@ -136,7 +139,7 @@
   `docs/research/roadmaps/M2_策略与因子库并行建设路线图.md`。R15 结果文档未创建。
 - 验证：focused 测试 `24 passed`；Ruff（生产文件与主测试）、mypy（生产文件）、cold import、TOML/
   cost identity 均通过；反例覆盖单 payload 漂移/重复读取、expected SHA 失败、日期/组缺失、重复组、
-  coverage 失败、非有限收益、1/5 horizon 漂移及 2/3 folds/pooled 门禁。
+  coverage 失败、非有限收益、1/5 horizon 漂移、`<=` 方向字段及 2/3 folds/pooled 门禁。
 - 运行边界：未执行真实 run、网络、PIT、PAPER 或全量测试；历史 run
   `10dea14f1fcbbbeb78871cddb7b00cd06d77cf005c3a776c4713f5a4f4129bb3` 未触碰，保持 immutable/HOLD。
   开发 Python 检查均为单实例 `BelowNormal`、affinity `0xF00`、数值线程不超过 2；R15 临时目录已清理。

@@ -76,8 +76,9 @@ RankCorr 的最大中位绝对值必须严格 `< 0.80`；等于 0.80 也失败�
 5. 2 倍成本后的跨 fold 链式收益严格为正；
 6. 实际 target 日期逐 fold 与预注册集合完全一致。
 7. primary 仅消费 `test`/`horizon=20` 的固定五组：每个预注册 signal date 必须有完整且唯一的
-   group 1..5、`coverage=PASS`、满足既有 minimum-symbol 合同且收益 finite；固定方向 `-1` 要求
-   `group1 >= group2 >= group3 >= group4 >= group5`，至少 2/3 folds 且 pooled 通过。
+   group 1..5、`coverage=PASS`、满足既有 minimum-symbol 合同且收益 finite；score 为
+   `factor * direction` 且 group 按 score 升序，固定方向 `-1` 时 group1 为高 MAX、group5 为低 MAX，
+   要求 `group1 <= group2 <= group3 <= group4 <= group5`，至少 2/3 folds 且 pooled 通过。
 
 任一失败即 `REJECTED`；全部通过也最高为 `RESEARCH_ONLY`。若历史初筛通过，进入 forward 前还必须以
 `daily_basic` 增补 `log_total_market_value` 和 turnover 的二阶段增量控制，不能直接申请

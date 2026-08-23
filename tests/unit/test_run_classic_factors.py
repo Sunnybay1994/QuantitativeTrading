@@ -671,9 +671,9 @@ def test_fourth_batch_gates_enforce_redundancy_coverage_and_schedule() -> None:
 def _monotonicity_fixture(
     *,
     fold_values: tuple[tuple[float, ...], ...] = (
-        (5.0, 4.0, 3.0, 2.0, 1.0),
-        (4.0, 3.0, 2.0, 1.0, 0.0),
-        (1.0, 2.0, 3.0, 2.0, 1.0),
+        (1.0, 2.0, 3.0, 4.0, 5.0),
+        (0.0, 1.0, 2.0, 3.0, 4.0),
+        (5.0, 4.0, 3.0, 4.0, 5.0),
     ),
 ) -> tuple[pl.DataFrame, pl.DataFrame, tuple[ResearchFoldV1, ...]]:
     factor = "max_daily_return_20"
@@ -745,7 +745,13 @@ def test_primary_group_monotonicity_is_date_equal_and_fail_closed() -> None:
         "group_3_mean_return",
         "group_4_mean_return",
         "group_5_mean_return",
-    ).row(0) == (10.0 / 3.0, 3.0, 8.0 / 3.0, 5.0 / 3.0, 2.0 / 3.0)
+    ).row(0) == (2.0, 7.0 / 3.0, 8.0 / 3.0, 11.0 / 3.0, 14.0 / 3.0)
+    assert result.filter(pl.col("fold") == 0).select(
+        "group_1_le_group_2",
+        "group_2_le_group_3",
+        "group_3_le_group_4",
+        "group_4_le_group_5",
+    ).row(0) == (True, True, True, True)
 
     diagnostic_drift = pl.concat(
         [

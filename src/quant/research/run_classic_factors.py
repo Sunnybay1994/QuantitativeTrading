@@ -1355,7 +1355,7 @@ def _primary_monotonicity_row(
             left = values[index]
             right = values[index + 1]
             comparison_values.append(
-                left >= right if left is not None and right is not None else False
+                left <= right if left is not None and right is not None else False
             )
         comparisons = cast(
             tuple[bool, bool, bool, bool], tuple(comparison_values)
@@ -1372,10 +1372,10 @@ def _primary_monotonicity_row(
         "group_3_mean_return": values[2],
         "group_4_mean_return": values[3],
         "group_5_mean_return": values[4],
-        "group_1_ge_group_2": comparisons[0],
-        "group_2_ge_group_3": comparisons[1],
-        "group_3_ge_group_4": comparisons[2],
-        "group_4_ge_group_5": comparisons[3],
+        "group_1_le_group_2": comparisons[0],
+        "group_2_le_group_3": comparisons[1],
+        "group_3_le_group_4": comparisons[2],
+        "group_4_le_group_5": comparisons[3],
         "monotonicity_passed": invalid_reason is None and all(comparisons),
         "invalid_reason": invalid_reason,
     }
