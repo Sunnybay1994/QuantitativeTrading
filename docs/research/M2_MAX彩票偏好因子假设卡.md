@@ -1,11 +1,15 @@
 # M2 MAX 彩票偏好因子假设卡
 
-> 状态：真实不可变运行已完成；历史初筛 `RESEARCH_ONLY`
+> 状态：历史真实不可变运行已完成；R15 纠偏重放在发布前停止，假设保持 `UNASSESSED/HOLD`
 > 最高结论：`RESEARCH_ONLY` / `REJECTED`
 > trial budget：1
 > 配置 SSOT：`configs/research/m2_classic_daily_factors_fifth_batch.toml`
 > 结果文档：[M2 MAX 彩票偏好因子研究结果](M2_MAX彩票偏好因子研究结果.md)
 > immutable run id：`10dea14f1fcbbbeb78871cddb7b00cd06d77cf005c3a776c4713f5a4f4129bb3`
+> R15 约束：`trial_delta=0`；历史 run 保持 immutable/HOLD；本次 attempt 无 run id、无不可变产物
+> R15 结果：[R15 纠偏重放结果](M2_MAX彩票偏好因子R15纠偏重放结果.md)
+> R15 主配置 raw payload SHA-256：`860ca0ef600dd4de107f5e60dc8593cbb03ca6c7a3cac0cad0adf2d56a778c9f`；
+> 任一配置字节漂移均在成本绑定、数据/snapshot 读取或 artifact 创建前 STOP，版本化配置仍是参数 SSOT
 
 ## 1. 可证伪命题与固定方向
 
@@ -74,6 +78,10 @@ RankCorr 的最大中位绝对值必须严格 `< 0.80`；等于 0.80 也失败�
 4. 最大中位绝对 RankCorr 严格 `< 0.80`；
 5. 2 倍成本后的跨 fold 链式收益严格为正；
 6. 实际 target 日期逐 fold 与预注册集合完全一致。
+7. primary 仅消费 `test`/`horizon=20` 的固定五组：每个预注册 signal date 必须有完整且唯一的
+   group 1..5、`coverage=PASS`、满足既有 minimum-symbol 合同且收益 finite；score 为
+   `factor * direction` 且 group 按 score 升序，固定方向 `-1` 时 group1 为高 MAX、group5 为低 MAX，
+   要求 `group1 <= group2 <= group3 <= group4 <= group5`，至少 2/3 folds 且 pooled 通过。
 
 任一失败即 `REJECTED`；全部通过也最高为 `RESEARCH_ONLY`。若历史初筛通过，进入 forward 前还必须以
 `daily_basic` 增补 `log_total_market_value` 和 turnover 的二阶段增量控制，不能直接申请
@@ -98,3 +106,10 @@ snapshot、配置与代码摘要，并保留 `run.json`、targets、IC、分组�
 
 财务采集若在已启动的唯一 run 中途完成，不中断本 run；本包结束后，PIT 财务质量研究立即优先于新增的
 bar-only 因子包。
+
+R15 纠偏重放只关闭 classic MAX 的 same-payload config/cost semantic identity、标准成本 input 和上述
+primary monotonicity admission gate；不关闭 PIT 对称 redundancy coverage、audit-v4、R3 或任何交易准入，
+也不改写历史 run。唯一真实 attempt 在固定 Top-K 后的 chosen-target outcome 完整性检查处正常 fail-closed，
+状态为 `STOPPED_BEFORE_PUBLICATION / DIAGNOSTIC_SELECTED_TARGET_OUTCOMES_INVALID`。它没有生成 run id、
+不可变 run、public verification 或 canonical retained；禁止替补和第二次运行。该 attempt 计入既有 trial
+ledger 规则，但不是完整研究 trial 结果，故 R15 假设保持 `UNASSESSED/HOLD`，旧 MAX run 也继续 HOLD。

@@ -94,11 +94,17 @@ premium；没有生成 `PAPER_CANDIDATE`，也没有启动 PAPER。
 
 - [MAX 彩票偏好因子假设卡](M2_MAX彩票偏好因子假设卡.md)
 - [MAX 彩票偏好因子研究结果](M2_MAX彩票偏好因子研究结果.md)
+- [MAX 彩票偏好因子 R15 纠偏重放结果](M2_MAX彩票偏好因子R15纠偏重放结果.md)
+- [M2-FROZEN-R15 冻结 Clean MAX 纠偏重放任务与交付记录](agent/M2_FROZEN_R15_冻结Clean_MAX纠偏重放任务与交付记录.md)
 
 本轮 trial budget 固定为 1，研究过去 20 个严格连续 session 的最大单日复权收盘收益，并将经济方向预注册
 为低 MAX 优先的 `-1`。它不是 Qlib Alpha158 的 `Max(high,20)/close`。原始 run 的历史状态仍为
 `RESEARCH_ONLY`，但其目标、组合与成本证据因 TARGET R11 进入 HOLD；规模/换手控制的不可变状态仍为
 `REJECTED`，其历史 2x 成本腿也不得继续作为有效经济证伪。forward、统一回放和人工 admission 仍暂停。
+R15 已完成开发检查，但唯一真实 attempt 在固定 Top-K 后的 chosen-target outcome 完整性 Gate 处以
+`STOPPED_BEFORE_PUBLICATION / DIAGNOSTIC_SELECTED_TARGET_OUTCOMES_INVALID` 正常 fail-closed。没有 run id、
+不可变 run、public verification 或 canonical retained，禁止替补和第二次运行；R15 假设保持
+`UNASSESSED/HOLD`，历史 run `10dea14f…129bb3` 也继续 immutable/HOLD。
 
 ### MAX 规模与换手二阶段控制
 
