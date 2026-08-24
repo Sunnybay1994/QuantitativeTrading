@@ -153,3 +153,14 @@
 - 剩余 STOP：须由独立初验与领域经理主验后，才可授权唯一真实 `RESEARCH_ONLY` run、由领域经理创建
   R15 结果文档，并由统筹执行后续合流；本 Worker 不关闭 PIT 对称 redundancy coverage、audit-v4、R3
   或任何交易 Gate。
+
+### REWORK3_TEST_CLOSURE（测试闭环）
+
+- reviewer：`PASS`（本轮测试闭环要求已通过；独立 reviewer 仍由 dispatcher 在交付后快速复核）。
+- 新增直接回归测试：非 fifth classic 主流程带有额外
+  `[portfolio].cost_schedule_semantic_sha256` 时，`main()` 仍先 snapshot 后调用 `_cost_periods`，不调用
+  `_cost_schedule_binding`，不产生 `a-share-cost-schedule` input，report 与非成本 run identity 字段保持不变；
+  frozen MAX 主配置由 CRLF 转 LF 后确认实际转换、raw SHA 漂移，并在 cost binding、snapshot/data reader、artifact
+  publisher 前 fail-closed。
+- 验证：focused `tests/unit/test_run_classic_factors.py` 为 `30 passed`；Ruff（修改测试文件）与
+  `git diff --check` 通过。生产源码未修改，未执行真实 run、网络、PIT 或 PAPER。

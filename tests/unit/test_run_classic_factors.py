@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import json
 import tomllib
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 
 import polars as pl
 import pytest
@@ -394,6 +396,181 @@ def test_legacy_classic_keeps_cost_binding_after_snapshot_boundary(
             )
         )
     assert cost_calls == []
+    assert not (project_root / "artifacts-test").exists()
+
+
+def test_legacy_main_ignores_extra_cost_identity_field(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base_payload = (PROJECT_ROOT / "configs/research/m2_classic_daily_factors.toml").read_bytes()
+    newline = b"\r\n" if b"\r\n" in base_payload else b"\n"
+    extra_cost_field = (
+        newline
+        + f'cost_schedule_semantic_sha256 = "{_COST_SEMANTIC_SHA256}"'.encode()
+        + newline
+    )
+    extra_payload = base_payload.replace(
+        newline + b"[admission]", extra_cost_field + b"[admission]", 1
+    )
+    assert extra_payload != base_payload
+
+    base_project, _, _, base_data_root = _classic_project(
+        tmp_path / "base",
+        config_payload=base_payload,
+        config_name="m2_classic_daily_factors.toml",
+    )
+    extra_project, _, _, extra_data_root = _classic_project(
+        tmp_path / "extra",
+        config_payload=extra_payload,
+        config_name="m2_classic_daily_factors.toml",
+    )
+    periods, _ = _cost_schedule_binding_from_payload(_cost_payload())
+    events: list[str] = []
+    captured_runs: list[object] = []
+    captured_reports: list[dict[str, object]] = []
+
+    def snapshot_verifier(*, data_root: Path, snapshot_id: str) -> object:
+        del data_root
+        events.append("snapshot")
+        return SimpleNamespace(
+            snapshot_id=snapshot_id,
+            manifest_sha256="a" * 64,
+            stock_rows=1,
+            fund_rows=0,
+        )
+
+    def stock_reader(*_: object, **__: object) -> pl.DataFrame:
+        return pl.DataFrame({"trade_date": [dt.date(2019, 1, 1)]})
+
+    def cost_periods(*_: object, **__: object) -> tuple[object, ...]:
+        events.append("cost_periods")
+        return periods
+
+    def unexpected_cost_binding(*_: object, **__: object) -> object:
+        events.append("cost_binding")
+        raise AssertionError("legacy main must not call cost binding")
+
+    def labels(**_: object) -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "trade_date": [dt.date(2020, 1, 2)],
+                "history_rows": [120],
+                "liquidity_20": [20_000_000.0],
+            }
+        )
+
+    def evaluate(**kwargs: object) -> dict[str, pl.DataFrame]:
+        assert kwargs["costs"] == periods
+        frame = pl.DataFrame({"value": [1]})
+        return {
+            "daily_ic": frame,
+            "group_returns": frame,
+            "fold_metrics": frame,
+            "targets": frame,
+            "portfolio_nav": frame,
+        }
+
+    def summarize(
+        _metrics: pl.DataFrame,
+        *,
+        factors: tuple[str, ...],
+        admission: object,
+    ) -> pl.DataFrame:
+        del admission
+        return pl.DataFrame(
+            {
+                "factor": list(factors),
+                "mean_test_rank_ic": [0.0] * len(factors),
+                "research_status": ["REJECTED"] * len(factors),
+            }
+        )
+
+    def publish(
+        *, artifact_root: Path, run: object, output_payloads: dict[str, bytes]
+    ) -> tuple[Path, object, bool]:
+        captured_runs.append(run)
+        captured_reports.append(json.loads(output_payloads["report.json"]))
+        return artifact_root, run, False
+
+    monkeypatch.setattr(classic_runner, "verify_tushare_bulk_clean_snapshot", snapshot_verifier)
+    monkeypatch.setattr(classic_runner, "read_tushare_bulk_clean_stock_bars", stock_reader)
+    monkeypatch.setattr(classic_runner, "select_frozen_liquid_universe", lambda *_args, **_kwargs: ("000001.SZ",))
+    monkeypatch.setattr(classic_runner, "compute_classic_daily_factors", lambda *_args, **_kwargs: pl.DataFrame())
+    monkeypatch.setattr(classic_runner, "build_next_open_factor_labels", labels)
+    monkeypatch.setattr(classic_runner, "_cost_periods", cost_periods)
+    monkeypatch.setattr(classic_runner, "_cost_schedule_binding", unexpected_cost_binding)
+    monkeypatch.setattr(classic_runner, "evaluate_walk_forward", evaluate)
+    monkeypatch.setattr(classic_runner, "summarize_factors", summarize)
+    monkeypatch.setattr(classic_runner, "compute_code_sha256", lambda **_kwargs: "b" * 64)
+    monkeypatch.setattr(classic_runner, "publish_lightweight_research_run", publish)
+
+    for project_root, data_root in (
+        (base_project, base_data_root),
+        (extra_project, extra_data_root),
+    ):
+        event_start = len(events)
+        assert main(
+            _classic_main_args(
+                project_root,
+                data_root,
+                config_name="m2_classic_daily_factors.toml",
+            )
+        ) == 0
+        assert events[event_start:] == ["snapshot", "cost_periods"]
+
+    assert len(captured_runs) == 2
+    assert len(captured_reports) == 2
+    base_run, extra_run = captured_runs
+    base_identity = dict(vars(base_run))
+    extra_identity = dict(vars(extra_run))
+    base_identity.pop("run_id")
+    extra_identity.pop("run_id")
+    base_identity.pop("config_sha256")
+    extra_identity.pop("config_sha256")
+    assert base_identity == extra_identity
+    assert tuple(item.name for item in extra_run.inputs) == (  # type: ignore[attr-defined]
+        "tushare-stock-bars",
+    )
+    assert captured_reports[0] == captured_reports[1]
+    assert not (base_project / "artifacts-test").exists()
+    assert not (extra_project / "artifacts-test").exists()
+
+
+def test_frozen_max_crlf_to_lf_drift_rejects_before_any_io_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = _frozen_max_config_payload()
+    lf_payload = payload.replace(b"\r\n", b"\n")
+    assert b"\r\n" in payload
+    assert b"\r\n" not in lf_payload
+    assert lf_payload != payload
+    assert hashlib.sha256(lf_payload).hexdigest() != _FROZEN_MAX_R15_CONFIG_SHA256
+    project_root, _, _, data_root = _classic_project(tmp_path, config_payload=lf_payload)
+    calls: list[str] = []
+
+    def unexpected_cost(*_: object, **__: object) -> object:
+        calls.append("cost")
+        raise AssertionError("cost binding must not run")
+
+    def unexpected_snapshot(**_: object) -> object:
+        calls.append("snapshot")
+        raise AssertionError("snapshot verifier must not run")
+
+    def unexpected_reader(*_: object, **__: object) -> object:
+        calls.append("reader")
+        raise AssertionError("data repository must not run")
+
+    def unexpected_publish(*_: object, **__: object) -> object:
+        calls.append("artifact")
+        raise AssertionError("artifact publisher must not run")
+
+    monkeypatch.setattr(classic_runner, "_cost_schedule_binding", unexpected_cost)
+    monkeypatch.setattr(classic_runner, "verify_tushare_bulk_clean_snapshot", unexpected_snapshot)
+    monkeypatch.setattr(classic_runner, "read_tushare_bulk_clean_stock_bars", unexpected_reader)
+    monkeypatch.setattr(classic_runner, "publish_lightweight_research_run", unexpected_publish)
+    with pytest.raises(ValueError, match="frozen MAX R15 config payload identity mismatch"):
+        main(_classic_main_args(project_root, data_root))
+    assert calls == []
     assert not (project_root / "artifacts-test").exists()
 
 
