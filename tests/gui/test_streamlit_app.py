@@ -31,6 +31,7 @@ def _publish_fixture(
     *,
     count: int = 1,
     mismatched_data_end_index: int | None = None,
+    empty_caveat_index: int | None = None,
 ) -> Path:
     buffer = io.BytesIO()
     pl.DataFrame(
@@ -93,7 +94,9 @@ def _publish_fixture(
             ),
             outputs=(),
             aggregate_metrics=(("net_sharpe", 0.75 - index / 10),),
-            caveats=("Research-only fixture.",),
+            caveats=(
+                () if index == empty_caveat_index else ("Research-only fixture.",)
+            ),
         )
         publish_lightweight_research_run(
             artifact_root=artifact_root,
@@ -122,6 +125,108 @@ def test_default_empty_state_is_safe_and_explains_the_source_blocker(
     assert app.title[0].value == "Quant 投研工作台"
     assert any("只读研究驾驶舱" in caption.value for caption in app.caption)
     assert any("RUNS_ROOT_MISSING" in str(dataframe.value) for dataframe in app.dataframe)
+
+
+def test_overview_default_keeps_catalog_rows_order_and_full_kpi_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact_root = _publish_fixture(tmp_path, count=3)
+    monkeypatch.setenv(ARTIFACT_ROOT_ENV, str(artifact_root))
+    expected_strategies = ["fixture_1", "fixture_2", "fixture_3"]
+
+    app = AppTest.from_file(str(_app_path())).run(timeout=10)
+
+    assert not app.exception
+    assert app.sidebar.text_input[0].value == ""
+    assert app.sidebar.radio[1].value == "ALL"
+    assert app.metric[0].value == "3"
+    assert app.dataframe[0].value["strategy"].tolist() == expected_strategies
+    assert any(
+        "当前显示 3 / 3 个运行；顶部卡片统计全部 canonical runs。"
+        in caption.value
+        for caption in app.caption
+    )
+
+
+def test_overview_search_and_caveat_filters_keep_kpi_catalog_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact_root = _publish_fixture(
+        tmp_path,
+        count=3,
+        empty_caveat_index=2,
+    )
+    monkeypatch.setenv(ARTIFACT_ROOT_ENV, str(artifact_root))
+
+    app = AppTest.from_file(str(_app_path())).run(timeout=10)
+    app.sidebar.text_input[0].set_value("FIXTURE_2").run(timeout=10)
+    assert not app.exception
+    assert app.metric[0].value == "3"
+    assert app.dataframe[0].value["strategy"].tolist() == ["fixture_2"]
+    assert any("当前显示 1 / 3 个运行" in caption.value for caption in app.caption)
+
+    app.sidebar.radio[1].set_value("PRESENT").run(timeout=10)
+    assert not app.exception
+    assert app.dataframe[0].value["strategy"].tolist() == ["fixture_2"]
+
+    app.sidebar.radio[1].set_value("ABSENT").run(timeout=10)
+    assert not app.exception
+    assert any("没有可展示的自洽运行" in message.value for message in app.info)
+
+    app.sidebar.text_input[0].set_value("").run(timeout=10)
+    assert not app.exception
+    assert app.dataframe[0].value["strategy"].tolist() == ["fixture_3"]
+
+    app.sidebar.radio[1].set_value("ALL").run(timeout=10)
+    assert not app.exception
+    assert app.metric[0].value == "3"
+    assert len(app.dataframe[0].value) == 3
+
+
+def test_overview_combined_filter_has_explicit_empty_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact_root = _publish_fixture(tmp_path, count=2)
+    monkeypatch.setenv(ARTIFACT_ROOT_ENV, str(artifact_root))
+
+    app = AppTest.from_file(str(_app_path())).run(timeout=10)
+    app.sidebar.multiselect[0].set_value(["RESEARCH_ONLY"]).run(timeout=10)
+    app.sidebar.multiselect[1].set_value(["fixture_1"]).run(timeout=10)
+    app.sidebar.text_input[0].set_value("does-not-exist").run(timeout=10)
+
+    assert not app.exception
+    assert any("当前显示 0 / 2 个运行" in caption.value for caption in app.caption)
+    assert any("没有可展示的自洽运行" in message.value for message in app.info)
+    assert len(app.dataframe) == 0
+
+
+def test_overview_filter_reruns_do_not_call_output_or_nav_verifiers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact_root = _publish_fixture(tmp_path, count=2)
+    monkeypatch.setenv(ARTIFACT_ROOT_ENV, str(artifact_root))
+
+    def fail_on_call(*_: object, **__: object) -> None:
+        raise AssertionError("overview filtering must not verify output or NAV")
+
+    for name in (
+        "verify_research_run",
+        "verify_research_run_comparison",
+        "load_nav_projection",
+        "load_comparison_nav_projection",
+    ):
+        monkeypatch.setattr(f"quant.gui.research_runs.{name}", fail_on_call)
+
+    app = AppTest.from_file(str(_app_path())).run(timeout=10)
+    app.sidebar.text_input[0].set_value("fixture").run(timeout=10)
+    app.sidebar.radio[1].set_value("PRESENT").run(timeout=10)
+    app.sidebar.radio[1].set_value("ABSENT").run(timeout=10)
+
+    assert not app.exception
 
 
 def test_detail_integrity_action_renders_verified_nav_without_exception(

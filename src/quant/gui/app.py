@@ -15,6 +15,7 @@ from quant.gui.research_runs import (
     conclusion_counts,
     diagnose_research_run_comparison,
     discover_research_runs,
+    filter_research_runs,
     load_comparison_nav_projection,
     load_nav_projection,
     verify_research_run,
@@ -72,13 +73,29 @@ def _render_overview(st: Any, catalog: ResearchRunCatalog) -> None:
         all_strategies,
         default=all_strategies,
     )
-    filtered = tuple(
-        run
-        for run in catalog.runs
-        if run.manifest.conclusion in selected_conclusions
-        and run.manifest.strategy_name in selected_strategies
+    query = st.sidebar.text_input("搜索运行", value="", max_chars=128)
+    caveat_presence = st.sidebar.radio(
+        "Caveat",
+        ("ALL", "PRESENT", "ABSENT"),
+        index=0,
+        format_func=lambda value: {
+            "ALL": "全部",
+            "PRESENT": "仅有 caveat",
+            "ABSENT": "仅无 caveat",
+        }[value],
+    )
+    filtered = filter_research_runs(
+        catalog.runs,
+        conclusions=selected_conclusions,
+        strategies=selected_strategies,
+        query=query,
+        caveat_presence=caveat_presence,
     )
     st.subheader("研究运行")
+    st.caption(
+        f"当前显示 {len(filtered)} / {len(catalog.runs)} 个运行；"
+        "顶部卡片统计全部 canonical runs。"
+    )
     if not filtered:
         st.info("当前固定目录与筛选条件下没有可展示的自洽运行。")
         return

@@ -40,6 +40,16 @@
 - 不显示合同字段原值、部分 metric/NAV、兼容子集、推荐、排名或准入，不改变既有 fail-closed 门禁与
   output-hash 前失败顺序。
 
+已冻结 G1-D2 范围（实现、独立初验与 focused 验证已通过；等待安全提交/合流）：
+
+- 在现有 canonical catalog 上增加唯一 `filter_research_runs` 纯筛选函数，保持输入运行原序和对象 identity；
+- 结论与策略仍为 exact membership；运行检索只对 `run_id`、`hypothesis_id`、策略名/版本及其组合做
+  `strip().casefold()` 后的 literal substring 匹配；
+- 总览增加最多 128 字符的 `搜索运行` 与 `Caveat` 三态筛选（`ALL` / `PRESENT` / `ABSENT`），空选择和
+  非法模式按冻结合同 fail-closed；
+- 六张 KPI 卡继续统计完整 canonical catalog，表格显示筛选计数；筛选不触发 output verifier、NAV、hash、
+  运行产物读取、排名、推荐、准入或任何运行编排能力。
+
 ## 明确非目标
 
 - 不遍历或修补 `data/`，不下载数据，不计算因子、策略、成交或准入结论；
@@ -54,7 +64,10 @@
 
 ## 分支、worktree 与基线
 
-- 唯一文档 owner：GUI session；当前没有活动 GUI worktree 或开放写白名单。
+- 唯一文档 owner：GUI session；当前 G1-D2 active topology 为 exact base
+  `ac57ce9e40dc6731e1106b2fa2398f4013fa19da`、branch `codex/gui-g1-d2-run-search`、worktree
+  `F:/AI_Coding/QuantitativeTrading/artifacts/dev_worktrees/gui-g1-d2-run-search`；exact7 active，包含 6 个
+  实现路径与 1 个 manager-owned taskbook，任务书对实现 Agent 只读。
 - G1-D1 历史冻结基线：`2a376100a50fb0ad5040048e4ba2aae8c974ace9`；source
   `9f42b3c81a3a5e4e70ec4a0c85e0c7695b9d1736` 已经 integration merge
   `8427c83ddad62690b1f75d391ed1178fd3f6f415` 吸收，并以
@@ -216,6 +229,21 @@ stdout/stderr、真实退出码、BelowNormal、affinity `0xF00` 和数值线程
 | G1-C2 | “运行比较”薄页面、纯逻辑/条件 AppTest 与文档同步 | G1-C1 完成且不增加任何执行能力 |
 | G1-C3 | 定向 pytest/Ruff/mypy 与真实 immutable artifacts 只读探针 | 项目统一串行资源队列轮到 GUI |
 | G1-D1 | `COMPARISON_CONTRACT_MISMATCH` 只读 14 字段关系诊断 | 已完成：source `9f42b3c` → merge `8427c83`，archive-first 退出 |
+| G1-D2 | 运行总览 manifest-only literal 检索与 caveat presence 过滤 | 实现、独立初验与 focused 验证已通过；当前仅为 `READY_FOR_SAFE_COMMIT` 候选，等待安全提交/合流 |
+
+G1-D2 当前证据边界（不替代项目 Gate 或合流结论）：实现已完成；独立 reviewer `01a03198...` 首轮
+`FAIL`，返工后 `REVIEW_PASS`。combined focused pytest exit 0（35 passed、1 skipped），唯一 skip
+是 Windows symlink-creation unit condition，不是 AppTest；等价 AppTest-only exit 0（9 passed、0 skipped）。
+Ruff 四路径 exit 0；mypy 两个生产 GUI 文件 exit 0、2 files clean；exact7 `git diff --check`
+exit 0、无 overflow；manager-owned taskbook 尾随空白 0、本地链接缺失 0。Python 3.13.13、
+Streamlit 1.62.0、`pip check` exit 0，`quant.gui.__file__` 指向当前 worktree；`--system-site-packages`
+不证明独立依赖闭包或 WSL Gate。目标环境、basetemp、PID tree 与 `0xF00` 均清理；未运行 browser、
+cold、real artifacts 或 full pytest。
+
+过程边界：首次 install carrier 仅发生 payload loss，未盲目重试；第二次 install exit 0。首次 combined
+run 因 total skip 保守 `STOP`，root 接受 symlink 边界后完成 AppTest-only recovery；首次 mypy payload
+loss 后仅做窄范围、可观测的 base recovery。G1-D2 当前仅是 `READY_FOR_SAFE_COMMIT` 候选，source
+SHA、safe commit、merge、integration 与 retirement 尚未完成。
 
 G0-C1 至 G0-C3、G1-C1 至 G1-C3、G0-C4 和 G1-D1 的既有提交与验证结果均作为历史证据保留；
 `GUI-DEBT-VEGA-001` 仍开放，因此不得宣称 strict zero-warning C4 关闭。G1-D1 的 focused pytest、
@@ -278,6 +306,23 @@ browser 或 WSL Gate 完成，也不把派生反例称为既存坏 run。
   live fixture 因不存在而保留 `BLOCKED_BY_FIXTURE_AVAILABILITY`。统筹冻结的等价验收已由一次真实 canonical
   字节派生的隔离篡改反例通过：14 字段全 `REFERENCE/SAME`、output fail 精确闭合、无部分 evidence/NAV，
   canonical SHA 不变且临时资源清零；它不是既存坏 run。exact 7 安全提交、合流与来源线退出均已完成。
+
+## G1-D2 验收标准
+
+- `filter_research_runs` 只消费 canonical manifest 摘要，单次按输入顺序返回，保持对象 identity；空结论或
+  策略选择返回空 tuple，非法 caveat 模式立即抛出 `ValueError`；
+- query 只搜索 `run_id`、`hypothesis_id`、`strategy_name`、`strategy_version` 与
+  `strategy_name strategy_version`，大小写不敏感但保持 literal substring 语义，不触碰 hypothesis 正文、
+  caveat 文本、路径、digest、metric、input/output 或 NAV；
+- `ALL`、`PRESENT`、`ABSENT` 只按 `manifest.caveats` 是否为空筛选；结论、策略、query、caveat 可组合，
+  无匹配显示明确空态；
+- overview 默认空 query/`ALL` 的行、列和 catalog 顺序与原行为一致；六张 KPI 卡仍统计全量 canonical
+  runs，计数说明同时给出筛选结果与 catalog 总量；
+- AppTest/单测用 fail-on-call 与 fail-on-file-access seam 证明筛选不触发 output verifier、comparison verifier、
+  NAV projection 或文件访问；详情、比较和 G1-D1 关系诊断合同保持不变；
+- 不新增依赖、缓存、索引、session state、路径输入、下载、执行能力或 M3/G2/orchestration 接缝；focused
+  pytest、Ruff、mypy 与独立初验已通过，但不代表独立依赖闭包、WSL Gate、browser/cold/real artifacts
+  或 full pytest 已完成。
 
 ## 后续队列
 
