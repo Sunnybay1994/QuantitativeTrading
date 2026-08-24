@@ -179,3 +179,44 @@
   verification 或 canonical retained；历史 run `10dea14f…129bb3` 未触碰并继续 HOLD。
 - 本次 attempt 计入既有 trial ledger 规则，但不得冒充完整研究 trial 结果；MAX corrective hypothesis 保持
   `UNASSESSED/HOLD`，不是 `REJECTED`，也不构成“无候选”的经济证据。
+
+## 9 M2-R15-PORTABLE-CONFIG-IDENTITY-R2（本次 Worker）
+
+- 状态：`STATIC_DONE`；本包只完成静态代码、测试和记录变更，不宣称 Python、Gate、真实数据或任何研究运行
+  已通过。
+- 新身份：任务 `M2-R15-PORTABLE-CONFIG-IDENTITY-R2`，角色 `IMPLEMENTATION_AGENT`，agent
+  `01a0335a-64b7-72f2-9834-dd4635102273`，exact base
+  `0341a1add2737210cde6ddb75b6d630aa446feea`，branch
+  `codex/m2-r15-portable-config-identity-r2`，mode `STATIC_ONLY`；本次 Worker 未采用旧实现或旧审查身份。
+- 旧 lineage：`STOPPED_VALIDATION_EVIDENCE_LOST`。旧 portable worktree 仅作为只读设计/补丁参考，未写入、未清理、
+  未接管，也未把旧交付报告当作 R2 的身份或验收证据。
+- 现象：旧 fifth/MAX 身份把原始配置字节直接绑定到固定 SHA，LF、CRLF、混合 EOL 与重复 bare CR 的同一配置文本
+  无法共享 canonical identity；主配置的 BOM、NUL、非法 UTF-8 和 interior `U+FEFF` 规则也未由同一主路径显式
+  冻结。这样会把可移植的换行差异误判为配置漂移，或使 payload hygiene 的失败语义不够明确。
+- 根因：主路径只有 raw payload 的 SHA 与直接 UTF-8/TOML 处理，缺少“严格解码 → 只规范 EOL → 再绑定 fifth
+  identity”的单一边界；测试也没有在同一 mocked publish boundary 覆盖四类 EOL 和四类 payload 反例。
+- 应遵循规则：主配置 `read_bytes()` 恰好一次；拒绝开头 raw `EF BB BF`、任意 NUL 和非法 UTF-8；只把 CRLF 与
+  bare CR 规范为 LF；不删除或规范 interior `U+FEFF`，其 UTF-8 字节参与 SHA。fifth/MAX 的 frozen guard 与
+  `LightweightResearchRunV1.config_sha256` 使用 canonical SHA
+  `baa384bbdcc1406fa53b6b7c689087ac03eeebf99db852f37ba9d03e40ca2c6e`，任何文本/语义漂移必须在 cost binding、
+  snapshot verifier 和 artifact mkdir 前 fail closed；legacy classic 继续使用 raw config SHA，并保留
+  `config_sha256`。成本 identity、R15 STOP/HOLD、其他 Gate/经济参数和 `trial_delta=0` 不变。
+- 最小反例与测试闭环：main path 在 full LF、full CRLF、多位置 mixed EOL、重复 bare CR 下均到达受控 publish
+  边界并断言 canonical SHA；leading BOM、NUL、非法 UTF-8、interior `U+FEFF` 均在 cost/snapshot/artifact 前
+  拒绝；legacy LF 与 CRLF 保持不同 raw SHA；既有 fifth、monotonicity、config、cost 节点继续保留。
+- R2-F1 返工闭环：现象为原 legacy 测试同时改变 EOL 与字段，根因为变量混杂；规则是相同 legacy payload 仅
+  LF/CRLF 不同仍分别绑定各自 raw SHA；最小复现/新增测试为
+  `test_legacy_main_binds_raw_sha_for_eol_only_variants`；通过条件为逐一断言 exact raw SHA 且两者不等，且本轮
+  保持零 Python 阶段。
+- 最终 EVIDENCE_REVIEW_PASS：identity probe exit=0；collect-only 为 38 tests/3.47s；selected nodes 为
+  33 passed/4.09s；Ruff exit=0、mypy exit=0；cold import 与 fresh fifth TOML canonical SHA 均为
+  `baa384bbdcc1406fa53b6b7c689087ac03eeebf99db852f37ba9d03e40ca2c6e`；六阶段 stderr 均无错误，验证资源已
+  释放。验证保留 `artifacts/test_tmp/m2-r15-portable-r2-formal-logs` 与
+  `artifacts/test_tmp/m2-r15-portable-r2-formal-basetemp` 证据；未执行真实 run、PAPER、网络或真实数据 I/O。
+  证据前 production `src/quant/research/run_classic_factors.py` SHA256 为
+  `59c6c22e60ec690df53671a599e99869ce76b8f20b7cd25df35ae31f38c01f5f`，test
+  `tests/unit/test_run_classic_factors.py` SHA256 为
+  `a0239e765edcc934c304d3473fa98118f89f94a4fdd4f30a74a55395587b7869`。
+- 通过条件：仅 exact4 路径有变更；`git diff --check` 与 Git status/scope inspection 通过；不运行 Python、pytest、
+  Ruff、mypy、cold/real run、网络，不 stage/commit，不扩大路径。dispatcher-owned mapping/status 由 Worker1
+  维护，不属于本 Worker 写白名单。

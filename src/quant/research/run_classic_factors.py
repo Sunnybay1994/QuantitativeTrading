@@ -88,7 +88,7 @@ _FIFTH_BATCH_CODE_PATHS: tuple[str, ...] = _FOURTH_BATCH_CODE_PATHS + (
     "src/quant/factors/classic_fifth_batch.py",
 )
 _FROZEN_MAX_R15_CONFIG_SHA256 = (
-    "860ca0ef600dd4de107f5e60dc8593cbb03ca6c7a3cac0cad0adf2d56a778c9f"
+    "baa384bbdcc1406fa53b6b7c689087ac03eeebf99db852f37ba9d03e40ca2c6e"
 )
 _COST_SECTION_KEYS = frozenset(
     {
@@ -137,8 +137,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     artifact_root = _inside(project_root, args.artifact_root, strict=False)
     data_root = resolve_data_root(args.data_root, base=project_root)
     config_payload = config_path.read_bytes()
-    config_sha256 = hashlib.sha256(config_payload).hexdigest()
-    config = cast(dict[str, Any], tomllib.loads(config_payload.decode("utf-8")))
+    config_text = _normalize_main_config_payload(config_payload)
+    config = cast(dict[str, Any], tomllib.loads(config_text))
     _validate_config(config, threads=args.threads)
 
     data = cast(Mapping[str, Any], config["data"])
@@ -147,6 +147,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     portfolio_config = cast(Mapping[str, Any], config["portfolio"])
     factor_names = tuple(cast(list[str], factor_config["names"]))
     fifth_batch = factor_names == FIFTH_BATCH_FACTOR_NAMES
+    config_sha256 = hashlib.sha256(
+        config_text.encode("utf-8") if fifth_batch else config_payload
+    ).hexdigest()
     cost_periods: tuple[AShareCostPeriod, ...] | None = None
     cost_semantic_sha256: str | None = None
     if fifth_batch:
@@ -1788,6 +1791,20 @@ def _with_evaluation_identity(
 def _folds(config: Mapping[str, Any]) -> tuple[ResearchFoldV1, ...]:
     rows = cast(list[Mapping[str, Any]], config["walk_forward"]["folds"])
     return tuple(ResearchFoldV1(fold=index, **dict(row)) for index, row in enumerate(rows, 1))
+
+
+def _normalize_main_config_payload(payload: bytes) -> str:
+    if type(payload) is not bytes:
+        raise ValueError("invalid classic config payload")
+    if payload.startswith(b"\xef\xbb\xbf"):
+        raise ValueError("classic config payload has a leading BOM")
+    if b"\x00" in payload:
+        raise ValueError("classic config payload contains NUL")
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError("classic config payload is not valid UTF-8") from None
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _cost_periods(project_root: Path, portfolio: Mapping[str, Any]) -> tuple[AShareCostPeriod, ...]:
