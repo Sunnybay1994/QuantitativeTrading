@@ -164,3 +164,18 @@
   publisher 前 fail-closed。
 - 验证：focused `tests/unit/test_run_classic_factors.py` 为 `30 passed`；Ruff（修改测试文件）与
   `git diff --check` 通过。生产源码未修改，未执行真实 run、网络、PIT 或 PAPER。
+
+### 领域经理主验与唯一真实 attempt 收口
+
+- 最终实现 source：`6e54227c6b0c8935eb3539470dd641c4470f36fc`；独立复验结论 `REVIEW_PASS`。
+- 主验：冻结身份、legacy 隔离、CRLF 漂移、成本单读与五组单调门禁等关键节点 `13 passed`；Ruff、mypy、
+  cold import、TOML、成本语义身份、cached/working diff-check 均通过；冻结 snapshot
+  `b79a7b5e66dee0ae439c030078414157ca6c1f3b6ce7fbe5e36ff3910c1089d2` fresh verify 通过。
+- 唯一真实 attempt 按 `BelowNormal`、affinity `0xF00`、数值线程不超过 2 启动并自然终止；在 artifact 发布前，
+  `build_diagnostic_factor_targets` 对固定 Top-K chosen outcomes 执行 R12 完整性门禁并抛出
+  `diagnostic selected target outcomes are invalid`。冻结状态为
+  `STOPPED_BEFORE_PUBLICATION / DIAGNOSTIC_SELECTED_TARGET_OUTCOMES_INVALID`。
+- R12 Gate 正常生效：没有使用第 K+1 名替补，也没有第二次运行。没有生成 run id、不可变 run、public
+  verification 或 canonical retained；历史 run `10dea14f…129bb3` 未触碰并继续 HOLD。
+- 本次 attempt 计入既有 trial ledger 规则，但不得冒充完整研究 trial 结果；MAX corrective hypothesis 保持
+  `UNASSESSED/HOLD`，不是 `REJECTED`，也不构成“无候选”的经济证据。

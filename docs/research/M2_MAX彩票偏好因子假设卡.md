@@ -1,12 +1,13 @@
 # M2 MAX 彩票偏好因子假设卡
 
-> 状态：历史真实不可变运行已完成；R15 纠偏重放仅完成开发检查，尚未启动真实 run
+> 状态：历史真实不可变运行已完成；R15 纠偏重放在发布前停止，假设保持 `UNASSESSED/HOLD`
 > 最高结论：`RESEARCH_ONLY` / `REJECTED`
 > trial budget：1
 > 配置 SSOT：`configs/research/m2_classic_daily_factors_fifth_batch.toml`
 > 结果文档：[M2 MAX 彩票偏好因子研究结果](M2_MAX彩票偏好因子研究结果.md)
 > immutable run id：`10dea14f1fcbbbeb78871cddb7b00cd06d77cf005c3a776c4713f5a4f4129bb3`
-> R15 约束：`trial_delta=0`；历史 run 保持 immutable/HOLD，R15 结果文档待唯一真实 run 后由领域经理创建
+> R15 约束：`trial_delta=0`；历史 run 保持 immutable/HOLD；本次 attempt 无 run id、无不可变产物
+> R15 结果：[R15 纠偏重放结果](M2_MAX彩票偏好因子R15纠偏重放结果.md)
 > R15 主配置 raw payload SHA-256：`860ca0ef600dd4de107f5e60dc8593cbb03ca6c7a3cac0cad0adf2d56a778c9f`；
 > 任一配置字节漂移均在成本绑定、数据/snapshot 读取或 artifact 创建前 STOP，版本化配置仍是参数 SSOT
 
@@ -108,4 +109,7 @@ bar-only 因子包。
 
 R15 纠偏重放只关闭 classic MAX 的 same-payload config/cost semantic identity、标准成本 input 和上述
 primary monotonicity admission gate；不关闭 PIT 对称 redundancy coverage、audit-v4、R3 或任何交易准入，
-也不改写历史 run。真实 run 尚未执行，因此本卡不记录 R15 结果或新的 run id。
+也不改写历史 run。唯一真实 attempt 在固定 Top-K 后的 chosen-target outcome 完整性检查处正常 fail-closed，
+状态为 `STOPPED_BEFORE_PUBLICATION / DIAGNOSTIC_SELECTED_TARGET_OUTCOMES_INVALID`。它没有生成 run id、
+不可变 run、public verification 或 canonical retained；禁止替补和第二次运行。该 attempt 计入既有 trial
+ledger 规则，但不是完整研究 trial 结果，故 R15 假设保持 `UNASSESSED/HOLD`，旧 MAX run 也继续 HOLD。
