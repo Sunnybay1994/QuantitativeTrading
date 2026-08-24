@@ -35,13 +35,27 @@ from quant.research.run_classic_factors import (
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _COST_SEMANTIC_SHA256 = "b2041d8495aa408de0bd264d6c03eb7e4d174e03f120289bc8471cbb5ea0a959"
 _FROZEN_MAX_R15_CONFIG_SHA256 = (
-    "860ca0ef600dd4de107f5e60dc8593cbb03ca6c7a3cac0cad0adf2d56a778c9f"
+    "baa384bbdcc1406fa53b6b7c689087ac03eeebf99db852f37ba9d03e40ca2c6e"
 )
 
 
 def _cost_payload() -> bytes:
     return (PROJECT_ROOT / "configs/research/m3_qlib_example.toml").read_bytes().replace(
         b"\r\n", b"\n"
+    )
+
+
+def _canonical_main_config_payload(payload: bytes) -> bytes:
+    return payload.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n").encode(
+        "utf-8"
+    )
+
+
+def _with_eols(payload: bytes, eols: tuple[bytes, ...]) -> bytes:
+    lines = payload.split(b"\n")
+    return b"".join(
+        line + (eols[index % len(eols)] if index < len(lines) - 1 else b"")
+        for index, line in enumerate(lines)
     )
 
 
@@ -191,7 +205,10 @@ def _frozen_max_config_payload() -> bytes:
     payload = (
         PROJECT_ROOT / "configs/research/m2_classic_daily_factors_fifth_batch.toml"
     ).read_bytes()
-    assert hashlib.sha256(payload).hexdigest() == _FROZEN_MAX_R15_CONFIG_SHA256
+    assert (
+        hashlib.sha256(_canonical_main_config_payload(payload)).hexdigest()
+        == _FROZEN_MAX_R15_CONFIG_SHA256
+    )
     return payload
 
 
@@ -232,6 +249,179 @@ def _classic_main_args(
     ]
 
 
+def _run_fifth_main_to_publish(
+    project_root: Path,
+    data_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> object:
+    factor = classic_runner.FIFTH_BATCH_FACTOR_NAMES[0]
+    trade_date = dt.date(2020, 1, 2)
+    captured_runs: list[object] = []
+
+    def factor_frame(names: tuple[str, ...]) -> pl.DataFrame:
+        values: dict[str, object] = {
+            "symbol": ["000001.SZ"],
+            "trade_date": [trade_date],
+        }
+        values.update({name: [0.0] for name in names})
+        return pl.DataFrame(values)
+
+    def snapshot_verifier(*, data_root: Path, snapshot_id: str) -> object:
+        del data_root
+        return SimpleNamespace(
+            snapshot_id=snapshot_id,
+            manifest_sha256="a" * 64,
+            stock_rows=1,
+            fund_rows=0,
+        )
+
+    def stock_reader(*_: object, **__: object) -> pl.DataFrame:
+        return pl.DataFrame({"trade_date": [trade_date]})
+
+    def labels(**_: object) -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "trade_date": [trade_date],
+                "history_rows": [120],
+                "liquidity_20": [20_000_000.0],
+            }
+        )
+
+    def evaluate(**_: object) -> dict[str, pl.DataFrame]:
+        frame = pl.DataFrame({"value": [1]})
+        return {
+            "daily_ic": frame,
+            "group_returns": frame,
+            "fold_metrics": frame,
+            "targets": frame,
+            "portfolio_nav": frame,
+        }
+
+    def summarize(
+        _metrics: pl.DataFrame,
+        *,
+        factors: tuple[str, ...],
+        admission: object,
+    ) -> pl.DataFrame:
+        del admission
+        return pl.DataFrame(
+            {
+                "factor": list(factors),
+                "mean_test_rank_ic": [0.0] * len(factors),
+                "positive_test_folds": [0] * len(factors),
+                "direction_consistent": [True] * len(factors),
+                "one_x_chained_return": [0.0] * len(factors),
+                "two_x_chained_return": [0.0] * len(factors),
+                "research_status": ["RESEARCH_ONLY"] * len(factors),
+            }
+        )
+
+    def publish(
+        *, artifact_root: Path, run: object, output_payloads: dict[str, bytes]
+    ) -> tuple[Path, object, bool]:
+        del output_payloads
+        captured_runs.append(run)
+        return artifact_root, run, False
+
+    monkeypatch.setattr(classic_runner, "verify_tushare_bulk_clean_snapshot", snapshot_verifier)
+    monkeypatch.setattr(classic_runner, "read_tushare_bulk_clean_stock_bars", stock_reader)
+    monkeypatch.setattr(
+        classic_runner,
+        "select_frozen_liquid_universe",
+        lambda *_args, **_kwargs: ("000001.SZ",),
+    )
+    monkeypatch.setattr(
+        classic_runner,
+        "compute_classic_daily_factors",
+        lambda *_args, **_kwargs: factor_frame(classic_runner.CLASSIC_FACTOR_NAMES),
+    )
+    monkeypatch.setattr(
+        classic_runner,
+        "compute_second_batch_daily_factors",
+        lambda *_args, **_kwargs: factor_frame(classic_runner.SECOND_BATCH_FACTOR_NAMES),
+    )
+    monkeypatch.setattr(
+        classic_runner,
+        "compute_third_batch_daily_factors",
+        lambda *_args, **_kwargs: factor_frame(classic_runner.THIRD_BATCH_FACTOR_NAMES),
+    )
+    monkeypatch.setattr(
+        classic_runner,
+        "compute_fourth_batch_daily_factors",
+        lambda *_args, **_kwargs: factor_frame(classic_runner.FOURTH_BATCH_FACTOR_NAMES),
+    )
+    monkeypatch.setattr(
+        classic_runner,
+        "compute_fifth_batch_daily_factors",
+        lambda *_args, **_kwargs: factor_frame(classic_runner.FIFTH_BATCH_FACTOR_NAMES),
+    )
+    monkeypatch.setattr(classic_runner, "build_next_open_factor_labels", labels)
+    monkeypatch.setattr(
+        classic_runner,
+        "_cost_schedule_binding",
+        lambda *_args, **_kwargs: ((), _COST_SEMANTIC_SHA256),
+    )
+    monkeypatch.setattr(classic_runner, "evaluate_walk_forward", evaluate)
+    monkeypatch.setattr(classic_runner, "summarize_factors", summarize)
+    monkeypatch.setattr(
+        classic_runner,
+        "evaluate_factor_redundancy",
+        lambda *_args, **_kwargs: (
+            pl.DataFrame({"value": [1]}),
+            pl.DataFrame(
+                {
+                    "factor_a": [factor],
+                    "factor_b": ["alpha158_std20"],
+                    "median_abs_rank_corr": [0.79],
+                }
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        classic_runner,
+        "evaluate_factor_coverage",
+        lambda *_args, **_kwargs: (
+            pl.DataFrame({"value": [1]}),
+            pl.DataFrame({"factor": [factor], "coverage_passed": [True]}),
+        ),
+    )
+    monkeypatch.setattr(
+        classic_runner,
+        "evaluate_rebalance_schedule_alignment",
+        lambda *_args, **_kwargs: pl.DataFrame(
+            {"factor": [factor], "fold": [1], "schedule_aligned": [True]}
+        ),
+    )
+    monkeypatch.setattr(
+        classic_runner,
+        "evaluate_primary_group_monotonicity",
+        lambda *_args, **_kwargs: pl.DataFrame(
+            {
+                "factor": [factor],
+                "fold": [0],
+                "period": ["test"],
+                "horizon": [20],
+                "expected_direction": [-1],
+                "monotonicity_passed": [True],
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        classic_runner,
+        "apply_fifth_batch_admission_gates",
+        lambda summary, **_kwargs: summary.with_columns(
+            pl.lit(True).alias("coverage_passed"),
+            pl.lit(True).alias("primary_monotonicity_passed"),
+        ),
+    )
+    monkeypatch.setattr(classic_runner, "compute_code_sha256", lambda **_kwargs: "b" * 64)
+    monkeypatch.setattr(classic_runner, "publish_lightweight_research_run", publish)
+
+    assert main(_classic_main_args(project_root, data_root)) == 0
+    assert len(captured_runs) == 1
+    return captured_runs[0]
+
+
 @pytest.mark.parametrize(
     ("mutation_name", "old", "new"),
     (
@@ -249,20 +439,20 @@ def _classic_main_args(
         ),
         (
             "comment",
-            b"[research]\r\n",
-            b"[research]\r\n# R15 raw payload byte drift\r\n",
+            b"[research]\n",
+            b"[research]\n# R15 payload identity drift\n",
         ),
     ),
     ids=("snapshot", "universe", "folds", "admission", "comment"),
 )
-def test_frozen_max_config_raw_identity_rejects_before_cost_snapshot_or_artifact(
+def test_frozen_max_config_identity_rejects_before_cost_snapshot_or_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     mutation_name: str,
     old: bytes,
     new: bytes,
 ) -> None:
-    payload = _frozen_max_config_payload()
+    payload = _canonical_main_config_payload(_frozen_max_config_payload())
     assert mutation_name
     assert old in payload
     payload = payload.replace(old, new, 1)
@@ -402,8 +592,10 @@ def test_legacy_classic_keeps_cost_binding_after_snapshot_boundary(
 def test_legacy_main_ignores_extra_cost_identity_field(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    base_payload = (PROJECT_ROOT / "configs/research/m2_classic_daily_factors.toml").read_bytes()
-    newline = b"\r\n" if b"\r\n" in base_payload else b"\n"
+    base_payload = _canonical_main_config_payload(
+        (PROJECT_ROOT / "configs/research/m2_classic_daily_factors.toml").read_bytes()
+    )
+    newline = b"\n"
     extra_cost_field = (
         newline
         + f'cost_schedule_semantic_sha256 = "{_COST_SEMANTIC_SHA256}"'.encode()
@@ -413,6 +605,7 @@ def test_legacy_main_ignores_extra_cost_identity_field(
         newline + b"[admission]", extra_cost_field + b"[admission]", 1
     )
     assert extra_payload != base_payload
+    extra_payload = _with_eols(extra_payload, (b"\r\n",))
 
     base_project, _, _, base_data_root = _classic_project(
         tmp_path / "base",
@@ -521,6 +714,9 @@ def test_legacy_main_ignores_extra_cost_identity_field(
     assert len(captured_runs) == 2
     assert len(captured_reports) == 2
     base_run, extra_run = captured_runs
+    assert base_run.config_sha256 == hashlib.sha256(base_payload).hexdigest()  # type: ignore[attr-defined]
+    assert extra_run.config_sha256 == hashlib.sha256(extra_payload).hexdigest()  # type: ignore[attr-defined]
+    assert base_run.config_sha256 != extra_run.config_sha256  # type: ignore[attr-defined]
     base_identity = dict(vars(base_run))
     extra_identity = dict(vars(extra_run))
     base_identity.pop("run_id")
@@ -536,16 +732,181 @@ def test_legacy_main_ignores_extra_cost_identity_field(
     assert not (extra_project / "artifacts-test").exists()
 
 
-def test_frozen_max_crlf_to_lf_drift_rejects_before_any_io_boundary(
+def test_legacy_main_binds_raw_sha_for_eol_only_variants(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    payload = _frozen_max_config_payload()
-    lf_payload = payload.replace(b"\r\n", b"\n")
-    assert b"\r\n" in payload
-    assert b"\r\n" not in lf_payload
-    assert lf_payload != payload
-    assert hashlib.sha256(lf_payload).hexdigest() != _FROZEN_MAX_R15_CONFIG_SHA256
-    project_root, _, _, data_root = _classic_project(tmp_path, config_payload=lf_payload)
+    canonical_payload = _canonical_main_config_payload(
+        (PROJECT_ROOT / "configs/research/m2_classic_daily_factors.toml").read_bytes()
+    )
+    lf_payload = _with_eols(canonical_payload, (b"\n",))
+    crlf_payload = _with_eols(canonical_payload, (b"\r\n",))
+    assert lf_payload != crlf_payload
+    periods, _ = _cost_schedule_binding_from_payload(_cost_payload())
+    captured_runs: list[object] = []
+
+    def snapshot_verifier(*, data_root: Path, snapshot_id: str) -> object:
+        del data_root
+        return SimpleNamespace(
+            snapshot_id=snapshot_id,
+            manifest_sha256="a" * 64,
+            stock_rows=1,
+            fund_rows=0,
+        )
+
+    def stock_reader(*_: object, **__: object) -> pl.DataFrame:
+        return pl.DataFrame({"trade_date": [dt.date(2019, 1, 1)]})
+
+    def cost_periods(*_: object, **__: object) -> tuple[object, ...]:
+        return periods
+
+    def labels(**_: object) -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "trade_date": [dt.date(2020, 1, 2)],
+                "history_rows": [120],
+                "liquidity_20": [20_000_000.0],
+            }
+        )
+
+    def evaluate(**kwargs: object) -> dict[str, pl.DataFrame]:
+        assert kwargs["costs"] == periods
+        frame = pl.DataFrame({"value": [1]})
+        return {
+            "daily_ic": frame,
+            "group_returns": frame,
+            "fold_metrics": frame,
+            "targets": frame,
+            "portfolio_nav": frame,
+        }
+
+    def summarize(
+        _metrics: pl.DataFrame,
+        *,
+        factors: tuple[str, ...],
+        admission: object,
+    ) -> pl.DataFrame:
+        del admission
+        return pl.DataFrame(
+            {
+                "factor": list(factors),
+                "mean_test_rank_ic": [0.0] * len(factors),
+                "research_status": ["REJECTED"] * len(factors),
+            }
+        )
+
+    def publish(
+        *, artifact_root: Path, run: object, output_payloads: dict[str, bytes]
+    ) -> tuple[Path, object, bool]:
+        del output_payloads
+        captured_runs.append(run)
+        return artifact_root, run, False
+
+    monkeypatch.setattr(classic_runner, "verify_tushare_bulk_clean_snapshot", snapshot_verifier)
+    monkeypatch.setattr(classic_runner, "read_tushare_bulk_clean_stock_bars", stock_reader)
+    monkeypatch.setattr(
+        classic_runner,
+        "select_frozen_liquid_universe",
+        lambda *_args, **_kwargs: ("000001.SZ",),
+    )
+    monkeypatch.setattr(classic_runner, "compute_classic_daily_factors", lambda *_args: pl.DataFrame())
+    monkeypatch.setattr(classic_runner, "build_next_open_factor_labels", labels)
+    monkeypatch.setattr(classic_runner, "_cost_periods", cost_periods)
+    monkeypatch.setattr(
+        classic_runner,
+        "_cost_schedule_binding",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("legacy main must not call cost binding")
+        ),
+    )
+    monkeypatch.setattr(classic_runner, "evaluate_walk_forward", evaluate)
+    monkeypatch.setattr(classic_runner, "summarize_factors", summarize)
+    monkeypatch.setattr(classic_runner, "compute_code_sha256", lambda **_kwargs: "b" * 64)
+    monkeypatch.setattr(classic_runner, "publish_lightweight_research_run", publish)
+
+    for payload, name in ((lf_payload, "lf"), (crlf_payload, "crlf")):
+        project_root, _, _, data_root = _classic_project(
+            tmp_path / name,
+            config_payload=payload,
+            config_name="m2_classic_daily_factors.toml",
+        )
+        assert (
+            main(
+                _classic_main_args(
+                    project_root,
+                    data_root,
+                    config_name="m2_classic_daily_factors.toml",
+                )
+            )
+            == 0
+        )
+
+    assert len(captured_runs) == 2
+    lf_run, crlf_run = captured_runs
+    assert lf_run.config_sha256 == hashlib.sha256(lf_payload).hexdigest()  # type: ignore[attr-defined]
+    assert crlf_run.config_sha256 == hashlib.sha256(crlf_payload).hexdigest()  # type: ignore[attr-defined]
+    assert lf_run.config_sha256 != crlf_run.config_sha256  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    ("variant", "eols"),
+    (
+        ("full_lf", (b"\n",)),
+        ("full_crlf", (b"\r\n",)),
+        ("mixed_locations", (b"\n", b"\r\n", b"\r", b"\r\n")),
+        ("repeated_bare_cr", (b"\r",)),
+    ),
+    ids=("full-lf", "full-crlf", "mixed-locations", "repeated-bare-cr"),
+)
+def test_frozen_max_eol_variants_publish_with_canonical_config_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    variant: str,
+    eols: tuple[bytes, ...],
+) -> None:
+    payload = _with_eols(
+        _canonical_main_config_payload(_frozen_max_config_payload()), eols
+    )
+    assert variant
+    project_root, _, _, data_root = _classic_project(tmp_path, config_payload=payload)
+    run = _run_fifth_main_to_publish(project_root, data_root, monkeypatch)
+    assert run.config_sha256 == _FROZEN_MAX_R15_CONFIG_SHA256  # type: ignore[attr-defined]
+    assert not (project_root / "artifacts-test").exists()
+
+
+@pytest.mark.parametrize(
+    ("mutation_name", "expected_error"),
+    (
+        ("leading_bom", "leading BOM"),
+        ("nul", "contains NUL"),
+        ("invalid_utf8", "not valid UTF-8"),
+        ("interior_feff", "frozen MAX R15 config payload identity mismatch"),
+    ),
+    ids=("leading-bom", "nul", "invalid-utf8", "interior-feff"),
+)
+def test_frozen_max_payload_hygiene_rejects_before_cost_snapshot_or_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation_name: str,
+    expected_error: str,
+) -> None:
+    payload = _canonical_main_config_payload(_frozen_max_config_payload())
+    if mutation_name == "leading_bom":
+        payload = b"\xef\xbb\xbf" + payload
+    elif mutation_name == "nul":
+        payload = payload.replace(
+            b"[research]\n", b"[research]\n# invalid\x00\n", 1
+        )
+    elif mutation_name == "invalid_utf8":
+        payload = payload.replace(
+            b"[research]\n", b"[research]\n# invalid\xff\n", 1
+        )
+    else:
+        payload = payload.replace(
+            b"[research]\n",
+            b"[research]\n# interior \xef\xbb\xbf remains part of identity\n",
+            1,
+        )
+    project_root, _, _, data_root = _classic_project(tmp_path, config_payload=payload)
     calls: list[str] = []
 
     def unexpected_cost(*_: object, **__: object) -> object:
@@ -556,19 +917,14 @@ def test_frozen_max_crlf_to_lf_drift_rejects_before_any_io_boundary(
         calls.append("snapshot")
         raise AssertionError("snapshot verifier must not run")
 
-    def unexpected_reader(*_: object, **__: object) -> object:
-        calls.append("reader")
-        raise AssertionError("data repository must not run")
-
     def unexpected_publish(*_: object, **__: object) -> object:
         calls.append("artifact")
         raise AssertionError("artifact publisher must not run")
 
     monkeypatch.setattr(classic_runner, "_cost_schedule_binding", unexpected_cost)
     monkeypatch.setattr(classic_runner, "verify_tushare_bulk_clean_snapshot", unexpected_snapshot)
-    monkeypatch.setattr(classic_runner, "read_tushare_bulk_clean_stock_bars", unexpected_reader)
     monkeypatch.setattr(classic_runner, "publish_lightweight_research_run", unexpected_publish)
-    with pytest.raises(ValueError, match="frozen MAX R15 config payload identity mismatch"):
+    with pytest.raises(ValueError, match=expected_error):
         main(_classic_main_args(project_root, data_root))
     assert calls == []
     assert not (project_root / "artifacts-test").exists()
