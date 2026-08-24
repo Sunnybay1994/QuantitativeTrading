@@ -51,6 +51,10 @@
    content_sha256=semantic_sha)`；既有 market-data inputs 保持原相对顺序；
 6. 注释、EOL、TOML 等价 Decimal 拼写及 `[costs]` 外 section 变化不得改变 semantic SHA；任何 `[costs]`
    经济语义变化必须改变摘要或稳定拒绝。
+7. 只有已验证为 fifth/MAX R15 的主配置才执行 raw payload identity：冻结 Windows payload SHA-256 为
+   `860ca0ef600dd4de107f5e60dc8593cbb03ca6c7a3cac0cad0adf2d56a778c9f`；任何字节漂移（包括注释、snapshot、
+   universe、fold 或 admission bytes）均须在 cost binding、data/snapshot 读取和 artifact 创建前 STOP，
+   不复制参数表，版本化 config 继续作为参数 SSOT；非 fifth classic 保持 base cost identity/read timing。
 
 ### 3.3 primary horizon=20 五组单调性
 
@@ -120,26 +124,29 @@
 
 ## 8. 交付记录
 
-### Worker 实现交付（P0 返工开发检查完成）
+### Worker 实现交付（P1/P2 返工开发检查完成）
 
 - 状态：`DELIVERED / SELF-VERIFIED`，等待未参与实现的独立初验；结论上限仍为
   `RESEARCH_ONLY`，本记录不宣称任何 Gate 已最终关闭。
-- parent：旧安全点 `09601eb9c602dd22025523e9feb8a1678f74450d`；source commit 为本次返工唯一 source
+- parent：`e2a5fcbfb3f21021a5c2a0e708455b877999137e`；source commit 为本次返工唯一 source
   commit，full SHA 由 Worker 最终交付报告给出，不在本记录中自引用。
-- 实现：主配置与成本配置各以单一 bytes payload 完成 parse/hash；expected cost semantic SHA 在
-  snapshot verifier 与 artifact mkdir 前 fail-closed；`run.inputs` 首项为标准
-  `a-share-cost-schedule`；primary 仅消费 `test`/`horizon=20`，按预注册日期等权固定五组；score 为
+- 实现：主配置只读一次为 bytes payload 并计算 raw SHA；仅已验证的 fifth/MAX R15 在成本绑定、
+  snapshot verifier、repository 与 artifact mkdir 前核对冻结 Windows payload SHA-256
+  `860ca0ef600dd4de107f5e60dc8593cbb03ca6c7a3cac0cad0adf2d56a778c9f`，字节漂移 fail-closed；
+  成本配置只绑定一次且 `run.inputs` 首项为标准 `a-share-cost-schedule`。非 fifth classic 恢复
+  base 的 snapshot 后 `_cost_periods` 位置、无 pre-snapshot cost binding、无 cost input digest 与
+  cost identity 变更。primary 仍仅消费 `test`/`horizon=20`，按预注册日期等权固定五组；score 为
   `factor * direction` 且 group 按 score 升序，固定方向 `-1` 时 group1 为高 MAX、group5 为低 MAX，
   使用 `group1 <= ... <= group5`、至少 2/3 folds 且 pooled 单调通过，并把 `*_le_*` 比较、均值和状态
   写入输出与 summary。
-- 精确变更路径：`src/quant/research/run_classic_factors.py`、
-  `configs/research/m2_classic_daily_factors_fifth_batch.toml`、
-  `tests/unit/test_run_classic_factors.py`、`docs/research/M2_MAX彩票偏好因子假设卡.md`、
-  `docs/research/README.md`、`docs/research/agent/M2_FROZEN_R15_冻结Clean_MAX纠偏重放任务与交付记录.md`、
-  `docs/research/roadmaps/M2_策略与因子库并行建设路线图.md`。R15 结果文档未创建。
-- 验证：focused 测试 `24 passed`；Ruff（生产文件与主测试）、mypy（生产文件）、cold import、TOML/
-  cost identity 均通过；反例覆盖单 payload 漂移/重复读取、expected SHA 失败、日期/组缺失、重复组、
-  coverage 失败、非有限收益、1/5 horizon 漂移、`<=` 方向字段及 2/3 folds/pooled 门禁。
+- 精确变更路径：`src/quant/research/run_classic_factors.py`、`tests/unit/test_run_classic_factors.py`、
+  `docs/research/M2_MAX彩票偏好因子假设卡.md`、
+  `docs/research/agent/M2_FROZEN_R15_冻结Clean_MAX纠偏重放任务与交付记录.md`、
+  `docs/research/roadmaps/M2_策略与因子库并行建设路线图.md`；配置与 README 未改动，R15 结果文档未创建。
+- 验证：focused 测试 `28 passed`；覆盖 frozen payload 通过、snapshot/universe/fold/admission/注释字节
+  漂移在 cost/snapshot/artifact 前拒绝、主配置与成本各单读一次、legacy 无 early cost read 且无 cost
+  input、fifth cost input 首项及 cost semantic drift。Ruff（生产文件与主测试）、mypy（生产文件）、
+  cold import、TOML/cost identity/raw SHA、git diff-check 均通过。
 - 运行边界：未执行真实 run、网络、PIT、PAPER 或全量测试；历史 run
   `10dea14f1fcbbbeb78871cddb7b00cd06d77cf005c3a776c4713f5a4f4129bb3` 未触碰，保持 immutable/HOLD。
   开发 Python 检查均为单实例 `BelowNormal`、affinity `0xF00`、数值线程不超过 2；R15 临时目录已清理。

@@ -7,6 +7,8 @@
 > 结果文档：[M2 MAX 彩票偏好因子研究结果](M2_MAX彩票偏好因子研究结果.md)
 > immutable run id：`10dea14f1fcbbbeb78871cddb7b00cd06d77cf005c3a776c4713f5a4f4129bb3`
 > R15 约束：`trial_delta=0`；历史 run 保持 immutable/HOLD，R15 结果文档待唯一真实 run 后由领域经理创建
+> R15 主配置 raw payload SHA-256：`860ca0ef600dd4de107f5e60dc8593cbb03ca6c7a3cac0cad0adf2d56a778c9f`；
+> 任一配置字节漂移均在成本绑定、数据/snapshot 读取或 artifact 创建前 STOP，版本化配置仍是参数 SSOT
 
 ## 1. 可证伪命题与固定方向
 

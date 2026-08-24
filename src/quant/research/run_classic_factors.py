@@ -87,6 +87,9 @@ _FOURTH_BATCH_CODE_PATHS: tuple[str, ...] = _CODE_PATHS + (
 _FIFTH_BATCH_CODE_PATHS: tuple[str, ...] = _FOURTH_BATCH_CODE_PATHS + (
     "src/quant/factors/classic_fifth_batch.py",
 )
+_FROZEN_MAX_R15_CONFIG_SHA256 = (
+    "860ca0ef600dd4de107f5e60dc8593cbb03ca6c7a3cac0cad0adf2d56a778c9f"
+)
 _COST_SECTION_KEYS = frozenset(
     {
         "schedule_version",
@@ -134,6 +137,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     artifact_root = _inside(project_root, args.artifact_root, strict=False)
     data_root = resolve_data_root(args.data_root, base=project_root)
     config_payload = config_path.read_bytes()
+    config_sha256 = hashlib.sha256(config_payload).hexdigest()
     config = cast(dict[str, Any], tomllib.loads(config_payload.decode("utf-8")))
     _validate_config(config, threads=args.threads)
 
@@ -141,17 +145,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     universe_config = cast(Mapping[str, Any], config["universe"])
     factor_config = cast(Mapping[str, Any], config["factors"])
     portfolio_config = cast(Mapping[str, Any], config["portfolio"])
-    cost_periods, cost_semantic_sha256 = _cost_schedule_binding(
-        project_root, portfolio_config
-    )
-    expected_cost_semantic_sha256 = portfolio_config.get(
-        "cost_schedule_semantic_sha256"
-    )
-    if (
-        expected_cost_semantic_sha256 is not None
-        and cost_semantic_sha256 != expected_cost_semantic_sha256
-    ):
-        raise ValueError("classic cost schedule semantic identity mismatch")
+    factor_names = tuple(cast(list[str], factor_config["names"]))
+    fifth_batch = factor_names == FIFTH_BATCH_FACTOR_NAMES
+    cost_periods: tuple[AShareCostPeriod, ...] | None = None
+    cost_semantic_sha256: str | None = None
+    if fifth_batch:
+        if config_sha256 != _FROZEN_MAX_R15_CONFIG_SHA256:
+            raise ValueError("frozen MAX R15 config payload identity mismatch")
+        cost_periods, cost_semantic_sha256 = _cost_schedule_binding(
+            project_root, portfolio_config
+        )
+        expected_cost_semantic_sha256 = portfolio_config["cost_schedule_semantic_sha256"]
+        if cost_semantic_sha256 != expected_cost_semantic_sha256:
+            raise ValueError("classic cost schedule semantic identity mismatch")
     snapshot_id = cast(str, data["snapshot_id"])
     snapshot = verify_tushare_bulk_clean_snapshot(data_root=data_root, snapshot_id=snapshot_id)
     freeze_bars = read_tushare_bulk_clean_stock_bars(
@@ -180,7 +186,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     sessions = tuple(sorted(set(bars.get_column("trade_date").to_list())))
-    factor_names = tuple(cast(list[str], factor_config["names"]))
     first_batch_values = compute_classic_daily_factors(bars)
     include_fund_input = False
     code_paths: tuple[str, ...] = _CODE_PATHS
@@ -334,6 +339,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         & (pl.col("liquidity_20") >= float(universe_config["minimum_average_amount"]))
     )
     folds = _folds(config)
+    if cost_periods is None:
+        cost_periods = _cost_periods(project_root, portfolio_config)
     results = evaluate_walk_forward(
         panel=panel,
         factors=factor_names,
@@ -591,9 +598,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             *market_input_digests,
         )
-    input_digests = (
-        _cost_schedule_input_digest(cost_periods, cost_semantic_sha256),
-        *market_input_digests,
+    input_digests = _build_input_digests(
+        market_input_digests,
+        fifth_batch=fifth_batch,
+        cost_periods=cost_periods,
+        cost_semantic_sha256=cost_semantic_sha256,
     )
     aggregate_metrics: list[tuple[str, float | int]] = [
         (
@@ -634,7 +643,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         conclusion=cast(Any, conclusion),
         random_seed=cast(int, config["research"]["random_seed"]),
         config_relative_path=config_path.relative_to(project_root).as_posix(),
-        config_sha256=hashlib.sha256(config_payload).hexdigest(),
+        config_sha256=config_sha256,
         code_sha256=compute_code_sha256(
             project_root=project_root, relative_paths=code_paths
         ),
@@ -1915,6 +1924,23 @@ def _cost_schedule_input_digest(
     )
 
 
+def _build_input_digests(
+    market_input_digests: tuple[ResearchInputDigestV1, ...],
+    *,
+    fifth_batch: bool,
+    cost_periods: tuple[AShareCostPeriod, ...] | None,
+    cost_semantic_sha256: str | None,
+) -> tuple[ResearchInputDigestV1, ...]:
+    if not fifth_batch:
+        return market_input_digests
+    if cost_periods is None or cost_semantic_sha256 is None:
+        raise ValueError("missing frozen MAX cost identity")
+    return (
+        _cost_schedule_input_digest(cost_periods, cost_semantic_sha256),
+        *market_input_digests,
+    )
+
+
 def _is_lower_hex64(value: object) -> bool:
     return (
         type(value) is str
@@ -2069,15 +2095,12 @@ def _report(
                 "audit-v4, R3 or any trading Gate.",
             ]
         )
-    return {
+    report: dict[str, object] = {
         "schema_version": "m2-classic-factor-report-v1",
         "conclusion": conclusion,
         "hypothesis": config["research"]["hypothesis"],
         "snapshot_id": snapshot_id,
         "snapshot_manifest_sha256": snapshot_manifest_sha256,
-        "cost_schedule_semantic_sha256": cast(Mapping[str, Any], config["portfolio"]).get(
-            "cost_schedule_semantic_sha256"
-        ),
         "candidate_symbol_count": len(candidates),
         "panel_rows": panel.height,
         "daily_ic_rows": results["daily_ic"].height,
@@ -2110,6 +2133,15 @@ def _report(
         },
         "caveats": caveats,
     }
+    if cast(Mapping[str, Any], config["factors"]).get("catalog") == (
+        "max_lottery_fifth_batch_v1"
+    ):
+        expected_cost_semantic_sha256 = cast(
+            Mapping[str, Any], config["portfolio"]
+        ).get("cost_schedule_semantic_sha256")
+        if expected_cost_semantic_sha256 is not None:
+            report["cost_schedule_semantic_sha256"] = expected_cost_semantic_sha256
+    return report
 
 
 def _parquet(frame: pl.DataFrame) -> bytes:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import tomllib
 from copy import deepcopy
 from pathlib import Path
@@ -10,7 +11,9 @@ import pytest
 
 import quant.research.run_classic_factors as classic_runner
 from quant.research.lightweight_run import ResearchFoldV1
+from quant.research.lightweight_run import ResearchInputDigestV1
 from quant.research.run_classic_factors import (
+    _build_input_digests,
     _cost_periods,
     _cost_schedule_binding,
     _cost_schedule_binding_from_payload,
@@ -29,6 +32,9 @@ from quant.research.run_classic_factors import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _COST_SEMANTIC_SHA256 = "b2041d8495aa408de0bd264d6c03eb7e4d174e03f120289bc8471cbb5ea0a959"
+_FROZEN_MAX_R15_CONFIG_SHA256 = (
+    "860ca0ef600dd4de107f5e60dc8593cbb03ca6c7a3cac0cad0adf2d56a778c9f"
+)
 
 
 def _cost_payload() -> bytes:
@@ -154,15 +160,47 @@ def test_cost_input_is_canonical() -> None:
     )
 
 
+def test_classic_input_identity_adds_cost_only_for_fifth_batch() -> None:
+    market_input = ResearchInputDigestV1(
+        name="tushare-stock-bars",
+        rows=1,
+        min_date=dt.date(2019, 1, 1),
+        max_date=dt.date(2019, 1, 1),
+        content_sha256="0" * 64,
+    )
+    market_inputs = (market_input,)
+    periods, semantic_sha256 = _cost_schedule_binding_from_payload(_cost_payload())
+
+    assert _build_input_digests(
+        market_inputs,
+        fifth_batch=False,
+        cost_periods=None,
+        cost_semantic_sha256=None,
+    ) == market_inputs
+    assert _build_input_digests(
+        market_inputs,
+        fifth_batch=True,
+        cost_periods=periods,
+        cost_semantic_sha256=semantic_sha256,
+    ) == (_cost_schedule_input_digest(periods, semantic_sha256), *market_inputs)
+
+
 def _frozen_max_config_payload() -> bytes:
-    return (PROJECT_ROOT / "configs/research/m2_classic_daily_factors_fifth_batch.toml").read_bytes()
+    payload = (
+        PROJECT_ROOT / "configs/research/m2_classic_daily_factors_fifth_batch.toml"
+    ).read_bytes()
+    assert hashlib.sha256(payload).hexdigest() == _FROZEN_MAX_R15_CONFIG_SHA256
+    return payload
 
 
 def _classic_project(
-    tmp_path: Path, *, config_payload: bytes
+    tmp_path: Path,
+    *,
+    config_payload: bytes,
+    config_name: str = "m2_classic_daily_factors_fifth_batch.toml",
 ) -> tuple[Path, Path, Path, Path]:
     project_root = tmp_path / "project"
-    config_path = project_root / "configs/research/m2_classic_daily_factors_fifth_batch.toml"
+    config_path = project_root / "configs/research" / config_name
     cost_path = project_root / "configs/research/m3_qlib_example.toml"
     config_path.parent.mkdir(parents=True)
     config_path.write_bytes(config_payload)
@@ -172,10 +210,15 @@ def _classic_project(
     return project_root, config_path, cost_path, data_root
 
 
-def _classic_main_args(project_root: Path, data_root: Path) -> list[str]:
+def _classic_main_args(
+    project_root: Path,
+    data_root: Path,
+    *,
+    config_name: str = "m2_classic_daily_factors_fifth_batch.toml",
+) -> list[str]:
     return [
         "--config",
-        "configs/research/m2_classic_daily_factors_fifth_batch.toml",
+        f"configs/research/{config_name}",
         "--data-root",
         str(data_root),
         "--artifact-root",
@@ -188,32 +231,74 @@ def _classic_main_args(project_root: Path, data_root: Path) -> list[str]:
 
 
 @pytest.mark.parametrize(
-    ("replacement", "message"),
+    ("mutation_name", "old", "new"),
     (
-        (None, "invalid classic-factor config"),
-        ("f" * 63, "invalid classic-factor config"),
-        (_COST_SEMANTIC_SHA256.upper(), "invalid classic-factor config"),
-        ("0" * 64, "classic cost schedule semantic identity mismatch"),
+        (
+            "snapshot",
+            b'snapshot_id = "b79a7b5e66dee0ae439c030078414157ca6c1f3b6ce7fbe5e36ff3910c1089d2"',
+            b'snapshot_id = "0000000000000000000000000000000000000000000000000000000000000000"',
+        ),
+        ("universe", b"top_n = 800", b"top_n = 801"),
+        ("folds", b"test_end = 2026-08-13", b"test_end = 2026-08-12"),
+        (
+            "admission",
+            b"minimum_mean_test_rank_ic = 0.01",
+            b"minimum_mean_test_rank_ic = 0.02",
+        ),
+        (
+            "comment",
+            b"[research]\r\n",
+            b"[research]\r\n# R15 raw payload byte drift\r\n",
+        ),
     ),
+    ids=("snapshot", "universe", "folds", "admission", "comment"),
 )
-def test_classic_cost_identity_rejects_before_snapshot_or_artifact(
+def test_frozen_max_config_raw_identity_rejects_before_cost_snapshot_or_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    replacement: str | None,
-    message: str,
+    mutation_name: str,
+    old: bytes,
+    new: bytes,
 ) -> None:
     payload = _frozen_max_config_payload()
-    expected_line = (
-        f'cost_schedule_semantic_sha256 = "{_COST_SEMANTIC_SHA256}"\n'.encode()
-    )
-    if replacement is None:
-        payload = payload.replace(expected_line, b"")
-    else:
-        payload = payload.replace(
-            expected_line,
-            f'cost_schedule_semantic_sha256 = "{replacement}"\n'.encode(),
-        )
+    assert mutation_name
+    assert old in payload
+    payload = payload.replace(old, new, 1)
+    assert hashlib.sha256(payload).hexdigest() != _FROZEN_MAX_R15_CONFIG_SHA256
     project_root, _, _, data_root = _classic_project(tmp_path, config_payload=payload)
+    cost_calls: list[str] = []
+    verifier_calls: list[str] = []
+
+    def unexpected_cost_binding(*_: object, **__: object) -> object:
+        cost_calls.append("called")
+        raise AssertionError("cost binding must not run")
+
+    def unexpected_verifier(**_: object) -> object:
+        verifier_calls.append("called")
+        raise AssertionError("snapshot verifier must not run")
+
+    monkeypatch.setattr(classic_runner, "_cost_schedule_binding", unexpected_cost_binding)
+    monkeypatch.setattr(classic_runner, "verify_tushare_bulk_clean_snapshot", unexpected_verifier)
+    with pytest.raises(ValueError, match="frozen MAX R15 config payload identity mismatch"):
+        main(_classic_main_args(project_root, data_root))
+    assert cost_calls == []
+    assert verifier_calls == []
+    assert not (project_root / "artifacts-test").exists()
+
+
+def test_frozen_cost_semantic_mismatch_rejects_before_snapshot_or_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root, _, cost_path, data_root = _classic_project(
+        tmp_path, config_payload=_frozen_max_config_payload()
+    )
+    cost_path.write_bytes(
+        cost_path.read_bytes().replace(
+            b"commission_rate = 0.00025",
+            b"commission_rate = 0.00026",
+            1,
+        )
+    )
     verifier_calls: list[str] = []
 
     def unexpected_verifier(**_: object) -> object:
@@ -221,7 +306,7 @@ def test_classic_cost_identity_rejects_before_snapshot_or_artifact(
         raise AssertionError("snapshot verifier must not run")
 
     monkeypatch.setattr(classic_runner, "verify_tushare_bulk_clean_snapshot", unexpected_verifier)
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ValueError, match="classic cost schedule semantic identity mismatch"):
         main(_classic_main_args(project_root, data_root))
     assert verifier_calls == []
     assert not (project_root / "artifacts-test").exists()
@@ -270,6 +355,45 @@ def test_classic_main_and_cost_each_use_one_stable_payload(
     with pytest.raises(RuntimeError, match="SNAPSHOT_SENTINEL"):
         main(_classic_main_args(project_root, data_root))
     assert reads == {config_path.resolve(): 1, cost_path.resolve(): 1}
+    assert not (project_root / "artifacts-test").exists()
+
+
+def test_legacy_classic_keeps_cost_binding_after_snapshot_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base_config = (
+        PROJECT_ROOT / "configs/research/m2_classic_daily_factors.toml"
+    ).read_bytes()
+    project_root, _, _, data_root = _classic_project(
+        tmp_path,
+        config_payload=base_config,
+        config_name="m2_classic_daily_factors.toml",
+    )
+    cost_calls: list[str] = []
+
+    def unexpected_early_cost(*_: object, **__: object) -> object:
+        cost_calls.append("early")
+        raise AssertionError("legacy cost binding must remain after snapshot")
+
+    def stop_at_snapshot_verifier(**_: object) -> object:
+        raise RuntimeError("SNAPSHOT_SENTINEL")
+
+    monkeypatch.setattr(classic_runner, "_cost_periods", unexpected_early_cost)
+    monkeypatch.setattr(classic_runner, "_cost_schedule_binding", unexpected_early_cost)
+    monkeypatch.setattr(
+        classic_runner,
+        "verify_tushare_bulk_clean_snapshot",
+        stop_at_snapshot_verifier,
+    )
+    with pytest.raises(RuntimeError, match="SNAPSHOT_SENTINEL"):
+        main(
+            _classic_main_args(
+                project_root,
+                data_root,
+                config_name="m2_classic_daily_factors.toml",
+            )
+        )
+    assert cost_calls == []
     assert not (project_root / "artifacts-test").exists()
 
 
