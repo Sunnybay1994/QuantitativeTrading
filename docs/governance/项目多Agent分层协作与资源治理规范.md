@@ -26,8 +26,10 @@
     ├── 投研 Agent（Domain Manager）
     ├── GUI 开发 Agent（Domain Manager）
     └── 实现 Worker 池
-        ├── 本地 Luna Worker session
-        │   └── 每个具体任务一个或多个隔离 subagent
+        ├── 本地 Luna Worker 1 session
+        │   └── 多个任务各自使用隔离 subagent
+        ├── 本地 Luna Worker 2 session
+        │   └── 多个任务各自使用隔离 subagent
         └── 外部 cursor-agent 独立会话
 ```
 
@@ -62,16 +64,22 @@
 - 向统筹提交安全 SHA、验证证据、剩余风险和合流申请。
 
 领域经理不直接修改 integration、不自行抢占共享资源、不跨领域派单，也不把计划状态写成完成状态。
+任务经统筹冻结后，领域经理与所选 Luna Worker 直接交互，不需要中央 Agent 转发普通派发、ACK、静态进度、
+独立初验、合同内返工或交付消息。领域经理仍须把共享资源申请、白名单扩大、身份冲突和合流申请提交统筹。
 
 ### 2.4 实现 Worker
 
 Worker 只执行已经冻结的具体任务，不决定业务路线或扩大架构。
 
-当前默认使用本地 Luna Worker。除非用户明确指定其他方式：
+当前默认使用由多个本地 Luna Worker session 组成的 Worker 池。除非用户明确指定其他方式：
 
-- 领域经理把完整任务包发给 Luna Worker session；
+- 领域经理在统筹冻结任务后，直接选择一个空闲或合适的 Luna Worker，并把完整任务包发给该 Worker；
 - Luna Worker 的顶层 session 是事件驱动 dispatcher，只负责任务校验、subagent 创建、路由登记和异常协调；
 - Luna Worker 收到每个具体任务后必须创建独立 subagent 执行，不能在顶层 session 直接混做多个实现；
+- 每个 Luna Worker 可同时管理多个互相隔离的 subagent；项目不预设固定“四槽”或“每个 Worker 一次只能有
+  一个任务”的规则。实际并行度由可用 Agent 容量、任务依赖、文件写集合和统筹分配的共享资源共同限制；
+- 每个 `task_id` 在任一时刻只能绑定一个 Luna Worker、一个实现 subagent 和一个 worktree。未经明确 STOP、
+  身份闭包和统筹重分配，不得把同一任务同时派给另一个 Luna Worker；
 - 多个任务只有在依赖已满足、写路径互斥且资源窗口允许时才可并行；否则顺序执行；
 - dispatch turn 在返回 `task_id → agent_id → manager_thread_id/worktree` 映射后立即结束并恢复 idle，不等待
   subagent 完整结束；新任务到达时再开启一个短 dispatch turn，因此任务可以分时到达、随到随派；
@@ -96,6 +104,12 @@ Luna session 的 idle 状态就是“监听态”，不需要用长期 active tu
    回到 idle；不得新建第二实现者覆盖同一现场；
 6. `DELIVERED / STOP`：subagent 直接发送压缩交付或阻断报告，Luna 只维护映射和异常升级，不等待全部任务
    成批完成。
+
+上述事件默认在“领域经理 ↔ 所选 Luna Worker / 任务 subagent”之间直接流转。中央 Agent 不作为消息代理，
+也不需要逐条批准合同内静态实现、初验和返工。只有以下控制面事件必须提交中央：exact base/worktree 或共享
+白名单冻结、CPU/真实 I/O/网络/端口等资源授权、跨领域或共享 SSOT 冲突、dispatch 身份无法闭合、任务迁移到
+另一 Luna Worker、架构边界变化、integration 合流与来源线退休。中央直接联系具体 subagent 仅是 dispatcher
+不可观察、身份损坏或原 owner 无法路由时的异常恢复手段，不是常规工作流。
 
 Dispatcher 不维护新的数据库、队列服务或常驻后台进程。任务书、worktree、agent tree、压缩消息和按 task
 隔离的 ignored mapping 构成当前轻量任务账本；只有直接回调与 mapping 都不可靠且用户另行批准时，才增加
@@ -171,6 +185,10 @@ diff/mtime、进程和资源租约。
 Luna dispatcher 收到任务后不得把顶层 turn 变成长时间实现或等待循环。它必须返回 `DISPATCH_ACK` 后恢复
 idle，让后续分时到达的任务继续触发短 turn；ACK 同时要求直接消息与 durable mapping 身份一致。实际实现、
 阶段回报和资源等待都由对应隔离 subagent 承担。
+
+任务冻结后的普通通信由领域经理直接发送给该任务已绑定的 Luna Worker 或 subagent。中央只接收需要控制面
+裁决的事件和最终合流申请，不承担日常消息中继。若某 Luna Worker 繁忙，可将新的、尚未派发的互斥任务分配给
+另一 Luna Worker；已派发任务不得仅为提高吞吐而迁移或复制。
 
 ### 4.4 审查、返工和领域验收
 
@@ -279,8 +297,11 @@ exact changed paths：
 ## 8. 当前默认执行策略
 
 1. 当前三个领域经理分别负责框架开发、投研和 GUI 开发；
-2. 当前默认实现通道为本地 Luna Worker；每个具体任务由其独立 subagent 执行；
+2. 当前默认实现通道为本地 Luna Worker 池，现有 `Luna worker 1` 与 `Luna worker 2`；两者均可并行管理多个
+   隔离 subagent，每个具体任务仍只能绑定一个 Worker 和一个实现 subagent；运行时 task id 与实时负载以
+   Codex 任务列表和 ignored dispatch mapping 为准，不写入 Git 文档；
 3. 只有用户或统筹明确指定时才改用外部 `cursor-agent`；未指定模型时使用 `auto`；
-4. 不为提高表面并行度拆分共享文件或强耦合任务；
-5. 不因 worker 类型改变 PIT、不可变发布、统一回放、OMS/风控/对账、人工准入和凭据安全 Gate；
-6. 新 Worker 类型加入前，先由统筹补充身份、权限、资源、交付和退出合同。
+4. 领域经理在统筹冻结后直接与所选 Luna Worker 完成派发、初验、返工和交付；中央只管理控制面与异常恢复；
+5. 不为提高表面并行度拆分共享文件或强耦合任务，也不设置脱离实际资源的固定并发槽数；
+6. 不因 worker 类型改变 PIT、不可变发布、统一回放、OMS/风控/对账、人工准入和凭据安全 Gate；
+7. 新 Worker 类型加入前，先由统筹补充身份、权限、资源、交付和退出合同。

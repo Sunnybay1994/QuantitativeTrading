@@ -23,10 +23,14 @@
   整洁，不承担常规业务功能实现；
 - 框架开发、投研、GUI 开发三个领域经理分别维护自己的详细路线图，把目标拆成最小任务包，冻结业务合同，
   向统筹申请 exact base/worktree/资源后再向 Worker 派发；
-- 实现 Worker 只执行冻结任务。当前默认使用本地 Luna Worker；Luna 顶层 session 负责调度，每个具体任务
-  必须创建隔离 subagent 实现，以支持上下文隔离和经批准的互斥并行。Luna 采用事件驱动 dispatcher：收到
+- 实现 Worker 只执行冻结任务。当前默认使用本地 Luna Worker 池；每个 Luna 顶层 session 负责调度，每个具体任务
+  必须创建隔离 subagent 实现，以支持上下文隔离和经批准的互斥并行。一个 Luna 可同时管理多个隔离 subagent，
+  但同一任务只能绑定一个 Worker、一个实现 subagent 和一个 worktree。Luna 采用事件驱动 dispatcher：收到
   任务后只完成校验、spawn、路由登记和简短 ACK，即结束当前 turn 并恢复 idle；不得在顶层等待某个实现
   subagent 完整结束。subagent 独立向领域经理与统筹推送阶段结果，后续任务可随到随派；
+- 统筹冻结任务后，领域经理直接与所选 Luna Worker 交互，普通派发、ACK、静态进度、初验、合同内返工和交付
+  不经统筹转发。统筹只处理 exact base/worktree、共享文件锁、CPU/真实 I/O/网络等资源、跨域冲突、身份异常、
+  架构变更、integration 合流和来源线退休；统筹直接联系具体 subagent 仅用于异常恢复；
 - 外部 `cursor-agent` 是可选 Worker。未特别指定模型时使用 `auto`；用户或统筹可按风险和能力需要显式指定
   其他模型。实现和独立审查必须使用不同的新会话或隔离上下文；
 - 领域经理不得直接写 integration 或抢占资源，Worker 不得自行扩大白名单、改变业务路线、合流或宣布 Gate
@@ -185,10 +189,12 @@ agent tree、进程、worktree、锁和任务状态共同构成权威运行现�
 branch/worktree、写白名单、只读输入、资源需求、失败语义、反例、验收命令和 Worker 类型。未获统筹冻结前，
 不得创建 worktree、写文件、启动真实运行或占用共享资源。
 
-当前默认实现通道为本地 Luna Worker。Luna 顶层 session 不混做多个实现；它必须为每个具体任务创建隔离
-subagent，并采用短 turn 的事件驱动 dispatcher 模式，不用持续 `wait` 阻塞前台。每个 dispatch turn 在返回
+当前默认实现通道为本地 Luna Worker 池。每个 Luna 顶层 session 不直接混做实现；它必须为每个具体任务创建
+隔离 subagent，并可同时管理多个互相隔离的 subagent。项目不预设固定并发槽数，实际并行度由 Agent 容量、
+任务依赖、文件写集合和统筹分配的共享资源决定。每个 dispatch turn 在返回
 task/agent 映射后立即结束；subagent 自行推送 `STATIC_DONE / RESOURCE_REQUEST / DELIVERED / STOP`，需要资源
-授权或返工时再由短 turn 路由到原 subagent。改用外部 `cursor-agent` 时，未指定模型使用 `auto`。无论使用哪种 Worker，
+授权或返工时再由短 turn 路由到原 subagent。任务冻结后，领域经理直接与所选 Luna 完成普通派发、初验、
+返工和收件；统筹不作为消息中继，只处理控制面和异常恢复。改用外部 `cursor-agent` 时，未指定模型使用 `auto`。无论使用哪种 Worker，
 实现者自测都不能代替领域验收或统筹终验。
 
 Dispatcher 的成功映射必须同时具备可验证的 ACK 和项目 ignored 目录下按任务隔离的 durable mapping；只看到
