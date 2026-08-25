@@ -15,6 +15,7 @@ import quant.research.run_classic_factors as classic_runner
 from quant.research.lightweight_run import ResearchFoldV1
 from quant.research.lightweight_run import ResearchInputDigestV1
 from quant.research.run_classic_factors import (
+    _aggregate_redundancy_by_factor,
     _build_input_digests,
     _cost_periods,
     _cost_schedule_binding,
@@ -57,6 +58,348 @@ def _with_eols(payload: bytes, eols: tuple[bytes, ...]) -> bytes:
         line + (eols[index % len(eols)] if index < len(lines) - 1 else b"")
         for index, line in enumerate(lines)
     )
+
+
+def test_redundancy_aggregation_is_symmetric_and_preserves_summary_order() -> None:
+    summary = pl.DataFrame(
+        {
+            "factor": ["candidate_b", "candidate_a"],
+            "research_status": ["RESEARCH_ONLY", "RESEARCH_ONLY"],
+        }
+    )
+    redundancy = pl.DataFrame(
+        {
+            "factor_a": ["reference", "candidate_a", "candidate_b"],
+            "factor_b": ["candidate_a", "candidate_b", "reference"],
+            "median_abs_rank_corr": [0.83, 0.79, 0.42],
+        }
+    )
+    expected = [
+        {"factor": "candidate_b", "max_median_abs_rank_corr": 0.79},
+        {"factor": "candidate_a", "max_median_abs_rank_corr": 0.83},
+    ]
+
+    assert _aggregate_redundancy_by_factor(summary, redundancy).rows(named=True) == expected
+
+    swapped_and_reordered = pl.DataFrame(
+        {
+            "factor_a": ["candidate_b", "reference", "candidate_a"],
+            "factor_b": ["reference", "candidate_a", "candidate_b"],
+            "median_abs_rank_corr": [0.42, 0.83, 0.79],
+        }
+    )
+    assert (
+        _aggregate_redundancy_by_factor(summary, swapped_and_reordered).rows(named=True)
+        == expected
+    )
+
+
+def test_reference_only_pairs_do_not_create_summary_rows() -> None:
+    summary = pl.DataFrame(
+        {"factor": ["candidate"], "research_status": ["RESEARCH_ONLY"]}
+    )
+    redundancy = pl.DataFrame(
+        {
+            "factor_a": ["candidate", "reference"],
+            "factor_b": ["reference", "control"],
+            "median_abs_rank_corr": [0.42, 0.91],
+        }
+    )
+
+    result = _aggregate_redundancy_by_factor(summary, redundancy)
+
+    assert result.rows(named=True) == [
+        {"factor": "candidate", "max_median_abs_rank_corr": 0.42}
+    ]
+
+
+def test_candidate_self_pair_is_rejected_before_aggregation() -> None:
+    summary = pl.DataFrame(
+        {"factor": ["candidate"], "research_status": ["RESEARCH_ONLY"]}
+    )
+    redundancy = pl.DataFrame(
+        {
+            "factor_a": ["candidate"],
+            "factor_b": ["candidate"],
+            "median_abs_rank_corr": [0.10],
+        }
+    )
+
+    with pytest.raises(ValueError, match="not distinct"):
+        _aggregate_redundancy_by_factor(summary, redundancy)
+
+
+def test_candidate_without_an_incident_is_rejected() -> None:
+    summary = pl.DataFrame(
+        {
+            "factor": ["candidate_a", "candidate_b"],
+            "research_status": ["RESEARCH_ONLY", "RESEARCH_ONLY"],
+        }
+    )
+    redundancy = pl.DataFrame(
+        {
+            "factor_a": ["candidate_a"],
+            "factor_b": ["reference"],
+            "median_abs_rank_corr": [0.42],
+        }
+    )
+
+    aggregated = _aggregate_redundancy_by_factor(summary, redundancy)
+
+    assert aggregated.rows(named=True) == [
+        {"factor": "candidate_a", "max_median_abs_rank_corr": 0.42},
+        {"factor": "candidate_b", "max_median_abs_rank_corr": None},
+    ]
+
+    gated = apply_fourth_batch_admission_gates(
+        summary,
+        redundancy_summary=redundancy,
+        coverage_summary=pl.DataFrame(
+            {"factor": ["candidate_a", "candidate_b"], "coverage_passed": [True, True]}
+        ),
+        schedule_alignment=pl.DataFrame(
+            {
+                "factor": ["candidate_a", "candidate_b"],
+                "schedule_aligned": [True, True],
+            }
+        ),
+        maximum_median_absolute_rank_correlation=0.80,
+    )
+    assert gated.select("factor", "research_status").rows() == [
+        ("candidate_a", "RESEARCH_ONLY"),
+        ("candidate_b", "REJECTED"),
+    ]
+
+
+def test_duplicate_summary_factor_is_rejected_before_aggregation() -> None:
+    summary = pl.DataFrame(
+        {
+            "factor": ["candidate", "candidate"],
+            "research_status": ["RESEARCH_ONLY", "RESEARCH_ONLY"],
+        }
+    )
+    redundancy = pl.DataFrame(
+        {
+            "factor_a": ["candidate"],
+            "factor_b": ["reference"],
+            "median_abs_rank_corr": [0.42],
+        }
+    )
+
+    with pytest.raises(ValueError, match="summary factors are not unique"):
+        _aggregate_redundancy_by_factor(summary, redundancy)
+
+
+@pytest.mark.parametrize(
+    ("factor_value", "status_value"),
+    (
+        (None, "RESEARCH_ONLY"),
+        (1, "RESEARCH_ONLY"),
+        ("", "RESEARCH_ONLY"),
+        ("candidate", None),
+        ("candidate", False),
+        ("candidate", 1),
+        ("candidate", ""),
+        ("candidate", "HOLD"),
+    ),
+    ids=(
+        "null-factor",
+        "non-string-factor",
+        "empty-factor",
+        "null-status",
+        "non-string-status-bool",
+        "non-string-status-int",
+        "empty-status",
+        "unexpected-status",
+    ),
+)
+def test_summary_factor_and_status_contract_is_strict(
+    factor_value: object, status_value: object
+) -> None:
+    summary = pl.DataFrame(
+        {"factor": [factor_value], "research_status": [status_value]}
+    )
+    redundancy = pl.DataFrame(
+        {
+            "factor_a": ["candidate"],
+            "factor_b": ["reference"],
+            "median_abs_rank_corr": [0.42],
+        }
+    )
+
+    with pytest.raises(ValueError, match="summary (string|status) contract"):
+        _aggregate_redundancy_by_factor(summary, redundancy)
+
+
+def test_redundancy_required_fields_are_rejected() -> None:
+    summary = pl.DataFrame(
+        {"factor": ["candidate"], "research_status": ["RESEARCH_ONLY"]}
+    )
+    redundancy = pl.DataFrame(
+        {
+            "factor_a": ["candidate"],
+            "factor_b": ["reference"],
+            "median_abs_rank_corr": [0.42],
+        }
+    )
+
+    with pytest.raises(ValueError, match="invalid classic redundancy aggregation"):
+        _aggregate_redundancy_by_factor(
+            summary.drop("factor"),
+            redundancy,
+        )
+    with pytest.raises(ValueError, match="invalid classic redundancy aggregation"):
+        _aggregate_redundancy_by_factor(
+            summary,
+            redundancy.drop("median_abs_rank_corr"),
+        )
+
+
+@pytest.mark.parametrize("bad_endpoint", (None, 1, ""), ids=("null", "non-string", "empty"))
+def test_redundancy_endpoints_must_be_non_empty_strings(bad_endpoint: object) -> None:
+    summary = pl.DataFrame(
+        {"factor": ["candidate"], "research_status": ["RESEARCH_ONLY"]}
+    )
+    redundancy = pl.DataFrame(
+        {
+            "factor_a": [bad_endpoint],
+            "factor_b": ["reference"],
+            "median_abs_rank_corr": [0.42],
+        }
+    )
+
+    with pytest.raises(ValueError, match="endpoint contract"):
+        _aggregate_redundancy_by_factor(summary, redundancy)
+
+
+@pytest.mark.parametrize(
+    "bad_correlation",
+    (None, True, float("nan"), float("inf"), float("-inf"), "0.42"),
+    ids=("null", "bool", "nan", "positive-infinity", "negative-infinity", "string"),
+)
+def test_redundancy_correlation_must_be_finite_numeric_not_bool(
+    bad_correlation: object,
+) -> None:
+    summary = pl.DataFrame(
+        {"factor": ["candidate"], "research_status": ["RESEARCH_ONLY"]}
+    )
+    redundancy = pl.DataFrame(
+        {
+            "factor_a": ["candidate"],
+            "factor_b": ["reference"],
+            "median_abs_rank_corr": [bad_correlation],
+        }
+    )
+
+    with pytest.raises(ValueError, match="correlation contract"):
+        _aggregate_redundancy_by_factor(summary, redundancy)
+
+
+@pytest.mark.parametrize(
+    "pairs",
+    (
+        (("candidate", "reference"), ("candidate", "reference")),
+        (("candidate", "reference"), ("reference", "candidate")),
+    ),
+    ids=("exact-duplicate", "reverse-duplicate"),
+)
+def test_duplicate_or_reverse_duplicate_pairs_are_rejected(
+    pairs: tuple[tuple[str, str], tuple[str, str]],
+) -> None:
+    summary = pl.DataFrame(
+        {"factor": ["candidate"], "research_status": ["RESEARCH_ONLY"]}
+    )
+    redundancy = pl.DataFrame(
+        {
+            "factor_a": [pair[0] for pair in pairs],
+            "factor_b": [pair[1] for pair in pairs],
+            "median_abs_rank_corr": [0.42, 0.43],
+        }
+    )
+
+    with pytest.raises(ValueError, match="pairs are not unique"):
+        _aggregate_redundancy_by_factor(summary, redundancy)
+
+
+def test_candidate_candidate_pair_constrains_both_sides_and_rejected_stays_rejected() -> None:
+    summary = pl.DataFrame(
+        {
+            "factor": ["candidate_b", "candidate_a"],
+            "research_status": ["RESEARCH_ONLY", "RESEARCH_ONLY"],
+        }
+    )
+    redundancy = pl.DataFrame(
+        {
+            "factor_a": ["candidate_a"],
+            "factor_b": ["candidate_b"],
+            "median_abs_rank_corr": [0.80],
+        }
+    )
+    coverage = pl.DataFrame(
+        {
+            "factor": ["candidate_b", "candidate_a"],
+            "coverage_passed": [True, True],
+        }
+    )
+    schedule = pl.DataFrame(
+        {
+            "factor": ["candidate_b", "candidate_a"],
+            "schedule_aligned": [True, True],
+        }
+    )
+
+    rejected = apply_fourth_batch_admission_gates(
+        summary,
+        redundancy_summary=redundancy,
+        coverage_summary=coverage,
+        schedule_alignment=schedule,
+        maximum_median_absolute_rank_correlation=0.80,
+    )
+    assert rejected.select("factor", "research_status").rows() == [
+        ("candidate_a", "REJECTED"),
+        ("candidate_b", "REJECTED"),
+    ]
+    assert rejected.select("factor", "max_median_abs_rank_corr").rows() == [
+        ("candidate_a", 0.80),
+        ("candidate_b", 0.80),
+    ]
+
+    below_threshold = redundancy.with_columns(
+        pl.lit(0.79).alias("median_abs_rank_corr")
+    )
+    passed = apply_fourth_batch_admission_gates(
+        summary,
+        redundancy_summary=below_threshold,
+        coverage_summary=coverage,
+        schedule_alignment=schedule,
+        maximum_median_absolute_rank_correlation=0.80,
+    )
+    assert passed.get_column("research_status").to_list() == [
+        "RESEARCH_ONLY",
+        "RESEARCH_ONLY",
+    ]
+
+    already_rejected = summary.with_columns(pl.lit("REJECTED").alias("research_status"))
+    remains_rejected = apply_fourth_batch_admission_gates(
+        already_rejected,
+        redundancy_summary=below_threshold,
+        coverage_summary=coverage,
+        schedule_alignment=schedule,
+        maximum_median_absolute_rank_correlation=0.80,
+    )
+    assert remains_rejected.get_column("research_status").to_list() == [
+        "REJECTED",
+        "REJECTED",
+    ]
+
+
+def test_all_four_classic_redundancy_call_sites_use_one_private_helper() -> None:
+    source = (PROJECT_ROOT / "src/quant/research/run_classic_factors.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert source.count("_aggregate_redundancy_by_factor(") == 5
+    assert 'group_by("factor_a")' not in source
 
 
 def test_cost_schedule_semantic_digest_ignores_non_cost_serialization_only() -> None:
@@ -1160,8 +1503,8 @@ def test_market_risk_gates_enforce_direction_redundancy_coverage_and_schedule() 
     )
     redundancy = pl.DataFrame(
         {
-            "factor_a": ["downside_beta"],
-            "factor_b": ["control"],
+            "factor_a": ["control"],
+            "factor_b": ["downside_beta"],
             "median_abs_rank_corr": [0.79],
         }
     )
@@ -1255,8 +1598,8 @@ def test_fourth_batch_gates_enforce_redundancy_coverage_and_schedule() -> None:
     )
     redundancy = pl.DataFrame(
         {
-            "factor_a": ["alpha158_resi20"],
-            "factor_b": ["alpha158_beta20"],
+            "factor_a": ["alpha158_beta20"],
+            "factor_b": ["alpha158_resi20"],
             "median_abs_rank_corr": [0.79],
         }
     )
@@ -1498,8 +1841,8 @@ def test_fifth_batch_gates_enforce_fixed_direction_and_all_fail_closed_edges() -
     )
     redundancy = pl.DataFrame(
         {
-            "factor_a": [factor],
-            "factor_b": ["alpha158_std20"],
+            "factor_a": ["alpha158_std20"],
+            "factor_b": [factor],
             "median_abs_rank_corr": [0.79],
         }
     )

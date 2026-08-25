@@ -120,6 +120,101 @@ _COST_DECIMAL_FIELDS = (
 _COST_SCALED_COMPONENTS = ("commission_rate", "commission_min", "slippage")
 
 
+def _aggregate_redundancy_by_factor(
+    summary: pl.DataFrame,
+    redundancy_summary: pl.DataFrame,
+) -> pl.DataFrame:
+    """Aggregate validated redundancy incidents for every summary candidate.
+
+    The redundancy evaluator emits unordered factor pairs.  Summary candidates
+    therefore receive incidents from either endpoint, while reference-only
+    endpoints remain absent from the returned candidate-keyed frame.
+    """
+    required_summary_columns = {"factor", "research_status"}
+    required_redundancy_columns = {
+        "factor_a",
+        "factor_b",
+        "median_abs_rank_corr",
+    }
+    if (
+        not isinstance(summary, pl.DataFrame)
+        or summary.is_empty()
+        or not required_summary_columns.issubset(summary.columns)
+        or not isinstance(redundancy_summary, pl.DataFrame)
+        or redundancy_summary.is_empty()
+        or not required_redundancy_columns.issubset(redundancy_summary.columns)
+    ):
+        raise ValueError("invalid classic redundancy aggregation request")
+
+    for column in ("factor", "research_status"):
+        if summary.schema[column] != pl.String:
+            raise ValueError("classic summary string contract is invalid")
+        values = summary.get_column(column).to_list()
+        if any(type(value) is not str or not value for value in values):
+            raise ValueError("classic summary string contract is invalid")
+    statuses = cast(list[str], summary.get_column("research_status").to_list())
+    if not set(statuses) <= {"RESEARCH_ONLY", "REJECTED"}:
+        raise ValueError("classic summary status contract is invalid")
+    for column in ("factor_a", "factor_b"):
+        if redundancy_summary.schema[column] != pl.String:
+            raise ValueError("classic redundancy endpoint contract is invalid")
+        values = redundancy_summary.get_column(column).to_list()
+        if any(type(value) is not str or not value for value in values):
+            raise ValueError("classic redundancy endpoint contract is invalid")
+
+    summary_factors = cast(list[str], summary.get_column("factor").to_list())
+    if len(summary_factors) != len(set(summary_factors)):
+        raise ValueError("classic summary factors are not unique")
+    candidate_set = set(summary_factors)
+    seen_pairs: set[tuple[str, str]] = set()
+    maximum_by_factor: dict[str, int | float | Decimal] = {}
+    for row in redundancy_summary.iter_rows(named=True):
+        factor_a = cast(str, row["factor_a"])
+        factor_b = cast(str, row["factor_b"])
+        if factor_a == factor_b:
+            raise ValueError("classic redundancy pair endpoints are not distinct")
+        correlation = row["median_abs_rank_corr"]
+        if isinstance(correlation, bool):
+            raise ValueError("classic redundancy correlation contract is invalid")
+        if not isinstance(correlation, (int, float, Decimal)):
+            raise ValueError("classic redundancy correlation contract is invalid")
+        numeric_correlation = cast(int | float | Decimal, correlation)
+        try:
+            finite = math.isfinite(float(numeric_correlation))
+        except (OverflowError, TypeError, ValueError):
+            finite = False
+        if not finite:
+            raise ValueError("classic redundancy correlation contract is invalid")
+
+        pair: tuple[str, str] = (
+            min(factor_a, factor_b),
+            max(factor_a, factor_b),
+        )
+        if pair in seen_pairs:
+            raise ValueError("classic redundancy pairs are not unique")
+        seen_pairs.add(pair)
+        for factor in (factor_a, factor_b):
+            if factor in candidate_set:
+                previous = maximum_by_factor.get(factor)
+                if previous is None or float(numeric_correlation) > float(previous):
+                    maximum_by_factor[factor] = numeric_correlation
+
+    return pl.DataFrame(
+        {
+            "factor": summary_factors,
+            "max_median_abs_rank_corr": [
+                maximum_by_factor.get(factor) for factor in summary_factors
+            ],
+        },
+        schema={
+            "factor": pl.String,
+            "max_median_abs_rank_corr": redundancy_summary.schema[
+                "median_abs_rank_corr"
+            ],
+        },
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="运行 M2 经典日频因子研究")
     parser.add_argument(
@@ -378,15 +473,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             minimum_symbols=cast(int, factor_config["minimum_daily_symbols"]),
         )
         threshold = float(factor_config["maximum_median_absolute_rank_correlation"])
-        redundancy_by_factor = redundancy_summary.group_by("factor_a").agg(
-            pl.col("median_abs_rank_corr").max().alias("max_median_abs_rank_corr")
+        redundancy_by_factor = _aggregate_redundancy_by_factor(
+            summary, redundancy_summary
         )
         summary = summary.join(
             redundancy_by_factor,
-            left_on="factor",
-            right_on="factor_a",
+            on="factor",
             how="left",
             validate="1:1",
+            maintain_order="left",
         ).with_columns(
             (
                 pl.col("max_median_abs_rank_corr").is_not_null()
@@ -1159,9 +1254,7 @@ def apply_market_risk_admission_gates(
             pl.col("direction").first().alias("observed_direction"),
         )
     )
-    redundancy = redundancy_summary.group_by("factor_a").agg(
-        pl.col("median_abs_rank_corr").max().alias("max_median_abs_rank_corr")
-    )
+    redundancy = _aggregate_redundancy_by_factor(summary, redundancy_summary)
     schedule = schedule_alignment.group_by("factor").agg(
         pl.col("schedule_aligned").all().alias("schedule_alignment_passed")
     )
@@ -1173,16 +1266,34 @@ def apply_market_risk_admission_gates(
     summary_base = summary.drop(drop_columns) if drop_columns else summary
     joined = (
         summary_base
-        .join(directions, on="factor", how="left", validate="1:1")
         .join(
-            redundancy,
-            left_on="factor",
-            right_on="factor_a",
+            directions,
+            on="factor",
             how="left",
             validate="1:1",
+            maintain_order="left",
         )
-        .join(coverage_summary, on="factor", how="left", validate="1:1")
-        .join(schedule, on="factor", how="left", validate="1:1")
+        .join(
+            redundancy,
+            on="factor",
+            how="left",
+            validate="1:1",
+            maintain_order="left",
+        )
+        .join(
+            coverage_summary,
+            on="factor",
+            how="left",
+            validate="1:1",
+            maintain_order="left",
+        )
+        .join(
+            schedule,
+            on="factor",
+            how="left",
+            validate="1:1",
+            maintain_order="left",
+        )
         .with_columns(
             pl.lit(expected_direction).alias("expected_direction"),
             (
@@ -1236,9 +1347,7 @@ def apply_fourth_batch_admission_gates(
         or not 0 < maximum_median_absolute_rank_correlation < 1
     ):
         raise ValueError("invalid fourth-batch admission gate request")
-    redundancy = redundancy_summary.group_by("factor_a").agg(
-        pl.col("median_abs_rank_corr").max().alias("max_median_abs_rank_corr")
-    )
+    redundancy = _aggregate_redundancy_by_factor(summary, redundancy_summary)
     schedule = schedule_alignment.group_by("factor").agg(
         pl.col("schedule_aligned").all().alias("schedule_alignment_passed")
     )
@@ -1251,13 +1360,25 @@ def apply_fourth_batch_admission_gates(
     return (
         summary_base.join(
             redundancy,
-            left_on="factor",
-            right_on="factor_a",
+            on="factor",
             how="left",
             validate="1:1",
+            maintain_order="left",
         )
-        .join(coverage_summary, on="factor", how="left", validate="1:1")
-        .join(schedule, on="factor", how="left", validate="1:1")
+        .join(
+            coverage_summary,
+            on="factor",
+            how="left",
+            validate="1:1",
+            maintain_order="left",
+        )
+        .join(
+            schedule,
+            on="factor",
+            how="left",
+            validate="1:1",
+            maintain_order="left",
+        )
         .with_columns(
             (
                 pl.col("max_median_abs_rank_corr").is_not_null()
@@ -1660,9 +1781,7 @@ def apply_fifth_batch_admission_gates(
             ).all().alias("validation_direction_passed"),
         )
     )
-    redundancy = redundancy_summary.group_by("factor_a").agg(
-        pl.col("median_abs_rank_corr").max().alias("max_median_abs_rank_corr")
-    )
+    redundancy = _aggregate_redundancy_by_factor(summary, redundancy_summary)
     schedule = schedule_alignment.group_by("factor").agg(
         pl.col("schedule_aligned").all().alias("schedule_alignment_passed")
     )
@@ -1706,17 +1825,41 @@ def apply_fifth_batch_admission_gates(
     ]
     summary_base = summary.drop(drop_columns) if drop_columns else summary
     return (
-        summary_base.join(directions, on="factor", how="left", validate="1:1")
-        .join(
-            redundancy,
-            left_on="factor",
-            right_on="factor_a",
+        summary_base.join(
+            directions,
+            on="factor",
             how="left",
             validate="1:1",
+            maintain_order="left",
         )
-        .join(coverage_summary, on="factor", how="left", validate="1:1")
-        .join(schedule, on="factor", how="left", validate="1:1")
-        .join(monotonicity, on="factor", how="left", validate="1:1")
+        .join(
+            redundancy,
+            on="factor",
+            how="left",
+            validate="1:1",
+            maintain_order="left",
+        )
+        .join(
+            coverage_summary,
+            on="factor",
+            how="left",
+            validate="1:1",
+            maintain_order="left",
+        )
+        .join(
+            schedule,
+            on="factor",
+            how="left",
+            validate="1:1",
+            maintain_order="left",
+        )
+        .join(
+            monotonicity,
+            on="factor",
+            how="left",
+            validate="1:1",
+            maintain_order="left",
+        )
         .with_columns(
             pl.lit(expected_direction).alias("expected_direction"),
             (
