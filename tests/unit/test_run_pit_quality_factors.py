@@ -483,6 +483,296 @@ def test_redundancy_calendar_coverage_fails_closed_for_one_missing_month() -> No
     assert gated.get_column("research_status").item() == "REJECTED"
 
 
+def _redundancy_coverage_rows(
+    rows: tuple[tuple[str, str, bool], ...],
+) -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "factor_a": [factor_a for factor_a, _, _ in rows],
+            "factor_b": [factor_b for _, factor_b, _ in rows],
+            "signal_date_coverage_passed": [coverage for _, _, coverage in rows],
+        },
+        schema={
+            "factor_a": pl.String,
+            "factor_b": pl.String,
+            "signal_date_coverage_passed": pl.Boolean,
+        },
+    )
+
+
+def _redundancy_factor_summary(
+    factors: tuple[str, ...], *, rejected: tuple[str, ...] = ()
+) -> pl.DataFrame:
+    rejected_set = set(rejected)
+    return pl.DataFrame(
+        {
+            "factor": list(factors),
+            "research_status": [
+                "REJECTED" if factor in rejected_set else "RESEARCH_ONLY"
+                for factor in factors
+            ],
+        },
+        schema={"factor": pl.String, "research_status": pl.String},
+    )
+
+
+def test_redundancy_coverage_is_symmetric_and_preserves_summary_order() -> None:
+    summary = _redundancy_factor_summary(
+        ("candidate_b", "candidate_a", "already_rejected"),
+        rejected=("already_rejected",),
+    )
+    redundancy = _redundancy_coverage_rows(
+        (
+            ("control_a", "candidate_a", True),
+            ("candidate_b", "control_b", False),
+            ("control_c", "candidate_b", True),
+            ("already_rejected", "control_d", True),
+        )
+    )
+
+    gated = apply_redundancy_signal_coverage_gate(
+        summary,
+        redundancy_summary=redundancy,
+    )
+
+    assert gated.get_column("factor").to_list() == [
+        "candidate_b",
+        "candidate_a",
+        "already_rejected",
+    ]
+    assert gated.get_column("redundancy_signal_coverage_passed").to_list() == [
+        False,
+        True,
+        True,
+    ]
+    assert gated.get_column("research_status").to_list() == [
+        "REJECTED",
+        "RESEARCH_ONLY",
+        "REJECTED",
+    ]
+
+    swapped = apply_redundancy_signal_coverage_gate(
+        summary,
+        redundancy_summary=redundancy.select(
+            pl.col("factor_b").alias("factor_a"),
+            pl.col("factor_a").alias("factor_b"),
+            "signal_date_coverage_passed",
+        ).reverse(),
+    )
+    assert swapped.select(
+        "factor", "redundancy_signal_coverage_passed", "research_status"
+    ).equals(
+        gated.select("factor", "redundancy_signal_coverage_passed", "research_status")
+    )
+
+
+def test_redundancy_coverage_does_not_add_absent_reference_rows() -> None:
+    summary = _redundancy_factor_summary(("candidate",))
+    gated = apply_redundancy_signal_coverage_gate(
+        summary,
+        redundancy_summary=_redundancy_coverage_rows(
+            (("candidate", "reference_not_in_summary", True),)
+        ),
+    )
+
+    assert gated.get_column("factor").to_list() == ["candidate"]
+    assert gated.get_column("research_status").to_list() == ["RESEARCH_ONLY"]
+
+
+def test_redundancy_coverage_rejects_no_incident() -> None:
+    gated = apply_redundancy_signal_coverage_gate(
+        _redundancy_factor_summary(("candidate",)),
+        redundancy_summary=_redundancy_coverage_rows(()),
+    )
+
+    assert gated.select(
+        "redundancy_signal_coverage_passed", "research_status"
+    ).row(0) == (False, "REJECTED")
+
+
+def test_redundancy_duplicate_and_reverse_duplicate_pairs_use_all_incidents() -> None:
+    summary = _redundancy_factor_summary(("candidate_a", "candidate_b"))
+    gated = apply_redundancy_signal_coverage_gate(
+        summary,
+        redundancy_summary=_redundancy_coverage_rows(
+            (
+                ("candidate_a", "control", True),
+                ("control", "candidate_a", False),
+                ("candidate_b", "control", True),
+                ("candidate_b", "control", True),
+            )
+        ),
+    )
+
+    assert gated.height == summary.height
+    assert gated.get_column("factor").to_list() == ["candidate_a", "candidate_b"]
+    assert gated.get_column("redundancy_signal_coverage_passed").to_list() == [
+        False,
+        True,
+    ]
+
+
+@pytest.mark.parametrize(
+    "invalid_redundancy",
+    [
+        pl.DataFrame(
+            {
+                "factor_a": ["candidate"],
+                "factor_b": ["control"],
+                "signal_date_coverage_passed": pl.Series(
+                    [None], dtype=pl.Boolean
+                ),
+            }
+        ),
+        pl.DataFrame(
+            {
+                "factor_a": ["candidate"],
+                "factor_b": ["control"],
+                "signal_date_coverage_passed": [1],
+            }
+        ),
+        pl.DataFrame({"factor_a": ["candidate"], "factor_b": ["control"]}),
+        pl.DataFrame(
+            {
+                "factor_a": ["candidate"],
+                "signal_date_coverage_passed": [True],
+            }
+        ),
+        pl.DataFrame(
+            {
+                "factor_b": ["control"],
+                "signal_date_coverage_passed": [True],
+            }
+        ),
+    ],
+    ids=["null", "non_bool", "missing_coverage", "missing_factor_b", "missing_factor_a"],
+)
+def test_redundancy_coverage_rejects_invalid_incident_inputs(
+    invalid_redundancy: pl.DataFrame,
+) -> None:
+    with pytest.raises(ValueError, match="invalid redundancy signal coverage gate"):
+        apply_redundancy_signal_coverage_gate(
+            _redundancy_factor_summary(("candidate",)),
+            redundancy_summary=invalid_redundancy,
+        )
+
+
+def test_redundancy_coverage_rejects_duplicate_summary_factors() -> None:
+    duplicate_summary = pl.DataFrame(
+        {
+            "factor": ["candidate", "candidate"],
+            "research_status": ["RESEARCH_ONLY", "RESEARCH_ONLY"],
+        }
+    )
+    with pytest.raises(ValueError, match="invalid redundancy signal coverage gate"):
+        apply_redundancy_signal_coverage_gate(
+            duplicate_summary,
+            redundancy_summary=_redundancy_coverage_rows(
+                (("candidate", "control", True),)
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "invalid_summary",
+    [
+        pl.DataFrame(
+            {"factor": ["candidate"], "research_status": ["HOLD"]},
+            schema={"factor": pl.String, "research_status": pl.String},
+        ),
+        pl.DataFrame(
+            {
+                "factor": ["candidate"],
+                "research_status": pl.Series([None], dtype=pl.String),
+            }
+        ),
+        pl.DataFrame({"factor": ["candidate"], "research_status": [1]}),
+        pl.DataFrame(
+            {
+                "factor": ["candidate"],
+                "research_status": pl.Series(
+                    ["RESEARCH_ONLY"], dtype=pl.Categorical
+                ),
+            }
+        ),
+        pl.DataFrame(
+            {
+                "factor": ["candidate"],
+                "research_status": pl.Series(
+                    ["RESEARCH_ONLY"],
+                    dtype=pl.Enum(["RESEARCH_ONLY", "REJECTED"]),
+                ),
+            }
+        ),
+    ],
+    ids=["unexpected", "null", "non_string", "categorical", "enum"],
+)
+def test_redundancy_coverage_rejects_invalid_research_status(
+    invalid_summary: pl.DataFrame,
+) -> None:
+    with pytest.raises(ValueError, match="invalid redundancy signal coverage gate"):
+        apply_redundancy_signal_coverage_gate(
+            invalid_summary,
+            redundancy_summary=_redundancy_coverage_rows(
+                (("candidate", "control", True),)
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "invalid_summary, invalid_redundancy",
+    [
+        (
+            _redundancy_factor_summary(("",)),
+            _redundancy_coverage_rows((("candidate", "control", True),)),
+        ),
+        (
+            _redundancy_factor_summary(("candidate",)),
+            _redundancy_coverage_rows((("", "control", True),)),
+        ),
+        (
+            _redundancy_factor_summary(("candidate",)),
+            _redundancy_coverage_rows((("candidate", "", True),)),
+        ),
+    ],
+    ids=["empty_summary_factor", "empty_factor_a", "empty_factor_b"],
+)
+def test_redundancy_coverage_rejects_empty_identifiers(
+    invalid_summary: pl.DataFrame,
+    invalid_redundancy: pl.DataFrame,
+) -> None:
+    with pytest.raises(ValueError, match="invalid redundancy signal coverage gate"):
+        apply_redundancy_signal_coverage_gate(
+            invalid_summary,
+            redundancy_summary=invalid_redundancy,
+        )
+
+
+def test_redundancy_coverage_preserves_diagnostics_and_rejects_output_collision() -> None:
+    summary = _redundancy_factor_summary(("candidate",)).with_columns(
+        pl.lit(0.125).alias("median_test_rank_ic")
+    )
+    gated = apply_redundancy_signal_coverage_gate(
+        summary,
+        redundancy_summary=_redundancy_coverage_rows(
+            (("candidate", "control", True),)
+        ),
+    )
+    assert gated.get_column("median_test_rank_ic").item() == 0.125
+    assert gated.get_column("research_status").item() == "RESEARCH_ONLY"
+
+    collision = summary.with_columns(
+        pl.lit(True).alias("redundancy_signal_coverage_passed")
+    )
+    with pytest.raises(ValueError, match="invalid redundancy signal coverage gate"):
+        apply_redundancy_signal_coverage_gate(
+            collision,
+            redundancy_summary=_redundancy_coverage_rows(
+                (("candidate", "control", True),)
+            ),
+        )
+
+
 def _coverage_rows(
     dates: tuple[dt.date, ...], *, valid_rows: int, eligible_rows: int
 ) -> pl.DataFrame:
