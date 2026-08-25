@@ -46,6 +46,11 @@
   partial financial raw、采集中 ledger 或未发布的 financial clean。财务接入顺序保持
   `writer terminal → audit-v4 → R3 → publisher/不可覆盖 snapshot → PIT`，任何前置未闭合都不得启动真实 PIT
   quality run。
+  2026-08-25 最新只读一致性事务样本为 `COMPLETE=92,879 / PENDING=82,939 / RUNNING=1 /
+  RETRYABLE=1,365`，active lease 为 1；`FAILED/SPLIT_REQUIRED=0`。writer PID 7692 仍为 `BelowNormal/0x3`，
+  CPU 继续累计且 stderr 为 0 bytes，因此状态仍是 `COLLECTING / NOT TERMINAL`。1,365 条 RETRYABLE 已达到
+  `max_attempts=3`，当前 writer 不会再领取；它们已登记为 [`UA-M2-001`](用户待批示与参与事项.md)，须等当前
+  pass 自然耗尽后先做只读错误分类，再请求用户批准有界恢复。现在不得重置 ledger、停止 writer 或启动 audit。
   snapshot READY 时，PIT 优先于新的非财务研究包。PIT 首跑前置 `3b8857c` 已以 A1
   `RECONSTRUCTED_CURRENT_INVENTORY_V1`、coverage gate、
   code-identity 与 `UNFROZEN/[]` pre-artifact STOP 进入 `086cae9`；来源线已 archive-first 退出，但这不等于
