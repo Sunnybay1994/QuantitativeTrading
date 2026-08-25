@@ -238,6 +238,7 @@ def _trading_config(
     frozen: str = "[]",
     manual: bool = False,
     max_cancels: int = 20,
+    mode: str = "PAPER",
 ):
     path = tmp_path / "trading.toml"
     path.write_text(
@@ -245,7 +246,7 @@ def _trading_config(
 [meta]
 schema_version = "trading-config-v1"
 [execution]
-mode = "PAPER"
+mode = "{mode}"
 auto_trade = false
 manual_approval = {str(manual).lower()}
 sell_only = false
@@ -273,8 +274,14 @@ max_cancels_per_day = {max_cancels}
     return load_trading_config(path)
 
 
-def _planner_config(tmp_path: Path, *, frozen: str = "[]", manual: bool = False):
-    trading = _trading_config(tmp_path, frozen=frozen, manual=manual)
+def _planner_config(
+    tmp_path: Path,
+    *,
+    frozen: str = "[]",
+    manual: bool = False,
+    mode: str = "PAPER",
+):
+    trading = _trading_config(tmp_path, frozen=frozen, manual=manual, mode=mode)
     schedule = build_execution_cost_schedule(
         selector="a_share_research_cost_schedule_v1",
         periods=tuple(
@@ -1779,3 +1786,599 @@ def test_dispatch_exact_pending_commands_preserves_claim_write_failure_as_retry(
         assert delivery.attempt_count == 0
     finally:
         store.close()
+
+
+def test_approval_first_atomic_stage_exact_replay_and_recovery_drift(
+    tmp_path: Path,
+) -> None:
+    from quant.execution.approval_flow import (
+        build_formal_approval_credential_capability,
+        issue_verified_approval_from_approve_challenge,
+    )
+    from quant.execution.reconcile import recover_local_state
+    from quant.domain.canonical_wire import utc_datetime_text
+    from quant.portfolio.order_planner import build_order_plan
+
+    store = _open(tmp_path)
+    gateway = FakeGateway()
+    clock = MutableClock()
+    service = _service(store, gateway, clock)
+    targets, market, account = _inputs()
+    planner = _planner_config(tmp_path, manual=True)
+    secret = b"service-approval-secret-bytes-012"
+    operator = "service-operator"
+    capability = build_formal_approval_credential_capability(
+        secret,
+        credential_id="credential/service",
+        operator_id=operator,
+        session_date=DAY,
+    )
+    before = recover_local_state(store)
+    plan = build_order_plan(
+        targets=targets,
+        target_identity=_hex("targets"),
+        market=market,
+        account=account,
+        config=planner,
+    )
+    sources = {
+        "account_snapshot_id": plan.account_snapshot_id,
+        "market_snapshot_id": plan.market_snapshot_id,
+        "planner_config_identity": plan.config_identity,
+        "target_receipt_identity": _hex("target-receipt"),
+        "target_verification_identity": _hex("target-verification"),
+        "trading_config_identity": plan.trading_config_identity,
+    }
+    issued = NOW.replace(second=0, microsecond=0, minute=(NOW.minute // 5) * 5)
+    challenge = {
+        "action": "approve",
+        "expires_at": utc_datetime_text(issued + dt.timedelta(minutes=10)),
+        "gateway_identity": None,
+        "issued_at": utc_datetime_text(issued),
+        "mode": "PAPER",
+        "schema_version": "m4-paper-cli-challenge-v1",
+        "source_identities": dict(sorted(sources.items())),
+        "store_recovery_id": before.recovery_id,
+        "subject_ids": [plan.plan_id],
+    }
+    verified = issue_verified_approval_from_approve_challenge(
+        capability,
+        challenge=challenge,
+        now=NOW,
+        expected_operator_id=operator,
+        expected_session_date=DAY,
+    )
+    drifted_challenge = {
+        **challenge,
+        "store_recovery_id": "f" * 64,
+    }
+    drifted = issue_verified_approval_from_approve_challenge(
+        capability,
+        challenge=drifted_challenge,
+        now=NOW,
+        expected_operator_id=operator,
+        expected_session_date=DAY,
+    )
+    with pytest.raises(ExecutionServiceError, match="APPROVAL_RECOVERY_DRIFT"):
+        service.plan_and_stage(
+            targets=targets,
+            target_identity=_hex("targets"),
+            market=market,
+            account=account,
+            planner_config=planner,
+            approval=drifted,
+            approval_source_identities=sources,
+        )
+    with store.transaction() as repo:
+        assert repo.get_approval_receipt_for_plan(
+            plan_identity=plan.plan_id, session_date=DAY
+        ) is None
+        assert repo.get_execution_stage(plan.plan_id) is None
+
+    staged = service.plan_and_stage(
+        targets=targets,
+        target_identity=_hex("targets"),
+        market=market,
+        account=account,
+        planner_config=planner,
+        approval=verified,
+        approval_source_identities=sources,
+    )
+    assert staged.replayed is False
+    assert staged.staged_command_ids
+    assert gateway.calls == []
+    with store.transaction() as repo:
+        assert repo.get_approval_receipt(verified.receipt.receipt_id) is not None
+
+    replayed = service.plan_and_stage(
+        targets=targets,
+        target_identity=_hex("targets"),
+        market=market,
+        account=account,
+        planner_config=planner,
+        approval=verified,
+        approval_source_identities=sources,
+    )
+    assert replayed.replayed is True
+    assert replayed.staged_command_ids == staged.staged_command_ids
+    assert gateway.calls == []
+
+    other = issue_verified_approval_from_approve_challenge(
+        capability,
+        challenge={
+            **challenge,
+            "store_recovery_id": recover_local_state(store).recovery_id,
+        },
+        now=NOW,
+        expected_operator_id=operator,
+        expected_session_date=DAY,
+    )
+    with pytest.raises(ExecutionServiceError, match="APPROVAL_BUSINESS_KEY_CONFLICT"):
+        service.plan_and_stage(
+            targets=targets,
+            target_identity=_hex("targets"),
+            market=market,
+            account=account,
+            planner_config=planner,
+            approval=other,
+            approval_source_identities=sources,
+        )
+    assert gateway.calls == []
+
+    weak_sources = {
+        "account_snapshot_id": plan.account_snapshot_id,
+        "market_snapshot_id": plan.market_snapshot_id,
+        "planner_config_identity": plan.config_identity,
+        "target_identity": plan.target_identity,
+        "trading_config_identity": plan.trading_config_identity,
+    }
+    with pytest.raises(ExecutionServiceError, match="APPROVAL_SOURCE_DRIFT"):
+        service.plan_and_stage(
+            targets=targets,
+            target_identity=_hex("targets"),
+            market=market,
+            account=account,
+            planner_config=planner,
+            approval=verified,
+            approval_source_identities=weak_sources,
+        )
+    store.close()
+
+
+def test_approval_rejects_bool_and_raw_receipt_hand_off(tmp_path: Path) -> None:
+    store = _open(tmp_path)
+    service = _service(store, FakeGateway(), MutableClock())
+    targets, market, account = _inputs()
+    planner = _planner_config(tmp_path, manual=True)
+    with pytest.raises(ExecutionServiceError):
+        service.plan_and_stage(
+            targets=targets,
+            target_identity=_hex("targets"),
+            market=market,
+            account=account,
+            planner_config=planner,
+            approval=True,
+            approval_source_identities={
+                "account_snapshot_id": "a" * 64,
+                "market_snapshot_id": "b" * 64,
+                "planner_config_identity": "c" * 64,
+                "target_receipt_identity": "d" * 64,
+                "target_verification_identity": "e" * 64,
+                "trading_config_identity": "f" * 64,
+            },
+        )
+    store.close()
+
+
+def _approval_bundle(
+    tmp_path: Path,
+    store,
+    *,
+    frozen: str = "[]",
+    cash: str = "2000",
+    zero_intent: bool = False,
+):
+    from quant.execution.approval_flow import (
+        build_formal_approval_credential_capability,
+        issue_verified_approval_from_approve_challenge,
+    )
+    from quant.execution.reconcile import recover_local_state
+    from quant.domain.canonical_wire import utc_datetime_text
+    from quant.portfolio.order_planner import build_order_plan
+
+    targets, market, account = _inputs(cash=cash)
+    if zero_intent:
+        targets = tuple(
+            OrderPlanTarget(
+                symbol=item.symbol,
+                market=item.market,
+                connect_route=item.connect_route,
+                target_weight=Decimal("0"),
+            )
+            for item in targets
+        )
+    planner = _planner_config(tmp_path, manual=True, frozen=frozen)
+    secret = b"service-approval-secret-bytes-012"
+    operator = "service-operator"
+    capability = build_formal_approval_credential_capability(
+        secret,
+        credential_id="credential/service",
+        operator_id=operator,
+        session_date=DAY,
+    )
+    before = recover_local_state(store)
+    plan = build_order_plan(
+        targets=targets,
+        target_identity=_hex("targets"),
+        market=market,
+        account=account,
+        config=planner,
+    )
+    sources = {
+        "account_snapshot_id": plan.account_snapshot_id,
+        "market_snapshot_id": plan.market_snapshot_id,
+        "planner_config_identity": plan.config_identity,
+        "target_receipt_identity": _hex("target-receipt"),
+        "target_verification_identity": _hex("target-verification"),
+        "trading_config_identity": plan.trading_config_identity,
+    }
+    issued = NOW.replace(second=0, microsecond=0, minute=(NOW.minute // 5) * 5)
+    challenge = {
+        "action": "approve",
+        "expires_at": utc_datetime_text(issued + dt.timedelta(minutes=10)),
+        "gateway_identity": None,
+        "issued_at": utc_datetime_text(issued),
+        "mode": "PAPER",
+        "schema_version": "m4-paper-cli-challenge-v1",
+        "source_identities": dict(sorted(sources.items())),
+        "store_recovery_id": before.recovery_id,
+        "subject_ids": [plan.plan_id],
+    }
+    verified = issue_verified_approval_from_approve_challenge(
+        capability,
+        challenge=challenge,
+        now=NOW,
+        expected_operator_id=operator,
+        expected_session_date=DAY,
+    )
+    return targets, market, account, planner, sources, verified, plan
+
+
+def test_approval_zero_command_closure_and_exact_replay(tmp_path: Path) -> None:
+    store = _open(tmp_path)
+    gateway = FakeGateway()
+    service = _service(store, gateway, MutableClock())
+    targets, market, account, planner, sources, verified, plan = _approval_bundle(
+        tmp_path, store, zero_intent=True
+    )
+    assert plan.intents == ()
+    staged = service.plan_and_stage(
+        targets=targets,
+        target_identity=_hex("targets"),
+        market=market,
+        account=account,
+        planner_config=planner,
+        approval=verified,
+        approval_source_identities=sources,
+    )
+    assert staged.replayed is False
+    assert staged.staged_command_ids == ()
+    assert staged.risk.commands == ()
+    assert staged.risk.accepted is True
+    assert gateway.calls == []
+    with store.transaction() as repo:
+        assert repo.get_approval_receipt(verified.receipt.receipt_id) is not None
+        assert repo.get_execution_stage(plan.plan_id) is not None
+        assert repo.get_risk_transition_receipt(
+            transition_kind="ORDER", subject_id=plan.plan_id
+        ) is not None
+        assert repo.get_ledger_checkpoint(LEDGER_CHECKPOINT_KEY) is not None
+    from quant.execution.reconcile import recover_local_state
+
+    recovered = recover_local_state(store)
+    assert recovered.allowed_zero_order_subject_ids == frozenset({plan.plan_id})
+    replayed = service.plan_and_stage(
+        targets=targets,
+        target_identity=_hex("targets"),
+        market=market,
+        account=account,
+        planner_config=planner,
+        approval=verified,
+        approval_source_identities=sources,
+    )
+    assert replayed.replayed is True
+    assert replayed.staged_command_ids == ()
+    assert gateway.calls == []
+    store.close()
+
+
+def test_approval_shadow_mode_rejects_before_any_write(tmp_path: Path) -> None:
+    store = _open(tmp_path)
+    service = _service(store, FakeGateway(), MutableClock())
+    targets, market, account, _planner, sources, verified, _plan = _approval_bundle(
+        tmp_path, store, zero_intent=True
+    )
+    shadow_planner = _planner_config(tmp_path, manual=True, mode="SHADOW")
+    with pytest.raises(ExecutionServiceError, match="APPROVAL_PAPER_ONLY"):
+        service.plan_and_stage(
+            targets=targets,
+            target_identity=_hex("targets"),
+            market=market,
+            account=account,
+            planner_config=shadow_planner,
+            approval=verified,
+            approval_source_identities=sources,
+        )
+    with sqlite3.connect(tmp_path / "db" / "execution.db") as conn:
+        counts = {
+            table: conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+            for table in (
+                "approval_receipts",
+                "execution_stages",
+                "risk_transition_receipts",
+                "commands",
+                "outbox",
+            )
+        }
+    assert counts == {
+        "approval_receipts": 0,
+        "execution_stages": 0,
+        "risk_transition_receipts": 0,
+        "commands": 0,
+        "outbox": 0,
+    }
+    store.close()
+
+
+def test_approval_insert_then_stage_failure_rolls_back_entire_tx(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _open(tmp_path)
+    service = _service(store, FakeGateway(), MutableClock())
+    targets, market, account, planner, sources, verified, _plan = _approval_bundle(
+        tmp_path, store
+    )
+
+    def fail_stage(self, **kwargs):
+        del self, kwargs
+        raise RuntimeError("inject stage failure after approval TOKEN")
+
+    monkeypatch.setattr(ExecutionRepository, "put_execution_stage", fail_stage)
+    with pytest.raises(ExecutionServiceError, match="^SERVICE_STAGE_WRITE_FAILED$"):
+        service.plan_and_stage(
+            targets=targets,
+            target_identity=_hex("targets"),
+            market=market,
+            account=account,
+            planner_config=planner,
+            approval=verified,
+            approval_source_identities=sources,
+        )
+    database = tmp_path / "db" / "execution.db"
+    with sqlite3.connect(database) as conn:
+        counts = {
+            table: conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+            for table in (
+                "approval_receipts",
+                "scoped_daily_risk_counters",
+                "commands",
+                "order_aggregates",
+                "outbox",
+                "outbox_deliveries",
+                "execution_stages",
+                "ledger_contexts",
+                "ledger_checkpoints",
+                "risk_transition_receipts",
+            )
+        }
+    assert counts == {
+        "approval_receipts": 0,
+        "scoped_daily_risk_counters": 0,
+        "commands": 0,
+        "order_aggregates": 0,
+        "outbox": 0,
+        "outbox_deliveries": 0,
+        "execution_stages": 0,
+        "ledger_contexts": 0,
+        "ledger_checkpoints": 0,
+        "risk_transition_receipts": 0,
+    }
+    store.close()
+
+
+def _logical_execution_snapshot(database: Path) -> dict[str, tuple[tuple[object, ...], ...]]:
+    tables = (
+        "approval_receipts",
+        "scoped_daily_risk_counters",
+        "commands",
+        "order_aggregates",
+        "outbox",
+        "outbox_deliveries",
+        "execution_stages",
+        "ledger_contexts",
+        "ledger_checkpoints",
+        "risk_transition_receipts",
+    )
+    with sqlite3.connect(database) as conn:
+        return {
+            table: tuple(conn.execute(f"SELECT * FROM {table} ORDER BY 1").fetchall())
+            for table in tables
+        }
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "order_receipt",
+        "counter",
+        "command",
+        "aggregate",
+        "outbox",
+        "delivery",
+        "ledger_context",
+        "checkpoint",
+    ],
+)
+def test_approval_replay_orphan_closure_fail_closed(
+    tmp_path: Path, tamper: str
+) -> None:
+    store = _open(tmp_path)
+    service = _service(store, FakeGateway(), MutableClock())
+    targets, market, account, planner, sources, verified, plan = _approval_bundle(
+        tmp_path, store
+    )
+    staged = service.plan_and_stage(
+        targets=targets,
+        target_identity=_hex("targets"),
+        market=market,
+        account=account,
+        planner_config=planner,
+        approval=verified,
+        approval_source_identities=sources,
+    )
+    assert staged.staged_command_ids
+    command_id = staged.staged_command_ids[0]
+    database = tmp_path / "db" / "execution.db"
+    before = _logical_execution_snapshot(database)
+    conn = store._conn  # noqa: SLF001 - deliberate in-process orphan injection
+    if tamper == "order_receipt":
+        conn.execute(
+            "UPDATE risk_transition_receipts SET payload = payload || X'00' "
+            "WHERE transition_kind = 'ORDER'"
+        )
+    elif tamper == "counter":
+        conn.execute(
+            "UPDATE scoped_daily_risk_counters SET identity = ?",
+            ("0" * 64,),
+        )
+    elif tamper == "command":
+        conn.execute(
+            "UPDATE commands SET payload = payload || X'00' WHERE command_id = ?",
+            (command_id,),
+        )
+    elif tamper == "aggregate":
+        conn.execute(
+            "UPDATE order_aggregates SET payload = payload || X'00' "
+            "WHERE command_id = ?",
+            (command_id,),
+        )
+    elif tamper == "outbox":
+        conn.execute(
+            "UPDATE outbox SET payload = payload || X'00' WHERE outbox_key = ?",
+            (command_id,),
+        )
+    elif tamper == "delivery":
+        # True orphan: remove delivery row while command/outbox/aggregate remain.
+        conn.execute(
+            "DELETE FROM outbox_deliveries WHERE outbox_key = ?",
+            (command_id,),
+        )
+    elif tamper == "ledger_context":
+        conn.execute(
+            "UPDATE ledger_contexts SET payload = payload || X'00' WHERE command_id = ?",
+            (command_id,),
+        )
+    else:
+        conn.execute(
+            "UPDATE ledger_checkpoints SET identity = ?",
+            ("0" * 64,),
+        )
+    conn.commit()
+    after_tamper = _logical_execution_snapshot(database)
+    assert after_tamper != before
+    with pytest.raises(ExecutionServiceError):
+        service.plan_and_stage(
+            targets=targets,
+            target_identity=_hex("targets"),
+            market=market,
+            account=account,
+            planner_config=planner,
+            approval=verified,
+            approval_source_identities=sources,
+        )
+    assert _logical_execution_snapshot(database) == after_tamper
+    store.close()
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "stage_payload",
+        "stage_identity",
+        "approval_raw_payload",
+        "approval_index_identity",
+        "approval_index_session",
+    ],
+)
+def test_approval_zero_replay_rejects_stage_and_approval_structure_drift(
+    tmp_path: Path, tamper: str
+) -> None:
+    """Isolated stage/approval bytes+index drifts: snapshot changes, replay fail-closed."""
+    store = _open(tmp_path)
+    service = _service(store, FakeGateway(), MutableClock())
+    targets, market, account, planner, sources, verified, plan = _approval_bundle(
+        tmp_path, store, zero_intent=True
+    )
+    staged = service.plan_and_stage(
+        targets=targets,
+        target_identity=_hex("targets"),
+        market=market,
+        account=account,
+        planner_config=planner,
+        approval=verified,
+        approval_source_identities=sources,
+    )
+    assert staged.replayed is False
+    database = tmp_path / "db" / "execution.db"
+    before = _logical_execution_snapshot(database)
+    conn = store._conn  # noqa: SLF001 - deliberate in-process structure injection
+    if tamper == "stage_payload":
+        conn.execute(
+            "UPDATE execution_stages SET payload = payload || X'00' WHERE plan_id = ?",
+            (plan.plan_id,),
+        )
+    elif tamper == "stage_identity":
+        conn.execute(
+            "UPDATE execution_stages SET identity = ? WHERE plan_id = ?",
+            ("0" * 64, plan.plan_id),
+        )
+    elif tamper == "approval_raw_payload":
+        conn.execute(
+            "UPDATE approval_receipts SET payload = "
+            "CAST(payload || X'00' AS BLOB) WHERE plan_identity = ?",
+            (plan.plan_id,),
+        )
+    elif tamper == "approval_index_identity":
+        conn.execute(
+            "UPDATE approval_receipts SET identity = ? WHERE plan_identity = ?",
+            ("0" * 64, plan.plan_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE approval_receipts SET session_date = ? WHERE plan_identity = ?",
+            ("2099-01-01", plan.plan_id),
+        )
+    conn.commit()
+    if tamper == "approval_raw_payload":
+        assert (
+            conn.execute(
+                "SELECT typeof(payload) FROM approval_receipts "
+                "WHERE plan_identity = ?",
+                (plan.plan_id,),
+            ).fetchone()[0]
+            == "blob"
+        )
+    after_tamper = _logical_execution_snapshot(database)
+    assert after_tamper != before
+    with pytest.raises(ExecutionServiceError):
+        service.plan_and_stage(
+            targets=targets,
+            target_identity=_hex("targets"),
+            market=market,
+            account=account,
+            planner_config=planner,
+            approval=verified,
+            approval_source_identities=sources,
+        )
+    assert _logical_execution_snapshot(database) == after_tamper
+    store.close()

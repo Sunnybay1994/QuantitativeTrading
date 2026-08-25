@@ -23,6 +23,7 @@ from quant.backtest.ledger_wire import (
     encode_ledger_state,
 )
 from quant.domain.enums import OrderStatus
+from quant.execution.approval import FORMAL_APPROVAL_ACTION, decode_approval_receipt
 from quant.execution.contracts import (
     AccountSnapshot,
     CancelCommand,
@@ -43,15 +44,18 @@ from quant.execution.risk_wire import (
     counter_identity,
     counter_payload,
     decode_risk_receipt,
+    encode_execution_stage,
     encode_risk_receipt,
     verify_risk_receipt_semantic_closure,
 )
 from quant.execution.store import (
     CancelOutboxDelivery,
+    ExecutionRepository,
     LEDGER_CHECKPOINT_KEY,
     ExecutionStore,
     OutboxDelivery,
     OutboxDeliveryState,
+    StoredApprovalReceipt,
     StoredCancelEventLink,
     StoredCancelCommand,
     StoredRecord,
@@ -81,6 +85,10 @@ _HEX = frozenset("0123456789abcdef")
 
 class RecoveryError(ValueError):
     """Stable local recovery failure without retained hostile context."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
 
 
 class ReconciliationError(ValueError):
@@ -114,6 +122,7 @@ class RecoveryResult:
     checkpoint: LedgerState | None
     issues: tuple[RecoveryIssue, ...]
     risk_receipts: tuple[DurableRiskTransitionReceipt, ...] = ()
+    allowed_zero_order_subject_ids: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         valid = False
@@ -121,6 +130,10 @@ class RecoveryResult:
             valid = (
                 self.disposition in _DISPOSITIONS
                 and _hex64(self.recovery_id)
+                and type(self.allowed_zero_order_subject_ids) is frozenset
+                and all(
+                    type(item) is str for item in self.allowed_zero_order_subject_ids
+                )
                 and self.issues
                 == tuple(sorted(
                     self.issues,
@@ -148,7 +161,10 @@ class RecoveryResult:
                     or bool(self.risk_receipts)
                 )
                 and _valid_recovery_receipts(
-                    self.risk_receipts, self.commands, self.cancel_commands
+                    self.risk_receipts,
+                    self.commands,
+                    self.cancel_commands,
+                    allowed_zero_order_subject_ids=self.allowed_zero_order_subject_ids,
                 )
                 and self.recovery_id == _recovery_identity(self)
             )
@@ -297,22 +313,29 @@ def build_broker_snapshot(
     return result
 
 
-def recover_local_state(store: ExecutionStore) -> RecoveryResult:
-    """Recover one transaction-consistent local state without changing the store."""
+def recover_repository_state(repo: ExecutionRepository) -> RecoveryResult:
+    """Recover from an already-open repository transaction (no begin/commit/rollback)."""
     result: RecoveryResult | None = None
     cancel_closure_invalid = False
     risk_closure_invalid = False
     try:
-        if type(store) is not ExecutionStore:
+        if type(repo) is not ExecutionRepository:
             raise ValueError
-        with store.transaction() as repo:
-            rows = repo.read_recovery_rows()
-            cancel_counter_rows = {
-                row.risk_counter_key: repo.get_scoped_daily_risk_counters(
-                    row.risk_counter_key
-                )
-                for row in rows.cancel_commands
-            }
+        # Approval rows are proven via the public repository API first so index/raw
+        # decode failures map to risk closure, not generic local recovery failure.
+        try:
+            observed_approvals = repo.query_approval_receipts()
+        except Exception:
+            raise _RiskRecoveryClosureError from None
+        rows = repo.read_recovery_rows()
+        if rows.approval_receipts != observed_approvals:
+            raise _RiskRecoveryClosureError from None
+        cancel_counter_rows = {
+            row.risk_counter_key: repo.get_scoped_daily_risk_counters(
+                row.risk_counter_key
+            )
+            for row in rows.cancel_commands
+        }
         commands: list[OrderCommand] = []
         command_map: dict[str, OrderCommand] = {}
         for row in rows.commands:
@@ -490,8 +513,10 @@ def recover_local_state(store: ExecutionStore) -> RecoveryResult:
                 if not expected_ids or linked_ids != expected_ids:
                     manual_cancel_subjects.add(cancel.cancel_id)
 
-        risk_receipts = _verify_risk_closure(
+        risk_receipts, allowed_zeros = _verify_risk_closure(
+            repo=repo,
             stored_receipts=rows.risk_transition_receipts,
+            approval_receipts=rows.approval_receipts,
             counter_rows=rows.risk_counter_rows,
             command_map=command_map,
             stored_cancel_rows=cancel_rows_by_id,
@@ -607,6 +632,7 @@ def recover_local_state(store: ExecutionStore) -> RecoveryResult:
             "ledger_entries": tuple(entries), "ledger_contexts": tuple(contexts),
             "checkpoint": checkpoint, "issues": tuple(issues),
             "risk_receipts": risk_receipts,
+            "allowed_zero_order_subject_ids": allowed_zeros,
         }
         for name, value in values.items():
             object.__setattr__(provisional, name, value)
@@ -625,6 +651,19 @@ def recover_local_state(store: ExecutionStore) -> RecoveryResult:
     if result is None:
         raise RecoveryError("RECOVERY_LOCAL_INVALID") from None
     return result
+
+
+def recover_local_state(store: ExecutionStore) -> RecoveryResult:
+    """Recover one transaction-consistent local state without changing the store."""
+    try:
+        if type(store) is not ExecutionStore:
+            raise ValueError
+        with store.transaction() as repo:
+            return recover_repository_state(repo)
+    except RecoveryError:
+        raise
+    except Exception:
+        raise RecoveryError("RECOVERY_LOCAL_INVALID") from None
 
 
 def reconcile(
@@ -895,8 +934,12 @@ def _valid_recovery_receipts(
     value: object,
     commands: object,
     cancel_commands: object,
+    *,
+    allowed_zero_order_subject_ids: frozenset[str] = frozenset(),
 ) -> bool:
     if type(value) is not tuple or type(commands) is not tuple or type(cancel_commands) is not tuple:
+        return False
+    if type(allowed_zero_order_subject_ids) is not frozenset:
         return False
     receipts = cast(tuple[object, ...], value)
     if any(type(item) is not DurableRiskTransitionReceipt for item in receipts):
@@ -917,6 +960,7 @@ def _valid_recovery_receipts(
             receipts=typed,
             commands=cast(tuple[OrderCommand, ...], commands),
             cancel_commands=cast(tuple[CancelCommand, ...], cancel_commands),
+            allowed_zero_order_subject_ids=allowed_zero_order_subject_ids,
         )
     except Exception:
         return False
@@ -941,16 +985,77 @@ def _stored_receipt_matches(
     )
 
 
+def _prove_zero_order_allow_set(
+    repo: ExecutionRepository,
+    *,
+    receipts: tuple[DurableRiskTransitionReceipt, ...],
+    approval_receipts: tuple[StoredApprovalReceipt, ...],
+) -> frozenset[str]:
+    """Structurally prove approval+stage ownership; never HMAC-reverify credentials."""
+    by_plan = {item.plan_identity: item for item in approval_receipts}
+    if len(by_plan) != len(approval_receipts):
+        raise ValueError
+    allowed: set[str] = set()
+    for receipt in receipts:
+        if receipt.transition_kind != "ORDER":
+            continue
+        decision = receipt.decision
+        if type(decision) is not DurableOrderRiskDecision:
+            raise ValueError
+        if decision.command_ids:
+            continue
+        if receipt.subject_id != decision.plan_id:
+            raise ValueError
+        stored = by_plan.get(receipt.subject_id)
+        if stored is None:
+            raise ValueError
+        decoded = decode_approval_receipt(stored.payload)
+        if (
+            stored.receipt_id != decoded.receipt_id
+            or stored.identity != decoded.receipt_id
+            or stored.schema_version != decoded.schema_version
+            or stored.classification != decoded.classification
+            or stored.credential_kind != decoded.credential_kind
+            or stored.credential_id != decoded.credential_id
+            or stored.operator_id != decoded.operator_id
+            or stored.session_date != decoded.session_date
+            or stored.action != decoded.action
+            or stored.action != FORMAL_APPROVAL_ACTION
+            or stored.plan_identity != decoded.plan_identity
+            or stored.plan_identity != receipt.subject_id
+            or stored.challenge_identity != decoded.challenge_identity
+            or stored.store_recovery_identity != decoded.store_recovery_identity
+            or stored.source_identities_digest != decoded.source_identities_digest
+            or stored.issued_at != decoded.issued_at
+            or stored.nonce != decoded.nonce
+        ):
+            raise ValueError
+        stage = repo.get_execution_stage(receipt.subject_id)
+        expected_payload = encode_execution_stage(decision)
+        if (
+            stage is None
+            or stage.key != receipt.subject_id
+            or stage.identity != hashlib.sha256(expected_payload).hexdigest()
+            or stage.payload != expected_payload
+        ):
+            raise ValueError
+        allowed.add(receipt.subject_id)
+    return frozenset(allowed)
+
+
 def _verify_risk_closure(
     *,
+    repo: ExecutionRepository,
     stored_receipts: tuple[StoredRiskTransitionReceipt, ...],
+    approval_receipts: tuple[StoredApprovalReceipt, ...],
     counter_rows: tuple[StoredRecord, ...],
     command_map: dict[str, OrderCommand],
     stored_cancel_rows: dict[str, StoredCancelCommand],
     cancel_map: dict[str, CancelCommand],
-) -> tuple[DurableRiskTransitionReceipt, ...]:
+) -> tuple[tuple[DurableRiskTransitionReceipt, ...], frozenset[str]]:
     failed = False
     result: tuple[DurableRiskTransitionReceipt, ...] = ()
+    allowed_zeros: frozenset[str] = frozenset()
     try:
         receipts: list[DurableRiskTransitionReceipt] = []
         expected_previous = GENESIS_RECEIPT_ID
@@ -1031,20 +1136,29 @@ def _verify_risk_closure(
             if row.identity != identity or row.payload != last_counter_payload[key]:
                 raise ValueError
         result = tuple(receipts)
+        allowed_zeros = _prove_zero_order_allow_set(
+            repo,
+            receipts=result,
+            approval_receipts=approval_receipts,
+        )
         verify_risk_receipt_semantic_closure(
             receipts=result,
             commands=tuple(command_map.values()),
             cancel_commands=tuple(cancel_map.values()),
+            allowed_zero_order_subject_ids=allowed_zeros,
         )
         if not _valid_recovery_receipts(
-            result, tuple(command_map.values()), tuple(cancel_map.values())
+            result,
+            tuple(command_map.values()),
+            tuple(cancel_map.values()),
+            allowed_zero_order_subject_ids=allowed_zeros,
         ):
             raise ValueError
     except Exception:
         failed = True
     if failed:
         raise _RiskRecoveryClosureError from None
-    return result
+    return result, allowed_zeros
 
 
 class _RiskRecoveryClosureError(Exception):
@@ -1124,5 +1238,9 @@ __all__ = [
     "BrokerOrderObservation", "BrokerSnapshot", "BrokerSnapshotFinality",
     "DifferenceAction", "ReconciliationDifference", "ReconciliationError",
     "ReconciliationResult", "RecoveryDisposition", "RecoveryError", "RecoveryIssue",
-    "RecoveryResult", "build_broker_snapshot", "recover_local_state", "reconcile",
+    "RecoveryResult",
+    "build_broker_snapshot",
+    "recover_local_state",
+    "recover_repository_state",
+    "reconcile",
 ]

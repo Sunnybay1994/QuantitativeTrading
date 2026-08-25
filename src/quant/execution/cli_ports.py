@@ -137,6 +137,9 @@ class CliDependencies:
     paper_gateway_factory: PaperGatewayFactory
     broker_snapshot_port: BrokerSnapshotPort
     clock: CliClock
+    approval_capability: object | None = None
+    trusted_expected_operator_id: str | None = None
+    trusted_expected_session_date: dt.date | None = None
 
     def __post_init__(self) -> None:
         values = (
@@ -150,6 +153,16 @@ class CliDependencies:
             (self.clock, "now"),
         )
         if any(not callable(getattr(value, method, None)) for value, method in values):
+            raise CliPortError("CLI_DEPENDENCIES_INVALID")
+        if self.trusted_expected_session_date is not None and (
+            type(self.trusted_expected_session_date) is not dt.date
+            or isinstance(self.trusted_expected_session_date, dt.datetime)
+        ):
+            raise CliPortError("CLI_DEPENDENCIES_INVALID")
+        if self.trusted_expected_operator_id is not None and (
+            type(self.trusted_expected_operator_id) is not str
+            or not self.trusted_expected_operator_id
+        ):
             raise CliPortError("CLI_DEPENDENCIES_INVALID")
 
 

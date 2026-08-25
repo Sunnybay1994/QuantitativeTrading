@@ -14,6 +14,10 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from quant.domain.enums import ConnectRoute, Currency, ExecutionMode, Market, OrderSide
+from quant.execution.approval import (
+    ApprovalReceiptError,
+    unpack_verified_approval_receipt,
+)
 from quant.execution.config import TradingConfig, trading_config_identity
 from quant.execution.contracts import (
     AccountSnapshot,
@@ -453,6 +457,7 @@ def evaluate_pretrade(
     daily_counters: DailyRiskCounters,
     *,
     now: dt.datetime | None = None,
+    approval: object | None = None,
 ) -> RiskDecision:
     """Evaluate an order plan against config switches, data gate, and risk limits.
 
@@ -1023,6 +1028,11 @@ def evaluate_pretrade(
 
     requires_manual = False
     commands: tuple[OrderCommand, ...] = ()
+    verified_approval = _optional_verified_approval(
+        approval,
+        plan_id=plan.plan_id,
+        session_date=market.session_date,
+    )
 
     # F4: only record command-policy success codes when approved intents exist.
     if approved_intents:
@@ -1036,7 +1046,7 @@ def evaluate_pretrade(
                     detail="SHADOW does not generate sendable commands",
                 )
             )
-        elif manual_approval:
+        elif manual_approval and verified_approval is None:
             requires_manual = True
             audit.append(
                 _result(
@@ -1056,7 +1066,11 @@ def evaluate_pretrade(
                 _result(
                     "COMMAND_POLICY",
                     accepted=True,
-                    code="COMMANDS_EMITTED",
+                    code=(
+                        "COMMANDS_EMITTED_AFTER_APPROVAL"
+                        if manual_approval and verified_approval is not None
+                        else "COMMANDS_EMITTED"
+                    ),
                     subject=plan.plan_id,
                     detail=f"emitted {len(commands)} PAPER command(s)",
                 )
@@ -1078,6 +1092,22 @@ def evaluate_pretrade(
         projected_counters=projected,
         requires_manual_approval=requires_manual,
     )
+
+
+def _optional_verified_approval(
+    approval: object | None, *, plan_id: str, session_date: dt.date
+) -> object | None:
+    if approval is None:
+        return None
+    try:
+        receipt, _payload = unpack_verified_approval_receipt(approval)
+    except ApprovalReceiptError as error:
+        raise RiskInputError(error.code) from None
+    if receipt.plan_identity != plan_id:
+        raise RiskInputError("APPROVAL_PLAN_DRIFT") from None
+    if receipt.session_date != session_date.isoformat():
+        raise RiskInputError("APPROVAL_SESSION_DRIFT") from None
+    return approval
 
 
 def _reject_all(

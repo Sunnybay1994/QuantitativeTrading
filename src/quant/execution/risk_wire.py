@@ -33,6 +33,7 @@ RiskTransitionKind = Literal["ORDER", "CANCEL"]
 GENESIS_RECEIPT_ID: Final[str] = "0" * 64
 _SCHEMA: Final[str] = "m4-risk-transition-receipt-v1"
 _COUNTER_SCHEMA: Final[str] = "m4-daily-risk-counters-v1"
+EXECUTION_STAGE_SCHEMA: Final[str] = "m4-execution-stage-v1"
 _HEX = frozenset("0123456789abcdef")
 
 
@@ -206,6 +207,61 @@ def encode_risk_receipt(value: DurableRiskTransitionReceipt) -> bytes:
     return result
 
 
+def encode_execution_stage(
+    decision: RiskDecision | DurableOrderRiskDecision,
+) -> bytes:
+    """Return the unique canonical m4-execution-stage-v1 bytes for one ORDER decision."""
+    failed = False
+    result = b""
+    try:
+        if type(decision) is RiskDecision:
+            accepted = decision.accepted
+            plan_id = decision.plan_id
+            approved_intent_ids = list(decision.approved_intent_ids)
+            command_ids = [item.command_id for item in decision.commands]
+            projected = decision.projected_counters
+            requires_manual_approval = decision.requires_manual_approval
+            rule_results = decision.rule_results
+        elif type(decision) is DurableOrderRiskDecision:
+            accepted = decision.accepted
+            plan_id = decision.plan_id
+            approved_intent_ids = list(decision.approved_intent_ids)
+            command_ids = list(decision.command_ids)
+            projected = decision.projected_counters
+            requires_manual_approval = decision.requires_manual_approval
+            rule_results = decision.rule_results
+        else:
+            raise ValueError
+        if type(projected) is not DailyRiskCounters:
+            raise ValueError
+        result = canonical_json_bytes(
+            {
+                "accepted": accepted,
+                "approved_intent_ids": approved_intent_ids,
+                "command_ids": command_ids,
+                "plan_id": plan_id,
+                "projected_counters": projected.to_persistable_dict(),
+                "requires_manual_approval": requires_manual_approval,
+                "rule_results": [
+                    {
+                        "accepted": item.accepted,
+                        "code": item.code,
+                        "detail": item.detail,
+                        "rule": item.rule,
+                        "subject": item.subject,
+                    }
+                    for item in rule_results
+                ],
+                "schema_version": EXECUTION_STAGE_SCHEMA,
+            }
+        )
+    except Exception:
+        failed = True
+    if failed:
+        raise RiskReceiptError() from None
+    return result
+
+
 def decode_risk_receipt(payload: bytes) -> DurableRiskTransitionReceipt:
     """Fresh-decode and re-prove one canonical receipt byte-for-byte."""
     failed = False
@@ -261,6 +317,7 @@ def verify_risk_receipt_semantic_closure(
     receipts: tuple[DurableRiskTransitionReceipt, ...],
     commands: tuple[OrderCommand, ...],
     cancel_commands: tuple[CancelCommand, ...],
+    allowed_zero_order_subject_ids: frozenset[str] = frozenset(),
 ) -> None:
     """Prove every retained command/cancel has exactly one semantic receipt owner."""
     failed = False
@@ -269,12 +326,19 @@ def verify_risk_receipt_semantic_closure(
             type(receipts) is not tuple
             or type(commands) is not tuple
             or type(cancel_commands) is not tuple
+            or type(allowed_zero_order_subject_ids) is not frozenset
             or any(type(item) is not DurableRiskTransitionReceipt for item in receipts)
             or any(type(item) is not OrderCommand for item in commands)
             or any(type(item) is not CancelCommand for item in cancel_commands)
+            or any(type(item) is not str for item in allowed_zero_order_subject_ids)
         ):
             raise ValueError
-        if not commands and not cancel_commands and receipts:
+        if (
+            not commands
+            and not cancel_commands
+            and receipts
+            and not allowed_zero_order_subject_ids
+        ):
             raise ValueError
         command_map = {item.command_id: item for item in commands}
         cancel_map = {item.cancel_id: item for item in cancel_commands}
@@ -288,6 +352,7 @@ def verify_risk_receipt_semantic_closure(
                 raise ValueError
         command_owners = {key: 0 for key in command_map}
         cancel_owners = {key: 0 for key in cancel_map}
+        consumed_zero_subjects: set[str] = set()
         expected_previous = GENESIS_RECEIPT_ID
         per_key_tail: dict[str, str] = {}
         for expected_sequence, receipt in enumerate(receipts, start=1):
@@ -310,24 +375,36 @@ def verify_risk_receipt_semantic_closure(
                 raise ValueError
             per_key_tail[receipt.risk_counter_key] = receipt.projected_counter_identity
             if receipt.transition_kind == "ORDER":
-                if (
-                    type(decision) is not DurableOrderRiskDecision
-                    or not decision.command_ids
-                    or len(decision.command_ids) != len(decision.approved_intent_ids)
-                ):
+                if type(decision) is not DurableOrderRiskDecision:
                     raise ValueError
-                owned: list[OrderCommand] = []
-                for command_id in decision.command_ids:
-                    owned_command = command_map.get(command_id)
+                if not decision.command_ids:
                     if (
-                        owned_command is None
-                        or owned_command.intent.plan_id != decision.plan_id
+                        decision.approved_intent_ids != ()
+                        or decision.accepted is not True
+                        or decision.requires_manual_approval is not False
+                        or receipt.subject_id != decision.plan_id
+                        or receipt.subject_id not in allowed_zero_order_subject_ids
                     ):
                         raise ValueError
-                    command_owners[command_id] += 1
-                    owned.append(owned_command)
-                if tuple(item.intent.intent_id for item in owned) != decision.approved_intent_ids:
-                    raise ValueError
+                    consumed_zero_subjects.add(receipt.subject_id)
+                else:
+                    if len(decision.command_ids) != len(decision.approved_intent_ids):
+                        raise ValueError
+                    owned: list[OrderCommand] = []
+                    for command_id in decision.command_ids:
+                        owned_command = command_map.get(command_id)
+                        if (
+                            owned_command is None
+                            or owned_command.intent.plan_id != decision.plan_id
+                        ):
+                            raise ValueError
+                        command_owners[command_id] += 1
+                        owned.append(owned_command)
+                    if (
+                        tuple(item.intent.intent_id for item in owned)
+                        != decision.approved_intent_ids
+                    ):
+                        raise ValueError
             elif receipt.transition_kind == "CANCEL":
                 if type(decision) is not DurableCancelRiskDecision:
                     raise ValueError
@@ -345,6 +422,8 @@ def verify_risk_receipt_semantic_closure(
         if any(value != 1 for value in command_owners.values()):
             raise ValueError
         if any(value != 1 for value in cancel_owners.values()):
+            raise ValueError
+        if frozenset(consumed_zero_subjects) != allowed_zero_order_subject_ids:
             raise ValueError
     except Exception:
         failed = True
@@ -573,8 +652,9 @@ def _decode_cancel(value: object) -> DurableCancelRiskDecision:
 
 __all__ = [
     "DurableCancelRiskDecision", "DurableOrderRiskDecision",
-    "DurableRiskTransitionReceipt", "GENESIS_RECEIPT_ID", "RiskReceiptError",
-    "RiskTransitionKind", "build_cancel_risk_receipt", "build_order_risk_receipt",
-    "counter_identity", "counter_payload", "decode_risk_receipt", "encode_risk_receipt",
+    "DurableRiskTransitionReceipt", "EXECUTION_STAGE_SCHEMA", "GENESIS_RECEIPT_ID",
+    "RiskReceiptError", "RiskTransitionKind", "build_cancel_risk_receipt",
+    "build_order_risk_receipt", "counter_identity", "counter_payload",
+    "decode_risk_receipt", "encode_execution_stage", "encode_risk_receipt",
     "verify_risk_receipt_semantic_closure",
 ]

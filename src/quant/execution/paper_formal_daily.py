@@ -373,12 +373,24 @@ def build_formal_paper_daily_dependencies(
     composition: VerifiedFormalPaperServiceComposition,
     session_date: dt.date,
     now: dt.datetime,
+    approval_capability: object | None = None,
+    trusted_expected_operator_id: str | None = None,
+    trusted_expected_session_date: dt.date | None = None,
 ) -> CliDependencies:
     """Compose CLI dependencies from one fresh formal PAPER capability chain."""
     try:
         timestamp = _utc(now)
         if type(session_date) is not dt.date:
             raise TypeError
+        trusted_session = (
+            session_date
+            if trusted_expected_session_date is None
+            else trusted_expected_session_date
+        )
+        if type(trusted_session) is not dt.date or isinstance(trusted_session, dt.datetime):
+            raise TypeError
+        if trusted_session != session_date:
+            raise ValueError
         _fresh_environment(environment, timestamp)
         fresh_policy = verify_existing_paper_execution_policy(
             policy=policy, environment=environment, now=timestamp
@@ -432,6 +444,9 @@ def build_formal_paper_daily_dependencies(
             paper_gateway_factory=composition.gateway_factory,
             broker_snapshot_port=broker_snapshot,
             clock=_FixedClock(timestamp),
+            approval_capability=approval_capability,
+            trusted_expected_operator_id=trusted_expected_operator_id,
+            trusted_expected_session_date=trusted_session,
         )
     except Exception:
         pass
@@ -480,6 +495,9 @@ def run_formal_paper_daily_operator(
     now: dt.datetime,
     confirm_sha256: str | None = None,
     command_id: str | None = None,
+    approval_capability: object | None = None,
+    trusted_expected_operator_id: str | None = None,
+    trusted_expected_session_date: dt.date | None = None,
 ) -> int:
     """Run exactly one PAPER-only daily CLI action from one fresh composition."""
     try:
@@ -494,6 +512,9 @@ def run_formal_paper_daily_operator(
             composition=composition,
             session_date=session_date,
             now=now,
+            approval_capability=approval_capability,
+            trusted_expected_operator_id=trusted_expected_operator_id,
+            trusted_expected_session_date=trusted_expected_session_date,
         )
         from quant.execution.cli import main
 

@@ -8,6 +8,9 @@ import json
 import sqlite3
 from pathlib import Path
 
+from quant.execution.approval_flow import (
+    build_formal_approval_credential_capability,
+)
 from quant.execution.cli import main
 from quant.execution.cli_ports import (
     CliDependencies,
@@ -21,6 +24,7 @@ from quant.execution.reconcile import recover_local_state
 from quant.execution.service import ExecutionService
 from quant.execution.store import ExecutionStore, OutboxDeliveryState
 from tests.unit.test_execution_service import (
+    DAY,
     FakeGateway,
     FixtureLedgerContextProvider,
     MutableClock,
@@ -29,6 +33,8 @@ from tests.unit.test_execution_service import (
 )
 
 NOW = dt.datetime(2026, 7, 19, 8, tzinfo=dt.UTC)
+_APPROVAL_SECRET = b"cli-approval-secret-bytes-0123456"
+_OPERATOR = "cli-operator-1"
 
 
 def _hex(value: str) -> str:
@@ -193,6 +199,12 @@ def _deps(tmp_path: Path):  # type: ignore[no-untyped-def]
         events=(),
     )
     broker = BrokerPort(evidence)
+    capability = build_formal_approval_credential_capability(
+        _APPROVAL_SECRET,
+        credential_id="credential/cli-key",
+        operator_id=_OPERATOR,
+        session_date=DAY,
+    )
     dependencies = CliDependencies(
         store_opener=StorePort(store),
         target_loader=ValueLoader(target_load),
@@ -201,6 +213,9 @@ def _deps(tmp_path: Path):  # type: ignore[no-untyped-def]
         paper_gateway_factory=gateway_factory,
         broker_snapshot_port=broker,
         clock=clock,
+        approval_capability=capability,
+        trusted_expected_operator_id=_OPERATOR,
+        trusted_expected_session_date=DAY,
     )
     return dependencies, store, gateway, gateway_factory, broker
 
@@ -257,6 +272,31 @@ def test_plan_reproves_inputs_and_emits_content_addressed_challenge(tmp_path: Pa
         store.close()
 
 
+def test_plan_and_approve_challenges_keep_full_planning_source_keys(
+    tmp_path: Path, capsys
+) -> None:  # type: ignore[no-untyped-def]
+    dependencies, store, _, _, _ = _deps(tmp_path)
+    expected = {
+        "account_snapshot_id",
+        "market_snapshot_id",
+        "planner_config_identity",
+        "target_receipt_identity",
+        "target_verification_identity",
+        "trading_config_identity",
+    }
+    try:
+        assert main(["plan"], dependencies=dependencies) == 0
+        plan_challenge = _json(capsys)["challenge"]
+        assert set(plan_challenge["source_identities"]) == expected
+
+        assert main(["approve"], dependencies=dependencies) == 20
+        approve_challenge = _json(capsys)["challenge"]
+        assert set(approve_challenge["source_identities"]) == expected
+        assert "target_identity" not in approve_challenge["source_identities"]
+    finally:
+        store.close()
+
+
 def test_approve_confirmation_fresh_recompute_and_replay_are_idempotent(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
     dependencies, store, gateway, _, _ = _deps(tmp_path)
     try:
@@ -269,21 +309,91 @@ def test_approve_confirmation_fresh_recompute_and_replay_are_idempotent(tmp_path
         assert main(["approve", "--confirm-sha256", challenge], dependencies=dependencies) == 0
         staged = _json(capsys)
         assert staged["code"] == "APPROVAL_STAGED"
+        assert "receipt_id" in staged
+        first_receipt = staged["receipt_id"]
         recovered = recover_local_state(store)
         assert len(recovered.commands) == 1
         assert gateway.calls == []
 
-        # The durable store changed, so the old approval cannot be replayed as a new challenge.
+        # Durable state changed: old confirmation hash drifts.
         assert main(["approve", "--confirm-sha256", challenge], dependencies=dependencies) == 20
         assert capsys.readouterr().err == "CONFIRMATION_DRIFT\n"
         assert len(recover_local_state(store).commands) == 1
 
-        # A fresh post-completion challenge replays the durable stage receipt with no new command.
+        # Fresh post-completion challenge re-verifies stored receipt and replays.
         assert main(["approve"], dependencies=dependencies) == 20
         replay = _json(capsys)["content_identity"]
         assert main(["approve", "--confirm-sha256", replay], dependencies=dependencies) == 0
-        assert _json(capsys)["code"] == "APPROVAL_STAGED_REPLAY"
+        replayed = _json(capsys)
+        assert replayed["code"] == "APPROVAL_STAGED_REPLAY"
+        assert replayed["receipt_id"] == first_receipt
         assert len(recover_local_state(store).commands) == 1
+        assert gateway.calls == []
+    finally:
+        store.close()
+
+
+def test_approve_without_capability_fails_closed(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+    dependencies, store, _, _, _ = _deps(tmp_path)
+    object.__setattr__(dependencies, "approval_capability", None)
+    try:
+        assert main(["approve"], dependencies=dependencies) == 20
+        challenge = _json(capsys)["content_identity"]
+        assert main(["approve", "--confirm-sha256", challenge], dependencies=dependencies) == 10
+        assert capsys.readouterr().err == "APPROVAL_CAPABILITY_REQUIRED\n"
+        assert recover_local_state(store).commands == ()
+    finally:
+        store.close()
+
+
+def test_approve_confirm_gate_leaves_fail_on_call_capability_untouched(
+    tmp_path: Path, capsys
+) -> None:  # type: ignore[no-untyped-def]
+    dependencies, store, _, _, _ = _deps(tmp_path)
+
+    class Guard:
+        touched = False
+
+        def __getattr__(self, name: str):
+            type(self).touched = True
+            raise RuntimeError("capability touched before confirm")
+
+    object.__setattr__(dependencies, "approval_capability", Guard())
+    try:
+        assert main(["approve"], dependencies=dependencies) == 20
+        _json(capsys)
+        assert Guard.touched is False
+        assert recover_local_state(store).commands == ()
+    finally:
+        store.close()
+
+
+def test_approve_fresh_replay_rejects_wrong_capability(
+    tmp_path: Path, capsys
+) -> None:  # type: ignore[no-untyped-def]
+    dependencies, store, gateway, _, _ = _deps(tmp_path)
+    try:
+        assert main(["approve"], dependencies=dependencies) == 20
+        challenge = _json(capsys)["content_identity"]
+        assert main(["approve", "--confirm-sha256", challenge], dependencies=dependencies) == 0
+        first = _json(capsys)
+        assert first["code"] == "APPROVAL_STAGED"
+
+        wrong = build_formal_approval_credential_capability(
+            b"wrong-cli-approval-secret-bytes-01",
+            credential_id="credential/cli-key",
+            operator_id=_OPERATOR,
+            session_date=DAY,
+        )
+        object.__setattr__(dependencies, "approval_capability", wrong)
+        assert main(["approve"], dependencies=dependencies) == 20
+        replay = _json(capsys)["content_identity"]
+        assert main(["approve", "--confirm-sha256", replay], dependencies=dependencies) == 10
+        err = capsys.readouterr().err.strip()
+        assert err
+        assert "secret" not in err.lower()
+        assert len(recover_local_state(store).commands) == 1
+        assert gateway.calls == []
     finally:
         store.close()
 

@@ -12,6 +12,11 @@ from typing import NoReturn, cast
 
 from quant.domain.canonical_wire import canonical_json_bytes, utc_datetime_text
 from quant.domain.enums import ExecutionMode
+from quant.execution.approval_flow import (
+    ApprovalFlowError,
+    issue_verified_approval_from_approve_challenge,
+    reverify_stored_approval_receipt,
+)
 from quant.execution.cli_ports import (
     CliDependencies,
     CliPortError,
@@ -174,15 +179,60 @@ def _approve(confirm: str | None, dependencies: CliDependencies) -> int:
     store = _store(dependencies)
     local = _recover(store)
     plan, targets, planning = _fresh_plan(dependencies)
+    expected_session = dependencies.trusted_expected_session_date
+    expected_operator = dependencies.trusted_expected_operator_id
+    if expected_session is not None and planning.market.session_date != expected_session:
+        raise _CliFailure(20, "APPROVAL_SESSION_DRIFT")
+    now = _now(dependencies)
+    sources = _planning_sources(targets, planning)
     challenge = _build_challenge(
         action="approve",
         store_recovery_id=local.recovery_id,
         subject_ids=(plan.plan_id,),
-        source_identities=_planning_sources(targets, planning),
+        source_identities=sources,
         gateway_identity=None,
-        now=_now(dependencies),
+        now=now,
     )
     _confirm_or_emit("approve", challenge, confirm)
+    if (
+        dependencies.approval_capability is None
+        or expected_operator is None
+        or expected_session is None
+    ):
+        raise _CliFailure(10, "APPROVAL_CAPABILITY_REQUIRED")
+    try:
+        stored_payload: bytes | None = None
+        stored_indexes: object | None = None
+        with store.transaction() as repo:
+            existing = repo.get_approval_receipt_for_plan(
+                plan_identity=plan.plan_id,
+                session_date=planning.market.session_date,
+            )
+            if existing is not None:
+                stored_payload = existing.payload
+                stored_indexes = existing
+        if stored_payload is not None:
+            verified = reverify_stored_approval_receipt(
+                dependencies.approval_capability,
+                payload=stored_payload,
+                source_identities=sources,
+                expected_operator_id=expected_operator,
+                expected_session_date=expected_session,
+                expected_plan_identity=plan.plan_id,
+            )
+            _require_stored_approval_indexes(stored_indexes, verified)
+        else:
+            verified = issue_verified_approval_from_approve_challenge(
+                dependencies.approval_capability,
+                challenge=challenge,
+                now=now,
+                expected_operator_id=expected_operator,
+                expected_session_date=expected_session,
+            )
+    except ApprovalFlowError as error:
+        raise _CliFailure(_approval_flow_exit(error.code), error.code) from None
+    except Exception:
+        raise _CliFailure(70, "APPROVAL_INTERNAL_FAILURE") from None
     gateway = _gateway(dependencies)
     service = _service(dependencies, store, gateway)
     try:
@@ -192,6 +242,8 @@ def _approve(confirm: str | None, dependencies: CliDependencies) -> int:
             market=planning.market,
             account=planning.account,
             planner_config=planning.planner_config,
+            approval=verified,
+            approval_source_identities=sources,
         )
         if build_order_plan_identity(staged.plan) != plan.plan_id:
             raise _CliFailure(20, "APPROVAL_FRESH_PLAN_DRIFT")
@@ -201,16 +253,69 @@ def _approve(confirm: str | None, dependencies: CliDependencies) -> int:
         _raise_service(error)
     except Exception:
         raise _CliFailure(70, "APPROVAL_INTERNAL_FAILURE") from None
-    _stdout(
-        _output(
-            action="approve",
-            status="completed",
-            code="APPROVAL_STAGED_REPLAY" if staged.replayed else "APPROVAL_STAGED",
-            content_identity=staged.plan.plan_id,
-            counts={"commands": len(staged.staged_command_ids)},
-        )
+    receipt_id = verified.receipt.receipt_id
+    payload = _output(
+        action="approve",
+        status="completed",
+        code="APPROVAL_STAGED_REPLAY" if staged.replayed else "APPROVAL_STAGED",
+        content_identity=staged.plan.plan_id,
+        counts={"commands": len(staged.staged_command_ids)},
     )
+    payload["receipt_id"] = receipt_id
+    _stdout(payload)
     return 0
+
+
+def _approval_flow_exit(code: str) -> int:
+    if (
+        "DRIFT" in code
+        or "EXPIRED" in code
+        or "BUCKET" in code
+        or "CHALLENGE" in code
+        or "ORPHAN" in code
+        or "CONFLICT" in code
+        or "TAMPER" in code
+        or "STORED" in code
+    ):
+        return 20
+    if (
+        "SECRET" in code
+        or "CAPABILITY" in code
+        or "CLOCK" in code
+        or "SIGNATURE" in code
+    ):
+        return 10
+    return 70
+
+
+def _require_stored_approval_indexes(stored: object, verified: object) -> None:
+    from quant.execution.approval import VerifiedApprovalReceipt
+    from quant.execution.store import StoredApprovalReceipt
+
+    if type(stored) is not StoredApprovalReceipt:
+        raise ApprovalFlowError("APPROVAL_STORED_RECEIPT_INVALID")
+    if type(verified) is not VerifiedApprovalReceipt:
+        raise ApprovalFlowError("APPROVAL_STORED_RECEIPT_INVALID")
+    receipt = verified.receipt
+    if (
+        stored.payload != verified.payload
+        or stored.receipt_id != receipt.receipt_id
+        or stored.identity != receipt.receipt_id
+        or stored.schema_version != receipt.schema_version
+        or stored.classification != receipt.classification
+        or stored.credential_kind != receipt.credential_kind
+        or stored.credential_id != receipt.credential_id
+        or stored.operator_id != receipt.operator_id
+        or stored.session_date != receipt.session_date
+        or stored.action != receipt.action
+        or stored.plan_identity != receipt.plan_identity
+        or stored.challenge_identity != receipt.challenge_identity
+        or stored.store_recovery_identity != receipt.store_recovery_identity
+        or stored.source_identities_digest != receipt.source_identities_digest
+        or stored.issued_at != receipt.issued_at
+        or stored.nonce != receipt.nonce
+    ):
+        raise ApprovalFlowError("APPROVAL_STORED_INDEX_TAMPER")
 
 
 def _paper_submit(confirm: str | None, dependencies: CliDependencies) -> int:
@@ -602,7 +707,7 @@ def _output(
 
 def _raise_service(error: ExecutionServiceError) -> NoReturn:
     code = error.code
-    if "DRIFT" in code:
+    if "DRIFT" in code or "ORPHAN" in code or "CONFLICT" in code:
         raise _CliFailure(20, "CONFIRMATION_DRIFT") from None
     if "LIMIT" in code or "RISK" in code:
         raise _CliFailure(40, "EXECUTION_RISK_BLOCKED") from None

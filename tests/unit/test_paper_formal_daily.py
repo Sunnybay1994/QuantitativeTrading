@@ -9,6 +9,7 @@ from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from typing import cast
 
 import polars as pl
 import pytest
@@ -744,3 +745,49 @@ def test_operator_unknown_submit_does_not_auto_resend(
         assert recover_local_state(store).deliveries[0].state is OutboxDeliveryState.UNKNOWN
     finally:
         store.close()
+
+
+def test_operator_forwards_approval_capability_and_trusted_anchors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from quant.execution.approval_flow import build_formal_approval_credential_capability
+
+    captured: dict[str, object] = {}
+
+    def capture(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(daily, "build_formal_paper_daily_dependencies", capture)
+    monkeypatch.setattr("quant.execution.cli.main", lambda *_args, **_kwargs: 0)
+    capability = build_formal_approval_credential_capability(
+        b"formal-daily-forward-secret-bytes01",
+        credential_id="credential/formal-forward",
+        operator_id="formal-operator",
+        session_date=SESSION,
+    )
+    assert (
+        daily.run_formal_paper_daily_operator(
+            action="approve",
+            approval_capability=capability,
+            trusted_expected_operator_id="formal-operator",
+            trusted_expected_session_date=SESSION,
+            **_dummy_operator_kwargs(),  # type: ignore[arg-type]
+        )
+        == 0
+    )
+    assert captured["approval_capability"] is capability
+    assert captured["trusted_expected_operator_id"] == "formal-operator"
+    assert captured["trusted_expected_session_date"] == SESSION
+
+
+def test_build_dependencies_rejects_trusted_session_mismatch() -> None:
+    with pytest.raises(daily.FormalPaperDailyRunnerError):
+        daily.build_formal_paper_daily_dependencies(
+            environment=cast(object, None),  # type: ignore[arg-type]
+            policy=cast(object, None),  # type: ignore[arg-type]
+            composition=cast(object, None),  # type: ignore[arg-type]
+            session_date=SESSION,
+            now=NOW,
+            trusted_expected_session_date=SESSION + dt.timedelta(days=1),
+        )
