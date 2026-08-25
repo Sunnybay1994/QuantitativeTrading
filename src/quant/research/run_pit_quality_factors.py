@@ -678,25 +678,74 @@ def apply_redundancy_signal_coverage_gate(
     *,
     redundancy_summary: pl.DataFrame,
 ) -> pl.DataFrame:
-    """Reject a factor when any pre-registered redundancy pair lacks dates."""
+    """Reject a factor when any incident redundancy pair lacks dates."""
+    coverage_column = "signal_date_coverage_passed"
     if (
         not isinstance(summary, pl.DataFrame)
         or summary.is_empty()
         or not {"factor", "research_status"} <= set(summary.columns)
+        or "redundancy_signal_coverage_passed" in summary.columns
         or not isinstance(redundancy_summary, pl.DataFrame)
-        or redundancy_summary.is_empty()
-        or not {"factor_a", "signal_date_coverage_passed"} <= set(redundancy_summary.columns)
+        or not {"factor_a", "factor_b", coverage_column} <= set(redundancy_summary.columns)
     ):
         raise ValueError("invalid redundancy signal coverage gate")
-    by_factor = redundancy_summary.group_by("factor_a").agg(
-        pl.col("signal_date_coverage_passed").all().alias("redundancy_signal_coverage_passed")
+
+    summary_factors = summary.get_column("factor")
+    research_status = summary.get_column("research_status")
+    if (
+        summary_factors.dtype != pl.String
+        or summary_factors.null_count()
+        or summary_factors.n_unique() != summary.height
+    ):
+        raise ValueError("invalid redundancy signal coverage gate")
+    if any(value == "" for value in cast(list[str], summary_factors.to_list())):
+        raise ValueError("invalid redundancy signal coverage gate")
+    if (
+        research_status.dtype != pl.String
+        or research_status.null_count()
+        or not set(cast(list[str], research_status.to_list()))
+        <= {"RESEARCH_ONLY", "REJECTED"}
+    ):
+        raise ValueError("invalid redundancy signal coverage gate")
+    factor_a = redundancy_summary.get_column("factor_a")
+    factor_b = redundancy_summary.get_column("factor_b")
+    if (
+        factor_a.dtype != pl.String
+        or factor_b.dtype != pl.String
+        or factor_a.null_count()
+        or factor_b.null_count()
+    ):
+        raise ValueError("invalid redundancy signal coverage gate")
+    if any(value == "" for value in cast(list[str], factor_a.to_list())) or any(
+        value == "" for value in cast(list[str], factor_b.to_list())
+    ):
+        raise ValueError("invalid redundancy signal coverage gate")
+    coverage = redundancy_summary.get_column(coverage_column)
+    if coverage.dtype != pl.Boolean or coverage.null_count():
+        raise ValueError("invalid redundancy signal coverage gate")
+
+    incidents = pl.concat(
+        [
+            redundancy_summary.select(
+                pl.col("factor_a").alias("_factor"),
+                pl.col(coverage_column).alias("_coverage"),
+            ),
+            redundancy_summary.select(
+                pl.col("factor_b").alias("_factor"),
+                pl.col(coverage_column).alias("_coverage"),
+            ),
+        ],
+        how="vertical",
     )
+    by_factor = incidents.group_by("_factor").agg(
+        pl.col("_coverage").all().alias("redundancy_signal_coverage_passed")
+    ).rename({"_factor": "factor"})
     result = summary.join(
         by_factor,
-        left_on="factor",
-        right_on="factor_a",
+        on="factor",
         how="left",
         validate="1:1",
+        maintain_order="left",
     ).with_columns(
         pl.col("redundancy_signal_coverage_passed")
         .fill_null(False)
@@ -705,12 +754,12 @@ def apply_redundancy_signal_coverage_gate(
     return result.with_columns(
         pl.when(
             (pl.col("research_status") == "RESEARCH_ONLY")
-            & pl.col("redundancy_signal_coverage_passed")
+            & ~pl.col("redundancy_signal_coverage_passed")
         )
-        .then(pl.lit("RESEARCH_ONLY"))
-        .otherwise(pl.lit("REJECTED"))
+        .then(pl.lit("REJECTED"))
+        .otherwise(pl.col("research_status"))
         .alias("research_status")
-    ).sort("factor")
+    )
 
 
 def _validate_config(config: Mapping[str, Any], *, threads: int) -> None:
