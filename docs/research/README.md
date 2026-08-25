@@ -18,9 +18,7 @@
 
 > **`M2-EVAL-STOP-001`（2026-08-16）**
 >
-> R11 只关闭 Top-K 替补；shared outcome cohort、漂移后换手、对称 redundancy coverage、same-bytes
-> config/cost identity、分组单调否证与 PIT version/comp-type 链仍未闭合。首个 PIT 与任何 corrective replay
-> 均暂停；历史 IC/group/direction/fold 与经济字段不得作为 promotion 证据。完整合同只见上述 M2 执行路线图。
+> R12 已关闭 shared outcome cohort 与漂移后换手；R13 已关闭首个 PIT 的成本语义身份；R14 已关闭 PIT version/comp-type runtime；R16 已关闭 PIT redundancy coverage，R17 已关闭 classic corrective-replay 的对称聚合。首个 PIT 仍受 writer terminal、audit-v4 与 R3 的 singleton report type、trial registry、固定方向和 PIT 分组单调门禁约束；历史 IC/group/direction/fold 与经济字段不得作为 promotion 证据。完整合同只见上述 M2 执行路线图。
 
 ## 方法论与行业调研
 
