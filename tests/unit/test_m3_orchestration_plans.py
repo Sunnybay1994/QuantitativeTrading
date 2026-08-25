@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -11,12 +12,20 @@ import pytest
 
 import quant.research.m3.orchestration as orchestration
 from quant.research.m3.config import LoadedM3Config
+from quant.research.m3.contracts import (
+    LabelReconciliationSpec,
+    ProviderValidationSpec,
+)
 from quant.research.m3.development_example import (
     VerifiedDevelopmentExampleEvaluationArtifact,
     VerifiedDevelopmentExampleExperimentIdentity,
     VerifiedDevelopmentExampleFoldPlanArtifact,
+    VerifiedDevelopmentExampleG1Release,
     VerifiedDevelopmentExampleLabelArtifact,
     VerifiedDevelopmentExampleLabelReconciliationArtifact,
+    VerifiedDevelopmentExampleProviderArtifact,
+    VerifiedDevelopmentExampleProviderValidationArtifact,
+    VerifiedDevelopmentExampleSnapshotArtifact,
 )
 from quant.research.m3.evaluate import verify_development_example_research_summary_artifact
 from quant.research.m3.orchestration import (
@@ -34,12 +43,17 @@ from quant.research.m3.orchestration import (
     StageNode,
     StageOutputInput,
     StaticDirectoryPublication,
-    make_work_run_plan,
+    make_experiment_artifact_run_plan,
+    make_label_reconciliation_run_plan,
+    make_provider_validation_run_plan,
     make_summary_run_plan,
+    make_work_run_plan,
 )
 from quant.research.m3.run_state import ArtifactDigest, compute_work_key
 
 _KEY = "0" * 64
+_EXAMPLE = "development-example-plans-v1"
+_SHA = "1" * 64
 
 def _external() -> ExternalInput:
     return ExternalInput(ArtifactDigest("fixture", "input.json", 2, "1" * 64))
@@ -216,10 +230,26 @@ def test_work_scope_keys_only_use_verified_experiment_and_work_identity(
     monkeypatch.setattr(
         orchestration, "_external_files", lambda **_kwargs: (_external(),)
     )
-    monkeypatch.setattr(orchestration, "_fold_boundary_inputs", lambda *_args: (_external(),))
-    monkeypatch.setattr(orchestration, "_experiment_boundary_inputs", lambda *_args: (_external(),))
-    monkeypatch.setattr(orchestration, "_label_boundary_inputs", lambda *_args: (_external(),))
-    monkeypatch.setattr(orchestration, "_reconciliation_boundary_inputs", lambda *_args: (_external(),))
+    monkeypatch.setattr(
+        orchestration,
+        "_fold_boundary_inputs",
+        lambda *_args, artifact_roots=None: (_external(),),
+    )
+    monkeypatch.setattr(
+        orchestration,
+        "_experiment_boundary_inputs",
+        lambda *_args, artifact_roots=None: (_external(),),
+    )
+    monkeypatch.setattr(
+        orchestration,
+        "_label_boundary_inputs",
+        lambda *_args, artifact_roots=None: (_external(),),
+    )
+    monkeypatch.setattr(
+        orchestration,
+        "_reconciliation_boundary_inputs",
+        lambda *_args, artifact_roots=None: (_external(),),
+    )
 
     plan = make_work_run_plan(
         config=_config(),
@@ -316,9 +346,15 @@ def test_development_summary_uses_verifier_receipt_stage(
         for fold in ("fold_001", "fold_002")
     )
     monkeypatch.setattr(
-        orchestration, "_experiment_boundary_inputs", lambda *_args: (_external(),)
+        orchestration,
+        "_experiment_boundary_inputs",
+        lambda *_args, artifact_roots=None: (_external(),),
     )
-    monkeypatch.setattr(orchestration, "_evaluation_boundary_inputs", lambda *_args: (_external(),))
+    monkeypatch.setattr(
+        orchestration,
+        "_evaluation_boundary_inputs",
+        lambda *_args, artifact_roots=None: (_external(),),
+    )
     plan = make_summary_run_plan(
         config=_config(),
         experiment=experiment,  # type: ignore[arg-type]
@@ -418,3 +454,381 @@ def test_run_plan_rejects_nested_static_publications() -> None:
                 ),
             ),
         )
+
+
+def test_select_run_plan_nodes_requires_exact_sorted_closure() -> None:
+    plan = RunPlan(
+        "PROVIDER",
+        (
+            _node(node_id="provider"),
+            _node(
+                node_id="provider-validation",
+                final_directory="provider-validations/one",
+            ),
+        ),
+    )
+    selected = orchestration.select_run_plan_nodes(
+        plan,
+        expected_continuation="PROVIDER",
+        expected_node_ids=("provider-validation", "provider"),
+    )
+    assert tuple(item.node_id for item in selected) == (
+        "provider",
+        "provider-validation",
+    )
+    with pytest.raises(ValueError, match="continuation"):
+        orchestration.select_run_plan_nodes(
+            plan,
+            expected_continuation="WORK",
+            expected_node_ids=("provider", "provider-validation"),
+        )
+    with pytest.raises(ValueError, match="closure"):
+        orchestration.select_run_plan_nodes(
+            plan,
+            expected_continuation="PROVIDER",
+            expected_node_ids=("provider",),
+        )
+    with pytest.raises(ValueError, match="closure"):
+        orchestration.select_run_plan_nodes(
+            plan,
+            expected_continuation="PROVIDER",
+            expected_node_ids=(
+                "provider",
+                "provider-validation",
+                "provider-extra",
+            ),
+        )
+    with pytest.raises(ValueError, match="duplicate"):
+        orchestration.select_run_plan_nodes(
+            plan,
+            expected_continuation="PROVIDER",
+            expected_node_ids=("provider", "provider", "provider-validation"),
+        )
+    with pytest.raises(ValueError, match="expected node ids invalid"):
+        orchestration.select_run_plan_nodes(
+            plan,
+            expected_continuation="PROVIDER",
+            expected_node_ids=["provider", "provider-validation"],  # type: ignore[arg-type]
+        )
+
+
+def test_six_builders_accept_optional_artifact_roots_keyword_only() -> None:
+    for name in (
+        "make_provider_materialization_run_plan",
+        "make_provider_validation_run_plan",
+        "make_experiment_artifact_run_plan",
+        "make_label_reconciliation_run_plan",
+        "make_work_run_plan",
+        "make_summary_run_plan",
+    ):
+        parameters = inspect.signature(getattr(orchestration, name)).parameters
+        assert "artifact_roots" in parameters
+        assert parameters["artifact_roots"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameters["artifact_roots"].default is None
+    assert not hasattr(orchestration, "make_features_run_plan")
+
+
+def _patch_plan_boundaries(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        orchestration, "_snapshot_boundary_inputs", lambda *_a, **_k: (_external(),),
+    )
+    monkeypatch.setattr(
+        orchestration, "_provider_boundary_inputs", lambda *_a, **_k: (_external(),),
+    )
+    monkeypatch.setattr(
+        orchestration,
+        "_provider_validation_boundary_inputs",
+        lambda *_a, **_k: (_external(),),
+    )
+    monkeypatch.setattr(
+        orchestration, "_experiment_boundary_inputs", lambda *_a, **_k: (_external(),),
+    )
+    monkeypatch.setattr(
+        orchestration, "_label_boundary_inputs", lambda *_a, **_k: (_external(),),
+    )
+    monkeypatch.setattr(
+        orchestration, "_fold_boundary_inputs", lambda *_a, **_k: (_external(),),
+    )
+    monkeypatch.setattr(
+        orchestration,
+        "_reconciliation_boundary_inputs",
+        lambda *_a, **_k: (_external(),),
+    )
+    monkeypatch.setattr(
+        orchestration, "_evaluation_boundary_inputs", lambda *_a, **_k: (_external(),),
+    )
+    monkeypatch.setattr(
+        orchestration, "_release_label_inputs", lambda *_a, **_k: (_external(),),
+    )
+    monkeypatch.setattr(
+        orchestration, "_release_reconciliation_inputs", lambda *_a, **_k: (_external(),),
+    )
+    monkeypatch.setattr(
+        orchestration, "_assert_release_snapshot_identity", lambda *_a, **_k: None,
+    )
+
+
+def _assert_omitted_equals_explicit_none(omitted: RunPlan, explicit: RunPlan) -> None:
+    assert asdict(omitted) == asdict(explicit)
+    assert omitted == explicit
+
+
+def test_remaining_five_builders_legacy_omitted_equals_explicit_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F2: five builders besides provider prove omitted ≡ artifact_roots=None."""
+    _patch_plan_boundaries(monkeypatch)
+    experiment_key = "3" * 64
+    root = Path("unused")
+    snapshot = _unchecked(
+        VerifiedDevelopmentExampleSnapshotArtifact,
+        example_id=_EXAMPLE,
+        root=root / "snapshots" / experiment_key,
+        request=SimpleNamespace(
+            snapshot_request_key=experiment_key,
+            signal_start="start",
+            signal_end="end",
+        ),
+        request_sha256=_SHA,
+        manifest=SimpleNamespace(
+            snapshot_id=experiment_key,
+            snapshot_manifest_sha256="5" * 64,
+            scientific_config_sha256="2" * 64,
+            signal_start="start",
+            signal_end="end",
+            g1_release_id="7" * 64,
+            g1_release_manifest_sha256="8" * 64,
+        ),
+        manifest_sha256="5" * 64,
+        snapshot_receipt_sha256=_SHA,
+        staging_paths=(),
+    )
+    provider = _unchecked(
+        VerifiedDevelopmentExampleProviderArtifact,
+        example_id=_EXAMPLE,
+        root=root / "providers" / experiment_key,
+        manifest=SimpleNamespace(
+            provider_key=experiment_key,
+            snapshot_id=experiment_key,
+            snapshot_manifest_sha256="5" * 64,
+            provider_runtime_fingerprint_sha256=_SHA,
+            qlib_version="0.9.7",
+            files=(),
+        ),
+        manifest_sha256=_SHA,
+        provider_receipt_sha256=_SHA,
+    )
+    validation = _unchecked(
+        VerifiedDevelopmentExampleProviderValidationArtifact,
+        example_id=_EXAMPLE,
+        root=root / "provider-validations" / experiment_key,
+        summary=SimpleNamespace(
+            provider_validation_key="4" * 64,
+            provider_key=experiment_key,
+            provider_receipt_sha256=_SHA,
+            provider_manifest_sha256=_SHA,
+            snapshot_id=experiment_key,
+            provider_validation_config_sha256="2" * 64,
+            provider_runtime_fingerprint_sha256=_SHA,
+            passed=True,
+        ),
+        summary_sha256=_SHA,
+        validation_receipt_sha256=_SHA,
+    )
+    experiment = _unchecked(
+        VerifiedDevelopmentExampleExperimentIdentity,
+        example_id=_EXAMPLE,
+        root=root / "runs" / experiment_key,
+        manifest=SimpleNamespace(
+            experiment_key=experiment_key,
+            snapshot_id=experiment_key,
+            snapshot_manifest_sha256="5" * 64,
+            scientific_config_sha256="2" * 64,
+            provider_key=experiment_key,
+            provider_receipt_sha256=_SHA,
+            dependency_fingerprint_sha256=_SHA,
+        ),
+        manifest_sha256="6" * 64,
+        experiment_receipt_sha256=_SHA,
+    )
+    release = _unchecked(
+        VerifiedDevelopmentExampleG1Release,
+        manifest=SimpleNamespace(
+            example_id=_EXAMPLE,
+            contract_release_id="7" * 64,
+        ),
+        manifest_sha256="8" * 64,
+        release=SimpleNamespace(root=root / "g1"),
+        artifact_paths={},
+    )
+    folds = _unchecked(
+        VerifiedDevelopmentExampleFoldPlanArtifact,
+        example_id=_EXAMPLE,
+        manifest=SimpleNamespace(
+            experiment_key=experiment_key,
+            experiment_manifest_sha256="6" * 64,
+            snapshot_id=experiment_key,
+            snapshot_manifest_sha256="5" * 64,
+            scientific_config_sha256="2" * 64,
+            folds=(SimpleNamespace(name="fold_001"),),
+        ),
+        root=root,
+        folds_receipt_sha256=_SHA,
+        manifest_sha256=_SHA,
+    )
+    labels = tuple(
+        _unchecked(
+            VerifiedDevelopmentExampleLabelArtifact,
+            example_id=_EXAMPLE,
+            manifest=SimpleNamespace(
+                experiment_key=experiment_key,
+                experiment_manifest_sha256="6" * 64,
+                snapshot_id=experiment_key,
+                snapshot_manifest_sha256="5" * 64,
+                g1_release_id="7" * 64,
+                g1_release_manifest_sha256="8" * 64,
+                horizon_sessions=horizon,
+            ),
+            manifest_sha256=("9" if horizon == 5 else "a") * 64,
+            root=root,
+            label_receipt_sha256=_SHA,
+        )
+        for horizon in (5, 10)
+    )
+    reconciliations = tuple(
+        _unchecked(
+            VerifiedDevelopmentExampleLabelReconciliationArtifact,
+            example_id=_EXAMPLE,
+            summary=SimpleNamespace(
+                experiment_key=experiment_key,
+                horizon_sessions=horizon,
+                label_manifest_sha256=("9" if horizon == 5 else "a") * 64,
+                provider_validation_receipt_sha256=_SHA,
+                reconciliation_key=("c" if horizon == 5 else "d") * 64,
+                passed=True,
+            ),
+            root=root,
+            summary_sha256=_SHA,
+            reconciliation_receipt_sha256=_SHA,
+        )
+        for horizon in (5, 10)
+    )
+    evaluations = tuple(
+        _evaluation(fold=fold, horizon=horizon, experiment_key=experiment_key)
+        for horizon in (5, 10)
+        for fold in ("fold_001", "fold_002")
+    )
+
+    validation_spec = _unchecked(
+        ProviderValidationSpec,
+        provider_validation_key="4" * 64,
+        provider_validation_config_sha256="2" * 64,
+        qlib_version="0.9.7",
+        code_version="development-example/provider-validation-v1",
+    )
+    monkeypatch.setattr(
+        orchestration,
+        "compute_development_provider_validation_key",
+        lambda **_kw: "4" * 64,
+    )
+    omitted_validation = make_provider_validation_run_plan(
+        config=_config(),
+        snapshot=snapshot,  # type: ignore[arg-type]
+        provider=provider,  # type: ignore[arg-type]
+        spec=validation_spec,  # type: ignore[arg-type]
+    )
+    explicit_validation = make_provider_validation_run_plan(
+        config=_config(),
+        snapshot=snapshot,  # type: ignore[arg-type]
+        provider=provider,  # type: ignore[arg-type]
+        spec=validation_spec,  # type: ignore[arg-type]
+        artifact_roots=None,
+    )
+    _assert_omitted_equals_explicit_none(omitted_validation, explicit_validation)
+
+    omitted_artifacts = make_experiment_artifact_run_plan(
+        config=_config(),
+        release=release,  # type: ignore[arg-type]
+        snapshot=snapshot,  # type: ignore[arg-type]
+        experiment=experiment,  # type: ignore[arg-type]
+    )
+    explicit_artifacts = make_experiment_artifact_run_plan(
+        config=_config(),
+        release=release,  # type: ignore[arg-type]
+        snapshot=snapshot,  # type: ignore[arg-type]
+        experiment=experiment,  # type: ignore[arg-type]
+        artifact_roots=None,
+    )
+    _assert_omitted_equals_explicit_none(omitted_artifacts, explicit_artifacts)
+
+    specs = tuple(
+        _unchecked(
+            LabelReconciliationSpec,
+            reconciliation_key=("c" if horizon == 5 else "d") * 64,
+            experiment_key=experiment_key,
+            horizon_sessions=horizon,
+            provider_validation_receipt_sha256=_SHA,
+            label_manifest_sha256=("9" if horizon == 5 else "a") * 64,
+            label_reconciliation_config_sha256="2" * 64,
+            dependency_fingerprint_sha256=_SHA,
+            code_version="development-example/reconciliation-v1",
+        )
+        for horizon in (5, 10)
+    )
+    monkeypatch.setattr(
+        orchestration,
+        "compute_development_label_reconciliation_key",
+        lambda **kwargs: ("c" if kwargs["horizon"] == 5 else "d") * 64,
+    )
+    omitted_reconciliation = make_label_reconciliation_run_plan(
+        config=_config(),
+        release=release,  # type: ignore[arg-type]
+        snapshot=snapshot,  # type: ignore[arg-type]
+        provider=provider,  # type: ignore[arg-type]
+        provider_validation=validation,  # type: ignore[arg-type]
+        experiment=experiment,  # type: ignore[arg-type]
+        labels=labels,  # type: ignore[arg-type]
+        specs=specs,  # type: ignore[arg-type]
+    )
+    explicit_reconciliation = make_label_reconciliation_run_plan(
+        config=_config(),
+        release=release,  # type: ignore[arg-type]
+        snapshot=snapshot,  # type: ignore[arg-type]
+        provider=provider,  # type: ignore[arg-type]
+        provider_validation=validation,  # type: ignore[arg-type]
+        experiment=experiment,  # type: ignore[arg-type]
+        labels=labels,  # type: ignore[arg-type]
+        specs=specs,  # type: ignore[arg-type]
+        artifact_roots=None,
+    )
+    _assert_omitted_equals_explicit_none(omitted_reconciliation, explicit_reconciliation)
+
+    omitted_work = make_work_run_plan(
+        config=_config(),
+        experiment=experiment,  # type: ignore[arg-type]
+        folds=folds,  # type: ignore[arg-type]
+        labels=labels,  # type: ignore[arg-type]
+        reconciliations=reconciliations,  # type: ignore[arg-type]
+    )
+    explicit_work = make_work_run_plan(
+        config=_config(),
+        experiment=experiment,  # type: ignore[arg-type]
+        folds=folds,  # type: ignore[arg-type]
+        labels=labels,  # type: ignore[arg-type]
+        reconciliations=reconciliations,  # type: ignore[arg-type]
+        artifact_roots=None,
+    )
+    _assert_omitted_equals_explicit_none(omitted_work, explicit_work)
+
+    omitted_summary = make_summary_run_plan(
+        config=_config(),
+        experiment=experiment,  # type: ignore[arg-type]
+        evaluations=evaluations,  # type: ignore[arg-type]
+    )
+    explicit_summary = make_summary_run_plan(
+        config=_config(),
+        experiment=experiment,  # type: ignore[arg-type]
+        evaluations=evaluations,  # type: ignore[arg-type]
+        artifact_roots=None,
+    )
+    _assert_omitted_equals_explicit_none(omitted_summary, explicit_summary)

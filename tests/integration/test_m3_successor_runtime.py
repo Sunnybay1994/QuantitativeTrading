@@ -79,31 +79,41 @@ def _public_api_substitutes(
     def marker(**_kwargs: object) -> object:
         return object()
 
-    folds_sentinel = object()
+    experiment_artifacts_sentinel = object()
     label_reconciliation_sentinel = object()
+    work_sentinel = object()
 
-    def folds_builder(**kwargs: object) -> object:
-        stage = kwargs.get("stage")
-        assert isinstance(stage, str)
+    def experiment_artifacts_builder(**kwargs: object) -> object:
+        wave = kwargs.get("wave")
+        assert isinstance(wave, str)
         if builder_call_records is not None:
-            builder_call_records.append(("folds", stage))
-        return folds_sentinel
+            builder_call_records.append(("experiment-artifacts", wave))
+        return experiment_artifacts_sentinel
 
     def label_reconciliation_builder(**kwargs: object) -> object:
-        stage = kwargs.get("stage")
-        assert isinstance(stage, str)
+        wave = kwargs.get("wave")
+        assert isinstance(wave, str)
         if builder_call_records is not None:
-            builder_call_records.append(("label-reconciliation", stage))
+            builder_call_records.append(("label-reconciliation", wave))
         return label_reconciliation_sentinel
+
+    def work_builder(**kwargs: object) -> object:
+        wave = kwargs.get("wave")
+        assert isinstance(wave, str)
+        if builder_call_records is not None:
+            builder_call_records.append(("work", wave))
+        return work_sentinel
 
     return runtime.SuccessorPublicApiBundle(
         stage_runner_type=StageRunner,
         run_plan_builders={
             stage: (
-                folds_builder
-                if stage == "folds"
+                experiment_artifacts_builder
+                if stage == "experiment-artifacts"
                 else label_reconciliation_builder
                 if stage == "label-reconciliation"
+                else work_builder
+                if stage == "work"
                 else marker
             )
             for stage in (
@@ -111,7 +121,7 @@ def _public_api_substitutes(
                 "provider",
                 "provider-validation",
                 "experiment-identity",
-                "folds",
+                "experiment-artifacts",
                 "label-reconciliation",
                 "work",
                 "summary",
@@ -166,7 +176,7 @@ class _DeterministicProductionBoundary:
     def dependencies(self) -> runtime.SuccessorProductionDependencies:
         return runtime.SuccessorProductionDependencies(
             stage_runner_factory=runtime.make_project_stage_runner,
-            run_upstream_stage=self.run_upstream_stage,
+            run_upstream_wave=self.run_upstream_wave,
             run_formal_stage=self.run_formal_stage,
             verify_fold=self.verify_fold,
             run_summary=self.run_summary,
@@ -241,10 +251,9 @@ class _DeterministicProductionBoundary:
         *,
         stage: str,
         horizon: int | None,
-        request: runtime.SuccessorFoldRequest,
+        fold: str | None,
     ) -> runtime.StageReceiptRef:
         effective = self._effective_horizon(horizon)
-        fold = request.fold if stage in {"features", *runtime._HORIZON_WORK_STAGES} else None
         scope = "WORK" if stage in runtime._HORIZON_WORK_STAGES else (
             "SNAPSHOT" if stage == "snapshot" else
             "PROVIDER" if stage in {"provider", "provider-validation"} else
@@ -272,7 +281,7 @@ class _DeterministicProductionBoundary:
                 )
             )
         suffix = f"-h{effective}" if effective is not None else ""
-        fold_suffix = f"-{request.fold}" if fold is not None else ""
+        fold_suffix = f"-{fold}" if fold is not None else ""
         return self._receipt(
             node_id=f"{stage}{fold_suffix}{suffix}",
             stage=stage,
@@ -282,42 +291,64 @@ class _DeterministicProductionBoundary:
             horizon=effective,
         )
 
-    def _builder_name(self, stage: str) -> str:
-        if stage == "labels":
-            return "folds"
-        if stage in {
-            "features",
-            "alignment",
-            "train",
-            "predictions",
-            "evaluation",
-            "targets",
-            "backtest-plan",
-        }:
-            return "work"
-        return stage
-
-    def run_upstream_stage(
+    def run_upstream_wave(
         self,
         *,
-        stage: str,
-        horizon: int | None,
+        wave: str,
         request: runtime.SuccessorFoldRequest,
         context: runtime.SuccessorStageContext,
         runner: StageRunner,
         public_apis: runtime.SuccessorPublicApiBundle,
         resume: bool,
-    ) -> runtime.StageReceiptRef:
-        assert context.fold == request.fold and resume is True
+    ) -> tuple[runtime.StageReceiptRef, ...]:
+        assert context.request is not None and resume is True
         assert type(runner) is StageRunner
-        builder = public_apis.run_plan_builders[self._builder_name(stage)]
-        self.public_api_calls.append(self._builder_name(stage))
-        builder(stage=stage, horizon=horizon)
-        return self._stage_receipt(
-            stage=stage,
-            horizon=horizon,
-            request=request,
-        )
+        assert wave not in {"labels", "features", "folds"}
+        builder = public_apis.run_plan_builders[wave]
+        self.public_api_calls.append(wave)
+        builder(wave=wave)
+        refs: list[runtime.StageReceiptRef] = []
+        if wave in runtime._SHARED_SINGLE_WAVES:
+            refs.append(
+                self._stage_receipt(stage=wave, horizon=None, fold=None)
+            )
+        elif wave == "experiment-artifacts":
+            for horizon in runtime.HORIZONS:
+                refs.append(
+                    self._stage_receipt(
+                        stage="labels", horizon=horizon, fold=None,
+                    )
+                )
+            refs.append(
+                self._stage_receipt(stage="folds", horizon=None, fold=None)
+            )
+        elif wave == "label-reconciliation":
+            for horizon in runtime.HORIZONS:
+                refs.append(
+                    self._stage_receipt(
+                        stage="label-reconciliation",
+                        horizon=horizon,
+                        fold=None,
+                    )
+                )
+        elif wave == "work":
+            for fold_request in context.request.folds:
+                fold = fold_request.fold
+                refs.append(
+                    self._stage_receipt(
+                        stage="features", horizon=None, fold=fold,
+                    )
+                )
+                for horizon in runtime.HORIZONS:
+                    for stage in runtime._WORK_PRE_FORMAL_STAGES[1:]:
+                        refs.append(
+                            self._stage_receipt(
+                                stage=stage, horizon=horizon, fold=fold,
+                            )
+                        )
+        else:
+            raise AssertionError(f"unexpected wave {wave}")
+        return tuple(sorted(refs, key=lambda item: item.node_id))
 
     def run_formal_stage(
         self,
@@ -344,7 +375,7 @@ class _DeterministicProductionBoundary:
         return self._stage_receipt(
             stage=stage,
             horizon=horizon,
-            request=request,
+            fold=request.fold,
         )
 
     def verify_fold(
@@ -927,7 +958,7 @@ def test_production_factory_rejects_marker_public_api_bundle(
     assert not (request.controlled_output_root / "artifacts").exists()
 
 
-def test_labels_routes_to_canonical_folds_builder_not_labels(
+def test_real_waves_call_builders_once_with_mapped_receipts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -935,13 +966,19 @@ def test_labels_routes_to_canonical_folds_builder_not_labels(
     _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis)
 
     assert "labels" not in boundary.public_apis.run_plan_builders
+    assert "features" not in boundary.public_apis.run_plan_builders
+    assert "folds" not in boundary.public_apis.run_plan_builders
     assert (
-        boundary.public_apis.run_plan_builders["folds"]
+        boundary.public_apis.run_plan_builders["experiment-artifacts"]
         is not boundary.public_apis.run_plan_builders["label-reconciliation"]
+    )
+    assert (
+        boundary.public_apis.run_plan_builders["experiment-artifacts"]
+        is not boundary.public_apis.run_plan_builders["work"]
     )
 
     adapter = _adapter(boundary)
-    adapter.run_fold(
+    first = adapter.run_fold(
         request=request.folds[0],
         context=runtime.SuccessorStageContext(
             request=request,
@@ -949,19 +986,150 @@ def test_labels_routes_to_canonical_folds_builder_not_labels(
         ),
         resume=True,
     )
+    second = adapter.run_fold(
+        request=request.folds[1],
+        context=runtime.SuccessorStageContext(
+            request=request,
+            fold=request.folds[1].fold,
+        ),
+        resume=True,
+    )
 
-    assert [
-        record
-        for record in boundary.builder_call_records
-        if record[1] == "labels"
-    ] == [("folds", "labels")] * len(runtime.HORIZONS)
-    assert [
-        record
-        for record in boundary.builder_call_records
-        if record[1] == "label-reconciliation"
-    ] == [
-        ("label-reconciliation", "label-reconciliation")
-    ] * len(runtime.HORIZONS)
+    assert boundary.builder_call_records == [
+        ("experiment-artifacts", "experiment-artifacts"),
+        ("label-reconciliation", "label-reconciliation"),
+        ("work", "work"),
+    ]
+    assert {
+        (ref.stage, ref.horizon)
+        for ref in first.receipts
+        if ref.stage in {"labels", "folds"}
+    } == {("folds", None), ("labels", 5), ("labels", 10)}
+    assert {
+        (ref.stage, ref.fold, ref.horizon)
+        for ref in first.receipts
+        if ref.stage == "features"
+    } == {("features", "fold_001", None)}
+    assert {
+        (ref.stage, ref.fold, ref.horizon)
+        for ref in second.receipts
+        if ref.stage == "features"
+    } == {("features", "fold_002", None)}
+    assert all(
+        ref.stage != "labels" or ref.fold is None
+        for ref in (*first.receipts, *second.receipts)
+    )
+
+
+def test_wave_cache_rejects_cross_request_poison_and_resume_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_a, boundary, configs, releases = _request(tmp_path)
+    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis)
+    adapter = _adapter(boundary)
+
+    adapter.run_fold(
+        request=request_a.folds[0],
+        context=runtime.SuccessorStageContext(
+            request=request_a, fold=request_a.folds[0].fold,
+        ),
+        resume=True,
+    )
+
+    # resume drift on the second fold of the same request
+    with pytest.raises(runtime.SuccessorRuntimeError) as resume_error:
+        adapter.run_fold(
+            request=request_a.folds[1],
+            context=runtime.SuccessorStageContext(
+                request=request_a, fold=request_a.folds[1].fold,
+            ),
+            resume=False,
+        )
+    assert resume_error.value.code == "SUCCESSOR_INPUT_INVALID"
+
+    # Fresh adapter for happy-path second fold, then poison with request B
+    adapter_ok = _adapter(boundary)
+    boundary.builder_call_records.clear()
+    adapter_ok.run_fold(
+        request=request_a.folds[0],
+        context=runtime.SuccessorStageContext(
+            request=request_a, fold=request_a.folds[0].fold,
+        ),
+        resume=True,
+    )
+    adapter_ok.run_fold(
+        request=request_a.folds[1],
+        context=runtime.SuccessorStageContext(
+            request=request_a, fold=request_a.folds[1].fold,
+        ),
+        resume=True,
+    )
+    assert boundary.builder_call_records == [
+        ("experiment-artifacts", "experiment-artifacts"),
+        ("label-reconciliation", "label-reconciliation"),
+        ("work", "work"),
+    ]
+
+    request_b, boundary_b, configs_b, releases_b = _request(tmp_path / "poison-b")
+    _install_fixture_verifiers(monkeypatch, configs_b, releases_b, boundary_b.public_apis)
+    with pytest.raises(runtime.SuccessorRuntimeError) as poison_error:
+        adapter_ok.run_fold(
+            request=request_b.folds[0],
+            context=runtime.SuccessorStageContext(
+                request=request_b, fold=request_b.folds[0].fold,
+            ),
+            resume=True,
+        )
+    assert poison_error.value.code == "SUCCESSOR_INPUT_INVALID"
+
+
+def test_wave_cache_rejects_duplicate_and_third_fold_consumption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, boundary, configs, releases = _request(tmp_path)
+    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis)
+    adapter = _adapter(boundary)
+
+    adapter.run_fold(
+        request=request.folds[0],
+        context=runtime.SuccessorStageContext(
+            request=request, fold=request.folds[0].fold,
+        ),
+        resume=True,
+    )
+    with pytest.raises(runtime.SuccessorRuntimeError) as duplicate_error:
+        adapter.run_fold(
+            request=request.folds[0],
+            context=runtime.SuccessorStageContext(
+                request=request, fold=request.folds[0].fold,
+            ),
+            resume=True,
+        )
+    assert duplicate_error.value.code == "SUCCESSOR_STAGE_INVALID"
+
+    adapter.run_fold(
+        request=request.folds[1],
+        context=runtime.SuccessorStageContext(
+            request=request, fold=request.folds[1].fold,
+        ),
+        resume=True,
+    )
+    with pytest.raises(runtime.SuccessorRuntimeError) as third_error:
+        adapter.run_fold(
+            request=request.folds[0],
+            context=runtime.SuccessorStageContext(
+                request=request, fold=request.folds[0].fold,
+            ),
+            resume=True,
+        )
+    assert third_error.value.code == "SUCCESSOR_STAGE_INVALID"
+    assert boundary.builder_call_records == [
+        ("experiment-artifacts", "experiment-artifacts"),
+        ("label-reconciliation", "label-reconciliation"),
+        ("work", "work"),
+    ]
 
 
 def test_scope_key_drift_cannot_join_work_to_execution(
