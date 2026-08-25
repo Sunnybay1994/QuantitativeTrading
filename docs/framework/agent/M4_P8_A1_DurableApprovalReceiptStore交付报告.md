@@ -137,3 +137,25 @@ DELIVERY_READY docs/framework/agent/M4_P8_A1_DurableApprovalReceiptStore交付�
 - **cold imports：PASS。** approval、migration registry、v008 与 store 四个模块均精确指向当前 worktree。
 - **scope/diff：PASS。** Git dirty 集仍仅为批准的 exact8 加独立初验报告；`git diff --check` 无错误，仅有既有 LF/CRLF 提示；未生成 mypy/Ruff cache 或其他临时路径。
 - **证据边界：** VALIDATION4 按中央裁定未重复 VALIDATION2 已绿的 focused approval `13 passed` 与 store/migration `8 passed`。本节与既有 focused 证据合并支持 A1 开发验收，但不等于 A2/manual E2E、PAPER、Linux Gate 或 UA-M4-005 已关闭。
+
+## 15. REWORK4 v3 upgrade fixture correction
+
+- **现象：** 集成回归既有证据为 `229 passed / 5 skipped / 1 failed`；`test_v3_upgrade_adds_empty_ledger_tables_without_forging_context` 在 reopen 时以 `MIGRATION_FAILED` 失败。
+- **根因：** fixture 先打开当前 v8 数据库，再只删除 v4–v7 表并把 `schema_version` 改为 3，却保留 v8 才有的 `approval_receipts`。重开时 v8 migration 正确执行不带 `IF NOT EXISTS` 的建表并发现表已存在，因此 fail closed；这是模拟历史库不完整，不是 production v008 需要放宽约束。
+- **规则：** 历史版本 fixture 必须删除所有高于模拟版本引入的表；production migration 必须保持严格建表/失败语义，不添加 `IF NOT EXISTS` 来掩盖上下文伪造或 schema drift。
+- **最小复现：** `_open()` 创建 v8 DB；fixture 删除 `risk_transition_receipts`、cancel/ledger v4–v7 表，留下 `approval_receipts`，将版本设为 3，再 `_open()`，即触发 v8 `CREATE TABLE approval_receipts` 的 `MIGRATION_FAILED`。
+- **窄修复：** `test_execution_store.py` 的模拟 v3 fixture 额外执行 `DROP TABLE approval_receipts`（其索引随表删除），升级后 recovery 断言新增 `rows.approval_receipts == ()`；未修改 production、v008 migration、schema 或其他测试行为。
+- **既有 focused-test 证据：** VALIDATION4/既有记录中的 approval `13 passed`、store/v008 `8 passed`、Ruff exact6、mypy production4 与 cold import 证据均保持历史原样；本轮没有重新运行集成回归或任何 Python/pytest/Ruff/mypy/cold/SQLite 检查。
+- **通过条件：** 该 v3 fixture 不再保留 v8-only `approval_receipts`，reopen 升级后 `recovery.approval_receipts == ()`，且 production v008 仍无 `IF NOT EXISTS`；后续集成验证应确认该单测通过。当前只交付静态 fixture 修复，不把既有或未运行证据扩写为本轮验证/Gate 通过。
+
+## 16. VALIDATION5 integration-fix 验证证据
+
+- **identity preflight：PASS。** `quant`、approval 与 store 均精确从当前 source worktree 导入；direct-call Windows Miniforge carrier 使用 BelowNormal、affinity `0xF00`、数值线程不超过 2。
+- **完整 focused 回归：PASS。** `tests/unit/test_approval.py` 与完整 `tests/unit/test_execution_store.py` 合计 `230 passed, 5 skipped in 9.18s`；修复前唯一 v3 fixture 失败已关闭。
+- **Ruff exact6：PASS。** approval、migration registry、v008、store 与两份完整测试文件返回 `All checks passed!`。
+- **mypy production4：PASS。** 返回 `Success: no issues found in 4 source files`。
+- **cold imports：PASS。** approval、migration registry、v008 与 store 均精确指向当前 worktree。
+- **scope/temp：PASS。** 验证前后业务变更仍只有 `test_execution_store.py` 与本交付报告，另有同一 reviewer 的既有初验报告；`git diff --check` 无错误，仅既有 LF/CRLF 提示。fresh pytest basetemp 已精确删除。
+- **边界：** 本轮没有修改或运行 PAPER、A2/manual E2E、网络、浏览器或真实 worker；结果支持 REWORK4 source fix 提交，不等于 UA-M4-005 或后续 Gate 已关闭。
+
+DELIVERY_READY docs/framework/agent/M4_P8_A1_DurableApprovalReceiptStore交付报告.md

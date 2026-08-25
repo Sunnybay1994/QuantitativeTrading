@@ -2791,6 +2791,7 @@ def test_v3_upgrade_adds_empty_ledger_tables_without_forging_context(
         conn.execute("DROP TABLE cancel_commands")
         conn.execute("DROP TABLE ledger_checkpoints")
         conn.execute("DROP TABLE ledger_contexts")
+        conn.execute("DROP TABLE approval_receipts")
         conn.execute("UPDATE schema_version SET version = 3")
     reopened = _open(name, cwd_tmp)
     try:
@@ -2800,6 +2801,7 @@ def test_v3_upgrade_adds_empty_ledger_tables_without_forging_context(
         assert tuple(item.key for item in rows.commands) == ("cmd-a",)
         assert rows.ledger_contexts == ()
         assert rows.ledger_checkpoints == ()
+        assert rows.approval_receipts == ()
     finally:
         reopened.close()
 
