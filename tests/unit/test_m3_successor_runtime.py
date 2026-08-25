@@ -228,7 +228,7 @@ def test_production_dependencies_fail_closed_when_any_boundary_is_missing() -> N
     with pytest.raises(SuccessorRuntimeError) as error:
         SuccessorProductionDependencies(
             stage_runner_factory=None,
-            run_upstream_stage=None,
+            run_upstream_wave=None,
             run_formal_stage=None,
             verify_fold=None,
             run_summary=None,
@@ -251,7 +251,7 @@ def test_each_production_dependency_none_fails_closed() -> None:
 
     dependencies = SuccessorProductionDependencies(
         stage_runner_factory=runtime.make_project_stage_runner,
-        run_upstream_stage=callback,
+        run_upstream_wave=callback,
         run_formal_stage=callback,
         verify_fold=callback,
         run_summary=callback,
@@ -266,7 +266,7 @@ def test_each_production_dependency_none_fails_closed() -> None:
     )
     for field in (
         "stage_runner_factory",
-        "run_upstream_stage",
+        "run_upstream_wave",
         "run_formal_stage",
         "verify_fold",
         "run_summary",
@@ -282,6 +282,68 @@ def test_each_production_dependency_none_fails_closed() -> None:
         with pytest.raises(SuccessorRuntimeError) as error:
             replace(dependencies, **{field: None})
         assert error.value.code == "SUCCESSOR_INPUT_INVALID"
+
+
+def test_pseudo_single_transition_builder_keys_are_rejected() -> None:
+    def marker(**_kwargs: object) -> object:
+        return object()
+
+    builders = {
+        name: marker
+        for name in (
+            "snapshot",
+            "provider",
+            "provider-validation",
+            "experiment-identity",
+            "experiment-artifacts",
+            "label-reconciliation",
+            "work",
+            "summary",
+            "labels",
+        )
+    }
+    with pytest.raises(ValueError):
+        runtime.SuccessorPublicApiBundle(
+            stage_runner_type=object,
+            run_plan_builders=builders,
+            formal_backtest_run_plan=marker,
+            formal_backtest_stage=marker,
+            formal_tracking_run_plan=marker,
+            formal_tracking_stage=marker,
+            summary_builder=marker,
+            summary_verifier=marker,
+            reproducibility_stage=marker,
+            reproducibility_verifier=marker,
+            readiness_stage=marker,
+            readiness_verifier=marker,
+            acceptance_stage=marker,
+            acceptance_audit=marker,
+        )
+
+
+def test_work_wave_filter_keeps_only_fold_owned_receipts() -> None:
+    owned = _receipt_ref(
+        node_id="features-fold_001",
+        stage="features",
+        fold="fold_001",
+        horizon=None,
+    )
+    foreign = _receipt_ref(
+        node_id="features-fold_002",
+        stage="features",
+        fold="fold_002",
+        horizon=None,
+    )
+    shared = _receipt_ref(
+        node_id="labels-h5",
+        stage="labels",
+        fold=None,
+        horizon=5,
+    )
+
+    assert runtime._work_receipt_belongs_to_fold(owned, "fold_001")
+    assert not runtime._work_receipt_belongs_to_fold(foreign, "fold_001")
+    assert not runtime._work_receipt_belongs_to_fold(shared, "fold_001")
 
 
 def test_canonical_bytes_dataclass_matches_asdict_form() -> None:

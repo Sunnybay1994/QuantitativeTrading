@@ -47,6 +47,7 @@ TREE_DIGEST_VERSION = "m3-successor-output-tree-v1"
 
 GateName = Literal["summary", "reproducibility", "readiness", "acceptance"]
 GateStatus = Literal["PASS", "FAIL"]
+_WaveReceiptKey = tuple[str, str | None, int | None]
 _GATES: tuple[GateName, ...] = (
     "summary",
     "reproducibility",
@@ -115,17 +116,36 @@ _REQUIRED_HORIZON_STAGES = (
     "tracking",
 )
 _HORIZON_WORK_STAGES = _REQUIRED_HORIZON_STAGES[2:]
-_FOLD_PRE_FORMAL_STAGES = (
+_SHARED_SINGLE_WAVES = (
     "snapshot",
     "provider",
     "provider-validation",
     "experiment-identity",
-    "folds",
-    "features",
 )
-_FOLD_HORIZON_PRE_FORMAL_STAGES = (
-    "labels",
-    "label-reconciliation",
+_EXPERIMENT_ARTIFACTS_WAVE = "experiment-artifacts"
+_LABEL_RECONCILIATION_WAVE = "label-reconciliation"
+_WORK_WAVE = "work"
+_UPSTREAM_WAVES = (
+    *_SHARED_SINGLE_WAVES,
+    _EXPERIMENT_ARTIFACTS_WAVE,
+    _LABEL_RECONCILIATION_WAVE,
+    _WORK_WAVE,
+)
+_REQUIRED_RUN_PLAN_BUILDERS = frozenset(
+    {
+        "snapshot",
+        "provider",
+        "provider-validation",
+        "experiment-identity",
+        "experiment-artifacts",
+        "label-reconciliation",
+        "work",
+        "summary",
+    }
+)
+_FORBIDDEN_PSEUDO_BUILDERS = frozenset({"labels", "features", "folds"})
+_WORK_PRE_FORMAL_STAGES = (
+    "features",
     "alignment",
     "train",
     "predictions",
@@ -636,20 +656,19 @@ class SuccessorProductionStageRunnerFactory(Protocol):
     ) -> "StageRunner": ...
 
 
-class SuccessorProductionStageBuilder(Protocol):
-    """Build and verify one upstream stage through the existing public API."""
+class SuccessorProductionWaveRunner(Protocol):
+    """Build and verify one real upstream wave through the existing public API."""
 
     def __call__(
         self,
         *,
-        stage: str,
-        horizon: int | None,
+        wave: str,
         request: SuccessorFoldRequest,
         context: SuccessorStageContext,
         runner: "StageRunner",
         public_apis: "SuccessorPublicApiBundle",
         resume: bool,
-    ) -> StageReceiptRef: ...
+    ) -> tuple[StageReceiptRef, ...]: ...
 
 
 class SuccessorProductionFormalStageRunner(Protocol):
@@ -741,6 +760,8 @@ class SuccessorPublicApiBundle:
         if (
             not isinstance(self.run_plan_builders, Mapping)
             or not self.run_plan_builders
+            or set(self.run_plan_builders) != _REQUIRED_RUN_PLAN_BUILDERS
+            or _FORBIDDEN_PSEUDO_BUILDERS.intersection(self.run_plan_builders)
             or any(
                 type(name) is not str or not name or not callable(builder)
                 for name, builder in self.run_plan_builders.items()
@@ -868,7 +889,7 @@ def make_public_successor_api_bundle() -> SuccessorPublicApiBundle:
                 "provider": make_provider_materialization_run_plan,
                 "provider-validation": make_provider_validation_run_plan,
                 "experiment-identity": make_experiment_identity_run_plan,
-                "folds": make_experiment_artifact_run_plan,
+                "experiment-artifacts": make_experiment_artifact_run_plan,
                 "label-reconciliation": make_label_reconciliation_run_plan,
                 "work": make_work_run_plan,
                 "summary": make_summary_run_plan,
@@ -894,15 +915,15 @@ def make_public_successor_api_bundle() -> SuccessorPublicApiBundle:
 
 @dataclass(frozen=True)
 class SuccessorProductionDependencies:
-    """Narrow, one-stage/one-gate adapters around the public M3 APIs.
+    """Narrow, one-wave/one-gate adapters around the public M3 APIs.
 
     No field accepts or returns the seven-method ``SuccessorStageApi``.  The
-    concrete adapter below owns the complete stage and Gate sequence; these
+    concrete adapter below owns the complete wave and Gate sequence; these
     dependencies only translate one call into the existing public API.
     """
 
     stage_runner_factory: SuccessorProductionStageRunnerFactory
-    run_upstream_stage: SuccessorProductionStageBuilder
+    run_upstream_wave: SuccessorProductionWaveRunner
     run_formal_stage: SuccessorProductionFormalStageRunner
     verify_fold: SuccessorProductionFoldVerifier
     run_summary: SuccessorProductionGateRunner
@@ -920,7 +941,7 @@ class SuccessorProductionDependencies:
             not callable(value)
             for value in (
                 self.stage_runner_factory,
-                self.run_upstream_stage,
+                self.run_upstream_wave,
                 self.run_formal_stage,
                 self.verify_fold,
                 self.run_summary,
@@ -942,10 +963,10 @@ class SuccessorProductionDependencies:
 class ProductionSuccessorStageAdapter:
     """Concrete, package-owned implementation of ``SuccessorStageApi``.
 
-    The adapter owns the fixed fold-stage and four-Gate order.  Injected
-    callbacks are deliberately limited to one existing stage or one existing
+    The adapter owns the fixed real-wave and four-Gate order.  Injected
+    callbacks are deliberately limited to one existing wave or one existing
     formal API call, so a caller cannot replace this order with a handwritten
-    ``run_fold``/``run_*`` sequence.
+    ``run_fold``/``run_*`` sequence or pseudo single-transition markers.
     """
 
     def __init__(
@@ -961,7 +982,7 @@ class ProductionSuccessorStageAdapter:
                 not callable(value)
                 for value in (
                     dependencies.stage_runner_factory,
-                    dependencies.run_upstream_stage,
+                    dependencies.run_upstream_wave,
                     dependencies.run_formal_stage,
                     dependencies.verify_fold,
                     dependencies.run_summary,
@@ -995,6 +1016,9 @@ class ProductionSuccessorStageAdapter:
             _fail("SUCCESSOR_INPUT_INVALID")
         self._dependencies = dependencies
         self._public_apis = bound_public_apis
+        self._wave_cache: dict[str, tuple[StageReceiptRef, ...]] = {}
+        self._wave_binding: tuple[str, Path, bool, tuple[str, str]] | None = None
+        self._consumed_folds: set[str] = set()
 
     @property
     def dependencies(self) -> SuccessorProductionDependencies:
@@ -1015,37 +1039,30 @@ class ProductionSuccessorStageAdapter:
         context: SuccessorStageContext,
         resume: bool,
     ) -> FoldExecution:
+        self._bind_runtime_wave_session(
+            runtime_request=context.request,
+            fold=request.fold,
+            resume=resume,
+        )
         runner = self._runner(context=context, config=request.config.config)
         refs: list[StageReceiptRef] = []
-        for stage in _FOLD_PRE_FORMAL_STAGES:
-            refs.append(
-                self._receipt(
-                    self._dependencies.run_upstream_stage(
-                        stage=stage,
-                        horizon=None,
-                        request=request,
-                        context=context,
-                        runner=runner,
-                        public_apis=self._public_apis,
-                        resume=resume,
-                    )
-                )
+        for wave in _UPSTREAM_WAVES:
+            wave_refs = self._cached_wave(
+                wave=wave,
+                request=request,
+                context=context,
+                runner=runner,
+                resume=resume,
             )
-        for horizon in HORIZONS:
-            for stage in _FOLD_HORIZON_PRE_FORMAL_STAGES:
-                refs.append(
-                    self._receipt(
-                        self._dependencies.run_upstream_stage(
-                            stage=stage,
-                            horizon=horizon,
-                            request=request,
-                            context=context,
-                            runner=runner,
-                            public_apis=self._public_apis,
-                            resume=resume,
-                        )
-                    )
+            if wave == _WORK_WAVE:
+                refs.extend(
+                    item
+                    for item in wave_refs
+                    if _work_receipt_belongs_to_fold(item, request.fold)
                 )
+            else:
+                refs.extend(wave_refs)
+        for horizon in HORIZONS:
             for stage in ("backtest", "tracking"):
                 refs.append(
                     self._receipt(
@@ -1094,6 +1111,109 @@ class ProductionSuccessorStageAdapter:
             raise
         except Exception:
             _fail("SUCCESSOR_STAGE_INVALID")
+
+    def _bind_runtime_wave_session(
+        self,
+        *,
+        runtime_request: SuccessorRuntimeRequest,
+        fold: str,
+        resume: bool,
+    ) -> None:
+        try:
+            if type(runtime_request) is not SuccessorRuntimeRequest or type(resume) is not bool:
+                raise ValueError
+            if type(fold) is not str or not fold:
+                raise ValueError
+            identity = two_fold_identity(runtime_request)
+            project = _real_directory(runtime_request.project_root)
+            expected_folds = tuple(item.fold for item in runtime_request.folds)
+            if (
+                len(expected_folds) != 2
+                or expected_folds[0] == expected_folds[1]
+                or fold not in expected_folds
+            ):
+                raise ValueError
+            binding = (identity, project, resume, expected_folds)
+            if self._wave_binding is None:
+                self._wave_binding = binding
+                self._consumed_folds = set()
+            elif self._wave_binding != binding:
+                _fail("SUCCESSOR_INPUT_INVALID")
+            if fold in self._consumed_folds:
+                _fail("SUCCESSOR_STAGE_INVALID")
+            if len(self._consumed_folds) >= 2:
+                _fail("SUCCESSOR_STAGE_INVALID")
+            self._consumed_folds.add(fold)
+        except SuccessorRuntimeError:
+            raise
+        except Exception:
+            _fail("SUCCESSOR_INPUT_INVALID")
+
+    def _assert_wave_binding(
+        self, *, runtime_request: SuccessorRuntimeRequest, resume: bool
+    ) -> None:
+        if self._wave_binding is None:
+            raise ValueError
+        identity, project, bound_resume, expected_folds = self._wave_binding
+        if (
+            identity != two_fold_identity(runtime_request)
+            or project != _real_directory(runtime_request.project_root)
+            or bound_resume != resume
+            or expected_folds != tuple(item.fold for item in runtime_request.folds)
+        ):
+            _fail("SUCCESSOR_INPUT_INVALID")
+
+    def _cached_wave(
+        self,
+        *,
+        wave: str,
+        request: SuccessorFoldRequest,
+        context: SuccessorStageContext,
+        runner: "StageRunner",
+        resume: bool,
+    ) -> tuple[StageReceiptRef, ...]:
+        self._assert_wave_binding(runtime_request=context.request, resume=resume)
+        cached = self._wave_cache.get(wave)
+        if cached is not None:
+            try:
+                _validate_wave_receipt_closure(
+                    wave=wave,
+                    refs=cached,
+                    request=context.request,
+                )
+                if (
+                    tuple(item.node_id for item in cached)
+                    != tuple(sorted(item.node_id for item in cached))
+                    or len({item.node_id for item in cached}) != len(cached)
+                    or any(type(item) is not StageReceiptRef for item in cached)
+                ):
+                    raise ValueError
+            except SuccessorRuntimeError:
+                raise
+            except Exception:
+                _fail("SUCCESSOR_STAGE_INVALID")
+            return cached
+        try:
+            raw = self._dependencies.run_upstream_wave(
+                wave=wave,
+                request=request,
+                context=context,
+                runner=runner,
+                public_apis=self._public_apis,
+                resume=resume,
+            )
+            refs = _coerce_wave_refs(raw)
+            _validate_wave_receipt_closure(
+                wave=wave,
+                refs=refs,
+                request=context.request,
+            )
+        except SuccessorRuntimeError:
+            raise
+        except Exception:
+            _fail("SUCCESSOR_STAGE_INVALID")
+        self._wave_cache[wave] = refs
+        return refs
 
     def verify_fold(
         self, *, execution: FoldExecution, context: SuccessorStageContext
@@ -1286,6 +1406,90 @@ class ProductionSuccessorStageAdapter:
         if len(found) != 1:
             _fail("SUCCESSOR_STAGE_INVALID")
         return found[0]
+
+
+def _coerce_wave_refs(value: object) -> tuple[StageReceiptRef, ...]:
+    if type(value) is not tuple or not value:
+        raise ValueError
+    if any(type(item) is not StageReceiptRef for item in value):
+        raise ValueError
+    refs = cast(tuple[StageReceiptRef, ...], value)
+    if (
+        tuple(item.node_id for item in refs)
+        != tuple(sorted(item.node_id for item in refs))
+        or len({item.node_id for item in refs}) != len(refs)
+    ):
+        raise ValueError
+    return refs
+
+
+def _work_receipt_belongs_to_fold(ref: StageReceiptRef, fold: str) -> bool:
+    if ref.stage == "features":
+        return ref.fold == fold
+    if ref.stage in _WORK_PRE_FORMAL_STAGES:
+        return ref.fold == fold
+    return False
+
+
+def _validate_wave_receipt_closure(
+    *,
+    wave: str,
+    refs: tuple[StageReceiptRef, ...],
+    request: SuccessorRuntimeRequest,
+) -> None:
+    if wave in _FORBIDDEN_PSEUDO_BUILDERS or wave not in {
+        *_UPSTREAM_WAVES,
+    }:
+        raise ValueError
+    if wave in _SHARED_SINGLE_WAVES:
+        if len(refs) != 1 or refs[0].stage != wave or refs[0].horizon is not None:
+            raise ValueError
+        return
+    if wave == _EXPERIMENT_ARTIFACTS_WAVE:
+        expected_experiment_artifact_keys: set[_WaveReceiptKey] = {
+            ("folds", None, None),
+            *(("labels", None, horizon) for horizon in HORIZONS),
+        }
+        actual_experiment_artifact_keys: set[_WaveReceiptKey] = {
+            (item.stage, item.fold, item.horizon) for item in refs
+        }
+        if (
+            actual_experiment_artifact_keys != expected_experiment_artifact_keys
+            or len(refs) != len(expected_experiment_artifact_keys)
+        ):
+            raise ValueError
+        if any(item.fold is not None for item in refs):
+            raise ValueError
+        return
+    if wave == _LABEL_RECONCILIATION_WAVE:
+        expected_label_reconciliation_keys: set[_WaveReceiptKey] = {
+            ("label-reconciliation", None, horizon) for horizon in HORIZONS
+        }
+        actual_label_reconciliation_keys: set[_WaveReceiptKey] = {
+            (item.stage, item.fold, item.horizon) for item in refs
+        }
+        if (
+            actual_label_reconciliation_keys != expected_label_reconciliation_keys
+            or len(refs) != len(expected_label_reconciliation_keys)
+        ):
+            raise ValueError
+        if any(item.fold is not None for item in refs):
+            raise ValueError
+        return
+    if wave != _WORK_WAVE:
+        raise ValueError
+    folds = tuple(item.fold for item in request.folds)
+    expected_work_keys: set[_WaveReceiptKey] = set()
+    for fold in folds:
+        expected_work_keys.add(("features", fold, None))
+        for horizon in HORIZONS:
+            for stage in _WORK_PRE_FORMAL_STAGES[1:]:
+                expected_work_keys.add((stage, fold, horizon))
+    actual_work_keys: set[_WaveReceiptKey] = {
+        (item.stage, item.fold, item.horizon) for item in refs
+    }
+    if actual_work_keys != expected_work_keys or len(refs) != len(expected_work_keys):
+        raise ValueError
 
 
 def make_production_successor_stage_adapter(
@@ -2822,7 +3026,7 @@ __all__ = [
     "SuccessorProductionGateRunner",
     "SuccessorProductionGateVerifier",
     "SuccessorProductionFormalStageRunner",
-    "SuccessorProductionStageBuilder",
+    "SuccessorProductionWaveRunner",
     "SuccessorProductionStageRunnerFactory",
     "SuccessorPublicApiBundle",
     "SuccessorConfigInput",
