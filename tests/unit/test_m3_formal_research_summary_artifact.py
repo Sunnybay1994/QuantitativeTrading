@@ -7,7 +7,7 @@ import importlib.util
 import math
 from dataclasses import asdict, replace
 from datetime import timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
 import polars as pl
@@ -26,8 +26,11 @@ from quant.research.m3.contracts import (
 )
 from quant.research.m3.evaluate import (
     EvaluationFreshVerificationContext,
+    FormalSummaryStagePublicationIdentity,
     build_research_summary_artifact,
+    build_research_summary_stage_artifact,
     verify_research_summary_artifact,
+    verify_research_summary_stage_precommit,
 )
 from quant.research.m3.run_state import publish_stage_receipt
 
@@ -370,3 +373,81 @@ def test_formal_summary_rejects_incomplete_order_and_horizon_before_output(
         )
     assert error.value.__cause__ is None and error.value.__context__ is None
     assert not any(root.iterdir())
+
+
+def test_legacy_summary_still_requires_horizon_leaf_and_stage_matches_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _context(tmp_path, monkeypatch)
+    bad = context["base"]["common"] / "summaries" / "h5" / "lightgbm" / "v1"
+    bad.mkdir(parents=True)
+    with pytest.raises(ValueError, match="^M3_RESEARCH_SUMMARY_ARTIFACT_INVALID$"):
+        build_research_summary_artifact(
+            evaluations=context["evaluations"],
+            evaluation_contexts=context["contexts"],
+            experiment=context["experiment"],
+            config=context["config"],
+            horizon_sessions=5,
+            upstream_paths=context["upstream"],
+            artifact_roots=context["roots"],
+            output_root=bad,
+        )
+    assert not any(bad.iterdir())
+
+    legacy_root = context["base"]["common"] / "horizon=5"
+    legacy_root.mkdir()
+    legacy_manifest = build_research_summary_artifact(
+        evaluations=context["evaluations"],
+        evaluation_contexts=context["contexts"],
+        experiment=context["experiment"],
+        config=context["config"],
+        horizon_sessions=5,
+        upstream_paths=context["upstream"],
+        artifact_roots=context["roots"],
+        output_root=legacy_root,
+    )
+    experiment_key = context["experiment"].manifest.experiment_key
+    model = context["evaluations"][0].manifest.model
+    model_version = context["evaluations"][0].manifest.model_version
+    stage_root = context["base"]["common"] / "stage"
+    stage_tmp = stage_root / ".stage-tmp"
+    stage_tmp.mkdir(parents=True)
+    node_id = f"summary.h5.{model}.{model_version}"
+    temp_root = stage_tmp / f".{node_id}.fixture"
+    temp_root.mkdir()
+    identity = FormalSummaryStagePublicationIdentity(
+        stage_root=stage_root,
+        node_id=node_id,
+        final_relative_path=PurePosixPath(
+            f"summaries/{experiment_key}/h5/{model}/{model_version}"
+        ),
+        experiment_key=experiment_key,
+        horizon_sessions=5,
+        model=model,
+        model_version=model_version,
+    )
+    stage_manifest = build_research_summary_stage_artifact(
+        identity=identity,
+        evaluations=context["evaluations"],
+        evaluation_contexts=context["contexts"],
+        experiment=context["experiment"],
+        config=context["config"],
+        upstream_paths=context["upstream"],
+        artifact_roots=context["roots"],
+        output_root=temp_root,
+    )
+    assert stage_manifest == legacy_manifest
+    for name in sorted(summary_module._SUMMARY_FILES):
+        assert (temp_root / name).read_bytes() == (legacy_root / name).read_bytes()
+    pre = verify_research_summary_stage_precommit(
+        identity=identity,
+        root=temp_root,
+        evaluations=context["evaluations"],
+        evaluation_contexts=context["contexts"],
+        experiment=context["experiment"],
+        config=context["config"],
+        upstream_paths=context["upstream"],
+        artifact_roots=context["roots"],
+    )
+    assert pre.manifest == legacy_manifest
+    assert pre.summary_receipt_sha256 == "0" * 64
