@@ -36,10 +36,19 @@ from quant.execution.paper_runtime import (
     VerifiedPaperRuntimeEnvironment,
     verify_paper_runtime_environment,
 )
-from quant.execution.store import ExecutionStore
+from quant.execution.session_barrier import (
+    SessionBarrierCapability,
+    SessionBarrierError,
+    build_session_barrier_capability,
+    recover_session_barrier_closure_capability,
+    require_matching_barrier_handle,
+    unpack_session_barrier_capability,
+)
+from quant.execution.store import CURRENT_SCHEMA_VERSION, ExecutionStore
 
-_SCHEMA = "formal-paper-execution-store-v1"
+_SCHEMA = "formal-paper-execution-store-v2"
 _DESCRIPTOR = "execution-store-instance.json"
+_BARRIER_SCHEMA = "m4-session-barrier-v1"
 
 
 class FormalPaperExecutionStoreError(ValueError):
@@ -80,6 +89,8 @@ class VerifiedFormalPaperExecutionStoreCapability:
     account_id: str
     policy_descriptor_identity: str
     gateway_identity: str
+    barrier_epoch: str
+    barrier_capability_identity: str
     verified_at: dt.datetime
     environment: VerifiedPaperRuntimeEnvironment = field(repr=False, compare=False)
     policy: VerifiedPaperExecutionPolicy = field(repr=False, compare=False)
@@ -89,6 +100,7 @@ class VerifiedFormalPaperExecutionStoreCapability:
         repr=False, compare=False
     )
     _store: ExecutionStore = field(repr=False, compare=False)
+    _session_barrier: object = field(repr=False, compare=False)
     _attestation: _Attestation = field(repr=False, compare=False)
 
     @property
@@ -128,8 +140,10 @@ def _create_api():  # type: ignore[no-untyped-def]
         binding: VerifiedFormalPaperBrokerPolicyBinding,
         account: VerifiedFormalPaperAccountDescriptor,
         broker_store: VerifiedFormalPaperBrokerStoreCapability,
+        session_barrier: object,
         now: dt.datetime,
     ) -> VerifiedFormalPaperExecutionStoreCapability:
+        barrier = unpack_session_barrier_capability(session_barrier)
         value = VerifiedFormalPaperExecutionStoreCapability(
             schema_version=_SCHEMA,
             store_identity=_text(descriptor, "store_identity"),
@@ -140,6 +154,8 @@ def _create_api():  # type: ignore[no-untyped-def]
             account_id=account.account_id,
             policy_descriptor_identity=_text(descriptor, "policy_descriptor_identity"),
             gateway_identity=broker_store.gateway_identity,
+            barrier_epoch=_text(descriptor, "barrier_epoch"),
+            barrier_capability_identity=_text(descriptor, "barrier_capability_identity"),
             verified_at=now,
             environment=environment,
             policy=policy,
@@ -147,10 +163,17 @@ def _create_api():  # type: ignore[no-untyped-def]
             account=account,
             broker_store=broker_store,
             _store=store,
+            _session_barrier=barrier,
             _attestation=_Attestation(b""),
         )
         object.__setattr__(value, "_attestation", _Attestation(token(value)))
         if not valid_token(value):
+            raise _Failure("PAPER_FORMAL_EXECUTION_STORE_INVALID")
+        if (
+            value.barrier_epoch != barrier.barrier_epoch
+            or value.barrier_capability_identity != barrier.capability_identity
+            or not store.session_barrier_enabled()
+        ):
             raise _Failure("PAPER_FORMAL_EXECUTION_STORE_INVALID")
         return value
 
@@ -165,7 +188,7 @@ def _create_api():  # type: ignore[no-untyped-def]
     ) -> VerifiedFormalPaperExecutionStoreCapability:
         root_created = False
         root_identity: tuple[int, int, int] | None = None
-        db_identity: tuple[int, int, int] | None = None
+        owned: dict[Path, tuple[int, int, int]] = {}
         store: ExecutionStore | None = None
         root = environment.config.runtime_root
         try:
@@ -189,32 +212,76 @@ def _create_api():  # type: ignore[no-untyped-def]
             descriptor_path = root / _DESCRIPTOR
             fd = os.open(db_path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
             os.close(fd)
-            db_identity = _object_identity(db_path, directory=False)
+            owned[db_path] = _object_identity(db_path, directory=False)
+            barrier_epoch = secrets.token_hex(32)
+            body = _descriptor_body(
+                environment=chain[0],
+                account=chain[3],
+                broker_store=fresh_broker,
+                created_at=timestamp,
+                execution_schema_version=CURRENT_SCHEMA_VERSION,
+                barrier_epoch=barrier_epoch,
+            )
+            store_identity = _sha256(body)
+            session_barrier = _build_formal_barrier(
+                environment=chain[0],
+                policy=chain[1],
+                account=chain[3],
+                broker_store=fresh_broker,
+                oms_store_identity=store_identity,
+                barrier_epoch=barrier_epoch,
+            )
             store = ExecutionStore.open(
-                f"sqlite:///{db_path.name}", trusted_root=root
+                f"sqlite:///{db_path.name}",
+                trusted_root=root,
+                session_barrier=session_barrier,
+                initialize_barrier=True,
+                barrier_created_at=timestamp,
             )
+            if store.schema_version() != CURRENT_SCHEMA_VERSION:
+                raise _Failure("PAPER_FORMAL_EXECUTION_STORE_INVALID")
+            _record_owned_sidecars(owned, db_path)
             descriptor = _descriptor(
-                environment=chain[0], policy=chain[1], account=chain[3],
-                broker_store=fresh_broker, store=store, created_at=timestamp,
+                environment=chain[0],
+                policy=chain[1],
+                account=chain[3],
+                broker_store=fresh_broker,
+                store=store,
+                created_at=timestamp,
+                barrier_epoch=barrier_epoch,
+                barrier_capability_identity=session_barrier.capability_identity,
             )
+            if descriptor["store_identity"] != store_identity:
+                raise _Failure("PAPER_FORMAL_EXECUTION_STORE_STALE")
             _write_exclusive(descriptor_path, canonical_json_bytes(descriptor))
+            owned[descriptor_path] = _object_identity(
+                descriptor_path, directory=False
+            )
             _verify_descriptor(descriptor_path, descriptor, store, chain[0])
+            _bind_formal_broker_barrier(fresh_broker, store, session_barrier)
             return mint(
-                store=store, descriptor=descriptor, environment=chain[0],
-                policy=chain[1], binding=chain[2], account=chain[3],
-                broker_store=fresh_broker, now=timestamp,
+                store=store,
+                descriptor=descriptor,
+                environment=chain[0],
+                policy=chain[1],
+                binding=chain[2],
+                account=chain[3],
+                broker_store=fresh_broker,
+                session_barrier=session_barrier,
+                now=timestamp,
             )
         except _Failure as exc:
             failure = exc.code
+        except SessionBarrierError as exc:
+            failure = str(exc) if str(exc).startswith("BARRIER_") else (
+                "PAPER_FORMAL_EXECUTION_STORE_INVALID"
+            )
         except FileExistsError:
             failure = "PAPER_FORMAL_EXECUTION_STORE_ALREADY_EXISTS"
         except Exception:
             failure = "PAPER_FORMAL_EXECUTION_STORE_INVALID"
-        db_path = root / environment.config.oms_sqlite_filename
         cleaned = (
-            _rollback(root, root_identity, db_path, db_identity, store)
-            if root_created
-            else True
+            _rollback(root, root_identity, owned, store) if root_created else True
         )
         if not cleaned:
             failure = "PAPER_FORMAL_EXECUTION_STORE_ROLLBACK_REQUIRED"
@@ -238,24 +305,62 @@ def _create_api():  # type: ignore[no-untyped-def]
             root = environment.config.runtime_root
             descriptor_path = root / _DESCRIPTOR
             descriptor = _read_descriptor(descriptor_path)
+            session_barrier = _build_formal_barrier(
+                environment=environment,
+                policy=policy,
+                account=account,
+                broker_store=fresh_broker,
+                oms_store_identity=_text(descriptor, "store_identity"),
+                barrier_epoch=_text(descriptor, "barrier_epoch"),
+            )
+            if (
+                session_barrier.capability_identity
+                != _text(descriptor, "barrier_capability_identity")
+            ):
+                raise _Failure("PAPER_FORMAL_EXECUTION_STORE_STALE")
             store = ExecutionStore.open(
-                f"sqlite:///{environment.config.oms_sqlite_filename}", trusted_root=root
+                f"sqlite:///{environment.config.oms_sqlite_filename}",
+                trusted_root=root,
+                session_barrier=session_barrier,
+                initialize_barrier=False,
             )
             expected = _descriptor(
-                environment=environment, policy=policy, account=account,
-                broker_store=fresh_broker, store=store,
-                created_at=dt.datetime.fromisoformat(_text(descriptor, "created_at").replace("Z", "+00:00")),
+                environment=environment,
+                policy=policy,
+                account=account,
+                broker_store=fresh_broker,
+                store=store,
+                created_at=dt.datetime.fromisoformat(
+                    _text(descriptor, "created_at").replace("Z", "+00:00")
+                ),
+                barrier_epoch=_text(descriptor, "barrier_epoch"),
+                barrier_capability_identity=session_barrier.capability_identity,
             )
             if descriptor != expected:
                 raise _Failure("PAPER_FORMAL_EXECUTION_STORE_STALE")
             _verify_descriptor(descriptor_path, expected, store, environment)
+            _bind_formal_broker_barrier(fresh_broker, store, session_barrier)
+            require_matching_barrier_handle(
+                oms_handle=store.session_barrier_oms_handle(),
+                capability=session_barrier,
+            )
             return mint(
-                store=store, descriptor=expected, environment=environment,
-                policy=policy, binding=binding, account=account,
-                broker_store=fresh_broker, now=timestamp,
+                store=store,
+                descriptor=expected,
+                environment=environment,
+                policy=policy,
+                binding=binding,
+                account=account,
+                broker_store=fresh_broker,
+                session_barrier=session_barrier,
+                now=timestamp,
             )
         except _Failure as exc:
             failure = exc.code
+        except SessionBarrierError as exc:
+            failure = str(exc) if str(exc).startswith("BARRIER_") else (
+                "PAPER_FORMAL_EXECUTION_STORE_NOT_FOUND"
+            )
         except Exception:
             failure = "PAPER_FORMAL_EXECUTION_STORE_NOT_FOUND"
         if store is not None:
@@ -279,6 +384,16 @@ def _create_api():  # type: ignore[no-untyped-def]
             )
             if fresh_broker is not capability.broker_store:
                 raise _Failure("PAPER_FORMAL_EXECUTION_STORE_STALE")
+            if (
+                not capability._store.session_barrier_enabled()
+                or not fresh_broker.store.session_barrier_enabled()
+            ):
+                raise _Failure("PAPER_FORMAL_EXECUTION_STORE_INVALID")
+            barrier = unpack_session_barrier_capability(capability._session_barrier)
+            require_matching_barrier_handle(
+                oms_handle=capability._store.session_barrier_oms_handle(),
+                capability=barrier,
+            )
             descriptor_path = capability.environment.config.runtime_root / _DESCRIPTOR
             descriptor = _read_descriptor(descriptor_path)
             _verify_descriptor(
@@ -286,11 +401,20 @@ def _create_api():  # type: ignore[no-untyped-def]
             )
             if _stable_projection(capability) != _descriptor_projection(descriptor):
                 raise _Failure("PAPER_FORMAL_EXECUTION_STORE_STALE")
-            with capability._store.transaction():
-                pass
+            if (
+                _text(descriptor, "barrier_epoch") != capability.barrier_epoch
+                or _text(descriptor, "barrier_capability_identity")
+                != capability.barrier_capability_identity
+                or barrier.capability_identity != capability.barrier_capability_identity
+            ):
+                raise _Failure("PAPER_FORMAL_EXECUTION_STORE_STALE")
             return capability
         except _Failure as exc:
             failure = exc.code
+        except SessionBarrierError as exc:
+            failure = str(exc) if str(exc).startswith("BARRIER_") else (
+                "PAPER_FORMAL_EXECUTION_STORE_STALE"
+            )
         except Exception:
             failure = "PAPER_FORMAL_EXECUTION_STORE_STALE"
         raise FormalPaperExecutionStoreError(failure) from None
@@ -368,23 +492,102 @@ def _descriptor(
     broker_store: VerifiedFormalPaperBrokerStoreCapability,
     store: ExecutionStore,
     created_at: dt.datetime,
+    barrier_epoch: str,
+    barrier_capability_identity: str,
 ) -> dict[str, object]:
+    del policy
+    body = _descriptor_body(
+        environment=environment,
+        account=account,
+        broker_store=broker_store,
+        created_at=created_at,
+        execution_schema_version=store.schema_version(),
+        barrier_epoch=barrier_epoch,
+    )
+    store_identity = _sha256(body)
+    return {
+        **body,
+        "barrier_capability_identity": barrier_capability_identity,
+        "store_identity": store_identity,
+    }
+
+
+def _descriptor_body(
+    *,
+    environment: VerifiedPaperRuntimeEnvironment,
+    account: VerifiedFormalPaperAccountDescriptor,
+    broker_store: VerifiedFormalPaperBrokerStoreCapability,
+    created_at: dt.datetime,
+    execution_schema_version: int,
+    barrier_epoch: str,
+    barrier_capability_identity: str | None = None,
+) -> dict[str, object]:
+    del barrier_capability_identity
     root = environment.config.runtime_root
     database = root / environment.config.oms_sqlite_filename
-    del policy
-    body: dict[str, object] = {
+    return {
         "schema_version": _SCHEMA,
         "runtime_config_identity": environment.config.config_identity,
         "runtime_root_identity": _identity_text(root, directory=True),
         "database_identity": _identity_text(database, directory=False),
         "database_filename": database.name,
-        "execution_schema_version": store.schema_version(),
+        "execution_schema_version": execution_schema_version,
         "account_id": account.account_id,
         "policy_descriptor_identity": broker_store.policy_descriptor_identity,
         "gateway_identity": broker_store.gateway_identity,
+        "barrier_schema": _BARRIER_SCHEMA,
+        "barrier_epoch": barrier_epoch,
         "created_at": utc_datetime_text(created_at),
     }
-    return {**body, "store_identity": _sha256(body)}
+
+
+def _build_formal_barrier(
+    *,
+    environment: VerifiedPaperRuntimeEnvironment,
+    policy: VerifiedPaperExecutionPolicy,
+    account: VerifiedFormalPaperAccountDescriptor,
+    broker_store: VerifiedFormalPaperBrokerStoreCapability,
+    oms_store_identity: str,
+    barrier_epoch: str,
+) -> SessionBarrierCapability:
+    root = environment.config.runtime_root
+    if type(root) is not type(Path()) or not root.is_absolute():
+        raise _Failure("PAPER_FORMAL_EXECUTION_STORE_INVALID")
+    try:
+        return build_session_barrier_capability(
+            barrier_epoch=barrier_epoch,
+            session_date=policy.session_date,
+            account_identity=account.descriptor_identity,
+            oms_store_identity=oms_store_identity,
+            broker_store_identity=broker_store.store.descriptor.descriptor_identity,
+            gateway_identity=broker_store.gateway_identity,
+            config_identity=environment.config.config_identity,
+            lock_root=root,
+            terminal_policy="FORMAL_CLOSURE_ONLY",
+        )
+    except SessionBarrierError as exc:
+        raise _Failure(str(exc)) from None
+
+
+def _bind_formal_broker_barrier(
+    broker_store: VerifiedFormalPaperBrokerStoreCapability,
+    store: ExecutionStore,
+    session_barrier: object,
+) -> None:
+    try:
+        broker_store.store.bind_session_barrier(
+            session_barrier,
+            oms_handle=store.session_barrier_oms_handle(),
+        )
+    except SessionBarrierError as exc:
+        raise _Failure(str(exc)) from None
+    except Exception as exc:
+        code = getattr(exc, "code", None)
+        if type(code) is str and code.startswith("BARRIER_"):
+            raise _Failure(code) from None
+        raise _Failure("PAPER_FORMAL_EXECUTION_STORE_INVALID") from None
+    if not broker_store.store.session_barrier_enabled():
+        raise _Failure("PAPER_FORMAL_EXECUTION_STORE_INVALID")
 
 
 def _verify_descriptor(
@@ -395,6 +598,8 @@ def _verify_descriptor(
         raise _Failure("PAPER_FORMAL_EXECUTION_STORE_STALE")
     if _identity_text(environment.config.runtime_root, directory=True) != _text(expected, "runtime_root_identity"):
         raise _Failure("PAPER_FORMAL_EXECUTION_STORE_STALE")
+    if not store.session_barrier_enabled():
+        raise _Failure("PAPER_FORMAL_EXECUTION_STORE_INVALID")
 
 
 def _capability_payload(value: VerifiedFormalPaperExecutionStoreCapability) -> dict[str, object]:
@@ -420,6 +625,8 @@ def _stable_projection(value: VerifiedFormalPaperExecutionStoreCapability) -> di
         "account_id": value.account_id,
         "policy_descriptor_identity": value.policy_descriptor_identity,
         "gateway_identity": value.gateway_identity,
+        "barrier_epoch": value.barrier_epoch,
+        "barrier_capability_identity": value.barrier_capability_identity,
     }
 
 
@@ -434,6 +641,8 @@ def _descriptor_projection(value: dict[str, object]) -> dict[str, object]:
         "account_id",
         "policy_descriptor_identity",
         "gateway_identity",
+        "barrier_epoch",
+        "barrier_capability_identity",
     )
     return {name: value[name] for name in names}
 
@@ -450,11 +659,18 @@ def _read_descriptor(path: Path) -> dict[str, object]:
         "schema_version", "runtime_config_identity", "runtime_root_identity",
         "database_identity", "database_filename", "execution_schema_version",
         "account_id", "policy_descriptor_identity", "gateway_identity",
+        "barrier_schema", "barrier_epoch", "barrier_capability_identity",
         "created_at", "store_identity",
     }
     if set(value) != expected_keys or value["schema_version"] != _SCHEMA:
         raise _Failure("PAPER_FORMAL_EXECUTION_STORE_STALE")
-    body = {name: item for name, item in value.items() if name != "store_identity"}
+    if value["barrier_schema"] != _BARRIER_SCHEMA:
+        raise _Failure("PAPER_FORMAL_EXECUTION_STORE_STALE")
+    body = {
+        name: item
+        for name, item in value.items()
+        if name not in {"store_identity", "barrier_capability_identity"}
+    }
     if value["store_identity"] != _sha256(body):
         raise _Failure("PAPER_FORMAL_EXECUTION_STORE_STALE")
     return value
@@ -468,25 +684,53 @@ def _write_exclusive(path: Path, raw: bytes) -> None:
         os.fsync(stream.fileno())
 
 
+def _record_owned_sidecars(
+    owned: dict[Path, tuple[int, int, int]], db_path: Path
+) -> None:
+    """Record WAL/SHM object identities only when present after this attempt."""
+    for sidecar in (Path(f"{db_path}-wal"), Path(f"{db_path}-shm")):
+        if sidecar.exists() and sidecar not in owned:
+            owned[sidecar] = _object_identity(sidecar, directory=False)
+
+
 def _rollback(
-    root: Path, root_identity: tuple[int, int, int] | None,
-    db_path: Path, db_identity: tuple[int, int, int] | None,
+    root: Path,
+    root_identity: tuple[int, int, int] | None,
+    owned: Mapping[Path, tuple[int, int, int]],
     store: ExecutionStore | None,
 ) -> bool:
+    """Best-effort half-init cleanup for this attempt's OMS artifacts only.
+
+    Deletes only paths whose object identities were recorded during this
+    initialize attempt (main sqlite, optional WAL/SHM snapshot after open,
+    descriptor immediately after ``_write_exclusive``). Fresh identity must
+    match before unlink. Unrecorded WAL/SHM or any other residue is never
+    deleted by name/“in new root”; returns False so callers surface
+    ``PAPER_FORMAL_EXECUTION_STORE_ROLLBACK_REQUIRED``. Never deletes the
+    broker root.
+    """
     try:
         if store is not None:
             store.close()
         if root_identity is None or _object_identity(root, directory=True) != root_identity:
             return False
-        db_paths = (db_path, Path(f"{db_path}-wal"), Path(f"{db_path}-shm"))
-        allowed = {root / _DESCRIPTOR, *db_paths}
-        if any(item not in allowed for item in root.iterdir()):
+        present = list(root.iterdir())
+        # Refuse any present path without a recorded identity (incl. unrecorded WAL/SHM).
+        if any(item not in owned for item in present):
             return False
-        for item in (root / _DESCRIPTOR, *db_paths):
-            if item.exists():
-                if item.name.endswith(".sqlite3") and db_identity is not None and _object_identity(item, directory=False) != db_identity:
-                    return False
-                item.unlink()
+        for path, identity in owned.items():
+            if not path.exists():
+                continue
+            if _object_identity(path, directory=False) != identity:
+                return False
+        for path, identity in owned.items():
+            if not path.exists():
+                continue
+            if _object_identity(path, directory=False) != identity:
+                return False
+            path.unlink()
+        if any(True for _ in root.iterdir()):
+            return False
         root.rmdir()
         return True
     except Exception:
@@ -537,5 +781,105 @@ __all__ = [
     "VerifiedFormalPaperExecutionStoreCapability",
     "initialize_verified_formal_paper_execution_store",
     "open_verified_formal_paper_execution_store",
+    "recover_formal_session_barrier_closure",
+    "transition_formal_session_barrier_to_closing",
     "verify_existing_formal_paper_execution_store_capability",
+    "verify_formal_session_barrier_closing_row",
 ]
+
+
+def transition_formal_session_barrier_to_closing(
+    *,
+    capability: VerifiedFormalPaperExecutionStoreCapability,
+    nonce: str,
+    now: dt.datetime,
+) -> tuple[object, object]:
+    """Formal OPEN→CLOSING; returns ``(row, closure)`` only — no raw token.
+
+    Closure is issue-only: no terminal broker/OMS writes and no CLOSING→CLOSED.
+    Formal barriers use ``FORMAL_CLOSURE_ONLY``; ``.store`` raw CLOSED remains
+    rejected with ``BARRIER_CLOSURE_REQUIRED``.
+    """
+    try:
+        timestamp = _utc(now)
+        verified = verify_existing_formal_paper_execution_store_capability(
+            capability=capability, now=timestamp
+        )
+        if verified is not capability:
+            raise _Failure("PAPER_FORMAL_EXECUTION_STORE_STALE")
+        row, _token, closure = verified.store.transition_session_barrier_to_closing(
+            nonce=nonce, now=timestamp
+        )
+        return row, closure
+    except _Failure as exc:
+        raise FormalPaperExecutionStoreError(exc.code) from None
+    except FormalPaperExecutionStoreError:
+        raise
+    except Exception as exc:
+        code = getattr(exc, "code", None)
+        if type(code) is str:
+            raise FormalPaperExecutionStoreError(code) from None
+        raise FormalPaperExecutionStoreError(
+            "PAPER_FORMAL_EXECUTION_STORE_INVALID"
+        ) from None
+
+
+def verify_formal_session_barrier_closing_row(
+    *,
+    capability: VerifiedFormalPaperExecutionStoreCapability,
+    now: dt.datetime,
+) -> object:
+    """Fresh-verify formal capability and return the durable barrier row only."""
+    try:
+        timestamp = _utc(now)
+        verified = verify_existing_formal_paper_execution_store_capability(
+            capability=capability, now=timestamp
+        )
+        if verified is not capability:
+            raise _Failure("PAPER_FORMAL_EXECUTION_STORE_STALE")
+        return verified.store.read_session_barrier_row()
+    except _Failure as exc:
+        raise FormalPaperExecutionStoreError(exc.code) from None
+    except FormalPaperExecutionStoreError:
+        raise
+    except Exception as exc:
+        code = getattr(exc, "code", None)
+        if type(code) is str:
+            raise FormalPaperExecutionStoreError(code) from None
+        raise FormalPaperExecutionStoreError(
+            "PAPER_FORMAL_EXECUTION_STORE_INVALID"
+        ) from None
+
+
+def recover_formal_session_barrier_closure(
+    *,
+    capability: VerifiedFormalPaperExecutionStoreCapability,
+    close_token_identity: str,
+    now: dt.datetime,
+) -> object:
+    """Recover CLOSING closure via private barrier; never exposes live capability."""
+    try:
+        timestamp = _utc(now)
+        verified = verify_existing_formal_paper_execution_store_capability(
+            capability=capability, now=timestamp
+        )
+        if verified is not capability:
+            raise _Failure("PAPER_FORMAL_EXECUTION_STORE_STALE")
+        return recover_session_barrier_closure_capability(
+            capability=verified._session_barrier,
+            oms_handle=verified.store.session_barrier_oms_handle(),
+            close_token_identity=close_token_identity,
+        )
+    except _Failure as exc:
+        raise FormalPaperExecutionStoreError(exc.code) from None
+    except FormalPaperExecutionStoreError:
+        raise
+    except SessionBarrierError as exc:
+        raise FormalPaperExecutionStoreError(str(exc)) from None
+    except Exception as exc:
+        code = getattr(exc, "code", None)
+        if type(code) is str:
+            raise FormalPaperExecutionStoreError(code) from None
+        raise FormalPaperExecutionStoreError(
+            "PAPER_FORMAL_EXECUTION_STORE_INVALID"
+        ) from None

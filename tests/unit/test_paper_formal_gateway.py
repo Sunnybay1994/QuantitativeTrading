@@ -10,6 +10,7 @@ import pytest
 
 from quant.domain.enums import Currency, ExecutionMode, Market, OrderSide
 from quant.execution import paper_formal_broker_store as formal_store
+from quant.execution import paper_formal_execution_store as formal_oms
 from quant.execution import paper_formal_gateway as formal_gateway
 from quant.execution.contracts import build_order_command, build_order_intent
 from quant.execution.gateways.paper import PaperGatewayError
@@ -50,6 +51,75 @@ def _approved_bundle(bundle: tuple[object, ...]) -> tuple[object, ...]:
     return environment, policy, binding, account
 
 
+def _full_chain(capability, chain):  # type: ignore[no-untyped-def]
+    environment, policy, binding, account = chain
+    layout = replace(
+        environment.layout,
+        root_identities=tuple(
+            (name, "1" * 64 if name == "runtime" else identity)
+            for name, identity in environment.layout.root_identities
+        ),
+        layout_identity="2" * 64,
+    )
+    environment = replace(
+        environment, layout=layout, verification_identity="3" * 64
+    )
+    policy = replace(policy, policy_identity="4" * 64)
+    binding = replace(
+        binding,
+        runtime_environment_identity=environment.verification_identity,
+        execution_policy_identity=policy.policy_identity,
+        binding_identity="5" * 64,
+    )
+    account = replace(
+        account,
+        runtime_environment_identity=environment.verification_identity,
+        execution_policy_identity=policy.policy_identity,
+        broker_binding_identity=binding.binding_identity,
+        verification_identity="6" * 64,
+    )
+    broker = replace(
+        capability,
+        runtime_environment_identity=environment.verification_identity,
+        runtime_layout_identity=layout.layout_identity,
+        execution_policy_identity=policy.policy_identity,
+        broker_binding_identity=binding.binding_identity,
+        account_verification_identity=account.verification_identity,
+        capability_identity="7" * 64,
+    )
+    return (environment, policy, binding, account), broker
+
+
+def _allow_materialization(
+    monkeypatch: pytest.MonkeyPatch, full, broker  # type: ignore[no-untyped-def]
+) -> None:
+    environment, policy, binding, account = full
+    monkeypatch.setattr(
+        formal_oms,
+        "verify_existing_formal_paper_broker_store_capability",
+        lambda **kwargs: kwargs["capability"],
+    )
+    monkeypatch.setattr(
+        formal_oms, "verify_paper_runtime_environment", lambda **kwargs: environment
+    )
+    monkeypatch.setattr(
+        formal_oms, "load_verified_paper_execution_policy", lambda **kwargs: policy
+    )
+    monkeypatch.setattr(
+        formal_oms,
+        "bind_verified_formal_paper_broker_policy",
+        lambda **kwargs: binding,
+    )
+    monkeypatch.setattr(
+        formal_oms,
+        "load_verified_formal_paper_account_descriptor",
+        lambda **kwargs: account,
+    )
+    monkeypatch.setattr(
+        formal_oms, "open_verified_formal_paper_broker_store", lambda **kwargs: broker
+    )
+
+
 def _setup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[object, tuple[object, ...]]:
@@ -57,14 +127,32 @@ def _setup(
     cold = _approved_bundle(cold_raw)
     materialized = _approved_bundle(materialized_raw)
     _allow_chain(monkeypatch, materialized)
-    capability = formal_store.initialize_verified_formal_paper_broker_store(
+    broker_only = formal_store.initialize_verified_formal_paper_broker_store(
         environment=cold[0],
         policy=cold[1],
         binding=cold[2],
         account=cold[3],
         now=NOW,
     )
-    return capability, materialized
+    full, broker = _full_chain(broker_only, materialized)
+    _allow_materialization(monkeypatch, full, broker)
+    oms = formal_oms.initialize_verified_formal_paper_execution_store(
+        broker_store=broker_only,
+        environment=materialized[0],
+        policy=materialized[1],
+        binding=materialized[2],
+        account=materialized[3],
+        now=NOW,
+    )
+    assert oms.store.session_barrier_enabled()
+    assert oms.broker_store.store.session_barrier_enabled()
+    # Test-owned exact verifier for positive gateway fixtures only (not production).
+    monkeypatch.setattr(
+        formal_gateway,
+        "verify_existing_formal_paper_broker_store_capability",
+        lambda **kwargs: kwargs["capability"],
+    )
+    return oms.broker_store, full
 
 
 def _command():  # type: ignore[no-untyped-def]
@@ -207,6 +295,41 @@ def test_closed_store_fails_at_dispatch_and_default_cancel_plan_is_exact(
         match="^PAPER_FORMAL_GATEWAY_INVALID$",
     ):
         gateway.submit.submit(command=_command(), dispatch_attempt=1, now=NOW)
+
+
+def test_unbound_broker_formal_gateway_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cold_raw, materialized_raw = _chains(tmp_path)
+    cold = _approved_bundle(cold_raw)
+    materialized = _approved_bundle(materialized_raw)
+    _allow_chain(monkeypatch, materialized)
+    unbound = formal_store.initialize_verified_formal_paper_broker_store(
+        environment=cold[0],
+        policy=cold[1],
+        binding=cold[2],
+        account=cold[3],
+        now=NOW,
+    )
+    assert unbound.store.session_barrier_enabled() is False
+    # Exact verifier returns this capability; rejection must be enabled()==False.
+    monkeypatch.setattr(
+        formal_gateway,
+        "verify_existing_formal_paper_broker_store_capability",
+        lambda **kwargs: kwargs["capability"],
+    )
+    with pytest.raises(
+        formal_gateway.FormalPaperGatewayError,
+        match="^PAPER_FORMAL_GATEWAY_INVALID$",
+    ):
+        formal_gateway.open_verified_formal_paper_gateway_factory(
+            store_capability=unbound,
+            environment=cold[0],
+            policy=cold[1],
+            binding=cold[2],
+            account=cold[3],
+            now=NOW,
+        )
 
 
 def test_legacy_clock_path_keeps_ordinal_timestamps() -> None:

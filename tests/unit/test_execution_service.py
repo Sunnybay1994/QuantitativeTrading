@@ -2382,3 +2382,261 @@ def test_approval_zero_replay_rejects_stage_and_approval_structure_drift(
         )
     assert _logical_execution_snapshot(database) == after_tamper
     store.close()
+
+def test_cancel_dispatch_does_not_hold_oms_tx_across_gateway() -> None:
+    """Lease depth exact-1: cancel must not keep OMS write lease across adapter."""
+    import inspect
+
+    source = inspect.getsource(ExecutionService.dispatch_cancel)
+    assert "Keep the immediate SQLite transaction across the adapter boundary" not in source
+    assert "open_operation_fence" in source
+    assert source.index("open_operation_fence") < source.index(
+        "_dispatch_cancel_under_operation_fence"
+    )
+    under = inspect.getsource(ExecutionService._dispatch_cancel_under_operation_fence)
+    assert "Lease depth must stay exact 1" in under
+    assert "preflight_dispatch_at" in under
+    assert under.index("preflight_dispatch_at = dispatch_at") < under.index(
+        "cancel_gateway.cancel"
+    )
+    assert under.index("cancel_gateway.cancel") < under.index("mark_cancel_sent")
+    # Submit/pending paths also wrap the same fence.
+    pending = inspect.getsource(ExecutionService.dispatch_pending)
+    exact = inspect.getsource(ExecutionService.dispatch_exact_pending_commands)
+    commands = inspect.getsource(ExecutionService.dispatch_commands)
+    assert "open_operation_fence" in pending
+    assert "open_operation_fence" in exact
+    assert "open_operation_fence" in commands
+
+
+def test_dispatch_methods_contain_open_operation_fence() -> None:
+    """Static contract: claim→gateway→callback paths hold one operation fence."""
+    import inspect
+
+    for name in (
+        "dispatch_cancel",
+        "dispatch_pending",
+        "dispatch_exact_pending_commands",
+        "dispatch_commands",
+    ):
+        source = inspect.getsource(getattr(ExecutionService, name))
+        assert "open_operation_fence" in source, name
+
+
+def test_barrier_enabled_dispatch_permit_lock_depth_exact_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Barrier-enabled submit: one OS lock acquire for the fence; child leases reuse it."""
+    import quant.execution.session_barrier as sb
+    import quant.execution.store as store_module
+    from quant.execution.session_barrier import build_session_barrier_capability
+
+    lock_root = tmp_path / "svc-op-fence-lock"
+    lock_root.mkdir()
+    cap = build_session_barrier_capability(
+        barrier_epoch=_hex("svc-epoch"),
+        session_date=DAY,
+        account_identity=_hex("svc-account"),
+        oms_store_identity=_hex("svc-oms"),
+        broker_store_identity=_hex("svc-broker"),
+        gateway_identity=_hex("svc-gateway"),
+        config_identity=_hex("svc-config"),
+        lock_root=lock_root,
+    )
+    created = NOW
+    store = ExecutionStore.open(
+        "sqlite:///svc-barrier/execution.db",
+        trusted_root=tmp_path,
+        session_barrier=cap,
+        initialize_barrier=True,
+        barrier_created_at=created,
+    )
+    acquire_count = {"n": 0}
+    real_acquire = sb._acquire_barrier_lock
+
+    def tracked_acquire(root: Path) -> object:
+        acquire_count["n"] += 1
+        return real_acquire(root)
+
+    monkeypatch.setattr(sb, "_acquire_barrier_lock", tracked_acquire)
+
+    child_leases = {"n": 0}
+    real_hold_lease = store_module.hold_open_write_lease
+
+    @contextmanager
+    def tracked_lease(*args: object, **kwargs: object):
+        child_leases["n"] += 1
+        with real_hold_lease(*args, **kwargs) as lease:
+            yield lease
+
+    monkeypatch.setattr(store_module, "hold_open_write_lease", tracked_lease)
+
+    gateway = FakeGateway()
+    service = _service(store, gateway, MutableClock())
+    _stage(service, tmp_path)
+    # Staging may have acquired locks; reset counters around dispatch only.
+    acquire_count["n"] = 0
+    child_leases["n"] = 0
+    result = service.dispatch_pending(limit=1)
+    assert result.claimed_count == 1
+    assert acquire_count["n"] == 1
+    assert child_leases["n"] >= 1
+    # After fence exit, CLOSING is reachable (outer lock released).
+    closing = store.transition_session_barrier_to_closing(
+        nonce="svc-close", now=created + dt.timedelta(seconds=1)
+    )
+    assert getattr(closing[0], "state") == "CLOSING"
+    store.close()
+
+
+def test_cancel_operation_fence_blocks_closing_during_gateway(
+    tmp_path: Path,
+) -> None:
+    """Cancel outer fence holds OS lock across gateway; CLOSING reports BUSY."""
+    import threading
+
+    from quant.execution.session_barrier import build_session_barrier_capability
+
+    lock_root = tmp_path / "cancel-fence-lock"
+    lock_root.mkdir()
+    cap = build_session_barrier_capability(
+        barrier_epoch=_hex("cancel-epoch"),
+        session_date=DAY,
+        account_identity=_hex("cancel-account"),
+        oms_store_identity=_hex("cancel-oms"),
+        broker_store_identity=_hex("cancel-broker"),
+        gateway_identity=_hex("cancel-gateway"),
+        config_identity=_hex("cancel-config"),
+        lock_root=lock_root,
+    )
+    created = NOW
+    store = ExecutionStore.open(
+        "sqlite:///cancel-fence/execution.db",
+        trusted_root=tmp_path,
+        session_barrier=cap,
+        initialize_barrier=True,
+        barrier_created_at=created,
+    )
+
+    class PausingCancelGateway(FakeGateway):
+        def __init__(self) -> None:
+            super().__init__()
+            self.in_cancel = threading.Event()
+            self.release = threading.Event()
+
+        def cancel(self, *, command, dispatch_attempt: int, now: dt.datetime):
+            self.in_cancel.set()
+            assert self.release.wait(timeout=5.0)
+            return super().cancel(
+                command=command, dispatch_attempt=dispatch_attempt, now=now
+            )
+
+    gateway = PausingCancelGateway()
+    service = _service(store, gateway, MutableClock())
+    staged = _stage(service, tmp_path)
+    dispatched = service.dispatch_commands(command_ids=staged.staged_command_ids)
+    assert dispatched.items[0].code == "SENT"
+    cancel = service.stage_cancel(
+        command_id=staged.staged_command_ids[0],
+        trading_config=_trading_config(tmp_path),
+    )
+
+    errors: list[str] = []
+    result_box: list[object] = []
+
+    def run_cancel() -> None:
+        try:
+            result_box.append(
+                service.dispatch_cancel(cancel_id=cancel.cancel.cancel_id)
+            )
+        except Exception as exc:  # noqa: BLE001 - capture for assertion
+            errors.append(type(exc).__name__ + ":" + str(exc))
+
+    worker = threading.Thread(target=run_cancel)
+    worker.start()
+    assert gateway.in_cancel.wait(timeout=5.0)
+    with pytest.raises(StoreError, match="^BARRIER_WRITER_BUSY$"):
+        store.transition_session_barrier_to_closing(
+            nonce="during-cancel", now=created + dt.timedelta(seconds=1)
+        )
+    gateway.release.set()
+    worker.join(timeout=5.0)
+    assert errors == []
+    assert result_box and getattr(result_box[0], "code") == "SENT"
+    closing = store.transition_session_barrier_to_closing(
+        nonce="after-cancel", now=created + dt.timedelta(seconds=2)
+    )
+    assert getattr(closing[0], "state") == "CLOSING"
+    store.close()
+
+
+def test_submit_operation_fence_blocks_closing_during_gateway(
+    tmp_path: Path,
+) -> None:
+    """Submit outer fence holds OS lock across gateway; CLOSING reports BUSY."""
+    import threading
+
+    from quant.execution.session_barrier import build_session_barrier_capability
+
+    lock_root = tmp_path / "submit-fence-lock"
+    lock_root.mkdir()
+    cap = build_session_barrier_capability(
+        barrier_epoch=_hex("submit-epoch"),
+        session_date=DAY,
+        account_identity=_hex("submit-account"),
+        oms_store_identity=_hex("submit-oms"),
+        broker_store_identity=_hex("submit-broker"),
+        gateway_identity=_hex("submit-gateway"),
+        config_identity=_hex("submit-config"),
+        lock_root=lock_root,
+    )
+    created = NOW
+    store = ExecutionStore.open(
+        "sqlite:///submit-fence/execution.db",
+        trusted_root=tmp_path,
+        session_barrier=cap,
+        initialize_barrier=True,
+        barrier_created_at=created,
+    )
+
+    class PausingSubmitGateway(FakeGateway):
+        def __init__(self) -> None:
+            super().__init__()
+            self.in_submit = threading.Event()
+            self.release = threading.Event()
+
+        def submit(self, *, command, dispatch_attempt: int, now: dt.datetime):
+            self.in_submit.set()
+            assert self.release.wait(timeout=5.0)
+            return super().submit(
+                command=command, dispatch_attempt=dispatch_attempt, now=now
+            )
+
+    gateway = PausingSubmitGateway()
+    service = _service(store, gateway, MutableClock())
+    _stage(service, tmp_path)
+    errors: list[str] = []
+    result_box: list[object] = []
+
+    def run_submit() -> None:
+        try:
+            result_box.append(service.dispatch_pending(limit=1))
+        except Exception as exc:  # noqa: BLE001 - capture for assertion
+            errors.append(type(exc).__name__ + ":" + str(exc))
+
+    worker = threading.Thread(target=run_submit)
+    worker.start()
+    assert gateway.in_submit.wait(timeout=5.0)
+    with pytest.raises(StoreError, match="^BARRIER_WRITER_BUSY$"):
+        store.transition_session_barrier_to_closing(
+            nonce="during-submit", now=created + dt.timedelta(seconds=1)
+        )
+    gateway.release.set()
+    worker.join(timeout=5.0)
+    assert errors == []
+    assert result_box and getattr(result_box[0], "claimed_count") == 1
+    closing = store.transition_session_barrier_to_closing(
+        nonce="after-submit", now=created + dt.timedelta(seconds=2)
+    )
+    assert getattr(closing[0], "state") == "CLOSING"
+    store.close()

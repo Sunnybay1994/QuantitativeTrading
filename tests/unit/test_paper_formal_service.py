@@ -57,11 +57,17 @@ class _GatewayFactory:
 
 def _inputs(tmp_path):  # type: ignore[no-untyped-def]
     store = ExecutionStore.open("sqlite:///oms.sqlite3", trusted_root=tmp_path)
+    # Mark barrier-enabled for formal service composition doubles (no real lease use).
+    object.__setattr__(store, "_session_barrier", object())
     capability = object.__new__(VerifiedFormalPaperExecutionStoreCapability)
     object.__setattr__(capability, "store_identity", _hex("store"))
     object.__setattr__(capability, "account_id", _hex("account"))
     object.__setattr__(capability, "_store", store)
-    object.__setattr__(capability, "broker_store", SimpleNamespace())
+    object.__setattr__(
+        capability,
+        "broker_store",
+        SimpleNamespace(store=SimpleNamespace(session_barrier_enabled=lambda: True)),
+    )
     object.__setattr__(capability, "environment", SimpleNamespace())
     object.__setattr__(capability, "policy", SimpleNamespace())
     object.__setattr__(capability, "binding", SimpleNamespace())
