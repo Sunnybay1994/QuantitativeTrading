@@ -159,6 +159,8 @@ class _Owner:
             store is not self.execution_store
             or provider is not self.ledger_provider
             or provider._execution_store is not store
+            or not store.store.session_barrier_enabled()
+            or not store.broker_store.store.session_barrier_enabled()
         ):
             raise FormalPaperServiceError()
 

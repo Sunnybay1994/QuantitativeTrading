@@ -1,6 +1,6 @@
-"""STATIC_ONLY unit contracts for session barrier substrate (M4-B1A).
+"""STATIC_ONLY unit contracts for session barrier + B1B1 closure capability.
 
-UA-M4-006 remains OPEN. No formal composition / PAPER / soak claims.
+UA-M4-006 remains OPEN. No PAPER / soak / terminal CLOSED claims.
 """
 
 from __future__ import annotations
@@ -25,10 +25,12 @@ from quant.execution.session_barrier import (
     SessionBarrierCapability,
     SessionBarrierError,
     SessionBarrierOmsHandle,
+    SessionBarrierOperationPermit,
     SessionBarrierWriteLease,
     build_session_barrier_capability,
     compute_close_token_identity,
     fresh_read_session_barrier,
+    hold_open_operation_permit,
     hold_open_write_lease,
     hold_session_barrier_lock,
     initialize_open_barrier,
@@ -41,6 +43,7 @@ from quant.execution.session_barrier import (
     unpack_open_write_lease,
     unpack_session_barrier_capability,
     unpack_session_barrier_oms_handle,
+    unpack_session_barrier_operation_permit,
 )
 
 UTC = dt.timezone.utc
@@ -52,6 +55,7 @@ def _hex(tag: str) -> str:
 
 
 def _capability(tmp_path: Path, **overrides: object) -> SessionBarrierCapability:
+    """Build a substrate capability by default (``SUBSTRATE_RAW_TOKEN``)."""
     root = tmp_path / "barrier-lock-root"
     root.mkdir(parents=True, exist_ok=True)
     kwargs = {
@@ -63,9 +67,13 @@ def _capability(tmp_path: Path, **overrides: object) -> SessionBarrierCapability
         "gateway_identity": _hex("gateway"),
         "config_identity": _hex("config"),
         "lock_root": root,
+        # Default omitted → factory SUBSTRATE_RAW_TOKEN; overrides may set FORMAL.
     }
     kwargs.update(overrides)
-    return build_session_barrier_capability(**kwargs)  # type: ignore[arg-type]
+    cap = build_session_barrier_capability(**kwargs)  # type: ignore[arg-type]
+    if "terminal_policy" not in overrides:
+        assert cap.terminal_policy == "SUBSTRATE_RAW_TOKEN"
+    return cap
 
 
 def _oms_conn(tmp_path: Path) -> sqlite3.Connection:
@@ -153,18 +161,22 @@ def test_open_closing_closed_transitions_and_token_conflicts(tmp_path: Path) -> 
     token_a = compute_close_token_identity(
         capability=cap, predecessor_state="OPEN", nonce="nonce-a"
     )
-    closing, token = transition_open_to_closing(
+    closing, token, closure = transition_open_to_closing(
         conn, cap, nonce="nonce-a", now=NOW + dt.timedelta(seconds=1)
     )
     assert token == token_a
     assert closing.state == "CLOSING"
     assert closing.close_token_identity == token_a
+    assert closure.close_token_identity == token_a
+    assert closure.closing_row_identity == closing.row_identity
 
     # exact replay
-    again, token2 = transition_open_to_closing(
+    again, token2, closure2 = transition_open_to_closing(
         conn, cap, nonce="nonce-a", now=NOW + dt.timedelta(seconds=2)
     )
     assert again == closing and token2 == token_a
+    assert closure2.closure_identity == closure.closure_identity
+    assert closure2 is closure
 
     # different token conflict
     with pytest.raises(SessionBarrierError, match="BARRIER_TOKEN_CONFLICT"):
@@ -250,6 +262,7 @@ def test_capability_rejects_copied_valid_proof_with_mutated_identity_fields(
         ("config_identity", _hex("mutated-config")),
         ("session_date", "2026-01-01"),
         ("barrier_epoch", _hex("mutated-epoch")),
+        ("terminal_policy", "FORMAL_CLOSURE_ONLY"),
     )
     for field_name, mutant in mutants:
         # Mutate fields on the exact minted object after registration.
@@ -269,6 +282,7 @@ def test_capability_rejects_copied_valid_proof_with_mutated_identity_fields(
             "broker_store_identity",
             "gateway_identity",
             "config_identity",
+            "terminal_policy",
             "lock_root",
             "capability_identity",
         ):
@@ -405,6 +419,7 @@ def test_exact_object_new_clones_rejected_for_capability_handle_and_lease(
         "broker_store_identity",
         "gateway_identity",
         "config_identity",
+        "terminal_policy",
         "lock_root",
         "capability_identity",
     ):
@@ -715,7 +730,7 @@ def test_writer_and_transition_lock_order_no_deadlock(tmp_path: Path) -> None:
     assert errors == []
     assert cleanup_errors == []
     # After writer releases, transition proceeds.
-    closing, _token = transition_open_to_closing(conn, cap, nonce="race", now=NOW)
+    closing, _token, _closure = transition_open_to_closing(conn, cap, nonce="race", now=NOW)
     assert closing.state == "CLOSING"
 
 
@@ -1165,3 +1180,307 @@ def test_lock_root_concrete_path_guards_native_and_rejects_nonconcrete(
         sb._require_absolute_path(sample_bad)  # type: ignore[arg-type]
     assert "_CONCRETE_PATH_TYPE" in sb.unpack_session_barrier_capability.__code__.co_names
     assert "_CONCRETE_PATH_TYPE" in sb._require_absolute_path.__code__.co_names
+
+
+def test_closure_capability_issue_recover_forge_and_third_mint(tmp_path: Path) -> None:
+    import copy
+    import pickle
+
+    from quant.execution.session_barrier import (
+        SessionBarrierClosureCapability,
+        recover_session_barrier_closure_capability,
+        unpack_session_barrier_closure_capability,
+    )
+
+    conn = _oms_conn(tmp_path)
+    cap = _capability(tmp_path)
+    initialize_open_barrier(conn, cap, created_at=NOW)
+    handle = issue_session_barrier_oms_handle(capability=cap, conn=conn)
+
+    closing, token, closure = transition_open_to_closing(
+        conn, cap, nonce="closure-1", now=NOW + dt.timedelta(seconds=1)
+    )
+    assert closing.state == "CLOSING"
+    assert unpack_session_barrier_closure_capability(
+        closure, capability=cap
+    ).closure_identity == closure.closure_identity
+
+    again, token2, closure2 = transition_open_to_closing(
+        conn, cap, nonce="closure-1", now=NOW + dt.timedelta(seconds=2)
+    )
+    assert token2 == token and closure2 is closure and again == closing
+
+    recovered = recover_session_barrier_closure_capability(
+        capability=cap, oms_handle=handle, close_token_identity=token
+    )
+    assert recovered is closure
+
+    with pytest.raises(SessionBarrierError, match="BARRIER_TOKEN_CONFLICT"):
+        recover_session_barrier_closure_capability(
+            capability=cap, oms_handle=handle, close_token_identity=_hex("other-token")
+        )
+
+    with pytest.raises(SessionBarrierError, match="BARRIER_CLOSURE_INVALID"):
+        SessionBarrierClosureCapability()  # type: ignore[call-arg]
+    forged = object.__new__(SessionBarrierClosureCapability)
+    for name in (
+        "capability_identity",
+        "barrier_epoch",
+        "session_date",
+        "account_identity",
+        "oms_store_identity",
+        "broker_store_identity",
+        "gateway_identity",
+        "config_identity",
+        "close_token_identity",
+        "closing_row_identity",
+        "lock_identity",
+        "closure_identity",
+        "lock_root",
+    ):
+        object.__setattr__(forged, name, getattr(closure, name))
+    # Closure forge must stay rejected even when capability carries terminal_policy.
+    assert cap.terminal_policy == "SUBSTRATE_RAW_TOKEN"
+    with pytest.raises(SessionBarrierError, match="BARRIER_CLOSURE_INVALID"):
+        unpack_session_barrier_closure_capability(forged, capability=cap)
+    with pytest.raises(TypeError):
+        copy.copy(closure)
+    with pytest.raises(TypeError):
+        copy.deepcopy(closure)
+    with pytest.raises(TypeError):
+        pickle.dumps(closure)
+    with pytest.raises(SessionBarrierError, match="BARRIER_CLOSURE_INVALID"):
+        replace(closure, close_token_identity=_hex("mutated"))
+
+    # Drop live registry entry and remint once (2nd mint); third mint refused.
+    import quant.execution.session_barrier as sb
+
+    key = (cap.capability_identity, token)
+    with sb._REGISTRY_LOCK:
+        sb._CLOSURE_BINDINGS.pop(closure, None)
+        sb._CLOSURE_BY_TOKEN.pop(key, None)
+    reminted = recover_session_barrier_closure_capability(
+        capability=cap, oms_handle=handle, close_token_identity=token
+    )
+    assert reminted.closure_identity == closure.closure_identity
+    assert reminted is not closure
+    with sb._REGISTRY_LOCK:
+        sb._CLOSURE_BINDINGS.pop(reminted, None)
+        sb._CLOSURE_BY_TOKEN.pop(key, None)
+    with pytest.raises(SessionBarrierError, match="BARRIER_CLOSURE_REISSUE_LIMIT"):
+        recover_session_barrier_closure_capability(
+            capability=cap, oms_handle=handle, close_token_identity=token
+        )
+
+    # Ordinary OPEN lease remains unavailable in CLOSING; closure does not unlock writes.
+    with pytest.raises(SessionBarrierError, match="BARRIER_STATE_CLOSING"):
+        with hold_open_write_lease(cap, oms_handle=handle, store_kind="oms"):
+            pass
+    assert not hasattr(closure, "transaction")
+    assert "seal" not in repr(closure) and token not in repr(closure)
+    conn.close()
+
+
+def test_closure_cross_identity_and_raw_token_closed_remain_substrate_only(
+    tmp_path: Path,
+) -> None:
+    from quant.execution.session_barrier import (
+        recover_session_barrier_closure_capability,
+        unpack_session_barrier_closure_capability,
+    )
+
+    root_a = tmp_path / "a"
+    root_b = tmp_path / "b"
+    root_a.mkdir()
+    root_b.mkdir()
+    conn_a = _oms_conn(root_a)
+    conn_b = _oms_conn(root_b)
+    cap_a = _capability(root_a)
+    cap_b = _capability(root_b, oms_store_identity=_hex("oms-b"))
+    initialize_open_barrier(conn_a, cap_a, created_at=NOW)
+    initialize_open_barrier(conn_b, cap_b, created_at=NOW)
+    handle_a = issue_session_barrier_oms_handle(capability=cap_a, conn=conn_a)
+    _closing, token, closure = transition_open_to_closing(
+        conn_a, cap_a, nonce="cross", now=NOW + dt.timedelta(seconds=1)
+    )
+    with pytest.raises(SessionBarrierError, match="BARRIER_CLOSURE_INVALID"):
+        unpack_session_barrier_closure_capability(closure, capability=cap_b)
+    with pytest.raises(SessionBarrierError):
+        recover_session_barrier_closure_capability(
+            capability=cap_b, oms_handle=handle_a, close_token_identity=token
+        )
+    # Raw token CLOSED remains available only on substrate API (B1A compat), not via closure.
+    closed = transition_closing_to_closed(
+        conn_a, cap_a, close_token_identity=token, now=NOW + dt.timedelta(seconds=2)
+    )
+    assert closed.state == "CLOSED"
+    with pytest.raises(SessionBarrierError, match="BARRIER_STATE_CLOSED"):
+        with hold_open_write_lease(cap_a, oms_handle=handle_a, store_kind="oms"):
+            pass
+    conn_a.close()
+    conn_b.close()
+
+
+def test_substrate_row_identity_unchanged_formal_policy_diverges(tmp_path: Path) -> None:
+    """SUBSTRATE row digest stays B1A-stable; FORMAL_CLOSURE_ONLY uses a separate domain."""
+    import quant.execution.session_barrier as sb
+
+    conn = _oms_conn(tmp_path)
+    cap = _capability(tmp_path)
+    assert cap.terminal_policy == "SUBSTRATE_RAW_TOKEN"
+    initialize_open_barrier(conn, cap, created_at=NOW)
+    row = read_session_barrier(conn)
+    substrate = sb._row_identity_for(
+        row,
+        state=row.state,
+        close_token_identity=row.close_token_identity,
+        transitioned_at=row.transitioned_at,
+        terminal_policy="SUBSTRATE_RAW_TOKEN",
+    )
+    formal = sb._row_identity_for(
+        row,
+        state=row.state,
+        close_token_identity=row.close_token_identity,
+        transitioned_at=row.transitioned_at,
+        terminal_policy="FORMAL_CLOSURE_ONLY",
+    )
+    assert substrate == row.row_identity
+    assert formal != substrate
+
+    formal_root = tmp_path / "formal-policy"
+    formal_root.mkdir()
+    conn_f = _oms_conn(formal_root)
+    formal_cap = _capability(formal_root, terminal_policy="FORMAL_CLOSURE_ONLY")
+    assert formal_cap.terminal_policy == "FORMAL_CLOSURE_ONLY"
+    assert formal_cap.capability_identity != cap.capability_identity
+    initialize_open_barrier(conn_f, formal_cap, created_at=NOW)
+    formal_row = read_session_barrier(conn_f)
+    assert formal_row.row_identity == sb._row_identity_for(
+        formal_row,
+        state=formal_row.state,
+        close_token_identity=formal_row.close_token_identity,
+        transitioned_at=formal_row.transitioned_at,
+        terminal_policy="FORMAL_CLOSURE_ONLY",
+    )
+    conn.close()
+    conn_f.close()
+
+
+def test_formal_closing_to_closed_requires_closure_capability(tmp_path: Path) -> None:
+    conn = _oms_conn(tmp_path)
+    cap = _capability(tmp_path, terminal_policy="FORMAL_CLOSURE_ONLY")
+    initialize_open_barrier(conn, cap, created_at=NOW)
+    _closing, token, _closure = transition_open_to_closing(
+        conn, cap, nonce="formal-raw-closed", now=NOW + dt.timedelta(seconds=1)
+    )
+    with pytest.raises(SessionBarrierError, match="BARRIER_CLOSURE_REQUIRED"):
+        transition_closing_to_closed(
+            conn, cap, close_token_identity=token, now=NOW + dt.timedelta(seconds=2)
+        )
+    assert read_session_barrier(conn).state == "CLOSING"
+    conn.close()
+
+
+def test_operation_permit_authority_symbols_not_in_public_all() -> None:
+    """§11 F2: permit type + holder stay module-private (absent from __all__)."""
+    import inspect
+
+    import quant.execution.session_barrier as sb
+    from quant.execution import store as store_mod
+
+    public = set(sb.__all__)
+    assert "SessionBarrierOperationPermit" not in public
+    assert "hold_open_operation_permit" not in public
+    # Narrow store fence must still call the real module-private holder.
+    fence_src = inspect.getsource(store_mod.ExecutionStore.open_operation_fence)
+    assert "hold_open_operation_permit" in fence_src
+    assert "hold_open_operation_permit" in inspect.getsource(store_mod)
+
+
+def test_operation_permit_nested_child_forge_cross_thread_and_closing_after_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import quant.execution.session_barrier as sb
+
+    acquire_count = {"n": 0}
+    real_acquire = sb._acquire_barrier_lock
+
+    def tracked_acquire(root: Path) -> object:
+        acquire_count["n"] += 1
+        return real_acquire(root)
+
+    monkeypatch.setattr(sb, "_acquire_barrier_lock", tracked_acquire)
+
+    conn = _oms_conn(tmp_path)
+    cap = _capability(tmp_path)
+    initialize_open_barrier(conn, cap, created_at=NOW)
+    handle = issue_session_barrier_oms_handle(capability=cap, conn=conn)
+    baseline = acquire_count["n"]
+
+    with hold_open_operation_permit(cap, oms_handle=handle) as permit:
+        assert acquire_count["n"] == baseline + 1
+        assert unpack_session_barrier_operation_permit(
+            permit, capability=cap, oms_handle=handle
+        ) is permit
+
+        with pytest.raises(SessionBarrierError, match="BARRIER_OPERATION_PERMIT_NESTED"):
+            with hold_open_operation_permit(cap, oms_handle=handle):
+                pass
+
+        with hold_open_write_lease(cap, oms_handle=handle, store_kind="oms") as lease:
+            assert acquire_count["n"] == baseline + 1
+            assert unpack_open_write_lease(lease, capability=cap, store_kind="oms") is lease
+            with pytest.raises(
+                SessionBarrierError, match="BARRIER_OPERATION_CHILD_ACTIVE"
+            ):
+                with hold_open_write_lease(cap, oms_handle=handle, store_kind="broker"):
+                    pass
+
+        # Sequential child after the first exits still reuses the outer OS lock.
+        with hold_open_write_lease(cap, oms_handle=handle, store_kind="broker") as lease2:
+            assert acquire_count["n"] == baseline + 1
+            assert lease2.store_kind == "broker"
+
+        forged = object.__new__(SessionBarrierOperationPermit)
+        for name in (
+            "capability_identity",
+            "handle_identity",
+            "lock_identity",
+            "owner_pid",
+            "owner_thread_id",
+        ):
+            object.__setattr__(forged, name, getattr(permit, name))
+        with pytest.raises(
+            SessionBarrierError, match="BARRIER_OPERATION_PERMIT_INVALID"
+        ):
+            unpack_session_barrier_operation_permit(
+                forged, capability=cap, oms_handle=handle
+            )
+
+        owner_errors: list[str] = []
+
+        def _cross_thread() -> None:
+            try:
+                unpack_session_barrier_operation_permit(
+                    permit, capability=cap, oms_handle=handle
+                )
+            except SessionBarrierError as exc:
+                owner_errors.append(exc.code)
+
+        thread = threading.Thread(target=_cross_thread)
+        thread.start()
+        thread.join()
+        assert owner_errors == ["BARRIER_OPERATION_PERMIT_OWNER_MISMATCH"]
+
+    # Permit release unlocks; OPEN→CLOSING can proceed (one more acquire).
+    assert acquire_count["n"] == baseline + 1
+    closing, _token, _closure = transition_open_to_closing(
+        conn, cap, nonce="after-permit", now=NOW + dt.timedelta(seconds=1)
+    )
+    assert closing.state == "CLOSING"
+    assert acquire_count["n"] == baseline + 2
+    with pytest.raises(SessionBarrierError, match="BARRIER_OPERATION_PERMIT_INVALID"):
+        unpack_session_barrier_operation_permit(
+            permit, capability=cap, oms_handle=handle
+        )
+    conn.close()

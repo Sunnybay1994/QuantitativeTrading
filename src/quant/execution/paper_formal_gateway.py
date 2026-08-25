@@ -292,6 +292,7 @@ def _fresh_capability(
     if (
         type(verified) is not VerifiedFormalPaperBrokerStoreCapability
         or verified is not store_capability
+        or not verified.store.session_barrier_enabled()
     ):
         raise ValueError
     return verified

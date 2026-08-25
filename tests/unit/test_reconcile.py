@@ -999,3 +999,79 @@ def test_recovery_result_allow_set_exact_with_observed_zero_subjects(
         _rebuild_recovery_with_allow_set(recovered, forged)
     _assert_detached(error.value)
     store.close()
+
+
+def test_barrier_closing_rejects_recover_local_write_path_keeps_read(
+    tmp_path: Path,
+) -> None:
+    """CLOSING blocks recover_local write TX; public API surfaces RECOVERY_LOCAL_INVALID.
+
+    ``raise RecoveryError(...) from None`` suppresses the traceback chain
+    (``__cause__ is None``, ``__suppress_context__ is True``). That is not the
+    same as clearing Python's implicit ``__context__`` object — suppressed
+    traceback != cleared object context. Do not assert ``__context__ is None``
+    or freeze its inner type/message as public API.
+    """
+    from quant.execution.session_barrier import build_session_barrier_capability
+
+    created = dt.datetime(2026, 8, 25, 1, 2, 3, tzinfo=dt.timezone.utc)
+    cap = build_session_barrier_capability(
+        barrier_epoch=_hex("rec-epoch"),
+        session_date=created.date(),
+        account_identity=_hex("rec-account"),
+        oms_store_identity=_hex("rec-oms"),
+        broker_store_identity=_hex("rec-broker"),
+        gateway_identity=_hex("rec-gateway"),
+        config_identity=_hex("rec-config"),
+        lock_root=tmp_path,
+    )
+    store = ExecutionStore.open(
+        "sqlite:///oms.sqlite3",
+        trusted_root=tmp_path,
+        session_barrier=cap,
+        initialize_barrier=True,
+        barrier_created_at=created,
+    )
+    try:
+        open_recovery = recover_local_state(store)
+        assert open_recovery.disposition == "READY"
+        store.transition_session_barrier_to_closing(
+            nonce="rec-close", now=created + dt.timedelta(seconds=1)
+        )
+        row = store.read_session_barrier_row()
+        assert getattr(row, "state") == "CLOSING"
+        with pytest.raises(RecoveryError) as caught:
+            recover_local_state(store)
+        error = caught.value
+        assert error.code == "RECOVERY_LOCAL_INVALID"
+        assert error.args[0] == "RECOVERY_LOCAL_INVALID"
+        assert str(error) == "RECOVERY_LOCAL_INVALID"
+        assert error.code == error.args[0] == str(error) == "RECOVERY_LOCAL_INVALID"
+        assert error.__cause__ is None
+        assert error.__suppress_context__ is True
+        # Public surfaces must not leak underlying barrier/store context text.
+        public_text = f"{error!s}|{error!r}|{error.args!r}|{error.code}"
+        assert "BARRIER_STATE_CLOSING" not in public_text
+        assert "StoreError" not in public_text
+        # CLOSING fresh-read remains available and zero-write relative to closing.
+        row_after = store.read_session_barrier_row()
+        assert getattr(row_after, "state") == "CLOSING"
+        assert getattr(row_after, "row_identity") == getattr(row, "row_identity")
+        # Broker/account observation identity is independent of barrier created time.
+        account = _account()
+        broker = build_broker_snapshot(
+            source_identity=_hex("broker-src"),
+            as_of=account.as_of,
+            finality="INTRADAY",
+            account=account,
+            orders=(),
+            events=(),
+        )
+        result = reconcile(open_recovery, broker, account.as_of)
+        assert result.disposition in {"READY", "QUERY_REQUIRED", "MANUAL_REQUIRED"}
+        # reconcile is read-only vs barrier: state/identity unchanged after compare.
+        row_final = store.read_session_barrier_row()
+        assert getattr(row_final, "state") == "CLOSING"
+        assert getattr(row_final, "row_identity") == getattr(row, "row_identity")
+    finally:
+        store.close()

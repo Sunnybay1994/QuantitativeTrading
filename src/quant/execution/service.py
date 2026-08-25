@@ -764,6 +764,18 @@ class ExecutionService:
         """Claim and dispatch exactly one durable cancel request."""
         if self._cancel_gateway is None:
             raise ExecutionServiceError("SERVICE_CANCEL_GATEWAY_MISSING")
+        # Outer OPEN operation fence covers claim → gateway → callback/unknown.
+        # Non-barrier stores: open_operation_fence is a no-op; permit always
+        # released via the contextmanager finally path.
+        with self._store.open_operation_fence():
+            return self._dispatch_cancel_under_operation_fence(cancel_id=cancel_id)
+
+    def _dispatch_cancel_under_operation_fence(
+        self, *, cancel_id: str
+    ) -> CancelDispatchResult:
+        cancel_gateway = self._cancel_gateway
+        if cancel_gateway is None:
+            raise ExecutionServiceError("SERVICE_CANCEL_GATEWAY_MISSING")
         claimed_at = self._now()
         lease_until = claimed_at + self._lease_duration
         try:
@@ -796,10 +808,10 @@ class ExecutionService:
             return self._mark_cancel_unknown(delivery, "CANCEL_SNAPSHOT_DRIFT")
 
         callback_ids: tuple[str, ...] = ()
+        # Barrier-enabled formal writers share one non-reentrant OS lock across OMS
+        # and broker. Lease depth must stay exact 1: never hold an OMS write lease
+        # across the gateway/broker boundary (same pattern as submit dispatch).
         try:
-            # Keep the immediate SQLite transaction across the adapter boundary.
-            # This is intentionally narrow (one exact PAPER cancel): it makes the
-            # final aggregate revalidation and adapter crossing one writer fence.
             with self._store.transaction() as repo:
                 current = repo.get_cancel_delivery(cancel.cancel_id)
                 if (
@@ -859,35 +871,71 @@ class ExecutionService:
                         (),
                         "CANCEL_GATEWAY_INPUT_INVALID",
                     )
-                try:
-                    raw_result = self._cancel_gateway.cancel(
-                        command=cancel,
-                        dispatch_attempt=delivery.attempt_count,
-                        now=dispatch_at,
-                    )
-                except Exception:
-                    observed_at = self._now()
-                    repo.mark_cancel_unknown(
-                        cancel_id=cancel.cancel_id,
-                        lease_owner=self._worker_id,
-                        expected_attempt=delivery.attempt_count,
-                        unknown_at=observed_at,
-                        error_code="CANCEL_GATEWAY_EXCEPTION",
-                    )
-                    return _cancel_item(
-                        delivery, DispatchCertainty.UNKNOWN, (),
-                        "CANCEL_DELIVERY_UNKNOWN",
-                    )
+                # Capture durable snapshots before releasing the OMS lease.
+                preflight_command = current_command
+                preflight_aggregate = current_aggregate
+                preflight_aggregate_row = aggregate_row
+                preflight_dispatch_at = dispatch_at
+        except ExecutionServiceError:
+            raise
+        except Exception:
+            return self._mark_cancel_unknown(delivery, "CANCEL_SNAPSHOT_DRIFT")
 
-                observed_at = self._now()
+        try:
+            raw_result = cancel_gateway.cancel(
+                command=cancel,
+                dispatch_attempt=delivery.attempt_count,
+                now=preflight_dispatch_at,
+            )
+        except Exception:
+            return self._mark_cancel_unknown(delivery, "CANCEL_GATEWAY_EXCEPTION")
+
+        observed_at = self._now()
+        try:
+            result = verify_gateway_cancel_result(
+                preflight_command,
+                cancel,
+                preflight_aggregate,
+                delivery.attempt_count,
+                observed_at,
+                raw_result,
+            )
+        except Exception:
+            return self._mark_cancel_unknown(delivery, "CANCEL_RESULT_INVALID")
+
+        callback_ids = tuple(item.event_id for item in result.callbacks)
+        try:
+            with self._store.transaction() as repo:
+                current = repo.get_cancel_delivery(cancel.cancel_id)
+                if (
+                    not _same_cancel_lease(current, delivery, self._worker_id)
+                    or current is None
+                    or current.last_error_code != "CANCEL_GATEWAY_STARTED"
+                ):
+                    raise ExecutionServiceError("CANCEL_DELIVERY_FENCE_MISMATCH")
+                current_command, current_aggregate, aggregate_row = _load_order_state(
+                    repo, command.command_id
+                )
+                if (
+                    current_command.command_id != preflight_command.command_id
+                    or aggregate_row.identity != preflight_aggregate_row.identity
+                ):
+                    repo.mark_cancel_unknown(
+                        cancel_id=cancel.cancel_id,
+                        lease_owner=self._worker_id,
+                        expected_attempt=delivery.attempt_count,
+                        unknown_at=observed_at,
+                        error_code="CANCEL_SNAPSHOT_DRIFT",
+                    )
+                    return _cancel_item(
+                        delivery,
+                        DispatchCertainty.UNKNOWN,
+                        callback_ids,
+                        "CANCEL_SNAPSHOT_DRIFT",
+                    )
                 try:
-                    result = verify_gateway_cancel_result(
-                        current_command,
-                        cancel,
-                        current_aggregate,
-                        delivery.attempt_count,
-                        observed_at,
-                        raw_result,
+                    _verify_cancel_frozen_snapshot(
+                        cancel, current_command, current_aggregate
                     )
                 except Exception:
                     repo.mark_cancel_unknown(
@@ -895,13 +943,14 @@ class ExecutionService:
                         lease_owner=self._worker_id,
                         expected_attempt=delivery.attempt_count,
                         unknown_at=observed_at,
-                        error_code="CANCEL_RESULT_INVALID",
+                        error_code="CANCEL_SNAPSHOT_DRIFT",
                     )
                     return _cancel_item(
-                        delivery, DispatchCertainty.UNKNOWN, (),
-                        "CANCEL_DELIVERY_UNKNOWN",
+                        delivery,
+                        DispatchCertainty.UNKNOWN,
+                        callback_ids,
+                        "CANCEL_SNAPSHOT_DRIFT",
                     )
-                callback_ids = tuple(item.event_id for item in result.callbacks)
                 if result.certainty is DispatchCertainty.NOT_SENT:
                     repo.mark_cancel_not_sent(
                         cancel_id=cancel.cancel_id,
@@ -991,18 +1040,18 @@ class ExecutionService:
             raise ExecutionServiceError("SERVICE_DISPATCH_LIMIT_INVALID")
         claimed_at = self._now()
         lease_until = claimed_at + self._lease_duration
-        try:
-            with self._store.transaction() as repo:
-                claimed = repo.claim_outbox_deliveries(
-                    worker_id=self._worker_id,
-                    now=claimed_at,
-                    lease_until=lease_until,
-                    limit=limit,
-                )
-        except Exception:
-            raise ExecutionServiceError("SERVICE_CLAIM_FAILED") from None
-
-        return self._dispatch_claimed(claimed, lease_until=lease_until)
+        with self._store.open_operation_fence():
+            try:
+                with self._store.transaction() as repo:
+                    claimed = repo.claim_outbox_deliveries(
+                        worker_id=self._worker_id,
+                        now=claimed_at,
+                        lease_until=lease_until,
+                        limit=limit,
+                    )
+            except Exception:
+                raise ExecutionServiceError("SERVICE_CLAIM_FAILED") from None
+            return self._dispatch_claimed(claimed, lease_until=lease_until)
 
     def dispatch_commands(self, *, command_ids: tuple[str, ...]) -> DispatchResult:
         """Claim and dispatch exactly one canonical, ordered command allowlist."""
@@ -1025,22 +1074,23 @@ class ExecutionService:
             raise error
         claimed_at = self._now()
         lease_until = claimed_at + self._lease_duration
-        claim_failed = False
-        try:
-            with self._store.transaction() as repo:
-                claimed = repo.claim_selected_outbox_deliveries(
-                    command_ids=command_ids,
-                    worker_id=self._worker_id,
-                    now=claimed_at,
-                    lease_until=lease_until,
-                )
-        except Exception:
-            claim_failed = True
-        if claim_failed:
-            error = ExecutionServiceError("SERVICE_SELECTED_CLAIM_FAILED")
-            error.__suppress_context__ = True
-            raise error
-        return self._dispatch_claimed(claimed, lease_until=lease_until)
+        with self._store.open_operation_fence():
+            claim_failed = False
+            try:
+                with self._store.transaction() as repo:
+                    claimed = repo.claim_selected_outbox_deliveries(
+                        command_ids=command_ids,
+                        worker_id=self._worker_id,
+                        now=claimed_at,
+                        lease_until=lease_until,
+                    )
+            except Exception:
+                claim_failed = True
+            if claim_failed:
+                error = ExecutionServiceError("SERVICE_SELECTED_CLAIM_FAILED")
+                error.__suppress_context__ = True
+                raise error
+            return self._dispatch_claimed(claimed, lease_until=lease_until)
 
     def dispatch_exact_pending_commands(
         self, *, command_ids: tuple[str, ...]
@@ -1063,28 +1113,29 @@ class ExecutionService:
             raise ExecutionServiceError("SERVICE_COMMAND_SELECTION_INVALID")
         claimed_at = self._now()
         lease_until = claimed_at + self._lease_duration
-        failure_code: str | None = None
-        try:
-            with self._store.transaction() as repo:
-                claimed = repo.claim_exact_pending_outbox_deliveries(
-                    command_ids=command_ids,
-                    worker_id=self._worker_id,
-                    now=claimed_at,
-                    lease_until=lease_until,
+        with self._store.open_operation_fence():
+            failure_code: str | None = None
+            try:
+                with self._store.transaction() as repo:
+                    claimed = repo.claim_exact_pending_outbox_deliveries(
+                        command_ids=command_ids,
+                        worker_id=self._worker_id,
+                        now=claimed_at,
+                        lease_until=lease_until,
+                    )
+            except StoreError as store_error:
+                failure_code = (
+                    "SERVICE_EXACT_PENDING_SET_DRIFT"
+                    if store_error.args == ("OUTBOX_DELIVERY_EXACT_SET_DRIFT",)
+                    else "SERVICE_EXACT_PENDING_WRITE_FAILED"
                 )
-        except StoreError as store_error:
-            failure_code = (
-                "SERVICE_EXACT_PENDING_SET_DRIFT"
-                if store_error.args == ("OUTBOX_DELIVERY_EXACT_SET_DRIFT",)
-                else "SERVICE_EXACT_PENDING_WRITE_FAILED"
-            )
-        except Exception:
-            failure_code = "SERVICE_EXACT_PENDING_WRITE_FAILED"
-        if failure_code is not None:
-            service_error = ExecutionServiceError(failure_code)
-            service_error.__suppress_context__ = True
-            raise service_error
-        return self._dispatch_claimed(claimed, lease_until=lease_until)
+            except Exception:
+                failure_code = "SERVICE_EXACT_PENDING_WRITE_FAILED"
+            if failure_code is not None:
+                service_error = ExecutionServiceError(failure_code)
+                service_error.__suppress_context__ = True
+                raise service_error
+            return self._dispatch_claimed(claimed, lease_until=lease_until)
 
     def _dispatch_claimed(
         self,

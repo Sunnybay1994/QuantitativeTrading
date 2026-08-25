@@ -35,6 +35,7 @@ from quant.execution.risk import (
 from quant.execution.session_barrier import (
     SessionBarrierError,
     fresh_read_session_barrier,
+    hold_open_operation_permit,
     hold_open_write_lease,
     initialize_open_barrier,
     invalidate_session_barrier_oms_handle,
@@ -3142,8 +3143,11 @@ class ExecutionStore:
         *,
         nonce: str,
         now: dt.datetime,
-    ) -> tuple[object, str]:
-        """OPEN → CLOSING under the store's internal connection (no connection escape)."""
+    ) -> tuple[object, str, object]:
+        """OPEN → CLOSING; returns (row, token_identity, closure_capability).
+
+        Closure is process-local and issue-only in B1B1 (no terminal writes).
+        """
         conn = self._conn
         barrier = self._session_barrier
         if conn is None:
@@ -3166,7 +3170,12 @@ class ExecutionStore:
         close_token_identity: str,
         now: dt.datetime,
     ) -> object:
-        """CLOSING → CLOSED under the store's internal connection."""
+        """CLOSING → CLOSED under the store's internal connection.
+
+        Substrate ``SUBSTRATE_RAW_TOKEN`` barriers may close with the raw token.
+        Formal ``FORMAL_CLOSURE_ONLY`` barriers reject this entry with
+        ``BARRIER_CLOSURE_REQUIRED`` (surfaced as ``StoreError``).
+        """
         conn = self._conn
         barrier = self._session_barrier
         if conn is None:
@@ -3186,6 +3195,32 @@ class ExecutionStore:
             raise StoreError(str(exc)) from None
         finally:
             self._release_write_lock()
+
+    @contextmanager
+    def open_operation_fence(self) -> Iterator[object | None]:
+        """Hold one OPEN operation permit across claim → gateway → callback.
+
+        Stores without a bound session barrier yield ``None`` (legacy no-op).
+        Does not hold ``_write_lock`` for the fence lifetime; each inner
+        ``transaction()`` still acquires it per TX and mints a child write lease
+        that reuses the permit's anchored OS lock.
+
+        Substrate raw-token barriers may still use
+        ``transition_session_barrier_to_closed``; formal ``FORMAL_CLOSURE_ONLY``
+        barriers reject that path with ``BARRIER_CLOSURE_REQUIRED``.
+        """
+        barrier = self._session_barrier
+        handle = self._barrier_oms_handle
+        if barrier is None:
+            yield None
+            return
+        if handle is None:
+            raise StoreError("BARRIER_OMS_HANDLE_INVALID")
+        try:
+            with hold_open_operation_permit(barrier, oms_handle=handle) as permit:
+                yield permit
+        except SessionBarrierError as exc:
+            raise StoreError(str(exc)) from None
 
     @contextmanager
     def transaction(self) -> Iterator[ExecutionRepository]:

@@ -407,6 +407,8 @@ def build_formal_paper_daily_dependencies(
             or policy.session_date != session_date
             or composition.account_id != store.account_id
             or composition.gateway_identity != store.gateway_identity
+            or not store.store.session_barrier_enabled()
+            or not store.broker_store.store.session_barrier_enabled()
         ):
             raise ValueError
         source_plan = load_formal_paper_daily_source_plan(
