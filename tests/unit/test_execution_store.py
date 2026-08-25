@@ -14,6 +14,13 @@ from typing import Any, Callable
 
 import pytest
 
+from quant.execution.approval import (
+    ApprovalReceiptError,
+    build_approval_receipt,
+    decode_approval_receipt,
+    encode_approval_receipt,
+    verify_approval_receipt_for_store,
+)
 from quant.execution.store import (
     CURRENT_SCHEMA_VERSION,
     ExecutionRepository,
@@ -22,6 +29,7 @@ from quant.execution.store import (
     LEDGER_CHECKPOINT_KEY,
     MigrationInterruptedError,
     OutboxDeliveryState,
+    StoredApprovalReceipt,
     StoreError,
     StoreUriError,
     UnknownSchemaVersionError,
@@ -82,6 +90,58 @@ def _uri(name: str) -> str:
 
 def _open(name: str, trusted_root: Path) -> ExecutionStore:
     return ExecutionStore.open(_uri(name), trusted_root=trusted_root)
+
+
+APPROVAL_SECRET = b"execution-store-approval-secret-012345"
+APPROVAL_SOURCES = {
+    "account_snapshot": _hex("approval-account"),
+    "market_snapshot": _hex("approval-market"),
+    "planner_config": _hex("approval-planner"),
+}
+
+
+def _approval(nonce: str = "store-approval-1", *, plan: str = "plan"):
+    return build_approval_receipt(
+        APPROVAL_SECRET,
+        credential_id="credential-store-1",
+        operator_id="operator-store-1",
+        session_date=dt.date(2026, 8, 24),
+        plan_identity=_hex(plan),
+        challenge_identity=_hex(f"challenge-{nonce}"),
+        store_recovery_identity=_hex("store-recovery"),
+        source_identities=APPROVAL_SOURCES,
+        issued_at=dt.datetime(2026, 8, 24, 3, 4, 5, tzinfo=UTC),
+        nonce=nonce,
+    )
+
+
+def _self_consistent_hmac_forgery(payload: bytes) -> bytes:
+    root = json.loads(payload.decode("utf-8"))
+    root["tag"] = "0" * 64 if root["tag"] != "0" * 64 else "1" * 64
+    unsigned = dict(root)
+    unsigned.pop("receipt_id")
+    root["receipt_id"] = hashlib.sha256(_canonical_bytes(unsigned)).hexdigest()
+    return _canonical_bytes(root)
+
+
+def _corrupt_handoff(
+    verified: Any,
+    payload: bytes,
+    *,
+    receipt: Any | None = None,
+    proof: bytes | None = None,
+) -> Any:
+    """Deliberately bypass construction to exercise the proof guard."""
+    forged = object.__new__(type(verified))
+    object.__setattr__(
+        forged,
+        "receipt",
+        verified.receipt if receipt is None else receipt,
+    )
+    object.__setattr__(forged, "payload", payload)
+    if proof is not None:
+        object.__setattr__(forged, "_proof", proof)
+    return forged
 
 
 UTC = dt.timezone.utc
@@ -3054,5 +3114,278 @@ def test_v5_recovery_rows_close_cancel_event_link_and_reject_orphan(
         with pytest.raises(StoreError, match="^ROW_CORRUPT$"):
             with reopened.transaction() as repo:
                 repo.read_recovery_rows()
+    finally:
+        reopened.close()
+
+
+def test_v8_approval_receipt_round_trip_is_raw_and_exactly_idempotent(
+    cwd_tmp: Path,
+) -> None:
+    store = _open("approval-v8.db", cwd_tmp)
+    receipt = _approval()
+    raw = encode_approval_receipt(receipt)
+    verified = verify_approval_receipt_for_store(
+        raw, APPROVAL_SECRET, source_identities=APPROVAL_SOURCES
+    )
+    try:
+        with store.transaction() as repo:
+            assert repo.put_verified_approval_receipt(verified)
+            assert not repo.put_verified_approval_receipt(verified)
+            stored = repo.get_approval_receipt(receipt.receipt_id)
+            assert stored is not None
+            assert stored.payload == raw
+            assert stored.receipt_id == receipt.receipt_id
+            assert stored.plan_identity == receipt.plan_identity
+            assert not hasattr(stored, "receipt")
+            assert not hasattr(stored, "_proof")
+            recovery = repo.read_recovery_rows()
+            assert recovery.approval_receipts == (stored,)
+    finally:
+        store.close()
+
+
+def test_v8_nonempty_approval_close_reopen_requires_caller_reverification(
+    cwd_tmp: Path,
+) -> None:
+    store = _open("approval-v8-reopen.db", cwd_tmp)
+    receipt = _approval("reopen-approval", plan="reopen-plan")
+    raw = encode_approval_receipt(receipt)
+    try:
+        with store.transaction() as repo:
+            assert repo.put_verified_approval_receipt(
+                verify_approval_receipt_for_store(
+                    raw, APPROVAL_SECRET, source_identities=APPROVAL_SOURCES
+                )
+            )
+    finally:
+        store.close()
+
+    recovered: StoredApprovalReceipt | None = None
+    reopened = _open("approval-v8-reopen.db", cwd_tmp)
+    try:
+        with reopened.transaction() as repo:
+            recovered = repo.get_approval_receipt(receipt.receipt_id)
+            assert recovered is not None
+            assert recovered.payload == raw
+            assert not hasattr(recovered, "receipt")
+            assert not hasattr(recovered, "_proof")
+            assert repo.read_recovery_rows().approval_receipts == (recovered,)
+            with pytest.raises(StoreError, match="^APPROVAL_RECEIPT_NOT_VERIFIED$"):
+                repo.put_verified_approval_receipt(recovered)
+    finally:
+        reopened.close()
+
+    assert recovered is not None
+    reverified = verify_approval_receipt_for_store(
+        recovered.payload,
+        APPROVAL_SECRET,
+        source_identities=APPROVAL_SOURCES,
+    )
+    reopened = _open("approval-v8-reopen.db", cwd_tmp)
+    try:
+        with reopened.transaction() as repo:
+            assert not repo.put_verified_approval_receipt(reverified)
+    finally:
+        reopened.close()
+
+
+def test_v8_approval_store_requires_credential_free_handoff_and_rejects_index_drift(
+    cwd_tmp: Path,
+) -> None:
+    store = _open("approval-v8-index-drift.db", cwd_tmp)
+    receipt = _approval()
+    raw = encode_approval_receipt(receipt)
+    verified = verify_approval_receipt_for_store(
+        raw, APPROVAL_SECRET, source_identities=APPROVAL_SOURCES
+    )
+    try:
+        with store.transaction() as repo:
+            assert not hasattr(repo, "put_approval_receipt")
+            with pytest.raises(StoreError, match="^APPROVAL_RECEIPT_NOT_VERIFIED$"):
+                repo.put_verified_approval_receipt(raw)
+
+            tampered = _canonical_bytes(
+                {**json.loads(raw.decode("utf-8")), "operator_id": "operator-drift"}
+            )
+            with pytest.raises(StoreError, match="^APPROVAL_RECEIPT_INDEX_MISMATCH$"):
+                repo.put_verified_approval_receipt(
+                    _corrupt_handoff(  # noqa: SLF001 - proof replay adversary
+                        verified, tampered, proof=verified._proof
+                    )
+                )
+
+            other = _approval("proof-replay", plan="proof-replay-plan")
+            other_verified = verify_approval_receipt_for_store(
+                encode_approval_receipt(other),
+                APPROVAL_SECRET,
+                source_identities=APPROVAL_SOURCES,
+            )
+            with pytest.raises(StoreError, match="^APPROVAL_RECEIPT_NOT_VERIFIED$"):
+                repo.put_verified_approval_receipt(
+                    _corrupt_handoff(
+                        other_verified,
+                        other_verified.payload,
+                        proof=verified._proof,  # noqa: SLF001 - proof replay adversary
+                    )
+                )
+            assert repo.get_approval_receipt(receipt.receipt_id) is None
+    finally:
+        store.close()
+
+
+def test_v8_hmac_invalid_self_consistent_payload_has_no_public_store_bypass(
+    cwd_tmp: Path,
+) -> None:
+    store = _open("approval-v8-forgery.db", cwd_tmp)
+    receipt = _approval()
+    raw = encode_approval_receipt(receipt)
+    verified = verify_approval_receipt_for_store(
+        raw, APPROVAL_SECRET, source_identities=APPROVAL_SOURCES
+    )
+    forged = _self_consistent_hmac_forgery(raw)
+    forged_receipt = decode_approval_receipt(forged)
+    try:
+        with pytest.raises(ApprovalReceiptError, match="^APPROVAL_RECEIPT_SIGNATURE_INVALID$"):
+            verify_approval_receipt_for_store(
+                forged, APPROVAL_SECRET, source_identities=APPROVAL_SOURCES
+            )
+        with store.transaction() as repo:
+            assert not hasattr(repo, "put_approval_receipt")
+            with pytest.raises(StoreError, match="^APPROVAL_RECEIPT_NOT_VERIFIED$"):
+                repo.put_verified_approval_receipt(forged)
+            with pytest.raises(StoreError, match="^APPROVAL_RECEIPT_NOT_VERIFIED$"):
+                repo.put_verified_approval_receipt(
+                    _corrupt_handoff(
+                        verified, forged, receipt=forged_receipt
+                    )
+                )
+            assert repo.get_approval_receipt(receipt.receipt_id) is None
+    finally:
+        store.close()
+
+
+def test_v8_raw_index_candidate_has_no_repository_persistence_bypass(
+    cwd_tmp: Path,
+) -> None:
+    store = _open("approval-v8-candidate-bypass.db", cwd_tmp)
+    receipt = _approval()
+    forged_raw = _self_consistent_hmac_forgery(encode_approval_receipt(receipt))
+    forged = decode_approval_receipt(forged_raw)
+    candidate = StoredApprovalReceipt(
+        receipt_id=forged.receipt_id,
+        identity=forged.receipt_id,
+        schema_version=forged.schema_version,
+        classification=forged.classification,
+        credential_kind=forged.credential_kind,
+        credential_id=forged.credential_id,
+        operator_id=forged.operator_id,
+        session_date=forged.session_date,
+        action=forged.action,
+        plan_identity=forged.plan_identity,
+        challenge_identity=forged.challenge_identity,
+        store_recovery_identity=forged.store_recovery_identity,
+        source_identities_digest=forged.source_identities_digest,
+        issued_at=forged.issued_at,
+        nonce=forged.nonce,
+        payload=forged_raw,
+    )
+    try:
+        with store.transaction() as repo:
+            assert not hasattr(repo, "_put_approval_receipt_candidate")
+            assert not callable(
+                getattr(ExecutionRepository, "_put_approval_receipt_candidate", None)
+            )
+            with pytest.raises(StoreError, match="^APPROVAL_RECEIPT_NOT_VERIFIED$"):
+                repo.put_verified_approval_receipt(candidate)
+            assert repo.query_approval_receipts() == ()
+    finally:
+        store.close()
+
+
+def test_v8_approval_business_key_conflict_fails_without_partial_write(
+    cwd_tmp: Path,
+) -> None:
+    store = _open("approval-v8-conflicts.db", cwd_tmp)
+    first = _approval()
+    second_same_plan = _approval("store-approval-2")
+    try:
+        with store.transaction() as repo:
+            assert repo.put_verified_approval_receipt(
+                verify_approval_receipt_for_store(
+                    encode_approval_receipt(first),
+                    APPROVAL_SECRET,
+                    source_identities=APPROVAL_SOURCES,
+                )
+            )
+            with pytest.raises(
+                IdempotencyConflict, match="^APPROVAL_BUSINESS_KEY_CONFLICT$"
+            ):
+                repo.put_verified_approval_receipt(
+                    verify_approval_receipt_for_store(
+                        encode_approval_receipt(second_same_plan),
+                        APPROVAL_SECRET,
+                        source_identities=APPROVAL_SOURCES,
+                    )
+                )
+            assert len(repo.query_approval_receipts()) == 1
+    finally:
+        store.close()
+
+
+def test_v8_recovery_fails_closed_on_index_payload_drift(cwd_tmp: Path) -> None:
+    database = cwd_tmp / "approval-v8-corrupt.db"
+    store = _open("approval-v8-corrupt.db", cwd_tmp)
+    receipt = _approval()
+    try:
+        with store.transaction() as repo:
+            repo.put_verified_approval_receipt(
+                verify_approval_receipt_for_store(
+                    encode_approval_receipt(receipt),
+                    APPROVAL_SECRET,
+                    source_identities=APPROVAL_SOURCES,
+                )
+            )
+    finally:
+        store.close()
+
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "UPDATE approval_receipts SET operator_id = ? WHERE receipt_id = ?",
+            ("operator-drift", receipt.receipt_id),
+        )
+        conn.commit()
+
+    reopened = _open("approval-v8-corrupt.db", cwd_tmp)
+    try:
+        with reopened.transaction() as repo:
+            with pytest.raises(StoreError, match="^ROW_CORRUPT$"):
+                repo.read_recovery_rows()
+    finally:
+        reopened.close()
+
+
+def test_v7_database_upgrade_adds_only_approval_substrate_and_preserves_rows(
+    cwd_tmp: Path,
+) -> None:
+    database = cwd_tmp / "approval-v7-upgrade.db"
+    store = _open("approval-v7-upgrade.db", cwd_tmp)
+    with store.transaction() as repo:
+        repo.put_command(command_id="legacy-command", identity=ID_A, payload=b"legacy")
+    store.close()
+
+    with sqlite3.connect(database) as conn:
+        conn.execute("DROP TABLE approval_receipts")
+        conn.execute(
+            "UPDATE schema_version SET version = 7, status = 'ready' "
+            "WHERE singleton = 1"
+        )
+        conn.commit()
+
+    reopened = _open("approval-v7-upgrade.db", cwd_tmp)
+    try:
+        assert reopened.schema_version() == CURRENT_SCHEMA_VERSION
+        with reopened.transaction() as repo:
+            assert repo.get_command("legacy-command") is not None
+            assert repo.read_recovery_rows().approval_receipts == ()
     finally:
         reopened.close()
