@@ -14,8 +14,8 @@
 4. integration 与项目目录树长期保持整洁；
 5. 任何业务结论、Gate 和不可变产物都有明确 owner 与证据链。
 
-本规范不建立新的调度平台、数据库或常驻服务。当前继续使用任务文档、session、branch/worktree、资源窗口和
-提交记录完成轻量治理。
+本规范不建立新的调度平台、数据库、强制 ACK 协议或常驻服务。任务书和交付文档是业务协作主通道；session、
+agent tree、branch/worktree、资源窗口和提交记录只承担通知、执行和现场核对职责。
 
 ## 2. 组织结构
 
@@ -64,8 +64,9 @@
 - 向统筹提交安全 SHA、验证证据、剩余风险和合流申请。
 
 领域经理不直接修改 integration、不自行抢占共享资源、不跨领域派单，也不把计划状态写成完成状态。
-任务经统筹冻结后，领域经理与所选 Luna Worker 直接交互，不需要中央 Agent 转发普通派发、ACK、静态进度、
-独立初验、合同内返工或交付消息。领域经理仍须把共享资源申请、白名单扩大、身份冲突和合流申请提交统筹。
+任务经统筹冻结后，领域经理只需把任务书路径、task id 和 worktree 发给所选 Worker，然后等待交付文档；不需要
+维护 ACK/mapping/status 状态机，也不要求 Worker 持续发送静态进度。领域经理仍须把共享资源申请、白名单扩大、
+跨领域冲突和合流申请提交统筹。
 
 ### 2.4 实现 Worker
 
@@ -73,66 +74,63 @@ Worker 只执行已经冻结的具体任务，不决定业务路线或扩大架�
 
 当前默认使用由多个本地 Luna Worker session 组成的 Worker 池。除非用户明确指定其他方式：
 
-- 领域经理在统筹冻结任务后，直接选择一个空闲或合适的 Luna Worker，并把完整任务包发给该 Worker；
-- Luna Worker 的顶层 session 是事件驱动 dispatcher，只负责任务校验、subagent 创建、路由登记和异常协调；
+- 领域经理在统筹冻结任务后，直接选择一个空闲或合适的 Luna Worker，并把任务书路径、task id、worktree 和
+  资源级别发给该 Worker；完整合同只在任务书中维护，不在 session 消息中复制；
+- Luna Worker 的顶层 session 只负责读取任务书、创建隔离 subagent 和转交任务；不需要建设 dispatcher 状态机；
 - Luna Worker 收到每个具体任务后必须创建独立 subagent 执行，不能在顶层 session 直接混做多个实现；
 - 每个 Luna Worker 可同时管理多个互相隔离的 subagent；项目不预设固定“四槽”或“每个 Worker 一次只能有
   一个任务”的规则。实际并行度由可用 Agent 容量、任务依赖、文件写集合和统筹分配的共享资源共同限制；
 - 每个 `task_id` 在任一时刻只能绑定一个 Luna Worker、一个实现 subagent 和一个 worktree。未经明确 STOP、
   身份闭包和统筹重分配，不得把同一任务同时派给另一个 Luna Worker；
 - 多个任务只有在依赖已满足、写路径互斥且资源窗口允许时才可并行；否则顺序执行；
-- dispatch turn 在返回 `task_id → agent_id → manager_thread_id/worktree` 映射后立即结束并恢复 idle，不等待
-  subagent 完整结束；新任务到达时再开启一个短 dispatch turn，因此任务可以分时到达、随到随派；
-- subagent 自行向领域经理和统筹推送阶段结果；每个 subagent 完成后必须返回精简交付报告并退出，不长期
-  保持 `active`。
+- 顶层 turn 在创建 subagent 并把任务书路径交给它后即可结束并恢复 idle，不等待 subagent 完整结束；
+- subagent 在分配的交付报告路径记录实现、验证、STOP、资源请求和剩余风险。完成后只需向领域经理发送
+  `DELIVERY_READY <path>` 或等价短提示并退出，不长期保持 `active`。
 
-#### 2.4.1 Luna 事件驱动 Dispatcher 协议
+#### 2.4.1 任务书与交付文档协议
 
-Luna session 的 idle 状态就是“监听态”，不需要用长期 active turn 或高频 heartbeat 模拟常驻进程。每个领域
-任务使用以下事件流：
+任务合同不再依赖 session 间长消息、ACK 或 ignored JSON 状态。新任务统一使用以下文档位置：
 
-1. `DISPATCH_REQUEST`：领域经理发送冻结任务包，并附 `task_id`、manager/root thread id、exact base、
-   worktree、白名单、依赖和资源级别；
-2. `DISPATCH_ACK`：Luna 校验边界、创建或复用该任务唯一 subagent，返回 `agent_id` 和当前状态，然后立即
-   结束顶层 turn；ACK 必须直接推送给领域经理，并在 `artifacts/agent_dispatch/<task_id>/mapping.json` 建立
-   no-clobber durable mapping；任一通道不可用时必须明确 `STOP`，不得默认为成功；
-3. `STATIC_DONE`：subagent 完成静态实现与文本检查后直接通知领域经理和统筹；若工具不能跨 task 发送，
-   则写入 Luna mailbox，由下一个短 turn 转发；
-4. `RESOURCE_REQUEST`：需要 pytest、Ruff、mypy、真实 I/O、browser、端口或其他共享资源时，subagent 先
-   停在安全边界并请求资源，不自行占槽；
-5. `RESOURCE_GRANT / REWORK`：统筹或领域经理用新消息唤醒 Luna，Luna 将事件路由给原 subagent 后立即
-   回到 idle；不得新建第二实现者覆盖同一现场；
-6. `DELIVERED / STOP`：subagent 直接发送压缩交付或阻断报告，Luna 只维护映射和异常升级，不等待全部任务
-   成批完成。
+| 领域 | 任务书 | Worker 交付 | 独立审查 |
+|---|---|---|---|
+| 框架 | `docs/framework/tasks/` | `docs/framework/deliveries/` | `docs/framework/reviews/` |
+| 投研 | `docs/research/tasks/` | `docs/research/deliveries/` | `docs/research/reviews/` |
+| GUI | `docs/gui/tasks/` | `docs/gui/deliveries/` | `docs/gui/reviews/` |
+| 跨领域治理 | `docs/governance/tasks/` | `docs/governance/deliveries/` | `docs/governance/reviews/` |
 
-上述事件默认在“领域经理 ↔ 所选 Luna Worker / 任务 subagent”之间直接流转。中央 Agent 不作为消息代理，
-也不需要逐条批准合同内静态实现、初验和返工。只有以下控制面事件必须提交中央：exact base/worktree 或共享
-白名单冻结、CPU/真实 I/O/网络/端口等资源授权、跨领域或共享 SSOT 冲突、dispatch 身份无法闭合、任务迁移到
-另一 Luna Worker、架构边界变化、integration 合流与来源线退休。中央直接联系具体 subagent 仅是 dispatcher
-不可观察、身份损坏或原 owner 无法路由时的异常恢复手段，不是常规工作流。
+文件名使用稳定 task id，例如 `M2-EVAL-R16_任务书.md`、`M2-EVAL-R16_交付报告.md` 和
+`M2-EVAL-R16_独立初验报告.md`。任务书由领域经理拥有，交付报告由实现 Worker 拥有，审查报告由独立 reviewer
+拥有；同一时刻不得交叉改写。已有 `docs/*/agent/` 历史文档和正在执行的任务保持原路径，不进行批量迁移；
+新任务开始使用上述目录。
 
-Dispatcher 不维护新的数据库、队列服务或常驻后台进程。任务书、worktree、agent tree、压缩消息和按 task
-隔离的 ignored mapping 构成当前轻量任务账本；只有直接回调与 mapping 都不可靠且用户另行批准时，才增加
-低频 watchdog。不得以 UI `items=0` 单独判断任务未启动，须同时核对 durable mapping、agent tree、worktree
-diff/mtime、进程和资源租约。
+任务书至少包含：目标/非目标、exact base、branch/worktree、写白名单、只读输入、禁止项、合同和失败语义、
+反例、资源等级、验证要求、交付报告路径和 STOP 条件。Worker 收到的 session 消息只需包含：
 
-#### 2.4.2 双通道映射与恢复
+```text
+TASK_READY <task_id>
+taskbook=<repo-relative path>
+worktree=<absolute path>
+resource=STATIC_ONLY|RESOURCE_GRANTED
+```
 
-每个任务使用独立目录 `artifacts/agent_dispatch/<task_id>/`，避免多个 subagent 争写同一 registry：
+Worker 开始后可立即创建交付报告并标记 `IN_PROGRESS`，随后在同一文件更新 `RESOURCE_WAIT / STOP / DELIVERED`、
+changed paths、验证结果、真实证据边界和残留。完成时发送 `DELIVERY_READY <path>`；领域经理读取文档验收，不要求
+Worker 回传完整日志或维持额外状态心跳。
 
-- `mapping.json` 由 Luna dispatcher 唯一写入且 no-clobber；至少包含 schema version、task id、稳定 logical
-  agent id、可用时的 runtime agent reference、manager/root task id、exact worktree、角色、创建时间和初始状态；
-- `status.json` 由该任务唯一 subagent 以临时文件加原子替换更新；只允许 `RUNNING / STATIC_DONE /
-  RESOURCE_WAIT / DELIVERED / STOP`，并记录最后事件时间与压缩证据定位；
-- 两文件均为运行协调状态，命中项目 ignore，不进入 Git，不保存提示全文、思维链、凭据、业务原始数据或长日志；
-- 直接消息是低延迟主通道，durable mapping 是恢复通道。领域经理收到 ACK 后必须核对两者 task id、agent id、
-  worktree 一致；不一致时按 `DISPATCH_IDENTITY_MISMATCH` 停止；
-- 若 turn 完成但消息不可见，只有已存在且身份一致的 mapping 才允许认定已派发；只有 worktree 变脏不足以推断
-  agent 身份。映射未证实时冻结现场、禁止重派，由统筹发起一次 status-only 恢复；恢复仍无 mapping/STOP 时标记
-  `MAPPING_UNCONFIRMED` 并等待人工或 Worker 通道恢复。
+#### 2.4.2 轻量活性观察与异常处理
 
-对采用本协议前已经启动、无法取得 runtime agent reference 的现场，可由原 Luna 在确认其内部唯一实现者后写入
-`adopted=true` 的 mapping；不得由领域经理或统筹仅凭文件时间代写或猜测 agent id。
+业务经理不负责强制调度 Worker，也不维护运行时状态机。需要判断任务是否仍在推进时，仅允许低频只读观察：
+
+1. 分配的 Worker/subagent id 是否仍存在；
+2. 批准的代码、测试或交付报告是否出现合理的 diff/mtime 变化；
+3. 已授权共享资源是否仍被正确 owner 持有。
+
+Agent 仍存在时，短期无文件变化不等于失活；禁止因此连续 resume、status-only、STOP、重派或创建第二实现者。
+只有 Agent 明确退出/报错/STOP，或长时间不再存在且交付文档没有形成时，领域经理才把现场提交统筹裁定。
+
+`artifacts/agent_dispatch/`、ACK、mapping/status 可由 Worker 自愿保留作诊断，但不是派发、身份或交付 Gate，
+不要求修复历史缺字段，也不得因为这些可选文件不一致而中断已有唯一 Worker。唯一所有权优先由任务书、分配消息、
+worktree 和 agent id 判断。发现真正的双写、两个实现者、白名单越界或共享资源冲突时，才立即停止并升级统筹。
 
 外部 `cursor-agent` 是可选 Worker。未特别指定模型时使用 `auto`；用户或统筹可针对高风险、复杂实现或能力
 需求显式指定其他模型。实现与独立审查必须使用不同的新会话或隔离上下文。
@@ -174,7 +172,7 @@ diff/mtime、进程和资源租约。
 
 ### 4.3 Worker 下发与实现
 
-领域经理把冻结任务包原样下发给选定 Worker。Worker 必须：
+领域经理先把冻结任务包写成任务书，再向选定 Worker 发送 task id、任务书路径和 worktree。Worker 必须：
 
 - 核对 branch、HEAD、worktree 和白名单；
 - 只修改批准路径；
@@ -182,13 +180,12 @@ diff/mtime、进程和资源租约。
 - 执行与风险相称的定向测试、Ruff、mypy、cold import 或真实探针；
 - 不自行合流、rebase、修改 integration 或宣布项目 Gate 通过。
 
-Luna dispatcher 收到任务后不得把顶层 turn 变成长时间实现或等待循环。它必须返回 `DISPATCH_ACK` 后恢复
-idle，让后续分时到达的任务继续触发短 turn；ACK 同时要求直接消息与 durable mapping 身份一致。实际实现、
-阶段回报和资源等待都由对应隔离 subagent 承担。
+Luna Worker 收到任务后创建隔离 subagent，把任务书路径交给它，然后顶层 turn 即可恢复 idle。实际实现、
+资源等待和交付文档都由对应隔离 subagent 承担；不要求额外 ACK 或 durable mapping。
 
-任务冻结后的普通通信由领域经理直接发送给该任务已绑定的 Luna Worker 或 subagent。中央只接收需要控制面
-裁决的事件和最终合流申请，不承担日常消息中继。若某 Luna Worker 繁忙，可将新的、尚未派发的互斥任务分配给
-另一 Luna Worker；已派发任务不得仅为提高吞吐而迁移或复制。
+任务冻结后的普通通信由领域经理通过任务书和交付报告完成；session 只传文档指针、资源批准或明确阻断。中央
+只接收需要控制面裁决的事件和最终合流申请，不承担日常消息中继。若某 Luna Worker 繁忙，可将新的、尚未派发
+任务分配给另一 Luna Worker；已派发任务不得仅为提高吞吐而迁移或复制。
 
 ### 4.4 审查、返工和领域验收
 
@@ -229,8 +226,9 @@ idle，让后续分时到达的任务继续触发短 turn；ACK 同时要求直�
 | `RETIRED` | 来源 branch/worktree、资源和临时现场均已退出 |
 | `BLOCKED` | 明确外部条件阻塞，且已记录恢复条件 |
 
-只有 `IMPLEMENTING` 才表示真正活跃执行。UI 历史卡片不构成运行证据；当前进程、agent tree、worktree、锁和
-任务状态共同决定真实状态。
+这些状态是文档里的里程碑，不是要求 Worker 高频更新的 heartbeat：`PROPOSED/FROZEN` 由任务书记录，
+`IMPLEMENTING/SELF_VERIFIED/BLOCKED` 由交付报告记录，其余由领域经理或统筹在验收、合流时更新。判断实时活性
+仍以 agent id 是否存在、批准路径是否有变化、进程和资源 owner 为低频旁证；短期无变化不自动触发 STOP。
 
 ## 6. 资源与冲突治理
 
@@ -258,7 +256,7 @@ idle，让后续分时到达的任务继续触发短 turn；ACK 同时要求直�
 - worktree 退休前必须检查 ignored 正式产物、缓存、进程 cwd、Git lock 和进行中操作；
 - 项目根、integration、`data/`、`artifacts/` 和用户资料不得作为模糊递归删除目标。
 
-## 7. 交付消息格式
+## 7. 任务与交付文档格式
 
 ### 7.1 领域经理 → 统筹：准入申请
 
@@ -274,11 +272,14 @@ exact 写白名单：
 建议 Worker：
 ```
 
-### 7.2 领域经理 → Worker：冻结任务包
+### 7.2 领域经理 → Worker：任务书
 
-除准入信息外，还必须写明任务文档路径、允许创建的临时目录、是否允许网络/真实数据、提交策略和停止条件。
+任务书存放于 `docs/<domain>/tasks/`，除准入信息外，还必须写明交付报告路径、允许创建的临时目录、是否允许
+网络/真实数据、提交策略和停止条件。派发消息只发送 task id、任务书路径、worktree 和资源等级。
 
-### 7.3 Worker → 领域经理：交付报告
+### 7.3 Worker → 领域经理：交付文档
+
+交付报告存放于 `docs/<domain>/deliveries/`，由 Worker 唯一写入。最低结构为：
 
 ```text
 source SHA / parent / branch / worktree：
@@ -290,6 +291,9 @@ exact changed paths：
 剩余风险 / STOP：
 ```
 
+Worker 可以先创建报告并写 `IN_PROGRESS`，需要资源时更新为 `RESOURCE_WAIT`，完成后更新为 `DELIVERED`；不要求
+另行维护 status.json。独立 reviewer 的报告写入 `docs/<domain>/reviews/`，不得修改实现交付报告。
+
 ### 7.4 领域经理 → 统筹：合流申请
 
 必须附 source SHA、路径核对、验证摘要、审查结论、产物 retained 状态、资源释放和来源线退出条件。
@@ -297,11 +301,12 @@ exact changed paths：
 ## 8. 当前默认执行策略
 
 1. 当前三个领域经理分别负责框架开发、投研和 GUI 开发；
-2. 当前默认实现通道为本地 Luna Worker 池，现有 `Luna worker 1` 与 `Luna worker 2`；两者均可并行管理多个
-   隔离 subagent，每个具体任务仍只能绑定一个 Worker 和一个实现 subagent；运行时 task id 与实时负载以
-   Codex 任务列表和 ignored dispatch mapping 为准，不写入 Git 文档；
+2. 当前默认实现通道为本地 Luna Worker 池；每个 Worker 均可并行管理多个隔离 subagent，每个具体任务仍只能
+   绑定一个 Worker 和一个实现 subagent；任务身份和合同以 Git 中的任务书为准，实时活性只参考 Codex agent id
+   与批准路径变化，不维护强制 dispatch registry；
 3. 只有用户或统筹明确指定时才改用外部 `cursor-agent`；未指定模型时使用 `auto`；
-4. 领域经理在统筹冻结后直接与所选 Luna Worker 完成派发、初验、返工和交付；中央只管理控制面与异常恢复；
+4. 领域经理在统筹冻结后通过任务书下发、通过交付/审查文档收件；中央只管理控制面、资源、合流和真正的双写
+   或所有权异常，不介入普通 Worker 心跳；
 5. 不为提高表面并行度拆分共享文件或强耦合任务，也不设置脱离实际资源的固定并发槽数；
 6. 不因 worker 类型改变 PIT、不可变发布、统一回放、OMS/风控/对账、人工准入和凭据安全 Gate；
 7. 新 Worker 类型加入前，先由统筹补充身份、权限、资源、交付和退出合同。
