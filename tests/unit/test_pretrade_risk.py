@@ -210,8 +210,12 @@ def _plan(
     account,
     *,
     intents: list,
+    planner_config_identity: str | None = None,
 ):
     cfg_id = trading_config_identity(config)
+    # Default keeps historical equality of planner/trading ids; optional override
+    # supplies a real, distinct planner identity shared by plan and intents.
+    planner_id = cfg_id if planner_config_identity is None else planner_config_identity
     specs = []
     for item in intents:
         if len(item) == 5:
@@ -233,7 +237,7 @@ def _plan(
                 target_identity=_hex64("target"),
                 market_snapshot_id=market.snapshot_id,
                 account_snapshot_id=account.snapshot_id,
-                config_identity=cfg_id,
+                config_identity=planner_id,
                 connect_route=connect_route,
             )
         )
@@ -241,7 +245,7 @@ def _plan(
         target_identity=_hex64("target"),
         market_snapshot_id=market.snapshot_id,
         account_snapshot_id=account.snapshot_id,
-        config_identity=cfg_id,
+        config_identity=planner_id,
         trading_config_identity=cfg_id,
         intent_specs=tuple(specs),
         rejections=(),
@@ -1458,5 +1462,121 @@ def test_p0b3_duplicate_route_contexts_fail_closed_at_prove(tmp_path: Path) -> N
         _assert_stable_risk_input_error(exc, "MARKET_CONTRACT_INVALID")
     else:
         raise AssertionError("duplicate connect contexts must raise")
+
+
+def test_verified_approval_unlocks_manual_gate_for_paper_only(tmp_path: Path) -> None:
+    from quant.execution.approval import (
+        build_approval_receipt,
+        encode_approval_receipt,
+        verify_approval_receipt_for_store,
+    )
+
+    config = _config(tmp_path, manual_approval="true")
+    market = _market()
+    account = _account()
+    plan = _plan(
+        config,
+        market,
+        account,
+        intents=[("600000.SH", OrderSide.BUY, 100, Decimal("10"))],
+        planner_config_identity=_hex64("pretrade-planner-paper"),
+    )
+    secret = b"pretrade-approval-secret-bytes-0123"
+    sources = {
+        "account_snapshot_id": plan.account_snapshot_id,
+        "market_snapshot_id": plan.market_snapshot_id,
+        "planner_config_identity": plan.config_identity,
+        "target_receipt_identity": _hex64("pretrade-target-receipt"),
+        "target_verification_identity": _hex64("pretrade-target-verification"),
+        "trading_config_identity": plan.trading_config_identity,
+    }
+    sources = dict(sorted(sources.items()))
+    assert len(set(sources.values())) == len(sources)
+    assert plan.config_identity != plan.trading_config_identity
+    assert all(intent.config_identity == plan.config_identity for intent in plan.intents)
+    receipt = build_approval_receipt(
+        secret,
+        credential_id="credential/pretrade",
+        operator_id="operator-pretrade",
+        session_date=market.session_date,
+        plan_identity=plan.plan_id,
+        challenge_identity="c" * 64,
+        store_recovery_identity="d" * 64,
+        source_identities=sources,
+        issued_at=_utc(3),
+        nonce="nonce-pretrade",
+    )
+    verified = verify_approval_receipt_for_store(
+        encode_approval_receipt(receipt), secret, source_identities=sources
+    )
+    unlocked = evaluate_pretrade(
+        plan, account, market, config, _counters(), now=_utc(3), approval=verified
+    )
+    assert unlocked.commands
+    assert unlocked.requires_manual_approval is False
+    assert "COMMANDS_EMITTED_AFTER_APPROVAL" in _codes(unlocked)
+
+    blocked = evaluate_pretrade(
+        plan, account, market, config, _counters(), now=_utc(3), approval=None
+    )
+    assert blocked.commands == ()
+    assert "MANUAL_APPROVAL_REQUIRED" in _codes(blocked)
+
+    shadow = _config(tmp_path, mode="SHADOW", manual_approval="true")
+    shadow_plan = _plan(
+        shadow,
+        market,
+        account,
+        intents=[("600000.SH", OrderSide.BUY, 100, Decimal("10"))],
+        planner_config_identity=_hex64("pretrade-planner-shadow"),
+    )
+    shadow_sources = {
+        "account_snapshot_id": shadow_plan.account_snapshot_id,
+        "market_snapshot_id": shadow_plan.market_snapshot_id,
+        "planner_config_identity": shadow_plan.config_identity,
+        "target_receipt_identity": _hex64("shadow-target-receipt"),
+        "target_verification_identity": _hex64("shadow-target-verification"),
+        "trading_config_identity": shadow_plan.trading_config_identity,
+    }
+    shadow_sources = dict(sorted(shadow_sources.items()))
+    assert len(set(shadow_sources.values())) == len(shadow_sources)
+    assert shadow_plan.config_identity != shadow_plan.trading_config_identity
+    assert all(
+        intent.config_identity == shadow_plan.config_identity
+        for intent in shadow_plan.intents
+    )
+    shadow_receipt = build_approval_receipt(
+        secret,
+        credential_id="credential/pretrade-shadow",
+        operator_id="operator-pretrade",
+        session_date=market.session_date,
+        plan_identity=shadow_plan.plan_id,
+        challenge_identity="e" * 64,
+        store_recovery_identity="f" * 64,
+        source_identities=shadow_sources,
+        issued_at=_utc(3),
+        nonce="nonce-shadow",
+    )
+    shadow_verified = verify_approval_receipt_for_store(
+        encode_approval_receipt(shadow_receipt),
+        secret,
+        source_identities=shadow_sources,
+    )
+    shadow_decision = evaluate_pretrade(
+        shadow_plan,
+        account,
+        market,
+        shadow,
+        _counters(),
+        now=_utc(3),
+        approval=shadow_verified,
+    )
+    assert shadow_decision.commands == ()
+    assert "SHADOW_READ_ONLY" in _codes(shadow_decision)
+
+    with pytest.raises(Exception):
+        evaluate_pretrade(
+            plan, account, market, config, _counters(), now=_utc(3), approval=True
+        )
     build_execution_event,
     evaluate_cancel_risk,

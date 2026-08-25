@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import hmac
 import json
 import re
 from collections.abc import Mapping, Sequence
@@ -32,6 +33,18 @@ from quant.backtest.ledger_wire import (
     encode_ledger_state,
 )
 from quant.domain.enums import ExecutionMode
+from quant.execution.approval import (
+    ApprovalReceiptError,
+    FORMAL_APPROVAL_ACTION,
+    canonical_source_identities_digest,
+    decode_approval_receipt,
+    unpack_verified_approval_receipt,
+)
+from quant.execution.approval_flow import (
+    ApprovalFlowError,
+    prove_approval_source_binding,
+    require_verified_approval_receipt,
+)
 from quant.execution.config import TradingConfig
 from quant.execution.contracts import (
     AccountSnapshot,
@@ -51,6 +64,7 @@ from quant.execution.gateways.contracts import (
     verify_gateway_dispatch_result,
 )
 from quant.execution.oms import OrderAggregate, new_order_aggregate, reduce_order
+from quant.execution.reconcile import RecoveryError, recover_repository_state
 from quant.execution.risk import (
     CancelRiskDecision,
     DailyRiskCounters,
@@ -63,10 +77,12 @@ from quant.execution.risk_wire import (
     DurableCancelRiskDecision,
     DurableOrderRiskDecision,
     DurableRiskTransitionReceipt,
+    EXECUTION_STAGE_SCHEMA,
     GENESIS_RECEIPT_ID,
     build_cancel_risk_receipt,
     build_order_risk_receipt,
     decode_risk_receipt,
+    encode_execution_stage,
     encode_risk_receipt,
     verify_risk_receipt_semantic_closure,
 )
@@ -74,10 +90,12 @@ from quant.execution.store import (
     CancelOutboxDelivery,
     ExecutionRepository,
     ExecutionStore,
+    IdempotencyConflict,
     LEDGER_CHECKPOINT_KEY,
     OutboxDelivery,
     OutboxDeliveryState,
     StoreError,
+    StoredApprovalReceipt,
     StoredRecord,
     StoredRiskTransitionReceipt,
     StoredLedgerCheckpoint,
@@ -100,7 +118,7 @@ from quant.portfolio.order_planner import (
 
 _SCOPE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 _HEX64 = frozenset("0123456789abcdef")
-_STAGE_SCHEMA = "m4-execution-stage-v1"
+_STAGE_SCHEMA = EXECUTION_STAGE_SCHEMA
 _COUNTER_SCHEMA = "m4-daily-risk-counters-v1"
 
 __all__ = [
@@ -234,9 +252,24 @@ class ExecutionService:
         market: VerifiedMarketSnapshot,
         account: AccountSnapshot,
         planner_config: OrderPlannerConfig,
+        approval: object | None = None,
+        approval_source_identities: Mapping[str, str] | None = None,
     ) -> StagedExecution:
         """Plan, risk-check and atomically stage commands exactly once per plan."""
         now = self._now()
+        if approval is not None:
+            return self._plan_and_stage_with_approval(
+                targets=targets,
+                target_identity=target_identity,
+                market=market,
+                account=account,
+                planner_config=planner_config,
+                approval=approval,
+                approval_source_identities=approval_source_identities,
+                now=now,
+            )
+        if approval_source_identities is not None:
+            raise ExecutionServiceError("APPROVAL_SOURCE_DRIFT") from None
         plan: OrderPlan | None = None
         try:
             plan = build_order_plan(
@@ -295,110 +328,310 @@ class ExecutionService:
             if risk is None:
                 raise ExecutionServiceError("SERVICE_RISK_FAILED") from None
 
-            counter_payload = _encode_counter(risk.projected_counters)
-            counter_identity = _digest(counter_payload)
-            receipt: DurableRiskTransitionReceipt | None = None
-            try:
-                next_sequence, previous_receipt_id = _next_risk_receipt_position(
-                    receipt_tail
-                )
-                receipt = build_order_risk_receipt(
-                    sequence=next_sequence,
-                    previous_receipt_id=previous_receipt_id,
-                    risk_counter_key=counter_key,
-                    predecessor_counters=counters,
-                    decision=risk,
-                )
-            except Exception:
-                pass
-            if receipt is None:
-                raise ExecutionServiceError("SERVICE_RISK_RECEIPT_INVALID") from None
-            stage_error: ExecutionServiceError | None = None
-            try:
-                checkpoint = repo.get_ledger_checkpoint(LEDGER_CHECKPOINT_KEY)
-                if checkpoint is None:
-                    genesis = build_genesis_checkpoint(
-                        account, as_of_date=market.session_date
+            return self._write_order_stage(
+                repo,
+                plan=plan,
+                account=account,
+                market=market,
+                risk=risk,
+                counters=counters,
+                counter_row=counter_row,
+                counter_key=counter_key,
+                receipt_tail=receipt_tail,
+                now=now,
+            )
+
+    def _plan_and_stage_with_approval(
+        self,
+        *,
+        targets: Sequence[OrderPlanTarget],
+        target_identity: str,
+        market: VerifiedMarketSnapshot,
+        account: AccountSnapshot,
+        planner_config: OrderPlannerConfig,
+        approval: object,
+        approval_source_identities: Mapping[str, str] | None,
+        now: dt.datetime,
+    ) -> StagedExecution:
+        try:
+            with self._store.transaction() as repo:
+                plan: OrderPlan | None = None
+                try:
+                    plan = build_order_plan(
+                        targets=targets,
+                        target_identity=target_identity,
+                        market=market,
+                        account=account,
+                        config=planner_config,
                     )
-                    genesis_payload = encode_ledger_state(genesis)
-                    repo.put_ledger_checkpoint(
-                        checkpoint_key=LEDGER_CHECKPOINT_KEY,
-                        identity=genesis.state_id,
-                        payload=genesis_payload,
-                        last_entry_id=None,
+                except Exception:
+                    pass
+                if plan is None:
+                    raise ExecutionServiceError("SERVICE_PLANNING_FAILED") from None
+
+                mode_raw = planner_config.trading_config.section("execution")["mode"]
+                if mode_raw != ExecutionMode.PAPER.value:
+                    raise ExecutionServiceError("APPROVAL_PAPER_ONLY") from None
+
+                verified = require_verified_approval_receipt(approval)
+                receipt, payload = unpack_verified_approval_receipt(verified)
+                if receipt.plan_identity != plan.plan_id:
+                    raise ExecutionServiceError("APPROVAL_PLAN_DRIFT") from None
+                if receipt.session_date != market.session_date.isoformat():
+                    raise ExecutionServiceError("APPROVAL_SESSION_DRIFT") from None
+                if approval_source_identities is None:
+                    raise ExecutionServiceError("APPROVAL_SOURCE_DRIFT") from None
+                try:
+                    expected_sources = prove_approval_source_binding(
+                        approval_source_identities,
+                        account_snapshot_id=plan.account_snapshot_id,
+                        market_snapshot_id=plan.market_snapshot_id,
+                        planner_config_identity=plan.config_identity,
+                        trading_config_identity=plan.trading_config_identity,
                     )
-                else:
-                    persisted = decode_ledger_state(checkpoint.payload)
+                except ApprovalFlowError as error:
+                    raise ExecutionServiceError(error.code) from None
+                expected_digest = canonical_source_identities_digest(expected_sources)
+                if not hmac.compare_digest(
+                    receipt.source_identities_digest, expected_digest
+                ):
+                    raise ExecutionServiceError("APPROVAL_SOURCE_DRIFT") from None
+
+                existing_approval = repo.get_approval_receipt_for_plan(
+                    plan_identity=plan.plan_id,
+                    session_date=market.session_date,
+                )
+                counter_key = (
+                    f"{self._risk_counter_scope}:{market.session_date.isoformat()}"
+                )
+                if existing_approval is not None:
                     if (
-                        persisted.state_id != checkpoint.identity
-                        or persisted.origin_account_snapshot_id != account.snapshot_id
+                        existing_approval.payload != payload
+                        or existing_approval.receipt_id != receipt.receipt_id
+                        or existing_approval.identity != receipt.receipt_id
+                        or existing_approval.schema_version != receipt.schema_version
+                        or existing_approval.classification != receipt.classification
+                        or existing_approval.credential_kind != receipt.credential_kind
+                        or existing_approval.credential_id != receipt.credential_id
+                        or existing_approval.operator_id != receipt.operator_id
+                        or existing_approval.session_date != receipt.session_date
+                        or existing_approval.action != receipt.action
+                        or existing_approval.plan_identity != receipt.plan_identity
+                        or existing_approval.challenge_identity
+                        != receipt.challenge_identity
+                        or existing_approval.store_recovery_identity
+                        != receipt.store_recovery_identity
+                        or existing_approval.source_identities_digest
+                        != receipt.source_identities_digest
+                        or existing_approval.issued_at != receipt.issued_at
+                        or existing_approval.nonce != receipt.nonce
                     ):
                         raise ExecutionServiceError(
-                            "SERVICE_LEDGER_ACCOUNT_MISMATCH"
-                        )
+                            "APPROVAL_BUSINESS_KEY_CONFLICT"
+                        ) from None
+                    existing_stage = repo.get_execution_stage(plan.plan_id)
+                    if existing_stage is None:
+                        raise ExecutionServiceError(
+                            "APPROVAL_ORPHAN_STAGE_MISSING"
+                        ) from None
+                    replayed_risk = _decode_stage(
+                        existing_stage, plan, market.session_date, repo
+                    )
+                    receipt_row = repo.get_risk_transition_receipt(
+                        transition_kind="ORDER", subject_id=plan.plan_id
+                    )
+                    _verify_replay_risk_chain(repo, expected_counter_key=counter_key)
+                    _require_order_receipt(
+                        receipt_row, replayed_risk, expected_counter_key=counter_key
+                    )
+                    _require_approval_replay_closure(repo, replayed_risk)
+                    return _staged(plan, replayed_risk, replayed=True)
+
+                try:
+                    current = recover_repository_state(repo)
+                except RecoveryError as error:
+                    raise ExecutionServiceError(error.code) from None
+                if current.recovery_id != receipt.store_recovery_identity:
+                    raise ExecutionServiceError("APPROVAL_RECOVERY_DRIFT") from None
+
+                try:
+                    inserted = repo.put_verified_approval_receipt(verified)
+                except IdempotencyConflict as error:
+                    raise ExecutionServiceError(_store_error_code(error)) from None
+                except StoreError as error:
+                    raise ExecutionServiceError(_store_error_code(error)) from None
+                if not inserted:
+                    raise ExecutionServiceError("APPROVAL_IDEMPOTENCY_INVALID") from None
+
+                counter_row = repo.get_scoped_daily_risk_counters(counter_key)
                 if counter_row is None:
-                    repo.put_scoped_daily_risk_counters(
-                        counter_key=counter_key,
-                        identity=counter_identity,
-                        payload=counter_payload,
+                    counters = DailyRiskCounters(
+                        session_date=market.session_date,
+                        order_count=0,
+                        cancel_count=0,
+                        buy_notional=Decimal(0),
                     )
                 else:
-                    repo.compare_and_set_scoped_daily_risk_counters(
-                        counter_key=counter_key,
-                        expected_identity=counter_row.identity,
-                        identity=counter_identity,
-                        payload=counter_payload,
-                    )
+                    counters = _decode_counter(counter_row, market.session_date)
+                receipt_tail = repo.get_risk_transition_tail()
 
-                for command in risk.commands:
-                    context = self._ledger_context_provider.context_for(command)
-                    context = verify_execution_ledger_context(
-                        context, command=command
+                risk: RiskDecision | None = None
+                try:
+                    risk = evaluate_pretrade(
+                        plan,
+                        account,
+                        market,
+                        planner_config.trading_config,
+                        counters,
+                        now=now,
+                        approval=verified,
                     )
-                    context_payload = encode_ledger_context(context)
-                    command_payload = encode_order_command(command)
-                    aggregate = new_order_aggregate(command)
-                    aggregate_payload = encode_order_aggregate(aggregate)
-                    repo.put_command(
-                        command_id=command.command_id,
-                        identity=command.command_id,
-                        payload=command_payload,
-                    )
-                    repo.put_ledger_context(
-                        command_id=command.command_id,
-                        identity=context.context_id,
-                        payload=context_payload,
-                    )
-                    repo.put_order_aggregate(
-                        command_id=command.command_id,
-                        identity=_digest(aggregate_payload),
-                        payload=aggregate_payload,
-                    )
-                    repo.put_outbox(
-                        outbox_key=command.command_id,
-                        identity=command.command_id,
-                        payload=command_payload,
-                    )
-                    repo.put_outbox_delivery(
-                        outbox_key=command.command_id,
-                        command_id=command.command_id,
-                        available_at=now,
-                    )
+                except Exception:
+                    pass
+                if risk is None:
+                    raise ExecutionServiceError("SERVICE_RISK_FAILED") from None
 
-                _put_risk_receipt(repo, receipt)
-
-                stage_payload = _encode_stage(risk)
-                repo.put_execution_stage(
-                    plan_id=plan.plan_id,
-                    identity=_digest(stage_payload),
-                    payload=stage_payload,
+                return self._write_order_stage(
+                    repo,
+                    plan=plan,
+                    account=account,
+                    market=market,
+                    risk=risk,
+                    counters=counters,
+                    counter_row=counter_row,
+                    counter_key=counter_key,
+                    receipt_tail=receipt_tail,
+                    now=now,
                 )
-            except ExecutionServiceError as error:
-                stage_error = error
-            except Exception:
-                stage_error = ExecutionServiceError("SERVICE_STAGE_WRITE_FAILED")
-            if stage_error is not None:
-                raise stage_error from None
+        except ExecutionServiceError:
+            raise
+        except ApprovalFlowError as error:
+            raise ExecutionServiceError(error.code) from None
+        except ApprovalReceiptError as error:
+            raise ExecutionServiceError(error.code) from None
+        except StoreError as error:
+            raise ExecutionServiceError(_store_error_code(error)) from None
+        except Exception:
+            raise ExecutionServiceError("SERVICE_STAGE_WRITE_FAILED") from None
+
+    def _write_order_stage(
+        self,
+        repo: ExecutionRepository,
+        *,
+        plan: OrderPlan,
+        account: AccountSnapshot,
+        market: VerifiedMarketSnapshot,
+        risk: RiskDecision,
+        counters: DailyRiskCounters,
+        counter_row: object | None,
+        counter_key: str,
+        receipt_tail: object | None,
+        now: dt.datetime,
+    ) -> StagedExecution:
+        counter_payload = _encode_counter(risk.projected_counters)
+        counter_identity = _digest(counter_payload)
+        receipt: DurableRiskTransitionReceipt | None = None
+        try:
+            next_sequence, previous_receipt_id = _next_risk_receipt_position(
+                receipt_tail  # type: ignore[arg-type]
+            )
+            receipt = build_order_risk_receipt(
+                sequence=next_sequence,
+                previous_receipt_id=previous_receipt_id,
+                risk_counter_key=counter_key,
+                predecessor_counters=counters,
+                decision=risk,
+            )
+        except Exception:
+            pass
+        if receipt is None:
+            raise ExecutionServiceError("SERVICE_RISK_RECEIPT_INVALID") from None
+        stage_error: ExecutionServiceError | None = None
+        try:
+            checkpoint = repo.get_ledger_checkpoint(LEDGER_CHECKPOINT_KEY)
+            if checkpoint is None:
+                genesis = build_genesis_checkpoint(
+                    account, as_of_date=market.session_date
+                )
+                genesis_payload = encode_ledger_state(genesis)
+                repo.put_ledger_checkpoint(
+                    checkpoint_key=LEDGER_CHECKPOINT_KEY,
+                    identity=genesis.state_id,
+                    payload=genesis_payload,
+                    last_entry_id=None,
+                )
+            else:
+                persisted = decode_ledger_state(checkpoint.payload)
+                if (
+                    persisted.state_id != checkpoint.identity
+                    or persisted.origin_account_snapshot_id != account.snapshot_id
+                ):
+                    raise ExecutionServiceError(
+                        "SERVICE_LEDGER_ACCOUNT_MISMATCH"
+                    )
+            if counter_row is None:
+                repo.put_scoped_daily_risk_counters(
+                    counter_key=counter_key,
+                    identity=counter_identity,
+                    payload=counter_payload,
+                )
+            else:
+                repo.compare_and_set_scoped_daily_risk_counters(
+                    counter_key=counter_key,
+                    expected_identity=counter_row.identity,  # type: ignore[attr-defined]
+                    identity=counter_identity,
+                    payload=counter_payload,
+                )
+
+            for command in risk.commands:
+                context = self._ledger_context_provider.context_for(command)
+                context = verify_execution_ledger_context(
+                    context, command=command
+                )
+                context_payload = encode_ledger_context(context)
+                command_payload = encode_order_command(command)
+                aggregate = new_order_aggregate(command)
+                aggregate_payload = encode_order_aggregate(aggregate)
+                repo.put_command(
+                    command_id=command.command_id,
+                    identity=command.command_id,
+                    payload=command_payload,
+                )
+                repo.put_ledger_context(
+                    command_id=command.command_id,
+                    identity=context.context_id,
+                    payload=context_payload,
+                )
+                repo.put_order_aggregate(
+                    command_id=command.command_id,
+                    identity=_digest(aggregate_payload),
+                    payload=aggregate_payload,
+                )
+                repo.put_outbox(
+                    outbox_key=command.command_id,
+                    identity=command.command_id,
+                    payload=command_payload,
+                )
+                repo.put_outbox_delivery(
+                    outbox_key=command.command_id,
+                    command_id=command.command_id,
+                    available_at=now,
+                )
+
+            _put_risk_receipt(repo, receipt)
+
+            stage_payload = _encode_stage(risk)
+            repo.put_execution_stage(
+                plan_id=plan.plan_id,
+                identity=_digest(stage_payload),
+                payload=stage_payload,
+            )
+        except ExecutionServiceError as error:
+            stage_error = error
+        except Exception:
+            stage_error = ExecutionServiceError("SERVICE_STAGE_WRITE_FAILED")
+        if stage_error is not None:
+            raise stage_error from None
         return _staged(plan, risk, replayed=False)
 
     def stage_cancel(
@@ -1122,6 +1355,15 @@ def _staged(plan: OrderPlan, risk: RiskDecision, *, replayed: bool) -> StagedExe
     )
 
 
+def _store_error_code(error: StoreError) -> str:
+    message = str(error)
+    if not message:
+        return "SERVICE_STORE_WRITE_FAILED"
+    if message.startswith("IDEMPOTENCY_CONFLICT"):
+        return "APPROVAL_IDEMPOTENCY_CONFLICT"
+    return message.split(":", 1)[0]
+
+
 def _dispatch_item(
     delivery: object,
     certainty: DispatchCertainty | None,
@@ -1301,6 +1543,60 @@ def _require_staged_ledger_rows(
         _load_ledger_context(repo, command)
 
 
+def _require_approval_replay_closure(
+    repo: ExecutionRepository, risk: RiskDecision
+) -> None:
+    """Prove full stage/command/aggregate/outbox/delivery/ledger join for replay."""
+    _require_staged_ledger_rows(repo, risk.commands)
+    for command in risk.commands:
+        _require_staged_command_storage_closure(repo, command)
+
+
+def _require_staged_command_storage_closure(
+    repo: ExecutionRepository, command: OrderCommand
+) -> None:
+    command_payload = encode_order_command(command)
+    row = repo.get_command(command.command_id)
+    if (
+        row is None
+        or row.key != command.command_id
+        or row.identity != command.command_id
+        or row.payload != command_payload
+    ):
+        raise ExecutionServiceError("APPROVAL_ORPHAN_COMMAND_MISSING") from None
+    aggregate = repo.get_order_aggregate(command.command_id)
+    if aggregate is None:
+        raise ExecutionServiceError("APPROVAL_ORPHAN_AGGREGATE_MISSING") from None
+    try:
+        _decode_aggregate(aggregate, command)
+    except ExecutionServiceError:
+        raise ExecutionServiceError("APPROVAL_ORPHAN_AGGREGATE_MISSING") from None
+    outbox = repo.get_outbox(command.command_id)
+    if (
+        outbox is None
+        or outbox.key != command.command_id
+        or outbox.identity != command.command_id
+        or outbox.payload != command_payload
+    ):
+        raise ExecutionServiceError("APPROVAL_ORPHAN_OUTBOX_MISSING") from None
+    delivery = repo.get_outbox_delivery(command.command_id)
+    if (
+        delivery is None
+        or delivery.outbox_key != command.command_id
+        or delivery.command_id != command.command_id
+        or delivery.identity != command.command_id
+        or delivery.payload != command_payload
+        or delivery.state
+        not in {
+            OutboxDeliveryState.PENDING,
+            OutboxDeliveryState.LEASED,
+            OutboxDeliveryState.SENT,
+            OutboxDeliveryState.UNKNOWN,
+        }
+    ):
+        raise ExecutionServiceError("APPROVAL_ORPHAN_DELIVERY_MISSING") from None
+
+
 def _canonical(payload: Mapping[str, object]) -> bytes:
     return json.dumps(
         payload,
@@ -1439,27 +1735,10 @@ def _decode_counter(record: StoredRecord, session_date: dt.date) -> DailyRiskCou
 
 
 def _encode_stage(risk: RiskDecision) -> bytes:
-    return _canonical(
-        {
-            "accepted": risk.accepted,
-            "approved_intent_ids": list(risk.approved_intent_ids),
-            "command_ids": [item.command_id for item in risk.commands],
-            "plan_id": risk.plan_id,
-            "projected_counters": risk.projected_counters.to_persistable_dict(),
-            "requires_manual_approval": risk.requires_manual_approval,
-            "rule_results": [
-                {
-                    "accepted": item.accepted,
-                    "code": item.code,
-                    "detail": item.detail,
-                    "rule": item.rule,
-                    "subject": item.subject,
-                }
-                for item in risk.rule_results
-            ],
-            "schema_version": _STAGE_SCHEMA,
-        }
-    )
+    try:
+        return encode_execution_stage(risk)
+    except Exception:
+        raise ExecutionServiceError("SERVICE_STAGE_INVALID") from None
 
 
 def _put_risk_receipt(
@@ -1570,10 +1849,16 @@ def _verify_replay_risk_chain(
             _decode_stored_risk_receipt(row)
             for row in rows.risk_transition_receipts
         )
+        allowed_zeros = _prove_zero_order_allow_set(
+            repo,
+            receipts=receipts,
+            approval_receipts=rows.approval_receipts,
+        )
         verify_risk_receipt_semantic_closure(
             receipts=receipts,
             commands=tuple(commands),
             cancel_commands=tuple(cancels),
+            allowed_zero_order_subject_ids=allowed_zeros,
         )
         key_receipts = tuple(
             item for item in receipts if item.risk_counter_key == expected_counter_key
@@ -1599,6 +1884,67 @@ def _verify_replay_risk_chain(
     if failed:
         raise ExecutionServiceError("SERVICE_RISK_RECEIPT_INVALID") from None
     return result
+
+
+def _prove_zero_order_allow_set(
+    repo: ExecutionRepository,
+    *,
+    receipts: tuple[DurableRiskTransitionReceipt, ...],
+    approval_receipts: tuple[StoredApprovalReceipt, ...],
+) -> frozenset[str]:
+    """Prove approval+stage ownership for every empty-command ORDER receipt."""
+    by_plan = {
+        item.plan_identity: item
+        for item in approval_receipts
+    }
+    if len(by_plan) != len(approval_receipts):
+        raise ValueError
+    allowed: set[str] = set()
+    for receipt in receipts:
+        if receipt.transition_kind != "ORDER":
+            continue
+        decision = receipt.decision
+        if type(decision) is not DurableOrderRiskDecision:
+            raise ValueError
+        if decision.command_ids:
+            continue
+        if receipt.subject_id != decision.plan_id:
+            raise ValueError
+        stored = by_plan.get(receipt.subject_id)
+        if stored is None:
+            raise ValueError
+        decoded = decode_approval_receipt(stored.payload)
+        if (
+            stored.receipt_id != decoded.receipt_id
+            or stored.identity != decoded.receipt_id
+            or stored.schema_version != decoded.schema_version
+            or stored.classification != decoded.classification
+            or stored.credential_kind != decoded.credential_kind
+            or stored.credential_id != decoded.credential_id
+            or stored.operator_id != decoded.operator_id
+            or stored.session_date != decoded.session_date
+            or stored.action != decoded.action
+            or stored.action != FORMAL_APPROVAL_ACTION
+            or stored.plan_identity != decoded.plan_identity
+            or stored.plan_identity != receipt.subject_id
+            or stored.challenge_identity != decoded.challenge_identity
+            or stored.store_recovery_identity != decoded.store_recovery_identity
+            or stored.source_identities_digest != decoded.source_identities_digest
+            or stored.issued_at != decoded.issued_at
+            or stored.nonce != decoded.nonce
+        ):
+            raise ValueError
+        stage = repo.get_execution_stage(receipt.subject_id)
+        expected_payload = encode_execution_stage(decision)
+        if (
+            stage is None
+            or stage.key != receipt.subject_id
+            or stage.identity != _digest(expected_payload)
+            or stage.payload != expected_payload
+        ):
+            raise ValueError
+        allowed.add(receipt.subject_id)
+    return frozenset(allowed)
 
 
 def _require_cancel_receipt(

@@ -30,10 +30,12 @@ from quant.execution.reconcile import (
     RecoveryResult,
     build_broker_snapshot,
     recover_local_state,
+    recover_repository_state,
     reconcile,
 )
 from quant.execution.risk import CancelRiskDecision, RiskDecision, RiskRuleResult
 from quant.execution.risk_wire import (
+    DurableOrderRiskDecision,
     build_cancel_risk_receipt,
     build_order_risk_receipt,
 )
@@ -45,7 +47,10 @@ from quant.execution.store import (
 from tests.unit.test_execution_service import (
     FakeGateway,
     MutableClock,
+    _approval_bundle,
     _inputs as service_inputs,
+    _logical_execution_snapshot,
+    _open as service_open,
     _planner_config,
     _service as build_service,
     _stage as stage_service,
@@ -296,6 +301,33 @@ def test_recovery_rejects_hostile_command_without_retained_context(
     assert info.value.__cause__ is None
     assert info.value.__context__ is None
     assert "TOKEN" not in repr(info.value.args)
+
+
+def test_recovery_error_exposes_stable_code_without_context(tmp_path: Path) -> None:
+    """F19: RecoveryError exposes stable .code; instances do not share state."""
+    with _opened(tmp_path) as store:
+        with store.transaction() as repo:
+            repo.put_command(
+                command_id=_hex("hostile-command-code"),
+                identity=_hex("hostile-command-code"),
+                payload=b"TOKEN",
+            )
+        with pytest.raises(RecoveryError, match="^RECOVERY_LOCAL_INVALID$") as first_info:
+            recover_local_state(store)
+        with pytest.raises(RecoveryError, match="^RECOVERY_LOCAL_INVALID$") as second_info:
+            recover_local_state(store)
+
+    first = first_info.value
+    second = second_info.value
+    assert first is not second
+    assert first.code == first.args[0] == str(first) == "RECOVERY_LOCAL_INVALID"
+    assert second.code == second.args[0] == str(second) == "RECOVERY_LOCAL_INVALID"
+    assert type(first.code) is str and type(first.args[0]) is str
+    _assert_detached(first)
+    _assert_detached(second)
+    assert "TOKEN" not in repr(first.args) and "TOKEN" not in repr(second.args)
+    first.code = "MUTATED"
+    assert second.code == second.args[0] == str(second) == "RECOVERY_LOCAL_INVALID"
 
 
 def test_staged_command_recovers_full_context_and_is_retry_classified(
@@ -769,3 +801,201 @@ def test_malformed_cancel_payload_fails_with_detached_stable_code(
     assert info.value.__cause__ is None
     assert info.value.__context__ is None
     assert "TOKEN" not in repr(info.value.args)
+
+def test_recover_repository_state_matches_recover_local_state_identity(
+    tmp_path: Path,
+) -> None:
+    with _opened(tmp_path) as store:
+        wrapped = recover_local_state(store)
+        with store.transaction() as repo:
+            direct = recover_repository_state(repo)
+        assert direct == wrapped
+        assert direct.recovery_id == wrapped.recovery_id
+
+
+def test_recover_zero_approval_structural_closure_without_hmac_claim(
+    tmp_path: Path,
+) -> None:
+    """Reconcile proves stored approval indexes+stage bytes; no credential reverify."""
+    store = service_open(tmp_path)
+    service = build_service(store, FakeGateway(), MutableClock())
+    targets, market, account, planner, sources, verified, plan = _approval_bundle(
+        tmp_path, store, zero_intent=True
+    )
+    service.plan_and_stage(
+        targets=targets,
+        target_identity=_hex("targets"),
+        market=market,
+        account=account,
+        planner_config=planner,
+        approval=verified,
+        approval_source_identities=sources,
+    )
+    recovered = recover_local_state(store)
+    with store.transaction() as repo:
+        direct = recover_repository_state(repo)
+    assert direct == recovered
+    assert recovered.allowed_zero_order_subject_ids == frozenset({plan.plan_id})
+    assert recovered.commands == ()
+    again = recover_local_state(store)
+    assert again.recovery_id == recovered.recovery_id
+    assert again.allowed_zero_order_subject_ids == recovered.allowed_zero_order_subject_ids
+    store.close()
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "approval_raw_payload",
+        "approval_index_identity",
+        "stage_payload",
+        "stage_identity",
+    ],
+)
+def test_recover_zero_approval_rejects_approval_or_stage_structure_drift(
+    tmp_path: Path, tamper: str
+) -> None:
+    """Reconcile ownership drifts fail closed; persisted logical snapshot stays exact."""
+    store = service_open(tmp_path)
+    service = build_service(store, FakeGateway(), MutableClock())
+    targets, market, account, planner, sources, verified, plan = _approval_bundle(
+        tmp_path, store, zero_intent=True
+    )
+    service.plan_and_stage(
+        targets=targets,
+        target_identity=_hex("targets"),
+        market=market,
+        account=account,
+        planner_config=planner,
+        approval=verified,
+        approval_source_identities=sources,
+    )
+    database = tmp_path / "db" / "execution.db"
+    before = _logical_execution_snapshot(database)
+    with sqlite3.connect(database) as connection:
+        if tamper == "approval_raw_payload":
+            connection.execute(
+                "UPDATE approval_receipts SET payload = "
+                "CAST(payload || X'00' AS BLOB) WHERE plan_identity = ?",
+                (plan.plan_id,),
+            )
+        elif tamper == "approval_index_identity":
+            connection.execute(
+                "UPDATE approval_receipts SET identity = ? WHERE plan_identity = ?",
+                ("0" * 64, plan.plan_id),
+            )
+        elif tamper == "stage_payload":
+            connection.execute(
+                "UPDATE execution_stages SET payload = payload || X'00' WHERE plan_id = ?",
+                (plan.plan_id,),
+            )
+        else:
+            connection.execute(
+                "UPDATE execution_stages SET identity = ? WHERE plan_id = ?",
+                ("0" * 64, plan.plan_id),
+            )
+        connection.commit()
+        if tamper == "approval_raw_payload":
+            assert (
+                connection.execute(
+                    "SELECT typeof(payload) FROM approval_receipts "
+                    "WHERE plan_identity = ?",
+                    (plan.plan_id,),
+                ).fetchone()[0]
+                == "blob"
+            )
+    after_tamper = _logical_execution_snapshot(database)
+    assert after_tamper != before
+    with pytest.raises(
+        RecoveryError, match="^RECOVERY_RISK_CLOSURE_INVALID$"
+    ) as error:
+        recover_local_state(store)
+    _assert_detached(error.value)
+    assert _logical_execution_snapshot(database) == after_tamper
+    with store.transaction() as repo:
+        with pytest.raises(
+            RecoveryError, match="^RECOVERY_RISK_CLOSURE_INVALID$"
+        ):
+            recover_repository_state(repo)
+    assert _logical_execution_snapshot(database) == after_tamper
+    store.close()
+
+
+def _rebuild_recovery_with_allow_set(
+    value: RecoveryResult, allowed: frozenset[str]
+) -> RecoveryResult:
+    values = {
+        field.name: getattr(value, field.name)
+        for field in fields(RecoveryResult)
+        if field.name != "recovery_id"
+    }
+    values["allowed_zero_order_subject_ids"] = allowed
+    # Keep the original recovery_id so a forged allow-set cannot invent a new identity.
+    return RecoveryResult(recovery_id=value.recovery_id, **values)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["extra", "missing", "wrong"],
+)
+def test_recovery_result_allow_set_exact_with_observed_zero_subjects(
+    tmp_path: Path, mutation: str
+) -> None:
+    """Allow-set is uniquely fixed by observed legal zero receipts; not a free dimension."""
+    store = service_open(tmp_path)
+    service = build_service(store, FakeGateway(), MutableClock())
+    targets, market, account, planner, sources, verified, plan = _approval_bundle(
+        tmp_path, store, zero_intent=True
+    )
+    service.plan_and_stage(
+        targets=targets,
+        target_identity=_hex("targets"),
+        market=market,
+        account=account,
+        planner_config=planner,
+        approval=verified,
+        approval_source_identities=sources,
+    )
+    recovered = recover_local_state(store)
+    legal = frozenset({plan.plan_id})
+    assert recovered.allowed_zero_order_subject_ids == legal
+    zero_subjects = frozenset(
+        item.subject_id
+        for item in recovered.risk_receipts
+        if (
+            item.transition_kind == "ORDER"
+            and type(item.decision) is DurableOrderRiskDecision
+            and item.decision.command_ids == ()
+        )
+    )
+    assert zero_subjects == legal
+    # Same receipts → same recovery_id; legal allow-set rebuilds exactly once.
+    rebuilt = _rebuild_recovery_with_allow_set(recovered, legal)
+    assert rebuilt.recovery_id == recovered.recovery_id
+    assert rebuilt.allowed_zero_order_subject_ids == legal
+    if mutation == "extra":
+        forged = frozenset({plan.plan_id, _hex("extra-zero-subject")})
+    elif mutation == "missing":
+        forged = frozenset()
+    else:
+        forged = frozenset({_hex("wrong-zero-subject")})
+    assert forged != legal
+    # Identity digest ignores allow-set, so a forged set would keep the same id if accepted.
+    provisional = RecoveryResult.__new__(RecoveryResult)
+    for field in fields(RecoveryResult):
+        if field.name == "recovery_id":
+            continue
+        object.__setattr__(
+            provisional,
+            field.name,
+            forged
+            if field.name == "allowed_zero_order_subject_ids"
+            else getattr(recovered, field.name),
+        )
+    object.__setattr__(provisional, "recovery_id", "0" * 64)
+    forged_identity = reconcile_module._recovery_identity(provisional)  # noqa: SLF001
+    assert forged_identity == recovered.recovery_id
+    with pytest.raises(RecoveryError, match="^RECOVERY_RESULT_INVALID$") as error:
+        _rebuild_recovery_with_allow_set(recovered, forged)
+    _assert_detached(error.value)
+    store.close()
