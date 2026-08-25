@@ -8,11 +8,12 @@ import io
 import json
 import math
 import os
+import stat
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, fields
 from functools import wraps
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Literal, ParamSpec, TypeVar, cast
 
 import polars as pl
@@ -1114,6 +1115,48 @@ def _formal_summary_boundary(function: Callable[_P, _T]) -> Callable[_P, _T]:
     return wrapped
 
 
+@dataclass(frozen=True)
+class FormalSummaryStagePublicationIdentity:
+    """Frozen StageRunner publication identity for one formal research-summary node."""
+
+    stage_root: Path
+    node_id: str
+    final_relative_path: PurePosixPath
+    experiment_key: str
+    horizon_sessions: Literal[5, 10]
+    model: str
+    model_version: str
+
+    def __post_init__(self) -> None:
+        path_type = type(Path())
+        if (
+            type(self.stage_root) is not path_type
+            or type(self.node_id) is not str
+            or not self.node_id
+            or type(self.final_relative_path) is not PurePosixPath
+            or type(self.experiment_key) is not str
+            or len(self.experiment_key) != 64
+            or type(self.horizon_sessions) is not int
+            or self.horizon_sessions not in {5, 10}
+            or type(self.model) is not str
+            or not self.model
+            or type(self.model_version) is not str
+            or not self.model_version
+        ):
+            raise ValueError("formal summary stage publication identity invalid")
+        expected = PurePosixPath(
+            f"summaries/{self.experiment_key}/h{self.horizon_sessions}/"
+            f"{self.model}/{self.model_version}"
+        )
+        if self.final_relative_path != expected:
+            raise ValueError("formal summary stage publication identity invalid")
+        expected_node = (
+            f"summary.h{self.horizon_sessions}.{self.model}.{self.model_version}"
+        )
+        if self.node_id != expected_node:
+            raise ValueError("formal summary stage publication identity invalid")
+
+
 @_formal_summary_boundary
 def build_research_summary_artifact(
     *,
@@ -1129,6 +1172,227 @@ def build_research_summary_artifact(
     """Build one formal fixed-horizon summary from all freshly verified folds."""
     if not isinstance(output_root, Path) or output_root.name != f"horizon={horizon_sessions}":
         raise ValueError("formal research summary output root invalid")
+    return _publish_formal_summary_files(
+        evaluations=evaluations,
+        evaluation_contexts=evaluation_contexts,
+        experiment=experiment,
+        config=config,
+        horizon_sessions=horizon_sessions,
+        upstream_paths=upstream_paths,
+        artifact_roots=artifact_roots,
+        output_root=output_root,
+    )
+
+
+@_formal_summary_boundary
+def build_research_summary_stage_artifact(
+    *,
+    identity: FormalSummaryStagePublicationIdentity,
+    evaluations: Sequence[VerifiedEvaluationArtifact],
+    evaluation_contexts: Sequence[EvaluationFreshVerificationContext],
+    experiment: VerifiedExperimentIdentity,
+    config: LoadedM3Config,
+    upstream_paths: ResearchSummaryUpstreamPaths,
+    artifact_roots: Mapping[str, Path],
+    output_root: Path,
+) -> ResearchSummaryManifestV1:
+    """Build formal summary bytes into a StageRunner-owned `.stage-tmp` leaf."""
+    if type(identity) is not FormalSummaryStagePublicationIdentity:
+        raise ValueError("formal summary stage publication identity invalid")
+    _require_stage_temp_output_root(
+        identity=identity, output_root=output_root, require_empty=True
+    )
+    _require_identity_evaluation_closure(
+        identity=identity,
+        evaluations=evaluations,
+        experiment=experiment,
+    )
+    return _publish_formal_summary_files(
+        evaluations=evaluations,
+        evaluation_contexts=evaluation_contexts,
+        experiment=experiment,
+        config=config,
+        horizon_sessions=identity.horizon_sessions,
+        upstream_paths=upstream_paths,
+        artifact_roots=artifact_roots,
+        output_root=output_root,
+    )
+
+
+@_formal_summary_boundary
+def verify_research_summary_artifact(
+    *,
+    root: Path,
+    receipt_path: Path,
+    evaluations: Sequence[VerifiedEvaluationArtifact],
+    evaluation_contexts: Sequence[EvaluationFreshVerificationContext],
+    experiment: VerifiedExperimentIdentity,
+    config: LoadedM3Config,
+    horizon_sessions: Literal[5, 10],
+    upstream_paths: ResearchSummaryUpstreamPaths,
+    artifact_roots: Mapping[str, Path],
+) -> VerifiedResearchSummaryArtifact:
+    """Freshly rebuild and verify a formal fixed-horizon summary and receipt."""
+    if (
+        not isinstance(root, Path)
+        or not isinstance(receipt_path, Path)
+        or not root.is_dir()
+        or root.is_symlink()
+        or root.name != f"horizon={horizon_sessions}"
+        or {item.name for item in os.scandir(root)} != _SUMMARY_FILES
+    ):
+        raise ValueError("formal research summary tree drift")
+    return _verify_formal_summary_at_root(
+        root=root,
+        receipt_path=receipt_path,
+        evaluations=evaluations,
+        evaluation_contexts=evaluation_contexts,
+        experiment=experiment,
+        config=config,
+        horizon_sessions=horizon_sessions,
+        upstream_paths=upstream_paths,
+        artifact_roots=artifact_roots,
+        require_receipt=True,
+    )
+
+
+@_formal_summary_boundary
+def verify_research_summary_stage_precommit(
+    *,
+    identity: FormalSummaryStagePublicationIdentity,
+    root: Path,
+    evaluations: Sequence[VerifiedEvaluationArtifact],
+    evaluation_contexts: Sequence[EvaluationFreshVerificationContext],
+    experiment: VerifiedExperimentIdentity,
+    config: LoadedM3Config,
+    upstream_paths: ResearchSummaryUpstreamPaths,
+    artifact_roots: Mapping[str, Path],
+) -> VerifiedResearchSummaryArtifact:
+    """Temp-only precommit verifier for StageRunner-owned `.stage-tmp` leaves."""
+    if type(identity) is not FormalSummaryStagePublicationIdentity:
+        raise ValueError("formal summary stage publication identity invalid")
+    absolute = _require_stage_temp_output_root(
+        identity=identity, output_root=root, require_empty=False
+    )
+    if _is_identity_final_root(identity=identity, root=absolute):
+        raise ValueError("formal summary stage temp root invalid")
+    _require_summary_stage_top_level_outputs(absolute)
+    _require_identity_evaluation_closure(
+        identity=identity,
+        evaluations=evaluations,
+        experiment=experiment,
+    )
+    return _verify_formal_summary_at_root(
+        root=absolute,
+        receipt_path=None,
+        evaluations=evaluations,
+        evaluation_contexts=evaluation_contexts,
+        experiment=experiment,
+        config=config,
+        horizon_sessions=identity.horizon_sessions,
+        upstream_paths=upstream_paths,
+        artifact_roots=artifact_roots,
+        require_receipt=False,
+    )
+
+
+@_formal_summary_boundary
+def verify_research_summary_stage_publication(
+    *,
+    identity: FormalSummaryStagePublicationIdentity,
+    root: Path,
+    evaluations: Sequence[VerifiedEvaluationArtifact],
+    evaluation_contexts: Sequence[EvaluationFreshVerificationContext],
+    experiment: VerifiedExperimentIdentity,
+    config: LoadedM3Config,
+    upstream_paths: ResearchSummaryUpstreamPaths,
+    artifact_roots: Mapping[str, Path],
+) -> VerifiedResearchSummaryArtifact:
+    """Final-root-only pre-receipt publication verifier."""
+    if type(identity) is not FormalSummaryStagePublicationIdentity:
+        raise ValueError("formal summary stage publication identity invalid")
+    resolved_root = _require_real_absolute_path(root, directory=True)
+    expected_root = _identity_final_root(identity)
+    if resolved_root != expected_root:
+        raise ValueError("formal research summary tree drift")
+    if _is_stage_tmp_descendant(identity=identity, root=resolved_root):
+        raise ValueError("formal research summary tree drift")
+    _require_summary_stage_top_level_outputs(resolved_root)
+    _require_identity_evaluation_closure(
+        identity=identity,
+        evaluations=evaluations,
+        experiment=experiment,
+    )
+    return _verify_formal_summary_at_root(
+        root=resolved_root,
+        receipt_path=None,
+        evaluations=evaluations,
+        evaluation_contexts=evaluation_contexts,
+        experiment=experiment,
+        config=config,
+        horizon_sessions=identity.horizon_sessions,
+        upstream_paths=upstream_paths,
+        artifact_roots=artifact_roots,
+        require_receipt=False,
+    )
+
+
+@_formal_summary_boundary
+def verify_research_summary_stage_artifact(
+    *,
+    identity: FormalSummaryStagePublicationIdentity,
+    root: Path,
+    receipt_path: Path,
+    evaluations: Sequence[VerifiedEvaluationArtifact],
+    evaluation_contexts: Sequence[EvaluationFreshVerificationContext],
+    experiment: VerifiedExperimentIdentity,
+    config: LoadedM3Config,
+    upstream_paths: ResearchSummaryUpstreamPaths,
+    artifact_roots: Mapping[str, Path],
+) -> VerifiedResearchSummaryArtifact:
+    """Post-run final root + receipt verifier after StageRunner returns."""
+    if type(identity) is not FormalSummaryStagePublicationIdentity:
+        raise ValueError("formal summary stage publication identity invalid")
+    path_type = type(Path())
+    if type(root) is not path_type or type(receipt_path) is not path_type:
+        raise ValueError("formal research summary tree drift")
+    expected_root = _identity_final_root(identity)
+    resolved_root = _require_real_absolute_path(root, directory=True)
+    if resolved_root != expected_root:
+        raise ValueError("formal research summary tree drift")
+    if _is_stage_tmp_descendant(identity=identity, root=resolved_root):
+        raise ValueError("formal research summary tree drift")
+    _require_summary_stage_top_level_outputs(resolved_root)
+    _require_identity_evaluation_closure(
+        identity=identity,
+        evaluations=evaluations,
+        experiment=experiment,
+    )
+    return _verify_formal_summary_at_root(
+        root=resolved_root,
+        receipt_path=receipt_path,
+        evaluations=evaluations,
+        evaluation_contexts=evaluation_contexts,
+        experiment=experiment,
+        config=config,
+        horizon_sessions=identity.horizon_sessions,
+        upstream_paths=upstream_paths,
+        artifact_roots=artifact_roots,
+        require_receipt=True,
+    )
+
+
+def _publish_formal_summary_files(
+    *,
+    evaluations: Sequence[VerifiedEvaluationArtifact],
+    evaluation_contexts: Sequence[EvaluationFreshVerificationContext],
+    experiment: VerifiedExperimentIdentity,
+    config: LoadedM3Config,
+    horizon_sessions: Literal[5, 10],
+    upstream_paths: ResearchSummaryUpstreamPaths,
+    artifact_roots: Mapping[str, Path],
+    output_root: Path,
+) -> ResearchSummaryManifestV1:
     with ArtifactPublication(output_root) as publication:
         verified, daily, fold_metrics = _fresh_formal_summary(
             evaluations=evaluations,
@@ -1179,11 +1443,10 @@ def build_research_summary_artifact(
         return manifest
 
 
-@_formal_summary_boundary
-def verify_research_summary_artifact(
+def _verify_formal_summary_at_root(
     *,
     root: Path,
-    receipt_path: Path,
+    receipt_path: Path | None,
     evaluations: Sequence[VerifiedEvaluationArtifact],
     evaluation_contexts: Sequence[EvaluationFreshVerificationContext],
     experiment: VerifiedExperimentIdentity,
@@ -1191,8 +1454,8 @@ def verify_research_summary_artifact(
     horizon_sessions: Literal[5, 10],
     upstream_paths: ResearchSummaryUpstreamPaths,
     artifact_roots: Mapping[str, Path],
+    require_receipt: bool,
 ) -> VerifiedResearchSummaryArtifact:
-    """Freshly rebuild and verify a formal fixed-horizon summary and receipt."""
     verified, expected_daily, expected_fold_metrics = _fresh_formal_summary(
         evaluations=evaluations,
         evaluation_contexts=evaluation_contexts,
@@ -1202,15 +1465,6 @@ def verify_research_summary_artifact(
         upstream_paths=upstream_paths,
         artifact_roots=artifact_roots,
     )
-    if (
-        not isinstance(root, Path)
-        or not isinstance(receipt_path, Path)
-        or not root.is_dir()
-        or root.is_symlink()
-        or root.name != f"horizon={horizon_sessions}"
-        or {item.name for item in os.scandir(root)} != _SUMMARY_FILES
-    ):
-        raise ValueError("formal research summary tree drift")
     raw_manifest = (root / "manifest.json").read_bytes()
     daily = _read_evaluation_daily(root / "daily_ic.parquet")
     fold_metrics = _read_fold_metrics(root / "fold_metrics.parquet")
@@ -1242,6 +1496,18 @@ def verify_research_summary_artifact(
         or manifest != expected_manifest
     ):
         raise ValueError("formal research summary content drift")
+    if not require_receipt:
+        return VerifiedResearchSummaryArtifact(
+            root=root.resolve(strict=True),
+            daily=daily,
+            fold_metrics=fold_metrics,
+            metrics=metrics,
+            manifest=manifest,
+            manifest_sha256=hashlib.sha256(raw_manifest).hexdigest(),
+            summary_receipt_sha256="0" * 64,
+        )
+    if receipt_path is None or not isinstance(receipt_path, Path):
+        raise ValueError("formal research summary receipt missing")
     verified_receipt = verify_stage_receipt_with_bytes(
         receipt_path=receipt_path, artifact_roots=artifact_roots
     )
@@ -1267,6 +1533,138 @@ def verify_research_summary_artifact(
         manifest_sha256=hashlib.sha256(raw_manifest).hexdigest(),
         summary_receipt_sha256=verified_receipt.sha256,
     )
+
+
+def _require_real_absolute_path(path: Path, *, directory: bool) -> Path:
+    path_type = type(Path())
+    if type(path) is not path_type or not path.is_absolute():
+        raise ValueError("formal summary stage path invalid")
+    absolute = Path(os.path.abspath(path))
+    resolved = absolute.resolve(strict=True)
+    if os.path.normcase(str(absolute)) != os.path.normcase(str(resolved)):
+        raise ValueError("formal summary stage path invalid")
+    info = os.lstat(absolute)
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or getattr(info, "st_file_attributes", 0) & reparse
+        or (directory and not stat.S_ISDIR(info.st_mode))
+        or (not directory and not stat.S_ISREG(info.st_mode))
+    ):
+        raise ValueError("formal summary stage path invalid")
+    return resolved
+
+
+def _identity_final_root(identity: FormalSummaryStagePublicationIdentity) -> Path:
+    stage_root = _require_real_absolute_path(identity.stage_root, directory=True)
+    return (stage_root.joinpath(*identity.final_relative_path.parts)).resolve(strict=True)
+
+
+_MKDTEMP_SUFFIX_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_")
+
+
+def _require_stage_temp_leaf_name(*, node_id: str, leaf_name: str) -> None:
+    """Require exact `.{node_id}.` + non-empty mkdtemp suffix (no `.` / separators)."""
+    prefix = f".{node_id}."
+    if type(node_id) is not str or type(leaf_name) is not str or not leaf_name.startswith(prefix):
+        raise ValueError("formal summary stage temp root invalid")
+    suffix = leaf_name[len(prefix):]
+    if (
+        not suffix
+        or "." in suffix
+        or "/" in suffix
+        or "\\" in suffix
+        or any(character not in _MKDTEMP_SUFFIX_CHARS for character in suffix)
+    ):
+        raise ValueError("formal summary stage temp root invalid")
+
+
+def _require_stage_temp_output_root(
+    *,
+    identity: FormalSummaryStagePublicationIdentity,
+    output_root: Path,
+    require_empty: bool,
+) -> Path:
+    stage_root = _require_real_absolute_path(identity.stage_root, directory=True)
+    absolute = _require_real_absolute_path(output_root, directory=True)
+    parent = absolute.parent
+    expected_parent = (stage_root / ".stage-tmp").resolve(strict=True)
+    if parent.resolve(strict=True) != expected_parent:
+        raise ValueError("formal summary stage temp root invalid")
+    _require_stage_temp_leaf_name(node_id=identity.node_id, leaf_name=absolute.name)
+    if require_empty and any(os.scandir(absolute)):
+        raise ValueError("formal summary stage temp root invalid")
+    return absolute
+
+
+def _is_identity_final_root(
+    *,
+    identity: FormalSummaryStagePublicationIdentity,
+    root: Path,
+) -> bool:
+    stage_root = _require_real_absolute_path(identity.stage_root, directory=True)
+    candidate = stage_root.joinpath(*identity.final_relative_path.parts)
+    try:
+        expected = Path(os.path.abspath(candidate)).resolve(strict=True)
+    except (OSError, ValueError, FileNotFoundError):
+        return False
+    try:
+        absolute = _require_real_absolute_path(root, directory=True)
+    except ValueError:
+        return False
+    return absolute == expected
+
+
+def _is_stage_tmp_descendant(
+    *,
+    identity: FormalSummaryStagePublicationIdentity,
+    root: Path,
+) -> bool:
+    stage_root = _require_real_absolute_path(identity.stage_root, directory=True)
+    stage_tmp = stage_root / ".stage-tmp"
+    try:
+        tmp_root = Path(os.path.abspath(stage_tmp)).resolve(strict=True)
+        absolute = _require_real_absolute_path(root, directory=True)
+    except (OSError, ValueError, FileNotFoundError):
+        return False
+    return absolute == tmp_root or absolute.is_relative_to(tmp_root)
+
+
+def _require_summary_stage_top_level_outputs(root: Path) -> None:
+    names = {item.name for item in os.scandir(root)}
+    if names != _SUMMARY_FILES:
+        raise ValueError("formal research summary tree drift")
+    for item in os.scandir(root):
+        if item.is_dir(follow_symlinks=False):
+            raise ValueError("formal research summary tree drift")
+        if item.name not in _SUMMARY_FILES:
+            raise ValueError("formal research summary tree drift")
+
+
+def _require_identity_evaluation_closure(
+    *,
+    identity: FormalSummaryStagePublicationIdentity,
+    evaluations: Sequence[VerifiedEvaluationArtifact],
+    experiment: VerifiedExperimentIdentity,
+) -> None:
+    if (
+        type(experiment) is not VerifiedExperimentIdentity
+        or experiment.manifest.experiment_key != identity.experiment_key
+        or not evaluations
+        or any(type(item) is not VerifiedEvaluationArtifact for item in evaluations)
+    ):
+        raise ValueError("formal summary stage publication identity invalid")
+    models = {item.manifest.model for item in evaluations}
+    versions = {item.manifest.model_version for item in evaluations}
+    horizons = {item.manifest.horizon_sessions for item in evaluations}
+    keys = {item.manifest.experiment_key for item in evaluations}
+    if (
+        models != {identity.model}
+        or versions != {identity.model_version}
+        or horizons != {identity.horizon_sessions}
+        or keys != {identity.experiment_key}
+    ):
+        raise ValueError("formal summary stage publication identity invalid")
 
 
 def build_development_example_research_summary_artifact(
