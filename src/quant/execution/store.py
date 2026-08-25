@@ -19,6 +19,12 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Final
 
+from quant.execution.approval import (
+    ApprovalReceiptError,
+    VerifiedApprovalReceipt,
+    decode_approval_receipt,
+    unpack_verified_approval_receipt,
+)
 from quant.execution.migrations import MIGRATIONS
 from quant.execution.risk import (
     DailyRiskCounters,
@@ -27,7 +33,7 @@ from quant.execution.risk import (
     serialize_daily_risk_counters,
 )
 
-CURRENT_SCHEMA_VERSION: Final[int] = 7
+CURRENT_SCHEMA_VERSION: Final[int] = 8
 LEDGER_CHECKPOINT_KEY: Final[str] = "paper-shadow-primary-v1"
 
 _URI_PREFIX = "sqlite:///"
@@ -110,6 +116,28 @@ class StoredRiskTransitionReceipt:
 
 
 @dataclass(frozen=True, slots=True)
+class StoredApprovalReceipt:
+    """Raw canonical approval bytes with only independently indexed values."""
+
+    receipt_id: str
+    identity: str
+    schema_version: str
+    classification: str
+    credential_kind: str
+    credential_id: str
+    operator_id: str
+    session_date: str
+    action: str
+    plan_identity: str
+    challenge_identity: str
+    store_recovery_identity: str
+    source_identities_digest: str
+    issued_at: str
+    nonce: str
+    payload: bytes
+
+
+@dataclass(frozen=True, slots=True)
 class RecoveryRows:
     """One transaction-consistent, deterministically ordered recovery snapshot."""
 
@@ -125,6 +153,7 @@ class RecoveryRows:
     cancel_event_links: tuple[StoredCancelEventLink, ...]
     risk_transition_receipts: tuple[StoredRiskTransitionReceipt, ...]
     risk_counter_rows: tuple[StoredRecord, ...]
+    approval_receipts: tuple[StoredApprovalReceipt, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -372,6 +401,100 @@ def _row_to_risk_receipt(
         risk_counter_key=counter_key,
         predecessor_counter_identity=predecessor,
         projected_counter_identity=projected,
+        payload=payload,
+    )
+
+
+def _require_approval_index_text(name: str, value: object) -> str:
+    if (
+        type(value) is not str
+        or not value
+        or value != value.strip()
+        or len(value) > 256
+        or any(ord(char) < 32 or ord(char) == 127 for char in value)
+    ):
+        raise StoreError(f"{name.upper()}_INVALID")
+    return value
+
+
+def _require_approval_session_date(value: object) -> str:
+    if type(value) is dt.date:
+        return value.isoformat()
+    if type(value) is not str:
+        raise StoreError("APPROVAL_SESSION_DATE_INVALID")
+    try:
+        parsed = dt.date.fromisoformat(value)
+    except ValueError:
+        raise StoreError("APPROVAL_SESSION_DATE_INVALID") from None
+    if parsed.isoformat() != value:
+        raise StoreError("APPROVAL_SESSION_DATE_INVALID")
+    return value
+
+
+def _row_to_stored_approval(row: tuple[object, ...]) -> StoredApprovalReceipt:
+    """Validate row/index agreement without treating the decoded value as trusted."""
+    if len(row) != 16:
+        raise StoreError("ROW_CORRUPT")
+    try:
+        receipt_id = _require_identity(row[0])
+        identity = _require_identity(row[1])
+        schema_version = _require_approval_index_text("schema_version", row[2])
+        classification = _require_approval_index_text("classification", row[3])
+        credential_kind = _require_approval_index_text("credential_kind", row[4])
+        credential_id = _require_approval_index_text("credential_id", row[5])
+        operator_id = _require_approval_index_text("operator_id", row[6])
+        session_date = _require_approval_session_date(row[7])
+        action = _require_approval_index_text("action", row[8])
+        plan_identity = _require_identity(row[9])
+        challenge_identity = _require_identity(row[10])
+        store_recovery_identity = _require_identity(row[11])
+        source_identities_digest = _require_identity(row[12])
+        issued_at = row[13]
+        if type(issued_at) is not str:
+            raise StoreError("APPROVAL_ISSUED_AT_INVALID")
+        parsed_issued_at = _datetime_from_text(issued_at)
+        if _datetime_to_text(parsed_issued_at) != issued_at:
+            raise StoreError("APPROVAL_ISSUED_AT_INVALID")
+        nonce = _require_approval_index_text("nonce", row[14])
+        payload = _require_payload(row[15])
+        if identity != receipt_id:
+            raise StoreError("ROW_CORRUPT")
+        parsed = decode_approval_receipt(payload)
+        if (
+            parsed.receipt_id != receipt_id
+            or parsed.schema_version != schema_version
+            or parsed.classification != classification
+            or parsed.credential_kind != credential_kind
+            or parsed.credential_id != credential_id
+            or parsed.operator_id != operator_id
+            or parsed.session_date != session_date
+            or parsed.action != action
+            or parsed.plan_identity != plan_identity
+            or parsed.challenge_identity != challenge_identity
+            or parsed.store_recovery_identity != store_recovery_identity
+            or parsed.source_identities_digest != source_identities_digest
+            or parsed.issued_at != issued_at
+            or parsed.nonce != nonce
+        ):
+            raise StoreError("ROW_CORRUPT")
+    except (ApprovalReceiptError, StoreError, TypeError, ValueError):
+        raise StoreError("ROW_CORRUPT") from None
+    return StoredApprovalReceipt(
+        receipt_id=receipt_id,
+        identity=identity,
+        schema_version=schema_version,
+        classification=classification,
+        credential_kind=credential_kind,
+        credential_id=credential_id,
+        operator_id=operator_id,
+        session_date=session_date,
+        action=action,
+        plan_identity=plan_identity,
+        challenge_identity=challenge_identity,
+        store_recovery_identity=store_recovery_identity,
+        source_identities_digest=source_identities_digest,
+        issued_at=issued_at,
+        nonce=nonce,
         payload=payload,
     )
 
@@ -1213,6 +1336,172 @@ class ExecutionRepository:
         if row is None:
             return None
         return _row_to_stored(row[0], row[1], row[2])
+
+    @staticmethod
+    def _approval_columns() -> str:
+        return (
+            "receipt_id, identity, schema_version, classification, credential_kind, "
+            "credential_id, operator_id, session_date, action, plan_identity, "
+            "challenge_identity, store_recovery_identity, source_identities_digest, "
+            "issued_at, nonce, payload"
+        )
+
+    def _select_approval_receipt(
+        self, *, where: str, parameters: tuple[object, ...], error_code: str
+    ) -> tuple[object, ...] | None:
+        try:
+            return self._conn.execute(
+                f"SELECT {self._approval_columns()} FROM approval_receipts WHERE {where}",
+                parameters,
+            ).fetchone()
+        except sqlite3.Error:
+            raise StoreError(error_code) from None
+
+    def put_verified_approval_receipt(
+        self, verified: VerifiedApprovalReceipt
+    ) -> bool:
+        """Persist only the credential-free hand-off returned by verification."""
+        try:
+            parsed, data = unpack_verified_approval_receipt(verified)
+        except ApprovalReceiptError as error:
+            raise StoreError(error.code) from None
+        data = _require_payload(data)
+        candidate = StoredApprovalReceipt(
+            receipt_id=parsed.receipt_id,
+            identity=parsed.receipt_id,
+            schema_version=parsed.schema_version,
+            classification=parsed.classification,
+            credential_kind=parsed.credential_kind,
+            credential_id=parsed.credential_id,
+            operator_id=parsed.operator_id,
+            session_date=parsed.session_date,
+            action=parsed.action,
+            plan_identity=parsed.plan_identity,
+            challenge_identity=parsed.challenge_identity,
+            store_recovery_identity=parsed.store_recovery_identity,
+            source_identities_digest=parsed.source_identities_digest,
+            issued_at=parsed.issued_at,
+            nonce=parsed.nonce,
+            payload=data,
+        )
+        existing_row = self._select_approval_receipt(
+            where="receipt_id = ?",
+            parameters=(candidate.receipt_id,),
+            error_code="APPROVAL_RECEIPT_QUERY_FAILED",
+        )
+        if existing_row is not None:
+            existing = _row_to_stored_approval(existing_row)
+            if existing == candidate:
+                return False
+            raise IdempotencyConflict(
+                "IDEMPOTENCY_CONFLICT:approval_receipt"
+            ) from None
+
+        business_row = self._select_approval_receipt(
+            where="plan_identity = ? AND session_date = ? AND action = ?",
+            parameters=(candidate.plan_identity, candidate.session_date, candidate.action),
+            error_code="APPROVAL_RECEIPT_QUERY_FAILED",
+        )
+        if business_row is not None:
+            raise IdempotencyConflict("APPROVAL_BUSINESS_KEY_CONFLICT") from None
+
+        nonce_row = self._select_approval_receipt(
+            where="credential_id = ? AND nonce = ?",
+            parameters=(candidate.credential_id, candidate.nonce),
+            error_code="APPROVAL_RECEIPT_QUERY_FAILED",
+        )
+        if nonce_row is not None:
+            raise IdempotencyConflict("APPROVAL_NONCE_CONFLICT") from None
+
+        try:
+            self._conn.execute(
+                "INSERT INTO approval_receipts ("
+                "receipt_id, identity, schema_version, classification, credential_kind, "
+                "credential_id, operator_id, session_date, action, plan_identity, "
+                "challenge_identity, store_recovery_identity, source_identities_digest, "
+                "issued_at, nonce, payload) VALUES ("
+                "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    candidate.receipt_id,
+                    candidate.identity,
+                    candidate.schema_version,
+                    candidate.classification,
+                    candidate.credential_kind,
+                    candidate.credential_id,
+                    candidate.operator_id,
+                    candidate.session_date,
+                    candidate.action,
+                    candidate.plan_identity,
+                    candidate.challenge_identity,
+                    candidate.store_recovery_identity,
+                    candidate.source_identities_digest,
+                    candidate.issued_at,
+                    candidate.nonce,
+                    candidate.payload,
+                ),
+            )
+        except sqlite3.IntegrityError:
+            raise IdempotencyConflict("APPROVAL_RECEIPT_CONFLICT") from None
+        except sqlite3.Error:
+            raise StoreError("APPROVAL_RECEIPT_WRITE_FAILED") from None
+        return True
+
+    def get_approval_receipt(
+        self, receipt_id: str
+    ) -> StoredApprovalReceipt | None:
+        """Return raw canonical bytes and indexes; never a trusted receipt object."""
+        key = _require_identity(receipt_id)
+        row = self._select_approval_receipt(
+            where="receipt_id = ?",
+            parameters=(key,),
+            error_code="APPROVAL_RECEIPT_QUERY_FAILED",
+        )
+        return None if row is None else _row_to_stored_approval(row)
+
+    def query_approval_receipts(
+        self,
+        *,
+        plan_identity: str | None = None,
+        session_date: str | dt.date | None = None,
+        operator_id: str | None = None,
+        store_recovery_identity: str | None = None,
+    ) -> tuple[StoredApprovalReceipt, ...]:
+        """Query raw approval rows by explicit indexed values."""
+        clauses: list[str] = []
+        parameters: list[object] = []
+        if plan_identity is not None:
+            clauses.append("plan_identity = ?")
+            parameters.append(_require_identity(plan_identity))
+        if session_date is not None:
+            clauses.append("session_date = ?")
+            parameters.append(_require_approval_session_date(session_date))
+        if operator_id is not None:
+            clauses.append("operator_id = ?")
+            parameters.append(_require_approval_index_text("operator_id", operator_id))
+        if store_recovery_identity is not None:
+            clauses.append("store_recovery_identity = ?")
+            parameters.append(_require_identity(store_recovery_identity))
+        where = " AND ".join(clauses) if clauses else "1 = 1"
+        try:
+            rows = self._conn.execute(
+                f"SELECT {self._approval_columns()} FROM approval_receipts "
+                f"WHERE {where} ORDER BY plan_identity, session_date, receipt_id",
+                tuple(parameters),
+            ).fetchall()
+        except sqlite3.Error:
+            raise StoreError("APPROVAL_RECEIPT_QUERY_FAILED") from None
+        return tuple(_row_to_stored_approval(row) for row in rows)
+
+    def get_approval_receipt_for_plan(
+        self, *, plan_identity: str, session_date: str | dt.date
+    ) -> StoredApprovalReceipt | None:
+        """Return the one raw approval row for a plan/session business key."""
+        rows = self.query_approval_receipts(
+            plan_identity=plan_identity, session_date=session_date
+        )
+        if len(rows) > 1:
+            raise StoreError("APPROVAL_BUSINESS_KEY_CORRUPT") from None
+        return rows[0] if rows else None
 
     def get_risk_transition_receipt(
         self, *, transition_kind: str, subject_id: str
@@ -2506,6 +2795,7 @@ class ExecutionRepository:
         cancel_link_rows: list[tuple[object, ...]] = []
         risk_receipt_rows: list[tuple[object, ...]] = []
         risk_counter_rows: list[tuple[object, ...]] = []
+        approval_receipt_rows: list[tuple[object, ...]] = []
         try:
             command_rows = self._conn.execute(
                 "SELECT command_id, identity, payload FROM commands ORDER BY command_id"
@@ -2578,6 +2868,10 @@ class ExecutionRepository:
                 "SELECT counter_key, identity, payload FROM scoped_daily_risk_counters "
                 "ORDER BY counter_key"
             ).fetchall()
+            approval_receipt_rows = self._conn.execute(
+                f"SELECT {self._approval_columns()} FROM approval_receipts "
+                "ORDER BY plan_identity, session_date, receipt_id"
+            ).fetchall()
         except sqlite3.Error:
             query_error = StoreError("RECOVERY_SNAPSHOT_READ_FAILED")
         if query_error is not None:
@@ -2609,6 +2903,9 @@ class ExecutionRepository:
             ),
             risk_counter_rows=tuple(
                 _row_to_stored(*row) for row in risk_counter_rows
+            ),
+            approval_receipts=tuple(
+                _row_to_stored_approval(row) for row in approval_receipt_rows
             ),
         )
 
@@ -2797,6 +3094,7 @@ __all__ = [
     "StoredEventRecord",
     "StoredCancelCommand",
     "StoredCancelEventLink",
+    "StoredApprovalReceipt",
     "StoredLedgerCheckpoint",
     "StoredRecord",
     "StoredRiskTransitionReceipt",
