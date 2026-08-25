@@ -297,3 +297,345 @@ STORE_LEFT_OPEN = initialize_paper_broker_store(root=root, database_filename="pa
     assert result.returncode == 0
     assert result.stdout == ""
     assert result.stderr == ""
+
+
+def test_unconfigured_broker_store_unchanged_without_barrier(tmp_path: Path) -> None:
+    account, policy = _inputs()
+    root = tmp_path / "broker"
+    oms = tmp_path / "oms"
+    root.mkdir()
+    oms.mkdir()
+    store = initialize_paper_broker_store(
+        root=root,
+        database_filename="paper.sqlite3",
+        oms_store_path=oms,
+        account=account,
+        policy=policy,
+        created_at=NOW,
+    )
+    try:
+        assert store.session_barrier_enabled() is False
+        assert store.evidence_finality() == "INTRADAY"
+    finally:
+        store.close()
+
+
+def test_broker_barrier_identity_mismatch_rejected(tmp_path: Path) -> None:
+    from quant.execution.session_barrier import build_session_barrier_capability
+    from quant.execution.store import ExecutionStore
+
+    account, policy = _inputs()
+    broker_root = tmp_path / "broker"
+    oms_root = tmp_path / "oms-root"
+    lock_root = tmp_path / "lock"
+    broker_root.mkdir()
+    oms_root.mkdir()
+    lock_root.mkdir()
+    broker = initialize_paper_broker_store(
+        root=broker_root,
+        database_filename="paper.sqlite3",
+        oms_store_path=oms_root / "x",
+        account=account,
+        policy=policy,
+        created_at=NOW,
+    )
+    cap = build_session_barrier_capability(
+        barrier_epoch=hashlib.sha256(b"e").hexdigest(),
+        session_date=dt.date(2026, 8, 25),
+        account_identity=hashlib.sha256(b"wrong-account").hexdigest(),
+        oms_store_identity=hashlib.sha256(b"oms").hexdigest(),
+        broker_store_identity=broker.descriptor.descriptor_identity,
+        gateway_identity=broker.gateway_identity,
+        config_identity=hashlib.sha256(b"cfg").hexdigest(),
+        lock_root=lock_root,
+    )
+    oms = ExecutionStore.open(
+        "sqlite:///oms.db",
+        trusted_root=oms_root,
+        session_barrier=cap,
+        initialize_barrier=True,
+        barrier_created_at=NOW,
+    )
+    try:
+        assert not hasattr(oms, "barrier_oms_connection")
+        with pytest.raises(PaperBrokerStoreError, match="BARRIER_IDENTITY_DRIFT"):
+            broker.bind_session_barrier(
+                cap, oms_handle=oms.session_barrier_oms_handle()
+            )
+        with pytest.raises(PaperBrokerStoreError, match="BARRIER_OMS_HANDLE_INVALID"):
+            broker.bind_session_barrier(cap, oms_handle=lambda: None)
+        with pytest.raises(TypeError):
+            broker.bind_session_barrier(  # type: ignore[call-arg]
+                cap, oms_conn_provider=lambda: None
+            )
+    finally:
+        oms.close()
+        broker.close()
+
+
+def test_broker_all_writers_require_open_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Writers take real OPEN lease at depth exact 1; no public gateway_identity under hold."""
+    from contextlib import contextmanager
+
+    from quant.execution.gateways.contracts import DispatchCertainty
+    from quant.execution.session_barrier import build_session_barrier_capability
+    from quant.execution.store import ExecutionStore
+
+    account, policy = _inputs()
+    broker_root = tmp_path / "broker2"
+    oms_root = tmp_path / "oms-root2"
+    lock_root = tmp_path / "lock2"
+    broker_root.mkdir()
+    oms_root.mkdir()
+    lock_root.mkdir()
+    broker = initialize_paper_broker_store(
+        root=broker_root,
+        database_filename="paper.sqlite3",
+        oms_store_path=oms_root / "x",
+        account=account,
+        policy=policy,
+        created_at=NOW,
+    )
+    # Public gateway_identity (fresh) only before lease observation is armed.
+    gateway_identity = broker.gateway_identity
+    cap = build_session_barrier_capability(
+        barrier_epoch=hashlib.sha256(b"e2").hexdigest(),
+        session_date=dt.date(2026, 8, 25),
+        account_identity=broker.account_descriptor.descriptor_identity,
+        oms_store_identity=hashlib.sha256(b"oms2").hexdigest(),
+        broker_store_identity=broker.descriptor.descriptor_identity,
+        gateway_identity=gateway_identity,
+        config_identity=hashlib.sha256(b"cfg2").hexdigest(),
+        lock_root=lock_root,
+    )
+    oms = ExecutionStore.open(
+        "sqlite:///oms2.db",
+        trusted_root=oms_root,
+        session_barrier=cap,
+        initialize_barrier=True,
+        barrier_created_at=NOW,
+    )
+    try:
+        broker.bind_session_barrier(cap, oms_handle=oms.session_barrier_oms_handle())
+        assert broker.session_barrier_enabled() is True
+        assert type(broker._bound_gateway_identity) is str
+        assert broker._bound_gateway_identity == gateway_identity
+        session = dt.date(2026, 8, 25)
+        closure = hashlib.sha256(b"closure").hexdigest()
+
+        lease_events: list[tuple[str, int]] = []
+        depth = {"n": 0}
+        public_gw_during_lease: list[str] = []
+        real_hold = broker_store_module.hold_open_write_lease
+        orig_gateway = broker_store_module.PaperBrokerStore.gateway_identity
+
+        @contextmanager
+        def observe_hold(*args: object, **kwargs: object):
+            depth["n"] += 1
+            lease_events.append(("enter", depth["n"]))
+            assert depth["n"] == 1, (
+                "hold_open_write_lease re-entered; writer depth must be exact 1"
+            )
+            try:
+                with real_hold(*args, **kwargs) as lease:
+                    yield lease
+            finally:
+                lease_events.append(("exit", depth["n"]))
+                depth["n"] -= 1
+
+        def tracking_gateway_identity(self: object) -> str:
+            if depth["n"] > 0:
+                public_gw_during_lease.append("public_gateway_identity")
+            return orig_gateway.__get__(self, type(self))
+
+        monkeypatch.setattr(broker_store_module, "hold_open_write_lease", observe_hold)
+        monkeypatch.setattr(
+            broker_store_module.PaperBrokerStore,
+            "gateway_identity",
+            property(tracking_gateway_identity),
+        )
+
+        def _clear_lease_events() -> None:
+            lease_events.clear()
+            public_gw_during_lease.clear()
+
+        def _enter_depths() -> list[int]:
+            return [d for kind, d in lease_events if kind == "enter"]
+
+        def _assert_writer_depth_exact_1() -> None:
+            enters = _enter_depths()
+            assert enters, "writer path must acquire real OPEN lease"
+            assert all(d == 1 for d in enters)
+            assert max(enters) == 1
+            assert depth["n"] == 0
+            assert public_gw_during_lease == [], (
+                "must not call public gateway_identity while holding lease"
+            )
+
+        # Observer alone must not change hold / must not enter.
+        assert _enter_depths() == []
+        assert depth["n"] == 0
+        assert public_gw_during_lease == []
+
+        # OPEN record writer: depth exact 1; no public gateway under hold.
+        _clear_lease_events()
+        broker.record_zero_broker_command_session_finality(
+            session_date=session,
+            finalized_at=NOW,
+            order_semantic_closure_identity=closure,
+        )
+        marker = broker.read_session_finality(session_date=session)
+        assert marker is not None
+        _assert_writer_depth_exact_1()
+
+        # Anchor checkpoint UPDATE under OPEN (depth-0 verify_fresh → _sync_anchors).
+        _clear_lease_events()
+        db_path = broker_root / "paper.sqlite3"
+        with sqlite3.connect(db_path) as raw:
+            seq = raw.execute(
+                "SELECT sequence,anchored_sequence FROM checkpoint WHERE singleton=1"
+            ).fetchone()
+            assert seq is not None
+            if int(seq[0]) > 0:
+                raw.execute(
+                    "UPDATE checkpoint SET anchored_sequence=0 WHERE singleton=1"
+                )
+                raw.commit()
+                broker.verify_fresh()
+                assert _enter_depths() == [1]
+                assert depth["n"] == 0
+                assert public_gw_during_lease == []
+
+        # persist_operation / update-path probe under OPEN.
+        _clear_lease_events()
+        with pytest.raises(PaperBrokerStoreError):
+            broker.persist_operation(
+                operation_id="op-open-probe",
+                kind="SUBMIT",
+                dispatch_attempt=1,
+                request_payload=b"{}",
+                certainty=DispatchCertainty.SENT,
+                result_payload=b"{}",
+                command_payload=b"{}",
+                callbacks=(),
+                account=account.initial_snapshot,
+                predecessor_state_digest="0" * 64,
+            )
+        _assert_writer_depth_exact_1()
+
+        # finalize_session under OPEN.
+        _clear_lease_events()
+        try:
+            broker.finalize_session(session_date=session, finalized_at=NOW)
+        except PaperBrokerStoreError:
+            pass
+        _assert_writer_depth_exact_1()
+
+        # Bound raw identity drift vs lease capability must fail-closed.
+        _clear_lease_events()
+        saved_bound = broker._bound_gateway_identity
+        broker._bound_gateway_identity = "f" * 64
+        with pytest.raises(PaperBrokerStoreError, match="BARRIER_IDENTITY_DRIFT"):
+            broker.record_zero_broker_command_session_finality(
+                session_date=dt.date(2026, 8, 26),
+                finalized_at=NOW + dt.timedelta(hours=1),
+                order_semantic_closure_identity=hashlib.sha256(b"drift").hexdigest(),
+            )
+        assert max(_enter_depths() or [1]) == 1
+        assert public_gw_during_lease == []
+        broker._bound_gateway_identity = saved_bound
+
+        oms.transition_session_barrier_to_closing(
+            nonce="broker-close", now=NOW + dt.timedelta(seconds=1)
+        )
+        with pytest.raises(PaperBrokerStoreError, match="BARRIER_STATE_CLOSING"):
+            broker.record_zero_broker_command_session_finality(
+                session_date=dt.date(2026, 8, 26),
+                finalized_at=NOW + dt.timedelta(days=1),
+                order_semantic_closure_identity=hashlib.sha256(b"c2").hexdigest(),
+            )
+        with pytest.raises(PaperBrokerStoreError, match="BARRIER_STATE_CLOSING"):
+            broker.finalize_session(
+                session_date=dt.date(2026, 8, 26),
+                finalized_at=NOW + dt.timedelta(days=1),
+            )
+        with pytest.raises(PaperBrokerStoreError, match="BARRIER_STATE_CLOSING"):
+            broker.persist_operation(
+                operation_id="op-closing",
+                kind="SUBMIT",
+                dispatch_attempt=1,
+                request_payload=b"{}",
+                certainty=DispatchCertainty.SENT,
+                result_payload=b"{}",
+                command_payload=b"{}",
+                callbacks=(),
+                account=account.initial_snapshot,
+                predecessor_state_digest="0" * 64,
+            )
+        with sqlite3.connect(db_path) as raw:
+            seq = raw.execute(
+                "SELECT sequence FROM checkpoint WHERE singleton=1"
+            ).fetchone()
+            assert seq is not None and int(seq[0]) >= 0
+            raw.execute("UPDATE checkpoint SET anchored_sequence=0 WHERE singleton=1")
+            raw.commit()
+        with pytest.raises(PaperBrokerStoreError, match="BARRIER_STATE_CLOSING"):
+            broker.verify_fresh()
+
+        token = oms.read_session_barrier_row()
+        close_token = getattr(token, "close_token_identity")
+        oms.transition_session_barrier_to_closed(
+            close_token_identity=close_token,
+            now=NOW + dt.timedelta(seconds=2),
+        )
+        with pytest.raises(PaperBrokerStoreError, match="BARRIER_STATE_CLOSED"):
+            broker.persist_operation(
+                operation_id="op-closed",
+                kind="SUBMIT",
+                dispatch_attempt=1,
+                request_payload=b"{}",
+                certainty=DispatchCertainty.SENT,
+                result_payload=b"{}",
+                command_payload=b"{}",
+                callbacks=(),
+                account=account.initial_snapshot,
+                predecessor_state_digest="0" * 64,
+            )
+        with pytest.raises(PaperBrokerStoreError, match="BARRIER_STATE_CLOSED"):
+            broker.finalize_session(
+                session_date=dt.date(2026, 8, 27),
+                finalized_at=NOW + dt.timedelta(days=2),
+            )
+        with sqlite3.connect(db_path) as raw:
+            raw.execute("UPDATE checkpoint SET anchored_sequence=0 WHERE singleton=1")
+            raw.commit()
+        with pytest.raises(PaperBrokerStoreError, match="BARRIER_STATE_CLOSED"):
+            broker.verify_fresh()
+    finally:
+        oms.close()
+        broker.close()
+
+def test_broker_rejects_raw_connection_provider_bypass(tmp_path: Path) -> None:
+    account, policy = _inputs()
+    broker_root = tmp_path / "broker3"
+    oms_root = tmp_path / "oms-root3"
+    broker_root.mkdir()
+    oms_root.mkdir()
+    broker = initialize_paper_broker_store(
+        root=broker_root,
+        database_filename="paper.sqlite3",
+        oms_store_path=oms_root / "x",
+        account=account,
+        policy=policy,
+        created_at=NOW,
+    )
+    try:
+        with pytest.raises(TypeError):
+            broker.bind_session_barrier(  # type: ignore[call-arg]
+                object(), oms_conn_provider=lambda: None
+            )
+        assert "oms_conn_provider" not in broker.bind_session_barrier.__code__.co_varnames
+    finally:
+        broker.close()
