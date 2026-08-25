@@ -2792,16 +2792,25 @@ def test_v3_upgrade_adds_empty_ledger_tables_without_forging_context(
         conn.execute("DROP TABLE ledger_checkpoints")
         conn.execute("DROP TABLE ledger_contexts")
         conn.execute("DROP TABLE approval_receipts")
+        # Downgrade past v9: drop session_barrier so real v009 CREATE can run.
+        # Indexes fall with the table; do not hand-manage them.
+        conn.execute("DROP TABLE session_barrier")
         conn.execute("UPDATE schema_version SET version = 3")
     reopened = _open(name, cwd_tmp)
     try:
         assert reopened.schema_version() == CURRENT_SCHEMA_VERSION
+        assert reopened.session_barrier_enabled() is False
         with reopened.transaction() as repo:
             rows = repo.read_recovery_rows()
         assert tuple(item.key for item in rows.commands) == ("cmd-a",)
         assert rows.ledger_contexts == ()
         assert rows.ledger_checkpoints == ()
         assert rows.approval_receipts == ()
+        with sqlite3.connect(database) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM session_barrier").fetchone()
+            assert count is not None and int(count[0]) == 0
+        with pytest.raises(StoreError, match="BARRIER_MISSING"):
+            reopened.read_session_barrier_row()
     finally:
         reopened.close()
 
@@ -3377,6 +3386,9 @@ def test_v7_database_upgrade_adds_only_approval_substrate_and_preserves_rows(
 
     with sqlite3.connect(database) as conn:
         conn.execute("DROP TABLE approval_receipts")
+        # Downgrade past v9: drop session_barrier so real v009 CREATE can run.
+        # Indexes fall with the table; do not hand-manage them.
+        conn.execute("DROP TABLE session_barrier")
         conn.execute(
             "UPDATE schema_version SET version = 7, status = 'ready' "
             "WHERE singleton = 1"
@@ -3386,8 +3398,310 @@ def test_v7_database_upgrade_adds_only_approval_substrate_and_preserves_rows(
     reopened = _open("approval-v7-upgrade.db", cwd_tmp)
     try:
         assert reopened.schema_version() == CURRENT_SCHEMA_VERSION
+        assert reopened.session_barrier_enabled() is False
         with reopened.transaction() as repo:
             assert repo.get_command("legacy-command") is not None
             assert repo.read_recovery_rows().approval_receipts == ()
+        with sqlite3.connect(database) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM session_barrier").fetchone()
+            assert count is not None and int(count[0]) == 0
+        with pytest.raises(StoreError, match="BARRIER_MISSING"):
+            reopened.read_session_barrier_row()
     finally:
         reopened.close()
+
+
+def test_v8_to_v9_migration_adds_empty_session_barrier_without_open_row(
+    cwd_tmp: Path,
+) -> None:
+    database = cwd_tmp / "barrier-v8-upgrade.db"
+    store = _open("barrier-v8-upgrade.db", cwd_tmp)
+    with store.transaction() as repo:
+        repo.put_command(command_id="pre-v9", identity=ID_A, payload=b"keep")
+    store.close()
+
+    with sqlite3.connect(database) as conn:
+        conn.execute("DROP TABLE IF EXISTS session_barrier")
+        conn.execute(
+            "UPDATE schema_version SET version = 8, status = 'ready' "
+            "WHERE singleton = 1"
+        )
+        conn.commit()
+
+    reopened = _open("barrier-v8-upgrade.db", cwd_tmp)
+    try:
+        assert reopened.schema_version() == CURRENT_SCHEMA_VERSION
+        assert reopened.session_barrier_enabled() is False
+        with reopened.transaction() as repo:
+            assert repo.get_command("pre-v9") is not None
+        with sqlite3.connect(database) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM session_barrier").fetchone()
+            assert count is not None and int(count[0]) == 0
+        with pytest.raises(StoreError, match="BARRIER_MISSING"):
+            reopened.read_session_barrier_row()
+    finally:
+        reopened.close()
+
+
+def test_barrier_enabled_open_write_and_closing_rejects(
+    cwd_tmp: Path,
+) -> None:
+    from quant.execution.session_barrier import (
+        SessionBarrierError,
+        build_session_barrier_capability,
+        unpack_session_barrier_oms_handle,
+    )
+
+    lock_root = cwd_tmp / "oms-barrier-lock"
+    lock_root.mkdir()
+    cap = build_session_barrier_capability(
+        barrier_epoch=_hex("barrier-epoch"),
+        session_date=dt.date(2026, 8, 25),
+        account_identity=_hex("barrier-account"),
+        oms_store_identity=_hex("barrier-oms"),
+        broker_store_identity=_hex("barrier-broker"),
+        gateway_identity=_hex("barrier-gateway"),
+        config_identity=_hex("barrier-config"),
+        lock_root=lock_root,
+    )
+    created = dt.datetime(2026, 8, 25, 1, tzinfo=dt.timezone.utc)
+    store = ExecutionStore.open(
+        _uri("barrier-enabled.db"),
+        trusted_root=cwd_tmp,
+        session_barrier=cap,
+        initialize_barrier=True,
+        barrier_created_at=created,
+    )
+    try:
+        assert store.session_barrier_enabled() is True
+        assert store.schema_version() == 9
+        assert not hasattr(ExecutionStore, "barrier_oms_connection")
+        handle = store.session_barrier_oms_handle()
+        assert type(handle).__name__ == "SessionBarrierOmsHandle"
+        assert not hasattr(handle, "_conn")
+        assert not hasattr(handle, "conn")
+        with store.transaction() as repo:
+            assert repo.put_command(command_id="ok", identity=ID_A, payload=b"x") is True
+        row = store.read_session_barrier_row()
+        assert getattr(row, "state") == "OPEN"
+
+        token = store.transition_session_barrier_to_closing(
+            nonce="close-1", now=created + dt.timedelta(seconds=1)
+        )[1]
+        with pytest.raises(StoreError, match="BARRIER_STATE_CLOSING"):
+            with store.transaction() as repo:
+                repo.put_command(command_id="blocked", identity=ID_B, payload=b"y")
+
+        store.transition_session_barrier_to_closed(
+            close_token_identity=token, now=created + dt.timedelta(seconds=2)
+        )
+        with pytest.raises(StoreError, match="BARRIER_STATE_CLOSED"):
+            with store.transaction() as repo:
+                repo.put_command(command_id="blocked2", identity=ID_X, payload=b"z")
+        retained = handle
+        store.close()
+        store = None  # type: ignore[assignment]
+        with pytest.raises(SessionBarrierError, match="BARRIER_OMS_HANDLE_INVALID"):
+            unpack_session_barrier_oms_handle(retained, capability=cap)
+    finally:
+        if store is not None:
+            store.close()
+
+
+def test_concurrent_close_during_barrier_transaction_fail_closed(
+    cwd_tmp: Path,
+) -> None:
+    """F5: close serializes on _write_lock; no concurrent handle/conn tear."""
+    import threading
+    import time
+
+    from quant.execution.session_barrier import (
+        build_session_barrier_capability,
+        hold_session_barrier_lock,
+    )
+
+    lock_root = cwd_tmp / "close-race-lock"
+    lock_root.mkdir()
+    cap = build_session_barrier_capability(
+        barrier_epoch=_hex("close-race-epoch"),
+        session_date=dt.date(2026, 8, 25),
+        account_identity=_hex("close-race-account"),
+        oms_store_identity=_hex("close-race-oms"),
+        broker_store_identity=_hex("close-race-broker"),
+        gateway_identity=_hex("close-race-gateway"),
+        config_identity=_hex("close-race-config"),
+        lock_root=lock_root,
+    )
+    created = dt.datetime(2026, 8, 25, 1, tzinfo=dt.timezone.utc)
+    store = ExecutionStore.open(
+        _uri("close-race.db"),
+        trusted_root=cwd_tmp,
+        session_barrier=cap,
+        initialize_barrier=True,
+        barrier_created_at=created,
+    )
+    in_tx = threading.Event()
+    close_done = threading.Event()
+    writer_error: list[BaseException] = []
+
+    def writer() -> None:
+        try:
+            with store.transaction() as repo:
+                repo.put_command(command_id="in-flight", identity=ID_A, payload=b"x")
+                in_tx.set()
+                assert close_done.wait(timeout=5)
+        except BaseException as exc:  # noqa: BLE001 - capture fail-closed surface
+            writer_error.append(exc)
+
+    thread = threading.Thread(target=writer)
+    thread.start()
+    assert in_tx.wait(timeout=5)
+    closer = threading.Thread(target=store.close)
+    closer.start()
+    time.sleep(0.05)
+    # Serialize: close blocks on _write_lock while writer holds the transaction.
+    assert closer.is_alive()
+    close_done.set()
+    thread.join(timeout=5)
+    closer.join(timeout=5)
+    assert not closer.is_alive()
+    for err in writer_error:
+        assert isinstance(err, StoreError)
+        assert type(err).__name__ == "StoreError"
+        assert err.__cause__ is None
+        assert "sqlite" not in str(err).lower()
+    assert store._conn is None  # noqa: SLF001
+    assert store._barrier_oms_handle is None  # noqa: SLF001
+    # OS lock not permanently held after writer + close complete.
+    with hold_session_barrier_lock(cap):
+        pass
+
+
+def test_same_thread_close_inside_active_transaction_fail_fast_no_deadlock(
+    cwd_tmp: Path,
+) -> None:
+    """P0: same-thread close while owning _write_lock must fail-fast, not hang."""
+    import time
+
+    from quant.execution.session_barrier import (
+        build_session_barrier_capability,
+        hold_session_barrier_lock,
+        unpack_session_barrier_oms_handle,
+    )
+
+    lock_root = cwd_tmp / "nested-close-lock"
+    lock_root.mkdir()
+    cap = build_session_barrier_capability(
+        barrier_epoch=_hex("nested-close-epoch"),
+        session_date=dt.date(2026, 8, 25),
+        account_identity=_hex("nested-close-account"),
+        oms_store_identity=_hex("nested-close-oms"),
+        broker_store_identity=_hex("nested-close-broker"),
+        gateway_identity=_hex("nested-close-gateway"),
+        config_identity=_hex("nested-close-config"),
+        lock_root=lock_root,
+    )
+    created = dt.datetime(2026, 8, 25, 1, tzinfo=dt.timezone.utc)
+    store = ExecutionStore.open(
+        _uri("nested-close.db"),
+        trusted_root=cwd_tmp,
+        session_barrier=cap,
+        initialize_barrier=True,
+        barrier_created_at=created,
+    )
+    handle_before = store.session_barrier_oms_handle()
+    started = time.monotonic()
+    with pytest.raises(StoreError, match="^CLOSE_DURING_TX$") as caught:
+        with store.transaction() as repo:
+            repo.put_command(command_id="nested-close", identity=ID_A, payload=b"x")
+            store.close()
+            raise AssertionError("close() must not return while owning write lock")
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 2.0
+    assert caught.value.__cause__ is None
+    assert "sqlite" not in str(caught.value).lower()
+    # Nested close must not mutate connection/handle; tx rolled back → no durable row.
+    assert store._conn is not None  # noqa: SLF001
+    assert store._barrier_oms_handle is not None  # noqa: SLF001
+    assert (
+        unpack_session_barrier_oms_handle(handle_before, capability=cap) is handle_before
+    )
+    with store.transaction() as repo:
+        assert repo.get_command("nested-close") is None
+    with hold_session_barrier_lock(cap):
+        pass
+    store.close()
+    assert store._conn is None  # noqa: SLF001
+    assert store._barrier_oms_handle is None  # noqa: SLF001
+    with hold_session_barrier_lock(cap):
+        pass
+
+
+def test_barrier_refuses_adopt_on_old_economic_root(cwd_tmp: Path) -> None:
+    from quant.execution.session_barrier import build_session_barrier_capability
+
+    store = _open("old-economic.db", cwd_tmp)
+    with store.transaction() as repo:
+        repo.put_command(command_id="legacy", identity=ID_A, payload=b"legacy")
+    store.close()
+
+    lock_root = cwd_tmp / "adopt-lock"
+    lock_root.mkdir()
+    cap = build_session_barrier_capability(
+        barrier_epoch=_hex("adopt-epoch"),
+        session_date=dt.date(2026, 8, 25),
+        account_identity=_hex("adopt-account"),
+        oms_store_identity=_hex("adopt-oms"),
+        broker_store_identity=_hex("adopt-broker"),
+        gateway_identity=_hex("adopt-gateway"),
+        config_identity=_hex("adopt-config"),
+        lock_root=lock_root,
+    )
+    with pytest.raises(StoreError, match="BARRIER_OLD_ROOT_REFUSED"):
+        ExecutionStore.open(
+            _uri("old-economic.db"),
+            trusted_root=cwd_tmp,
+            session_barrier=cap,
+            initialize_barrier=True,
+            barrier_created_at=dt.datetime(2026, 8, 25, 1, tzinfo=dt.timezone.utc),
+        )
+
+
+def test_writer_exception_rollback_does_not_advance_barrier(
+    cwd_tmp: Path,
+) -> None:
+    from quant.execution.session_barrier import build_session_barrier_capability
+
+    lock_root = cwd_tmp / "rollback-lock"
+    lock_root.mkdir()
+    cap = build_session_barrier_capability(
+        barrier_epoch=_hex("rollback-epoch"),
+        session_date=dt.date(2026, 8, 25),
+        account_identity=_hex("rollback-account"),
+        oms_store_identity=_hex("rollback-oms"),
+        broker_store_identity=_hex("rollback-broker"),
+        gateway_identity=_hex("rollback-gateway"),
+        config_identity=_hex("rollback-config"),
+        lock_root=lock_root,
+    )
+    created = dt.datetime(2026, 8, 25, 2, tzinfo=dt.timezone.utc)
+    store = ExecutionStore.open(
+        _uri("barrier-rollback.db"),
+        trusted_root=cwd_tmp,
+        session_barrier=cap,
+        initialize_barrier=True,
+        barrier_created_at=created,
+    )
+    try:
+        before = store.read_session_barrier_row()
+        with pytest.raises(RuntimeError, match="boom"):
+            with store.transaction() as repo:
+                repo.put_command(command_id="partial", identity=ID_A, payload=b"p")
+                raise RuntimeError("boom")
+        after = store.read_session_barrier_row()
+        assert after == before
+        with store.transaction() as repo:
+            assert repo.get_command("partial") is None
+    finally:
+        store.close()

@@ -15,7 +15,8 @@ import weakref
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from typing import Any, Literal, cast
 
 from quant.backtest.costs import ExecutionCostSchedule
@@ -36,6 +37,16 @@ from quant.execution.gateways.contracts import DispatchCertainty
 from quant.execution.reconcile import BrokerOrderObservation
 from quant.execution.paper_broker_binding import VerifiedFormalPaperBrokerPolicyBinding
 from quant.execution.paper_policy import VerifiedPaperExecutionPolicy
+from quant.execution.session_barrier import (
+    SessionBarrierError,
+    fresh_read_session_barrier,
+    hold_open_write_lease,
+    invalidate_write_lease,
+    require_matching_barrier_handle,
+    unpack_session_barrier_capability,
+    unpack_session_barrier_oms_handle,
+    verify_lease_against_row,
+)
 from quant.execution.wire import (
     decode_cancel_command,
     decode_execution_event,
@@ -313,16 +324,117 @@ class PaperBrokerStore:
             )
         )
         self._guarded_anchor_names: set[str] = set()
+        self._session_barrier: object | None = None
+        self._oms_handle: object | None = None
+        # Bound only by bind_session_barrier after fresh verify; never caller-injected.
+        self._bound_gateway_identity: str | None = None
 
-    @property
-    def gateway_identity(self) -> str:
-        self.verify_fresh()
+    def bind_session_barrier(
+        self,
+        capability: object,
+        *,
+        oms_handle: object,
+    ) -> None:
+        """Bind this broker store to the shared OMS session barrier.
+
+        State remains OMS-only via a process-local OMS handle; this store never
+        hosts a second state machine and never accepts a raw sqlite connection.
+        """
+        try:
+            cap = unpack_session_barrier_capability(capability)
+            handle = unpack_session_barrier_oms_handle(oms_handle, capability=cap)
+            self.verify_fresh()
+            # Capture digest only after fresh verification; lease paths reuse this
+            # raw field and must not re-enter via public gateway_identity.
+            bound_gateway_identity = self._gateway_identity_digest()
+            if (
+                cap.account_identity != self.account_descriptor.descriptor_identity
+                or cap.broker_store_identity != self.descriptor.descriptor_identity
+                or cap.gateway_identity != bound_gateway_identity
+            ):
+                raise SessionBarrierError("BARRIER_IDENTITY_DRIFT")
+            require_matching_barrier_handle(oms_handle=handle, capability=cap)
+            self._session_barrier = cap
+            self._oms_handle = handle
+            self._bound_gateway_identity = bound_gateway_identity
+        except PaperBrokerStoreError:
+            raise
+        except SessionBarrierError as exc:
+            raise PaperBrokerStoreError(str(exc)) from None
+        except Exception:
+            raise PaperBrokerStoreError("BARRIER_CAPABILITY_INVALID") from None
+
+    def session_barrier_enabled(self) -> bool:
+        return self._session_barrier is not None
+
+    @contextmanager
+    def _barrier_lease(self) -> Iterator[object | None]:
+        if self._session_barrier is None:
+            yield None
+            return
+        handle = self._oms_handle
+        if handle is None:
+            raise PaperBrokerStoreError("BARRIER_OMS_HANDLE_INVALID") from None
+        try:
+            with hold_open_write_lease(
+                self._session_barrier, oms_handle=handle, store_kind="broker"
+            ) as lease:
+                try:
+                    yield lease
+                finally:
+                    invalidate_write_lease(lease)
+        except SessionBarrierError as exc:
+            raise PaperBrokerStoreError(str(exc)) from None
+        except PaperBrokerStoreError:
+            raise
+        except Exception:
+            raise PaperBrokerStoreError("BARRIER_LEASE_INVALID") from None
+
+    def _verify_barrier_lease(self, lease: object | None) -> None:
+        if self._session_barrier is None:
+            if lease is not None:
+                raise PaperBrokerStoreError("BARRIER_LEASE_INVALID") from None
+            return
+        assert lease is not None
+        handle = self._oms_handle
+        if handle is None:
+            raise PaperBrokerStoreError("BARRIER_OMS_HANDLE_INVALID") from None
+        try:
+            row = fresh_read_session_barrier(
+                oms_handle=handle, capability=self._session_barrier
+            )
+            verify_lease_against_row(
+                lease,
+                capability=self._session_barrier,
+                row=row,
+                store_kind="broker",
+            )
+            cap = unpack_session_barrier_capability(self._session_barrier)
+            bound_gateway_identity = self._bound_gateway_identity
+            if type(bound_gateway_identity) is not str:
+                raise SessionBarrierError("BARRIER_IDENTITY_DRIFT")
+            if (
+                cap.account_identity != self.account_descriptor.descriptor_identity
+                or cap.broker_store_identity != self.descriptor.descriptor_identity
+                or cap.gateway_identity != bound_gateway_identity
+            ):
+                raise SessionBarrierError("BARRIER_IDENTITY_DRIFT")
+        except SessionBarrierError as exc:
+            raise PaperBrokerStoreError(str(exc)) from None
+
+    def _gateway_identity_digest(self) -> str:
+        """Module-private digest from loaded descriptors; no verify_fresh/lease."""
         return _digest({
             "account_id": self.descriptor.account_id,
             "policy_identity": self.descriptor.policy_identity,
             "store_identity": self.descriptor.descriptor_identity,
             "type": "DurablePaperGateway",
         })
+
+    @property
+    def gateway_identity(self) -> str:
+        self.verify_fresh()
+        return self._gateway_identity_digest()
 
     def close(self) -> None:
         """Release physical instance anchors; transaction connections are scoped."""
@@ -427,82 +539,93 @@ class PaperBrokerStore:
         self._verify_files()
         request_digest = hashlib.sha256(request_payload).hexdigest()
         try:
-            conn = self._connect()
-            try:
-                conn.execute("BEGIN IMMEDIATE")
-                self._verify_database(conn)
-                checkpoint = conn.execute(
-                    "SELECT state_digest FROM checkpoint WHERE singleton=1"
-                ).fetchone()
-                if (
-                    checkpoint is None
-                    or str(checkpoint[0]) != predecessor_state_digest
-                ):
-                    raise PaperBrokerStoreError("PAPER_BROKER_PREDECESSOR_STALE")
-                prior = conn.execute(
-                    "SELECT attempt, request_digest FROM operations WHERE operation_id=?",
-                    (operation_id,),
-                ).fetchone()
-                if prior is not None:
-                    if int(prior[0]) == dispatch_attempt and str(prior[1]) == request_digest:
-                        conn.rollback()
-                        return
-                    raise PaperBrokerStoreError("PAPER_BROKER_OPERATION_CONFLICT")
-                command = decode_order_command(command_payload)
-                finalized = conn.execute(
-                    "SELECT 1 FROM session_finality WHERE session_date=?",
-                    (command.intent.session_date.isoformat(),),
-                ).fetchone()
-                if finalized is not None:
-                    raise PaperBrokerStoreError("PAPER_BROKER_SESSION_FINAL")
-                conn.execute(
-                    "INSERT OR IGNORE INTO commands(command_id,payload) VALUES(?,?)",
-                    (command.command_id, command_payload),
-                )
-                retained_command = conn.execute(
-                    "SELECT payload FROM commands WHERE command_id=?", (command.command_id,),
-                ).fetchone()
-                if retained_command is None or bytes(retained_command[0]) != command_payload:
-                    raise PaperBrokerStoreError("PAPER_BROKER_OPERATION_CONFLICT")
-                conn.execute(
-                    "INSERT INTO operations VALUES(?,?,?,?,?,?,?)",
-                    (operation_id, kind, dispatch_attempt, request_digest, request_payload, certainty.value, result_payload),
-                )
-                for ordinal, event in enumerate(callbacks):
-                    event_payload = encode_execution_event(event)
+            with self._barrier_lease() as lease:
+                if lease is not None:
+                    self._verify_barrier_lease(lease)
+                conn = self._connect()
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    if lease is not None:
+                        self._verify_barrier_lease(lease)
+                    self._verify_database(conn)
+                    checkpoint = conn.execute(
+                        "SELECT state_digest FROM checkpoint WHERE singleton=1"
+                    ).fetchone()
+                    if (
+                        checkpoint is None
+                        or str(checkpoint[0]) != predecessor_state_digest
+                    ):
+                        raise PaperBrokerStoreError("PAPER_BROKER_PREDECESSOR_STALE")
+                    prior = conn.execute(
+                        "SELECT attempt, request_digest FROM operations WHERE operation_id=?",
+                        (operation_id,),
+                    ).fetchone()
+                    if prior is not None:
+                        if int(prior[0]) == dispatch_attempt and str(prior[1]) == request_digest:
+                            conn.rollback()
+                            invalidate_write_lease(lease)
+                            return
+                        raise PaperBrokerStoreError("PAPER_BROKER_OPERATION_CONFLICT")
+                    command = decode_order_command(command_payload)
+                    finalized = conn.execute(
+                        "SELECT 1 FROM session_finality WHERE session_date=?",
+                        (command.intent.session_date.isoformat(),),
+                    ).fetchone()
+                    if finalized is not None:
+                        raise PaperBrokerStoreError("PAPER_BROKER_SESSION_FINAL")
                     conn.execute(
-                        "INSERT OR IGNORE INTO events(event_id,command_id,payload) VALUES(?,?,?)",
-                        (event.event_id, command.command_id, event_payload),
+                        "INSERT OR IGNORE INTO commands(command_id,payload) VALUES(?,?)",
+                        (command.command_id, command_payload),
                     )
-                    existing = conn.execute("SELECT payload FROM events WHERE event_id=?", (event.event_id,)).fetchone()
-                    if existing is None or bytes(existing[0]) != event_payload:
-                        raise PaperBrokerStoreError("PAPER_BROKER_EVENT_CONFLICT")
+                    retained_command = conn.execute(
+                        "SELECT payload FROM commands WHERE command_id=?", (command.command_id,),
+                    ).fetchone()
+                    if retained_command is None or bytes(retained_command[0]) != command_payload:
+                        raise PaperBrokerStoreError("PAPER_BROKER_OPERATION_CONFLICT")
                     conn.execute(
-                        "INSERT INTO operation_events(operation_id,ordinal,event_id) VALUES(?,?,?)",
-                        (operation_id, ordinal, event.event_id),
+                        "INSERT INTO operations VALUES(?,?,?,?,?,?,?)",
+                        (operation_id, kind, dispatch_attempt, request_digest, request_payload, certainty.value, result_payload),
                     )
-                observations = _rebuild_observations(conn)
-                conn.execute("DELETE FROM order_state")
-                conn.executemany(
-                    "INSERT INTO order_state(broker_order_id,payload) VALUES(?,?)",
-                    tuple(
-                        (item.broker_order_id, _observation_wire(item))
-                        for item in observations
-                    ),
-                )
-                conn.execute("UPDATE account_state SET payload=? WHERE singleton=1", (_account_wire(account),))
-                self._append_journal(conn, kind=kind, subject=operation_id, payload=result_payload)
-                conn.commit()
-            except sqlite3.OperationalError as exc:
-                conn.rollback()
-                if "locked" in str(exc).lower() or "busy" in str(exc).lower():
-                    raise PaperBrokerStoreError("PAPER_BROKER_BUSY") from None
-                raise PaperBrokerStoreError("PAPER_BROKER_WRITE_FAILED") from None
-            except Exception:
-                conn.rollback()
-                raise
-            finally:
-                conn.close()
+                    for ordinal, event in enumerate(callbacks):
+                        event_payload = encode_execution_event(event)
+                        conn.execute(
+                            "INSERT OR IGNORE INTO events(event_id,command_id,payload) VALUES(?,?,?)",
+                            (event.event_id, command.command_id, event_payload),
+                        )
+                        existing = conn.execute("SELECT payload FROM events WHERE event_id=?", (event.event_id,)).fetchone()
+                        if existing is None or bytes(existing[0]) != event_payload:
+                            raise PaperBrokerStoreError("PAPER_BROKER_EVENT_CONFLICT")
+                        conn.execute(
+                            "INSERT INTO operation_events(operation_id,ordinal,event_id) VALUES(?,?,?)",
+                            (operation_id, ordinal, event.event_id),
+                        )
+                    observations = _rebuild_observations(conn)
+                    conn.execute("DELETE FROM order_state")
+                    conn.executemany(
+                        "INSERT INTO order_state(broker_order_id,payload) VALUES(?,?)",
+                        tuple(
+                            (item.broker_order_id, _observation_wire(item))
+                            for item in observations
+                        ),
+                    )
+                    conn.execute("UPDATE account_state SET payload=? WHERE singleton=1", (_account_wire(account),))
+                    self._append_journal(conn, kind=kind, subject=operation_id, payload=result_payload)
+                    if lease is not None:
+                        self._verify_barrier_lease(lease)
+                    conn.commit()
+                    invalidate_write_lease(lease)
+                except sqlite3.OperationalError as exc:
+                    conn.rollback()
+                    invalidate_write_lease(lease)
+                    if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+                        raise PaperBrokerStoreError("PAPER_BROKER_BUSY") from None
+                    raise PaperBrokerStoreError("PAPER_BROKER_WRITE_FAILED") from None
+                except Exception:
+                    conn.rollback()
+                    invalidate_write_lease(lease)
+                    raise
+                finally:
+                    conn.close()
             self.verify_fresh()
         except PaperBrokerStoreError:
             raise
@@ -698,49 +821,60 @@ class PaperBrokerStore:
             }
         )
         try:
-            conn = self._connect()
-            try:
-                conn.execute("BEGIN IMMEDIATE")
-                self._verify_database(conn)
-                existing = conn.execute(
-                    "SELECT payload FROM session_finality WHERE session_date=?",
-                    (session_date.isoformat(),),
-                ).fetchone()
-                if existing is not None:
-                    if bytes(existing[0]) == payload:
-                        conn.rollback()
-                        return
-                    raise PaperBrokerStoreError("PAPER_BROKER_FINALITY_CONFLICT")
-                command_rows = conn.execute(
-                    "SELECT payload FROM commands ORDER BY command_id"
-                ).fetchall()
-                if any(
-                    decode_order_command(bytes(row[0])).intent.session_date
-                    == session_date
-                    for row in command_rows
-                ):
-                    raise PaperBrokerStoreError("PAPER_BROKER_FINALITY_INVALID")
-                conn.execute(
-                    "INSERT INTO session_finality(session_date,payload) VALUES(?,?)",
-                    (session_date.isoformat(), payload),
-                )
-                self._append_journal(
-                    conn,
-                    kind="SESSION_FINALITY",
-                    subject=session_date.isoformat(),
-                    payload=payload,
-                )
-                conn.commit()
-            except sqlite3.OperationalError as exc:
-                conn.rollback()
-                if "locked" in str(exc).lower() or "busy" in str(exc).lower():
-                    raise PaperBrokerStoreError("PAPER_BROKER_BUSY") from None
-                raise PaperBrokerStoreError("PAPER_BROKER_WRITE_FAILED") from None
-            except Exception:
-                conn.rollback()
-                raise
-            finally:
-                conn.close()
+            with self._barrier_lease() as lease:
+                if lease is not None:
+                    self._verify_barrier_lease(lease)
+                conn = self._connect()
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    if lease is not None:
+                        self._verify_barrier_lease(lease)
+                    self._verify_database(conn)
+                    existing = conn.execute(
+                        "SELECT payload FROM session_finality WHERE session_date=?",
+                        (session_date.isoformat(),),
+                    ).fetchone()
+                    if existing is not None:
+                        if bytes(existing[0]) == payload:
+                            conn.rollback()
+                            invalidate_write_lease(lease)
+                            return
+                        raise PaperBrokerStoreError("PAPER_BROKER_FINALITY_CONFLICT")
+                    command_rows = conn.execute(
+                        "SELECT payload FROM commands ORDER BY command_id"
+                    ).fetchall()
+                    if any(
+                        decode_order_command(bytes(row[0])).intent.session_date
+                        == session_date
+                        for row in command_rows
+                    ):
+                        raise PaperBrokerStoreError("PAPER_BROKER_FINALITY_INVALID")
+                    conn.execute(
+                        "INSERT INTO session_finality(session_date,payload) VALUES(?,?)",
+                        (session_date.isoformat(), payload),
+                    )
+                    self._append_journal(
+                        conn,
+                        kind="SESSION_FINALITY",
+                        subject=session_date.isoformat(),
+                        payload=payload,
+                    )
+                    if lease is not None:
+                        self._verify_barrier_lease(lease)
+                    conn.commit()
+                    invalidate_write_lease(lease)
+                except sqlite3.OperationalError as exc:
+                    conn.rollback()
+                    invalidate_write_lease(lease)
+                    if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+                        raise PaperBrokerStoreError("PAPER_BROKER_BUSY") from None
+                    raise PaperBrokerStoreError("PAPER_BROKER_WRITE_FAILED") from None
+                except Exception:
+                    conn.rollback()
+                    invalidate_write_lease(lease)
+                    raise
+                finally:
+                    conn.close()
             self.verify_fresh()
         except PaperBrokerStoreError:
             raise
@@ -752,44 +886,55 @@ class PaperBrokerStore:
         if type(session_date) is not dt.date or not _utc(finalized_at):
             raise PaperBrokerStoreError("PAPER_BROKER_FINALITY_INVALID")
         try:
-            conn = self._connect()
-            try:
-                conn.execute("BEGIN IMMEDIATE")
-                self._verify_database(conn)
-                existing = conn.execute(
-                    "SELECT payload FROM session_finality WHERE session_date=?",
-                    (session_date.isoformat(),),
-                ).fetchone()
-                payload = canonical_json_bytes({
-                    "finalized_at": utc_datetime_text(finalized_at),
-                    "schema_version": "paper-session-finality-v1",
-                    "session_date": session_date.isoformat(),
-                })
-                if existing is not None:
-                    if bytes(existing[0]) == payload:
-                        conn.rollback()
-                        return
-                    raise PaperBrokerStoreError("PAPER_BROKER_FINALITY_CONFLICT")
-                if not _session_is_terminal(conn, session_date=session_date, finalized_at=finalized_at):
-                    raise PaperBrokerStoreError("PAPER_BROKER_SESSION_NOT_FINAL")
-                conn.execute(
-                    "INSERT INTO session_finality(session_date,payload) VALUES(?,?)",
-                    (session_date.isoformat(), payload),
-                )
-                self._append_journal(
-                    conn, kind="SESSION_FINALITY", subject=session_date.isoformat(), payload=payload
-                )
-                conn.commit()
-            except sqlite3.OperationalError as exc:
-                conn.rollback()
-                if "locked" in str(exc).lower() or "busy" in str(exc).lower():
-                    raise PaperBrokerStoreError("PAPER_BROKER_BUSY") from None
-                raise PaperBrokerStoreError("PAPER_BROKER_WRITE_FAILED") from None
-            except Exception:
-                conn.rollback()
-                raise
-            finally:
-                conn.close()
+            with self._barrier_lease() as lease:
+                if lease is not None:
+                    self._verify_barrier_lease(lease)
+                conn = self._connect()
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    if lease is not None:
+                        self._verify_barrier_lease(lease)
+                    self._verify_database(conn)
+                    existing = conn.execute(
+                        "SELECT payload FROM session_finality WHERE session_date=?",
+                        (session_date.isoformat(),),
+                    ).fetchone()
+                    payload = canonical_json_bytes({
+                        "finalized_at": utc_datetime_text(finalized_at),
+                        "schema_version": "paper-session-finality-v1",
+                        "session_date": session_date.isoformat(),
+                    })
+                    if existing is not None:
+                        if bytes(existing[0]) == payload:
+                            conn.rollback()
+                            invalidate_write_lease(lease)
+                            return
+                        raise PaperBrokerStoreError("PAPER_BROKER_FINALITY_CONFLICT")
+                    if not _session_is_terminal(conn, session_date=session_date, finalized_at=finalized_at):
+                        raise PaperBrokerStoreError("PAPER_BROKER_SESSION_NOT_FINAL")
+                    conn.execute(
+                        "INSERT INTO session_finality(session_date,payload) VALUES(?,?)",
+                        (session_date.isoformat(), payload),
+                    )
+                    self._append_journal(
+                        conn, kind="SESSION_FINALITY", subject=session_date.isoformat(), payload=payload
+                    )
+                    if lease is not None:
+                        self._verify_barrier_lease(lease)
+                    conn.commit()
+                    invalidate_write_lease(lease)
+                except sqlite3.OperationalError as exc:
+                    conn.rollback()
+                    invalidate_write_lease(lease)
+                    if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+                        raise PaperBrokerStoreError("PAPER_BROKER_BUSY") from None
+                    raise PaperBrokerStoreError("PAPER_BROKER_WRITE_FAILED") from None
+                except Exception:
+                    conn.rollback()
+                    invalidate_write_lease(lease)
+                    raise
+                finally:
+                    conn.close()
             self.verify_fresh()
         except PaperBrokerStoreError:
             raise
@@ -881,28 +1026,37 @@ class PaperBrokerStore:
                     self._guarded_anchor_names.add(path.name)
                 predecessor_digest = hashlib.sha256(payload).hexdigest()
             if anchored != len(rows):
-                conn = self._connect()
-                try:
-                    conn.execute("BEGIN IMMEDIATE")
-                    current = conn.execute(
-                        "SELECT sequence,anchored_sequence FROM checkpoint WHERE singleton=1"
-                    ).fetchone()
-                    if current is None or (int(current[0]), int(current[1])) != (
-                        len(rows),
-                        anchored,
-                    ):
-                        raise PaperBrokerStoreError("PAPER_BROKER_ANCHOR_RETRY")
-                    conn.execute(
-                        "UPDATE checkpoint SET anchored_sequence=? "
-                        "WHERE singleton=1 AND anchored_sequence=?",
-                        (len(rows), anchored),
-                    )
-                    conn.commit()
-                except Exception:
-                    conn.rollback()
-                    raise
-                finally:
-                    conn.close()
+                with self._barrier_lease() as lease:
+                    if lease is not None:
+                        self._verify_barrier_lease(lease)
+                    conn = self._connect()
+                    try:
+                        conn.execute("BEGIN IMMEDIATE")
+                        if lease is not None:
+                            self._verify_barrier_lease(lease)
+                        current = conn.execute(
+                            "SELECT sequence,anchored_sequence FROM checkpoint WHERE singleton=1"
+                        ).fetchone()
+                        if current is None or (int(current[0]), int(current[1])) != (
+                            len(rows),
+                            anchored,
+                        ):
+                            raise PaperBrokerStoreError("PAPER_BROKER_ANCHOR_RETRY")
+                        conn.execute(
+                            "UPDATE checkpoint SET anchored_sequence=? "
+                            "WHERE singleton=1 AND anchored_sequence=?",
+                            (len(rows), anchored),
+                        )
+                        if lease is not None:
+                            self._verify_barrier_lease(lease)
+                        conn.commit()
+                        invalidate_write_lease(lease)
+                    except Exception:
+                        conn.rollback()
+                        invalidate_write_lease(lease)
+                        raise
+                    finally:
+                        conn.close()
         except PaperBrokerStoreError:
             raise
         except Exception:

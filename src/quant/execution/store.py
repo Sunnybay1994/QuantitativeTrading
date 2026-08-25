@@ -32,8 +32,24 @@ from quant.execution.risk import (
     deserialize_daily_risk_counters,
     serialize_daily_risk_counters,
 )
+from quant.execution.session_barrier import (
+    SessionBarrierError,
+    fresh_read_session_barrier,
+    hold_open_write_lease,
+    initialize_open_barrier,
+    invalidate_session_barrier_oms_handle,
+    invalidate_write_lease,
+    issue_session_barrier_oms_handle,
+    read_session_barrier,
+    require_matching_barrier,
+    transition_closing_to_closed,
+    transition_open_to_closing,
+    unpack_session_barrier_capability,
+    unpack_session_barrier_oms_handle,
+    verify_lease_against_row,
+)
 
-CURRENT_SCHEMA_VERSION: Final[int] = 8
+CURRENT_SCHEMA_VERSION: Final[int] = 9
 LEDGER_CHECKPOINT_KEY: Final[str] = "paper-shadow-primary-v1"
 
 _URI_PREFIX = "sqlite:///"
@@ -2936,14 +2952,50 @@ class ExecutionRepository:
 class ExecutionStore:
     """SQLite-backed durable store with explicit schema version and migrations."""
 
-    def __init__(self, conn: sqlite3.Connection, *, version: int) -> None:
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        version: int,
+        session_barrier: object | None = None,
+        barrier_oms_handle: object | None = None,
+    ) -> None:
         self._conn: sqlite3.Connection | None = conn
         self._version = version
         self._write_lock = threading.Lock()
+        self._write_lock_owner: int | None = None
+        self._session_barrier: object | None = None
+        self._barrier_oms_handle: object | None = None
+        if session_barrier is not None:
+            try:
+                self._session_barrier = unpack_session_barrier_capability(session_barrier)
+                if barrier_oms_handle is None:
+                    raise SessionBarrierError("BARRIER_OMS_HANDLE_INVALID")
+                self._barrier_oms_handle = unpack_session_barrier_oms_handle(
+                    barrier_oms_handle, capability=self._session_barrier
+                )
+            except SessionBarrierError as exc:
+                raise StoreError(str(exc)) from None
 
     @classmethod
-    def open(cls, uri: str, *, trusted_root: Path) -> ExecutionStore:
-        """Open (or create) the store under trusted_root, apply migrations."""
+    def open(
+        cls,
+        uri: str,
+        *,
+        trusted_root: Path,
+        session_barrier: object | None = None,
+        initialize_barrier: bool = False,
+        barrier_created_at: dt.datetime | None = None,
+    ) -> ExecutionStore:
+        """Open (or create) the store under trusted_root, apply migrations.
+
+        When ``session_barrier`` is omitted, behavior matches the pre-barrier
+        non-formal store aside from schema v9 table presence.
+
+        When ``session_barrier`` is provided, writers require an OPEN write lease.
+        ``initialize_barrier=True`` may create the OPEN row only on an empty new
+        root; old economic roots are refused (no adopt/backfill).
+        """
         relative = _parse_sqlite_uri(uri)
         resolved_root = _validate_trusted_root(trusted_root)
 
@@ -3011,7 +3063,20 @@ class ExecutionStore:
             except sqlite3.Error:
                 migration_err = StoreError("MIGRATION_FAILED")
             if migration_err is not None:
+                _safe_rollback(connected)
                 raise migration_err from None
+
+            if session_barrier is not None:
+                # Barrier init owns OS-lock → BEGIN → COMMIT → unlock (no nested lock).
+                try:
+                    _bind_session_barrier_on_open(
+                        connected,
+                        session_barrier,
+                        initialize_barrier=initialize_barrier,
+                        barrier_created_at=barrier_created_at,
+                    )
+                except SessionBarrierError as exc:
+                    raise StoreError(str(exc)) from None
         except Exception:
             if conn is not None:
                 _safe_rollback(conn)
@@ -3019,20 +3084,187 @@ class ExecutionStore:
             raise
 
         assert conn is not None
-        return cls(conn, version=version)
+        handle: object | None = None
+        if session_barrier is not None:
+            try:
+                handle = issue_session_barrier_oms_handle(
+                    capability=session_barrier, conn=conn
+                )
+            except SessionBarrierError as exc:
+                _safe_close(conn)
+                raise StoreError(str(exc)) from None
+        return cls(
+            conn,
+            version=version,
+            session_barrier=session_barrier,
+            barrier_oms_handle=handle,
+        )
 
     def schema_version(self) -> int:
         """Return the applied schema version."""
         return self._version
 
-    @contextmanager
-    def transaction(self) -> Iterator[ExecutionRepository]:
-        """Begin an immediate write transaction; rollback on exception."""
+    def session_barrier_enabled(self) -> bool:
+        """Return whether this store requires OPEN write leases."""
+        return self._session_barrier is not None
+
+    def session_barrier_oms_handle(self) -> object:
+        """Return the process-local OMS barrier handle (no sqlite connection)."""
+        if self._session_barrier is None or self._barrier_oms_handle is None:
+            raise StoreError("BARRIER_MISSING")
+        try:
+            return unpack_session_barrier_oms_handle(
+                self._barrier_oms_handle, capability=self._session_barrier
+            )
+        except SessionBarrierError as exc:
+            raise StoreError(str(exc)) from None
+
+    def read_session_barrier_row(self) -> object:
+        """Fresh-read the OMS barrier row (SSOT); available with or without binding."""
+        if self._session_barrier is not None and self._barrier_oms_handle is not None:
+            try:
+                return fresh_read_session_barrier(
+                    oms_handle=self._barrier_oms_handle,
+                    capability=self._session_barrier,
+                )
+            except SessionBarrierError as exc:
+                raise StoreError(str(exc)) from None
         conn = self._conn
         if conn is None:
             raise StoreError("STORE_CLOSED")
-        if not self._write_lock.acquire(blocking=False):
+        try:
+            return read_session_barrier(conn)
+        except SessionBarrierError as exc:
+            raise StoreError(str(exc)) from None
+
+    def transition_session_barrier_to_closing(
+        self,
+        *,
+        nonce: str,
+        now: dt.datetime,
+    ) -> tuple[object, str]:
+        """OPEN → CLOSING under the store's internal connection (no connection escape)."""
+        conn = self._conn
+        barrier = self._session_barrier
+        if conn is None:
+            raise StoreError("STORE_CLOSED")
+        if barrier is None:
+            raise StoreError("BARRIER_MISSING")
+        if not self._try_acquire_write_lock():
             raise StoreError("TX_BUSY")
+        try:
+            # transition_* owns OS lock → BEGIN → COMMIT → unlock.
+            return transition_open_to_closing(conn, barrier, nonce=nonce, now=now)
+        except SessionBarrierError as exc:
+            raise StoreError(str(exc)) from None
+        finally:
+            self._release_write_lock()
+
+    def transition_session_barrier_to_closed(
+        self,
+        *,
+        close_token_identity: str,
+        now: dt.datetime,
+    ) -> object:
+        """CLOSING → CLOSED under the store's internal connection."""
+        conn = self._conn
+        barrier = self._session_barrier
+        if conn is None:
+            raise StoreError("STORE_CLOSED")
+        if barrier is None:
+            raise StoreError("BARRIER_MISSING")
+        if not self._try_acquire_write_lock():
+            raise StoreError("TX_BUSY")
+        try:
+            return transition_closing_to_closed(
+                conn,
+                barrier,
+                close_token_identity=close_token_identity,
+                now=now,
+            )
+        except SessionBarrierError as exc:
+            raise StoreError(str(exc)) from None
+        finally:
+            self._release_write_lock()
+
+    @contextmanager
+    def transaction(self) -> Iterator[ExecutionRepository]:
+        """Begin an immediate write transaction; rollback on exception.
+
+        Barrier-enabled stores acquire the anchored lock, mint an OPEN write
+        lease, and re-verify lock/lease/state before commit.
+        """
+        conn = self._conn
+        if conn is None:
+            raise StoreError("STORE_CLOSED")
+        if not self._try_acquire_write_lock():
+            raise StoreError("TX_BUSY")
+        barrier = self._session_barrier
+        handle = self._barrier_oms_handle
+        try:
+            if barrier is None:
+                yield from self._transaction_unbounded(conn)
+                return
+            if handle is None:
+                raise StoreError("BARRIER_OMS_HANDLE_INVALID")
+            try:
+                with hold_open_write_lease(
+                    barrier, oms_handle=handle, store_kind="oms"
+                ) as lease:
+                    begin_err: StoreError | None = None
+                    try:
+                        conn.execute("BEGIN IMMEDIATE")
+                    except sqlite3.Error as exc:
+                        if getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_BUSY:
+                            begin_err = StoreError("TX_BUSY")
+                        else:
+                            begin_err = StoreError("TX_BEGIN_FAILED")
+                    if begin_err is not None:
+                        raise begin_err from None
+                    try:
+                        row = fresh_read_session_barrier(
+                            oms_handle=handle, capability=barrier
+                        )
+                        verify_lease_against_row(
+                            lease, capability=barrier, row=row, store_kind="oms"
+                        )
+                    except SessionBarrierError as exc:
+                        _safe_rollback(conn)
+                        raise StoreError(str(exc)) from None
+                    repo = ExecutionRepository(conn)
+                    try:
+                        yield repo
+                    except Exception:
+                        _safe_rollback(conn)
+                        invalidate_write_lease(lease)
+                        raise
+                    else:
+                        commit_err: StoreError | None = None
+                        try:
+                            row = fresh_read_session_barrier(
+                                oms_handle=handle, capability=barrier
+                            )
+                            verify_lease_against_row(
+                                lease, capability=barrier, row=row, store_kind="oms"
+                            )
+                            conn.execute("COMMIT")
+                        except SessionBarrierError as exc:
+                            _safe_rollback(conn)
+                            commit_err = StoreError(str(exc))
+                        except sqlite3.Error:
+                            _safe_rollback(conn)
+                            commit_err = StoreError("TX_COMMIT_FAILED")
+                        invalidate_write_lease(lease)
+                        if commit_err is not None:
+                            raise commit_err from None
+            except SessionBarrierError as exc:
+                raise StoreError(str(exc)) from None
+        finally:
+            self._release_write_lock()
+
+    def _transaction_unbounded(
+        self, conn: sqlite3.Connection
+    ) -> Iterator[ExecutionRepository]:
         begin_err: StoreError | None = None
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -3042,7 +3274,6 @@ class ExecutionStore:
             else:
                 begin_err = StoreError("TX_BEGIN_FAILED")
         if begin_err is not None:
-            self._write_lock.release()
             raise begin_err from None
         repo = ExecutionRepository(conn)
         try:
@@ -3059,22 +3290,70 @@ class ExecutionStore:
                 commit_err = StoreError("TX_COMMIT_FAILED")
             if commit_err is not None:
                 raise commit_err from None
-        finally:
-            self._write_lock.release()
+
+    def _try_acquire_write_lock(self) -> bool:
+        if not self._write_lock.acquire(blocking=False):
+            return False
+        self._write_lock_owner = threading.get_ident()
+        return True
+
+    def _release_write_lock(self) -> None:
+        self._write_lock_owner = None
+        self._write_lock.release()
 
     def close(self) -> None:
-        """Close the underlying connection."""
-        conn = self._conn
-        if conn is not None:
-            close_err: StoreError | None = None
-            try:
-                conn.close()
-            except sqlite3.Error:
-                close_err = StoreError("CLOSE_FAILED")
-            finally:
-                self._conn = None
-            if close_err is not None:
-                raise close_err from None
+        """Close the underlying connection; serialize with active writers.
+
+        Same-thread close while this thread owns an active write lock fails
+        immediately (non-reentrant Lock cannot be re-acquired). Cross-thread
+        close waits for the owner to finish commit/rollback and release the
+        OS lease, then invalidates the handle and closes the connection.
+        """
+        owner = self._write_lock_owner
+        if owner is not None and owner == threading.get_ident():
+            raise StoreError("CLOSE_DURING_TX") from None
+        self._write_lock.acquire(blocking=True)
+        try:
+            # Re-check after acquire: owner should be clear once we hold the lock.
+            self._write_lock_owner = threading.get_ident()
+            if self._barrier_oms_handle is not None:
+                invalidate_session_barrier_oms_handle(self._barrier_oms_handle)
+                self._barrier_oms_handle = None
+            conn = self._conn
+            if conn is not None:
+                close_err: StoreError | None = None
+                try:
+                    conn.close()
+                except sqlite3.Error:
+                    close_err = StoreError("CLOSE_FAILED")
+                finally:
+                    self._conn = None
+                if close_err is not None:
+                    raise close_err from None
+        finally:
+            self._write_lock_owner = None
+            self._write_lock.release()
+
+
+def _bind_session_barrier_on_open(
+    conn: sqlite3.Connection,
+    session_barrier: object,
+    *,
+    initialize_barrier: bool,
+    barrier_created_at: dt.datetime | None,
+) -> None:
+    capability = unpack_session_barrier_capability(session_barrier)
+    try:
+        require_matching_barrier(conn, capability)
+        return
+    except SessionBarrierError as exc:
+        if exc.code != "BARRIER_MISSING":
+            raise
+    if not initialize_barrier:
+        raise SessionBarrierError("BARRIER_MISSING")
+    if barrier_created_at is None:
+        raise SessionBarrierError("BARRIER_TIME_INVALID")
+    initialize_open_barrier(conn, capability, created_at=barrier_created_at)
 
 
 __all__ = [
