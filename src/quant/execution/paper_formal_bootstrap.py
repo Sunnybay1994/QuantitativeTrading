@@ -462,7 +462,7 @@ def _create_api():  # type: ignore[no-untyped-def]
                 now=timestamp,
             )
             if (
-                policy is not bootstrap.policy
+                policy != bootstrap.policy
                 or binding is not bootstrap.binding
                 or account is not bootstrap.account
             ):

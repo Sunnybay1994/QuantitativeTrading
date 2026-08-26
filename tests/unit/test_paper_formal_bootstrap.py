@@ -18,7 +18,7 @@ from quant.execution.paper_formal_broker_store import (
     VerifiedFormalPaperBrokerStoreCapability,
     _StoreAttestation,
 )
-from quant.execution.paper_runtime import FormalPaperRuntimeConfig
+from quant.execution.paper_runtime import FormalPaperRuntimeConfig, PaperRuntimeError
 from quant.execution.session_barrier import SessionBarrierRow
 
 NOW = dt.datetime(2026, 8, 12, 10, tzinfo=dt.timezone.utc)
@@ -931,3 +931,194 @@ def test_public_verifier_wrong_type_fails_closed(
             config_path=path, session_date=SESSION, now=NOW
         )
     _assert_bootstrap_error(caught.value, "PAPER_FORMAL_BOOTSTRAP_ROLLBACK_REQUIRED")
+
+
+def _copy_ns(value: SimpleNamespace) -> SimpleNamespace:
+    return SimpleNamespace(**vars(value))
+
+
+def _patch_retained_verify(
+    monkeypatch: pytest.MonkeyPatch,
+    retained: bootstrap.VerifiedFormalPaperRuntimeBootstrap,
+    *,
+    policy: object | None = None,
+    binding: object | None = None,
+    account: object | None = None,
+    broker: object | None = None,
+    execution: object | None = None,
+    preflight: object | None = None,
+) -> None:
+    monkeypatch.setattr(
+        bootstrap,
+        "verify_existing_paper_runtime_preflight",
+        (lambda *args, **kwargs: None) if preflight is None else preflight,
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "verify_existing_paper_execution_policy",
+        lambda **kwargs: retained.policy if policy is None else policy,
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "verify_existing_formal_paper_broker_policy_binding",
+        lambda **kwargs: retained.binding if binding is None else binding,
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "verify_existing_formal_paper_account_descriptor",
+        lambda **kwargs: retained.account if account is None else account,
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "verify_existing_formal_paper_broker_store_capability",
+        lambda **kwargs: retained.broker_store if broker is None else broker,
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "verify_existing_formal_paper_execution_store_capability",
+        lambda **kwargs: retained.execution_store if execution is None else execution,
+    )
+
+
+def test_verify_accepts_fresh_equal_policy_not_same_object_and_retains_bootstrap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Merge-regression: policy helper may return value-equal fresh object; retain bootstrap."""
+    config, cold, final, broker, execution = _cold_and_final(tmp_path)
+    path = type(Path())(config.source_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("x\n", encoding="utf-8")
+    _patch_happy_path(monkeypatch, path, config, cold, final, broker, execution)
+    retained = bootstrap.bootstrap_fresh_formal_paper_runtime(
+        config_path=path, session_date=SESSION, now=NOW
+    )
+    fresh_equal_policy = _copy_ns(retained.policy)
+    assert fresh_equal_policy == retained.policy
+    assert fresh_equal_policy is not retained.policy
+    _patch_retained_verify(monkeypatch, retained, policy=fresh_equal_policy)
+    verified = bootstrap.verify_existing_formal_paper_runtime_bootstrap(
+        bootstrap=retained, now=NOW
+    )
+    assert verified is retained
+
+
+def test_verify_rejects_policy_field_attestation_or_environment_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, cold, final, broker, execution = _cold_and_final(tmp_path)
+    path = type(Path())(config.source_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("x\n", encoding="utf-8")
+    _patch_happy_path(monkeypatch, path, config, cold, final, broker, execution)
+    retained = bootstrap.bootstrap_fresh_formal_paper_runtime(
+        config_path=path, session_date=SESSION, now=NOW
+    )
+
+    field_drift = _copy_ns(retained.policy)
+    field_drift.cost_schedule_identity = "drifted" * 8
+    _patch_retained_verify(monkeypatch, retained, policy=field_drift)
+    with pytest.raises(bootstrap.FormalPaperBootstrapError) as field_caught:
+        bootstrap.verify_existing_formal_paper_runtime_bootstrap(
+            bootstrap=retained, now=NOW
+        )
+    _assert_bootstrap_error(field_caught.value, "PAPER_FORMAL_BOOTSTRAP_STALE")
+
+    attestation_drift = SimpleNamespace(
+        **vars(retained.policy), _attestation=b"hostile-token"
+    )
+    _patch_retained_verify(monkeypatch, retained, policy=attestation_drift)
+    with pytest.raises(bootstrap.FormalPaperBootstrapError) as att_caught:
+        bootstrap.verify_existing_formal_paper_runtime_bootstrap(
+            bootstrap=retained, now=NOW
+        )
+    _assert_bootstrap_error(att_caught.value, "PAPER_FORMAL_BOOTSTRAP_STALE")
+
+    def _hostile_preflight(*args: object, **kwargs: object) -> None:
+        raise PaperRuntimeError("PAPER_RUNTIME_STALE")
+
+    _patch_retained_verify(monkeypatch, retained, preflight=_hostile_preflight)
+    with pytest.raises(bootstrap.FormalPaperBootstrapError) as env_caught:
+        bootstrap.verify_existing_formal_paper_runtime_bootstrap(
+            bootstrap=retained, now=NOW
+        )
+    _assert_bootstrap_error(env_caught.value, "PAPER_FORMAL_BOOTSTRAP_STALE")
+
+
+def test_verify_keeps_binding_account_and_capability_identity_is_gates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Binding/account/capability remain object-identity gated; equal copies are STALE."""
+    config, cold, final, broker, execution = _cold_and_final(tmp_path)
+    path = type(Path())(config.source_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("x\n", encoding="utf-8")
+    _patch_happy_path(monkeypatch, path, config, cold, final, broker, execution)
+    retained = bootstrap.bootstrap_fresh_formal_paper_runtime(
+        config_path=path, session_date=SESSION, now=NOW
+    )
+    fresh_equal_policy = _copy_ns(retained.policy)
+
+    equal_binding = _copy_ns(retained.binding)
+    assert equal_binding == retained.binding
+    assert equal_binding is not retained.binding
+    _patch_retained_verify(
+        monkeypatch,
+        retained,
+        policy=fresh_equal_policy,
+        binding=equal_binding,
+    )
+    with pytest.raises(bootstrap.FormalPaperBootstrapError) as binding_caught:
+        bootstrap.verify_existing_formal_paper_runtime_bootstrap(
+            bootstrap=retained, now=NOW
+        )
+    _assert_bootstrap_error(binding_caught.value, "PAPER_FORMAL_BOOTSTRAP_STALE")
+
+    equal_account = _copy_ns(retained.account)
+    assert equal_account == retained.account
+    assert equal_account is not retained.account
+    _patch_retained_verify(
+        monkeypatch,
+        retained,
+        policy=fresh_equal_policy,
+        account=equal_account,
+    )
+    with pytest.raises(bootstrap.FormalPaperBootstrapError) as account_caught:
+        bootstrap.verify_existing_formal_paper_runtime_bootstrap(
+            bootstrap=retained, now=NOW
+        )
+    _assert_bootstrap_error(account_caught.value, "PAPER_FORMAL_BOOTSTRAP_STALE")
+
+    other_broker = object()
+    _patch_retained_verify(
+        monkeypatch,
+        retained,
+        policy=fresh_equal_policy,
+        broker=other_broker,
+    )
+    with pytest.raises(bootstrap.FormalPaperBootstrapError) as broker_caught:
+        bootstrap.verify_existing_formal_paper_runtime_bootstrap(
+            bootstrap=retained, now=NOW
+        )
+    _assert_bootstrap_error(broker_caught.value, "PAPER_FORMAL_BOOTSTRAP_STALE")
+
+    other_execution = SimpleNamespace(
+        broker_store=retained.broker_store,
+        store=retained.execution_store.store,
+        store_identity=retained.execution_store_identity,
+        barrier_epoch=retained.barrier_epoch,
+        barrier_capability_identity=retained.barrier_capability_identity,
+        gateway_identity=retained.gateway_identity,
+        account_id=retained.account_id,
+        verified_at=NOW,
+    )
+    _patch_retained_verify(
+        monkeypatch,
+        retained,
+        policy=fresh_equal_policy,
+        execution=other_execution,
+    )
+    with pytest.raises(bootstrap.FormalPaperBootstrapError) as execution_caught:
+        bootstrap.verify_existing_formal_paper_runtime_bootstrap(
+            bootstrap=retained, now=NOW
+        )
+    _assert_bootstrap_error(execution_caught.value, "PAPER_FORMAL_BOOTSTRAP_STALE")

@@ -1,12 +1,12 @@
 # M4-UA006-R1 Rebuilt2 Fresh Formal Runtime Bootstrap 交付报告
 
 日期：2026-08-26
-状态：`EVIDENCE_UPDATE_READY` / `FRESH_FORMAL_BOOTSTRAP_WINDOWS_ENGINEERING_VALIDATED`（**不等于** UA-M4-006 关闭、PAPER、soak、Linux Gate、主验合流）
+状态：`EVIDENCE_UPDATE_READY`（source merge-regression fix Windows validated；**不等于** main `937787` 回归解除、UA-M4-006 关闭、PAPER、soak、Linux Gate）
 task id：`M4-UA006-R1-REBUILT2-FRESH-FORMAL-RUNTIME-BOOTSTRAP`
-exact base / HEAD：`9cc5b56d176a18aa468386b369d550be73051edb`（实现未 stage/commit；工作树仍停在该 tip）
+exact base / HEAD：`74586cea97ba93aa3e25cca0dd4921cf214de54c`（source branch；本轮未 stage/commit）
 branch：`codex/m4-ua006-r1-fresh-formal-runtime-bootstrap-rebuilt2`
 worktree：`artifacts/dev_worktrees/m4-ua006-r1-fresh-formal-runtime-bootstrap-rebuilt2`
-角色：原实现者续任 EVIDENCE_UPDATE（仅任务书 + 本 delivery；production/tests/`__init__.py`/review 只读；零 Python）
+角色：原实现者续任 EVIDENCE_UPDATE（仅任务书 + 本 delivery；production/tests/review 冻结；零 Python）
 
 ## 1. 现象—根因—应遵循规则—最小复现—新增测试—通过条件
 
@@ -364,3 +364,82 @@ REVIEW_PASS 后另申请资源：identity → focused unit+integration → Ruff 
 `EVIDENCE_UPDATE_READY`
 
 写集核对：仅任务书 + 本 delivery；production/tests/`__init__.py`/review 未改；evidence 未清；未 stage/commit。
+
+## 13. STATIC_REWORK：main merge-regression（policy identity gate）
+
+中央批准。main 已 merge `937787bc` 但回归 STOP；本 source branch tip `74586cea`（clean tracked + ignored evidence）。STATIC_ONLY：仅改 `paper_formal_bootstrap.py`、bootstrap unit/integration、taskbook/delivery；`__init__.py`/review/`paper_policy.py` 只读；零 Python；不 stage/commit。
+
+### 13.1 main regression 证据（诚实保留）
+
+| 项 | 值 |
+| --- | --- |
+| evidence root | `artifacts/agent_runs/m4-r1-rebuilt2-main-merge-regression-20260826T203000Z` |
+| summary SHA256 | `EE48534311AF5162375B5F23B44706666F019ACA914FA305EC361E0530A86151` |
+| focused | **`26 passed / 1 skipped / 1 failed`**；错误码 `PAPER_FORMAL_BOOTSTRAP_STALE` |
+| 失败节点 | `tests/integration/test_paper_formal_bootstrap.py::test_public_fresh_bootstrap_reopen_and_identity_closure`（`verify_existing_formal_paper_runtime_bootstrap`） |
+| Ruff / mypy / cold / scope | **全部 UNRUN** |
+| STOP | `STOP=STAGE_FAILED:focused` |
+
+### 13.2 现象—根因—规则—最小复现—测试—通过条件
+
+| 项 | 内容 |
+| --- | --- |
+| 现象 | main 合流后 focused 回归：retained bootstrap 的 `verify_existing_*` 在 policy fresh helper 返回后稳定 `PAPER_FORMAL_BOOTSTRAP_STALE` |
+| 根因 | `verify_existing_paper_execution_policy` 设计为 fresh-load 后按**值**相等返回**新** policy 对象（`_attestation` compare=False）；bootstrap 门禁误用 `policy is not bootstrap.policy`，把合法值相等误判为 STALE |
+| 应遵循规则 | 生产唯一修复：`policy != bootstrap.policy`；binding/account 继续 `is`；broker/execution capability 继续 `is`；chain join / identity payload / bytes / 错误码 / 顺序不变；不得改 `paper_policy.py`；不用 Any/cast/type:ignore |
+| 最小复现 | public fresh bootstrap → `verify_existing_formal_paper_runtime_bootstrap(bootstrap=first, now=NOW)`；policy helper 返回 `fresh == retained.policy` 且 `fresh is not retained.policy` → 旧码 STALE |
+| 测试 | unit：值相等非同一对象正向且返回原 bootstrap；policy 字段/attestation/环境漂移仍 STALE；binding/account/capability 等值非同一对象仍 STALE。integration：verify 仍 `is first` |
+| 通过条件 | 上述门禁与测试就位；写集 ⊆ 批准路径；本轮 Python/pytest/Ruff/mypy/cold **UNRUN**；不宣称新 Windows 全绿或 UA-M4-006 关闭 |
+
+### 13.3 生产变更（唯一）
+
+`verify_existing_formal_paper_runtime_bootstrap`：`policy is not bootstrap.policy` → `policy != bootstrap.policy`。其余 identity/`is` 闸未改。
+
+### 13.4 STATIC_REWORK 收口
+
+`STATIC_REWORK_READY`
+
+**仍 OPEN**：UA-M4-006、PAPER、soak、Linux Gate。历史 `FRESH_FORMAL_BOOTSTRAP_WINDOWS_ENGINEERING_VALIDATED` 证据链保留；本回归修复后须另申请合流/回归验证，不得继承失败轮冒充全绿。
+
+## 14. EVIDENCE_UPDATE：merge-regression fix source validation PASS
+
+中央授权。本轮 **仅** 更新任务书 §14 与本交付 §14；production / tests / review **冻结只读**；不清 evidence；零 Python；零 stage/commit。
+
+### 14.1 历史 main merge regression（保留；不洗白）
+
+| 项 | 值 |
+| --- | --- |
+| evidence root | `artifacts/agent_runs/m4-r1-rebuilt2-main-merge-regression-20260826T203000Z` |
+| summary SHA256 | `EE48534311AF5162375B5F23B44706666F019ACA914FA305EC361E0530A86151` |
+| focused | **`26 passed / 1 skipped / 1 failed`**；`PAPER_FORMAL_BOOTSTRAP_STALE` |
+| Ruff / mypy / cold / scope | **UNRUN**（首失败合同） |
+| 口径 | **历史 STOP 原文保留；不得改写为通过** |
+
+### 14.2 本轮 source fix validation（PASS）
+
+| 项 | 值 |
+| --- | --- |
+| evidence root | `artifacts/agent_runs/m4-r1-rebuilt2-merge-regression-fix-validation-20260826T204000Z` |
+| summary SHA256 | `1D39C474FCD239210A2820DFA597569A586ED6D5F67BA2E72CB45F528983D105` |
+| identity | PASS |
+| focused unit+integration | **`27 passed / 4 skipped`** |
+| Ruff | 实际 production/tests PASS |
+| mypy | production2 PASS |
+| cold | bootstrap PASS |
+| scope | exact7 actual dirty6 / cached0 / diff / temp / process PASS |
+| 资源 | scratch/cache 清理；`0xF00=0`；writer PID7692 / `0x3` 未扰动 |
+| 收口 | `PASS=ALL_STAGES` |
+
+### 14.3 口径边界（强制）
+
+| 声明 | 是否成立 |
+| --- | --- |
+| source fix Windows validated（本 worktree） | **是** |
+| main `937787` 回归已解除 | **否**（仍 `MERGED_REGRESSION_STOP`） |
+| UA-M4-006 / PAPER / soak / Linux Gate 关闭 | **否**（仍 OPEN） |
+
+### 14.4 EVIDENCE_UPDATE 收口
+
+`EVIDENCE_UPDATE_READY`
+
+写集核对：仅任务书 + 本 delivery；production/tests/review 未改；evidence 未清；未 stage/commit。
