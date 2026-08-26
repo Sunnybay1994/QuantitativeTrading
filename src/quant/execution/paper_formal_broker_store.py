@@ -189,6 +189,14 @@ def _create_formal_store_api():  # type: ignore[no-untyped-def]
                 materialized_binding,
                 materialized_account,
             )
+            materialized = _verify_existing_chain(
+                materialized.environment,
+                materialized.policy,
+                materialized.binding,
+                materialized.account,
+                timestamp,
+            )
+            _require_materialized(materialized.environment)
             _compare_cold_materialized(cold, materialized)
             descriptor = build_formal_paper_broker_policy_descriptor(
                 policy=materialized.policy, binding=materialized.binding
@@ -443,13 +451,46 @@ def _reload_materialized_chain(chain: _FreshChain, now: dt.datetime) -> _FreshCh
 
 
 def _compare_cold_materialized(cold: _FreshChain, current: _FreshChain) -> None:
+    """Compare cold→materialized chains on economic semantics only.
+
+    First broker-root materialization must change environment verification /
+    layout identities and derived attestations. Physical presence is gated by
+    ``_require_materialized`` after public ``_verify_existing_chain``; joins and
+    derived-identity freshness are gated by ``_require_materialized_chain_closure``.
+    """
     if (
         cold.environment.config != current.environment.config
+        or cold.environment.verification_identity
+        == current.environment.verification_identity
         or cold.environment.layout.layout_identity
         == current.environment.layout.layout_identity
-        or _policy_business(cold.policy) != _policy_business(current.policy)
-        or _binding_business(cold.binding) != _binding_business(current.binding)
-        or _account_business(cold.account) != _account_business(current.account)
+        or _policy_economic(cold.policy) != _policy_economic(current.policy)
+        or _binding_economic(cold.binding) != _binding_economic(current.binding)
+        or _account_economic(cold.account) != _account_economic(current.account)
+    ):
+        raise _Failure("PAPER_FORMAL_STORE_STALE")
+    _require_materialized_chain_closure(cold, current)
+
+
+def _require_materialized_chain_closure(
+    cold: _FreshChain, current: _FreshChain
+) -> None:
+    """Require materialized siblings join and derived attestations leave cold."""
+    environment = current.environment
+    policy = current.policy
+    binding = current.binding
+    account = current.account
+    if (
+        binding.runtime_environment_identity != environment.verification_identity
+        or binding.runtime_config_identity != environment.config.config_identity
+        or binding.execution_policy_identity != policy.policy_identity
+        or account.runtime_environment_identity != environment.verification_identity
+        or account.runtime_config_identity != environment.config.config_identity
+        or account.execution_policy_identity != policy.policy_identity
+        or account.broker_binding_identity != binding.binding_identity
+        or policy.policy_identity == cold.policy.policy_identity
+        or binding.binding_identity == cold.binding.binding_identity
+        or account.verification_identity == cold.account.verification_identity
     ):
         raise _Failure("PAPER_FORMAL_STORE_STALE")
 
@@ -463,6 +504,73 @@ def _compare_materialized(left: _FreshChain, right: _FreshChain) -> None:
         or _account_business(left.account) != _account_business(right.account)
     ):
         raise _Failure("PAPER_FORMAL_STORE_STALE")
+
+
+def _policy_economic(value: VerifiedPaperExecutionPolicy) -> tuple[object, ...]:
+    """Cold→materialized economic projection; excludes env-derived attestation."""
+    return (
+        value.schema_version,
+        value.selector,
+        value.session_date,
+        value.source_path,
+        value.source_file_identity,
+        value.source_parent_identity,
+        value.raw_sha256,
+        value.trading_config,
+        value.trading_config_identity,
+        value.supported_markets,
+        value.execution_cost_schedule,
+        value.cost_schedule_identity,
+        value.minimum_order_notionals,
+        value.a_share_rule_selector,
+        value.adapter_policy_version,
+        value.fill_policy_version,
+        value.fault_policy_version,
+        value.finality_policy_version,
+        value.clock_policy_version,
+        value.fx_snapshot_identity,
+    )
+
+
+def _binding_economic(
+    value: VerifiedFormalPaperBrokerPolicyBinding,
+) -> tuple[object, ...]:
+    """Cold→materialized economic projection; excludes env-derived identities."""
+    return (
+        value.schema_version,
+        value.classification,
+        value.session_date,
+        value.runtime_config_identity,
+        value.adapter_policy_version,
+        value.fill_policy_version,
+        value.fault_policy_version,
+        value.finality_policy_version,
+        value.clock_policy_version,
+        value.cost_schedule_identity,
+        value.fx_snapshot_identity,
+    )
+
+
+def _account_economic(
+    value: VerifiedFormalPaperAccountDescriptor,
+) -> tuple[object, ...]:
+    """Cold→materialized economic projection; excludes env-derived attestations."""
+    return (
+        value.schema_version,
+        value.classification,
+        value.session_date,
+        value.selector,
+        value.source_path,
+        value.source_file_identity,
+        value.source_parent_identity,
+        value.raw_sha256,
+        value.runtime_config_identity,
+        value.account_descriptor,
+        value.account_id,
+        value.initial_snapshot_identity,
+        value.descriptor_identity,
+        value.risk_counter_scope,
+    )
 
 
 def _policy_business(value: VerifiedPaperExecutionPolicy) -> tuple[object, ...]:
@@ -589,8 +697,12 @@ def _assemble_capability(
 
 
 def _require_materialized(environment: VerifiedPaperRuntimeEnvironment) -> None:
-    root_identity = dict(environment.layout.root_identities).get("broker", "")
-    if not environment.config.broker_root.is_dir() or "absent" in root_identity:
+    """Require the configured broker root to be a physical directory.
+
+    Layout / attestation authenticity is supplied by public preflight inside
+    ``_verify_existing_chain``; root identity bytes are opaque SHA256 digests.
+    """
+    if not environment.config.broker_root.is_dir():
         raise _Failure("PAPER_FORMAL_STORE_NOT_FOUND")
 
 
