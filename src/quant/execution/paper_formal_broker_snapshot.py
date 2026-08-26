@@ -131,6 +131,32 @@ def _finalize_and_query_formal_paper_broker_eod(
     order_semantic_closure_identity: str,
 ) -> VerifiedBrokerEvidence:
     """Apply an exact broker marker after the caller proves OMS ORDER closure."""
+    return finalize_and_query_formal_paper_broker_eod(
+        store_capability=store_capability,
+        environment=environment,
+        policy=policy,
+        binding=binding,
+        account=account,
+        session_date=session_date,
+        now=now,
+        gateway_identity=gateway_identity,
+        order_semantic_closure_identity=order_semantic_closure_identity,
+    )
+
+
+def finalize_and_query_formal_paper_broker_eod(
+    *,
+    store_capability: VerifiedFormalPaperBrokerStoreCapability,
+    environment: VerifiedPaperRuntimeEnvironment,
+    policy: VerifiedPaperExecutionPolicy,
+    binding: VerifiedFormalPaperBrokerPolicyBinding,
+    account: VerifiedFormalPaperAccountDescriptor,
+    session_date: dt.date,
+    now: dt.datetime,
+    gateway_identity: str,
+    order_semantic_closure_identity: str,
+) -> VerifiedBrokerEvidence:
+    """Package-owned broker EOD finalization + verified evidence (INFRA-007)."""
     try:
         if (
             type(session_date) is not dt.date
@@ -269,5 +295,6 @@ def _utc(value: object) -> bool:
 
 __all__ = [
     "FormalPaperBrokerSnapshotError",
+    "finalize_and_query_formal_paper_broker_eod",
     "open_verified_formal_paper_broker_snapshot_port",
 ]

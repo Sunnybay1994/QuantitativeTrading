@@ -9,6 +9,8 @@ import json
 import os
 import secrets
 import stat
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Mapping
@@ -39,12 +41,16 @@ from quant.execution.paper_runtime import (
 from quant.execution.session_barrier import (
     SessionBarrierCapability,
     SessionBarrierError,
+    TerminalClosureStepKind,
+    bind_terminal_successor_identity,
     build_session_barrier_capability,
+    hold_terminal_closure_child,
+    hold_terminal_closure_context,
     recover_session_barrier_closure_capability,
     require_matching_barrier_handle,
     unpack_session_barrier_capability,
 )
-from quant.execution.store import CURRENT_SCHEMA_VERSION, ExecutionStore
+from quant.execution.store import CURRENT_SCHEMA_VERSION, ExecutionStore, StoreError
 
 _SCHEMA = "formal-paper-execution-store-v2"
 _DESCRIPTOR = "execution-store-instance.json"
@@ -779,9 +785,13 @@ def _integer(value: dict[str, object], name: str) -> int:
 __all__ = [
     "FormalPaperExecutionStoreError",
     "VerifiedFormalPaperExecutionStoreCapability",
+    "bind_formal_terminal_successor",
+    "hold_formal_terminal_closure",
+    "hold_formal_terminal_step",
     "initialize_verified_formal_paper_execution_store",
     "open_verified_formal_paper_execution_store",
     "recover_formal_session_barrier_closure",
+    "transition_formal_session_barrier_to_closed",
     "transition_formal_session_barrier_to_closing",
     "verify_existing_formal_paper_execution_store_capability",
     "verify_formal_session_barrier_closing_row",
@@ -842,6 +852,154 @@ def verify_formal_session_barrier_closing_row(
         raise FormalPaperExecutionStoreError(exc.code) from None
     except FormalPaperExecutionStoreError:
         raise
+    except Exception as exc:
+        code = getattr(exc, "code", None)
+        if type(code) is str:
+            raise FormalPaperExecutionStoreError(code) from None
+        raise FormalPaperExecutionStoreError(
+            "PAPER_FORMAL_EXECUTION_STORE_INVALID"
+        ) from None
+
+
+@contextmanager
+def hold_formal_terminal_closure(
+    *,
+    capability: VerifiedFormalPaperExecutionStoreCapability,
+    closure: object,
+    now: dt.datetime,
+) -> Iterator[object]:
+    """Hold the B1 anchored lock for one durable formal terminal closure.
+
+    Requires a fresh, live ``FORMAL_CLOSURE_ONLY`` execution-store capability
+    and a matching live ``SessionBarrierClosureCapability``. Yields only the
+    module-private terminal context object; never exposes the underlying
+    session-barrier capability, OMS handle, or OMS connection to the caller.
+    ``BARRIER_STATE_CLOSED`` is a legitimate, cryptographically-verified
+    signal that the exact closure/token already reached ``CLOSED``.
+    """
+    try:
+        timestamp = _utc(now)
+        verified = verify_existing_formal_paper_execution_store_capability(
+            capability=capability, now=timestamp
+        )
+        if verified is not capability:
+            raise _Failure("PAPER_FORMAL_EXECUTION_STORE_STALE")
+        oms_handle = verified.store.session_barrier_oms_handle()
+        barrier = verified._session_barrier
+    except _Failure as exc:
+        raise FormalPaperExecutionStoreError(exc.code) from None
+    except FormalPaperExecutionStoreError:
+        raise
+    except (SessionBarrierError, StoreError) as exc:
+        raise FormalPaperExecutionStoreError(str(exc)) from None
+    except Exception:
+        raise FormalPaperExecutionStoreError(
+            "PAPER_FORMAL_EXECUTION_STORE_INVALID"
+        ) from None
+    try:
+        with hold_terminal_closure_context(
+            closure, capability=barrier, oms_handle=oms_handle
+        ) as context:
+            yield context
+    except SessionBarrierError as exc:
+        raise FormalPaperExecutionStoreError(str(exc)) from None
+
+
+@contextmanager
+def hold_formal_terminal_step(
+    context: object,
+    *,
+    capability: VerifiedFormalPaperExecutionStoreCapability,
+    step_kind: TerminalClosureStepKind,
+) -> Iterator[object]:
+    """Mint one single-step terminal child under an already-held formal context.
+
+    Does not re-verify the full composition/environment chain (the caller's
+    ``hold_formal_terminal_closure`` already did so); relies on the terminal
+    context's own fresh row/lock re-verification for step-level safety.
+    """
+    try:
+        if type(capability) is not VerifiedFormalPaperExecutionStoreCapability:
+            raise _Failure("PAPER_FORMAL_EXECUTION_STORE_INVALID")
+        oms_handle = capability.store.session_barrier_oms_handle()
+        barrier = capability._session_barrier
+    except _Failure as exc:
+        raise FormalPaperExecutionStoreError(exc.code) from None
+    except (SessionBarrierError, StoreError) as exc:
+        raise FormalPaperExecutionStoreError(str(exc)) from None
+    except Exception:
+        raise FormalPaperExecutionStoreError(
+            "PAPER_FORMAL_EXECUTION_STORE_INVALID"
+        ) from None
+    try:
+        with hold_terminal_closure_child(
+            context, capability=barrier, oms_handle=oms_handle, step_kind=step_kind
+        ) as child:
+            yield child
+    except SessionBarrierError as exc:
+        raise FormalPaperExecutionStoreError(str(exc)) from None
+
+
+def bind_formal_terminal_successor(
+    context: object,
+    *,
+    capability: VerifiedFormalPaperExecutionStoreCapability,
+    terminal_successor_identity: str,
+) -> str:
+    """Bind the exact successor under a live ``terminal_successor`` child.
+
+    Must run inside ``hold_formal_terminal_closure`` with an active
+    ``terminal_successor`` step child. Formal CLOSING→CLOSED refuses any
+    successor that was not bound on the same live context.
+    """
+    try:
+        if type(capability) is not VerifiedFormalPaperExecutionStoreCapability:
+            raise _Failure("PAPER_FORMAL_EXECUTION_STORE_INVALID")
+        oms_handle = capability.store.session_barrier_oms_handle()
+        barrier = capability._session_barrier
+        return bind_terminal_successor_identity(
+            context,
+            capability=barrier,
+            oms_handle=oms_handle,
+            terminal_successor_identity=terminal_successor_identity,
+        )
+    except _Failure as exc:
+        raise FormalPaperExecutionStoreError(exc.code) from None
+    except FormalPaperExecutionStoreError:
+        raise
+    except (SessionBarrierError, StoreError) as exc:
+        raise FormalPaperExecutionStoreError(str(exc)) from None
+    except Exception:
+        raise FormalPaperExecutionStoreError(
+            "PAPER_FORMAL_EXECUTION_STORE_INVALID"
+        ) from None
+
+
+def transition_formal_session_barrier_to_closed(
+    *,
+    capability: VerifiedFormalPaperExecutionStoreCapability,
+    closure: object,
+    terminal_successor_identity: str,
+    now: dt.datetime,
+) -> object:
+    """Formal CLOSING → CLOSED; must run under an active ``closing_to_closed``
+    terminal child minted from the same held terminal context.
+    """
+    try:
+        timestamp = _utc(now)
+        if type(capability) is not VerifiedFormalPaperExecutionStoreCapability:
+            raise _Failure("PAPER_FORMAL_EXECUTION_STORE_INVALID")
+        return capability.store.transition_session_barrier_to_closed_with_closure(
+            closure=closure,
+            terminal_successor_identity=terminal_successor_identity,
+            now=timestamp,
+        )
+    except _Failure as exc:
+        raise FormalPaperExecutionStoreError(exc.code) from None
+    except FormalPaperExecutionStoreError:
+        raise
+    except (SessionBarrierError, StoreError) as exc:
+        raise FormalPaperExecutionStoreError(str(exc)) from None
     except Exception as exc:
         code = getattr(exc, "code", None)
         if type(code) is str:

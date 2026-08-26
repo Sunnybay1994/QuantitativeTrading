@@ -3474,7 +3474,7 @@ def test_barrier_enabled_open_write_and_closing_rejects(
     )
     try:
         assert store.session_barrier_enabled() is True
-        assert store.schema_version() == 9
+        assert store.schema_version() == 10
         assert not hasattr(ExecutionStore, "barrier_oms_connection")
         handle = store.session_barrier_oms_handle()
         assert type(handle).__name__ == "SessionBarrierOmsHandle"

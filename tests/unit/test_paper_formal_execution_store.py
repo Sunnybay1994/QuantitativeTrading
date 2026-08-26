@@ -190,9 +190,21 @@ def test_formal_closing_issues_closure_and_rejects_ordinary_writers(
             session_date=NOW.date(),
             finalized_at=NOW,
         )
-    # Formal public surface has no CLOSING→CLOSED helper; raw store path is
-    # substrate-only and must not be reached via formal transition API.
-    assert not hasattr(formal_oms, "transition_formal_session_barrier_to_closed")
+    # Formal CLOSING→CLOSED helper exists (M4-B1B2) but only ever succeeds
+    # under an active ``closing_to_closed`` terminal child minted from a held
+    # ``hold_formal_terminal_closure`` context; without one it fails closed
+    # and leaves the row in CLOSING (no bypass of the durable step sequence).
+    with pytest.raises(formal_oms.FormalPaperExecutionStoreError):
+        formal_oms.transition_formal_session_barrier_to_closed(
+            capability=capability,
+            closure=closure,
+            terminal_successor_identity="a" * 64,
+            now=NOW,
+        )
+    assert (
+        capability.store.read_session_barrier_row().state  # type: ignore[union-attr]
+        == "CLOSING"
+    )
     # Closure has no write/transaction interface.
     assert not hasattr(closure, "transaction")
     assert not hasattr(closure, "write")

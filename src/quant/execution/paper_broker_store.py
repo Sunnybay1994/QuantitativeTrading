@@ -39,6 +39,7 @@ from quant.execution.paper_broker_binding import VerifiedFormalPaperBrokerPolicy
 from quant.execution.paper_policy import VerifiedPaperExecutionPolicy
 from quant.execution.session_barrier import (
     SessionBarrierError,
+    active_terminal_broker_finality_child,
     fresh_read_session_barrier,
     hold_open_write_lease,
     invalidate_write_lease,
@@ -46,6 +47,7 @@ from quant.execution.session_barrier import (
     unpack_session_barrier_capability,
     unpack_session_barrier_oms_handle,
     verify_lease_against_row,
+    verify_terminal_child_against_row,
 )
 from quant.execution.wire import (
     decode_cancel_command,
@@ -376,6 +378,12 @@ class PaperBrokerStore:
         if handle is None:
             raise PaperBrokerStoreError("BARRIER_OMS_HANDLE_INVALID") from None
         try:
+            terminal = active_terminal_broker_finality_child(
+                capability=self._session_barrier
+            )
+            if terminal is not None:
+                yield terminal
+                return
             with hold_open_write_lease(
                 self._session_barrier, oms_handle=handle, store_kind="broker"
             ) as lease:
@@ -403,12 +411,25 @@ class PaperBrokerStore:
             row = fresh_read_session_barrier(
                 oms_handle=handle, capability=self._session_barrier
             )
-            verify_lease_against_row(
-                lease,
-                capability=self._session_barrier,
-                row=row,
-                store_kind="broker",
+            terminal = active_terminal_broker_finality_child(
+                capability=self._session_barrier
             )
+            if terminal is not None:
+                if lease is not terminal:
+                    raise SessionBarrierError("BARRIER_TERMINAL_CHILD_INVALID")
+                verify_terminal_child_against_row(
+                    lease,
+                    capability=self._session_barrier,
+                    row=row,
+                    step_kind="broker_finality",
+                )
+            else:
+                verify_lease_against_row(
+                    lease,
+                    capability=self._session_barrier,
+                    row=row,
+                    store_kind="broker",
+                )
             cap = unpack_session_barrier_capability(self._session_barrier)
             bound_gateway_identity = self._bound_gateway_identity
             if type(bound_gateway_identity) is not str:

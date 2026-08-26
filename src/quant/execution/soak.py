@@ -677,10 +677,25 @@ def expected_schedule_identity(expected_sessions: tuple[dt.date, ...]) -> str:
         raise SoakError("SOAK_EXPECTED_SCHEDULE_INVALID") from None
 
 
+def session_order_semantic_closure_identity(
+    recovery: RecoveryResult, *, session_date: dt.date
+) -> str:
+    """Package-owned ORDER semantic closure identity (INFRA-007 public surface)."""
+    return _session_order_semantic_closure_identity(
+        recovery, session_date=session_date
+    )
+
+
 def _session_order_semantic_closure_identity(
     recovery: RecoveryResult, *, session_date: dt.date
 ) -> str:
-    """Prove and identify the durable ORDER closure for one exact session."""
+    """Prove and identify the durable ORDER closure for one exact session.
+
+    Nonzero sessions bind accepted ORDER risk receipts to session commands
+    (historical bytes unchanged). Zero-command sessions prove there are no
+    commands and no orphan ORDER receipts for the session, then bind an
+    independent canonical zero payload to recovery_id + session_date.
+    """
     try:
         checked = _prove_recovery(recovery)
         if type(session_date) is not dt.date:
@@ -696,7 +711,23 @@ def _session_order_semantic_closure_identity(
             if command.intent.session_date == session_date
         )
         if not session_commands:
-            raise SoakError("SOAK_SESSION_ORDER_RECEIPT_MISSING")
+            for receipt in checked.risk_receipts:
+                if receipt.transition_kind != "ORDER":
+                    continue
+                decision = receipt.decision
+                if type(decision) is not DurableOrderRiskDecision:
+                    raise ValueError
+                if decision.projected_counters.session_date == session_date:
+                    raise SoakError("SOAK_SESSION_ORDER_RECEIPT_INVALID")
+            return _identity(
+                "SoakSessionOrderSemanticClosureZero",
+                {
+                    "command_ids": (),
+                    "order_receipt_ids": (),
+                    "recovery_id": checked.recovery_id,
+                    "session_date": session_date.isoformat(),
+                },
+            )
         command_ids = tuple(command.command_id for command in session_commands)
         command_set = set(command_ids)
         session_receipts = []
@@ -721,7 +752,8 @@ def _session_order_semantic_closure_identity(
             session_receipts.append(receipt)
             owned_ids.update(decision_ids)
         if not session_receipts or owned_ids != command_set:
-            raise ValueError
+            # Nonzero session commands without a complete ORDER receipt set.
+            raise SoakError("SOAK_SESSION_ORDER_RECEIPT_MISSING")
         return _identity(
             "SoakSessionOrderSemanticClosure",
             {
@@ -2303,5 +2335,6 @@ __all__ = [
     "build_soak_run",
     "decide_soak_gate",
     "expected_schedule_identity",
+    "session_order_semantic_closure_identity",
     "verify_soak_evidence",
 ]

@@ -1,8 +1,9 @@
 """Shared session-close barrier substrate (OMS SSOT, anchored lock, write lease).
 
-B1B1 adds process-local closure capability issuance on OPEN→CLOSING only.
-Closure has no write/transaction interface and must not drive CLOSING→CLOSED.
-UA-M4-006 remains OPEN.
+B1B1 issues process-local closure capability on OPEN→CLOSING.
+B1B2 consumes formal ``FORMAL_CLOSURE_ONLY`` closure via module-private terminal
+child context to drive durable terminal steps and CLOSING→CLOSED.
+Highest claim remains Windows engineering validation only (no PAPER/soak Gate).
 """
 
 from __future__ import annotations
@@ -44,6 +45,10 @@ _LEASE_DOMAIN: Final[bytes] = b"m4-session-barrier-lease-v1\x00"
 _TOKEN_DOMAIN: Final[bytes] = b"m4-session-barrier-close-token-v1\x00"
 _CLOSURE_DOMAIN: Final[bytes] = b"m4-session-barrier-closure-v1\x00"
 _OPERATION_PERMIT_DOMAIN: Final[bytes] = b"m4-session-barrier-operation-permit-v1\x00"
+_TERMINAL_CONTEXT_DOMAIN: Final[bytes] = b"m4-session-barrier-terminal-context-v1\x00"
+_TERMINAL_CHILD_DOMAIN: Final[bytes] = b"m4-session-barrier-terminal-child-v1\x00"
+_TERMINAL_STEP_DOMAIN: Final[str] = "m4-terminal-closure-step-v1"
+_TERMINAL_SUCCESSOR_DOMAIN: Final[str] = "m4-terminal-closure-successor-v1"
 _PROCESS_PROOF_KEY: Final[bytes] = secrets.token_bytes(32)
 _Identity = tuple[int, int]
 _REGISTRY_LOCK = threading.Lock()
@@ -52,6 +57,31 @@ _CONCRETE_PATH_TYPE: Final[type[Path]] = type(Path())
 _ACTIVE_OPERATION_PERMIT: ContextVar[SessionBarrierOperationPermit | None] = ContextVar(
     "session_barrier_active_operation_permit",
     default=None,
+)
+_ACTIVE_TERMINAL_CONTEXT: ContextVar[SessionBarrierTerminalClosureContext | None] = (
+    ContextVar("session_barrier_active_terminal_context", default=None)
+)
+_ACTIVE_TERMINAL_CHILD: ContextVar[SessionBarrierTerminalChildCapability | None] = (
+    ContextVar("session_barrier_active_terminal_child", default=None)
+)
+
+TerminalClosureStepKind = Literal[
+    "broker_finality",
+    "oms_recovery",
+    "reconciliation",
+    "report_soak",
+    "terminal_successor",
+    "closing_to_closed",
+]
+_TERMINAL_STEP_KINDS: Final[frozenset[str]] = frozenset(
+    {
+        "broker_finality",
+        "oms_recovery",
+        "reconciliation",
+        "report_soak",
+        "terminal_successor",
+        "closing_to_closed",
+    }
 )
 
 
@@ -118,6 +148,36 @@ _CLOSURE_BY_TOKEN: WeakValueDictionary[
 ] = WeakValueDictionary()
 # barrier_capability_identity → mint count (exact recover remint allowed once).
 _CLOSURE_MINT_COUNT: dict[str, int] = {}
+_TERMINAL_CONTEXT_BINDINGS: WeakKeyDictionary[
+    SessionBarrierTerminalClosureContext, _TerminalContextBinding
+] = WeakKeyDictionary()
+_TERMINAL_CHILD_BINDINGS: WeakKeyDictionary[
+    SessionBarrierTerminalChildCapability, _TerminalChildBinding
+] = WeakKeyDictionary()
+
+
+@dataclass(slots=True)
+class _TerminalContextBinding:
+    seal: bytes
+    proof: bytes
+    alive: bool
+    lock_object: object
+    oms_handle: SessionBarrierOmsHandle
+    closure: SessionBarrierClosureCapability
+    active_child: SessionBarrierTerminalChildCapability | None = None
+    # Process-local bind from the ``terminal_successor`` step; required by
+    # formal CLOSING→CLOSED. Not a durable column (no migration); same-token
+    # resume recomputes and rebinds from durable step facts.
+    bound_successor_identity: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _TerminalChildBinding:
+    seal: bytes
+    proof: bytes
+    alive: bool
+    context: SessionBarrierTerminalClosureContext
+    lock_object: object
 
 
 class SessionBarrierError(ValueError):
@@ -160,6 +220,7 @@ class SessionBarrierRow:
     created_at: str
     transitioned_at: str
     row_identity: str
+    terminal_successor_identity: str | None = None
 
 
 @dataclass(frozen=True, eq=False, slots=True, weakref_slot=True, init=False)
@@ -349,6 +410,76 @@ class SessionBarrierClosureCapability:
     def __replace__(self, **changes: object) -> NoReturn:
         del changes
         raise TypeError("session barrier closure is process-local")
+
+
+@dataclass(frozen=True, eq=False, slots=True, weakref_slot=True, init=False)
+class SessionBarrierTerminalClosureContext:
+    """Module-private outer fence for formal terminal closure under one OS lock.
+
+    Holds the anchored barrier lock for the durable step sequence. Not a general
+    transaction permit and not interchangeable with OPEN operation permits.
+    """
+
+    capability_identity: str
+    closure_identity: str
+    close_token_identity: str
+    closing_row_identity: str
+    lock_identity: str
+    owner_pid: int
+    owner_thread_id: int
+    context_identity: str
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise SessionBarrierError("BARRIER_TERMINAL_CONTEXT_INVALID") from None
+
+    def __reduce_ex__(self, protocol: SupportsIndex) -> NoReturn:
+        del protocol
+        raise TypeError("session barrier terminal context is process-local")
+
+    def __copy__(self) -> NoReturn:
+        raise TypeError("session barrier terminal context is process-local")
+
+    def __deepcopy__(self, memo: object) -> NoReturn:
+        del memo
+        raise TypeError("session barrier terminal context is process-local")
+
+    def __replace__(self, **changes: object) -> NoReturn:
+        del changes
+        raise TypeError("session barrier terminal context is process-local")
+
+
+@dataclass(frozen=True, eq=False, slots=True, weakref_slot=True, init=False)
+class SessionBarrierTerminalChildCapability:
+    """Module-private single-step write gate under a live terminal context."""
+
+    capability_identity: str
+    closure_identity: str
+    context_identity: str
+    step_kind: TerminalClosureStepKind
+    lock_identity: str
+    owner_pid: int
+    owner_thread_id: int
+    child_identity: str
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise SessionBarrierError("BARRIER_TERMINAL_CHILD_INVALID") from None
+
+    def __reduce_ex__(self, protocol: SupportsIndex) -> NoReturn:
+        del protocol
+        raise TypeError("session barrier terminal child is process-local")
+
+    def __copy__(self) -> NoReturn:
+        raise TypeError("session barrier terminal child is process-local")
+
+    def __deepcopy__(self, memo: object) -> NoReturn:
+        del memo
+        raise TypeError("session barrier terminal child is process-local")
+
+    def __replace__(self, **changes: object) -> NoReturn:
+        del changes
+        raise TypeError("session barrier terminal child is process-local")
 
 
 @dataclass(slots=True)
@@ -875,6 +1006,362 @@ def recover_session_barrier_closure_capability(
         )
 
 
+@contextmanager
+def hold_terminal_closure_context(
+    closure: object,
+    *,
+    capability: object,
+    oms_handle: object,
+) -> Iterator[SessionBarrierTerminalClosureContext]:
+    """Hold one formal terminal fence under the anchored OS lock (module-private).
+
+    Only ``FORMAL_CLOSURE_ONLY`` live closures may enter. Ordinary OPEN writers
+    and OPEN operation permits remain fail-closed for the CLOSING row. Nested
+    terminal contexts are refused. Physical lock depth stays exact one.
+    """
+    cap = unpack_session_barrier_capability(capability)
+    if cap.terminal_policy != "FORMAL_CLOSURE_ONLY":
+        raise SessionBarrierError("BARRIER_CLOSURE_REQUIRED") from None
+    live_closure = unpack_session_barrier_closure_capability(closure, capability=cap)
+    handle = unpack_session_barrier_oms_handle(oms_handle, capability=cap)
+    existing = _ACTIVE_TERMINAL_CONTEXT.get()
+    if existing is not None:
+        with _REGISTRY_LOCK:
+            existing_binding = _TERMINAL_CONTEXT_BINDINGS.get(existing)
+        if existing_binding is not None and existing_binding.alive is True:
+            raise SessionBarrierError("BARRIER_TERMINAL_CONTEXT_NESTED") from None
+    permit = _ACTIVE_OPERATION_PERMIT.get()
+    if permit is not None:
+        with _REGISTRY_LOCK:
+            permit_binding = _OPERATION_PERMIT_BINDINGS.get(permit)
+        if permit_binding is not None and permit_binding.alive is True:
+            raise SessionBarrierError("BARRIER_TERMINAL_CONTEXT_CONFLICT") from None
+    with hold_session_barrier_lock(cap) as held:
+        row = read_session_barrier(_oms_connection(handle))
+        _require_identity_match(row, cap)
+        if row.lock_identity != held.lock_identity:
+            raise SessionBarrierError("BARRIER_LOCK_IDENTITY_DRIFT") from None
+        if row.state != "CLOSING":
+            if row.state == "CLOSED":
+                raise SessionBarrierError("BARRIER_STATE_CLOSED") from None
+            raise SessionBarrierError("BARRIER_TRANSITION_INVALID") from None
+        if (
+            row.close_token_identity != live_closure.close_token_identity
+            or row.row_identity != live_closure.closing_row_identity
+            or row.lock_identity != live_closure.lock_identity
+        ):
+            raise SessionBarrierError("BARRIER_CLOSURE_INVALID") from None
+        context = _mint_terminal_context(
+            cap,
+            closure=live_closure,
+            handle=handle,
+            lock_object=held,
+            lock_identity=held.lock_identity,
+        )
+        token = _ACTIVE_TERMINAL_CONTEXT.set(context)
+        try:
+            yield context
+        finally:
+            _invalidate_terminal_context(context)
+            _ACTIVE_TERMINAL_CONTEXT.reset(token)
+
+
+@contextmanager
+def hold_terminal_closure_child(
+    context: object,
+    *,
+    capability: object,
+    oms_handle: object,
+    step_kind: TerminalClosureStepKind,
+) -> Iterator[SessionBarrierTerminalChildCapability]:
+    """Mint one single-step terminal child under the held formal context."""
+    cap = unpack_session_barrier_capability(capability)
+    handle = unpack_session_barrier_oms_handle(oms_handle, capability=cap)
+    if step_kind not in _TERMINAL_STEP_KINDS:
+        raise SessionBarrierError("BARRIER_TERMINAL_STEP_INVALID") from None
+    live_context = unpack_session_barrier_terminal_context(
+        context, capability=cap, oms_handle=handle
+    )
+    active = _ACTIVE_TERMINAL_CONTEXT.get()
+    if active is not live_context:
+        raise SessionBarrierError("BARRIER_TERMINAL_CONTEXT_INVALID") from None
+    with _REGISTRY_LOCK:
+        binding = _TERMINAL_CONTEXT_BINDINGS.get(live_context)
+        if binding is None or binding.alive is not True:
+            raise SessionBarrierError("BARRIER_TERMINAL_CONTEXT_EXPIRED") from None
+        if binding.active_child is not None:
+            raise SessionBarrierError("BARRIER_TERMINAL_CHILD_ACTIVE") from None
+        held = binding.lock_object
+    if not isinstance(held, _HeldBarrierLock):
+        raise SessionBarrierError("BARRIER_TERMINAL_CONTEXT_INVALID") from None
+    row = read_session_barrier(_oms_connection(handle))
+    _require_identity_match(row, cap)
+    if row.lock_identity != live_context.lock_identity:
+        raise SessionBarrierError("BARRIER_LOCK_IDENTITY_DRIFT") from None
+    if row.state != "CLOSING":
+        raise SessionBarrierError("BARRIER_TRANSITION_INVALID") from None
+    if (
+        row.close_token_identity != live_context.close_token_identity
+        or row.row_identity != live_context.closing_row_identity
+    ):
+        raise SessionBarrierError("BARRIER_CLOSURE_INVALID") from None
+    child = _mint_terminal_child(
+        cap,
+        context=live_context,
+        step_kind=step_kind,
+        lock_object=held,
+        lock_identity=live_context.lock_identity,
+    )
+    with _REGISTRY_LOCK:
+        binding = _TERMINAL_CONTEXT_BINDINGS.get(live_context)
+        if binding is None or binding.alive is not True:
+            _invalidate_terminal_child(child)
+            raise SessionBarrierError("BARRIER_TERMINAL_CONTEXT_EXPIRED") from None
+        if binding.active_child is not None:
+            _invalidate_terminal_child(child)
+            raise SessionBarrierError("BARRIER_TERMINAL_CHILD_ACTIVE") from None
+        binding.active_child = child
+    child_token = _ACTIVE_TERMINAL_CHILD.set(child)
+    try:
+        yield child
+    except BaseException:
+        _invalidate_terminal_child(child)
+        with _REGISTRY_LOCK:
+            binding = _TERMINAL_CONTEXT_BINDINGS.get(live_context)
+            if binding is not None and binding.active_child is child:
+                binding.active_child = None
+            if binding is not None:
+                binding.alive = False
+        raise
+    finally:
+        with _REGISTRY_LOCK:
+            binding = _TERMINAL_CONTEXT_BINDINGS.get(live_context)
+            if binding is not None and binding.active_child is child:
+                binding.active_child = None
+        _invalidate_terminal_child(child)
+        _ACTIVE_TERMINAL_CHILD.reset(child_token)
+
+
+def unpack_session_barrier_terminal_context(
+    value: object,
+    *,
+    capability: object,
+    oms_handle: object,
+) -> SessionBarrierTerminalClosureContext:
+    """Validate one live terminal closure context (module-private)."""
+    cap = unpack_session_barrier_capability(capability)
+    handle = unpack_session_barrier_oms_handle(oms_handle, capability=cap)
+    if type(value) is not SessionBarrierTerminalClosureContext:
+        raise SessionBarrierError("BARRIER_TERMINAL_CONTEXT_INVALID") from None
+    context = cast(SessionBarrierTerminalClosureContext, value)
+    try:
+        with _REGISTRY_LOCK:
+            binding = _TERMINAL_CONTEXT_BINDINGS.get(context)
+        if binding is None:
+            raise SessionBarrierError("BARRIER_TERMINAL_CONTEXT_INVALID")
+        if binding.alive is not True:
+            raise SessionBarrierError("BARRIER_TERMINAL_CONTEXT_EXPIRED")
+        if context.capability_identity != cap.capability_identity:
+            raise SessionBarrierError("BARRIER_TERMINAL_CONTEXT_INVALID")
+        if binding.oms_handle is not handle:
+            raise SessionBarrierError("BARRIER_TERMINAL_CONTEXT_INVALID")
+        if binding.closure.closure_identity != context.closure_identity:
+            raise SessionBarrierError("BARRIER_TERMINAL_CONTEXT_INVALID")
+        if (
+            context.owner_pid != os.getpid()
+            or context.owner_thread_id != threading.get_ident()
+        ):
+            raise SessionBarrierError("BARRIER_TERMINAL_CONTEXT_OWNER_MISMATCH")
+        held = binding.lock_object
+        if (
+            not isinstance(held, _HeldBarrierLock)
+            or held.lock_identity != context.lock_identity
+        ):
+            raise SessionBarrierError("BARRIER_TERMINAL_CONTEXT_INVALID")
+        expected = _terminal_context_proof(context, seal=binding.seal)
+        if not hmac.compare_digest(binding.proof, expected):
+            raise SessionBarrierError("BARRIER_TERMINAL_CONTEXT_INVALID")
+        return context
+    except SessionBarrierError:
+        raise
+    except Exception:
+        raise SessionBarrierError("BARRIER_TERMINAL_CONTEXT_INVALID") from None
+
+
+def unpack_session_barrier_terminal_child(
+    value: object,
+    *,
+    capability: object,
+    step_kind: TerminalClosureStepKind,
+) -> SessionBarrierTerminalChildCapability:
+    """Validate one live terminal child for the exact step kind."""
+    cap = unpack_session_barrier_capability(capability)
+    if step_kind not in _TERMINAL_STEP_KINDS:
+        raise SessionBarrierError("BARRIER_TERMINAL_STEP_INVALID") from None
+    if type(value) is not SessionBarrierTerminalChildCapability:
+        raise SessionBarrierError("BARRIER_TERMINAL_CHILD_INVALID") from None
+    child = cast(SessionBarrierTerminalChildCapability, value)
+    try:
+        with _REGISTRY_LOCK:
+            binding = _TERMINAL_CHILD_BINDINGS.get(child)
+        if binding is None:
+            raise SessionBarrierError("BARRIER_TERMINAL_CHILD_INVALID")
+        if binding.alive is not True:
+            raise SessionBarrierError("BARRIER_TERMINAL_CHILD_EXPIRED")
+        if child.capability_identity != cap.capability_identity:
+            raise SessionBarrierError("BARRIER_TERMINAL_CHILD_INVALID")
+        if child.step_kind != step_kind:
+            raise SessionBarrierError("BARRIER_TERMINAL_STEP_INVALID")
+        if (
+            child.owner_pid != os.getpid()
+            or child.owner_thread_id != threading.get_ident()
+        ):
+            raise SessionBarrierError("BARRIER_TERMINAL_CHILD_OWNER_MISMATCH")
+        expected = _terminal_child_proof(child, seal=binding.seal)
+        if not hmac.compare_digest(binding.proof, expected):
+            raise SessionBarrierError("BARRIER_TERMINAL_CHILD_INVALID")
+        return child
+    except SessionBarrierError:
+        raise
+    except Exception:
+        raise SessionBarrierError("BARRIER_TERMINAL_CHILD_INVALID") from None
+
+
+def verify_terminal_child_against_row(
+    child: object,
+    *,
+    capability: object,
+    row: SessionBarrierRow,
+    step_kind: TerminalClosureStepKind,
+) -> SessionBarrierTerminalChildCapability:
+    """Re-verify a terminal child under a freshly read CLOSING row."""
+    live = unpack_session_barrier_terminal_child(
+        child, capability=capability, step_kind=step_kind
+    )
+    cap = unpack_session_barrier_capability(capability)
+    _require_identity_match(row, cap)
+    if row.state != "CLOSING":
+        if row.state == "CLOSED":
+            raise SessionBarrierError("BARRIER_STATE_CLOSED") from None
+        raise SessionBarrierError("BARRIER_STATE_INVALID") from None
+    if row.lock_identity != live.lock_identity:
+        raise SessionBarrierError("BARRIER_LOCK_IDENTITY_DRIFT") from None
+    return live
+
+
+def active_terminal_broker_finality_child(
+    *,
+    capability: object,
+) -> SessionBarrierTerminalChildCapability | None:
+    """Return the live broker_finality child when present (module-private peek)."""
+    child = _ACTIVE_TERMINAL_CHILD.get()
+    if child is None:
+        return None
+    try:
+        return unpack_session_barrier_terminal_child(
+            child, capability=capability, step_kind="broker_finality"
+        )
+    except SessionBarrierError:
+        return None
+
+
+def compute_terminal_step_identity(
+    *,
+    step_kind: TerminalClosureStepKind,
+    close_token_identity: str,
+    closing_row_identity: str,
+    predecessor_step_identity: str | None,
+    fact_identity: str,
+) -> str:
+    """Canonical durable step identity; two stores are not one atomic transaction."""
+    if step_kind not in _TERMINAL_STEP_KINDS:
+        raise SessionBarrierError("BARRIER_TERMINAL_STEP_INVALID") from None
+    token = _hex64(close_token_identity)
+    closing = _hex64(closing_row_identity)
+    fact = _hex64(fact_identity)
+    predecessor: str | None
+    if predecessor_step_identity is None:
+        if step_kind != "broker_finality":
+            raise SessionBarrierError("BARRIER_TERMINAL_STEP_INVALID") from None
+        predecessor = None
+    else:
+        predecessor = _hex64(predecessor_step_identity)
+    return _digest(
+        {
+            "close_token_identity": token,
+            "closing_row_identity": closing,
+            "domain": _TERMINAL_STEP_DOMAIN,
+            "fact_identity": fact,
+            "predecessor_step_identity": predecessor,
+            "step_kind": step_kind,
+        }
+    )
+
+
+def compute_terminal_successor_identity(
+    *,
+    close_token_identity: str,
+    closing_row_identity: str,
+    closure_identity: str,
+    broker_finality_step_identity: str,
+    oms_recovery_step_identity: str,
+    reconciliation_step_identity: str,
+    report_soak_step_identity: str,
+) -> str:
+    """Bind the full verified durable chain before CLOSING→CLOSED."""
+    return _digest(
+        {
+            "broker_finality_step_identity": _hex64(broker_finality_step_identity),
+            "close_token_identity": _hex64(close_token_identity),
+            "closing_row_identity": _hex64(closing_row_identity),
+            "closure_identity": _hex64(closure_identity),
+            "domain": _TERMINAL_SUCCESSOR_DOMAIN,
+            "oms_recovery_step_identity": _hex64(oms_recovery_step_identity),
+            "reconciliation_step_identity": _hex64(reconciliation_step_identity),
+            "report_soak_step_identity": _hex64(report_soak_step_identity),
+        }
+    )
+
+
+def bind_terminal_successor_identity(
+    context: object,
+    *,
+    capability: object,
+    oms_handle: object,
+    terminal_successor_identity: str,
+) -> str:
+    """Record the exact successor under a live ``terminal_successor`` child.
+
+    Module-private. Formal CLOSING→CLOSED refuses any successor that was not
+    bound on this same live terminal context. Idempotent for the exact same
+    identity; a different identity after a prior bind fails closed.
+    """
+    cap = unpack_session_barrier_capability(capability)
+    handle = unpack_session_barrier_oms_handle(oms_handle, capability=cap)
+    live_context = unpack_session_barrier_terminal_context(
+        context, capability=cap, oms_handle=handle
+    )
+    active = _ACTIVE_TERMINAL_CONTEXT.get()
+    if active is not live_context:
+        raise SessionBarrierError("BARRIER_TERMINAL_CONTEXT_INVALID") from None
+    child = _ACTIVE_TERMINAL_CHILD.get()
+    if child is None:
+        raise SessionBarrierError("BARRIER_TERMINAL_CHILD_INVALID") from None
+    unpack_session_barrier_terminal_child(
+        child, capability=cap, step_kind="terminal_successor"
+    )
+    successor = _hex64(terminal_successor_identity)
+    with _REGISTRY_LOCK:
+        binding = _TERMINAL_CONTEXT_BINDINGS.get(live_context)
+        if binding is None or binding.alive is not True:
+            raise SessionBarrierError("BARRIER_TERMINAL_CONTEXT_EXPIRED") from None
+        existing = binding.bound_successor_identity
+        if existing is not None and existing != successor:
+            raise SessionBarrierError("BARRIER_TERMINAL_SUCCESSOR_MISMATCH") from None
+        binding.bound_successor_identity = successor
+    return successor
+
+
 def transition_closing_to_closed(
     conn: sqlite3.Connection,
     capability: object,
@@ -911,12 +1398,14 @@ def transition_closing_to_closed(
             state="CLOSED",
             close_token_identity=token,
             transitioned_at=transitioned,
+            terminal_successor_identity=None,
             row_identity=_row_identity_for(
                 current,
                 state="CLOSED",
                 close_token_identity=token,
                 transitioned_at=transitioned,
                 terminal_policy=cap.terminal_policy,
+                terminal_successor_identity=None,
             ),
         )
         _replace_barrier_row(conn, previous=current, updated=updated)
@@ -925,7 +1414,127 @@ def transition_closing_to_closed(
     return _run_under_barrier_lock_transaction(cap, conn, _work)
 
 
+def transition_closing_to_closed_with_closure(
+    conn: sqlite3.Connection,
+    capability: object,
+    *,
+    closure: object,
+    terminal_successor_identity: str,
+    now: dt.datetime,
+) -> SessionBarrierRow:
+    """Formal CLOSING → CLOSED under an active ``closing_to_closed`` terminal child.
+
+    Reuses the held terminal context lock (no second OS lock). Requires exact
+    live closure and content-addressed terminal successor identity. Two SQLite
+    stores remain non-atomic; this only advances the OMS barrier SSOT row.
+    """
+    cap = unpack_session_barrier_capability(capability)
+    if cap.terminal_policy != "FORMAL_CLOSURE_ONLY":
+        raise SessionBarrierError("BARRIER_CLOSURE_REQUIRED") from None
+    live_closure = unpack_session_barrier_closure_capability(closure, capability=cap)
+    successor = _hex64(terminal_successor_identity)
+    child = _ACTIVE_TERMINAL_CHILD.get()
+    if child is None:
+        raise SessionBarrierError("BARRIER_TERMINAL_CHILD_INVALID") from None
+    live_child = unpack_session_barrier_terminal_child(
+        child, capability=cap, step_kind="closing_to_closed"
+    )
+    if live_child.closure_identity != live_closure.closure_identity:
+        raise SessionBarrierError("BARRIER_TERMINAL_CHILD_INVALID") from None
+    context = _ACTIVE_TERMINAL_CONTEXT.get()
+    if context is None:
+        raise SessionBarrierError("BARRIER_TERMINAL_CONTEXT_INVALID") from None
+    with _REGISTRY_LOCK:
+        binding = _TERMINAL_CONTEXT_BINDINGS.get(context)
+        if binding is None or binding.alive is not True:
+            raise SessionBarrierError("BARRIER_TERMINAL_CONTEXT_EXPIRED") from None
+        bound = binding.bound_successor_identity
+        held_lock = binding.lock_object
+    if bound is None:
+        raise SessionBarrierError("BARRIER_TERMINAL_SUCCESSOR_REQUIRED") from None
+    if bound != successor:
+        raise SessionBarrierError("BARRIER_TERMINAL_SUCCESSOR_MISMATCH") from None
+    if not isinstance(held_lock, _HeldBarrierLock):
+        raise SessionBarrierError("BARRIER_TERMINAL_CONTEXT_INVALID") from None
+    if held_lock.lock_identity != live_child.lock_identity:
+        raise SessionBarrierError("BARRIER_LOCK_IDENTITY_DRIFT") from None
+    transitioned = _utc_text(now)
+    token = live_closure.close_token_identity
+
+    def _work(active_held: _HeldBarrierLock) -> SessionBarrierRow:
+        current = read_session_barrier(conn)
+        _require_identity_match(current, cap)
+        if current.lock_identity != active_held.lock_identity:
+            raise SessionBarrierError("BARRIER_LOCK_IDENTITY_DRIFT") from None
+        if current.state == "CLOSED":
+            if (
+                current.close_token_identity == token
+                and current.terminal_successor_identity == successor
+            ):
+                return current
+            raise SessionBarrierError("BARRIER_TOKEN_CONFLICT") from None
+        if current.state != "CLOSING":
+            raise SessionBarrierError("BARRIER_TRANSITION_INVALID") from None
+        if (
+            current.close_token_identity != token
+            or current.row_identity != live_closure.closing_row_identity
+        ):
+            raise SessionBarrierError("BARRIER_TOKEN_CONFLICT") from None
+        if current.terminal_successor_identity is not None:
+            raise SessionBarrierError("BARRIER_TERMINAL_SUCCESSOR_INVALID") from None
+        updated = replace(
+            current,
+            state="CLOSED",
+            close_token_identity=token,
+            transitioned_at=transitioned,
+            terminal_successor_identity=successor,
+            row_identity=_row_identity_for(
+                current,
+                state="CLOSED",
+                close_token_identity=token,
+                transitioned_at=transitioned,
+                terminal_policy=cap.terminal_policy,
+                terminal_successor_identity=successor,
+            ),
+        )
+        _replace_barrier_row(conn, previous=current, updated=updated)
+        return read_session_barrier(conn)
+
+    return _run_under_held_lock_transaction(held_lock, conn, _work)
+
+
 _T = TypeVar("_T")
+
+
+def _run_under_held_lock_transaction(
+    held: _HeldBarrierLock,
+    conn: sqlite3.Connection,
+    work: Callable[[_HeldBarrierLock], _T],
+) -> _T:
+    """BEGIN IMMEDIATE → work → COMMIT under an already-held OS lock."""
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+    except sqlite3.Error as exc:
+        if getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_BUSY:
+            raise SessionBarrierError("BARRIER_WRITER_BUSY") from None
+        raise SessionBarrierError("BARRIER_WRITE_FAILED") from None
+    try:
+        result = work(held)
+    except BaseException:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+        raise
+    try:
+        conn.execute("COMMIT")
+    except sqlite3.Error:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+        raise SessionBarrierError("BARRIER_WRITE_FAILED") from None
+    return result
 
 
 def _run_under_barrier_lock_transaction(
@@ -1389,6 +1998,157 @@ def _operation_permit_proof(
     )
 
 
+def _mint_terminal_context(
+    cap: SessionBarrierCapability,
+    *,
+    closure: SessionBarrierClosureCapability,
+    handle: SessionBarrierOmsHandle,
+    lock_object: object,
+    lock_identity: str,
+) -> SessionBarrierTerminalClosureContext:
+    seal = secrets.token_bytes(32)
+    context = object.__new__(SessionBarrierTerminalClosureContext)
+    object.__setattr__(context, "capability_identity", cap.capability_identity)
+    object.__setattr__(context, "closure_identity", closure.closure_identity)
+    object.__setattr__(context, "close_token_identity", closure.close_token_identity)
+    object.__setattr__(context, "closing_row_identity", closure.closing_row_identity)
+    object.__setattr__(context, "lock_identity", lock_identity)
+    object.__setattr__(context, "owner_pid", os.getpid())
+    object.__setattr__(context, "owner_thread_id", threading.get_ident())
+    context_identity = _digest(
+        {
+            "capability_identity": cap.capability_identity,
+            "close_token_identity": closure.close_token_identity,
+            "closing_row_identity": closure.closing_row_identity,
+            "closure_identity": closure.closure_identity,
+            "domain": "m4-terminal-closure-context-v1",
+            "lock_identity": lock_identity,
+            "owner_pid": os.getpid(),
+            "owner_thread_id": threading.get_ident(),
+        }
+    )
+    object.__setattr__(context, "context_identity", context_identity)
+    proof = _terminal_context_proof(context, seal=seal)
+    with _REGISTRY_LOCK:
+        _TERMINAL_CONTEXT_BINDINGS[context] = _TerminalContextBinding(
+            seal=seal,
+            proof=proof,
+            alive=True,
+            lock_object=lock_object,
+            oms_handle=handle,
+            closure=closure,
+            active_child=None,
+        )
+    return context
+
+
+def _invalidate_terminal_context(context: object) -> None:
+    if type(context) is not SessionBarrierTerminalClosureContext:
+        return
+    with _REGISTRY_LOCK:
+        binding = _TERMINAL_CONTEXT_BINDINGS.pop(context, None)
+        child = None if binding is None else binding.active_child
+        if binding is not None:
+            binding.alive = False
+            binding.active_child = None
+    if child is not None:
+        _invalidate_terminal_child(child)
+
+
+def _terminal_context_proof(
+    context: SessionBarrierTerminalClosureContext, *, seal: bytes
+) -> bytes:
+    return _hmac(
+        _TERMINAL_CONTEXT_DOMAIN,
+        canonical_json_bytes(
+            {
+                "capability_identity": context.capability_identity,
+                "close_token_identity": context.close_token_identity,
+                "closing_row_identity": context.closing_row_identity,
+                "closure_identity": context.closure_identity,
+                "context_identity": context.context_identity,
+                "lock_identity": context.lock_identity,
+                "owner_pid": context.owner_pid,
+                "owner_thread_id": context.owner_thread_id,
+                "seal": seal.hex(),
+            }
+        ),
+    )
+
+
+def _mint_terminal_child(
+    cap: SessionBarrierCapability,
+    *,
+    context: SessionBarrierTerminalClosureContext,
+    step_kind: TerminalClosureStepKind,
+    lock_object: object,
+    lock_identity: str,
+) -> SessionBarrierTerminalChildCapability:
+    seal = secrets.token_bytes(32)
+    child = object.__new__(SessionBarrierTerminalChildCapability)
+    object.__setattr__(child, "capability_identity", cap.capability_identity)
+    object.__setattr__(child, "closure_identity", context.closure_identity)
+    object.__setattr__(child, "context_identity", context.context_identity)
+    object.__setattr__(child, "step_kind", step_kind)
+    object.__setattr__(child, "lock_identity", lock_identity)
+    object.__setattr__(child, "owner_pid", os.getpid())
+    object.__setattr__(child, "owner_thread_id", threading.get_ident())
+    child_identity = _digest(
+        {
+            "capability_identity": cap.capability_identity,
+            "closure_identity": context.closure_identity,
+            "context_identity": context.context_identity,
+            "domain": "m4-terminal-closure-child-v1",
+            "lock_identity": lock_identity,
+            "owner_pid": os.getpid(),
+            "owner_thread_id": threading.get_ident(),
+            "step_kind": step_kind,
+        }
+    )
+    object.__setattr__(child, "child_identity", child_identity)
+    proof = _terminal_child_proof(child, seal=seal)
+    with _REGISTRY_LOCK:
+        _TERMINAL_CHILD_BINDINGS[child] = _TerminalChildBinding(
+            seal=seal,
+            proof=proof,
+            alive=True,
+            context=context,
+            lock_object=lock_object,
+        )
+    return child
+
+
+def _invalidate_terminal_child(child: object) -> None:
+    if type(child) is not SessionBarrierTerminalChildCapability:
+        return
+    with _REGISTRY_LOCK:
+        binding = _TERMINAL_CHILD_BINDINGS.pop(child, None)
+        if binding is not None:
+            # frozen binding; drop by pop only
+            del binding
+
+
+def _terminal_child_proof(
+    child: SessionBarrierTerminalChildCapability, *, seal: bytes
+) -> bytes:
+    return _hmac(
+        _TERMINAL_CHILD_DOMAIN,
+        canonical_json_bytes(
+            {
+                "capability_identity": child.capability_identity,
+                "child_identity": child.child_identity,
+                "closure_identity": child.closure_identity,
+                "context_identity": child.context_identity,
+                "lock_identity": child.lock_identity,
+                "owner_pid": child.owner_pid,
+                "owner_thread_id": child.owner_thread_id,
+                "seal": seal.hex(),
+                "step_kind": child.step_kind,
+            }
+        ),
+    )
+
+
 def _issue_or_recover_closure(
     cap: SessionBarrierCapability,
     *,
@@ -1577,6 +2337,7 @@ def _build_open_row(
         created_at=created_at,
         transitioned_at=created_at,
         row_identity="0" * 64,
+        terminal_successor_identity=None,
     )
     return replace(
         provisional,
@@ -1586,6 +2347,7 @@ def _build_open_row(
             close_token_identity=None,
             transitioned_at=created_at,
             terminal_policy=cap.terminal_policy,
+            terminal_successor_identity=None,
         ),
     )
 
@@ -1597,8 +2359,10 @@ def _row_identity_for(
     close_token_identity: str | None,
     transitioned_at: str,
     terminal_policy: TerminalTransitionPolicy,
+    terminal_successor_identity: str | None = None,
 ) -> str:
-    # SUBSTRATE_RAW_TOKEN keeps the exact B1A digest payload (no new keys).
+    # NULL-successor paths keep the exact pre-v10 digest payload (no new keys).
+    # Only FORMAL_CLOSURE_ONLY CLOSED with a non-NULL successor adds the bind key.
     payload: dict[str, object] = {
         "account_identity": row.account_identity,
         "barrier_epoch": row.barrier_epoch,
@@ -1616,8 +2380,12 @@ def _row_identity_for(
     }
     if terminal_policy == "FORMAL_CLOSURE_ONLY":
         payload["terminal_policy_domain"] = _FORMAL_ROW_POLICY_DOMAIN
+        if terminal_successor_identity is not None:
+            payload["terminal_successor_identity"] = _hex64(terminal_successor_identity)
     elif terminal_policy != "SUBSTRATE_RAW_TOKEN":
         raise SessionBarrierError("BARRIER_CAPABILITY_INVALID") from None
+    elif terminal_successor_identity is not None:
+        raise SessionBarrierError("BARRIER_TERMINAL_SUCCESSOR_INVALID") from None
     return _digest(payload)
 
 
@@ -1639,6 +2407,7 @@ def _require_identity_match(row: SessionBarrierRow, cap: SessionBarrierCapabilit
         close_token_identity=row.close_token_identity,
         transitioned_at=row.transitioned_at,
         terminal_policy=cap.terminal_policy,
+        terminal_successor_identity=row.terminal_successor_identity,
     )
     if hmac.compare_digest(row.row_identity, expected):
         return
@@ -1653,6 +2422,11 @@ def _require_identity_match(row: SessionBarrierRow, cap: SessionBarrierCapabilit
         close_token_identity=row.close_token_identity,
         transitioned_at=row.transitioned_at,
         terminal_policy=other_policy,
+        terminal_successor_identity=(
+            row.terminal_successor_identity
+            if other_policy == "FORMAL_CLOSURE_ONLY"
+            else None
+        ),
     )
     if hmac.compare_digest(row.row_identity, other_expected):
         raise SessionBarrierError("BARRIER_IDENTITY_DRIFT") from None
@@ -1666,8 +2440,9 @@ def _insert_barrier_row(conn: sqlite3.Connection, row: SessionBarrierRow) -> Non
             singleton, barrier_schema, barrier_epoch, session_date,
             account_identity, oms_store_identity, broker_store_identity,
             gateway_identity, config_identity, lock_identity, state,
-            close_token_identity, created_at, transitioned_at, row_identity
-        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            close_token_identity, created_at, transitioned_at, row_identity,
+            terminal_successor_identity
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             row.barrier_schema,
@@ -1684,6 +2459,7 @@ def _insert_barrier_row(conn: sqlite3.Connection, row: SessionBarrierRow) -> Non
             row.created_at,
             row.transitioned_at,
             row.row_identity,
+            row.terminal_successor_identity,
         ),
     )
 
@@ -1701,7 +2477,8 @@ def _replace_barrier_row(
                 state = ?,
                 close_token_identity = ?,
                 transitioned_at = ?,
-                row_identity = ?
+                row_identity = ?,
+                terminal_successor_identity = ?
             WHERE singleton = 1
               AND row_identity = ?
               AND state = ?
@@ -1711,6 +2488,7 @@ def _replace_barrier_row(
                 updated.close_token_identity,
                 updated.transitioned_at,
                 updated.row_identity,
+                updated.terminal_successor_identity,
                 previous.row_identity,
                 previous.state,
             ),
@@ -1731,7 +2509,8 @@ def _load_barrier_rows(conn: sqlite3.Connection) -> list[tuple[object, ...]]:
                 SELECT barrier_schema, barrier_epoch, session_date, account_identity,
                        oms_store_identity, broker_store_identity, gateway_identity,
                        config_identity, lock_identity, state, close_token_identity,
-                       created_at, transitioned_at, row_identity
+                       created_at, transitioned_at, row_identity,
+                       terminal_successor_identity
                 FROM session_barrier
                 ORDER BY singleton
                 """
@@ -1743,7 +2522,7 @@ def _load_barrier_rows(conn: sqlite3.Connection) -> list[tuple[object, ...]]:
 
 def _parse_barrier_row(row: tuple[object, ...]) -> SessionBarrierRow:
     try:
-        if len(row) != 14:
+        if len(row) != 15:
             raise ValueError
         state = row[9]
         if state not in {"OPEN", "CLOSING", "CLOSED"}:
@@ -1751,6 +2530,12 @@ def _parse_barrier_row(row: tuple[object, ...]) -> SessionBarrierRow:
         close_token = row[10]
         if close_token is not None:
             close_token = _hex64(str(close_token))
+        successor_raw = row[14]
+        successor: str | None
+        if successor_raw is None:
+            successor = None
+        else:
+            successor = _hex64(str(successor_raw))
         parsed = SessionBarrierRow(
             barrier_schema=str(row[0]),
             barrier_epoch=_hex64(str(row[1])),
@@ -1766,15 +2551,19 @@ def _parse_barrier_row(row: tuple[object, ...]) -> SessionBarrierRow:
             created_at=_require_utc_text(str(row[11])),
             transitioned_at=_require_utc_text(str(row[12])),
             row_identity=_hex64(str(row[13])),
+            terminal_successor_identity=successor,
         )
         if parsed.barrier_schema != _BARRIER_SCHEMA:
             raise SessionBarrierError("BARRIER_SCHEMA_INVALID")
+        if parsed.state in {"OPEN", "CLOSING"} and parsed.terminal_successor_identity is not None:
+            raise SessionBarrierError("BARRIER_TERMINAL_SUCCESSOR_INVALID")
         substrate_identity = _row_identity_for(
             parsed,
             state=parsed.state,
             close_token_identity=parsed.close_token_identity,
             transitioned_at=parsed.transitioned_at,
             terminal_policy="SUBSTRATE_RAW_TOKEN",
+            terminal_successor_identity=None,
         )
         formal_identity = _row_identity_for(
             parsed,
@@ -1782,6 +2571,7 @@ def _parse_barrier_row(row: tuple[object, ...]) -> SessionBarrierRow:
             close_token_identity=parsed.close_token_identity,
             transitioned_at=parsed.transitioned_at,
             terminal_policy="FORMAL_CLOSURE_ONLY",
+            terminal_successor_identity=parsed.terminal_successor_identity,
         )
         if not (
             hmac.compare_digest(parsed.row_identity, substrate_identity)
@@ -1792,6 +2582,11 @@ def _parse_barrier_row(row: tuple[object, ...]) -> SessionBarrierRow:
             raise SessionBarrierError("BARRIER_ROW_CORRUPT")
         if parsed.state in {"CLOSING", "CLOSED"} and parsed.close_token_identity is None:
             raise SessionBarrierError("BARRIER_ROW_CORRUPT")
+        if (
+            parsed.terminal_successor_identity is not None
+            and not hmac.compare_digest(parsed.row_identity, formal_identity)
+        ):
+            raise SessionBarrierError("BARRIER_TERMINAL_SUCCESSOR_INVALID")
         return parsed
     except SessionBarrierError:
         raise
@@ -2238,8 +3033,9 @@ def _hmac(domain: bytes, body: bytes) -> bytes:
     return hmac.new(_PROCESS_PROOF_KEY, domain + body, hashlib.sha256).digest()
 
 
-# SessionBarrierOperationPermit / hold_open_operation_permit stay module-private
-# (not exported). ExecutionStore.open_operation_fence imports the holder narrowly.
+# SessionBarrierOperationPermit / hold_open_operation_permit and terminal
+# context/child holders stay module-private (not exported). Formal/OMS modules
+# import the holders narrowly.
 __all__ = [
     "SessionBarrierCapability",
     "SessionBarrierClosureCapability",
@@ -2247,9 +3043,12 @@ __all__ = [
     "SessionBarrierOmsHandle",
     "SessionBarrierRow",
     "SessionBarrierWriteLease",
+    "TerminalClosureStepKind",
     "TerminalTransitionPolicy",
     "build_session_barrier_capability",
     "compute_close_token_identity",
+    "compute_terminal_step_identity",
+    "compute_terminal_successor_identity",
     "fresh_read_session_barrier",
     "hold_open_write_lease",
     "hold_session_barrier_lock",
@@ -2262,6 +3061,7 @@ __all__ = [
     "require_matching_barrier",
     "require_matching_barrier_handle",
     "transition_closing_to_closed",
+    "transition_closing_to_closed_with_closure",
     "transition_open_to_closing",
     "unpack_open_write_lease",
     "unpack_session_barrier_capability",
@@ -2269,4 +3069,5 @@ __all__ = [
     "unpack_session_barrier_oms_handle",
     "unpack_session_barrier_operation_permit",
     "verify_lease_against_row",
+    "verify_terminal_child_against_row",
 ]

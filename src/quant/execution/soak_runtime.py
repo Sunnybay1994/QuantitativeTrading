@@ -1,32 +1,41 @@
-"""Minimal single-session closure for the Windows PAPER soak track."""
+"""Terminal-closure-driven single-session closure for the Windows PAPER soak track.
+
+Consumes the same formal ``FORMAL_CLOSURE_ONLY`` closure capability B1B1
+issued on OPEN→CLOSING to drive the durable terminal step sequence: broker
+finality → OMS fresh recovery/reconciliation → report/soak evidence →
+terminal successor → CLOSING→CLOSED. The B1 barrier anchored lock (held via
+``VerifiedFormalPaperClosureView.hold_terminal_closure``) is the only
+serialization authority; this module does not acquire a second lock layer.
+
+The two SQLite stores (OMS, broker) are not one atomic transaction. Each
+durable step carries a canonical, content-addressed identity referencing its
+predecessor; same-token resume fresh-verifies existing steps from durable
+facts (broker marker, OMS recovery/reconciliation recomputation, persisted
+soak receipt) and only appends the next missing step. Highest claim remains
+Windows engineering validation; no PAPER/soak/Gate claim is made here.
+"""
 
 from __future__ import annotations
 
 import datetime as dt
-import errno
-import os
-import stat
-import sys
-from contextlib import contextmanager
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Protocol, cast
+from typing import Any, Protocol, cast
 
-if sys.platform == "win32":
-    import msvcrt
-else:
-    import fcntl
-
+from quant.domain.canonical_wire import canonical_json_bytes
 from quant.execution.paper_formal_broker_snapshot import (
-    _finalize_and_query_formal_paper_broker_eod,
+    finalize_and_query_formal_paper_broker_eod,
 )
+from quant.execution.paper_formal_execution_store import FormalPaperExecutionStoreError
 from quant.execution.paper_formal_schedule import (
     VerifiedFormalPaperSoakSchedule,
     verify_existing_formal_paper_soak_schedule,
 )
 from quant.execution.paper_formal_service import (
+    VerifiedFormalPaperClosureView,
     VerifiedFormalPaperServiceComposition,
-    verify_existing_formal_paper_service_composition,
+    open_formal_paper_closure_view,
 )
 from quant.execution.paper_policy import (
     VerifiedPaperExecutionPolicy,
@@ -41,7 +50,11 @@ from quant.execution.reconcile import (
     ReconciliationResult,
     build_broker_snapshot,
     reconcile,
-    recover_local_state,
+)
+from quant.execution.session_barrier import (
+    SessionBarrierRow,
+    compute_terminal_step_identity,
+    compute_terminal_successor_identity,
 )
 from quant.execution.soak import (
     SoakGateDecision,
@@ -52,12 +65,9 @@ from quant.execution.soak import (
     append_soak_session,
     build_soak_run,
     decide_soak_gate,
-    _session_order_semantic_closure_identity,
+    session_order_semantic_closure_identity,
     verify_soak_evidence,
 )
-
-_LOCK_NAME = "paper-soak-session.lock"
-_REPARSE_POINT = 0x400
 
 
 class SessionReportPort(Protocol):
@@ -90,13 +100,15 @@ class FormalPaperSoakSessionError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class FormalPaperSoakSessionResult:
-    """Exact fresh result for one appended or replayed session."""
+    """Exact fresh result for one appended, resumed, or replayed session."""
 
     manifest: SoakRunManifest
     session_receipt: SoakSessionReceipt
     evidence: VerifiedPaperSoakEvidence
     decision: SoakGateDecision
     replayed: bool
+    closed_row: object | None = None
+    terminal_successor_identity: str | None = None
 
 
 def close_formal_paper_soak_session(
@@ -108,8 +120,16 @@ def close_formal_paper_soak_session(
     session_date: dt.date,
     now: dt.datetime,
     report_port: SessionReportPort,
+    closure: object,
 ) -> FormalPaperSoakSessionResult:
-    """Close one exact Windows PAPER session without dispatching an order."""
+    """Close (or resume/replay) one exact Windows PAPER session.
+
+    ``closure`` must be a live formal ``SessionBarrierClosureCapability``
+    matching the composition's own barrier. Serialization is exclusively the
+    B1 anchored lock held for the durable terminal step sequence; there is no
+    second lock layer here. Soak evidence ``before``/existing receipt bytes are
+    only read under that lock.
+    """
     try:
         if (
             type(environment) is not VerifiedPaperRuntimeEnvironment
@@ -119,132 +139,214 @@ def close_formal_paper_soak_session(
             or type(session_date) is not dt.date
             or not _utc(now)
             or not callable(getattr(report_port, "build", None))
+            or closure is None
         ):
             raise ValueError
 
-        # This first verification is read-only path authorization.  All retained
-        # identities are verified again under the writer lock below.
         verify_existing_paper_runtime_preflight(
             environment,
             config_path=environment.config.source_path,
             now=now,
         )
-        with _hold_session_lock(environment.config.log_root):
-            _verify_fresh_chain(
-                environment=environment,
-                policy=policy,
-                composition=composition,
-                schedule=schedule,
-                session_date=session_date,
-                now=now,
-            )
-            config = environment.config
-            manifest = build_soak_run(
-                root=config.evidence_root,
-                anchor_root=config.anchor_root,
-                evidence_kind=SoakEvidenceKind.PAPER_REAL_TIME_WINDOWS,
-                source_identity=schedule.schedule_identity,
-                config_identity=config.config_identity,
-                gateway_identity=composition.gateway_identity,
-                store_identity=composition.execution_store_identity,
-                account_identity=composition.account_id,
-                expected_sessions=schedule.expected_sessions,
-                expected_schedule_identity=schedule.expected_schedule_identity,
-                started_at=schedule.readiness_completed_at,
-            )
-            before = _verified_windows_evidence(
-                root=config.evidence_root,
-                anchor_root=config.anchor_root,
-                manifest=manifest,
-            )
-            existing = _session_receipt(before, session_date)
-            missing = tuple(
-                item
-                for item in schedule.expected_sessions
-                if item not in {receipt.session_date for receipt in before.sessions}
-            )
-            if existing is None and (not missing or missing[0] != session_date):
-                raise ValueError
+        view = _verified_view(
+            environment=environment,
+            policy=policy,
+            composition=composition,
+            schedule=schedule,
+            session_date=session_date,
+            now=now,
+        )
+        config = environment.config
+        manifest = build_soak_run(
+            root=config.evidence_root,
+            anchor_root=config.anchor_root,
+            evidence_kind=SoakEvidenceKind.PAPER_REAL_TIME_WINDOWS,
+            source_identity=schedule.schedule_identity,
+            config_identity=config.config_identity,
+            gateway_identity=view.gateway_identity,
+            store_identity=view.execution_store_identity,
+            account_identity=view.account_id,
+            expected_sessions=schedule.expected_sessions,
+            expected_schedule_identity=schedule.expected_schedule_identity,
+            started_at=schedule.readiness_completed_at,
+        )
 
-            store = composition.store_opener.open()
-            if store is not composition._execution_store.store:
-                raise ValueError
-            recovery = recover_local_state(store)
-            closure_identity = _session_order_semantic_closure_identity(
-                recovery, session_date=session_date
-            )
-
-            broker_capability = composition._execution_store.broker_store
-            if existing is not None and broker_capability.store.read_session_finality(
-                session_date=session_date
-            ) is None:
-                raise ValueError
-            broker_evidence = _finalize_and_query_formal_paper_broker_eod(
-                store_capability=broker_capability,
-                environment=environment,
-                policy=policy,
-                binding=composition._execution_store.binding,
-                account=composition._execution_store.account,
-                session_date=session_date,
-                now=now,
-                gateway_identity=composition.gateway_identity,
-                order_semantic_closure_identity=closure_identity,
-            )
-            broker_snapshot = build_broker_snapshot(
-                source_identity=broker_evidence.source_identity,
-                as_of=broker_evidence.as_of,
-                finality=broker_evidence.finality,
-                account=broker_evidence.account,
-                orders=broker_evidence.orders,
-                events=broker_evidence.events,
-            )
-            reconciliation = reconcile(
-                recovery, broker_snapshot, broker_evidence.as_of
-            )
-            fresh_recovery = recover_local_state(store)
-            fresh_closure_identity = _session_order_semantic_closure_identity(
-                fresh_recovery, session_date=session_date
-            )
-            if (
-                fresh_recovery.recovery_id != recovery.recovery_id
-                or fresh_closure_identity != closure_identity
-            ):
-                raise ValueError
-            recovery = fresh_recovery
-
-            if existing is not None:
-                if (
-                    existing.recovery_id != recovery.recovery_id
-                    or existing.reconciliation_id
-                    != reconciliation.reconciliation_id
-                ):
-                    raise ValueError
-                _verify_fresh_chain(
-                    environment=environment,
-                    policy=policy,
-                    composition=composition,
-                    schedule=schedule,
-                    session_date=session_date,
-                    now=now,
-                )
-                decision = _fresh_decision(
-                    evidence=before,
+        try:
+            with view.hold_terminal_closure(closure) as context:
+                before = _verified_windows_evidence(
                     root=config.evidence_root,
                     anchor_root=config.anchor_root,
+                    manifest=manifest,
+                )
+                existing = _session_receipt(before, session_date)
+                missing = tuple(
+                    item
+                    for item in schedule.expected_sessions
+                    if item not in {receipt.session_date for receipt in before.sessions}
+                )
+                if existing is None and (not missing or missing[0] != session_date):
+                    raise ValueError
+                return _run_terminal_sequence(
+                    view=view,
+                    context=context,
+                    closure=closure,
+                    manifest=manifest,
+                    before=before,
+                    existing=existing,
+                    session_date=session_date,
                     now=now,
+                    report_port=report_port,
+                    config_evidence_root=config.evidence_root,
+                    config_anchor_root=config.anchor_root,
                 )
-                return FormalPaperSoakSessionResult(
-                    manifest, existing, before, decision, True
-                )
+        except FormalPaperExecutionStoreError as exc:
+            if str(exc) != "BARRIER_STATE_CLOSED":
+                raise
+            return _replay_closed(
+                view=view,
+                closure=closure,
+                manifest=manifest,
+                session_date=session_date,
+                now=now,
+                config_evidence_root=config.evidence_root,
+                config_anchor_root=config.anchor_root,
+            )
+    except FormalPaperSoakSessionError:
+        raise
+    except Exception:
+        pass
+    raise FormalPaperSoakSessionError() from None
 
+
+def _run_terminal_sequence(
+    *,
+    view: VerifiedFormalPaperClosureView,
+    context: object,
+    closure: object,
+    manifest: SoakRunManifest,
+    before: VerifiedPaperSoakEvidence,
+    existing: SoakSessionReceipt | None,
+    session_date: dt.date,
+    now: dt.datetime,
+    report_port: SessionReportPort,
+    config_evidence_root: Path,
+    config_anchor_root: Path,
+) -> FormalPaperSoakSessionResult:
+    close_token_identity = _closure_field(closure, "close_token_identity")
+    closing_row_identity = _closure_field(closure, "closing_row_identity")
+    closure_identity = _closure_field(closure, "closure_identity")
+
+    # Step 1: broker EOD finality. Preliminary OMS recovery is computed inside
+    # the formal view (rollback-only inspect); caller only receives RecoveryResult.
+    with view.hold_terminal_step(context, step_kind="broker_finality") as child:
+        pre_recovery = view.recover_oms_under_terminal_child(
+            terminal_child=child, step_kind="broker_finality"
+        )
+        pre_closure_identity = session_order_semantic_closure_identity(
+            pre_recovery, session_date=session_date
+        )
+        broker_marker = view.broker_store.store.read_session_finality(
+            session_date=session_date
+        )
+        if existing is not None and broker_marker is None:
+            raise ValueError
+        broker_evidence = finalize_and_query_formal_paper_broker_eod(
+            store_capability=view.broker_store,
+            environment=view.environment,
+            policy=view.policy,
+            binding=view.binding,
+            account=view.account,
+            session_date=session_date,
+            now=now,
+            gateway_identity=view.gateway_identity,
+            order_semantic_closure_identity=pre_closure_identity,
+        )
+        step1_identity = compute_terminal_step_identity(
+            step_kind="broker_finality",
+            close_token_identity=close_token_identity,
+            closing_row_identity=closing_row_identity,
+            predecessor_step_identity=None,
+            fact_identity=broker_evidence.source_identity,
+        )
+
+    # Step 2: fresh OMS recovery + ORDER semantic closure (committing OMS
+    # transaction stays inside the formal view; only RecoveryResult returns).
+    with view.hold_terminal_step(context, step_kind="oms_recovery") as child:
+        fresh_recovery = view.recover_oms_under_terminal_child(
+            terminal_child=child, step_kind="oms_recovery"
+        )
+        fresh_closure_identity = session_order_semantic_closure_identity(
+            fresh_recovery, session_date=session_date
+        )
+        if (
+            fresh_recovery.recovery_id != pre_recovery.recovery_id
+            or fresh_closure_identity != pre_closure_identity
+        ):
+            raise ValueError
+        if existing is not None and existing.recovery_id != fresh_recovery.recovery_id:
+            raise ValueError
+        step2_identity = compute_terminal_step_identity(
+            step_kind="oms_recovery",
+            close_token_identity=close_token_identity,
+            closing_row_identity=closing_row_identity,
+            predecessor_step_identity=step1_identity,
+            fact_identity=_hex(
+                {
+                    "recovery_id": fresh_recovery.recovery_id,
+                    "order_semantic_closure_identity": fresh_closure_identity,
+                }
+            ),
+        )
+
+    # Step 3: broker snapshot + reconciliation (pure computation).
+    with view.hold_terminal_step(context, step_kind="reconciliation"):
+        broker_snapshot = build_broker_snapshot(
+            source_identity=broker_evidence.source_identity,
+            as_of=broker_evidence.as_of,
+            finality=broker_evidence.finality,
+            account=broker_evidence.account,
+            orders=broker_evidence.orders,
+            events=broker_evidence.events,
+        )
+        reconciliation = reconcile(fresh_recovery, broker_snapshot, broker_evidence.as_of)
+        if (
+            existing is not None
+            and existing.reconciliation_id != reconciliation.reconciliation_id
+        ):
+            raise ValueError
+        step3_identity = compute_terminal_step_identity(
+            step_kind="reconciliation",
+            close_token_identity=close_token_identity,
+            closing_row_identity=closing_row_identity,
+            predecessor_step_identity=step2_identity,
+            fact_identity=reconciliation.reconciliation_id,
+        )
+
+    # Step 4: report + soak evidence append. Fresh re-verify under the same
+    # barrier lock before and after any append; lock-out snapshots are refused.
+    with view.hold_terminal_step(context, step_kind="report_soak"):
+        locked_before = _verified_windows_evidence(
+            root=config_evidence_root,
+            anchor_root=config_anchor_root,
+            manifest=manifest,
+        )
+        if locked_before != before:
+            raise ValueError
+        locked_existing = _session_receipt(locked_before, session_date)
+        if locked_existing != existing:
+            raise ValueError
+        if locked_existing is not None:
+            receipt = locked_existing
+            evidence = locked_before
+        else:
             report = report_port.build(
-                recovery=recovery,
+                recovery=fresh_recovery,
                 reconciliation=reconciliation,
                 as_of=broker_evidence.as_of,
             )
             receipt = append_soak_session(
-                root=config.evidence_root,
-                anchor_root=config.anchor_root,
+                root=config_evidence_root,
+                anchor_root=config_anchor_root,
                 manifest=manifest,
                 session_date=session_date,
                 invocation_started_at=now,
@@ -254,42 +356,208 @@ def close_formal_paper_soak_session(
                 gateway_identity=manifest.gateway_identity,
                 store_identity=manifest.store_identity,
                 account_identity=manifest.account_identity,
-                recovery=recovery,
+                recovery=fresh_recovery,
                 reconciliation=reconciliation,
                 execution_report=cast(Any, report),
             )
             evidence = _verified_windows_evidence(
-                root=config.evidence_root,
-                anchor_root=config.anchor_root,
+                root=config_evidence_root,
+                anchor_root=config_anchor_root,
                 manifest=manifest,
             )
             if _session_receipt(evidence, session_date) != receipt:
                 raise ValueError
-            _verify_fresh_chain(
-                environment=environment,
-                policy=policy,
-                composition=composition,
-                schedule=schedule,
-                session_date=session_date,
-                now=now,
-            )
-            decision = _fresh_decision(
-                evidence=evidence,
-                root=config.evidence_root,
-                anchor_root=config.anchor_root,
-                now=now,
-            )
-            return FormalPaperSoakSessionResult(
-                manifest, receipt, evidence, decision, False
-            )
-    except FormalPaperSoakSessionError:
-        raise
-    except Exception:
-        pass
-    raise FormalPaperSoakSessionError() from None
+        step4_identity = compute_terminal_step_identity(
+            step_kind="report_soak",
+            close_token_identity=close_token_identity,
+            closing_row_identity=closing_row_identity,
+            predecessor_step_identity=step3_identity,
+            fact_identity=receipt.receipt_id,
+        )
+
+    # Step 5: terminal successor identity binding the full durable chain.
+    with view.hold_terminal_step(context, step_kind="terminal_successor"):
+        terminal_successor_identity = compute_terminal_successor_identity(
+            close_token_identity=close_token_identity,
+            closing_row_identity=closing_row_identity,
+            closure_identity=closure_identity,
+            broker_finality_step_identity=step1_identity,
+            oms_recovery_step_identity=step2_identity,
+            reconciliation_step_identity=step3_identity,
+            report_soak_step_identity=step4_identity,
+        )
+        view.bind_terminal_successor(
+            context, terminal_successor_identity=terminal_successor_identity
+        )
+
+    # Step 6: exact CLOSING → CLOSED under the terminal successor identity.
+    with view.hold_terminal_step(context, step_kind="closing_to_closed"):
+        closed_row = view.transition_to_closed(
+            closure=closure,
+            terminal_successor_identity=terminal_successor_identity,
+            now=now,
+        )
+
+    decision = _fresh_decision(
+        evidence=evidence,
+        root=config_evidence_root,
+        anchor_root=config_anchor_root,
+        now=now,
+    )
+    return FormalPaperSoakSessionResult(
+        manifest,
+        receipt,
+        evidence,
+        decision,
+        existing is not None,
+        closed_row=closed_row,
+        terminal_successor_identity=terminal_successor_identity,
+    )
 
 
-def _verify_fresh_chain(
+def _replay_closed(
+    *,
+    view: VerifiedFormalPaperClosureView,
+    closure: object,
+    manifest: SoakRunManifest,
+    session_date: dt.date,
+    now: dt.datetime,
+    config_evidence_root: Path,
+    config_anchor_root: Path,
+) -> FormalPaperSoakSessionResult:
+    """Zero-write verify-only replay after the barrier is already CLOSED.
+
+    Fresh-reads the persisted terminal successor and recomputes the full durable
+    chain while the anchored barrier lock is held. Legal replay never returns
+    ``None`` for the successor; missing/tamper/drift fail closed.
+    """
+    close_token_identity = _closure_field(closure, "close_token_identity")
+    closing_row_identity = _closure_field(closure, "closing_row_identity")
+    closure_identity = _closure_field(closure, "closure_identity")
+
+    with view.recover_oms_when_barrier_closed() as (fresh_recovery, closed_row):
+        if type(closed_row) is not SessionBarrierRow:
+            raise ValueError
+        if (
+            closed_row.state != "CLOSED"
+            or closed_row.close_token_identity != close_token_identity
+        ):
+            raise ValueError
+        persisted_successor = closed_row.terminal_successor_identity
+        if type(persisted_successor) is not str or len(persisted_successor) != 64:
+            raise ValueError
+
+        before = _verified_windows_evidence(
+            root=config_evidence_root,
+            anchor_root=config_anchor_root,
+            manifest=manifest,
+        )
+        existing = _session_receipt(before, session_date)
+        if existing is None:
+            raise ValueError
+
+        if existing.recovery_id != fresh_recovery.recovery_id:
+            raise ValueError
+        fresh_closure_identity = session_order_semantic_closure_identity(
+            fresh_recovery, session_date=session_date
+        )
+        broker_evidence = finalize_and_query_formal_paper_broker_eod(
+            store_capability=view.broker_store,
+            environment=view.environment,
+            policy=view.policy,
+            binding=view.binding,
+            account=view.account,
+            session_date=session_date,
+            now=now,
+            gateway_identity=view.gateway_identity,
+            order_semantic_closure_identity=fresh_closure_identity,
+        )
+        step1_identity = compute_terminal_step_identity(
+            step_kind="broker_finality",
+            close_token_identity=close_token_identity,
+            closing_row_identity=closing_row_identity,
+            predecessor_step_identity=None,
+            fact_identity=broker_evidence.source_identity,
+        )
+        step2_identity = compute_terminal_step_identity(
+            step_kind="oms_recovery",
+            close_token_identity=close_token_identity,
+            closing_row_identity=closing_row_identity,
+            predecessor_step_identity=step1_identity,
+            fact_identity=_hex(
+                {
+                    "recovery_id": fresh_recovery.recovery_id,
+                    "order_semantic_closure_identity": fresh_closure_identity,
+                }
+            ),
+        )
+        broker_snapshot = build_broker_snapshot(
+            source_identity=broker_evidence.source_identity,
+            as_of=broker_evidence.as_of,
+            finality=broker_evidence.finality,
+            account=broker_evidence.account,
+            orders=broker_evidence.orders,
+            events=broker_evidence.events,
+        )
+        reconciliation = reconcile(
+            fresh_recovery, broker_snapshot, broker_evidence.as_of
+        )
+        if existing.reconciliation_id != reconciliation.reconciliation_id:
+            raise ValueError
+        step3_identity = compute_terminal_step_identity(
+            step_kind="reconciliation",
+            close_token_identity=close_token_identity,
+            closing_row_identity=closing_row_identity,
+            predecessor_step_identity=step2_identity,
+            fact_identity=reconciliation.reconciliation_id,
+        )
+        locked_evidence = _verified_windows_evidence(
+            root=config_evidence_root,
+            anchor_root=config_anchor_root,
+            manifest=manifest,
+        )
+        if locked_evidence != before:
+            raise ValueError
+        locked_receipt = _session_receipt(locked_evidence, session_date)
+        if locked_receipt != existing:
+            raise ValueError
+        step4_identity = compute_terminal_step_identity(
+            step_kind="report_soak",
+            close_token_identity=close_token_identity,
+            closing_row_identity=closing_row_identity,
+            predecessor_step_identity=step3_identity,
+            fact_identity=existing.receipt_id,
+        )
+        recomputed = compute_terminal_successor_identity(
+            close_token_identity=close_token_identity,
+            closing_row_identity=closing_row_identity,
+            closure_identity=closure_identity,
+            broker_finality_step_identity=step1_identity,
+            oms_recovery_step_identity=step2_identity,
+            reconciliation_step_identity=step3_identity,
+            report_soak_step_identity=step4_identity,
+        )
+        if recomputed != persisted_successor:
+            raise ValueError
+
+        decision = _fresh_decision(
+            evidence=before,
+            root=config_evidence_root,
+            anchor_root=config_anchor_root,
+            now=now,
+        )
+        return FormalPaperSoakSessionResult(
+            manifest,
+            existing,
+            before,
+            decision,
+            True,
+            closed_row=closed_row,
+            terminal_successor_identity=persisted_successor,
+        )
+
+
+def _verified_view(
     *,
     environment: VerifiedPaperRuntimeEnvironment,
     policy: VerifiedPaperExecutionPolicy,
@@ -297,42 +565,31 @@ def _verify_fresh_chain(
     schedule: VerifiedFormalPaperSoakSchedule,
     session_date: dt.date,
     now: dt.datetime,
-) -> None:
-    verify_existing_paper_runtime_preflight(
-        environment,
-        config_path=environment.config.source_path,
-        now=now,
-    )
+) -> VerifiedFormalPaperClosureView:
     fresh_policy = verify_existing_paper_execution_policy(
         policy=policy, environment=environment, now=now
     )
-    fresh_composition = verify_existing_formal_paper_service_composition(
-        composition=composition, now=now
-    )
+    view = open_formal_paper_closure_view(composition=composition, now=now)
     fresh_schedule = verify_existing_formal_paper_soak_schedule(
         schedule=schedule, now=now
     )
-    execution_store = composition._execution_store
     if (
         fresh_policy != policy
-        or fresh_composition is not composition
         or fresh_schedule is not schedule
         or environment.config.mode != "PAPER_REAL_TIME_WINDOWS"
         or policy.session_date != session_date
-        or execution_store.environment is not environment
-        or execution_store.policy is not policy
-        or execution_store.account.session_date != session_date
-        or execution_store.broker_store.session_date != session_date
-        or execution_store.store_identity != composition.execution_store_identity
-        or execution_store.gateway_identity != composition.gateway_identity
-        or execution_store.account_id != composition.account_id
-        or composition._ledger_provider._execution_store is not execution_store
-        or schedule._provider is not composition._ledger_provider
-        or schedule.ledger_provider_identity
-        != composition.ledger_provider_identity
+        or view.policy is not policy
+        or view.account.session_date != session_date
+        or view.broker_store.session_date != session_date
+        or view.execution_store_identity != composition.execution_store_identity
+        or view.gateway_identity != composition.gateway_identity
+        or view.account_id != composition.account_id
+        or view.ledger_provider_identity != composition.ledger_provider_identity
+        or schedule.ledger_provider_identity != composition.ledger_provider_identity
         or session_date not in schedule.expected_sessions
     ):
         raise ValueError
+    return view
 
 
 def _verified_windows_evidence(
@@ -379,134 +636,15 @@ def _fresh_decision(
     return decision
 
 
-@contextmanager
-def _hold_session_lock(root: Path) -> Iterator[None]:
-    descriptor = _acquire_session_lock(root)
-    primary = False
-    try:
-        yield
-    except BaseException:
-        primary = True
-        raise
-    finally:
-        release_failed = False
-        try:
-            _release_lock(descriptor)
-        except Exception:
-            release_failed = True
-        try:
-            os.close(descriptor)
-        except OSError:
-            release_failed = True
-        if release_failed and not primary:
-            raise FormalPaperSoakSessionError() from None
+def _closure_field(closure: object, name: str) -> str:
+    value = getattr(closure, name, None)
+    if type(value) is not str or len(value) != 64:
+        raise ValueError
+    return value
 
 
-def _acquire_session_lock(root: Path) -> int:
-    descriptor = -1
-    try:
-        if not isinstance(root, Path) or not root.is_absolute():
-            raise ValueError
-        before = os.lstat(root)
-        if not stat.S_ISDIR(before.st_mode) or _is_reparse(root, before):
-            raise ValueError
-        lock_path = root / _LOCK_NAME
-        try:
-            lock_before = os.lstat(lock_path)
-        except FileNotFoundError:
-            lock_before = None
-        if lock_before is not None and not _valid_lock_status(lock_path, lock_before):
-            raise ValueError
-        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0)
-        if sys.platform != "win32":
-            flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-        descriptor = os.open(lock_path, flags, 0o600)
-        opened = os.fstat(descriptor)
-        current = os.lstat(lock_path)
-        root_after_open = os.lstat(root)
-        if (
-            not _valid_lock_status(lock_path, opened)
-            or not _valid_lock_status(lock_path, current)
-            or _object_identity(opened) != _object_identity(current)
-            or _object_identity(before) != _object_identity(root_after_open)
-        ):
-            raise ValueError
-        if opened.st_size == 0:
-            os.lseek(descriptor, 0, os.SEEK_SET)
-            if os.write(descriptor, b"\0") != 1:
-                raise OSError
-            os.fsync(descriptor)
-        elif opened.st_size != 1:
-            raise ValueError
-        _apply_lock(descriptor)
-        locked = os.fstat(descriptor)
-        current = os.lstat(lock_path)
-        root_after_lock = os.lstat(root)
-        if (
-            locked.st_size != 1
-            or not _valid_lock_status(lock_path, locked)
-            or not _valid_lock_status(lock_path, current)
-            or _object_identity(locked) != _object_identity(current)
-            or _object_identity(before) != _object_identity(root_after_lock)
-        ):
-            raise ValueError
-        result = descriptor
-        descriptor = -1
-        return result
-    except Exception:
-        if descriptor >= 0:
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
-        raise FormalPaperSoakSessionError() from None
-
-
-def _apply_lock(descriptor: int) -> None:
-    try:
-        if sys.platform == "win32":
-            os.lseek(descriptor, 0, os.SEEK_SET)
-            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
-        else:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError as exc:
-        if exc.errno in {
-            errno.EACCES,
-            errno.EAGAIN,
-            getattr(errno, "EWOULDBLOCK", errno.EAGAIN),
-        }:
-            raise FormalPaperSoakSessionError() from None
-        raise
-
-
-def _release_lock(descriptor: int) -> None:
-    if sys.platform == "win32":
-        os.lseek(descriptor, 0, os.SEEK_SET)
-        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-    else:
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
-
-
-def _valid_lock_status(path: Path, value: os.stat_result) -> bool:
-    return (
-        stat.S_ISREG(value.st_mode)
-        and not stat.S_ISLNK(value.st_mode)
-        and not _is_reparse(path, value)
-        and value.st_nlink == 1
-    )
-
-
-def _is_reparse(path: Path, value: os.stat_result) -> bool:
-    if stat.S_ISLNK(value.st_mode):
-        return True
-    is_junction = getattr(os.path, "isjunction", None)
-    if callable(is_junction) and is_junction(path):
-        return True
-    return bool(getattr(value, "st_file_attributes", 0) & _REPARSE_POINT)
-
-
-def _object_identity(value: os.stat_result) -> tuple[int, int]:
-    return value.st_dev, value.st_ino
+def _hex(value: dict[str, object]) -> str:
+    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
 def _utc(value: object) -> bool:
