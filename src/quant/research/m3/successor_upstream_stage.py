@@ -32,6 +32,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Literal, NoReturn, Protocol
 
 if TYPE_CHECKING:
+    from quant.backtest.a_share_reporting import BacktestArtifactFreshVerificationContext
     from quant.data.m3_release import VerifiedG1Release
     from quant.research.m3.config import LoadedM3Config
     from quant.research.m3.contracts import (
@@ -44,11 +45,14 @@ if TYPE_CHECKING:
         LightgbmTrainingSpec,
         PredictionBuildSpec,
         ProviderBuildSpec,
+        ResearchSummaryUpstreamPaths,
         SnapshotBuildResult,
         SnapshotBuildSpec,
         SnapshotRequestRecordV1,
         TargetBuildSpec,
         VerifiedAlignmentArtifact,
+        VerifiedBacktestArtifact,
+        VerifiedBacktestPlanArtifact,
         VerifiedEvaluationArtifact,
         VerifiedExperimentIdentity,
         VerifiedFeatureArtifact,
@@ -62,7 +66,10 @@ if TYPE_CHECKING:
         VerifiedSnapshotArtifact,
         VerifiedTargetArtifact,
     )
-    from quant.research.m3.evaluate import EvaluationFreshVerificationContext
+    from quant.research.m3.evaluate import (
+        EvaluationFreshVerificationContext,
+        FormalSummaryStagePublicationIdentity,
+    )
     from quant.research.m3.orchestration import (
         ArtifactDigest,
         RunPlan,
@@ -82,6 +89,7 @@ if TYPE_CHECKING:
         SuccessorStageContext,
         SuccessorToolchainBinding,
     )
+    from quant.research.m3.tracking import FormalTrackingFreshVerificationContext
 
 
 class _ReceiptNodeView(Protocol):
@@ -2994,6 +3002,618 @@ def _reconstruct_work_chain_for_evaluation(
     return evaluation, context
 
 
+# --------------------------------------------------------------------------
+# Package-owned formal fresh-rehydrate (explicit prior_refs only)
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SuccessorFormalBacktestInputs:
+    """Typed formal-backtest closure rebuilt from explicit prior receipt refs."""
+
+    stage_root: Path
+    artifact_roots: Mapping[str, Path]
+    config: "LoadedM3Config"
+    release: "VerifiedG1Release"
+    experiment: "VerifiedExperimentIdentity"
+    target: "VerifiedTargetArtifact"
+    plan: "VerifiedBacktestPlanArtifact"
+    fresh_context: "BacktestArtifactFreshVerificationContext"
+    work_key: str
+    fold: str
+    horizon: Literal[5, 10]
+    evaluation: "VerifiedEvaluationArtifact"
+    evaluation_context: "EvaluationFreshVerificationContext"
+    evaluation_receipt_path: Path
+
+
+@dataclass(frozen=True)
+class SuccessorFormalTrackingInputs:
+    """Typed formal-tracking closure rebuilt from explicit prior receipt refs."""
+
+    stage_root: Path
+    artifact_roots: Mapping[str, Path]
+    config: "LoadedM3Config"
+    evaluation: "VerifiedEvaluationArtifact"
+    backtest: "VerifiedBacktestArtifact"
+    fresh_context: "FormalTrackingFreshVerificationContext"
+    work_key: str
+    fold: str
+    horizon: Literal[5, 10]
+    tracking_uri: str
+
+
+def _require_sorted_unique_prior_refs(
+    prior_refs: tuple["StageReceiptRef", ...],
+) -> tuple["StageReceiptRef", ...]:
+    from quant.research.m3.successor_runtime import StageReceiptRef
+
+    if type(prior_refs) is not tuple or any(
+        type(item) is not StageReceiptRef for item in prior_refs
+    ):
+        _fail("SUCCESSOR_STAGE_INVALID")
+    node_ids = tuple(item.node_id for item in prior_refs)
+    if node_ids != tuple(sorted(node_ids)) or len(set(node_ids)) != len(node_ids):
+        _fail("SUCCESSOR_STAGE_INVALID")
+    return prior_refs
+
+
+def _one_fold_horizon_ref(
+    prior_refs: tuple["StageReceiptRef", ...],
+    *,
+    stage: str,
+    fold: str,
+    horizon: int | None,
+) -> "StageReceiptRef":
+    matches = tuple(
+        item
+        for item in prior_refs
+        if item.stage == stage and item.fold == fold and item.horizon == horizon
+    )
+    if len(matches) != 1:
+        _fail("SUCCESSOR_STAGE_INVALID")
+    return matches[0]
+
+
+def _shared_by_stage_from_prior_refs(
+    prior_refs: tuple["StageReceiptRef", ...],
+    *,
+    canonical_horizons: tuple[Literal[5, 10], ...],
+) -> dict[str, tuple["StageReceiptRef", ...]]:
+    try:
+        return _extract_summary_shared_stages(
+            prior_refs, canonical_horizons=canonical_horizons,
+        )
+    except Exception:
+        _fail("SUCCESSOR_STAGE_INVALID")
+
+
+def rehydrate_successor_formal_backtest_inputs(
+    *,
+    prior_refs: tuple["StageReceiptRef", ...],
+    request: "SuccessorFoldRequest",
+    context: "SuccessorStageContext",
+    horizon: int,
+) -> SuccessorFormalBacktestInputs:
+    """Fresh-verify typed backtest inputs from explicit prior receipt paths only."""
+
+    from types import MappingProxyType
+
+    from quant.backtest.a_share_execution import AShareMarketFactsFreshVerificationContext
+    from quant.backtest.a_share_plan import (
+        BacktestPlanFreshVerificationContext,
+        verify_backtest_plan_artifact,
+    )
+    from quant.backtest.a_share_reporting import (
+        BacktestArtifactFreshVerificationContext,
+        FormalBacktestArtifactUpstreamPaths,
+    )
+    from quant.research.m3.contracts import TargetBuildSpec, TargetUpstreamPaths
+    from quant.research.m3.successor_runtime import (
+        SuccessorFoldRequest,
+        SuccessorStageContext,
+        project_stage_root,
+    )
+    from quant.research.m3.targets import verify_target_artifact
+
+    if type(context) is not SuccessorStageContext or type(request) is not SuccessorFoldRequest:
+        _fail("SUCCESSOR_STAGE_INVALID")
+    if context.fold not in (None, request.fold):
+        _fail("SUCCESSOR_STAGE_INVALID")
+    if request.fold not in {item.fold for item in context.request.folds}:
+        _fail("SUCCESSOR_STAGE_INVALID")
+    # Prefer the runtime-bound fold request object when present.
+    bound = next(
+        (item for item in context.request.folds if item.fold == request.fold),
+        None,
+    )
+    if bound is None:
+        _fail("SUCCESSOR_STAGE_INVALID")
+    if (
+        bound is not request
+        and (
+            bound.config.config.full_config_sha256 != request.config.config.full_config_sha256
+            or bound.release.manifest_sha256 != request.release.manifest_sha256
+        )
+    ):
+        _fail("SUCCESSOR_STAGE_INVALID")
+    horizon_lit = _require_horizon(horizon)
+    refs = _require_sorted_unique_prior_refs(prior_refs)
+    project_root = context.project_root
+    config = request.config.config
+    release = request.release
+    fold = request.fold
+    toolchain = _require_toolchain(context.request.toolchain)
+    validate_successor_toolchain_binding(
+        project_root=project_root,
+        toolchain=toolchain,
+        fold_configs=tuple(item.config.config for item in context.request.folds),
+    )
+    ids = _runtime_ids(context)
+    horizons = _canonical_horizons_from_config(config)
+    by_stage = _shared_by_stage_from_prior_refs(refs, canonical_horizons=horizons)
+    shared = _reconstruct_shared_upstream(
+        by_stage=by_stage,
+        project_root=project_root,
+        release=release,
+        config=config,
+        ids=ids,
+        dump_tool_path=toolchain.qlib_dump_tool_path,
+        include_reconciliation=False,
+    )
+    if shared.folds is None or shared.fold_spec is None:
+        _fail("SUCCESSOR_STAGE_INVALID")
+    folds_artifact = shared.folds
+    fold_spec = shared.fold_spec
+    evaluation, eval_context = _reconstruct_work_chain_for_evaluation(
+        shared=shared,
+        fold=fold,
+        horizon=horizon_lit,
+        project_root=project_root,
+        config=config,
+        receipts=refs,
+        dump_tool_path=toolchain.qlib_dump_tool_path,
+    )
+    evaluation_ref = _one_fold_horizon_ref(
+        refs, stage="evaluation", fold=fold, horizon=horizon_lit,
+    )
+    evaluation_receipt_path = project_root / evaluation_ref.relative_path
+    feature_ref = _one_fold_horizon_ref(
+        refs, stage="features", fold=fold, horizon=None,
+    )
+    prediction_ref = _one_fold_horizon_ref(
+        refs, stage="predictions", fold=fold, horizon=horizon_lit,
+    )
+    target_ref = _one_fold_horizon_ref(
+        refs, stage="targets", fold=fold, horizon=horizon_lit,
+    )
+    plan_ref = _one_fold_horizon_ref(
+        refs, stage="backtest_plan", fold=fold, horizon=horizon_lit,
+    )
+    experiment_ref = _find_stage_refs(refs, stage="experiment-identity")
+    folds_ref = _find_stage_refs(refs, stage="folds")
+    if len(experiment_ref) != 1 or len(folds_ref) != 1:
+        _fail("SUCCESSOR_STAGE_INVALID")
+    work_key = target_ref.scope_key
+    if (
+        plan_ref.scope_key != work_key
+        or evaluation_ref.scope_key != work_key
+        or prediction_ref.scope_key != work_key
+    ):
+        _fail("SUCCESSOR_STAGE_INVALID")
+    portfolio = config.section("portfolio")
+    features_cfg = config.section("features")
+    target_spec = TargetBuildSpec(
+        experiment_key=shared.experiment.manifest.experiment_key,
+        work_key=work_key,
+        fold=fold,
+        horizon_sessions=horizon_lit,
+        strategy=_require_strategy(portfolio["strategy"]),
+        strategy_version=_require_str(portfolio["strategy_version"]),
+        top_k=_require_positive_int(portfolio["top_k"]),
+        cash_buffer=_require_finite_float(portfolio["cash_buffer"]),
+        max_weight=_require_finite_float(portfolio["max_weight"]),
+        minimum_scorable_coverage=_require_finite_float(
+            features_cfg["minimum_scorable_coverage"],
+        ),
+    )
+    prediction_upstream = eval_context.evaluation_upstream_paths.prediction_upstream_paths
+    target_upstream = TargetUpstreamPaths(
+        feature_receipt_path=project_root / feature_ref.relative_path,
+        prediction_receipt_path=project_root / prediction_ref.relative_path,
+        prediction_upstream_paths=prediction_upstream,
+        fold_receipt_path=project_root / folds_ref[0].relative_path,
+        experiment_receipt_path=project_root / experiment_ref[0].relative_path,
+    )
+    target_receipt = _verify_prior_receipt(target_ref, project_root=project_root)
+    target_root = _receipt_output_path(
+        target_receipt, name="target_manifest.json", project_root=project_root,
+    ).parent
+    artifact_roots = MappingProxyType({"PROJECT": project_root})
+    try:
+        target = verify_target_artifact(
+            root=target_root,
+            receipt_path=project_root / target_ref.relative_path,
+            release=release,
+            snapshot=shared.snapshot,
+            snapshot_spec=shared.snapshot_spec,
+            provider=shared.provider,
+            provider_spec=shared.provider_spec,
+            experiment=shared.experiment,
+            experiment_spec=shared.experiment_spec,
+            folds=folds_artifact,
+            fold_spec=fold_spec,
+            feature=eval_context.feature,
+            feature_spec=eval_context.feature_spec,
+            label=eval_context.label,
+            label_spec=eval_context.label_spec,
+            alignment=eval_context.alignment,
+            alignment_spec=eval_context.alignment_spec,
+            model=eval_context.model,
+            model_spec=eval_context.model_spec,
+            prediction=eval_context.prediction,
+            prediction_spec=eval_context.prediction_spec,
+            config=config,
+            spec=target_spec,
+            upstream_paths=target_upstream,
+            artifact_roots=artifact_roots,
+        )
+    except Exception:
+        _fail("SUCCESSOR_STAGE_INVALID")
+    plan_fresh = BacktestPlanFreshVerificationContext(
+        snapshot=shared.snapshot,
+        snapshot_spec=shared.snapshot_spec,
+        provider=shared.provider,
+        provider_spec=shared.provider_spec,
+        experiment_spec=shared.experiment_spec,
+        fold_spec=fold_spec,
+        feature=eval_context.feature,
+        feature_spec=eval_context.feature_spec,
+        label=eval_context.label,
+        label_spec=eval_context.label_spec,
+        alignment=eval_context.alignment,
+        alignment_spec=eval_context.alignment_spec,
+        model=eval_context.model,
+        model_spec=eval_context.model_spec,
+        prediction=eval_context.prediction,
+        prediction_spec=eval_context.prediction_spec,
+        target_spec=target_spec,
+        target_upstream_paths=target_upstream,
+        target_receipt_path=project_root / target_ref.relative_path,
+    )
+    plan_receipt = _verify_prior_receipt(plan_ref, project_root=project_root)
+    plan_root = _receipt_output_path(
+        plan_receipt, name="manifest.json", project_root=project_root,
+    ).parent
+    try:
+        plan = verify_backtest_plan_artifact(
+            root=plan_root,
+            receipt_path=project_root / plan_ref.relative_path,
+            target=target,
+            release=release,
+            folds=folds_artifact,
+            experiment=shared.experiment,
+            config=config,
+            fresh_context=plan_fresh,
+            artifact_roots=artifact_roots,
+        )
+    except Exception:
+        _fail("SUCCESSOR_STAGE_INVALID")
+    facts_fresh = AShareMarketFactsFreshVerificationContext(
+        target=target,
+        folds=folds_artifact,
+        experiment=shared.experiment,
+        config=config,
+        plan_fresh_context=plan_fresh,
+        plan_receipt_path=project_root / plan_ref.relative_path,
+    )
+    upstream_paths = FormalBacktestArtifactUpstreamPaths(
+        target_receipt_path=project_root / target_ref.relative_path,
+        plan_receipt_path=project_root / plan_ref.relative_path,
+        experiment_receipt_path=project_root / experiment_ref[0].relative_path,
+    )
+    fresh_context = BacktestArtifactFreshVerificationContext(
+        facts_fresh_context=facts_fresh,
+        upstream_paths=upstream_paths,
+        release=release,
+    )
+    try:
+        stage_root = project_stage_root(project_root=project_root, config=config)
+    except Exception:
+        _fail("SUCCESSOR_INPUT_INVALID")
+    return SuccessorFormalBacktestInputs(
+        stage_root=stage_root,
+        artifact_roots=artifact_roots,
+        config=config,
+        release=release,
+        experiment=shared.experiment,
+        target=target,
+        plan=plan,
+        fresh_context=fresh_context,
+        work_key=work_key,
+        fold=fold,
+        horizon=horizon_lit,
+        evaluation=evaluation,
+        evaluation_context=eval_context,
+        evaluation_receipt_path=evaluation_receipt_path,
+    )
+
+
+def rehydrate_successor_formal_tracking_inputs(
+    *,
+    prior_refs: tuple["StageReceiptRef", ...],
+    request: "SuccessorFoldRequest",
+    context: "SuccessorStageContext",
+    horizon: int,
+) -> SuccessorFormalTrackingInputs:
+    """Fresh-verify tracking inputs; requires same fold/horizon backtest prior ref."""
+
+    from quant.backtest.a_share_reporting import verify_backtest_artifact
+    from quant.research.m3.successor_runtime import SuccessorFoldRequest, SuccessorStageContext
+    from quant.research.m3.tracking import FormalTrackingFreshVerificationContext
+
+    if type(context) is not SuccessorStageContext or type(request) is not SuccessorFoldRequest:
+        _fail("SUCCESSOR_STAGE_INVALID")
+    refs = _require_sorted_unique_prior_refs(prior_refs)
+    horizon_lit = _require_horizon(horizon)
+    backtest_ref = _one_fold_horizon_ref(
+        refs, stage="backtest", fold=request.fold, horizon=horizon_lit,
+    )
+    base = rehydrate_successor_formal_backtest_inputs(
+        prior_refs=refs,
+        request=request,
+        context=context,
+        horizon=horizon_lit,
+    )
+    if backtest_ref.scope_key != base.work_key:
+        _fail("SUCCESSOR_STAGE_INVALID")
+    project_root = context.project_root
+    backtest_receipt = _verify_prior_receipt(backtest_ref, project_root=project_root)
+    backtest_root = _receipt_output_path(
+        backtest_receipt, name="backtest_manifest.json", project_root=project_root,
+    ).parent
+    try:
+        backtest = verify_backtest_artifact(
+            root=backtest_root,
+            receipt_path=project_root / backtest_ref.relative_path,
+            target=base.target,
+            plan=base.plan,
+            release=base.release,
+            experiment=base.experiment,
+            config=base.config,
+            fresh_context=base.fresh_context,
+            artifact_roots=base.artifact_roots,
+        )
+    except Exception:
+        _fail("SUCCESSOR_STAGE_INVALID")
+    tracking_fresh = FormalTrackingFreshVerificationContext(
+        evaluation_context=base.evaluation_context,
+        evaluation_receipt_path=base.evaluation_receipt_path,
+        target=base.target,
+        plan=base.plan,
+        release=base.release,
+        experiment=base.experiment,
+        backtest_context=base.fresh_context,
+        backtest_receipt_path=project_root / backtest_ref.relative_path,
+    )
+    try:
+        tracking_uri = base.config.canonical_tracking_uri
+    except Exception:
+        _fail("SUCCESSOR_CONFIG_INVALID")
+    if type(tracking_uri) is not str or not tracking_uri:
+        _fail("SUCCESSOR_CONFIG_INVALID")
+    return SuccessorFormalTrackingInputs(
+        stage_root=base.stage_root,
+        artifact_roots=base.artifact_roots,
+        config=base.config,
+        evaluation=base.evaluation,
+        backtest=backtest,
+        fresh_context=tracking_fresh,
+        work_key=base.work_key,
+        fold=base.fold,
+        horizon=horizon_lit,
+        tracking_uri=tracking_uri,
+    )
+
+
+@dataclass(frozen=True)
+class SuccessorSummaryHorizonVerifyInputs:
+    """Typed inputs for one-horizon R2S stage summary fresh verifier."""
+
+    identity: "FormalSummaryStagePublicationIdentity"
+    root: Path
+    receipt_path: Path
+    evaluations: tuple["VerifiedEvaluationArtifact", ...]
+    evaluation_contexts: tuple["EvaluationFreshVerificationContext", ...]
+    experiment: "VerifiedExperimentIdentity"
+    config: "LoadedM3Config"
+    horizon_sessions: Literal[5, 10]
+    upstream_paths: "ResearchSummaryUpstreamPaths"
+    artifact_roots: Mapping[str, Path]
+    expected_receipt_sha256: str
+
+
+def rehydrate_successor_summary_horizon_verify_inputs(
+    *,
+    folds: tuple["FoldExecution", ...],
+    context: "SuccessorStageContext",
+    summary_ref: "StageReceiptRef",
+) -> SuccessorSummaryHorizonVerifyInputs:
+    """Fresh-rebuild one horizon's typed summary closure from explicit fold receipts."""
+
+    from types import MappingProxyType
+
+    from quant.research.m3.contracts import ResearchSummaryUpstreamPaths
+    from quant.research.m3.evaluate import FormalSummaryStagePublicationIdentity
+    from quant.research.m3.run_state import path_for_artifact_digest, verify_stage_receipt_with_bytes
+    from quant.research.m3.successor_runtime import (
+        FoldExecution,
+        StageReceiptRef,
+        SuccessorStageContext,
+        project_stage_root,
+    )
+
+    if (
+        type(context) is not SuccessorStageContext
+        or type(folds) is not tuple
+        or len(folds) != 2
+        or any(type(item) is not FoldExecution for item in folds)
+        or type(summary_ref) is not StageReceiptRef
+    ):
+        _fail("SUCCESSOR_GATE_FAILED")
+    if (
+        summary_ref.stage != "research-summary"
+        or summary_ref.fold is not None
+        or summary_ref.scope != "EXPERIMENT"
+        or summary_ref.horizon not in {5, 10}
+    ):
+        _fail("SUCCESSOR_GATE_FAILED")
+    horizon = _require_horizon(summary_ref.horizon)
+    project_root = context.project_root
+    config_by_fold = {item.fold: item.config.config for item in context.request.folds}
+    release_by_fold = {item.fold: item.release for item in context.request.folds}
+    if len(set(config_by_fold.values())) < 1:
+        _fail("SUCCESSOR_GATE_FAILED")
+    # Summary joins on scientific config; use the first fold's LoadedM3Config object.
+    config = next(iter(config_by_fold.values()))
+    release = next(iter(release_by_fold.values()))
+    ids = _runtime_ids(context)
+    toolchain = _require_toolchain(context.request.toolchain)
+    validate_successor_toolchain_binding(
+        project_root=project_root,
+        toolchain=toolchain,
+        fold_configs=tuple(config_by_fold[execution.fold] for execution in folds),
+    )
+    all_receipts = tuple(
+        sorted(
+            {ref for execution in folds for ref in execution.receipts},
+            key=lambda item: item.node_id,
+        )
+    )
+    horizons = _canonical_horizons_from_config(config)
+    try:
+        by_stage = _extract_summary_shared_stages(
+            all_receipts, canonical_horizons=horizons,
+        )
+    except Exception:
+        _fail("SUCCESSOR_GATE_FAILED")
+    shared = _reconstruct_shared_upstream(
+        by_stage=by_stage,
+        project_root=project_root,
+        release=release,
+        config=config,
+        ids=ids,
+        dump_tool_path=toolchain.qlib_dump_tool_path,
+        include_reconciliation=False,
+    )
+    evaluations = []
+    eval_contexts = []
+    evaluation_receipt_paths: list[Path] = []
+    for execution in folds:
+        evaluation, eval_context = _reconstruct_work_chain_for_evaluation(
+            shared=shared,
+            fold=execution.fold,
+            horizon=horizon,
+            project_root=project_root,
+            config=config,
+            receipts=execution.receipts,
+            dump_tool_path=toolchain.qlib_dump_tool_path,
+        )
+        evaluations.append(evaluation)
+        eval_contexts.append(eval_context)
+        evaluation_ref = next(
+            (
+                item
+                for item in execution.receipts
+                if item.stage == "evaluation"
+                and item.fold == execution.fold
+                and item.horizon == horizon
+            ),
+            None,
+        )
+        if evaluation_ref is None:
+            _fail("SUCCESSOR_GATE_FAILED")
+        evaluation_receipt_paths.append(project_root / evaluation_ref.relative_path)
+    experiment_receipt_path = (
+        project_root / by_stage["experiment-identity"][0].relative_path
+    )
+    upstream_paths = ResearchSummaryUpstreamPaths(
+        experiment_receipt_path=experiment_receipt_path,
+        evaluation_receipt_paths=tuple(evaluation_receipt_paths),
+    )
+    models = {item.manifest.model for item in evaluations}
+    versions = {item.manifest.model_version for item in evaluations}
+    if len(models) != 1 or len(versions) != 1:
+        _fail("SUCCESSOR_GATE_FAILED")
+    model = next(iter(models))
+    model_version = next(iter(versions))
+    experiment_key = shared.experiment.manifest.experiment_key
+    if summary_ref.scope_key != experiment_key:
+        _fail("SUCCESSOR_GATE_FAILED")
+    try:
+        stage_root = project_stage_root(project_root=project_root, config=config)
+    except Exception:
+        _fail("SUCCESSOR_INPUT_INVALID")
+    identity = FormalSummaryStagePublicationIdentity(
+        stage_root=stage_root,
+        node_id=f"summary.h{horizon}.{model}.{model_version}",
+        final_relative_path=PurePosixPath(
+            f"summaries/{experiment_key}/h{horizon}/{model}/{model_version}"
+        ),
+        experiment_key=experiment_key,
+        horizon_sessions=horizon,
+        model=model,
+        model_version=model_version,
+    )
+    receipt_path = project_root / summary_ref.relative_path
+    artifact_roots = MappingProxyType({"PROJECT": project_root})
+    try:
+        verified_receipt = verify_stage_receipt_with_bytes(
+            receipt_path=receipt_path, artifact_roots=artifact_roots,
+        )
+    except Exception:
+        _fail("SUCCESSOR_GATE_FAILED")
+    if (
+        verified_receipt is None
+        or verified_receipt.sha256 != summary_ref.sha256
+        or verified_receipt.receipt.stage != "research-summary"
+        or verified_receipt.receipt.scope_key != experiment_key
+    ):
+        _fail("SUCCESSOR_GATE_FAILED")
+    try:
+        manifest_outputs = tuple(
+            item
+            for item in verified_receipt.receipt.outputs
+            if PurePosixPath(item.relative_path).name == "manifest.json"
+        )
+        if len(manifest_outputs) != 1:
+            raise ValueError
+        root = path_for_artifact_digest(
+            manifest_outputs[0], artifact_roots=artifact_roots,
+        ).parent
+    except Exception:
+        _fail("SUCCESSOR_GATE_FAILED")
+    expected_root = stage_root.joinpath(*identity.final_relative_path.parts)
+    try:
+        if root.resolve(strict=True) != expected_root.resolve(strict=True):
+            raise ValueError
+    except Exception:
+        _fail("SUCCESSOR_GATE_FAILED")
+    return SuccessorSummaryHorizonVerifyInputs(
+        identity=identity,
+        root=root,
+        receipt_path=receipt_path,
+        evaluations=tuple(evaluations),
+        evaluation_contexts=tuple(eval_contexts),
+        experiment=shared.experiment,
+        config=config,
+        horizon_sessions=horizon,
+        upstream_paths=upstream_paths,
+        artifact_roots=artifact_roots,
+        expected_receipt_sha256=summary_ref.sha256,
+    )
+
+
 def run_successor_formal_summary_gate(
     *,
     folds: tuple["FoldExecution", ...],
@@ -3137,3 +3757,6 @@ def run_successor_formal_summary_gate(
 
 CANONICAL_RUN_UPSTREAM_WAVE = run_successor_upstream_wave
 CANONICAL_RUN_SUMMARY_GATE = run_successor_formal_summary_gate
+CANONICAL_REHYDRATE_FORMAL_BACKTEST = rehydrate_successor_formal_backtest_inputs
+CANONICAL_REHYDRATE_FORMAL_TRACKING = rehydrate_successor_formal_tracking_inputs
+CANONICAL_REHYDRATE_SUMMARY_HORIZON = rehydrate_successor_summary_horizon_verify_inputs

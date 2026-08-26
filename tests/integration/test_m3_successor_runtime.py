@@ -190,22 +190,23 @@ class _DeterministicProductionBoundary:
 
     @property
     def dependencies(self) -> runtime.SuccessorProductionDependencies:
+        import quant.research.m3.successor_downstream_stage as downstream
         import quant.research.m3.successor_upstream_stage as upstream
 
         return runtime.SuccessorProductionDependencies(
             stage_runner_factory=runtime.make_project_stage_runner,
             run_upstream_wave=upstream.run_successor_upstream_wave,
-            run_formal_stage=self.run_formal_stage,
-            verify_fold=self.verify_fold,
+            run_formal_stage=downstream.run_successor_formal_stage,
+            verify_fold=downstream.verify_successor_fold,
             run_summary=upstream.run_successor_formal_summary_gate,
-            verify_summary=self.verify_summary,
-            run_reproducibility=self.run_reproducibility,
-            verify_reproducibility=self.verify_reproducibility,
-            run_readiness=self.run_readiness,
-            verify_readiness=self.verify_readiness,
-            run_acceptance=self.run_acceptance,
-            verify_acceptance=self.verify_acceptance,
-            verify_gate=self.verify_gate,
+            verify_summary=downstream.verify_successor_summary_gate,
+            run_reproducibility=downstream.run_successor_reproducibility_gate,
+            verify_reproducibility=downstream.verify_successor_reproducibility_gate,
+            run_readiness=downstream.run_successor_readiness_gate,
+            verify_readiness=downstream.verify_successor_readiness_gate,
+            run_acceptance=downstream.run_successor_acceptance_gate,
+            verify_acceptance=downstream.verify_successor_acceptance_gate,
+            verify_gate=downstream.verify_successor_terminal_gate,
         )
 
     def _receipt(
@@ -433,16 +434,30 @@ class _DeterministicProductionBoundary:
         context: runtime.SuccessorStageContext,
         runner: StageRunner,
         public_apis: runtime.SuccessorPublicApiBundle,
+        prior_refs: tuple[runtime.StageReceiptRef, ...],
         resume: bool,
     ) -> runtime.StageReceiptRef:
         assert context.fold == request.fold and resume is True
         assert type(runner) is StageRunner
+        assert type(prior_refs) is tuple
+        assert all(type(item) is runtime.StageReceiptRef for item in prior_refs)
+        assert tuple(item.node_id for item in prior_refs) == tuple(
+            sorted(item.node_id for item in prior_refs)
+        )
         if stage == "backtest":
             plan_builder = public_apis.formal_backtest_run_plan
             stage_runner = public_apis.formal_backtest_stage
         else:
             plan_builder = public_apis.formal_tracking_run_plan
             stage_runner = public_apis.formal_tracking_stage
+            backtest_matches = tuple(
+                item
+                for item in prior_refs
+                if item.stage == "backtest"
+                and item.fold == request.fold
+                and item.horizon == horizon
+            )
+            assert len(backtest_matches) == 1
         self.public_api_calls.append(f"{stage}-run-plan")
         plan_builder(stage=stage, horizon=horizon)
         stage_runner(stage=stage, horizon=horizon)
@@ -512,19 +527,30 @@ class _DeterministicProductionBoundary:
                         ref = replace(ref, scope_key=_hex(f"legacy-join:{fold}:{horizon}"))
                     refs.append(ref)
         elif gate == "readiness":
-            for fold in ("fold_001", "fold_002"):
-                physical_key = (
-                    _hex("readiness:collided")
-                    if self.collide_readiness_keys
-                    else _hex(f"readiness:{fold}")
+            physical_key = (
+                _hex("readiness:collided")
+                if self.collide_readiness_keys
+                else _hex("readiness:global")
+            )
+            refs.append(
+                self._receipt(
+                    node_id="gate-readiness",
+                    stage="readiness-evidence",
+                    scope="ACCEPTANCE",
+                    scope_key=physical_key,
+                    fold=None,
+                    horizon=None,
                 )
+            )
+            if self.collide_readiness_keys:
+                # Adversarial: duplicate fold-bound copy of same readiness bytes.
                 refs.append(
                     self._receipt(
-                        node_id=f"gate-readiness-{fold}",
+                        node_id="gate-readiness-fold-dup",
                         stage="readiness-evidence",
                         scope="ACCEPTANCE",
                         scope_key=physical_key,
-                        fold=fold,
+                        fold="fold_001",
                         horizon=None,
                     )
                 )
@@ -731,6 +757,7 @@ def _install_fixture_verifiers(
     public_apis: runtime.SuccessorPublicApiBundle,
     boundary: _DeterministicProductionBoundary | None = None,
 ) -> None:
+    import quant.research.m3.successor_downstream_stage as downstream
     import quant.research.m3.successor_upstream_stage as upstream
 
     monkeypatch.setattr(
@@ -764,6 +791,38 @@ def _install_fixture_verifiers(
         )
         monkeypatch.setattr(
             upstream, "run_successor_formal_summary_gate", boundary.run_summary
+        )
+        monkeypatch.setattr(
+            downstream, "run_successor_formal_stage", boundary.run_formal_stage
+        )
+        monkeypatch.setattr(downstream, "verify_successor_fold", boundary.verify_fold)
+        monkeypatch.setattr(
+            downstream, "verify_successor_summary_gate", boundary.verify_summary
+        )
+        monkeypatch.setattr(
+            downstream,
+            "run_successor_reproducibility_gate",
+            boundary.run_reproducibility,
+        )
+        monkeypatch.setattr(
+            downstream,
+            "verify_successor_reproducibility_gate",
+            boundary.verify_reproducibility,
+        )
+        monkeypatch.setattr(
+            downstream, "run_successor_readiness_gate", boundary.run_readiness
+        )
+        monkeypatch.setattr(
+            downstream, "verify_successor_readiness_gate", boundary.verify_readiness
+        )
+        monkeypatch.setattr(
+            downstream, "run_successor_acceptance_gate", boundary.run_acceptance
+        )
+        monkeypatch.setattr(
+            downstream, "verify_successor_acceptance_gate", boundary.verify_acceptance
+        )
+        monkeypatch.setattr(
+            downstream, "verify_successor_terminal_gate", boundary.verify_gate
         )
         boundary._stub_wave_cache.clear()
     upstream._reset_wave_registry_for_tests()
@@ -1267,7 +1326,7 @@ def test_legacy_join_hash_masquerading_as_comparison_key_fails(
     assert not (request.controlled_output_root / runtime.TERMINAL_FILENAME).exists()
 
 
-def test_readiness_key_collision_across_folds_fails(
+def test_readiness_extra_fold_bound_receipt_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
@@ -272,26 +273,25 @@ def test_group_prior_refs_rejects_missing_extra_duplicate_and_scan_poison() -> N
 def test_adapter_rejects_wrapper_upstream_and_summary_callables(
     tmp_path: Path,
 ) -> None:
+    import quant.research.m3.successor_downstream_stage as downstream
+
     def wrapper(**_kwargs: object) -> object:
         return ()
-
-    def callback(**_kwargs: object) -> object:
-        return object()
 
     dependencies = runtime.SuccessorProductionDependencies(
         stage_runner_factory=runtime.make_project_stage_runner,
         run_upstream_wave=wrapper,  # type: ignore[arg-type]
-        run_formal_stage=callback,  # type: ignore[arg-type]
-        verify_fold=callback,  # type: ignore[arg-type]
+        run_formal_stage=downstream.run_successor_formal_stage,
+        verify_fold=downstream.verify_successor_fold,
         run_summary=wrapper,  # type: ignore[arg-type]
-        verify_summary=callback,  # type: ignore[arg-type]
-        run_reproducibility=callback,  # type: ignore[arg-type]
-        verify_reproducibility=callback,  # type: ignore[arg-type]
-        run_readiness=callback,  # type: ignore[arg-type]
-        verify_readiness=callback,  # type: ignore[arg-type]
-        run_acceptance=callback,  # type: ignore[arg-type]
-        verify_acceptance=callback,  # type: ignore[arg-type]
-        verify_gate=callback,  # type: ignore[arg-type]
+        verify_summary=downstream.verify_successor_summary_gate,
+        run_reproducibility=downstream.run_successor_reproducibility_gate,
+        verify_reproducibility=downstream.verify_successor_reproducibility_gate,
+        run_readiness=downstream.run_successor_readiness_gate,
+        verify_readiness=downstream.verify_successor_readiness_gate,
+        run_acceptance=downstream.run_successor_acceptance_gate,
+        verify_acceptance=downstream.verify_successor_acceptance_gate,
+        verify_gate=downstream.verify_successor_terminal_gate,
     )
     with pytest.raises(runtime.SuccessorRuntimeError) as error:
         runtime.make_production_successor_stage_adapter(dependencies=dependencies)
@@ -854,6 +854,75 @@ def _load_sibling_test_module(filename: str, module_name: str) -> object:
     return module
 
 
+def _assert_shared_subprocess_run(expected: object) -> None:
+    """Lock stdlib/provider/provider_validation on one shared subprocess.run."""
+
+    import subprocess
+
+    import quant.research.m3.provider as provider_module
+    import quant.research.m3.provider_validation as provider_validation_module
+
+    assert subprocess.run is expected
+    assert provider_module.subprocess.run is expected
+    assert provider_validation_module.subprocess.run is expected
+
+
+def _restore_shared_subprocess_run(
+    monkeypatch: pytest.MonkeyPatch, original: object,
+) -> None:
+    """Restore the exact pre-context shared worker callable (test-owned seam)."""
+
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "run", original)
+    _assert_shared_subprocess_run(original)
+
+
+def _install_shared_subprocess_run(
+    monkeypatch: pytest.MonkeyPatch, worker: object,
+) -> None:
+    """Install a test-owned shared worker seam on every subprocess.run alias."""
+
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "run", worker)
+    _assert_shared_subprocess_run(worker)
+
+
+def _plan_context_with_feature_worker_seam(
+    *,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    plan_support: object,
+    feature_support: object,
+) -> dict[str, object]:
+    """Authority-B seam: feature fake around legacy _context; original before return."""
+
+    import subprocess
+
+    original_subprocess_run = subprocess.run
+    _assert_shared_subprocess_run(original_subprocess_run)
+    dump_fake = feature_support._PROVIDER._fake_dump
+    feature_fake = feature_support._fake_feature_worker
+    assert feature_fake is not dump_fake
+    assert feature_fake is not original_subprocess_run
+
+    _install_shared_subprocess_run(monkeypatch, feature_fake)
+    assert subprocess.run is feature_fake
+    assert subprocess.run is not dump_fake
+    _assert_shared_subprocess_run(feature_fake)
+    try:
+        context = plan_support._context(tmp_path, monkeypatch)
+    finally:
+        # Normal and exception paths must restore before any production builder.
+        _restore_shared_subprocess_run(monkeypatch, original_subprocess_run)
+    assert subprocess.run is original_subprocess_run
+    assert subprocess.run is not feature_fake
+    assert subprocess.run is not dump_fake
+    _assert_shared_subprocess_run(original_subprocess_run)
+    return context
+
+
 def test_plan_provider_probe_positive_real_call_with_valid_spec(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -978,21 +1047,32 @@ def test_build_backtest_plan_artifact_positive_project_only_roots(
     """Unmocked build_backtest_plan_artifact with explicit PROJECT-only artifact_roots."""
 
     import inspect
+    import subprocess
 
-    import quant.backtest.a_share_plan as plan_module
     from quant.backtest.a_share_plan import build_backtest_plan_artifact
     from quant.research.m3.contracts import BacktestPlanManifestV1
 
+    feature_support = _load_sibling_test_module(
+        "test_m3_formal_feature_artifact.py",
+        "upstream_formal_feature_support_for_plan_roots",
+    )
     plan_support = _load_sibling_test_module(
         "test_m3_formal_backtest_plan_artifact.py",
         "upstream_formal_plan_support_for_roots",
     )
-    context = plan_support._context(tmp_path, monkeypatch)
+    context = _plan_context_with_feature_worker_seam(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        plan_support=plan_support,
+        feature_support=feature_support,
+    )
     kwargs = dict(context["plan_kwargs"])
     project_root = type(Path())(context["common"])
     target = kwargs["target"]
     # Isolate PROJECT alias binding: fixture receipts use "root"; production
     # successor path is PROJECT-only. Stub only fresh target verify (not the builder).
+    import quant.backtest.a_share_plan as plan_module
+
     monkeypatch.setattr(plan_module, "verify_target_artifact", lambda **_: target)
 
     params = inspect.signature(build_backtest_plan_artifact).parameters
@@ -1000,6 +1080,11 @@ def test_build_backtest_plan_artifact_positive_project_only_roots(
     assert params["artifact_roots"].default is inspect.Parameter.empty
     source = Path(upstream.__file__).read_text(encoding="utf-8")
     assert 'artifact_roots={"PROJECT": project_root}' in source
+
+    # Production builder runs only after feature fake has been restored.
+    _assert_shared_subprocess_run(subprocess.run)
+    assert subprocess.run is not feature_support._fake_feature_worker
+    assert subprocess.run is not feature_support._PROVIDER._fake_dump
 
     output_root = project_root / "formal-plan-project-only"
     output_root.mkdir()
@@ -1018,22 +1103,40 @@ def test_build_backtest_plan_artifact_positive_project_only_roots(
     assert manifest.experiment_key == target.manifest.experiment_key
     assert (output_root / "manifest.json").is_file()
     assert (output_root / "scheduled_targets.parquet").is_file()
+    _assert_shared_subprocess_run(subprocess.run)
+    assert subprocess.run is not feature_support._fake_feature_worker
 
 
 def test_build_backtest_plan_artifact_rejects_wrong_alias_roots(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import subprocess
+
     from quant.backtest.a_share_plan import build_backtest_plan_artifact
 
+    feature_support = _load_sibling_test_module(
+        "test_m3_formal_feature_artifact.py",
+        "upstream_formal_feature_support_for_wrong_alias",
+    )
     plan_support = _load_sibling_test_module(
         "test_m3_formal_backtest_plan_artifact.py",
         "upstream_formal_plan_support_for_wrong_alias",
     )
-    context = plan_support._context(tmp_path, monkeypatch)
+    context = _plan_context_with_feature_worker_seam(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        plan_support=plan_support,
+        feature_support=feature_support,
+    )
     kwargs = dict(context["plan_kwargs"])
     project_root = type(Path())(context["common"])
     output_root = project_root / "formal-plan-wrong-alias"
     output_root.mkdir()
+
+    _assert_shared_subprocess_run(subprocess.run)
+    assert subprocess.run is not feature_support._fake_feature_worker
+    assert subprocess.run is not feature_support._PROVIDER._fake_dump
+
     with pytest.raises(ValueError, match="^M3_BACKTEST_PLAN_ARTIFACT_INVALID$"):
         build_backtest_plan_artifact(
             target=kwargs["target"],
@@ -1046,6 +1149,8 @@ def test_build_backtest_plan_artifact_rejects_wrong_alias_roots(
             output_root=output_root,
         )
     assert not any(output_root.iterdir())
+    _assert_shared_subprocess_run(subprocess.run)
+    assert subprocess.run is not feature_support._fake_feature_worker
 
 
 def test_backtest_plan_fresh_context_imports_from_a_share_plan_not_contracts() -> None:
@@ -1101,3 +1206,106 @@ def test_require_toolchain_and_frequency_reject_illegal_shapes() -> None:
         upstream._require_frequency("week")
     assert bad_freq.value.code == "SUCCESSOR_STAGE_INVALID"
     assert upstream._require_frequency("day") == "day"
+
+
+# --------------------------------------------------------------------------
+# VALIDATION1 F4: public rehydrate return-type boundary (AST / signature)
+# --------------------------------------------------------------------------
+
+_PUBLIC_REHYDRATE_RETURN_TYPES: tuple[tuple[str, str], ...] = (
+    ("rehydrate_successor_formal_backtest_inputs", "SuccessorFormalBacktestInputs"),
+    ("rehydrate_successor_formal_tracking_inputs", "SuccessorFormalTrackingInputs"),
+    (
+        "rehydrate_successor_summary_horizon_verify_inputs",
+        "SuccessorSummaryHorizonVerifyInputs",
+    ),
+)
+
+
+def _module_function_defs(tree: ast.Module) -> dict[str, ast.FunctionDef]:
+    return {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+    }
+
+
+def _annotation_source(node: ast.AST | None) -> str:
+    if node is None:
+        return ""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return ast.unparse(node)
+
+
+def test_public_rehydrate_defs_ast_return_annotations_are_strong_public_types() -> None:
+    """Scope only the three public rehydrate defs; private helpers may use _SharedUpstream."""
+
+    source = Path(upstream.__file__).read_text(encoding="utf-8")
+    defs = _module_function_defs(ast.parse(source))
+    for name, expected in _PUBLIC_REHYDRATE_RETURN_TYPES:
+        node = defs[name]
+        ann = _annotation_source(node.returns)
+        assert ann == expected
+        assert ann != "_SharedUpstream"
+        assert "_SharedUpstream" not in ann
+
+
+def test_public_rehydrate_signature_return_annotations_match_public_inputs() -> None:
+    import inspect
+
+    for name, expected in _PUBLIC_REHYDRATE_RETURN_TYPES:
+        fn = getattr(upstream, name)
+        ret = inspect.signature(fn).return_annotation
+        if isinstance(ret, type):
+            assert ret is getattr(upstream, expected)
+            assert ret.__name__ == expected
+        else:
+            assert ret == expected
+        assert "_SharedUpstream" not in str(ret)
+
+
+def test_private_reconstruct_shared_upstream_may_return_shared_upstream() -> None:
+    source = Path(upstream.__file__).read_text(encoding="utf-8")
+    defs = _module_function_defs(ast.parse(source))
+    node = defs["_reconstruct_shared_upstream"]
+    assert _annotation_source(node.returns) == "_SharedUpstream"
+
+
+def test_public_rehydrate_return_types_exact_and_do_not_leak_shared_upstream() -> None:
+    from dataclasses import fields
+
+    public_types = (
+        upstream.SuccessorFormalBacktestInputs,
+        upstream.SuccessorFormalTrackingInputs,
+        upstream.SuccessorSummaryHorizonVerifyInputs,
+    )
+    shared = upstream._SharedUpstream
+    for cls in public_types:
+        assert cls is not shared
+        assert type(cls) is type
+        for field in fields(cls):
+            type_text = str(field.type)
+            assert "_SharedUpstream" not in type_text
+            assert field.name != "_SharedUpstream"
+            assert not field.name.startswith("_shared")
+
+
+def test_caller_cannot_inject_shared_upstream_into_public_rehydrate_apis() -> None:
+    import inspect
+
+    shared = upstream._SharedUpstream
+    for name, _expected in _PUBLIC_REHYDRATE_RETURN_TYPES:
+        fn = getattr(upstream, name)
+        params = inspect.signature(fn).parameters
+        assert "shared" not in params
+        assert "_SharedUpstream" not in params
+        assert all("_SharedUpstream" not in pname for pname in params)
+        with pytest.raises(TypeError):
+            fn(**{"shared": shared})
+        with pytest.raises(TypeError):
+            fn(**{"_SharedUpstream": shared})

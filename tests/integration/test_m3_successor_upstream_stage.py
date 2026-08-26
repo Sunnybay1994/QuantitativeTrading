@@ -247,24 +247,22 @@ def test_failed_wave_is_not_registered_for_reuse(
 
 
 def test_canonical_production_dependencies_bind_upstream_and_summary_by_is() -> None:
-    def callback(**_kwargs: object) -> object:
-        return object()
+    import quant.research.m3.successor_downstream_stage as downstream
 
-    deps = runtime.make_canonical_successor_production_dependencies(
-        run_formal_stage=callback,  # type: ignore[arg-type]
-        verify_fold=callback,  # type: ignore[arg-type]
-        verify_summary=callback,  # type: ignore[arg-type]
-        run_reproducibility=callback,  # type: ignore[arg-type]
-        verify_reproducibility=callback,  # type: ignore[arg-type]
-        run_readiness=callback,  # type: ignore[arg-type]
-        verify_readiness=callback,  # type: ignore[arg-type]
-        run_acceptance=callback,  # type: ignore[arg-type]
-        verify_acceptance=callback,  # type: ignore[arg-type]
-        verify_gate=callback,  # type: ignore[arg-type]
-    )
+    deps = runtime.make_canonical_successor_production_dependencies()
     assert deps.run_upstream_wave is upstream.run_successor_upstream_wave
     assert deps.run_summary is upstream.run_successor_formal_summary_gate
     assert deps.stage_runner_factory is runtime.make_project_stage_runner
+    assert deps.run_formal_stage is downstream.run_successor_formal_stage
+    assert deps.verify_fold is downstream.verify_successor_fold
+    assert deps.verify_summary is downstream.verify_successor_summary_gate
+    assert deps.run_reproducibility is downstream.run_successor_reproducibility_gate
+    assert deps.verify_reproducibility is downstream.verify_successor_reproducibility_gate
+    assert deps.run_readiness is downstream.run_successor_readiness_gate
+    assert deps.verify_readiness is downstream.verify_successor_readiness_gate
+    assert deps.run_acceptance is downstream.run_successor_acceptance_gate
+    assert deps.verify_acceptance is downstream.verify_successor_acceptance_gate
+    assert deps.verify_gate is downstream.verify_successor_terminal_gate
 
 
 def test_toolchain_identity_enters_two_fold_identity(
@@ -671,14 +669,50 @@ def _load_unit_fixture_module(filename: str, module_name: str) -> object:
     return module
 
 
+def _assert_shared_subprocess_run(expected: object) -> None:
+    """Lock stdlib/provider/provider_validation on one shared subprocess.run."""
+
+    import subprocess
+
+    import quant.research.m3.provider as provider_module
+    import quant.research.m3.provider_validation as provider_validation_module
+
+    assert subprocess.run is expected
+    assert provider_module.subprocess.run is expected
+    assert provider_validation_module.subprocess.run is expected
+
+
+def _restore_shared_subprocess_run(
+    monkeypatch: pytest.MonkeyPatch, original: object,
+) -> None:
+    """Restore the exact pre-Authority-A shared worker callable (test-owned seam)."""
+
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "run", original)
+    _assert_shared_subprocess_run(original)
+
+
+def _install_shared_subprocess_run(
+    monkeypatch: pytest.MonkeyPatch, worker: object,
+) -> None:
+    """Install a test-owned shared worker seam on every subprocess.run alias."""
+
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "run", worker)
+    _assert_shared_subprocess_run(worker)
+
+
 def test_integration_real_api_positive_probe_and_project_roots(
     tmp_path: Path,
 ) -> None:
     """Integration: unmocked probe + PROJECT plan builder with isolated patch authority."""
 
     import inspect
+    import subprocess
 
-    import quant.backtest.a_share_plan as plan_module
+    import quant.research.m3.provider as provider_module
     from quant.backtest.a_share_plan import (
         BacktestPlanFreshVerificationContext,
         build_backtest_plan_artifact,
@@ -706,6 +740,10 @@ def test_integration_real_api_positive_probe_and_project_roots(
         "upstream_integration_formal_plan_for_roots",
     )
 
+    # Capture exact shared worker BEFORE Authority A installs provider dump fake.
+    original_subprocess_run = subprocess.run
+    _assert_shared_subprocess_run(original_subprocess_run)
+
     # Authority A: provider materialization + real plan_provider_probe only.
     with pytest.MonkeyPatch.context() as provider_mp:
         common = tmp_path / "artifacts"
@@ -718,6 +756,10 @@ def test_integration_real_api_positive_probe_and_project_roots(
         provider, _provider_spec, _tool, _provider_receipt = feature_support._provider(
             common, snapshot, config, snapshot_request, snapshot_receipt, provider_mp,
         )
+        # Provider dump fake must be active on every shared subprocess.run alias.
+        assert subprocess.run is not original_subprocess_run
+        assert subprocess.run is feature_support._PROVIDER._fake_dump
+        _assert_shared_subprocess_run(subprocess.run)
         assert type(snapshot) is VerifiedSnapshotArtifact
         assert type(provider) is VerifiedProviderArtifact
         code_version = "successor-upstream-integration-probe-v1"
@@ -757,52 +799,114 @@ def test_integration_real_api_positive_probe_and_project_roots(
             )
         assert missing_spec.value.code == "PROVIDER_VALIDATION_INPUT_INVALID"
 
-    # Authority B: backtest-plan support + real build_backtest_plan_artifact only.
-    # Independent context so provider-side subprocess/runtime stubs cannot leak.
-    with pytest.MonkeyPatch.context() as plan_mp:
-        # Test-owned parent: deep formal support does `plan_root/artifacts.mkdir()`
-        # with parents=False; caller must create plan_root before _context.
-        plan_root = tmp_path / "plan"
-        plan_root.mkdir()
-        context = plan_support._context(plan_root, plan_mp)
-        kwargs = dict(context["plan_kwargs"])
-        project_root = type(Path())(context["common"])
-        target = kwargs["target"]
-        real_verify_target = plan_module.verify_target_artifact
-        # Isolate PROJECT alias vs fixture receipt alias=root; do not stub builder.
-        plan_mp.setattr(plan_module, "verify_target_artifact", lambda **_: target)
-        output_root = project_root / "integration-plan-project-only"
-        output_root.mkdir()
-        manifest = build_backtest_plan_artifact(
-            target=target,
-            release=kwargs["release"],
-            folds=kwargs["folds"],
-            experiment=kwargs["experiment"],
-            config=kwargs["config"],
-            fresh_context=kwargs["fresh_context"],
-            artifact_roots={"PROJECT": project_root},
-            output_root=output_root,
-        )
-        assert type(manifest) is BacktestPlanManifestV1
-        assert manifest.work_key == target.manifest.work_key
-        assert type(kwargs["fresh_context"]) is BacktestPlanFreshVerificationContext
-        assert not hasattr(contracts, "BacktestPlanFreshVerificationContext")
+        # Explicit restore to pre-A callable before Authority A monkeypatch unwinds.
+        _restore_shared_subprocess_run(provider_mp, original_subprocess_run)
+        assert subprocess.run is original_subprocess_run
+        assert subprocess.run is not feature_support._PROVIDER._fake_dump
 
-        plan_mp.setattr(plan_module, "verify_target_artifact", real_verify_target)
-        wrong_output = project_root / "integration-plan-wrong-alias"
-        wrong_output.mkdir()
-        with pytest.raises(ValueError, match="^M3_BACKTEST_PLAN_ARTIFACT_INVALID$"):
-            build_backtest_plan_artifact(
-                target=kwargs["target"],
-                release=kwargs["release"],
-                folds=kwargs["folds"],
-                experiment=kwargs["experiment"],
-                config=kwargs["config"],
-                fresh_context=kwargs["fresh_context"],
-                artifact_roots={"EXTERNAL_QLIB": project_root},
-                output_root=wrong_output,
-            )
-        assert not any(wrong_output.iterdir())
+    # Authority A exited: shared refs must still be the exact pre-A callable.
+    # Fail here with AssertionError — never let Authority B feature wrap this into
+    # M3_FEATURE_ARTIFACT_INVALID.
+    if subprocess.run is not original_subprocess_run:
+        raise AssertionError(
+            "Authority A leaked subprocess.run fake into shared worker seam"
+        )
+    _assert_shared_subprocess_run(original_subprocess_run)
+    assert provider_module.subprocess.run is original_subprocess_run
+
+    # Bridge pin: keep exact real callable across the A→B gap (F6 proof retained).
+    with pytest.MonkeyPatch.context() as bridge_mp:
+        _restore_shared_subprocess_run(bridge_mp, original_subprocess_run)
+        dump_fake = feature_support._PROVIDER._fake_dump
+        feature_fake = feature_support._fake_feature_worker
+        assert dump_fake is not feature_fake
+        assert feature_fake is not original_subprocess_run
+
+        # Authority B: isolated plan_mp owns feature worker seam for deep fixture
+        # only; production backtest-plan builder/verifier stay real.
+        with pytest.MonkeyPatch.context() as plan_mp:
+            _assert_shared_subprocess_run(original_subprocess_run)
+            assert subprocess.run is not dump_fake
+            # Install exact feature fixture worker BEFORE plan_support._context so
+            # legacy _build_feature_bundle captures/restores this seam (not real run).
+            _install_shared_subprocess_run(plan_mp, feature_fake)
+            assert subprocess.run is feature_fake
+            assert subprocess.run is not dump_fake
+            _assert_shared_subprocess_run(feature_fake)
+            # Test-owned parent: deep formal support does `plan_root/artifacts.mkdir()`
+            # with parents=False; caller must create plan_root before _context.
+            plan_root = tmp_path / "plan"
+            plan_root.mkdir()
+            context = plan_support._context(plan_root, plan_mp)
+            # Immediately restore F6 original real callable before production target.
+            _restore_shared_subprocess_run(plan_mp, original_subprocess_run)
+            assert subprocess.run is original_subprocess_run
+            assert subprocess.run is not feature_fake
+            assert subprocess.run is not dump_fake
+            _assert_shared_subprocess_run(original_subprocess_run)
+
+            kwargs = dict(context["plan_kwargs"])
+            project_root = type(Path())(context["common"])
+            target = kwargs["target"]
+            output_root = project_root / "integration-plan-project-only"
+            output_root.mkdir()
+
+            import quant.backtest.a_share_plan as plan_module
+
+            real_verify_target = plan_module.verify_target_artifact
+            # Narrow verifier seam ONLY around positive PROJECT-only builder:
+            # fixture receipts use alias=root; this node passes PROJECT-only roots.
+            # Must not cover wrong-alias; must not stub the builder itself.
+            with pytest.MonkeyPatch.context() as positive_mp:
+                positive_mp.setattr(
+                    plan_module, "verify_target_artifact", lambda **_: target,
+                )
+                assert plan_module.verify_target_artifact is not real_verify_target
+                assert plan_module.verify_target_artifact(**{}) is target
+                manifest = build_backtest_plan_artifact(
+                    target=target,
+                    release=kwargs["release"],
+                    folds=kwargs["folds"],
+                    experiment=kwargs["experiment"],
+                    config=kwargs["config"],
+                    fresh_context=kwargs["fresh_context"],
+                    artifact_roots={"PROJECT": project_root},
+                    output_root=output_root,
+                )
+                assert type(manifest) is BacktestPlanManifestV1
+                assert manifest.work_key == target.manifest.work_key
+                assert type(kwargs["fresh_context"]) is BacktestPlanFreshVerificationContext
+                assert not hasattr(contracts, "BacktestPlanFreshVerificationContext")
+            # Stub revoked immediately after positive builder.
+            assert plan_module.verify_target_artifact is real_verify_target
+            # No feature/dump fake may remain after the real builder call.
+            _assert_shared_subprocess_run(original_subprocess_run)
+            assert subprocess.run is not feature_fake
+            assert subprocess.run is not dump_fake
+
+            wrong_output = project_root / "integration-plan-wrong-alias"
+            wrong_output.mkdir()
+            # wrong-alias must run with production verifier (stub already gone).
+            assert plan_module.verify_target_artifact is real_verify_target
+            with pytest.raises(ValueError, match="^M3_BACKTEST_PLAN_ARTIFACT_INVALID$"):
+                build_backtest_plan_artifact(
+                    target=kwargs["target"],
+                    release=kwargs["release"],
+                    folds=kwargs["folds"],
+                    experiment=kwargs["experiment"],
+                    config=kwargs["config"],
+                    fresh_context=kwargs["fresh_context"],
+                    artifact_roots={"EXTERNAL_QLIB": project_root},
+                    output_root=wrong_output,
+                )
+            assert not any(wrong_output.iterdir())
+            assert plan_module.verify_target_artifact is real_verify_target
+            _assert_shared_subprocess_run(original_subprocess_run)
+
+        # After plan_mp exit, bridge must still hold the exact pre-A real callable.
+        _assert_shared_subprocess_run(original_subprocess_run)
+        assert subprocess.run is not dump_fake
+        assert subprocess.run is not feature_fake
 
     production = Path(upstream.__file__).read_text(encoding="utf-8")
     assert "spec=validation_spec" in production
