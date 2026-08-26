@@ -169,7 +169,9 @@ def _create_policy_api():  # type: ignore[no-untyped-def]
             _fresh_verify_environment(environment, timestamp)
             _fresh_verify_anchored_policy(anchored)
             config_id = trading_config_identity(parsed.trading_config)
-            cost_id = _cost_schedule_identity(parsed.execution_cost_schedule)
+            cost_id = paper_execution_cost_schedule_identity(
+                parsed.execution_cost_schedule
+            )
             identity_payload = _identity_payload(
                 environment=environment,
                 selector=selector,
@@ -836,7 +838,10 @@ def _valid_version(value: str) -> bool:
     )
 
 
-def _cost_schedule_identity(schedule: ExecutionCostSchedule) -> str:
+def paper_execution_cost_schedule_identity(schedule: ExecutionCostSchedule) -> str:
+    """Return the sole canonical SHA-256 identity of one ExecutionCostSchedule."""
+    if type(schedule) is not ExecutionCostSchedule:
+        raise TypeError("paper_execution_cost_schedule_identity requires ExecutionCostSchedule")
     return _sha256(
         {
             "schema_version": "paper-execution-cost-schedule-identity-v1",
@@ -904,7 +909,7 @@ def _policy_payload(policy: VerifiedPaperExecutionPolicy) -> dict[str, object]:
         "fresh_trading_config_identity": trading_config_identity(policy.trading_config),
         "supported_markets": [item.value for item in policy.supported_markets],
         "cost_schedule_identity": policy.cost_schedule_identity,
-        "fresh_cost_schedule_identity": _cost_schedule_identity(
+        "fresh_cost_schedule_identity": paper_execution_cost_schedule_identity(
             policy.execution_cost_schedule
         ),
         "minimum_order_notionals": [
@@ -1008,5 +1013,6 @@ __all__ = [
     "PaperExecutionPolicyError",
     "VerifiedPaperExecutionPolicy",
     "load_verified_paper_execution_policy",
+    "paper_execution_cost_schedule_identity",
     "verify_existing_paper_execution_policy",
 ]

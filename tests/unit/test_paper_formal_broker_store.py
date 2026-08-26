@@ -112,7 +112,7 @@ def _chains(tmp_path: Path):  # type: ignore[no-untyped-def]
         "d" * 64,
         (Market.SH, Market.SZ),
         schedule,
-        b1._digest(b1._cost_payload(schedule)),
+        paper_policy.paper_execution_cost_schedule_identity(schedule),
         (),
         "a-share-v1",
         "adapter-v1",
@@ -375,6 +375,23 @@ def test_closed_and_forged_capabilities_are_rejected(
             binding=materialized[2],
             account=materialized[3],
             now=NOW,
+        )
+
+
+def test_legacy_broker_local_cost_identity_rejected_by_formal_descriptor(
+    tmp_path: Path,
+) -> None:
+    _, materialized = _chains(tmp_path)
+    schedule = materialized[1].execution_cost_schedule
+    legacy_identity = b1._digest(b1._cost_payload(schedule))
+    canonical = paper_policy.paper_execution_cost_schedule_identity(schedule)
+    assert legacy_identity != canonical
+    assert materialized[1].cost_schedule_identity == canonical
+    stale_policy = replace(materialized[1], cost_schedule_identity=legacy_identity)
+    stale_binding = replace(materialized[2], cost_schedule_identity=legacy_identity)
+    with pytest.raises(b1.PaperBrokerStoreError, match="^PAPER_BROKER_POLICY_INVALID$"):
+        b1.build_formal_paper_broker_policy_descriptor(
+            policy=stale_policy, binding=stale_binding
         )
 
 
