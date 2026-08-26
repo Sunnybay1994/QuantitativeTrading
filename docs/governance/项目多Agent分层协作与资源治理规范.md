@@ -30,6 +30,7 @@ agent tree、branch/worktree、资源窗口和提交记录只承担通知、执�
         │   └── 多个任务各自使用隔离 subagent
         ├── 本地 Luna Worker 2 session
         │   └── 多个任务各自使用隔离 subagent
+        ├── 本地 GPT-5.3-Codex-Spark（xhigh）受限轻任务 session
         └── 外部 cursor-agent 独立会话
 ```
 
@@ -134,6 +135,42 @@ worktree 和 agent id 判断。发现真正的双写、两个实现者、白名�
 
 外部 `cursor-agent` 是可选 Worker。未特别指定模型时使用 `auto`；用户或统筹可针对高风险、复杂实现或能力
 需求显式指定其他模型。实现与独立审查必须使用不同的新会话或隔离上下文。
+
+#### 2.4.3 GPT-5.3-Codex-Spark 受限轻任务准入
+
+2026-08-26 本机已验真 Worker 配置为 `gpt-5.3-codex-spark`、`model_reasoning_effort = "xhigh"`。OpenAI
+公开文档将该模型标为文本型 research preview，定位为近即时、实时的编码迭代；官方用例特别推荐它处理既有
+应用中的小粒度 UI 修改。`xhigh` 提供更深的单任务推理，但会增加耗时和 token 使用，不构成权限、正确性或
+项目 Gate 的证明：
+
+- <https://learn.chatgpt.com/docs/models#recommended-models>
+- <https://learn.chatgpt.com/use-cases>
+
+该 Worker 作为 Luna 池之外的可选实现通道，三个领域经理均可派发任务，但任务必须同时满足：
+
+1. 任务书已经冻结目标、非目标、exact base/worktree、写白名单、失败语义和验收命令，不需要 Worker 作业务或
+   架构选择；
+2. 改动局限于一个已有模块、组件或一组紧密相关的文档/测试，接口和依赖模式在仓库中已有可复用范例；
+3. 不写 integration 或共享 SSOT，不触碰真实数据、凭据、账户、网络、PAPER/LIVE、不可逆外部状态或迁移；
+4. 结果可通过小范围确定性单元/组件测试及定向 Ruff、mypy、cold import 等独立验收；失败影响局部且可恢复；
+5. 派单前记录 Worker 的 exact model/effort、task id、唯一 worktree 和资源级别；身份或配置漂移时 STOP，不以
+   “Spark”显示名推断底层能力。
+
+三个领域的首批适用任务：
+
+| 领域 | 可派发的简单任务 | 不得派发的边界 |
+|---|---|---|
+| 框架开发 | 文档同步；既有模式下的局部类型标注、错误归一、测试 fixture 或纯 helper 修复 | Schema/migration、锁与持久性、receipt/identity、session barrier、跨库事务、执行安全或跨模块架构 |
+| 投研 | 已冻结公式的纯因子函数与单元测试；fixture/类型/文档修正；不改变语义的局部 runner 接线 | PIT/时间语义、共享 evaluator/schema、参数或候选选择、真实数据/回测、结果解释、Gate、Qlib actual worker |
+| GUI | 既有设计系统内的小粒度布局/文案/样式、只读筛选投影和组件测试 | 运行/下单入口、后台队列、私有 verifier 复制、研究或交易写入、PAPER/LIVE |
+
+以下工作即使描述很短，也不属于“简单任务”：需求仍有实质歧义；修改共享生产合同；跨两个以上领域；需要
+真实网络/数据/SQLite/券商/Qlib 或不可逆操作；涉及安全、凭据、资金、订单、OMS/风控/对账；需要中央合流、
+archive 或来源线退休。此类任务继续交给适合复杂开放任务的 Worker，并保留独立初验与中央终验。
+
+首次准入采用三单试运行：框架、投研、GUI 各最多一个互不冲突的简单任务。每单仍执行“一任务、一 Worker、
+一 worktree”、任务书/交付/审查职责分离和正常验证；Spark 不审查自己的实现。三单完成后由统筹根据越界、
+返工次数、测试缺陷和验收结果决定是否扩大任务类型，而不是按响应速度自动晋级。
 
 ## 3. 权限与责任矩阵
 
@@ -304,9 +341,11 @@ Worker 可以先创建报告并写 `IN_PROGRESS`，需要资源时更新为 `RES
 2. 当前默认实现通道为本地 Luna Worker 池；每个 Worker 均可并行管理多个隔离 subagent，每个具体任务仍只能
    绑定一个 Worker 和一个实现 subagent；任务身份和合同以 Git 中的任务书为准，实时活性只参考 Codex agent id
    与批准路径变化，不维护强制 dispatch registry；
-3. 只有用户或统筹明确指定时才改用外部 `cursor-agent`；未指定模型时使用 `auto`；
-4. 领域经理在统筹冻结后通过任务书下发、通过交付/审查文档收件；中央只管理控制面、资源、合流和真正的双写
+3. 三个领域可在统筹冻结后把符合 §2.4.3 的简单任务交给本地 GPT-5.3-Codex-Spark（xhigh）；首批按三单试运行，
+   不改变 Luna 默认通道、唯一所有权、验证或职责分离规则；
+4. 只有用户或统筹明确指定时才改用外部 `cursor-agent`；未指定模型时使用 `auto`；
+5. 领域经理在统筹冻结后通过任务书下发、通过交付/审查文档收件；中央只管理控制面、资源、合流和真正的双写
    或所有权异常，不介入普通 Worker 心跳；
-5. 不为提高表面并行度拆分共享文件或强耦合任务，也不设置脱离实际资源的固定并发槽数；
-6. 不因 worker 类型改变 PIT、不可变发布、统一回放、OMS/风控/对账、人工准入和凭据安全 Gate；
-7. 新 Worker 类型加入前，先由统筹补充身份、权限、资源、交付和退出合同。
+6. 不为提高表面并行度拆分共享文件或强耦合任务，也不设置脱离实际资源的固定并发槽数；
+7. 不因 worker 类型改变 PIT、不可变发布、统一回放、OMS/风控/对账、人工准入和凭据安全 Gate；
+8. 新 Worker 类型加入前，先由统筹补充身份、权限、资源、交付和退出合同。
