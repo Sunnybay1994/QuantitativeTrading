@@ -7,3 +7,7 @@ configs/research/m2_s2_minimum_breadth_forward.toml text eol=lf
 
 # This registered Task Scheduler runner is bound by a physical SHA-256 receipt.
 scripts/run_m1_daily_streak_20260810_20260814.sh text eol=lf
+
+# Formal PAPER trading SSOT: loaders require LF-only canonical text bytes.
+configs/trading/policies/paper_a_share_v1.toml text eol=lf
+configs/trading/accounts/formal_paper_a_share_v1.toml text eol=lf
