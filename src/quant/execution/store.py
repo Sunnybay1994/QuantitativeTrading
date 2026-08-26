@@ -37,6 +37,7 @@ from quant.execution.session_barrier import (
     fresh_read_session_barrier,
     hold_open_operation_permit,
     hold_open_write_lease,
+    hold_session_barrier_lock,
     initialize_open_barrier,
     invalidate_session_barrier_oms_handle,
     invalidate_write_lease,
@@ -44,13 +45,15 @@ from quant.execution.session_barrier import (
     read_session_barrier,
     require_matching_barrier,
     transition_closing_to_closed,
+    transition_closing_to_closed_with_closure,
     transition_open_to_closing,
     unpack_session_barrier_capability,
     unpack_session_barrier_oms_handle,
     verify_lease_against_row,
+    verify_terminal_child_against_row,
 )
 
-CURRENT_SCHEMA_VERSION: Final[int] = 9
+CURRENT_SCHEMA_VERSION: Final[int] = 10
 LEDGER_CHECKPOINT_KEY: Final[str] = "paper-shadow-primary-v1"
 
 _URI_PREFIX = "sqlite:///"
@@ -3193,6 +3196,218 @@ class ExecutionStore:
             )
         except SessionBarrierError as exc:
             raise StoreError(str(exc)) from None
+        finally:
+            self._release_write_lock()
+
+    def transition_session_barrier_to_closed_with_closure(
+        self,
+        *,
+        closure: object,
+        terminal_successor_identity: str,
+        now: dt.datetime,
+    ) -> object:
+        """Formal CLOSING → CLOSED under an active ``closing_to_closed`` child.
+
+        Reuses the terminal context's already-held anchored OS lock (no
+        second lock acquisition); only ``FORMAL_CLOSURE_ONLY`` capabilities
+        may use this entry. ``SUBSTRATE_RAW_TOKEN`` barriers reject with
+        ``BARRIER_CLOSURE_REQUIRED`` inside the session-barrier module.
+        """
+        conn = self._conn
+        barrier = self._session_barrier
+        if conn is None:
+            raise StoreError("STORE_CLOSED")
+        if barrier is None:
+            raise StoreError("BARRIER_MISSING")
+        if not self._try_acquire_write_lock():
+            raise StoreError("TX_BUSY")
+        try:
+            return transition_closing_to_closed_with_closure(
+                conn,
+                barrier,
+                closure=closure,
+                terminal_successor_identity=terminal_successor_identity,
+                now=now,
+            )
+        except SessionBarrierError as exc:
+            raise StoreError(str(exc)) from None
+        finally:
+            self._release_write_lock()
+
+    @contextmanager
+    def transaction_under_terminal_child(
+        self,
+        *,
+        terminal_child: object,
+        step_kind: str,
+    ) -> Iterator[ExecutionRepository]:
+        """OMS committing transaction under an exact ``oms_recovery`` terminal child.
+
+        Reuses the already-held terminal anchored lock (physical lock depth stays
+        exact one). Other terminal step kinds are refused: they must not receive
+        a general writable OMS repository.
+        """
+        if step_kind != "oms_recovery":
+            raise StoreError("BARRIER_TERMINAL_STEP_INVALID")
+        conn = self._conn
+        barrier = self._session_barrier
+        handle = self._barrier_oms_handle
+        if conn is None:
+            raise StoreError("STORE_CLOSED")
+        if barrier is None or handle is None:
+            raise StoreError("BARRIER_MISSING")
+        if not self._try_acquire_write_lock():
+            raise StoreError("TX_BUSY")
+        try:
+            try:
+                row = fresh_read_session_barrier(oms_handle=handle, capability=barrier)
+                verify_terminal_child_against_row(
+                    terminal_child, capability=barrier, row=row, step_kind="oms_recovery"
+                )
+            except SessionBarrierError as exc:
+                raise StoreError(str(exc)) from None
+            begin_err: StoreError | None = None
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+            except sqlite3.Error as exc:
+                if getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_BUSY:
+                    begin_err = StoreError("TX_BUSY")
+                else:
+                    begin_err = StoreError("TX_BEGIN_FAILED")
+            if begin_err is not None:
+                raise begin_err from None
+            try:
+                row = fresh_read_session_barrier(oms_handle=handle, capability=barrier)
+                verify_terminal_child_against_row(
+                    terminal_child, capability=barrier, row=row, step_kind="oms_recovery"
+                )
+            except SessionBarrierError as exc:
+                _safe_rollback(conn)
+                raise StoreError(str(exc)) from None
+            repo = ExecutionRepository(conn)
+            try:
+                yield repo
+            except Exception:
+                _safe_rollback(conn)
+                raise
+            else:
+                commit_err: StoreError | None = None
+                try:
+                    row = fresh_read_session_barrier(
+                        oms_handle=handle, capability=barrier
+                    )
+                    verify_terminal_child_against_row(
+                        terminal_child,
+                        capability=barrier,
+                        row=row,
+                        step_kind="oms_recovery",
+                    )
+                    conn.execute("COMMIT")
+                except SessionBarrierError as exc:
+                    _safe_rollback(conn)
+                    commit_err = StoreError(str(exc))
+                except sqlite3.Error:
+                    _safe_rollback(conn)
+                    commit_err = StoreError("TX_COMMIT_FAILED")
+                if commit_err is not None:
+                    raise commit_err from None
+        finally:
+            self._release_write_lock()
+
+    @contextmanager
+    def inspect_repository_under_terminal_child(
+        self,
+        *,
+        terminal_child: object,
+        step_kind: str,
+    ) -> Iterator[ExecutionRepository]:
+        """Read-only OMS inspect under a live terminal child; always ROLLBACK.
+
+        Never commits. Used by ``broker_finality`` (and similar) to obtain fresh
+        recovery facts without exposing a writable repository.
+        """
+        conn = self._conn
+        barrier = self._session_barrier
+        handle = self._barrier_oms_handle
+        if conn is None:
+            raise StoreError("STORE_CLOSED")
+        if barrier is None or handle is None:
+            raise StoreError("BARRIER_MISSING")
+        if not self._try_acquire_write_lock():
+            raise StoreError("TX_BUSY")
+        try:
+            try:
+                row = fresh_read_session_barrier(oms_handle=handle, capability=barrier)
+                verify_terminal_child_against_row(
+                    terminal_child, capability=barrier, row=row, step_kind=step_kind  # type: ignore[arg-type]
+                )
+            except SessionBarrierError as exc:
+                raise StoreError(str(exc)) from None
+            begin_err: StoreError | None = None
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+            except sqlite3.Error as exc:
+                if getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_BUSY:
+                    begin_err = StoreError("TX_BUSY")
+                else:
+                    begin_err = StoreError("TX_BEGIN_FAILED")
+            if begin_err is not None:
+                raise begin_err from None
+            try:
+                row = fresh_read_session_barrier(oms_handle=handle, capability=barrier)
+                verify_terminal_child_against_row(
+                    terminal_child, capability=barrier, row=row, step_kind=step_kind  # type: ignore[arg-type]
+                )
+                yield ExecutionRepository(conn)
+            finally:
+                _safe_rollback(conn)
+        finally:
+            self._release_write_lock()
+
+    @contextmanager
+    def inspect_repository_when_barrier_closed(self) -> Iterator[ExecutionRepository]:
+        """Read-only OMS inspect after barrier is CLOSED; always ROLLBACK.
+
+        Holds the anchored barrier lock, proves ``state=CLOSED``, then yields a
+        repository that cannot commit. Used by formal CLOSED replay to fresh
+        recompute the durable successor chain without writers.
+        """
+        conn = self._conn
+        barrier = self._session_barrier
+        handle = self._barrier_oms_handle
+        if conn is None:
+            raise StoreError("STORE_CLOSED")
+        if barrier is None or handle is None:
+            raise StoreError("BARRIER_MISSING")
+        if not self._try_acquire_write_lock():
+            raise StoreError("TX_BUSY")
+        try:
+            try:
+                with hold_session_barrier_lock(barrier) as held:
+                    row = fresh_read_session_barrier(
+                        oms_handle=handle, capability=barrier
+                    )
+                    if row.state != "CLOSED":
+                        raise SessionBarrierError("BARRIER_TRANSITION_INVALID")
+                    if row.lock_identity != held.lock_identity:
+                        raise SessionBarrierError("BARRIER_LOCK_IDENTITY_DRIFT")
+                    try:
+                        conn.execute("BEGIN IMMEDIATE")
+                    except sqlite3.Error as exc:
+                        if getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_BUSY:
+                            raise StoreError("TX_BUSY") from None
+                        raise StoreError("TX_BEGIN_FAILED") from None
+                    try:
+                        row = fresh_read_session_barrier(
+                            oms_handle=handle, capability=barrier
+                        )
+                        if row.state != "CLOSED":
+                            raise SessionBarrierError("BARRIER_TRANSITION_INVALID")
+                        yield ExecutionRepository(conn)
+                    finally:
+                        _safe_rollback(conn)
+            except SessionBarrierError as exc:
+                raise StoreError(str(exc)) from None
         finally:
             self._release_write_lock()
 

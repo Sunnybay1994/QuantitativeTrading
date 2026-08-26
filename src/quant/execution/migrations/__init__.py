@@ -17,6 +17,9 @@ from quant.execution.migrations.v007_unified_risk_counters import (
 )
 from quant.execution.migrations.v008_approval_receipts import upgrade as upgrade_v008
 from quant.execution.migrations.v009_session_barrier import upgrade as upgrade_v009
+from quant.execution.migrations.v010_terminal_successor import (
+    upgrade as upgrade_v010,
+)
 
 # Ordered list of (target_version, upgrade_callable).
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
@@ -29,6 +32,7 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (7, upgrade_v007),
     (8, upgrade_v008),
     (9, upgrade_v009),
+    (10, upgrade_v010),
 ]
 
 __all__ = ["MIGRATIONS"]

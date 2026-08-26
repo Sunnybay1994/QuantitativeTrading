@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import inspect
 import json
 import os
 import shutil
@@ -579,9 +580,10 @@ def test_development_evidence_never_returns_pass(tmp_path: Path) -> None:
     assert decision.last_observed_at - decision.first_observed_at >= dt.timedelta(days=28)
 
 
-def test_formal_empty_session_is_durably_blocked_without_order_receipt(
+def test_formal_empty_session_order_closure_uses_canonical_zero(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """§10 supersede: true zero-command + no orphan ORDER is Zero success, not MISSING."""
     root = (tmp_path / "explicit-formal-root").resolve()
     started = dt.datetime(2026, 8, 9, 8, tzinfo=UTC)
     date = started.date()
@@ -595,7 +597,12 @@ def test_formal_empty_session_is_durably_blocked_without_order_receipt(
     )
     observed = started
     clock[0] = observed + dt.timedelta(minutes=3)
-    _append(root, manifest, date, observed, _facts(tmp_path, observed, "formal"))
+    facts = _facts(tmp_path, observed, "formal")
+    zero = soak_module.session_order_semantic_closure_identity(
+        facts[0], session_date=date
+    )
+    assert len(zero) == 64
+    _append(root, manifest, date, observed, facts)
 
     verified = verify_soak_evidence(
         root=root, anchor_root=_anchor_root(root), manifest=manifest
@@ -603,11 +610,75 @@ def test_formal_empty_session_is_durably_blocked_without_order_receipt(
     decision = decide_soak_gate(
         verified, root=root, anchor_root=_anchor_root(root), as_of=clock[0]
     )
-    assert decision.status == "BLOCKED"
-    assert verified.sessions[0].issue_codes == (
-        "SOAK_SESSION_ORDER_RECEIPT_MISSING",
+    assert "SOAK_SESSION_ORDER_RECEIPT_MISSING" not in verified.sessions[0].issue_codes
+    assert "SOAK_SESSION_ORDER_RECEIPT_INVALID" not in verified.sessions[0].issue_codes
+    assert "SOAK_SESSION_BLOCKED" not in decision.stable_codes
+    assert decision.status == "WAITING_FOR_SOAK_EVIDENCE"
+
+
+def test_orphan_order_receipt_for_session_without_commands_is_invalid(
+    tmp_path: Path,
+) -> None:
+    from decimal import Decimal
+
+    import quant.execution.reconcile as reconcile_module
+    import quant.execution.risk_wire as risk_wire
+    from quant.execution.risk import DailyRiskCounters
+    from quant.execution.risk_wire import DurableOrderRiskDecision
+
+    recovery, _, _ = _filled_inputs(tmp_path)
+    command_date = recovery.commands[0].intent.session_date
+    orphan_date = command_date + DAY
+    old = recovery.risk_receipts[0]
+    decision = old.decision
+    assert type(decision) is DurableOrderRiskDecision
+    new_decision = replace(
+        decision,
+        projected_counters=replace(
+            decision.projected_counters, session_date=orphan_date
+        ),
     )
-    assert "SOAK_SESSION_BLOCKED" in decision.stable_codes
+    new_receipt = risk_wire._build(
+        kind="ORDER",
+        sequence=old.sequence,
+        previous_receipt_id=old.previous_receipt_id,
+        subject_id=old.subject_id,
+        risk_counter_key=old.risk_counter_key,
+        predecessor_counters=DailyRiskCounters(
+            session_date=orphan_date,
+            order_count=0,
+            cancel_count=0,
+            buy_notional=Decimal(0),
+        ),
+        decision=new_decision,
+    )
+    object.__setattr__(recovery, "risk_receipts", (new_receipt,))
+    object.__setattr__(
+        recovery, "recovery_id", reconcile_module._recovery_identity(recovery)
+    )
+    with pytest.raises(SoakError, match="^SOAK_SESSION_ORDER_RECEIPT_INVALID$"):
+        soak_module.session_order_semantic_closure_identity(
+            recovery, session_date=orphan_date
+        )
+
+
+def test_nonzero_session_commands_without_order_receipts_are_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recovery, _, _ = _filled_inputs(tmp_path)
+    session_date = recovery.commands[0].intent.session_date
+    stripped = RecoveryResult.__new__(RecoveryResult)
+    for name in recovery.__dataclass_fields__:
+        value = () if name == "risk_receipts" else getattr(recovery, name)
+        object.__setattr__(stripped, name, value)
+    monkeypatch.setattr(soak_module, "_prove_recovery", lambda value: value)
+    monkeypatch.setattr(
+        soak_module, "verify_risk_receipt_semantic_closure", lambda **kwargs: None
+    )
+    with pytest.raises(SoakError, match="^SOAK_SESSION_ORDER_RECEIPT_MISSING$"):
+        soak_module.session_order_semantic_closure_identity(
+            stripped, session_date=session_date
+        )
 
 
 def test_windows_scope_manifest_wait_block_and_complete_decisions(
@@ -901,12 +972,30 @@ def test_session_order_receipt_identity_rejects_old_date(tmp_path: Path) -> None
         recovery, session_date=session_date
     )
     assert len(identity) == 64
-    with pytest.raises(
-        SoakError, match="^SOAK_SESSION_ORDER_RECEIPT_MISSING$"
-    ):
-        soak_module._session_order_semantic_closure_identity(
-            recovery, session_date=session_date + DAY
-        )
+    # Different session_date with no commands and no orphan ORDER receipts yields
+    # the package-owned zero-command identity (distinct from the nonzero digest).
+    zero = soak_module.session_order_semantic_closure_identity(
+        recovery, session_date=session_date + DAY
+    )
+    assert len(zero) == 64
+    assert zero != identity
+
+
+def test_session_order_zero_command_identity_is_package_owned_ssot(
+    tmp_path: Path,
+) -> None:
+    recovery, _, _ = _filled_inputs(tmp_path)
+    session_date = recovery.commands[0].intent.session_date + DAY
+    public = soak_module.session_order_semantic_closure_identity(
+        recovery, session_date=session_date
+    )
+    private = soak_module._session_order_semantic_closure_identity(
+        recovery, session_date=session_date
+    )
+    assert public == private
+    assert len(public) == 64
+    assert "soak-runtime-zero-order-closure-v1" not in inspect.getsource(soak_module)
+    assert "SoakSessionOrderSemanticClosureZero" in inspect.getsource(soak_module)
 
 
 def test_manifest_is_bound_to_original_physical_root(tmp_path: Path) -> None:

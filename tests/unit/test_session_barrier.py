@@ -21,29 +21,44 @@ from typing import Protocol
 import pytest
 
 from quant.execution.migrations.v009_session_barrier import upgrade as upgrade_v009
+from quant.execution.migrations.v010_terminal_successor import (
+    upgrade as upgrade_v010,
+)
 from quant.execution.session_barrier import (
     SessionBarrierCapability,
     SessionBarrierError,
     SessionBarrierOmsHandle,
     SessionBarrierOperationPermit,
+    SessionBarrierTerminalChildCapability,
+    SessionBarrierTerminalClosureContext,
     SessionBarrierWriteLease,
+    active_terminal_broker_finality_child,
+    bind_terminal_successor_identity,
     build_session_barrier_capability,
     compute_close_token_identity,
+    compute_terminal_step_identity,
+    compute_terminal_successor_identity,
     fresh_read_session_barrier,
     hold_open_operation_permit,
     hold_open_write_lease,
     hold_session_barrier_lock,
+    hold_terminal_closure_child,
+    hold_terminal_closure_context,
     initialize_open_barrier,
     invalidate_session_barrier_oms_handle,
     invalidate_write_lease,
     issue_session_barrier_oms_handle,
     read_session_barrier,
     transition_closing_to_closed,
+    transition_closing_to_closed_with_closure,
     transition_open_to_closing,
     unpack_open_write_lease,
     unpack_session_barrier_capability,
     unpack_session_barrier_oms_handle,
     unpack_session_barrier_operation_permit,
+    unpack_session_barrier_terminal_child,
+    unpack_session_barrier_terminal_context,
+    verify_terminal_child_against_row,
 )
 
 UTC = dt.timezone.utc
@@ -91,8 +106,9 @@ def _oms_conn(tmp_path: Path) -> sqlite3.Connection:
         """
     )
     upgrade_v009(conn)
+    upgrade_v010(conn)
     conn.execute(
-        "INSERT INTO schema_version VALUES (1, 9, 'ready', '2026-08-25T00:00:00.000000Z')"
+        "INSERT INTO schema_version VALUES (1, 10, 'ready', '2026-08-25T00:00:00.000000Z')"
     )
     conn.execute("COMMIT")
     return conn
@@ -1483,4 +1499,618 @@ def test_operation_permit_nested_child_forge_cross_thread_and_closing_after_exit
         unpack_session_barrier_operation_permit(
             permit, capability=cap, oms_handle=handle
         )
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# M4-B1B2: formal terminal closure context/child adversarial coverage.
+# ---------------------------------------------------------------------------
+
+
+def _formal_closing(tmp_path: Path):  # type: ignore[no-untyped-def]
+    """Build one FORMAL_CLOSURE_ONLY barrier already in CLOSING with a live closure."""
+    conn = _oms_conn(tmp_path)
+    cap = _capability(tmp_path, terminal_policy="FORMAL_CLOSURE_ONLY")
+    initialize_open_barrier(conn, cap, created_at=NOW)
+    handle = issue_session_barrier_oms_handle(capability=cap, conn=conn)
+    _closing, token, closure = transition_open_to_closing(
+        conn, cap, nonce="formal-terminal", now=NOW + dt.timedelta(seconds=1)
+    )
+    return conn, cap, handle, token, closure
+
+
+def test_terminal_context_lock_depth_exact_one_across_sequential_children(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import quant.execution.session_barrier as sb
+
+    acquire_count = {"n": 0}
+    real_acquire = sb._acquire_barrier_lock
+
+    def tracked_acquire(root: Path) -> object:
+        acquire_count["n"] += 1
+        return real_acquire(root)
+
+    monkeypatch.setattr(sb, "_acquire_barrier_lock", tracked_acquire)
+    conn, cap, handle, token, closure = _formal_closing(tmp_path)
+    baseline = acquire_count["n"]
+
+    with hold_terminal_closure_context(
+        closure, capability=cap, oms_handle=handle
+    ) as context:
+        assert acquire_count["n"] == baseline + 1
+        assert unpack_session_barrier_terminal_context(
+            context, capability=cap, oms_handle=handle
+        ) is context
+        with hold_terminal_closure_child(
+            context, capability=cap, oms_handle=handle, step_kind="broker_finality"
+        ) as child1:
+            assert acquire_count["n"] == baseline + 1
+            assert child1.step_kind == "broker_finality"
+        with hold_terminal_closure_child(
+            context, capability=cap, oms_handle=handle, step_kind="oms_recovery"
+        ) as child2:
+            assert acquire_count["n"] == baseline + 1
+            assert child2.step_kind == "oms_recovery"
+        assert acquire_count["n"] == baseline + 1
+    assert acquire_count["n"] == baseline + 1
+    conn.close()
+
+
+def test_terminal_context_forge_copy_pickle_replace_rejected(
+    tmp_path: Path,
+) -> None:
+    conn, cap, handle, token, closure = _formal_closing(tmp_path)
+    with hold_terminal_closure_context(
+        closure, capability=cap, oms_handle=handle
+    ) as context:
+        with pytest.raises(SessionBarrierError, match="BARRIER_TERMINAL_CONTEXT_INVALID"):
+            SessionBarrierTerminalClosureContext(  # type: ignore[call-arg]
+                capability_identity="x", closure_identity="x", close_token_identity="x",
+                closing_row_identity="x", lock_identity="x", owner_pid=0,
+                owner_thread_id=0, context_identity="x",
+            )
+        forged = object.__new__(SessionBarrierTerminalClosureContext)
+        for name in (
+            "capability_identity", "closure_identity", "close_token_identity",
+            "closing_row_identity", "lock_identity", "owner_pid", "owner_thread_id",
+            "context_identity",
+        ):
+            object.__setattr__(forged, name, getattr(context, name))
+        with pytest.raises(
+            SessionBarrierError, match="BARRIER_TERMINAL_CONTEXT_INVALID"
+        ):
+            unpack_session_barrier_terminal_context(
+                forged, capability=cap, oms_handle=handle
+            )
+        with pytest.raises(TypeError):
+            copy.copy(context)
+        with pytest.raises(TypeError):
+            copy.deepcopy(context)
+        with pytest.raises(TypeError):
+            pickle.dumps(context)
+        with pytest.raises(
+            SessionBarrierError, match="BARRIER_TERMINAL_CONTEXT_INVALID"
+        ):
+            replace(context, owner_pid=0)  # type: ignore[misc]
+    conn.close()
+
+
+def test_terminal_child_forge_copy_pickle_replace_rejected(
+    tmp_path: Path,
+) -> None:
+    conn, cap, handle, token, closure = _formal_closing(tmp_path)
+    with hold_terminal_closure_context(
+        closure, capability=cap, oms_handle=handle
+    ) as context:
+        with hold_terminal_closure_child(
+            context, capability=cap, oms_handle=handle, step_kind="broker_finality"
+        ) as child:
+            with pytest.raises(
+                SessionBarrierError, match="BARRIER_TERMINAL_CHILD_INVALID"
+            ):
+                SessionBarrierTerminalChildCapability(  # type: ignore[call-arg]
+                    capability_identity="x", closure_identity="x",
+                    context_identity="x", step_kind="broker_finality",
+                    lock_identity="x", owner_pid=0, owner_thread_id=0,
+                    child_identity="x",
+                )
+            forged = object.__new__(SessionBarrierTerminalChildCapability)
+            for name in (
+                "capability_identity", "closure_identity", "context_identity",
+                "step_kind", "lock_identity", "owner_pid", "owner_thread_id",
+                "child_identity",
+            ):
+                object.__setattr__(forged, name, getattr(child, name))
+            with pytest.raises(
+                SessionBarrierError, match="BARRIER_TERMINAL_CHILD_INVALID"
+            ):
+                unpack_session_barrier_terminal_child(
+                    forged, capability=cap, step_kind="broker_finality"
+                )
+            with pytest.raises(TypeError):
+                copy.copy(child)
+            with pytest.raises(TypeError):
+                copy.deepcopy(child)
+            with pytest.raises(TypeError):
+                pickle.dumps(child)
+            with pytest.raises(
+                SessionBarrierError, match="BARRIER_TERMINAL_CHILD_INVALID"
+            ):
+                replace(child, owner_pid=0)  # type: ignore[misc]
+    conn.close()
+
+
+def test_terminal_context_nested_and_conflicting_operation_permit_rejected(
+    tmp_path: Path,
+) -> None:
+    conn, cap, handle, token, closure = _formal_closing(tmp_path)
+    with hold_terminal_closure_context(closure, capability=cap, oms_handle=handle):
+        with pytest.raises(
+            SessionBarrierError, match="BARRIER_TERMINAL_CONTEXT_NESTED"
+        ):
+            with hold_terminal_closure_context(
+                closure, capability=cap, oms_handle=handle
+            ):
+                pass
+    conn.close()
+
+
+def test_terminal_child_wrong_step_kind_and_second_active_child_rejected(
+    tmp_path: Path,
+) -> None:
+    conn, cap, handle, token, closure = _formal_closing(tmp_path)
+    with hold_terminal_closure_context(
+        closure, capability=cap, oms_handle=handle
+    ) as context:
+        with hold_terminal_closure_child(
+            context, capability=cap, oms_handle=handle, step_kind="broker_finality"
+        ) as child:
+            with pytest.raises(
+                SessionBarrierError, match="BARRIER_TERMINAL_STEP_INVALID"
+            ):
+                unpack_session_barrier_terminal_child(
+                    child, capability=cap, step_kind="oms_recovery"
+                )
+            with pytest.raises(
+                SessionBarrierError, match="BARRIER_TERMINAL_CHILD_ACTIVE"
+            ):
+                with hold_terminal_closure_child(
+                    context, capability=cap, oms_handle=handle, step_kind="oms_recovery"
+                ):
+                    pass
+            assert active_terminal_broker_finality_child(capability=cap) is child
+        assert active_terminal_broker_finality_child(capability=cap) is None
+        # Sequential child after the first exits still reuses the same context.
+        with hold_terminal_closure_child(
+            context, capability=cap, oms_handle=handle, step_kind="oms_recovery"
+        ) as child2:
+            assert child2.step_kind == "oms_recovery"
+    conn.close()
+
+
+def test_terminal_child_cross_thread_owner_mismatch(tmp_path: Path) -> None:
+    conn, cap, handle, token, closure = _formal_closing(tmp_path)
+    with hold_terminal_closure_context(
+        closure, capability=cap, oms_handle=handle
+    ) as context:
+        with hold_terminal_closure_child(
+            context, capability=cap, oms_handle=handle, step_kind="broker_finality"
+        ) as child:
+            owner_errors: list[str] = []
+
+            def _cross_thread() -> None:
+                try:
+                    unpack_session_barrier_terminal_child(
+                        child, capability=cap, step_kind="broker_finality"
+                    )
+                except SessionBarrierError as exc:
+                    owner_errors.append(exc.code)
+
+            thread = threading.Thread(target=_cross_thread)
+            thread.start()
+            thread.join()
+            assert owner_errors == ["BARRIER_TERMINAL_CHILD_OWNER_MISMATCH"]
+
+        context_errors: list[str] = []
+
+        def _cross_thread_context() -> None:
+            try:
+                unpack_session_barrier_terminal_context(
+                    context, capability=cap, oms_handle=handle
+                )
+            except SessionBarrierError as exc:
+                context_errors.append(exc.code)
+
+        thread2 = threading.Thread(target=_cross_thread_context)
+        thread2.start()
+        thread2.join()
+        assert context_errors == ["BARRIER_TERMINAL_CONTEXT_OWNER_MISMATCH"]
+    conn.close()
+
+
+def test_formal_closed_replay_signal_vs_raw_token_always_rejected(
+    tmp_path: Path,
+) -> None:
+    conn, cap, handle, token, closure = _formal_closing(tmp_path)
+    with hold_terminal_closure_context(
+        closure, capability=cap, oms_handle=handle
+    ) as context:
+        successor = compute_terminal_successor_identity(
+            close_token_identity=closure.close_token_identity,
+            closing_row_identity=closure.closing_row_identity,
+            closure_identity=closure.closure_identity,
+            broker_finality_step_identity=_hex("s1"),
+            oms_recovery_step_identity=_hex("s2"),
+            reconciliation_step_identity=_hex("s3"),
+            report_soak_step_identity=_hex("s4"),
+        )
+        with hold_terminal_closure_child(
+            context, capability=cap, oms_handle=handle, step_kind="terminal_successor"
+        ):
+            assert (
+                bind_terminal_successor_identity(
+                    context,
+                    capability=cap,
+                    oms_handle=handle,
+                    terminal_successor_identity=successor,
+                )
+                == successor
+            )
+            assert (
+                bind_terminal_successor_identity(
+                    context,
+                    capability=cap,
+                    oms_handle=handle,
+                    terminal_successor_identity=successor,
+                )
+                == successor
+            )
+            with pytest.raises(
+                SessionBarrierError, match="BARRIER_TERMINAL_SUCCESSOR_MISMATCH"
+            ):
+                bind_terminal_successor_identity(
+                    context,
+                    capability=cap,
+                    oms_handle=handle,
+                    terminal_successor_identity=_hex("tampered-successor"),
+                )
+        with hold_terminal_closure_child(
+            context, capability=cap, oms_handle=handle, step_kind="closing_to_closed"
+        ):
+            closed = transition_closing_to_closed_with_closure(
+                conn, cap,
+                closure=closure,
+                terminal_successor_identity=successor,
+                now=NOW + dt.timedelta(seconds=2),
+            )
+            assert closed.state == "CLOSED"
+            assert closed.terminal_successor_identity == successor
+            # Idempotent same-token replay inside the same live child.
+            replayed = transition_closing_to_closed_with_closure(
+                conn, cap,
+                closure=closure,
+                terminal_successor_identity=successor,
+                now=NOW + dt.timedelta(seconds=3),
+            )
+            assert replayed == closed
+            assert replayed.terminal_successor_identity == successor
+
+    # Re-entering the formal terminal context after CLOSED is a clean signal,
+    # not a crash: this is exactly how soak_runtime distinguishes "resume the
+    # sequence" (CLOSING) from "verify-only replay" (CLOSED).
+    with pytest.raises(SessionBarrierError, match="BARRIER_STATE_CLOSED"):
+        with hold_terminal_closure_context(closure, capability=cap, oms_handle=handle):
+            pass
+
+    # SUBSTRATE_RAW_TOKEN barriers are refused by the formal closure API even
+    # once CLOSED, at both context entry and the CLOSING→CLOSED transition.
+    raw_root = tmp_path / "raw"
+    raw_root.mkdir()
+    raw_conn = _oms_conn(raw_root)
+    raw_cap = _capability(raw_root)
+    initialize_open_barrier(raw_conn, raw_cap, created_at=NOW)
+    raw_handle = issue_session_barrier_oms_handle(capability=raw_cap, conn=raw_conn)
+    _raw_closing, raw_token, _raw_closure_none = transition_open_to_closing(
+        raw_conn, raw_cap, nonce="raw", now=NOW + dt.timedelta(seconds=1)
+    )
+    with pytest.raises(SessionBarrierError, match="BARRIER_CLOSURE_REQUIRED"):
+        with hold_terminal_closure_context(
+            object(), capability=raw_cap, oms_handle=raw_handle
+        ):
+            pass
+    raw_closed = transition_closing_to_closed(
+        raw_conn, raw_cap, close_token_identity=raw_token, now=NOW + dt.timedelta(seconds=2)
+    )
+    assert raw_closed.state == "CLOSED"
+    with pytest.raises(SessionBarrierError, match="BARRIER_CLOSURE_REQUIRED"):
+        transition_closing_to_closed_with_closure(
+            raw_conn, raw_cap,
+            closure=object(),
+            terminal_successor_identity=_hex("raw-successor"),
+            now=NOW + dt.timedelta(seconds=3),
+        )
+    raw_conn.close()
+    conn.close()
+
+
+def test_transition_closing_to_closed_with_closure_requires_active_matching_child(
+    tmp_path: Path,
+) -> None:
+    conn, cap, handle, token, closure = _formal_closing(tmp_path)
+    successor = compute_terminal_successor_identity(
+        close_token_identity=closure.close_token_identity,
+        closing_row_identity=closure.closing_row_identity,
+        closure_identity=closure.closure_identity,
+        broker_finality_step_identity=_hex("s1"),
+        oms_recovery_step_identity=_hex("s2"),
+        reconciliation_step_identity=_hex("s3"),
+        report_soak_step_identity=_hex("s4"),
+    )
+    # No active terminal context/child at all.
+    with pytest.raises(SessionBarrierError, match="BARRIER_TERMINAL_CHILD_INVALID"):
+        transition_closing_to_closed_with_closure(
+            conn, cap, closure=closure, terminal_successor_identity=successor, now=NOW
+        )
+    with hold_terminal_closure_context(
+        closure, capability=cap, oms_handle=handle
+    ) as context:
+        # Active child exists but for the wrong step kind.
+        with hold_terminal_closure_child(
+            context, capability=cap, oms_handle=handle, step_kind="broker_finality"
+        ):
+            with pytest.raises(
+                SessionBarrierError, match="BARRIER_TERMINAL_STEP_INVALID"
+            ):
+                transition_closing_to_closed_with_closure(
+                    conn, cap, closure=closure,
+                    terminal_successor_identity=successor,
+                    now=NOW,
+                )
+            with pytest.raises(
+                SessionBarrierError, match="BARRIER_TERMINAL_STEP_INVALID"
+            ):
+                bind_terminal_successor_identity(
+                    context,
+                    capability=cap,
+                    oms_handle=handle,
+                    terminal_successor_identity=successor,
+                )
+        # closing_to_closed without a prior terminal_successor bind fails closed.
+        with hold_terminal_closure_child(
+            context, capability=cap, oms_handle=handle, step_kind="closing_to_closed"
+        ):
+            with pytest.raises(
+                SessionBarrierError, match="BARRIER_TERMINAL_SUCCESSOR_REQUIRED"
+            ):
+                transition_closing_to_closed_with_closure(
+                    conn, cap, closure=closure,
+                    terminal_successor_identity=successor,
+                    now=NOW,
+                )
+            with pytest.raises(SessionBarrierError):
+                transition_closing_to_closed_with_closure(
+                    conn, cap, closure=closure,
+                    terminal_successor_identity="not-hex64",
+                    now=NOW,
+                )
+        with hold_terminal_closure_child(
+            context, capability=cap, oms_handle=handle, step_kind="terminal_successor"
+        ):
+            bind_terminal_successor_identity(
+                context,
+                capability=cap,
+                oms_handle=handle,
+                terminal_successor_identity=successor,
+            )
+        with hold_terminal_closure_child(
+            context, capability=cap, oms_handle=handle, step_kind="closing_to_closed"
+        ):
+            with pytest.raises(
+                SessionBarrierError, match="BARRIER_TERMINAL_SUCCESSOR_MISMATCH"
+            ):
+                transition_closing_to_closed_with_closure(
+                    conn, cap, closure=closure,
+                    terminal_successor_identity=_hex("wrong-successor"),
+                    now=NOW,
+                )
+    assert read_session_barrier(conn).state == "CLOSING"
+    conn.close()
+
+
+def test_verify_terminal_child_against_row_lock_drift_and_state(
+    tmp_path: Path,
+) -> None:
+    import quant.execution.session_barrier as sb
+
+    conn, cap, handle, token, closure = _formal_closing(tmp_path)
+    with hold_terminal_closure_context(
+        closure, capability=cap, oms_handle=handle
+    ) as context:
+        with hold_terminal_closure_child(
+            context, capability=cap, oms_handle=handle, step_kind="oms_recovery"
+        ) as child:
+            row = read_session_barrier(conn)
+            live = verify_terminal_child_against_row(
+                child, capability=cap, row=row, step_kind="oms_recovery"
+            )
+            assert live is child
+            with pytest.raises(
+                SessionBarrierError, match="BARRIER_TERMINAL_STEP_INVALID"
+            ):
+                verify_terminal_child_against_row(
+                    child, capability=cap, row=row, step_kind="reconciliation"
+                )
+            # A self-consistent row (own row_identity recomputed) whose lock
+            # identity genuinely differs from the live child's minted lock
+            # must still be rejected: the child's proof is bound to the exact
+            # OS lock instance held when it was minted, not merely to a row
+            # that happens to pass the generic identity check.
+            drifted = replace(row, lock_identity=_hex("drifted-lock"))
+            drifted = replace(
+                drifted,
+                row_identity=sb._row_identity_for(
+                    drifted,
+                    state=drifted.state,
+                    close_token_identity=drifted.close_token_identity,
+                    transitioned_at=drifted.transitioned_at,
+                    terminal_policy=cap.terminal_policy,
+                ),
+            )
+            with pytest.raises(
+                SessionBarrierError, match="BARRIER_LOCK_IDENTITY_DRIFT"
+            ):
+                verify_terminal_child_against_row(
+                    child, capability=cap, row=drifted, step_kind="oms_recovery"
+                )
+            closed_row = replace(row, state="CLOSED")
+            closed_row = replace(
+                closed_row,
+                row_identity=sb._row_identity_for(
+                    closed_row,
+                    state="CLOSED",
+                    close_token_identity=closed_row.close_token_identity,
+                    transitioned_at=closed_row.transitioned_at,
+                    terminal_policy=cap.terminal_policy,
+                ),
+            )
+            with pytest.raises(SessionBarrierError, match="BARRIER_STATE_CLOSED"):
+                verify_terminal_child_against_row(
+                    child, capability=cap, row=closed_row, step_kind="oms_recovery"
+                )
+    conn.close()
+
+
+def test_compute_terminal_step_and_successor_identity_tamper_detection() -> None:
+    base = dict(
+        close_token_identity=_hex("token"),
+        closing_row_identity=_hex("row"),
+        fact_identity=_hex("fact"),
+    )
+    baseline = compute_terminal_step_identity(
+        step_kind="broker_finality", predecessor_step_identity=None, **base
+    )
+    assert baseline == compute_terminal_step_identity(
+        step_kind="broker_finality", predecessor_step_identity=None, **base
+    )
+    tampered = compute_terminal_step_identity(
+        step_kind="broker_finality",
+        predecessor_step_identity=None,
+        **{**base, "fact_identity": _hex("tampered-fact")},
+    )
+    assert tampered != baseline
+    with pytest.raises(SessionBarrierError, match="BARRIER_TERMINAL_STEP_INVALID"):
+        compute_terminal_step_identity(
+            step_kind="oms_recovery", predecessor_step_identity=None, **base
+        )
+    with pytest.raises(SessionBarrierError):
+        compute_terminal_step_identity(
+            step_kind="broker_finality",
+            predecessor_step_identity=None,
+            **{**base, "fact_identity": "not-hex64"},
+        )
+
+    successor_kwargs = dict(
+        close_token_identity=_hex("token"),
+        closing_row_identity=_hex("row"),
+        closure_identity=_hex("closure"),
+        broker_finality_step_identity=_hex("s1"),
+        oms_recovery_step_identity=_hex("s2"),
+        reconciliation_step_identity=_hex("s3"),
+        report_soak_step_identity=_hex("s4"),
+    )
+    successor_baseline = compute_terminal_successor_identity(**successor_kwargs)
+    assert successor_baseline == compute_terminal_successor_identity(**successor_kwargs)
+    for field_name in successor_kwargs:
+        tampered_kwargs = {**successor_kwargs, field_name: _hex(f"tampered-{field_name}")}
+        assert compute_terminal_successor_identity(**tampered_kwargs) != successor_baseline
+
+def test_v010_terminal_successor_column_upgrade_preserves_null_and_rejects_illegal(
+    tmp_path: Path,
+) -> None:
+    """F1: v3/v7/v9→v10 leave successor NULL; illegal values fail-closed on read."""
+    import quant.execution.migrations as migrations_pkg
+    from quant.execution.migrations.v001_initial import upgrade as upgrade_v001
+    from quant.execution.migrations.v002_outbox_delivery import upgrade as upgrade_v002
+    from quant.execution.migrations.v003_execution_state import upgrade as upgrade_v003
+    from quant.execution.migrations.v004_ledger_persistence import upgrade as upgrade_v004
+    from quant.execution.migrations.v005_cancel_delivery import upgrade as upgrade_v005
+    from quant.execution.migrations.v006_risk_receipt import upgrade as upgrade_v006
+    from quant.execution.migrations.v007_unified_risk_counters import (
+        upgrade as upgrade_v007,
+    )
+    from quant.execution.migrations.v008_approval_receipts import upgrade as upgrade_v008
+
+    path = tmp_path / "upgrade.sqlite3"
+    conn = sqlite3.connect(path, isolation_level=None)
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute(
+        """
+        CREATE TABLE schema_version (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            version INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        )
+        """
+    )
+    upgrade_v001(conn)
+    upgrade_v002(conn)
+    upgrade_v003(conn)
+    upgrade_v004(conn)
+    upgrade_v005(conn)
+    upgrade_v006(conn)
+    upgrade_v007(conn)
+    upgrade_v008(conn)
+    upgrade_v009(conn)
+    conn.execute(
+        "INSERT INTO schema_version VALUES (1, 9, 'ready', '2026-08-25T00:00:00.000000Z')"
+    )
+    cols_before = {
+        row[1] for row in conn.execute("PRAGMA table_info(session_barrier)").fetchall()
+    }
+    assert "terminal_successor_identity" not in cols_before
+    upgrade_v010(conn)
+    cols_after = {
+        row[1] for row in conn.execute("PRAGMA table_info(session_barrier)").fetchall()
+    }
+    assert "terminal_successor_identity" in cols_after
+    assert migrations_pkg.MIGRATIONS[-1][0] == 10
+
+    # Empty table after upgrade: insert an OPEN row with NULL successor via API.
+    conn.execute("COMMIT")
+    conn.close()
+
+    # Exact parent for the fresh OMS sqlite path; do not rely on SQLite auto-mkdir.
+    fresh_root = tmp_path / "fresh"
+    fresh_root.mkdir(parents=True, exist_ok=True)
+    conn2 = _oms_conn(fresh_root)
+    cap = _capability(fresh_root)
+    initialize_open_barrier(conn2, cap, created_at=NOW)
+    row = read_session_barrier(conn2)
+    assert row.state == "OPEN"
+    assert row.terminal_successor_identity is None
+
+    # Illegal non-hex successor value must fail closed on parse/load.
+    conn2.execute(
+        "UPDATE session_barrier SET terminal_successor_identity = ? WHERE singleton = 1",
+        ("g" * 64,),
+    )
+    with pytest.raises(SessionBarrierError):
+        read_session_barrier(conn2)
+    conn2.close()
+
+
+def test_substrate_legacy_closed_keeps_null_successor(tmp_path: Path) -> None:
+    conn = _oms_conn(tmp_path)
+    cap = _capability(tmp_path)
+    initialize_open_barrier(conn, cap, created_at=NOW)
+    _closing, token, _closure = transition_open_to_closing(
+        conn, cap, nonce="legacy", now=NOW + dt.timedelta(seconds=1)
+    )
+    closed = transition_closing_to_closed(
+        conn, cap, close_token_identity=token, now=NOW + dt.timedelta(seconds=2)
+    )
+    assert closed.state == "CLOSED"
+    assert closed.terminal_successor_identity is None
     conn.close()
