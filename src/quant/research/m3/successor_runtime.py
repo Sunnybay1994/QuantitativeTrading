@@ -111,7 +111,7 @@ _REQUIRED_HORIZON_STAGES = (
     "predictions",
     "evaluation",
     "targets",
-    "backtest-plan",
+    "backtest_plan",
     "backtest",
     "tracking",
 )
@@ -144,6 +144,7 @@ _REQUIRED_RUN_PLAN_BUILDERS = frozenset(
     }
 )
 _FORBIDDEN_PSEUDO_BUILDERS = frozenset({"labels", "features", "folds"})
+# Must match StageSpec / StageReceipt.stage names published by StageRunner.
 _WORK_PRE_FORMAL_STAGES = (
     "features",
     "alignment",
@@ -151,7 +152,7 @@ _WORK_PRE_FORMAL_STAGES = (
     "predictions",
     "evaluation",
     "targets",
-    "backtest-plan",
+    "backtest_plan",
 )
 
 
@@ -235,6 +236,31 @@ class SuccessorFoldRequest:
 
 
 @dataclass(frozen=True)
+class SuccessorToolchainBinding:
+    """Explicit concrete toolchain binding; never discovered from PATH/env."""
+
+    python_executable: Path
+    qlib_dump_tool_path: Path
+    timeout_seconds: float
+
+    def __post_init__(self) -> None:
+        path_type = type(Path())
+        if (
+            type(self.python_executable) is not path_type
+            or type(self.qlib_dump_tool_path) is not path_type
+        ):
+            raise ValueError("invalid successor toolchain path type")
+        if (
+            type(self.timeout_seconds) is not float
+            or isinstance(self.timeout_seconds, bool)
+            or self.timeout_seconds != self.timeout_seconds  # NaN
+            or self.timeout_seconds in (float("inf"), float("-inf"))
+            or self.timeout_seconds <= 0.0
+        ):
+            raise ValueError("invalid successor toolchain timeout")
+
+
+@dataclass(frozen=True)
 class SuccessorRuntimeRequest:
     """Frozen caller inputs; no path or stage discovery is performed."""
 
@@ -243,6 +269,7 @@ class SuccessorRuntimeRequest:
     folds: tuple[SuccessorFoldRequest, ...]
     runtime_identity: SuccessorRuntimeIdentity
     now: dt.datetime
+    toolchain: SuccessorToolchainBinding
 
     def __post_init__(self) -> None:
         if not isinstance(self.project_root, Path) or not isinstance(
@@ -260,6 +287,8 @@ class SuccessorRuntimeRequest:
             raise ValueError("successor requires two distinct ordered folds")
         if type(self.runtime_identity) is not SuccessorRuntimeIdentity:
             raise ValueError("invalid successor runtime identity")
+        if type(self.toolchain) is not SuccessorToolchainBinding:
+            raise ValueError("invalid successor toolchain binding")
         _validate_utc(self.now)
 
 
@@ -667,6 +696,7 @@ class SuccessorProductionWaveRunner(Protocol):
         context: SuccessorStageContext,
         runner: "StageRunner",
         public_apis: "SuccessorPublicApiBundle",
+        prior_refs: tuple[StageReceiptRef, ...],
         resume: bool,
     ) -> tuple[StageReceiptRef, ...]: ...
 
@@ -1010,13 +1040,21 @@ class ProductionSuccessorStageAdapter:
                 or bound_public_apis.stage_runner_type is not StageRunner
             ):
                 raise ValueError
+            from quant.research.m3 import successor_upstream_stage as upstream
+
+            if (
+                dependencies.run_upstream_wave
+                is not upstream.run_successor_upstream_wave
+                or dependencies.run_summary
+                is not upstream.run_successor_formal_summary_gate
+            ):
+                raise ValueError
         except SuccessorRuntimeError:
             raise
         except Exception:
             _fail("SUCCESSOR_INPUT_INVALID")
         self._dependencies = dependencies
         self._public_apis = bound_public_apis
-        self._wave_cache: dict[str, tuple[StageReceiptRef, ...]] = {}
         self._wave_binding: tuple[str, Path, bool, tuple[str, str]] | None = None
         self._consumed_folds: set[str] = set()
 
@@ -1047,11 +1085,12 @@ class ProductionSuccessorStageAdapter:
         runner = self._runner(context=context, config=request.config.config)
         refs: list[StageReceiptRef] = []
         for wave in _UPSTREAM_WAVES:
-            wave_refs = self._cached_wave(
+            wave_refs = self._run_wave(
                 wave=wave,
                 request=request,
                 context=context,
                 runner=runner,
+                prior_refs=tuple(sorted(refs, key=lambda item: item.node_id)),
                 resume=resume,
             )
             if wave == _WORK_WAVE:
@@ -1163,36 +1202,24 @@ class ProductionSuccessorStageAdapter:
         ):
             _fail("SUCCESSOR_INPUT_INVALID")
 
-    def _cached_wave(
+    def _run_wave(
         self,
         *,
         wave: str,
         request: SuccessorFoldRequest,
         context: SuccessorStageContext,
         runner: "StageRunner",
+        prior_refs: tuple[StageReceiptRef, ...],
         resume: bool,
     ) -> tuple[StageReceiptRef, ...]:
+        """Always invoke the package-owned upstream runner with explicit priors.
+
+        Same-process physical-wave resume is owned by
+        ``successor_upstream_stage`` (exact resume + fresh receipt verify).
+        This adapter never returns an in-memory tuple without that call.
+        """
+
         self._assert_wave_binding(runtime_request=context.request, resume=resume)
-        cached = self._wave_cache.get(wave)
-        if cached is not None:
-            try:
-                _validate_wave_receipt_closure(
-                    wave=wave,
-                    refs=cached,
-                    request=context.request,
-                )
-                if (
-                    tuple(item.node_id for item in cached)
-                    != tuple(sorted(item.node_id for item in cached))
-                    or len({item.node_id for item in cached}) != len(cached)
-                    or any(type(item) is not StageReceiptRef for item in cached)
-                ):
-                    raise ValueError
-            except SuccessorRuntimeError:
-                raise
-            except Exception:
-                _fail("SUCCESSOR_STAGE_INVALID")
-            return cached
         try:
             raw = self._dependencies.run_upstream_wave(
                 wave=wave,
@@ -1200,6 +1227,7 @@ class ProductionSuccessorStageAdapter:
                 context=context,
                 runner=runner,
                 public_apis=self._public_apis,
+                prior_refs=prior_refs,
                 resume=resume,
             )
             refs = _coerce_wave_refs(raw)
@@ -1212,7 +1240,6 @@ class ProductionSuccessorStageAdapter:
             raise
         except Exception:
             _fail("SUCCESSOR_STAGE_INVALID")
-        self._wave_cache[wave] = refs
         return refs
 
     def verify_fold(
@@ -1505,6 +1532,40 @@ def make_production_successor_stage_adapter(
     )
 
 
+def make_canonical_successor_production_dependencies(
+    *,
+    run_formal_stage: SuccessorProductionFormalStageRunner,
+    verify_fold: SuccessorProductionFoldVerifier,
+    verify_summary: SuccessorProductionGateVerifier,
+    run_reproducibility: SuccessorProductionGateRunner,
+    verify_reproducibility: SuccessorProductionGateVerifier,
+    run_readiness: SuccessorProductionGateRunner,
+    verify_readiness: SuccessorProductionGateVerifier,
+    run_acceptance: SuccessorProductionGateRunner,
+    verify_acceptance: SuccessorProductionGateVerifier,
+    verify_gate: SuccessorProductionGateVerifier,
+) -> SuccessorProductionDependencies:
+    """Bind package-owned upstream + R2S summary runners by ``is`` identity."""
+
+    from quant.research.m3 import successor_upstream_stage as upstream
+
+    return SuccessorProductionDependencies(
+        stage_runner_factory=make_project_stage_runner,
+        run_upstream_wave=upstream.run_successor_upstream_wave,
+        run_formal_stage=run_formal_stage,
+        verify_fold=verify_fold,
+        run_summary=upstream.run_successor_formal_summary_gate,
+        verify_summary=verify_summary,
+        run_reproducibility=run_reproducibility,
+        verify_reproducibility=verify_reproducibility,
+        run_readiness=run_readiness,
+        verify_readiness=verify_readiness,
+        run_acceptance=run_acceptance,
+        verify_acceptance=verify_acceptance,
+        verify_gate=verify_gate,
+    )
+
+
 def run_production_two_fold_successor(
     *,
     request: SuccessorRuntimeRequest,
@@ -1589,6 +1650,22 @@ def make_project_stage_runner(
 def two_fold_identity(request: SuccessorRuntimeRequest) -> str:
     """Return the deterministic identity of the explicit two-fold input set."""
 
+    from quant.research.m3.successor_upstream_stage import (
+        validate_successor_toolchain_binding,
+    )
+
+    try:
+        python_posix, dump_relative, dump_size, dump_sha256 = (
+            validate_successor_toolchain_binding(
+                project_root=request.project_root,
+                toolchain=request.toolchain,
+                fold_configs=tuple(item.config.config for item in request.folds),
+            )
+        )
+    except SuccessorRuntimeError:
+        raise
+    except Exception:
+        _fail("SUCCESSOR_INPUT_INVALID")
     values = [
         TWO_FOLD_IDENTITY_VERSION,
         [
@@ -1603,6 +1680,14 @@ def two_fold_identity(request: SuccessorRuntimeRequest) -> str:
             for item in request.folds
         ],
         list(HORIZONS),
+        [
+            "m3-successor-toolchain-identity-v1",
+            python_posix,
+            dump_relative,
+            dump_size,
+            dump_sha256,
+            request.toolchain.timeout_seconds,
+        ],
     ]
     return _sha256_json(values)
 
@@ -1899,6 +1984,16 @@ def _validate_request(request: SuccessorRuntimeRequest) -> None:
             raise ValueError
         if len(release_identities) != 2:
             raise ValueError
+        from quant.research.m3.successor_upstream_stage import (
+            validate_successor_toolchain_binding,
+        )
+
+        # Toolchain must validate before any controlled root / worker work.
+        validate_successor_toolchain_binding(
+            project_root=project,
+            toolchain=request.toolchain,
+            fold_configs=tuple(item.config.config for item in request.folds),
+        )
     except SuccessorRuntimeError:
         raise
     except Exception:
