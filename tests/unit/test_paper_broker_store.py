@@ -21,15 +21,34 @@ from quant.domain.enums import Currency, Market
 from quant.execution.contracts import CashBalance, build_account_snapshot
 from quant.execution.paper_broker_store import (
     PaperBrokerStoreError,
+    build_formal_paper_broker_policy_descriptor,
     build_paper_account_descriptor,
     build_paper_broker_policy_descriptor,
     initialize_paper_broker_store,
     open_verified_paper_broker_store,
 )
 import quant.execution.paper_broker_store as broker_store_module
+from quant.execution.paper_broker_binding import (
+    VerifiedFormalPaperBrokerPolicyBinding,
+)
+from quant.execution import paper_broker_binding as binding_module
+from quant.execution.paper_policy import (
+    VerifiedPaperExecutionPolicy,
+    paper_execution_cost_schedule_identity,
+)
+from quant.execution import paper_policy as policy_module
 
 UTC = dt.timezone.utc
 NOW = dt.datetime(2026, 8, 9, 1, tzinfo=UTC)
+_FROZEN_FORMAL_COST_SCHEDULE_IDENTITY = (
+    "9864f09ccbc7be9f30299f74cb4659665765194776844ed36914815a87749f7a"
+)
+_FROZEN_DEVELOPMENT_COST_SCHEDULE_IDENTITY = (
+    "464bc03f41dfe131dad396995b047c1365b2c6b403e991cbffa1ac1da7b7a1a7"
+)
+_FROZEN_DEVELOPMENT_DESCRIPTOR_IDENTITY = (
+    "9dd4dcb507578098ff946a2e57607ff03840af0f0b482b9283b3126233c12db1"
+)
 
 
 def _schedule():
@@ -639,3 +658,298 @@ def test_broker_rejects_raw_connection_provider_bypass(tmp_path: Path) -> None:
         assert "oms_conn_provider" not in broker.bind_session_barrier.__code__.co_varnames
     finally:
         broker.close()
+
+
+def _formal_schedule():
+    return build_execution_cost_schedule(
+        selector="paper_a_share_cost_schedule_v1",
+        periods=(
+            ExecutionCostPeriod(
+                Market.SH,
+                dt.date(2026, 1, 1),
+                None,
+                Decimal("0.00025"),
+                Decimal("5.00"),
+                Decimal("0.0005"),
+                Decimal("0.00001"),
+                Currency.CNY,
+            ),
+            ExecutionCostPeriod(
+                Market.SZ,
+                dt.date(2026, 1, 1),
+                None,
+                Decimal("0.00025"),
+                Decimal("5.00"),
+                Decimal("0.0005"),
+                Decimal("0.00001"),
+                Currency.CNY,
+            ),
+        ),
+    )
+
+
+def _formal_policy_and_binding(
+    *,
+    schedule=None,
+    cost_schedule_identity: str | None = None,
+    session_date: dt.date = NOW.date(),
+    adapter_policy_version: str = "paper_durable_a_share_adapter_v1",
+    fill_policy_version: str = "paper_deterministic_fill_v1",
+    fault_policy_version: str = "paper_controlled_fault_drills_v1",
+    finality_policy_version: str = "paper_session_eod_finality_v1",
+    clock_policy_version: str = "utc_system_clock_v1",
+    binding_cost_schedule_identity: str | None = None,
+    binding_session_date: dt.date | None = None,
+    binding_fill_policy_version: str | None = None,
+):
+    resolved_schedule = _formal_schedule() if schedule is None else schedule
+    identity = (
+        paper_execution_cost_schedule_identity(resolved_schedule)
+        if cost_schedule_identity is None
+        else cost_schedule_identity
+    )
+    policy = VerifiedPaperExecutionPolicy(
+        schema_version="paper-execution-policy-v1",
+        selector="paper_a_share_v1",
+        session_date=session_date,
+        source_path=Path("formal-project").absolute() / "policy.toml",
+        source_file_identity="a" * 64,
+        source_parent_identity="b" * 64,
+        raw_sha256="c" * 64,
+        trading_config=object(),  # type: ignore[arg-type]
+        trading_config_identity="d" * 64,
+        supported_markets=(Market.SH, Market.SZ),
+        execution_cost_schedule=resolved_schedule,
+        cost_schedule_identity=identity,
+        minimum_order_notionals=(),
+        a_share_rule_selector="a_share_execution_rules_v1",
+        adapter_policy_version=adapter_policy_version,
+        fill_policy_version=fill_policy_version,
+        fault_policy_version=fault_policy_version,
+        finality_policy_version=finality_policy_version,
+        clock_policy_version=clock_policy_version,
+        fx_snapshot_identity=None,
+        policy_identity="e" * 64,
+        verified_at=NOW,
+        _attestation=policy_module._PolicyAttestation(b"test"),
+    )
+    binding = VerifiedFormalPaperBrokerPolicyBinding(
+        schema_version="formal-paper-broker-policy-binding-v1",
+        classification="formal-paper-simulation",
+        session_date=session_date if binding_session_date is None else binding_session_date,
+        runtime_environment_identity="1" * 64,
+        runtime_config_identity="2" * 64,
+        execution_policy_identity=policy.policy_identity,
+        adapter_policy_version=policy.adapter_policy_version,
+        fill_policy_version=(
+            policy.fill_policy_version
+            if binding_fill_policy_version is None
+            else binding_fill_policy_version
+        ),
+        fault_policy_version=policy.fault_policy_version,
+        finality_policy_version=policy.finality_policy_version,
+        clock_policy_version=policy.clock_policy_version,
+        cost_schedule_identity=(
+            identity if binding_cost_schedule_identity is None else binding_cost_schedule_identity
+        ),
+        fx_snapshot_identity=None,
+        binding_identity="f" * 64,
+        verified_at=NOW,
+        _attestation=binding_module._BindingAttestation(b"test"),
+    )
+    return policy, binding
+
+
+def test_formal_descriptor_accepts_public_cost_identity_and_keeps_schema() -> None:
+    policy, binding = _formal_policy_and_binding()
+    assert policy.cost_schedule_identity == _FROZEN_FORMAL_COST_SCHEDULE_IDENTITY
+    descriptor = build_formal_paper_broker_policy_descriptor(
+        policy=policy, binding=binding
+    )
+    assert descriptor.schema_version == "paper-broker-policy-v1"
+    assert descriptor.classification == "formal-paper-simulation"
+    assert descriptor.cost_schedule_identity == _FROZEN_FORMAL_COST_SCHEDULE_IDENTITY
+    assert descriptor.adapter_policy_version == policy.adapter_policy_version
+    assert descriptor.fill_policy_version == policy.fill_policy_version
+    assert descriptor.fault_policy_version == policy.fault_policy_version
+    assert descriptor.finality_policy_version == policy.finality_policy_version
+    assert descriptor.fx_snapshot_identity is None
+    body = {
+        "adapter_policy_version": descriptor.adapter_policy_version,
+        "classification": "formal-paper-simulation",
+        "cost_schedule_identity": descriptor.cost_schedule_identity,
+        "fault_policy_version": descriptor.fault_policy_version,
+        "fill_policy_version": descriptor.fill_policy_version,
+        "finality_policy_version": descriptor.finality_policy_version,
+        "fx_snapshot_identity": None,
+        "schema_version": "paper-broker-policy-v1",
+    }
+    assert descriptor.descriptor_identity == broker_store_module._digest(body)
+    assert broker_store_module._is_issued_formal_policy_descriptor(descriptor)
+
+
+def test_formal_descriptor_rejects_stale_cost_identity_and_rule_drift() -> None:
+    drifted = build_execution_cost_schedule(
+        selector="paper_a_share_cost_schedule_v1",
+        periods=(
+            ExecutionCostPeriod(
+                Market.SH,
+                dt.date(2026, 1, 1),
+                None,
+                Decimal("0.00026"),
+                Decimal("5.00"),
+                Decimal("0.0005"),
+                Decimal("0.00001"),
+                Currency.CNY,
+            ),
+            ExecutionCostPeriod(
+                Market.SZ,
+                dt.date(2026, 1, 1),
+                None,
+                Decimal("0.00025"),
+                Decimal("5.00"),
+                Decimal("0.0005"),
+                Decimal("0.00001"),
+                Currency.CNY,
+            ),
+        ),
+    )
+    stale_policy, stale_binding = _formal_policy_and_binding(
+        schedule=drifted,
+        cost_schedule_identity=_FROZEN_FORMAL_COST_SCHEDULE_IDENTITY,
+    )
+    with pytest.raises(PaperBrokerStoreError, match="^PAPER_BROKER_POLICY_INVALID$"):
+        build_formal_paper_broker_policy_descriptor(
+            policy=stale_policy, binding=stale_binding
+        )
+
+    claimed_wrong, claimed_binding = _formal_policy_and_binding(
+        cost_schedule_identity="f" * 64,
+    )
+    with pytest.raises(PaperBrokerStoreError, match="^PAPER_BROKER_POLICY_INVALID$"):
+        build_formal_paper_broker_policy_descriptor(
+            policy=claimed_wrong, binding=claimed_binding
+        )
+
+    policy, binding = _formal_policy_and_binding(
+        binding_cost_schedule_identity="0" * 64,
+    )
+    with pytest.raises(PaperBrokerStoreError, match="^PAPER_BROKER_POLICY_INVALID$"):
+        build_formal_paper_broker_policy_descriptor(policy=policy, binding=binding)
+
+    policy, binding = _formal_policy_and_binding(
+        binding_session_date=dt.date(2026, 8, 8),
+    )
+    with pytest.raises(PaperBrokerStoreError, match="^PAPER_BROKER_POLICY_INVALID$"):
+        build_formal_paper_broker_policy_descriptor(policy=policy, binding=binding)
+
+    policy, binding = _formal_policy_and_binding(
+        binding_fill_policy_version="paper_deterministic_fill_v0",
+    )
+    with pytest.raises(PaperBrokerStoreError, match="^PAPER_BROKER_POLICY_INVALID$"):
+        build_formal_paper_broker_policy_descriptor(policy=policy, binding=binding)
+
+
+def test_formal_descriptor_rejects_forged_objects_and_nonexact_schedule() -> None:
+    policy, binding = _formal_policy_and_binding()
+    with pytest.raises(PaperBrokerStoreError, match="^PAPER_BROKER_POLICY_INVALID$"):
+        build_formal_paper_broker_policy_descriptor(
+            policy=object.__new__(VerifiedPaperExecutionPolicy),
+            binding=binding,
+        )
+    with pytest.raises(PaperBrokerStoreError, match="^PAPER_BROKER_POLICY_INVALID$"):
+        build_formal_paper_broker_policy_descriptor(
+            policy=policy,
+            binding=object.__new__(VerifiedFormalPaperBrokerPolicyBinding),
+        )
+    forged_policy = replace(
+        policy,
+        execution_cost_schedule=object(),  # type: ignore[arg-type]
+        cost_schedule_identity=_FROZEN_FORMAL_COST_SCHEDULE_IDENTITY,
+    )
+    forged_binding = replace(
+        binding, cost_schedule_identity=_FROZEN_FORMAL_COST_SCHEDULE_IDENTITY
+    )
+    with pytest.raises(PaperBrokerStoreError, match="^PAPER_BROKER_POLICY_INVALID$"):
+        build_formal_paper_broker_policy_descriptor(
+            policy=forged_policy, binding=forged_binding
+        )
+
+
+def test_monkeypatched_public_identity_fail_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    policy, binding = _formal_policy_and_binding()
+
+    def boom(schedule: object) -> str:
+        del schedule
+        raise RuntimeError("HOSTILE_IDENTITY_PATH")
+
+    monkeypatch.setattr(broker_store_module, "paper_execution_cost_schedule_identity", boom)
+    with pytest.raises(PaperBrokerStoreError, match="^PAPER_BROKER_POLICY_INVALID$") as caught:
+        build_formal_paper_broker_policy_descriptor(policy=policy, binding=binding)
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+    assert "HOSTILE" not in repr(caught.value)
+
+    monkeypatch.setattr(
+        broker_store_module,
+        "paper_execution_cost_schedule_identity",
+        lambda schedule: "0" * 64,
+    )
+    with pytest.raises(PaperBrokerStoreError, match="^PAPER_BROKER_POLICY_INVALID$"):
+        build_formal_paper_broker_policy_descriptor(policy=policy, binding=binding)
+
+
+def test_issued_formal_descriptor_required_for_store(tmp_path: Path) -> None:
+    policy, binding = _formal_policy_and_binding()
+    issued = build_formal_paper_broker_policy_descriptor(policy=policy, binding=binding)
+    clone = replace(issued)
+    assert clone == issued and clone is not issued
+    account, _ = _inputs()
+    root = tmp_path / "formal-issued"
+    oms = tmp_path / "formal-oms"
+    root.mkdir()
+    oms.mkdir()
+    with pytest.raises(PaperBrokerStoreError, match="PAPER_BROKER_POLICY_INVALID"):
+        initialize_paper_broker_store(
+            root=root,
+            database_filename="paper.sqlite3",
+            oms_store_path=oms,
+            account=account,
+            policy=clone,
+            created_at=NOW,
+        )
+    assert tuple(root.iterdir()) == ()
+    store = initialize_paper_broker_store(
+        root=root,
+        database_filename="paper.sqlite3",
+        oms_store_path=oms,
+        account=account,
+        policy=issued,
+        created_at=NOW,
+    )
+    try:
+        assert store.policy_identity == issued.descriptor_identity
+    finally:
+        store.close()
+
+
+def test_non_formal_descriptor_bytes_and_identity_regression() -> None:
+    account, policy = _inputs()
+    del account
+    assert policy.cost_schedule_identity == _FROZEN_DEVELOPMENT_COST_SCHEDULE_IDENTITY
+    assert policy.descriptor_identity == _FROZEN_DEVELOPMENT_DESCRIPTOR_IDENTITY
+    assert policy.classification == "development"
+    assert policy.schema_version == "paper-broker-policy-v1"
+    rebuilt = build_paper_broker_policy_descriptor(
+        adapter_policy_version="adapter-v1",
+        fill_policy_version="fill-v1",
+        fault_policy_version="fault-v1",
+        finality_policy_version="eod-v1",
+        cost_schedule=_schedule(),
+        fx_snapshot=None,
+    )
+    assert rebuilt.cost_schedule_identity == _FROZEN_DEVELOPMENT_COST_SCHEDULE_IDENTITY
+    assert rebuilt.descriptor_identity == _FROZEN_DEVELOPMENT_DESCRIPTOR_IDENTITY
+    # Incompatible paper-policy algorithm must not be forced into non-formal path.
+    assert rebuilt.cost_schedule_identity != paper_execution_cost_schedule_identity(
+        _schedule()
+    )

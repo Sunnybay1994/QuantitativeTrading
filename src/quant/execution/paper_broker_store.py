@@ -36,7 +36,10 @@ from quant.execution.contracts import (
 from quant.execution.gateways.contracts import DispatchCertainty
 from quant.execution.reconcile import BrokerOrderObservation
 from quant.execution.paper_broker_binding import VerifiedFormalPaperBrokerPolicyBinding
-from quant.execution.paper_policy import VerifiedPaperExecutionPolicy
+from quant.execution.paper_policy import (
+    VerifiedPaperExecutionPolicy,
+    paper_execution_cost_schedule_identity,
+)
 from quant.execution.session_barrier import (
     SessionBarrierError,
     active_terminal_broker_finality_child,
@@ -254,7 +257,7 @@ def _initialize_formal_policy_descriptor_api() -> tuple[Any, Any]:
                 or binding.clock_policy_version != policy.clock_policy_version
                 or binding.cost_schedule_identity != policy.cost_schedule_identity
                 or binding.fx_snapshot_identity != policy.fx_snapshot_identity
-                or _digest(_cost_payload(policy.execution_cost_schedule))
+                or paper_execution_cost_schedule_identity(policy.execution_cost_schedule)
                 != policy.cost_schedule_identity
             ):
                 raise ValueError

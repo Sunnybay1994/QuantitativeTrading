@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from quant.backtest.costs import ExecutionCostPeriod, build_execution_cost_schedule
 from quant.domain.enums import Currency, Market
 from quant.execution import paper_policy as policy
 from quant.execution import paper_runtime as runtime
@@ -24,6 +25,10 @@ FORMAL_POLICY = (
     / "trading"
     / "policies"
     / "paper_a_share_v1.toml"
+)
+# Frozen SHA of paper-execution-cost-schedule-identity-v1 for formal fixture schedule.
+_FROZEN_FORMAL_COST_SCHEDULE_IDENTITY = (
+    "9864f09ccbc7be9f30299f74cb4659665765194776844ed36914815a87749f7a"
 )
 
 
@@ -475,4 +480,138 @@ def test_public_surface_has_one_mint_no_generic_signer_or_key() -> None:
     assert not hasattr(policy, "_create_policy_api")
     assert not hasattr(policy, "sign_policy")
     assert not hasattr(policy, "build_verified_policy")
+    assert not hasattr(policy, "_cost_schedule_identity")
+    assert tuple(inspect.signature(policy.paper_execution_cost_schedule_identity).parameters) == (
+        "schedule",
+    )
     assert not any(type(value) is bytes and len(value) == 32 for value in vars(policy).values())
+
+
+def _formal_fixture_schedule():
+    return build_execution_cost_schedule(
+        selector="paper_a_share_cost_schedule_v1",
+        periods=(
+            ExecutionCostPeriod(
+                Market.SH,
+                dt.date(2026, 1, 1),
+                None,
+                Decimal("0.00025"),
+                Decimal("5.00"),
+                Decimal("0.0005"),
+                Decimal("0.00001"),
+                Currency.CNY,
+            ),
+            ExecutionCostPeriod(
+                Market.SZ,
+                dt.date(2026, 1, 1),
+                None,
+                Decimal("0.00025"),
+                Decimal("5.00"),
+                Decimal("0.0005"),
+                Decimal("0.00001"),
+                Currency.CNY,
+            ),
+        ),
+    )
+
+
+def test_public_cost_identity_matches_frozen_sha_and_loader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    schedule = _formal_fixture_schedule()
+    assert (
+        policy.paper_execution_cost_schedule_identity(schedule)
+        == _FROZEN_FORMAL_COST_SCHEDULE_IDENTITY
+    )
+    verified = _load(_project(tmp_path), monkeypatch)
+    assert verified.cost_schedule_identity == _FROZEN_FORMAL_COST_SCHEDULE_IDENTITY
+    assert (
+        policy.paper_execution_cost_schedule_identity(verified.execution_cost_schedule)
+        == verified.cost_schedule_identity
+    )
+
+
+def test_semantically_equivalent_schedule_objects_share_identity() -> None:
+    first = _formal_fixture_schedule()
+    second = _formal_fixture_schedule()
+    assert first is not second
+    assert policy.paper_execution_cost_schedule_identity(
+        first
+    ) == policy.paper_execution_cost_schedule_identity(second)
+    assert (
+        policy.paper_execution_cost_schedule_identity(first)
+        == _FROZEN_FORMAL_COST_SCHEDULE_IDENTITY
+    )
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda period: replace(period, commission_rate=Decimal("0.00026")),
+        lambda period: replace(period, commission_min=Decimal("5.01")),
+        lambda period: replace(period, stamp_tax_sell=Decimal("0.0006")),
+        lambda period: replace(period, transfer_fee=Decimal("0.00002")),
+        lambda period: replace(
+            period, market=Market.HK, settlement_currency=Currency.HKD
+        ),
+        lambda period: replace(period, effective_from=dt.date(2026, 1, 2)),
+    ),
+)
+def test_economic_schedule_drift_changes_canonical_identity(mutate: Callable) -> None:
+    base = _formal_fixture_schedule()
+    drifted_first = mutate(base.periods[0])
+    if drifted_first.market is Market.HK:
+        periods = (drifted_first,)
+    else:
+        periods = (drifted_first, base.periods[1])
+    drifted = build_execution_cost_schedule(selector=base.selector, periods=periods)
+    assert (
+        policy.paper_execution_cost_schedule_identity(drifted)
+        != _FROZEN_FORMAL_COST_SCHEDULE_IDENTITY
+    )
+
+
+def test_period_reorder_extra_and_missing_change_identity() -> None:
+    base = _formal_fixture_schedule()
+    closed_sh = replace(base.periods[0], effective_to=dt.date(2026, 12, 31))
+    extra_sh = replace(
+        base.periods[0],
+        effective_from=dt.date(2027, 1, 1),
+        commission_rate=Decimal("0.00030"),
+    )
+    with_extra = build_execution_cost_schedule(
+        selector=base.selector,
+        periods=(closed_sh, base.periods[1], extra_sh),
+    )
+    missing = build_execution_cost_schedule(
+        selector=base.selector,
+        periods=(base.periods[0],),
+    )
+    assert (
+        policy.paper_execution_cost_schedule_identity(with_extra)
+        != _FROZEN_FORMAL_COST_SCHEDULE_IDENTITY
+    )
+    assert (
+        policy.paper_execution_cost_schedule_identity(missing)
+        != _FROZEN_FORMAL_COST_SCHEDULE_IDENTITY
+    )
+    # Builder sorts by market/effective_from; semantic reorder keeps identity.
+    rebuilt = build_execution_cost_schedule(
+        selector=base.selector,
+        periods=(base.periods[1], base.periods[0]),
+    )
+    assert (
+        policy.paper_execution_cost_schedule_identity(rebuilt)
+        == _FROZEN_FORMAL_COST_SCHEDULE_IDENTITY
+    )
+
+
+def test_non_exact_schedule_type_is_rejected() -> None:
+    class Wrapper:
+        selector = "paper_a_share_cost_schedule_v1"
+        periods = ()
+
+    with pytest.raises(TypeError, match="ExecutionCostSchedule"):
+        policy.paper_execution_cost_schedule_identity(object())  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="ExecutionCostSchedule"):
+        policy.paper_execution_cost_schedule_identity(Wrapper())  # type: ignore[arg-type]
