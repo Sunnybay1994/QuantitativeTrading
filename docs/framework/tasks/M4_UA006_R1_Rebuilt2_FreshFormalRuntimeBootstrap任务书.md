@@ -175,3 +175,37 @@ delivery 必须记录 F7 的现象—根因—规则—最小复现—修正测�
 状态上限达成：**仅** `FRESH_FORMAL_BOOTSTRAP_WINDOWS_ENGINEERING_VALIDATED`。
 
 **仍 OPEN**：`UA-M4-006`、PAPER、soak、Linux Gate。不得宣称主验合流、无人值守实盘或 Gate 关闭。
+
+## 13. STATIC_REWORK：main merge-regression（policy `is` → 值相等）
+
+中央批准 STATIC_ONLY。main 已 merge `937787bc` 但回归 STOP；source branch tip `74586cea`（clean tracked + ignored evidence）。仅改 `paper_formal_bootstrap.py`、bootstrap unit/integration、本任务书与 delivery；review / `__init__.py` / `paper_policy.py` 只读；零 Python；不 stage/commit。
+
+| 项 | 内容 |
+| --- | --- |
+| evidence root | `artifacts/agent_runs/m4-r1-rebuilt2-main-merge-regression-20260826T203000Z` |
+| summary SHA | `EE48534311AF5162375B5F23B44706666F019ACA914FA305EC361E0530A86151` |
+| focused | `26 passed / 1 skipped / 1 failed`；`PAPER_FORMAL_BOOTSTRAP_STALE`；Ruff/mypy/cold/scope **UNRUN** |
+| 现象 | retained verify 在 policy fresh helper 后误 STALE |
+| 根因 | helper 返回值相等的新 policy 对象；门禁误用 `is` |
+| 规则 | 仅将 policy 闸改为 `!=`；binding/account/`is` capability 不放宽；不改 policy 模块 |
+| 最小复现 | integration `test_public_fresh_bootstrap_reopen_and_identity_closure` verify 路径 |
+| 测试 | 值相等非同一对象正向；字段/attestation/环境漂移拒绝；binding/account/capability identity 不放宽 |
+| 通过条件 | 见 delivery §13；完成后 `STATIC_REWORK_READY` |
+
+## 14. EVIDENCE_UPDATE：merge-regression fix source validation PASS
+
+中央授权 EVIDENCE_UPDATE（STATIC_ONLY：仅本任务书 + delivery；production / tests / review 冻结只读；不清 evidence；零 Python；零 stage/commit）。
+
+| 轮次 | evidence root | 原生结果（保留；不洗白） |
+| --- | --- | --- |
+| main merge regression（历史 STOP） | `artifacts/agent_runs/m4-r1-rebuilt2-main-merge-regression-20260826T203000Z` | focused **`26 passed / 1 skipped / 1 failed`**；`PAPER_FORMAL_BOOTSTRAP_STALE`；Ruff/mypy/cold/scope **UNRUN**；summary `EE48534311AF5162375B5F23B44706666F019ACA914FA305EC361E0530A86151` — **不得改写为通过** |
+| STATIC_REWORK（policy `!=`） | （source：production + bootstrap tests + docs） | 见 §13 |
+| fix validation（本轮 PASS） | `artifacts/agent_runs/m4-r1-rebuilt2-merge-regression-fix-validation-20260826T204000Z` | identity PASS；focused unit+integration **`27 passed / 4 skipped`**；Ruff 实际 production/tests PASS；mypy production2 PASS；cold bootstrap PASS；exact7 actual dirty6 / cached0 / diff / temp / process PASS；scratch/cache 清理；`0xF00=0`；writer PID7692/`0x3` 未扰动；summary SHA `1D39C474FCD239210A2820DFA597569A586ED6D5F67BA2E72CB45F528983D105`；`PASS=ALL_STAGES` |
+
+口径边界：
+
+- **当前仅** source fix Windows validated（本 worktree / source branch）。
+- main `937787` **仍** `MERGED_REGRESSION_STOP`（未因本轮 source 绿而自动解除）。
+- **仍 OPEN**：`UA-M4-006`、PAPER、soak、Linux Gate。
+
+完成后 delivery / 本任务书状态：`EVIDENCE_UPDATE_READY`。

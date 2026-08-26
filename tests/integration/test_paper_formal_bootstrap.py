@@ -204,6 +204,8 @@ def test_public_fresh_bootstrap_reopen_and_identity_closure(tmp_path: Path) -> N
         )
         is first
     )
+    # Retained bootstrap object identity is the verify contract; policy helper may
+    # mint a value-equal fresh policy that is not the same Python object.
 
     first.execution_store.store.close()
     first.broker_store.store.close()
