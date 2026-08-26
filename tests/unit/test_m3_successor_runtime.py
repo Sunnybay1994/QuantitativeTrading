@@ -12,6 +12,7 @@ from typing import Literal
 import pytest
 
 import quant.research.m3.successor_runtime as runtime
+from quant.research.m3.run_state import publish_stage_receipt
 from quant.research.m3.successor_runtime import (
     FoldExecution,
     GateExecution,
@@ -23,6 +24,7 @@ from quant.research.m3.successor_runtime import (
     WorkIdentity,
     _lookup_refs,
     _unique_refs,
+    _validate_gate_execution,
 )
 
 
@@ -576,4 +578,491 @@ def test_unique_refs_rejects_distinct_node_physical_and_semantic_alias() -> None
 
     with pytest.raises(SuccessorRuntimeError) as error:
         _unique_refs((first, second))
+    assert error.value.code == "SUCCESSOR_TERMINAL_INVALID"
+
+
+def _two_fold_executions() -> tuple[FoldExecution, ...]:
+    shared_experiment = _hex("shared-experiment")
+    return (
+        FoldExecution(
+            fold="fold_001",
+            config_raw_sha256=_hex("raw-a"),
+            config_full_sha256=_hex("full-a"),
+            g1_release_id=_hex("release-a"),
+            g1_release_manifest_sha256=_hex("manifest-a"),
+            snapshot_id=_hex("snapshot-a"),
+            experiment_key=shared_experiment,
+            work_identities=(
+                WorkIdentity("fold_001", 5, _hex("work-a-5")),
+                WorkIdentity("fold_001", 10, _hex("work-a-10")),
+            ),
+            receipts=(
+                _receipt_ref(
+                    node_id="snap-a",
+                    stage="snapshot",
+                    fold=None,
+                    horizon=None,
+                ),
+            ),
+        ),
+        FoldExecution(
+            fold="fold_002",
+            config_raw_sha256=_hex("raw-b"),
+            config_full_sha256=_hex("full-b"),
+            g1_release_id=_hex("release-b"),
+            g1_release_manifest_sha256=_hex("manifest-b"),
+            snapshot_id=_hex("snapshot-b"),
+            experiment_key=shared_experiment,
+            work_identities=(
+                WorkIdentity("fold_002", 5, _hex("work-b-5")),
+                WorkIdentity("fold_002", 10, _hex("work-b-10")),
+            ),
+            receipts=(
+                _receipt_ref(
+                    node_id="snap-b",
+                    stage="snapshot",
+                    fold=None,
+                    horizon=None,
+                ),
+            ),
+        ),
+    )
+
+
+def test_validate_gate_accepts_acceptance_key_distinct_from_identity() -> None:
+    folds = _two_fold_executions()
+    prior = (
+        GateExecution(
+            gate="summary",
+            status="PASS",
+            identity=_hex("summary-id"),
+            receipt_refs=tuple(
+                sorted(
+                    (
+                        StageReceiptRef(
+                            node_id="summary-h5",
+                            stage="research-summary",
+                            scope="EXPERIMENT",
+                            scope_key=folds[0].experiment_key,
+                            relative_path="receipts/research-summary/summary-h5.json",
+                            sha256=_hex("summary-h5"),
+                            fold=None,
+                            horizon=5,
+                        ),
+                        StageReceiptRef(
+                            node_id="summary-h10",
+                            stage="research-summary",
+                            scope="EXPERIMENT",
+                            scope_key=folds[0].experiment_key,
+                            relative_path="receipts/research-summary/summary-h10.json",
+                            sha256=_hex("summary-h10"),
+                            fold=None,
+                            horizon=10,
+                        ),
+                    ),
+                    key=lambda item: item.node_id,
+                )
+            ),
+        ),
+        GateExecution(
+            gate="reproducibility",
+            status="PASS",
+            identity=_hex("repro-id"),
+            receipt_refs=tuple(
+                sorted(
+                    (
+                        StageReceiptRef(
+                            node_id=f"repro-{fold}-h{horizon}",
+                            stage="reproducibility",
+                            scope="REPRO",
+                            scope_key=_hex(f"comparison:{fold}:{horizon}"),
+                            relative_path=(
+                                f"receipts/reproducibility/repro-{fold}-h{horizon}.json"
+                            ),
+                            sha256=_hex(f"repro:{fold}:{horizon}"),
+                            fold=fold,
+                            horizon=horizon,
+                        )
+                        for fold in ("fold_001", "fold_002")
+                        for horizon in HORIZONS
+                    ),
+                    key=lambda item: item.node_id,
+                )
+            ),
+        ),
+        GateExecution(
+            gate="readiness",
+            status="PASS",
+            identity=_hex("readiness-id"),
+            receipt_refs=tuple(
+                sorted(
+                    (
+                        StageReceiptRef(
+                            node_id="readiness-fold_001",
+                            stage="readiness-evidence",
+                            scope="ACCEPTANCE",
+                            scope_key=_hex("readiness:fold_001"),
+                            relative_path=(
+                                "receipts/readiness-evidence/readiness-fold_001.json"
+                            ),
+                            sha256=_hex("readiness-a"),
+                            fold="fold_001",
+                            horizon=None,
+                        ),
+                        StageReceiptRef(
+                            node_id="readiness-fold_002",
+                            stage="readiness-evidence",
+                            scope="ACCEPTANCE",
+                            scope_key=_hex("readiness:fold_002"),
+                            relative_path=(
+                                "receipts/readiness-evidence/readiness-fold_002.json"
+                            ),
+                            sha256=_hex("readiness-b"),
+                            fold="fold_002",
+                            horizon=None,
+                        ),
+                    ),
+                    key=lambda item: item.node_id,
+                )
+            ),
+        ),
+    )
+    identity = runtime.compute_successor_gate_identity(
+        gate="acceptance",
+        folds=folds,
+        prior_gates=prior,
+    )
+    physical = _hex("acceptance-physical")
+    assert physical != identity
+    gate = GateExecution(
+        gate="acceptance",
+        status="PASS",
+        identity=identity,
+        receipt_refs=(
+            StageReceiptRef(
+                node_id="acceptance",
+                stage="acceptance",
+                scope="ACCEPTANCE",
+                scope_key=physical,
+                relative_path="receipts/acceptance/acceptance.json",
+                sha256=_hex("acceptance-bytes"),
+                fold=None,
+                horizon=None,
+            ),
+        ),
+    )
+    _validate_gate_execution("acceptance", gate, executions=folds, known=prior)
+
+
+def test_validate_gate_rejects_readiness_key_collision() -> None:
+    folds = _two_fold_executions()
+    collided = _hex("readiness:same")
+    gate = GateExecution(
+        gate="readiness",
+        status="PASS",
+        identity=runtime.compute_successor_gate_identity(
+            gate="readiness",
+            folds=folds,
+            prior_gates=(),
+        ),
+        receipt_refs=(
+            StageReceiptRef(
+                node_id="readiness-fold_001",
+                stage="readiness-evidence",
+                scope="ACCEPTANCE",
+                scope_key=collided,
+                relative_path="receipts/readiness-evidence/a.json",
+                sha256=_hex("readiness-a"),
+                fold="fold_001",
+                horizon=None,
+            ),
+            StageReceiptRef(
+                node_id="readiness-fold_002",
+                stage="readiness-evidence",
+                scope="ACCEPTANCE",
+                scope_key=collided,
+                relative_path="receipts/readiness-evidence/b.json",
+                sha256=_hex("readiness-b"),
+                fold="fold_002",
+                horizon=None,
+            ),
+        ),
+    )
+    with pytest.raises(SuccessorRuntimeError) as error:
+        _validate_gate_execution("readiness", gate, executions=folds, known=())
+    assert error.value.code == "SUCCESSOR_GATE_FAILED"
+
+
+def test_validate_gate_rejects_duplicate_reproducibility_comparison_keys() -> None:
+    folds = _two_fold_executions()
+    shared = _hex("comparison:shared")
+    refs = [
+        StageReceiptRef(
+            node_id=f"repro-{fold}-h{horizon}",
+            stage="reproducibility",
+            scope="REPRO",
+            scope_key=shared,
+            relative_path=f"receipts/reproducibility/{fold}-{horizon}.json",
+            sha256=_hex(f"repro:{fold}:{horizon}"),
+            fold=fold,
+            horizon=horizon,
+        )
+        for fold in ("fold_001", "fold_002")
+        for horizon in HORIZONS
+    ]
+    gate = GateExecution(
+        gate="reproducibility",
+        status="PASS",
+        identity=runtime.compute_successor_gate_identity(
+            gate="reproducibility",
+            folds=folds,
+            prior_gates=(),
+        ),
+        receipt_refs=tuple(sorted(refs, key=lambda item: item.node_id)),
+    )
+    with pytest.raises(SuccessorRuntimeError) as error:
+        _validate_gate_execution("reproducibility", gate, executions=folds, known=())
+    assert error.value.code == "SUCCESSOR_GATE_FAILED"
+
+
+def test_compute_successor_gate_scope_key_is_not_exported() -> None:
+    assert not hasattr(runtime, "compute_successor_gate_scope_key")
+    assert "compute_successor_gate_scope_key" not in runtime.__all__
+
+
+def test_artifact_roots_for_receipt_stage_are_exclusive() -> None:
+    project = Path("C:/project")
+    stage = Path("C:/project/output/stage")
+    acceptance_roots = runtime._artifact_roots_for_receipt_stage(
+        stage="acceptance",
+        project_root=project,
+        canonical_stage_root=stage,
+    )
+    other_roots = runtime._artifact_roots_for_receipt_stage(
+        stage="reproducibility",
+        project_root=project,
+        canonical_stage_root=stage,
+    )
+    assert dict(acceptance_roots) == {"G8": stage}
+    assert list(acceptance_roots.keys()) == ["G8"]
+    assert dict(other_roots) == {"PROJECT": project}
+    assert list(other_roots.keys()) == ["PROJECT"]
+
+
+def _readiness_gate(
+    *,
+    folds: tuple[FoldExecution, ...],
+    refs: tuple[StageReceiptRef, ...],
+) -> GateExecution:
+    return GateExecution(
+        gate="readiness",
+        status="PASS",
+        identity=runtime.compute_successor_gate_identity(
+            gate="readiness",
+            folds=folds,
+            prior_gates=(),
+        ),
+        receipt_refs=tuple(sorted(refs, key=lambda item: item.node_id)),
+    )
+
+
+def test_validate_gate_rejects_readiness_both_refs_same_fold() -> None:
+    folds = _two_fold_executions()
+    gate = _readiness_gate(
+        folds=folds,
+        refs=(
+            StageReceiptRef(
+                node_id="readiness-a",
+                stage="readiness-evidence",
+                scope="ACCEPTANCE",
+                scope_key=_hex("readiness:a"),
+                relative_path="receipts/readiness-evidence/a.json",
+                sha256=_hex("readiness-a-bytes"),
+                fold="fold_001",
+                horizon=None,
+            ),
+            StageReceiptRef(
+                node_id="readiness-b",
+                stage="readiness-evidence",
+                scope="ACCEPTANCE",
+                scope_key=_hex("readiness:b"),
+                relative_path="receipts/readiness-evidence/b.json",
+                sha256=_hex("readiness-b-bytes"),
+                fold="fold_001",
+                horizon=None,
+            ),
+        ),
+    )
+    with pytest.raises(SuccessorRuntimeError) as error:
+        _validate_gate_execution("readiness", gate, executions=folds, known=())
+    assert error.value.code == "SUCCESSOR_GATE_FAILED"
+
+
+def test_validate_gate_rejects_readiness_unknown_fold() -> None:
+    folds = _two_fold_executions()
+    gate = _readiness_gate(
+        folds=folds,
+        refs=(
+            StageReceiptRef(
+                node_id="readiness-a",
+                stage="readiness-evidence",
+                scope="ACCEPTANCE",
+                scope_key=_hex("readiness:a"),
+                relative_path="receipts/readiness-evidence/a.json",
+                sha256=_hex("readiness-a-bytes"),
+                fold="fold_001",
+                horizon=None,
+            ),
+            StageReceiptRef(
+                node_id="readiness-unknown",
+                stage="readiness-evidence",
+                scope="ACCEPTANCE",
+                scope_key=_hex("readiness:unknown"),
+                relative_path="receipts/readiness-evidence/unknown.json",
+                sha256=_hex("readiness-unknown-bytes"),
+                fold="fold_003",
+                horizon=None,
+            ),
+        ),
+    )
+    with pytest.raises(SuccessorRuntimeError) as error:
+        _validate_gate_execution("readiness", gate, executions=folds, known=())
+    assert error.value.code == "SUCCESSOR_GATE_FAILED"
+
+
+def test_validate_gate_rejects_readiness_missing_fold() -> None:
+    folds = _two_fold_executions()
+    gate = _readiness_gate(
+        folds=folds,
+        refs=(
+            StageReceiptRef(
+                node_id="readiness-only",
+                stage="readiness-evidence",
+                scope="ACCEPTANCE",
+                scope_key=_hex("readiness:only"),
+                relative_path="receipts/readiness-evidence/only.json",
+                sha256=_hex("readiness-only-bytes"),
+                fold="fold_001",
+                horizon=None,
+            ),
+        ),
+    )
+    with pytest.raises(SuccessorRuntimeError) as error:
+        _validate_gate_execution("readiness", gate, executions=folds, known=())
+    assert error.value.code == "SUCCESSOR_GATE_FAILED"
+
+
+def test_unique_refs_rejects_readiness_same_bytes_different_paths() -> None:
+    shared_sha = _hex("identical-readiness-receipt-bytes")
+    first = StageReceiptRef(
+        node_id="gate-readiness-fold_001",
+        stage="readiness-evidence",
+        scope="ACCEPTANCE",
+        scope_key=_hex("readiness:fold_001"),
+        relative_path="receipts/readiness-evidence/fold_001.json",
+        sha256=shared_sha,
+        fold="fold_001",
+        horizon=None,
+    )
+    second = StageReceiptRef(
+        node_id="gate-readiness-fold_002",
+        stage="readiness-evidence",
+        scope="ACCEPTANCE",
+        scope_key=_hex("readiness:fold_002"),
+        relative_path="receipts/readiness-evidence/fold_002.json",
+        sha256=shared_sha,
+        fold="fold_002",
+        horizon=None,
+    )
+    with pytest.raises(SuccessorRuntimeError) as error:
+        _unique_refs((first, second))
+    assert error.value.code == "SUCCESSOR_TERMINAL_INVALID"
+
+
+def test_global_ownership_rejects_readiness_same_bytes_different_paths(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    first_path = project / "output/stage/receipts/readiness-evidence/fold_001.json"
+    second_path = project / "output/stage/receipts/readiness-evidence/fold_002.json"
+    first_path.parent.mkdir(parents=True)
+    payload = b'{"stage":"readiness-evidence","identical":true}'
+    first_path.write_bytes(payload)
+    second_path.write_bytes(payload)
+    shared_sha = hashlib.sha256(payload).hexdigest()
+    first = StageReceiptRef(
+        node_id="gate-readiness-fold_001",
+        stage="readiness-evidence",
+        scope="ACCEPTANCE",
+        scope_key=_hex("readiness:fold_001"),
+        relative_path="output/stage/receipts/readiness-evidence/fold_001.json",
+        sha256=shared_sha,
+        fold="fold_001",
+        horizon=None,
+    )
+    second = StageReceiptRef(
+        node_id="gate-readiness-fold_002",
+        stage="readiness-evidence",
+        scope="ACCEPTANCE",
+        scope_key=_hex("readiness:fold_002"),
+        relative_path="output/stage/receipts/readiness-evidence/fold_002.json",
+        sha256=shared_sha,
+        fold="fold_002",
+        horizon=None,
+    )
+    gate = GateExecution(
+        gate="readiness",
+        status="PASS",
+        identity=_hex("readiness-gate"),
+        receipt_refs=tuple(sorted((first, second), key=lambda item: item.node_id)),
+    )
+    with pytest.raises(SuccessorRuntimeError) as error:
+        runtime._validate_global_receipt_ownership(
+            project_root=project,
+            folds=(),
+            gates=(gate,),
+        )
+    assert error.value.code == "SUCCESSOR_TERMINAL_INVALID"
+
+
+def test_verify_receipts_rejects_acceptance_mixed_project_g8_alias(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    stage = project / "output" / "stage"
+    stage.mkdir(parents=True)
+    project_input = stage / "artifacts" / "mixed-input.bin"
+    g8_output = stage / "artifacts" / "mixed-output.bin"
+    project_input.parent.mkdir(parents=True, exist_ok=True)
+    project_input.write_bytes(b"project-side")
+    g8_output.write_bytes(b"g8-side")
+    receipt_path = stage / "receipts" / "acceptance" / "mixed.json"
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    scope_key = _hex("acceptance-mixed")
+    publish_stage_receipt(
+        receipt_path=receipt_path,
+        stage="acceptance",
+        scope="ACCEPTANCE",
+        scope_key=scope_key,
+        artifact_roots={"G8": stage, "PROJECT": project},
+        inputs=(("PROJECT", project_input),),
+        outputs=(("G8", g8_output),),
+    )
+    ref = StageReceiptRef(
+        node_id="gate-acceptance",
+        stage="acceptance",
+        scope="ACCEPTANCE",
+        scope_key=scope_key,
+        relative_path="output/stage/receipts/acceptance/mixed.json",
+        sha256=hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
+        fold=None,
+        horizon=None,
+    )
+    with pytest.raises(SuccessorRuntimeError) as error:
+        runtime._verify_receipts(
+            project_root=project,
+            controlled_output_root=stage,
+            refs=(ref,),
+            canonical_stage_root=stage,
+        )
     assert error.value.code == "SUCCESSOR_TERMINAL_INVALID"

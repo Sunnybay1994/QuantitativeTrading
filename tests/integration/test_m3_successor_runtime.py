@@ -151,18 +151,30 @@ class _DeterministicProductionBoundary:
         *,
         omit_horizon: int | None = None,
         drift_work_scope: bool = False,
-        drift_reproducibility_scope: bool = False,
         alias_physical_receipt: bool = False,
         require_reconstructed_context: bool = False,
+        masquerade_join_scope: bool = False,
+        collide_readiness_keys: bool = False,
+        force_acceptance_identity_as_key: bool = False,
+        force_acceptance_identity_masquerade: bool = False,
+        force_acceptance_project_alias: bool = False,
+        force_acceptance_mixed_alias: bool = False,
+        force_summary_g8_alias: bool = False,
     ) -> None:
         self.project_root = project_root
         self.experiment_key = _hex("experiment")
         self.snapshot_id = _hex("snapshot")
         self.omit_horizon = omit_horizon
         self.drift_work_scope = drift_work_scope
-        self.drift_reproducibility_scope = drift_reproducibility_scope
         self.alias_physical_receipt = alias_physical_receipt
         self.require_reconstructed_context = require_reconstructed_context
+        self.masquerade_join_scope = masquerade_join_scope
+        self.collide_readiness_keys = collide_readiness_keys
+        self.force_acceptance_identity_as_key = force_acceptance_identity_as_key
+        self.force_acceptance_identity_masquerade = force_acceptance_identity_masquerade
+        self.force_acceptance_project_alias = force_acceptance_project_alias
+        self.force_acceptance_mixed_alias = force_acceptance_mixed_alias
+        self.force_summary_g8_alias = force_summary_g8_alias
         self.fold_verifications = 0
         self.gate_verifications = 0
         self.gate_contexts: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
@@ -172,6 +184,9 @@ class _DeterministicProductionBoundary:
         self.public_apis = _public_api_substitutes(
             builder_call_records=self.builder_call_records,
         )
+
+    def _stage_root(self) -> Path:
+        return self.project_root / "output" / "stage"
 
     @property
     def dependencies(self) -> runtime.SuccessorProductionDependencies:
@@ -202,24 +217,72 @@ class _DeterministicProductionBoundary:
         scope_key: str,
         fold: str | None,
         horizon: int | None,
+        root_alias: str | None = None,
     ) -> runtime.StageReceiptRef:
-        relative = PurePosixPath(
-            "output/stage/receipts/features/shared-alias.json"
-            if self.alias_physical_receipt and stage == "features"
-            else f"output/stage/receipts/{stage}/{node_id}.json"
-        )
-        receipt_path = self.project_root.joinpath(*relative.parts)
-        output_path = (
-            self.project_root
-            / "output"
-            / "stage"
-            / "artifacts"
-            / (
-                "features-shared-alias.bin"
-                if self.alias_physical_receipt and stage == "features"
-                else f"{node_id}.bin"
+        if root_alias is None:
+            if stage == "acceptance" and self.force_acceptance_mixed_alias:
+                root_alias = "MIXED"
+            elif stage == "acceptance" and not self.force_acceptance_project_alias:
+                root_alias = "G8"
+            elif stage == "research-summary" and self.force_summary_g8_alias:
+                root_alias = "G8"
+            else:
+                root_alias = "PROJECT"
+        stage_root = self._stage_root()
+        if root_alias == "MIXED":
+            artifact_roots = {"G8": stage_root, "PROJECT": self.project_root}
+            relative = PurePosixPath(f"output/stage/receipts/{stage}/{node_id}.json")
+            input_path = stage_root / "artifacts" / f"{node_id}-input.bin"
+            output_path = stage_root / "artifacts" / f"{node_id}.bin"
+            input_path.parent.mkdir(parents=True, exist_ok=True)
+            if not input_path.exists():
+                input_path.write_bytes(b"mixed-project-input")
+            if not output_path.exists():
+                output_path.write_bytes(node_id.encode("ascii"))
+            receipt_path = self.project_root.joinpath(*relative.parts)
+            receipt_path.parent.mkdir(parents=True, exist_ok=True)
+            publish_stage_receipt(
+                receipt_path=receipt_path,
+                stage=stage,
+                scope=scope,
+                scope_key=scope_key,
+                artifact_roots=artifact_roots,
+                inputs=(("PROJECT", input_path),),
+                outputs=(("G8", output_path),),
             )
-        )
+            return runtime.StageReceiptRef(
+                node_id=node_id,
+                stage=stage,
+                scope=scope,
+                scope_key=scope_key,
+                relative_path=relative.as_posix(),
+                sha256=hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
+                fold=fold,
+                horizon=horizon,
+            )
+        if root_alias == "G8":
+            artifact_roots = {"G8": stage_root}
+            relative = PurePosixPath(f"output/stage/receipts/{stage}/{node_id}.json")
+            output_path = stage_root / "artifacts" / f"{node_id}.bin"
+        else:
+            artifact_roots = {"PROJECT": self.project_root}
+            relative = PurePosixPath(
+                "output/stage/receipts/features/shared-alias.json"
+                if self.alias_physical_receipt and stage == "features"
+                else f"output/stage/receipts/{stage}/{node_id}.json"
+            )
+            output_path = (
+                self.project_root
+                / "output"
+                / "stage"
+                / "artifacts"
+                / (
+                    "features-shared-alias.bin"
+                    if self.alias_physical_receipt and stage == "features"
+                    else f"{node_id}.bin"
+                )
+            )
+        receipt_path = self.project_root.joinpath(*relative.parts)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         if not output_path.exists():
             output_path.write_bytes(node_id.encode("ascii"))
@@ -229,9 +292,9 @@ class _DeterministicProductionBoundary:
             stage=stage,
             scope=scope,
             scope_key=scope_key,
-            artifact_roots={"PROJECT": self.project_root},
+            artifact_roots=artifact_roots,
             inputs=(),
-            outputs=(("PROJECT", output_path),),
+            outputs=((root_alias, output_path),),
         )
         return runtime.StageReceiptRef(
             node_id=node_id,
@@ -414,19 +477,16 @@ class _DeterministicProductionBoundary:
         )
         refs: list[runtime.StageReceiptRef] = []
         if gate == "summary":
+            experiment_keys = {item.experiment_key for item in folds}
+            assert len(experiment_keys) == 1
+            physical_key = next(iter(experiment_keys))
             for horizon in runtime.HORIZONS:
                 refs.append(
                     self._receipt(
                         node_id=f"gate-summary-h{horizon}",
                         stage="research-summary",
                         scope="EXPERIMENT",
-                        scope_key=runtime.compute_successor_gate_scope_key(
-                            gate=gate,
-                            fold=None,
-                            horizon=horizon,
-                            folds=folds,
-                            prior_gates=prior_gates,
-                        ),
+                        scope_key=physical_key,
                         fold=None,
                         horizon=horizon,
                     )
@@ -434,61 +494,61 @@ class _DeterministicProductionBoundary:
         elif gate == "reproducibility":
             for fold in ("fold_001", "fold_002"):
                 for horizon in runtime.HORIZONS:
-                    refs.append(
-                        self._receipt(
-                            node_id=f"gate-repro-{fold}-h{horizon}",
-                            stage="reproducibility",
-                            scope="REPRO",
-                            scope_key=(
-                                _hex(f"drifted-repro:{fold}:{horizon}")
-                                if self.drift_reproducibility_scope
-                                else runtime.compute_successor_gate_scope_key(
-                                    gate=gate,
-                                    fold=fold,
-                                    horizon=horizon,
-                                    folds=folds,
-                                    prior_gates=prior_gates,
-                                )
-                            ),
-                            fold=fold,
-                            horizon=horizon,
-                        )
+                    physical_key = _hex(f"comparison:{fold}:{horizon}")
+                    published = physical_key
+                    if self.masquerade_join_scope:
+                        # Publish real comparison_key bytes, then point the ref
+                        # at a legacy successor join-hash disguise.
+                        published = physical_key
+                    ref = self._receipt(
+                        node_id=f"gate-repro-{fold}-h{horizon}",
+                        stage="reproducibility",
+                        scope="REPRO",
+                        scope_key=published,
+                        fold=fold,
+                        horizon=horizon,
                     )
+                    if self.masquerade_join_scope:
+                        ref = replace(ref, scope_key=_hex(f"legacy-join:{fold}:{horizon}"))
+                    refs.append(ref)
         elif gate == "readiness":
             for fold in ("fold_001", "fold_002"):
+                physical_key = (
+                    _hex("readiness:collided")
+                    if self.collide_readiness_keys
+                    else _hex(f"readiness:{fold}")
+                )
                 refs.append(
                     self._receipt(
                         node_id=f"gate-readiness-{fold}",
                         stage="readiness-evidence",
                         scope="ACCEPTANCE",
-                        scope_key=runtime.compute_successor_gate_scope_key(
-                            gate=gate,
-                            fold=fold,
-                            horizon=None,
-                            folds=folds,
-                            prior_gates=prior_gates,
-                        ),
+                        scope_key=physical_key,
                         fold=fold,
                         horizon=None,
                     )
                 )
         else:
-            refs.append(
-                self._receipt(
-                    node_id="gate-acceptance",
-                    stage="acceptance",
-                    scope="ACCEPTANCE",
-                    scope_key=runtime.compute_successor_gate_scope_key(
-                        gate=gate,
-                        fold=None,
-                        horizon=None,
-                        folds=folds,
-                        prior_gates=prior_gates,
-                    ),
-                    fold=None,
-                    horizon=None,
-                )
+            physical_key = (
+                identity
+                if self.force_acceptance_identity_as_key
+                else _hex("acceptance-physical-key")
             )
+            ref = self._receipt(
+                node_id="gate-acceptance",
+                stage="acceptance",
+                scope="ACCEPTANCE",
+                scope_key=(
+                    _hex("acceptance-physical-key")
+                    if self.force_acceptance_identity_masquerade
+                    else physical_key
+                ),
+                fold=None,
+                horizon=None,
+            )
+            if self.force_acceptance_identity_masquerade:
+                ref = replace(ref, scope_key=identity)
+            refs.append(ref)
         return runtime.GateExecution(
             gate=gate,
             status="PASS",
@@ -1192,12 +1252,27 @@ def test_scope_key_drift_cannot_join_work_to_execution(
     assert not (request.controlled_output_root / runtime.TERMINAL_FILENAME).exists()
 
 
-def test_reproducibility_scope_key_drift_cannot_join_work(
+def test_legacy_join_hash_masquerading_as_comparison_key_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request, boundary, configs, releases = _request(tmp_path)
-    boundary.drift_reproducibility_scope = True
+    boundary.masquerade_join_scope = True
+    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis, boundary)
+
+    with pytest.raises(runtime.SuccessorRuntimeError) as error:
+        _run(request, boundary)
+
+    assert error.value.code == "SUCCESSOR_TERMINAL_INVALID"
+    assert not (request.controlled_output_root / runtime.TERMINAL_FILENAME).exists()
+
+
+def test_readiness_key_collision_across_folds_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, boundary, configs, releases = _request(tmp_path)
+    boundary.collide_readiness_keys = True
     _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis, boundary)
 
     with pytest.raises(runtime.SuccessorRuntimeError) as error:
@@ -1207,12 +1282,149 @@ def test_reproducibility_scope_key_drift_cannot_join_work(
     assert not (request.controlled_output_root / runtime.TERMINAL_FILENAME).exists()
 
 
+def test_acceptance_physical_key_may_differ_from_gate_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, boundary, configs, releases = _request(tmp_path)
+    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis, boundary)
+
+    result = _run(request, boundary)
+    acceptance = next(item for item in result.gates if item.gate == "acceptance")
+    assert len(acceptance.receipt_refs) == 1
+    assert acceptance.receipt_refs[0].scope_key == _hex("acceptance-physical-key")
+    assert acceptance.receipt_refs[0].scope_key != acceptance.identity
+
+
+def test_acceptance_project_alias_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, boundary, configs, releases = _request(tmp_path)
+    boundary.force_acceptance_project_alias = True
+    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis, boundary)
+
+    with pytest.raises(runtime.SuccessorRuntimeError) as error:
+        _run(request, boundary)
+
+    assert error.value.code == "SUCCESSOR_TERMINAL_INVALID"
+    assert not (request.controlled_output_root / runtime.TERMINAL_FILENAME).exists()
+
+
+def test_non_acceptance_g8_alias_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, boundary, configs, releases = _request(tmp_path)
+    boundary.force_summary_g8_alias = True
+    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis, boundary)
+
+    with pytest.raises(runtime.SuccessorRuntimeError) as error:
+        _run(request, boundary)
+
+    assert error.value.code == "SUCCESSOR_TERMINAL_INVALID"
+    assert not (request.controlled_output_root / runtime.TERMINAL_FILENAME).exists()
+
+
+def test_divergent_fold_stage_roots_fail_before_stage_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, boundary, configs, releases = _request(tmp_path)
+    divergent = object.__new__(LoadedM3Config)
+    for name in (
+        "document",
+        "config_version",
+        "full_config_sha256",
+        "g1_config_sha256",
+        "snapshot_config_sha256",
+        "provider_config_sha256",
+        "scientific_config_sha256",
+        "provider_validation_config_sha256",
+        "label_reconciliation_config_sha256",
+        "acceptance_config_sha256",
+        "canonical_tracking_uri",
+        "tracking_target_key",
+        "raw_config_sha256",
+    ):
+        object.__setattr__(divergent, name, getattr(request.folds[1].config.config, name))
+    object.__setattr__(
+        divergent,
+        "document",
+        {"tracking": {"artifact_root": "output/other-stage"}},
+    )
+    (request.project_root / "output" / "other-stage").mkdir(parents=True)
+    configs[request.project_root.joinpath("configs", "fold_002.toml").resolve()] = divergent
+    folds = (
+        request.folds[0],
+        replace(
+            request.folds[1],
+            config=replace(request.folds[1].config, config=divergent),
+        ),
+    )
+    request = replace(request, folds=folds)
+    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis, boundary)
+
+    with pytest.raises(runtime.SuccessorRuntimeError) as error:
+        _run(request, boundary)
+
+    assert error.value.code == "SUCCESSOR_INPUT_INVALID"
+    assert not (request.controlled_output_root / runtime.TERMINAL_FILENAME).exists()
+
+
+def test_controlled_root_mismatch_with_canonical_g8_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, boundary, configs, releases = _request(tmp_path)
+    other = request.project_root / "output" / "controlled-other"
+    other.mkdir(parents=True)
+    request = replace(request, controlled_output_root=other)
+    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis, boundary)
+
+    with pytest.raises(runtime.SuccessorRuntimeError) as error:
+        _run(request, boundary)
+
+    assert error.value.code == "SUCCESSOR_INPUT_INVALID"
+    assert not (other / runtime.TERMINAL_FILENAME).exists()
+
+
 def test_distinct_node_same_receipt_path_and_bytes_is_rejected(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request, boundary, configs, releases = _request(tmp_path)
     boundary.alias_physical_receipt = True
+    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis, boundary)
+
+    with pytest.raises(runtime.SuccessorRuntimeError) as error:
+        _run(request, boundary)
+
+    assert error.value.code == "SUCCESSOR_TERMINAL_INVALID"
+    assert not (request.controlled_output_root / runtime.TERMINAL_FILENAME).exists()
+
+
+def test_acceptance_mixed_project_g8_alias_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, boundary, configs, releases = _request(tmp_path)
+    boundary.force_acceptance_mixed_alias = True
+    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis, boundary)
+
+    with pytest.raises(runtime.SuccessorRuntimeError) as error:
+        _run(request, boundary)
+
+    assert error.value.code == "SUCCESSOR_TERMINAL_INVALID"
+    assert not (request.controlled_output_root / runtime.TERMINAL_FILENAME).exists()
+
+
+def test_acceptance_identity_masquerade_fails_receipt_verify(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, boundary, configs, releases = _request(tmp_path)
+    boundary.force_acceptance_identity_masquerade = True
     _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis, boundary)
 
     with pytest.raises(runtime.SuccessorRuntimeError) as error:

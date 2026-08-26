@@ -102,7 +102,6 @@ _SHARED_RECEIPT_STAGES = frozenset(
     }
 )
 _GATE_IDENTITY_VERSION = "m3-successor-gate-identity-v1"
-_GATE_SCOPE_JOIN_VERSION = "m3-successor-gate-scope-v1"
 _REQUIRED_HORIZON_STAGES = (
     "labels",
     "label-reconciliation",
@@ -459,54 +458,6 @@ def compute_successor_gate_identity(
     )
 
 
-def compute_successor_gate_scope_key(
-    *,
-    gate: GateName,
-    fold: str | None,
-    horizon: int | None,
-    folds: tuple[FoldExecution, ...],
-    prior_gates: tuple[GateExecution, ...],
-) -> str:
-    """Derive the scope key join for one Gate receipt slot."""
-
-    if gate not in _GATES:
-        _fail("SUCCESSOR_GATE_FAILED")
-    if gate == "summary":
-        if fold is not None or horizon not in HORIZONS:
-            _fail("SUCCESSOR_GATE_FAILED")
-        experiment_keys = {item.experiment_key for item in folds}
-        if len(experiment_keys) != 1:
-            _fail("SUCCESSOR_GATE_FAILED")
-        return next(iter(experiment_keys))
-    if gate == "reproducibility":
-        if fold is None or horizon not in HORIZONS:
-            _fail("SUCCESSOR_GATE_FAILED")
-        execution = _execution_for_fold(folds, fold)
-        work = _work_for_horizon(execution, horizon)
-        return _sha256_json(
-            [_GATE_SCOPE_JOIN_VERSION, gate, work.fold, work.horizon, work.work_key]
-        )
-    if gate == "readiness":
-        if fold is None or horizon is not None:
-            _fail("SUCCESSOR_GATE_FAILED")
-        execution = _execution_for_fold(folds, fold)
-        return _sha256_json(
-            [
-                _GATE_SCOPE_JOIN_VERSION,
-                gate,
-                _execution_join_payload(execution),
-                [[item.gate, item.identity] for item in prior_gates],
-            ]
-        )
-    if fold is not None or horizon is not None:
-        _fail("SUCCESSOR_GATE_FAILED")
-    return compute_successor_gate_identity(
-        gate="acceptance",
-        folds=folds,
-        prior_gates=prior_gates,
-    )
-
-
 def _execution_join_payload(execution: FoldExecution) -> list[object]:
     return [
         execution.fold,
@@ -519,20 +470,41 @@ def _execution_join_payload(execution: FoldExecution) -> list[object]:
     ]
 
 
-def _execution_for_fold(
-    folds: tuple[FoldExecution, ...], fold: str
-) -> FoldExecution:
-    matches = tuple(item for item in folds if item.fold == fold)
-    if len(matches) != 1:
-        _fail("SUCCESSOR_GATE_FAILED")
-    return matches[0]
+def _resolve_canonical_g8_stage_root(request: SuccessorRuntimeRequest) -> Path:
+    """Resolve the sole G8 root from both fold configs; must equal controlled output."""
+
+    try:
+        project = _real_directory(request.project_root)
+        controlled = _real_directory(request.controlled_output_root)
+        resolved: list[Path] = []
+        for item in request.folds:
+            stage = project_stage_root(
+                project_root=project, config=item.config.config
+            )
+            resolved.append(stage.resolve(strict=True))
+        if len(set(resolved)) != 1:
+            raise ValueError
+        canonical = resolved[0]
+        if canonical != controlled.resolve(strict=True):
+            raise ValueError
+        return canonical
+    except SuccessorRuntimeError:
+        raise
+    except Exception:
+        _fail("SUCCESSOR_INPUT_INVALID")
 
 
-def _work_for_horizon(execution: FoldExecution, horizon: int) -> WorkIdentity:
-    matches = tuple(item for item in execution.work_identities if item.horizon == horizon)
-    if len(matches) != 1:
-        _fail("SUCCESSOR_GATE_FAILED")
-    return matches[0]
+def _artifact_roots_for_receipt_stage(
+    *,
+    stage: str,
+    project_root: Path,
+    canonical_stage_root: Path,
+) -> Mapping[str, Path]:
+    """Select the unique root map for one receipt stage (PROJECT or G8)."""
+
+    if stage == "acceptance":
+        return MappingProxyType({"G8": canonical_stage_root})
+    return MappingProxyType({"PROJECT": project_root})
 
 
 @dataclass(frozen=True)
@@ -1711,6 +1683,7 @@ def run_two_fold_successor(
     if type(request) is not SuccessorRuntimeRequest or type(resume) is not bool:
         _fail("SUCCESSOR_INPUT_INVALID")
     _validate_request(request)
+    canonical_stage_root = _resolve_canonical_g8_stage_root(request)
     terminal = _terminal_path(request)
     if terminal.exists():
         if not resume:
@@ -1743,6 +1716,7 @@ def run_two_fold_successor(
                     project_root=request.project_root,
                     controlled_output_root=request.controlled_output_root,
                     refs=execution.receipts,
+                    canonical_stage_root=canonical_stage_root,
                 )
             except SuccessorRuntimeError:
                 _fail("SUCCESSOR_STAGE_INVALID")
@@ -1761,6 +1735,7 @@ def run_two_fold_successor(
             project_root=request.project_root,
             controlled_output_root=request.controlled_output_root,
             refs=summary.receipt_refs,
+            canonical_stage_root=canonical_stage_root,
         )
         _require_fresh_gate(
             api.verify_gate,
@@ -1781,6 +1756,7 @@ def run_two_fold_successor(
             project_root=request.project_root,
             controlled_output_root=request.controlled_output_root,
             refs=reproducibility.receipt_refs,
+            canonical_stage_root=canonical_stage_root,
         )
         _require_fresh_gate(
             api.verify_gate,
@@ -1805,6 +1781,7 @@ def run_two_fold_successor(
             project_root=request.project_root,
             controlled_output_root=request.controlled_output_root,
             refs=readiness.receipt_refs,
+            canonical_stage_root=canonical_stage_root,
         )
         _require_fresh_gate(
             api.verify_gate,
@@ -1830,6 +1807,7 @@ def run_two_fold_successor(
             project_root=request.project_root,
             controlled_output_root=request.controlled_output_root,
             refs=acceptance.receipt_refs,
+            canonical_stage_root=canonical_stage_root,
         )
         _require_fresh_gate(
             api.verify_gate,
@@ -1890,10 +1868,12 @@ def verify_terminal_attestation(
             raise ValueError
         _validate_attestation_bindings(request, attestation)
         refs = {item.node_id: item for item in attestation.receipts}
+        canonical_stage_root = _resolve_canonical_g8_stage_root(request)
         _verify_receipts(
             project_root=request.project_root,
             controlled_output_root=request.controlled_output_root,
             refs=attestation.receipts,
+            canonical_stage_root=canonical_stage_root,
         )
         _verify_controlled_tree(
             request=request,
@@ -1975,7 +1955,6 @@ def _validate_request(request: SuccessorRuntimeRequest) -> None:
             release_identities.append(
                 (item.release.manifest.release_id, item.release.manifest_sha256)
             )
-            project_stage_root(project_root=project, config=config)
         if len(config_identities) != 2 or len(full_config_identities) != 2:
             raise ValueError
         # Existing summary/work contracts join folds on the scientific config
@@ -1984,6 +1963,9 @@ def _validate_request(request: SuccessorRuntimeRequest) -> None:
             raise ValueError
         if len(release_identities) != 2:
             raise ValueError
+        # Canonical G8 must be uniquely resolved from both fold configs and
+        # equal the controlled output root before any stage / worker work.
+        _resolve_canonical_g8_stage_root(request)
         from quant.research.m3.successor_upstream_stage import (
             validate_successor_toolchain_binding,
         )
@@ -2164,28 +2146,22 @@ def _validate_gate_execution(
                 for item in refs
             ):
                 raise ValueError
+            # Physical readiness_key must be unique per fold ownership slot.
+            if len({item.scope_key for item in refs}) != len(refs):
+                raise ValueError
         else:
+            # acceptance_key is the public physical key; may differ from aggregate identity.
             if (
                 len(refs) != 1
                 or refs[0].stage != "acceptance"
                 or refs[0].fold is not None
                 or refs[0].scope != "ACCEPTANCE"
-                or refs[0].scope_key != gate.identity
+                or not _is_hex64(refs[0].scope_key)
             ):
                 raise ValueError
-        if any(
-            ref.scope_key
-            != compute_successor_gate_scope_key(
-                gate=expected_gate,
-                fold=ref.fold,
-                horizon=ref.horizon,
-                folds=executions,
-                prior_gates=known,
-            )
-            for ref in refs
-        ):
-            raise ValueError
         if any(item.scope not in {"EXPERIMENT", "REPRO", "ACCEPTANCE"} for item in refs):
+            raise ValueError
+        if any(not _is_hex64(item.scope_key) for item in refs):
             raise ValueError
     except SuccessorRuntimeError:
         raise
@@ -2288,10 +2264,12 @@ def _build_attestation(
             gates=gates,
         )
         refs = _unique_refs(all_refs)
+        canonical_stage_root = _resolve_canonical_g8_stage_root(request)
         _verify_receipts(
             project_root=request.project_root,
             controlled_output_root=request.controlled_output_root,
             refs=refs,
+            canonical_stage_root=canonical_stage_root,
         )
         tree_sha = _controlled_tree_sha256(
             request=request, refs=refs,
@@ -2598,19 +2576,32 @@ def _unique_refs(refs: Sequence[StageReceiptRef]) -> tuple[StageReceiptRef, ...]
 
 
 def _verify_receipts(
-    *, project_root: Path, controlled_output_root: Path, refs: Sequence[StageReceiptRef]
+    *,
+    project_root: Path,
+    controlled_output_root: Path,
+    refs: Sequence[StageReceiptRef],
+    canonical_stage_root: Path,
 ) -> Mapping[str, StageReceipt]:
     try:
         project = _real_directory(project_root)
         controlled = _real_directory(controlled_output_root)
+        canonical = _real_directory(canonical_stage_root)
+        if canonical.resolve(strict=True) != controlled.resolve(strict=True):
+            raise ValueError
         result: dict[str, StageReceipt] = {}
         for ref in refs:
             path = _path_from_relative(project, ref.relative_path)
             if not path.is_relative_to(controlled):
                 raise ValueError
+            roots = _artifact_roots_for_receipt_stage(
+                stage=ref.stage,
+                project_root=project,
+                canonical_stage_root=canonical,
+            )
+            expected_alias = "G8" if ref.stage == "acceptance" else "PROJECT"
             verified = verify_stage_receipt_with_bytes(
                 receipt_path=path,
-                artifact_roots={"PROJECT": project},
+                artifact_roots=roots,
             )
             if (
                 verified is None
@@ -2619,14 +2610,14 @@ def _verify_receipts(
                 or verified.receipt.scope != ref.scope
                 or verified.receipt.scope_key != ref.scope_key
                 or any(
-                    digest.root_alias != "PROJECT"
+                    digest.root_alias != expected_alias
                     for digest in (*verified.receipt.inputs, *verified.receipt.outputs)
                 )
             ):
                 raise ValueError
             if any(
                 not path_for_artifact_digest(
-                    digest, artifact_roots={"PROJECT": project}
+                    digest, artifact_roots=dict(roots)
                 ).is_relative_to(controlled)
                 for digest in verified.receipt.outputs
             ):
@@ -2656,18 +2647,26 @@ def _controlled_tree_sha256(
     try:
         project = _real_directory(request.project_root)
         controlled = _real_directory(request.controlled_output_root)
+        canonical = _resolve_canonical_g8_stage_root(request)
         expected_files: set[str] = set()
         for ref in refs:
             receipt_path = _path_from_relative(project, ref.relative_path)
             expected_files.add(_relative_to_project(receipt_path, controlled))
+            roots = _artifact_roots_for_receipt_stage(
+                stage=ref.stage,
+                project_root=project,
+                canonical_stage_root=canonical,
+            )
             verified = verify_stage_receipt_with_bytes(
                 receipt_path=receipt_path,
-                artifact_roots={"PROJECT": project},
+                artifact_roots=roots,
             )
             if verified is None:
                 raise ValueError
             for digest in verified.receipt.outputs:
-                path = path_for_artifact_digest(digest, artifact_roots={"PROJECT": project})
+                path = path_for_artifact_digest(
+                    digest, artifact_roots=dict(roots)
+                )
                 if path.is_relative_to(controlled):
                     expected_files.add(_relative_to_project(path, controlled))
         entries = _walk_controlled_tree(controlled)
@@ -3136,7 +3135,6 @@ __all__ = [
     "VerifiedTerminalAttestation",
     "WorkIdentity",
     "compute_successor_gate_identity",
-    "compute_successor_gate_scope_key",
     "make_production_successor_stage_adapter",
     "make_public_successor_api_bundle",
     "make_project_stage_runner",
