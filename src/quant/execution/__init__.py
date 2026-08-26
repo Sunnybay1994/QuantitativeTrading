@@ -125,6 +125,13 @@ if TYPE_CHECKING:
         open_verified_formal_paper_broker_store,
         verify_existing_formal_paper_broker_store_capability,
     )
+    from quant.execution.paper_formal_bootstrap import (
+        FormalPaperBootstrapError,
+        VerifiedFormalPaperRuntimeBootstrap,
+        bootstrap_fresh_formal_paper_runtime,
+        reopen_verified_formal_paper_runtime,
+        verify_existing_formal_paper_runtime_bootstrap,
+    )
     from quant.execution.soak import (
         FaultDrillReceipt,
         REQUIRED_FAULT_DRILLS,
@@ -172,6 +179,16 @@ _FORMAL_STORE_EXPORTS = frozenset(
         "initialize_verified_formal_paper_broker_store",
         "open_verified_formal_paper_broker_store",
         "verify_existing_formal_paper_broker_store_capability",
+    }
+)
+
+_FORMAL_BOOTSTRAP_EXPORTS = frozenset(
+    {
+        "FormalPaperBootstrapError",
+        "VerifiedFormalPaperRuntimeBootstrap",
+        "bootstrap_fresh_formal_paper_runtime",
+        "reopen_verified_formal_paper_runtime",
+        "verify_existing_formal_paper_runtime_bootstrap",
     }
 )
 
@@ -278,6 +295,10 @@ def __getattr__(name: str) -> Any:
         value = getattr(import_module("quant.execution.paper_formal_broker_store"), name)
         globals()[name] = value
         return value
+    if name in _FORMAL_BOOTSTRAP_EXPORTS:
+        value = getattr(import_module("quant.execution.paper_formal_bootstrap"), name)
+        globals()[name] = value
+        return value
     if name not in _SOAK_EXPORTS:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     value = getattr(import_module("quant.execution.soak"), name)
@@ -295,6 +316,7 @@ __all__ = [
     "ExecutionEvent",
     "FeeComponent",
     "FaultDrillReceipt",
+    "FormalPaperBootstrapError",
     "FormalPaperBrokerSnapshotError",
     "FormalPaperBrokerStoreError",
     "FormalPaperCandidateTargetLoader",
@@ -330,6 +352,7 @@ __all__ = [
     "VerifiedConnectMarketContext",
     "VerifiedFormalPaperExecutionStoreCapability",
     "VerifiedFormalPaperLedgerContextProvider",
+    "VerifiedFormalPaperRuntimeBootstrap",
     "VerifiedFormalPaperServiceComposition",
     "VerifiedFormalPaperSoakSchedule",
     "VerifiedDevelopmentSoakEvidence",
@@ -370,6 +393,7 @@ __all__ = [
     "build_verified_market_snapshot",
     "build_verified_market_snapshot_identity",
     "build_verified_formal_paper_soak_schedule",
+    "bootstrap_fresh_formal_paper_runtime",
     "load_trading_config",
     "load_formal_paper_daily_source_plan",
     "load_verified_formal_paper_ledger_context_provider",
@@ -381,6 +405,7 @@ __all__ = [
     "open_verified_formal_paper_execution_store",
     "open_verified_formal_paper_service_composition",
     "publish_formal_paper_opening_market_input",
+    "reopen_verified_formal_paper_runtime",
     "run_formal_paper_daily_operator",
     "run_formal_paper_daily_read_only",
     "decide_soak_gate",
@@ -390,6 +415,7 @@ __all__ = [
     "verify_existing_formal_paper_broker_store_capability",
     "verify_existing_formal_paper_execution_store_capability",
     "verify_existing_formal_paper_ledger_context_provider",
+    "verify_existing_formal_paper_runtime_bootstrap",
     "verify_existing_formal_paper_service_composition",
     "verify_existing_formal_paper_soak_schedule",
 ]
