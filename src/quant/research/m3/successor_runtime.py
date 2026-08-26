@@ -37,7 +37,13 @@ from quant.research.m3.run_state import (
 )
 
 if TYPE_CHECKING:
+    from quant.research.m3.acceptance import AcceptanceDecisionV1
+    from quant.research.m3.acceptance_stage import FormalAcceptanceStageResult
+    from quant.research.m3.backtest_stage import FormalBacktestStageResult
     from quant.research.m3.orchestration import StageRunner
+    from quant.research.m3.readiness_evidence import VerifiedReadinessEvidenceArtifact
+    from quant.research.m3.reproducibility import FormalReproducibilityResult
+    from quant.research.m3.tracking_stage import FormalTrackingStageResult
 
 HORIZONS: tuple[int, int] = (5, 10)
 TERMINAL_FILENAME = "completion.json"
@@ -685,6 +691,7 @@ class SuccessorProductionFormalStageRunner(Protocol):
         context: SuccessorStageContext,
         runner: "StageRunner",
         public_apis: "SuccessorPublicApiBundle",
+        prior_refs: tuple[StageReceiptRef, ...],
         resume: bool,
     ) -> StageReceiptRef: ...
 
@@ -744,17 +751,17 @@ class SuccessorPublicApiBundle:
     stage_runner_type: type[Any]
     run_plan_builders: Mapping[str, Callable[..., object]]
     formal_backtest_run_plan: Callable[..., object]
-    formal_backtest_stage: Callable[..., object]
+    formal_backtest_stage: Callable[..., "FormalBacktestStageResult"]
     formal_tracking_run_plan: Callable[..., object]
-    formal_tracking_stage: Callable[..., object]
+    formal_tracking_stage: Callable[..., "FormalTrackingStageResult"]
     summary_builder: Callable[..., object]
     summary_verifier: Callable[..., object]
-    reproducibility_stage: Callable[..., object]
+    reproducibility_stage: Callable[..., "FormalReproducibilityResult"]
     reproducibility_verifier: Callable[..., object]
-    readiness_stage: Callable[..., object]
-    readiness_verifier: Callable[..., object]
-    acceptance_stage: Callable[..., object]
-    acceptance_audit: Callable[..., object]
+    readiness_stage: Callable[..., "VerifiedReadinessEvidenceArtifact"]
+    readiness_verifier: Callable[..., "VerifiedReadinessEvidenceArtifact"]
+    acceptance_stage: Callable[..., "FormalAcceptanceStageResult"]
+    acceptance_audit: Callable[..., "AcceptanceDecisionV1"]
 
     def __post_init__(self) -> None:
         if not isinstance(self.stage_runner_type, type):
@@ -857,7 +864,7 @@ def make_public_successor_api_bundle() -> SuccessorPublicApiBundle:
         )
         from quant.research.m3.evaluate import (
             build_research_summary_artifact,
-            verify_research_summary_artifact,
+            verify_research_summary_stage_artifact,
         )
         from quant.research.m3.experiment_identity import (
             make_experiment_identity_run_plan,
@@ -901,7 +908,7 @@ def make_public_successor_api_bundle() -> SuccessorPublicApiBundle:
             formal_tracking_run_plan=make_formal_tracking_run_plan,
             formal_tracking_stage=run_formal_tracking_stage,
             summary_builder=build_research_summary_artifact,
-            summary_verifier=verify_research_summary_artifact,
+            summary_verifier=verify_research_summary_stage_artifact,
             reproducibility_stage=run_formal_reproducibility_stage,
             reproducibility_verifier=verify_formal_reproducibility_artifact,
             readiness_stage=run_readiness_evidence_stage,
@@ -1012,6 +1019,7 @@ class ProductionSuccessorStageAdapter:
                 or bound_public_apis.stage_runner_type is not StageRunner
             ):
                 raise ValueError
+            from quant.research.m3 import successor_downstream_stage as downstream
             from quant.research.m3 import successor_upstream_stage as upstream
 
             if (
@@ -1019,6 +1027,25 @@ class ProductionSuccessorStageAdapter:
                 is not upstream.run_successor_upstream_wave
                 or dependencies.run_summary
                 is not upstream.run_successor_formal_summary_gate
+                or dependencies.run_formal_stage
+                is not downstream.run_successor_formal_stage
+                or dependencies.verify_fold is not downstream.verify_successor_fold
+                or dependencies.verify_summary
+                is not downstream.verify_successor_summary_gate
+                or dependencies.run_reproducibility
+                is not downstream.run_successor_reproducibility_gate
+                or dependencies.verify_reproducibility
+                is not downstream.verify_successor_reproducibility_gate
+                or dependencies.run_readiness
+                is not downstream.run_successor_readiness_gate
+                or dependencies.verify_readiness
+                is not downstream.verify_successor_readiness_gate
+                or dependencies.run_acceptance
+                is not downstream.run_successor_acceptance_gate
+                or dependencies.verify_acceptance
+                is not downstream.verify_successor_acceptance_gate
+                or dependencies.verify_gate
+                is not downstream.verify_successor_terminal_gate
             ):
                 raise ValueError
         except SuccessorRuntimeError:
@@ -1084,6 +1111,9 @@ class ProductionSuccessorStageAdapter:
                             context=context,
                             runner=runner,
                             public_apis=self._public_apis,
+                            prior_refs=tuple(
+                                sorted(refs, key=lambda item: item.node_id)
+                            ),
                             resume=resume,
                         )
                     )
@@ -1504,37 +1534,26 @@ def make_production_successor_stage_adapter(
     )
 
 
-def make_canonical_successor_production_dependencies(
-    *,
-    run_formal_stage: SuccessorProductionFormalStageRunner,
-    verify_fold: SuccessorProductionFoldVerifier,
-    verify_summary: SuccessorProductionGateVerifier,
-    run_reproducibility: SuccessorProductionGateRunner,
-    verify_reproducibility: SuccessorProductionGateVerifier,
-    run_readiness: SuccessorProductionGateRunner,
-    verify_readiness: SuccessorProductionGateVerifier,
-    run_acceptance: SuccessorProductionGateRunner,
-    verify_acceptance: SuccessorProductionGateVerifier,
-    verify_gate: SuccessorProductionGateVerifier,
-) -> SuccessorProductionDependencies:
-    """Bind package-owned upstream + R2S summary runners by ``is`` identity."""
+def make_canonical_successor_production_dependencies() -> SuccessorProductionDependencies:
+    """Zero-arg factory: bind R2A upstream, R2S summary, and package downstream by ``is``."""
 
+    from quant.research.m3 import successor_downstream_stage as downstream
     from quant.research.m3 import successor_upstream_stage as upstream
 
     return SuccessorProductionDependencies(
         stage_runner_factory=make_project_stage_runner,
         run_upstream_wave=upstream.run_successor_upstream_wave,
-        run_formal_stage=run_formal_stage,
-        verify_fold=verify_fold,
+        run_formal_stage=downstream.run_successor_formal_stage,
+        verify_fold=downstream.verify_successor_fold,
         run_summary=upstream.run_successor_formal_summary_gate,
-        verify_summary=verify_summary,
-        run_reproducibility=run_reproducibility,
-        verify_reproducibility=verify_reproducibility,
-        run_readiness=run_readiness,
-        verify_readiness=verify_readiness,
-        run_acceptance=run_acceptance,
-        verify_acceptance=verify_acceptance,
-        verify_gate=verify_gate,
+        verify_summary=downstream.verify_successor_summary_gate,
+        run_reproducibility=downstream.run_successor_reproducibility_gate,
+        verify_reproducibility=downstream.verify_successor_reproducibility_gate,
+        run_readiness=downstream.run_successor_readiness_gate,
+        verify_readiness=downstream.verify_successor_readiness_gate,
+        run_acceptance=downstream.run_successor_acceptance_gate,
+        verify_acceptance=downstream.verify_successor_acceptance_gate,
+        verify_gate=downstream.verify_successor_terminal_gate,
     )
 
 
@@ -2137,17 +2156,18 @@ def _validate_gate_execution(
             if len({item.scope_key for item in refs}) != len(refs):
                 raise ValueError
         elif expected_gate == "readiness":
-            if len(refs) != 2 or {item.fold for item in refs} != {
-                execution.fold for execution in executions
-            } or any(
-                item.horizon is not None
+            # Single global readiness physical receipt (no fold dimension).
+            # Aggregate two-fold closure stays on gate.identity only.
+            if len(refs) != 1:
+                raise ValueError
+            item = refs[0]
+            if (
+                item.fold is not None
+                or item.horizon is not None
                 or item.stage != "readiness-evidence"
                 or item.scope != "ACCEPTANCE"
-                for item in refs
+                or not _is_hex64(item.scope_key)
             ):
-                raise ValueError
-            # Physical readiness_key must be unique per fold ownership slot.
-            if len({item.scope_key for item in refs}) != len(refs):
                 raise ValueError
         else:
             # acceptance_key is the public physical key; may differ from aggregate identity.
@@ -3135,6 +3155,7 @@ __all__ = [
     "VerifiedTerminalAttestation",
     "WorkIdentity",
     "compute_successor_gate_identity",
+    "make_canonical_successor_production_dependencies",
     "make_production_successor_stage_adapter",
     "make_public_successor_api_bundle",
     "make_project_stage_runner",
