@@ -5,6 +5,8 @@ import inspect
 import os
 import pickle
 import shutil
+import tomllib
+from collections.abc import Callable
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
@@ -95,6 +97,37 @@ def _assert_sanitized(exc: policy.PaperExecutionPolicyError, code: str) -> None:
     assert repr(exc) == f"PaperExecutionPolicyError({code!r})"
     assert exc.__cause__ is None
     assert exc.__context__ is None
+
+
+def test_versioned_formal_policy_source_bytes_match_canonical_renderer() -> None:
+    raw = FORMAL_POLICY.read_bytes()
+    assert b"\r" not in raw
+    assert not raw.startswith(b"\xef\xbb\xbf")
+    assert raw.endswith(b"\n")
+    assert not raw.endswith(b"\n\n")
+    text = raw.decode("utf-8")
+    document = tomllib.loads(text)
+    assert text == policy._render_canonical(document)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda raw: raw.replace(b"\n", b"\r\n"),
+        lambda raw: b"\xef\xbb\xbf" + raw,
+        lambda raw: raw + b"\n",
+    ),
+)
+def test_crlf_bom_and_extra_newline_fail_closed_via_public_loader(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutate: Callable[[bytes], bytes],
+) -> None:
+    raw = mutate(FORMAL_POLICY.read_bytes())
+    root = _project(tmp_path, raw)
+    with pytest.raises(policy.PaperExecutionPolicyError) as caught:
+        _load(root, monkeypatch)
+    _assert_sanitized(caught.value, "PAPER_POLICY_SOURCE_INVALID")
 
 
 @pytest.mark.parametrize("session_date", [dt.date(2026, 1, 1), dt.date(2026, 8, 9)])
