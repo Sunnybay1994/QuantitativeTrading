@@ -168,18 +168,21 @@ class _DeterministicProductionBoundary:
         self.gate_contexts: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
         self.public_api_calls: list[str] = []
         self.builder_call_records: list[tuple[str, str]] = []
+        self._stub_wave_cache: dict[str, tuple[runtime.StageReceiptRef, ...]] = {}
         self.public_apis = _public_api_substitutes(
             builder_call_records=self.builder_call_records,
         )
 
     @property
     def dependencies(self) -> runtime.SuccessorProductionDependencies:
+        import quant.research.m3.successor_upstream_stage as upstream
+
         return runtime.SuccessorProductionDependencies(
             stage_runner_factory=runtime.make_project_stage_runner,
-            run_upstream_wave=self.run_upstream_wave,
+            run_upstream_wave=upstream.run_successor_upstream_wave,
             run_formal_stage=self.run_formal_stage,
             verify_fold=self.verify_fold,
-            run_summary=self.run_summary,
+            run_summary=upstream.run_successor_formal_summary_gate,
             verify_summary=self.verify_summary,
             run_reproducibility=self.run_reproducibility,
             verify_reproducibility=self.verify_reproducibility,
@@ -299,11 +302,17 @@ class _DeterministicProductionBoundary:
         context: runtime.SuccessorStageContext,
         runner: StageRunner,
         public_apis: runtime.SuccessorPublicApiBundle,
+        prior_refs: tuple[runtime.StageReceiptRef, ...],
         resume: bool,
     ) -> tuple[runtime.StageReceiptRef, ...]:
-        assert context.request is not None and resume is True
+        assert context.request is not None
         assert type(runner) is StageRunner
+        assert type(prior_refs) is tuple
         assert wave not in {"labels", "features", "folds"}
+        assert all(type(item) is runtime.StageReceiptRef for item in prior_refs)
+        cached = self._stub_wave_cache.get(wave)
+        if cached is not None:
+            return cached
         builder = public_apis.run_plan_builders[wave]
         self.public_api_calls.append(wave)
         builder(wave=wave)
@@ -348,7 +357,9 @@ class _DeterministicProductionBoundary:
                         )
         else:
             raise AssertionError(f"unexpected wave {wave}")
-        return tuple(sorted(refs, key=lambda item: item.node_id))
+        result = tuple(sorted(refs, key=lambda item: item.node_id))
+        self._stub_wave_cache[wave] = result
+        return result
 
     def run_formal_stage(
         self,
@@ -603,6 +614,12 @@ def _request(
     project = tmp_path / "successor-project"
     (project / "configs").mkdir(parents=True)
     (project / "output" / "stage").mkdir(parents=True)
+    python_path = type(Path())(project / "toolchain" / "python.exe")
+    python_path.parent.mkdir(parents=True)
+    python_path.write_bytes(b"fixture-python")
+    dump_path = type(Path())(project / "data" / "external" / "qlib" / "v0.9.7" / "dump_bin.py")
+    dump_path.parent.mkdir(parents=True)
+    dump_path.write_bytes(b"dump")
     configs: dict[Path, LoadedM3Config] = {}
     releases: dict[str, VerifiedG1Release] = {}
     folds: list[runtime.SuccessorFoldRequest] = []
@@ -637,6 +654,11 @@ def _request(
             provider_runtime_fingerprint_sha256=_hex("provider-runtime"),
         ),
         now=dt.datetime(2026, 8, 23, 12, 0, tzinfo=dt.timezone.utc),
+        toolchain=runtime.SuccessorToolchainBinding(
+            python_executable=python_path,
+            qlib_dump_tool_path=dump_path,
+            timeout_seconds=30.0,
+        ),
     )
     boundary = _DeterministicProductionBoundary(project)
     return request, boundary, configs, releases
@@ -647,7 +669,10 @@ def _install_fixture_verifiers(
     configs: dict[Path, LoadedM3Config],
     releases: dict[str, VerifiedG1Release],
     public_apis: runtime.SuccessorPublicApiBundle,
+    boundary: _DeterministicProductionBoundary | None = None,
 ) -> None:
+    import quant.research.m3.successor_upstream_stage as upstream
+
     monkeypatch.setattr(
         runtime,
         "load_m3_config",
@@ -663,6 +688,25 @@ def _install_fixture_verifiers(
         "make_public_successor_api_bundle",
         lambda: public_apis,
     )
+    monkeypatch.setattr(
+        upstream,
+        "validate_successor_toolchain_binding",
+        lambda **_kwargs: (
+            "/fixture/python",
+            "data/external/qlib/v0.9.7/dump_bin.py",
+            4,
+            _hex("dump-bytes"),
+        ),
+    )
+    if boundary is not None:
+        monkeypatch.setattr(
+            upstream, "run_successor_upstream_wave", boundary.run_upstream_wave
+        )
+        monkeypatch.setattr(
+            upstream, "run_successor_formal_summary_gate", boundary.run_summary
+        )
+        boundary._stub_wave_cache.clear()
+    upstream._reset_wave_registry_for_tests()
 
 
 def _adapter(boundary: _DeterministicProductionBoundary) -> runtime.ProductionSuccessorStageAdapter:
@@ -687,7 +731,7 @@ def test_two_fold_terminal_is_durable_and_replayable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request, boundary, configs, releases = _request(tmp_path)
-    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis)
+    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis, boundary)
 
     first = _run(request, boundary)
     second = _run(request, boundary)
@@ -726,7 +770,7 @@ def test_terminal_rejects_receipt_bytes_and_unknown_tree_entry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request, boundary, configs, releases = _request(tmp_path)
-    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis)
+    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis, boundary)
     first = _run(request, boundary)
     adapter = _adapter(boundary)
 
@@ -771,7 +815,7 @@ def test_terminal_rejects_receipt_bytes_and_unknown_tree_entry(
     # Rebuild the independent fixture before testing the unknown-entry branch.
     request_2, boundary_2, configs_2, releases_2 = _request(tmp_path / "second")
     _install_fixture_verifiers(
-        monkeypatch, configs_2, releases_2, boundary_2.public_apis
+        monkeypatch, configs_2, releases_2, boundary_2.public_apis, boundary_2
     )
     _run(request_2, boundary_2)
     adapter_2 = _adapter(boundary_2)
@@ -793,7 +837,7 @@ def test_missing_h10_cannot_publish_terminal(
 ) -> None:
     request, boundary, configs, releases = _request(tmp_path)
     boundary.omit_horizon = 10
-    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis)
+    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis, boundary)
 
     with pytest.raises(runtime.SuccessorRuntimeError) as error:
         _run(request, boundary)
@@ -845,7 +889,7 @@ def test_terminal_rejects_unknown_empty_directory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request, boundary, configs, releases = _request(tmp_path)
-    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis)
+    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis, boundary)
     _run(request, boundary)
 
     (request.controlled_output_root / "unknown-empty").mkdir()
@@ -888,7 +932,7 @@ def test_runner_accepts_concrete_path_subclass_and_rejects_invalid_root(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request, boundary, configs, releases = _request(tmp_path)
-    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis)
+    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis, boundary)
     context = runtime.SuccessorStageContext(request=request, fold="fold_001")
     config = request.folds[0].config.config
 
@@ -963,7 +1007,7 @@ def test_real_waves_call_builders_once_with_mapped_receipts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request, boundary, configs, releases = _request(tmp_path)
-    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis)
+    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis, boundary)
 
     assert "labels" not in boundary.public_apis.run_plan_builders
     assert "features" not in boundary.public_apis.run_plan_builders
@@ -1026,7 +1070,7 @@ def test_wave_cache_rejects_cross_request_poison_and_resume_drift(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request_a, boundary, configs, releases = _request(tmp_path)
-    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis)
+    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis, boundary)
     adapter = _adapter(boundary)
 
     adapter.run_fold(
@@ -1051,6 +1095,7 @@ def test_wave_cache_rejects_cross_request_poison_and_resume_drift(
     # Fresh adapter for happy-path second fold, then poison with request B
     adapter_ok = _adapter(boundary)
     boundary.builder_call_records.clear()
+    boundary._stub_wave_cache.clear()
     adapter_ok.run_fold(
         request=request_a.folds[0],
         context=runtime.SuccessorStageContext(
@@ -1072,7 +1117,7 @@ def test_wave_cache_rejects_cross_request_poison_and_resume_drift(
     ]
 
     request_b, boundary_b, configs_b, releases_b = _request(tmp_path / "poison-b")
-    _install_fixture_verifiers(monkeypatch, configs_b, releases_b, boundary_b.public_apis)
+    _install_fixture_verifiers(monkeypatch, configs_b, releases_b, boundary_b.public_apis, boundary_b)
     with pytest.raises(runtime.SuccessorRuntimeError) as poison_error:
         adapter_ok.run_fold(
             request=request_b.folds[0],
@@ -1089,7 +1134,7 @@ def test_wave_cache_rejects_duplicate_and_third_fold_consumption(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request, boundary, configs, releases = _request(tmp_path)
-    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis)
+    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis, boundary)
     adapter = _adapter(boundary)
 
     adapter.run_fold(
@@ -1138,7 +1183,7 @@ def test_scope_key_drift_cannot_join_work_to_execution(
 ) -> None:
     request, boundary, configs, releases = _request(tmp_path)
     boundary.drift_work_scope = True
-    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis)
+    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis, boundary)
 
     with pytest.raises(runtime.SuccessorRuntimeError) as error:
         _run(request, boundary)
@@ -1153,7 +1198,7 @@ def test_reproducibility_scope_key_drift_cannot_join_work(
 ) -> None:
     request, boundary, configs, releases = _request(tmp_path)
     boundary.drift_reproducibility_scope = True
-    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis)
+    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis, boundary)
 
     with pytest.raises(runtime.SuccessorRuntimeError) as error:
         _run(request, boundary)
@@ -1168,7 +1213,7 @@ def test_distinct_node_same_receipt_path_and_bytes_is_rejected(
 ) -> None:
     request, boundary, configs, releases = _request(tmp_path)
     boundary.alias_physical_receipt = True
-    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis)
+    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis, boundary)
 
     with pytest.raises(runtime.SuccessorRuntimeError) as error:
         _run(request, boundary)
@@ -1183,7 +1228,7 @@ def test_fresh_gate_verifier_requires_reconstructed_fold_and_prior_context(
 ) -> None:
     request, boundary, configs, releases = _request(tmp_path)
     boundary.require_reconstructed_context = True
-    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis)
+    _install_fixture_verifiers(monkeypatch, configs, releases, boundary.public_apis, boundary)
 
     _run(request, boundary)
 
