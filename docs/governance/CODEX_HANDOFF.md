@@ -41,18 +41,20 @@
   复验为 `RESEARCH_ONLY`；source/canonical 6 文件、60,597 bytes、逐文件 SHA-256 差异为 0。R10 证据已由
   `ba83ad7` 合流，重复 worktree 已移除，source branch 已由 `archive/m2-source-r10-successor-20260816` 保存后删除。
   历史混合 EOL 导致旧 code hash 不可由 commit 复算的 provenance 债仍开放，但不再阻塞 M2-FWD-R1。
-- finance writer 仍在根 checkout 单实例推进，`data/clean/tushare_financials` 尚未形成。用户已裁定投研主线
+- finance writer 已自然耗尽当前可领取请求并退出，`data/clean/tushare_financials` 尚未形成。用户已裁定投研主线
   不因采集等待而整体暂停，但恢复期间只能消费既有、已验证、冻结且不可变的 clean snapshot；禁止读取或使用
   partial financial raw、采集中 ledger 或未发布的 financial clean。财务接入顺序保持
   `writer terminal → audit-v4 → R3 → publisher/不可覆盖 snapshot → PIT`，任何前置未闭合都不得启动真实 PIT
   quality run。
-  2026-08-25 最新只读一致性事务样本为 `COMPLETE=92,879 / PENDING=82,939 / RUNNING=1 /
-  RETRYABLE=1,365`，active lease 为 1；`FAILED/SPLIT_REQUIRED=0`。writer PID 7692 仍为 `BelowNormal/0x3`，
-  CPU 继续累计且 stderr 为 0 bytes，因此状态仍是 `COLLECTING / NOT TERMINAL`。1,365 条 RETRYABLE 已达到
-  `max_attempts=3`，当前 writer 不会再领取；它们已登记为 [`UA-M2-001`](用户待批示与参与事项.md)，须等当前
-  pass 自然耗尽后再请求用户批准有界恢复。只读分类已确认该集合全部为
-  `cashflow / attempts=3 / TRANSIENT`；批准前还必须冻结 exact count 与 request-set digest。现在不得重置 ledger、
-  并发第二 writer、停止现有 writer 或启动 audit。
+  2026-08-28 四财务 dataset 的只读一致性事务为 `COMPLETE=175,819 / RETRYABLE=1,365`，
+  `PENDING/RUNNING/FAILED/SPLIT_REQUIRED=0`，lease 行数与 active lease 均为 0，writer absent，最新 finance
+  stderr 为 0 bytes。1,365 条全部为 `cashflow / RETRYABLE / attempts=3 / TRANSIENT`；full canonical request-set
+  schema `m2-tushare-finance-retry-request-set-v1` 的 527,133 bytes SHA-256 为
+  `45523530323690e8ecf9f1a7649e0efbdac9ce9c99de3e5fef0f572e0f4ec966`，辅助 IDs-only SHA-256 为
+  `f22b930b1bde003a63ca66d4a086ffa4ee8d6af2d9c517904fbc5eb23a209992`。[`UA-M2-001`](用户待批示与参与事项.md)
+  已从“待前置”进入“待批示”：建议仅对该 full digest 集合每 request 增加 1 次机会，attempt ceiling `3 → 4`，
+  单 writer 单 pass；fresh digest/lease/writer preflight 不一致则 `0-write STOP`，任何 attempt 4 失败、
+  `FAILED/SPLIT_REQUIRED`、新 stderr 或 identity drift 即 STOP。用户批准前不得 reset/修改 ledger、启动 writer 或 audit。
   snapshot READY 时，PIT 优先于新的非财务研究包。PIT 首跑前置 `3b8857c` 已以 A1
   `RECONSTRUCTED_CURRENT_INVENTORY_V1`、coverage gate、
   code-identity 与 `UNFROZEN/[]` pre-artifact STOP 进入 `086cae9`；来源线已 archive-first 退出，但这不等于
