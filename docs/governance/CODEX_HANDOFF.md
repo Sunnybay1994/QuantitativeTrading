@@ -52,9 +52,16 @@
   schema `m2-tushare-finance-retry-request-set-v1` 的 527,133 bytes SHA-256 为
   `45523530323690e8ecf9f1a7649e0efbdac9ce9c99de3e5fef0f572e0f4ec966`，辅助 IDs-only SHA-256 为
   `f22b930b1bde003a63ca66d4a086ffa4ee8d6af2d9c517904fbc5eb23a209992`。[`UA-M2-001`](用户待批示与参与事项.md)
-  已从“待前置”进入“待批示”：建议仅对该 full digest 集合每 request 增加 1 次机会，attempt ceiling `3 → 4`，
-  单 writer 单 pass；fresh digest/lease/writer preflight 不一致则 `0-write STOP`，任何 attempt 4 失败、
-  `FAILED/SPLIT_REQUIRED`、新 stderr 或 identity drift 即 STOP。用户批准前不得 reset/修改 ledger、启动 writer 或 audit。
+  用户已逐字批准仅该 full digest 集合每 request 增加 1 次机会，attempt ceiling `3 → 4`、single writer/single pass。
+  首次 PID `40212` 在零写边界因 `RECOVERY_PRIORITY_SET_FAILED` 停止；显式 64-bit Windows `ctypes` ABI 的独立
+  AUDIT1 随后 PASS。新的 recovery2 preflight/manifest 再次闭合原 exact 1,365/digest/lease0/writer absent，manifest
+  SHA-256=`a2500992bebb88bcc9b737ff1551997d2030ca268bb8fc68168f587a28687db9`；唯一 writer PID `8676` 以
+  `BelowNormal/0x3` 完成 exact 1,365，terminal SHA-256=
+  `33655f1f15144551cd536610cac033534047341f39419452c84e325df4a1691b`，failure null、stderr 0 bytes。
+  唯一 post-terminal 只读复核确认四财务 dataset 各 `COMPLETE=44,296`、合计 `177,184`，所有 noncomplete 状态为
+  0、lease0、writer absent；exact 1,365 当前均 attempts4/COMPLETE，重建冻结 prestate full digest仍精确匹配；
+  post-terminal result SHA-256=`7757a3c40526121cb26b2d087a81b14885968c37f96f2db89fd5ddae1c079386`。
+  UA-M2-001 恢复已关闭，但 audit-v4、snapshot、R3 与真实 PIT仍未运行，下一步必须先冻结独立 audit-v4 包。
   snapshot READY 时，PIT 优先于新的非财务研究包。PIT 首跑前置 `3b8857c` 已以 A1
   `RECONSTRUCTED_CURRENT_INVENTORY_V1`、coverage gate、
   code-identity 与 `UNFROZEN/[]` pre-artifact STOP 进入 `086cae9`；来源线已 archive-first 退出，但这不等于
