@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import stat
 from dataclasses import asdict, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from typing import Literal
 
 import pytest
 
 import quant.research.m3.successor_runtime as runtime
+from quant.data.m3_release import VerifiedG1Release
+from quant.research.m3.config import LoadedM3Config
 from quant.research.m3.run_state import publish_stage_receipt
 from quant.research.m3.successor_runtime import (
     FoldExecution,
@@ -30,6 +33,253 @@ from quant.research.m3.successor_runtime import (
 
 def _hex(label: str) -> str:
     return hashlib.sha256(label.encode("ascii")).hexdigest()
+
+
+def _validation_config(*, raw: str, full: str, scientific: str) -> LoadedM3Config:
+    config = object.__new__(LoadedM3Config)
+    object.__setattr__(config, "document", {"tracking": {"artifact_root": "output/stage"}})
+    object.__setattr__(config, "config_version", "unit-config-v1")
+    object.__setattr__(config, "full_config_sha256", full)
+    object.__setattr__(config, "g1_config_sha256", _hex(f"g1:{raw}"))
+    object.__setattr__(config, "snapshot_config_sha256", _hex(f"snapshot:{raw}"))
+    object.__setattr__(config, "provider_config_sha256", _hex(f"provider:{raw}"))
+    object.__setattr__(config, "scientific_config_sha256", scientific)
+    object.__setattr__(
+        config,
+        "provider_validation_config_sha256",
+        _hex(f"provider-validation:{raw}"),
+    )
+    object.__setattr__(
+        config,
+        "label_reconciliation_config_sha256",
+        _hex(f"label-reconciliation:{raw}"),
+    )
+    object.__setattr__(config, "acceptance_config_sha256", _hex(f"acceptance:{raw}"))
+    object.__setattr__(config, "canonical_tracking_uri", "file:///unit-test")
+    object.__setattr__(config, "tracking_target_key", _hex(f"tracking:{raw}"))
+    object.__setattr__(config, "raw_config_sha256", raw)
+    return config
+
+
+def _validation_release(*, project: Path, identity: str, suffix: str) -> VerifiedG1Release:
+    root = project / "g1" / suffix
+    root.mkdir(parents=True)
+    release = SimpleNamespace(root=root, release_id=identity)
+    manifest = SimpleNamespace(release_id=identity)
+    verified = object.__new__(VerifiedG1Release)
+    object.__setattr__(verified, "release", release)
+    object.__setattr__(verified, "manifest", manifest)
+    object.__setattr__(verified, "manifest_sha256", _hex(f"manifest:{suffix}"))
+    object.__setattr__(verified, "quality", SimpleNamespace())
+    object.__setattr__(verified, "quality_sha256", _hex(f"quality:{suffix}"))
+    object.__setattr__(verified, "artifact_paths", ())
+    return verified
+
+
+def _validation_request(
+    tmp_path: Path, *, duplicate_release: bool = False
+) -> tuple[
+    runtime.SuccessorRuntimeRequest,
+    dict[Path, LoadedM3Config],
+    dict[str, VerifiedG1Release],
+]:
+    project = tmp_path / "project"
+    (project / "configs").mkdir(parents=True)
+    (project / "output" / "stage").mkdir(parents=True)
+    raw_bytes = b"shared-config"
+    raw = hashlib.sha256(raw_bytes).hexdigest()
+    config = _validation_config(
+        raw=raw,
+        full=_hex("full:shared"),
+        scientific=_hex("scientific:shared"),
+    )
+    configs: dict[Path, LoadedM3Config] = {}
+    releases: dict[str, VerifiedG1Release] = {}
+    folds: list[runtime.SuccessorFoldRequest] = []
+    shared_path = project / "configs" / "shared.toml"
+    shared_path.write_bytes(raw_bytes)
+    configs[shared_path.resolve()] = config
+    (project / "configs" / "unbound.toml").write_bytes(b"unbound")
+    for fold in ("fold_001", "fold_002"):
+        release = _validation_release(
+            project=project,
+            identity=_hex(f"release:{fold}"),
+            suffix=fold,
+        )
+        releases[release.release.release_id] = release
+        folds.append(
+            runtime.SuccessorFoldRequest(
+                fold=fold,
+                config=runtime.SuccessorConfigInput(
+                    relative_path=PurePosixPath("configs/shared.toml"),
+                    config=config,
+                ),
+                release=release,
+            )
+        )
+    if duplicate_release:
+        folds[1] = replace(folds[1], release=folds[0].release)
+    request = runtime.SuccessorRuntimeRequest(
+        project_root=project,
+        controlled_output_root=project / "output" / "stage",
+        folds=tuple(folds),
+        runtime_identity=SuccessorRuntimeIdentity(
+            code_version="unit-successor-v1",
+            dependency_fingerprint_sha256=_hex("dependencies"),
+            provider_runtime_fingerprint_sha256=_hex("provider-runtime"),
+        ),
+        now=dt.datetime(2026, 8, 23, 12, 0, tzinfo=dt.timezone.utc),
+        toolchain=runtime.SuccessorToolchainBinding(
+            python_executable=project / "python.exe",
+            qlib_dump_tool_path=project / "dump_bin.py",
+            timeout_seconds=30.0,
+        ),
+    )
+    return request, configs, releases
+
+
+def _patch_request_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    configs: dict[Path, LoadedM3Config],
+    releases: dict[str, VerifiedG1Release],
+    load_calls: list[Path],
+    release_calls: list[str],
+) -> None:
+    import quant.research.m3.successor_upstream_stage as upstream
+
+    def load(path: Path) -> LoadedM3Config:
+        load_calls.append(path.resolve())
+        return configs[path.resolve()]
+
+    def verify(release: object) -> VerifiedG1Release:
+        assert isinstance(release, SimpleNamespace)
+        release_calls.append(release.release_id)
+        return releases[release.release_id]
+
+    monkeypatch.setattr(runtime, "load_m3_config", load)
+    monkeypatch.setattr(runtime, "verify_g1_release", verify)
+    monkeypatch.setattr(
+        runtime,
+        "_resolve_canonical_g8_stage_root",
+        lambda candidate: candidate.controlled_output_root,
+    )
+    monkeypatch.setattr(
+        upstream,
+        "validate_successor_toolchain_binding",
+        lambda **_kwargs: (
+            "/unit/python",
+            "data/external/qlib/v0.9.7/dump_bin.py",
+            4,
+            _hex("dump-bytes"),
+        ),
+    )
+
+
+def test_validate_request_allows_shared_config_with_two_fresh_loads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request, configs, releases = _validation_request(tmp_path)
+    load_calls: list[Path] = []
+    release_calls: list[str] = []
+    _patch_request_validation(
+        monkeypatch, configs, releases, load_calls, release_calls
+    )
+
+    runtime._validate_request(request)
+
+    assert tuple(item.config.relative_path for item in request.folds) == (
+        PurePosixPath("configs/shared.toml"),
+        PurePosixPath("configs/shared.toml"),
+    )
+    assert (
+        request.folds[0].release.manifest.release_id
+        != request.folds[1].release.manifest.release_id
+    )
+    assert load_calls == [
+        (request.project_root / "configs" / "shared.toml").resolve(),
+        (request.project_root / "configs" / "shared.toml").resolve(),
+    ]
+    assert len(release_calls) == 2
+
+
+def test_validate_request_rejects_duplicate_release_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request, configs, releases = _validation_request(tmp_path, duplicate_release=True)
+    load_calls: list[Path] = []
+    release_calls: list[str] = []
+    _patch_request_validation(
+        monkeypatch, configs, releases, load_calls, release_calls
+    )
+
+    with pytest.raises(SuccessorRuntimeError) as error:
+        runtime._validate_request(request)
+
+    assert error.value.code == "SUCCESSOR_INPUT_INVALID"
+    assert len(load_calls) == 2
+    assert len(release_calls) == 2
+
+
+def test_validate_request_rejects_second_shared_load_config_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request, configs, releases = _validation_request(tmp_path)
+    shared_path = (request.project_root / "configs" / "shared.toml").resolve()
+    load_calls: list[Path] = []
+    read_calls: list[Path] = []
+    release_calls: list[str] = []
+    original_config = configs[shared_path]
+    drifted_config = _validation_config(
+        raw=original_config.raw_config_sha256 or "",
+        full=_hex("full:drift"),
+        scientific=original_config.scientific_config_sha256,
+    )
+
+    def load(path: Path) -> LoadedM3Config:
+        load_calls.append(path.resolve())
+        return original_config if len(load_calls) == 1 else drifted_config
+
+    monkeypatch.setattr(runtime, "load_m3_config", load)
+    original_read = runtime._read_regular_file
+
+    def read(path: Path) -> bytes:
+        read_calls.append(path.resolve())
+        return original_read(path)
+
+    monkeypatch.setattr(runtime, "_read_regular_file", read)
+    monkeypatch.setattr(
+        runtime,
+        "verify_g1_release",
+        lambda release: (
+            release_calls.append(release.release_id),
+            releases[release.release_id],
+        )[1],
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_resolve_canonical_g8_stage_root",
+        lambda candidate: candidate.controlled_output_root,
+    )
+    import quant.research.m3.successor_upstream_stage as upstream
+
+    monkeypatch.setattr(
+        upstream,
+        "validate_successor_toolchain_binding",
+        lambda **_kwargs: (
+            "/unit/python",
+            "data/external/qlib/v0.9.7/dump_bin.py",
+            4,
+            _hex("dump-bytes"),
+        ),
+    )
+
+    with pytest.raises(SuccessorRuntimeError) as error:
+        runtime._validate_request(request)
+
+    assert error.value.code == "SUCCESSOR_INPUT_INVALID"
+    assert read_calls == [shared_path, shared_path]
+    assert load_calls == [shared_path, shared_path]
+    assert len(release_calls) == 1
 
 
 def _receipt_ref(
