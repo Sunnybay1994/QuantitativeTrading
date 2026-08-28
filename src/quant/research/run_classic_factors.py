@@ -44,6 +44,11 @@ from quant.factors.classic_fifth_batch import (
     FIFTH_BATCH_FACTOR_SPECS,
     compute_fifth_batch_daily_factors,
 )
+from quant.factors.classic_sixth_batch import (
+    SIXTH_BATCH_FACTOR_NAMES,
+    SIXTH_BATCH_FACTOR_SPECS,
+    compute_sixth_batch_daily_factors,
+)
 from quant.factors.classic_market_risk import (
     DOWNSIDE_BETA_FACTOR_NAMES,
     DOWNSIDE_BETA_FACTOR_SPECS,
@@ -86,6 +91,66 @@ _FOURTH_BATCH_CODE_PATHS: tuple[str, ...] = _CODE_PATHS + (
 )
 _FIFTH_BATCH_CODE_PATHS: tuple[str, ...] = _FOURTH_BATCH_CODE_PATHS + (
     "src/quant/factors/classic_fifth_batch.py",
+)
+_SIXTH_BATCH_CODE_PATHS: tuple[str, ...] = _FIFTH_BATCH_CODE_PATHS + (
+    "src/quant/factors/classic_sixth_batch.py",
+)
+_SIXTH_BATCH_CATALOG = "alpha101_price_volume_geometry_sixth_batch_v1"
+_SIXTH_BATCH_HYPOTHESIS_ID = "m2-alpha101-price-volume-geometry-sixth-batch-v1"
+_SIXTH_BATCH_SNAPSHOT_ID = (
+    "b79a7b5e66dee0ae439c030078414157ca6c1f3b6ce7fbe5e36ff3910c1089d2"
+)
+_SIXTH_BATCH_COST_SEMANTIC_SHA256 = (
+    "b2041d8495aa408de0bd264d6c03eb7e4d174e03f120289bc8471cbb5ea0a959"
+)
+_SIXTH_BATCH_REFERENCE_NAMES = (
+    CLASSIC_FACTOR_NAMES
+    + SECOND_BATCH_FACTOR_NAMES
+    + THIRD_BATCH_FACTOR_NAMES
+    + FOURTH_BATCH_FACTOR_NAMES
+    + FIFTH_BATCH_FACTOR_NAMES
+    + ("liquidity_20",)
+)
+_SIXTH_BATCH_SECTION_KEYS = frozenset(
+    {
+        "schema_version",
+        "hypothesis_id",
+        "factors",
+        "correlation_window_sessions",
+        "delta_lag_sessions",
+        "alpha041_price_basis",
+        "alpha041_vwap_formula",
+        "direction_policy",
+        "trial_budget",
+        "trial_delta",
+        "attempt_ordinal",
+    }
+)
+_SIXTH_BATCH_FROZEN_FOLDS: tuple[dict[str, dt.date], ...] = (
+    {
+        "train_start": dt.date(2020, 1, 1),
+        "train_end": dt.date(2020, 12, 31),
+        "validation_start": dt.date(2021, 1, 1),
+        "validation_end": dt.date(2021, 12, 31),
+        "test_start": dt.date(2022, 1, 1),
+        "test_end": dt.date(2022, 12, 31),
+    },
+    {
+        "train_start": dt.date(2020, 1, 1),
+        "train_end": dt.date(2022, 12, 31),
+        "validation_start": dt.date(2023, 1, 1),
+        "validation_end": dt.date(2023, 12, 31),
+        "test_start": dt.date(2024, 1, 1),
+        "test_end": dt.date(2024, 12, 31),
+    },
+    {
+        "train_start": dt.date(2020, 1, 1),
+        "train_end": dt.date(2024, 12, 31),
+        "validation_start": dt.date(2025, 1, 1),
+        "validation_end": dt.date(2025, 12, 31),
+        "test_start": dt.date(2026, 1, 1),
+        "test_end": dt.date(2026, 8, 13),
+    },
 )
 _FROZEN_MAX_R15_CONFIG_SHA256 = (
     "baa384bbdcc1406fa53b6b7c689087ac03eeebf99db852f37ba9d03e40ca2c6e"
@@ -185,6 +250,8 @@ def _aggregate_redundancy_by_factor(
             finite = False
         if not finite:
             raise ValueError("classic redundancy correlation contract is invalid")
+        if numeric_correlation < 0 or numeric_correlation > 1:
+            raise ValueError("classic redundancy correlation must be between 0 and 1")
 
         pair: tuple[str, str] = (
             min(factor_a, factor_b),
@@ -242,13 +309,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     portfolio_config = cast(Mapping[str, Any], config["portfolio"])
     factor_names = tuple(cast(list[str], factor_config["names"]))
     fifth_batch = factor_names == FIFTH_BATCH_FACTOR_NAMES
+    sixth_batch = factor_names == SIXTH_BATCH_FACTOR_NAMES
     config_sha256 = hashlib.sha256(
         config_text.encode("utf-8") if fifth_batch else config_payload
     ).hexdigest()
     cost_periods: tuple[AShareCostPeriod, ...] | None = None
     cost_semantic_sha256: str | None = None
-    if fifth_batch:
-        if config_sha256 != _FROZEN_MAX_R15_CONFIG_SHA256:
+    if fifth_batch or sixth_batch:
+        if fifth_batch and config_sha256 != _FROZEN_MAX_R15_CONFIG_SHA256:
             raise ValueError("frozen MAX R15 config payload identity mismatch")
         cost_periods, cost_semantic_sha256 = _cost_schedule_binding(
             project_root, portfolio_config
@@ -389,6 +457,59 @@ def main(argv: Sequence[str] | None = None) -> int:
         factor_specs = FIFTH_BATCH_FACTOR_SPECS
         code_paths = _FIFTH_BATCH_CODE_PATHS
         fixed_direction = cast(int, config["max_lottery"]["expected_direction"])
+    elif factor_names == SIXTH_BATCH_FACTOR_NAMES:
+        second_batch_values = compute_second_batch_daily_factors(bars)
+        third_batch_values = compute_third_batch_daily_factors(bars)
+        fourth_batch_values = compute_fourth_batch_daily_factors(
+            bars,
+            sessions=sessions,
+        )
+        fifth_batch_values = compute_fifth_batch_daily_factors(
+            bars,
+            sessions=sessions,
+        )
+        sixth_batch_values = compute_sixth_batch_daily_factors(
+            bars,
+            sessions=sessions,
+        )
+        factor_values = (
+            first_batch_values.join(
+                second_batch_values.select(
+                    "symbol", "trade_date", *SECOND_BATCH_FACTOR_NAMES
+                ),
+                on=["symbol", "trade_date"],
+                how="inner",
+                validate="1:1",
+            )
+            .join(
+                third_batch_values.select(
+                    "symbol", "trade_date", *THIRD_BATCH_FACTOR_NAMES
+                ),
+                on=["symbol", "trade_date"],
+                how="inner",
+                validate="1:1",
+            )
+            .join(
+                fourth_batch_values,
+                on=["symbol", "trade_date"],
+                how="left",
+                validate="1:1",
+            )
+            .join(
+                fifth_batch_values,
+                on=["symbol", "trade_date"],
+                how="left",
+                validate="1:1",
+            )
+            .join(
+                sixth_batch_values,
+                on=["symbol", "trade_date"],
+                how="left",
+                validate="1:1",
+            )
+        )
+        factor_specs = SIXTH_BATCH_FACTOR_SPECS
+        code_paths = _SIXTH_BATCH_CODE_PATHS
     elif factor_names == DOWNSIDE_BETA_FACTOR_NAMES:
         market_risk = cast(Mapping[str, Any], config["market_risk"])
         benchmark_symbol = cast(str, market_risk["benchmark"])
@@ -532,7 +653,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         results["factor_coverage_daily"] = coverage_daily
         results["factor_coverage_summary"] = coverage_summary
         results["rebalance_schedule_alignment"] = schedule_alignment
-    if factor_names == FOURTH_BATCH_FACTOR_NAMES:
+    if factor_names in (FOURTH_BATCH_FACTOR_NAMES, SIXTH_BATCH_FACTOR_NAMES):
         coverage_config = cast(Mapping[str, Any], config["coverage"])
         coverage_daily, coverage_summary = evaluate_factor_coverage(
             panel,
@@ -699,6 +820,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     input_digests = _build_input_digests(
         market_input_digests,
         fifth_batch=fifth_batch,
+        sixth_batch=sixth_batch,
         cost_periods=cost_periods,
         cost_semantic_sha256=cost_semantic_sha256,
     )
@@ -2090,11 +2212,16 @@ def _build_input_digests(
     fifth_batch: bool,
     cost_periods: tuple[AShareCostPeriod, ...] | None,
     cost_semantic_sha256: str | None,
+    sixth_batch: bool = False,
 ) -> tuple[ResearchInputDigestV1, ...]:
-    if not fifth_batch:
+    if not fifth_batch and not sixth_batch:
         return market_input_digests
     if cost_periods is None or cost_semantic_sha256 is None:
-        raise ValueError("missing frozen MAX cost identity")
+        raise ValueError(
+            "missing frozen MAX cost identity"
+            if fifth_batch
+            else "missing frozen sixth-batch cost identity"
+        )
     return (
         _cost_schedule_input_digest(cost_periods, cost_semantic_sha256),
         *market_input_digests,
@@ -2109,7 +2236,232 @@ def _is_lower_hex64(value: object) -> bool:
     )
 
 
+def _is_exact_int(value: object, expected: int) -> bool:
+    return type(value) is int and value == expected
+
+
+def _is_exact_float(value: object, expected: float) -> bool:
+    if type(value) is int:
+        try:
+            numeric_value = float(value)
+        except OverflowError:
+            return False
+    elif type(value) is float:
+        numeric_value = value
+    else:
+        return False
+    return math.isfinite(numeric_value) and numeric_value == expected
+
+
+def _is_non_empty_string(value: object) -> bool:
+    return type(value) is str and bool(value)
+
+
+def _has_exact_keys(value: object, keys: frozenset[str]) -> bool:
+    return isinstance(value, Mapping) and frozenset(value) == keys
+
+
+def _is_exact_sixth_fold(value: object, expected: Mapping[str, dt.date]) -> bool:
+    if not _has_exact_keys(value, frozenset(expected)):
+        return False
+    row = cast(Mapping[str, object], value)
+    return all(
+        type(row[key]) is dt.date and row[key] == expected[key]
+        for key in expected
+    )
+
+
+def _validate_sixth_batch_config(
+    config: Mapping[str, Any], *, threads: int
+) -> None:
+    required_sections = frozenset(
+        {
+            "research",
+            "data",
+            "universe",
+            "factors",
+            "alpha101_sixth_batch",
+            "coverage",
+            "portfolio",
+            "admission",
+            "walk_forward",
+        }
+    )
+    valid = False
+    try:
+        if not _has_exact_keys(config, required_sections):
+            raise ValueError
+        research = cast(Mapping[str, Any], config["research"])
+        data = cast(Mapping[str, Any], config["data"])
+        universe = cast(Mapping[str, Any], config["universe"])
+        factors = cast(Mapping[str, Any], config["factors"])
+        sixth = cast(Mapping[str, Any], config["alpha101_sixth_batch"])
+        coverage = cast(Mapping[str, Any], config["coverage"])
+        portfolio = cast(Mapping[str, Any], config["portfolio"])
+        admission = cast(Mapping[str, Any], config["admission"])
+        walk_forward = cast(Mapping[str, Any], config["walk_forward"])
+        expected_research_keys = frozenset(
+            {"hypothesis_id", "hypothesis", "strategy_name", "strategy_version", "random_seed"}
+        )
+        expected_data_keys = frozenset(
+            {"snapshot_id", "warmup_start", "research_start", "research_end"}
+        )
+        expected_universe_keys = frozenset(
+            {"freeze_start", "freeze_end", "top_n", "minimum_observations", "minimum_average_amount"}
+        )
+        expected_factor_keys = frozenset(
+            {
+                "catalog",
+                "names",
+                "redundancy_reference_names",
+                "horizons",
+                "minimum_history_rows",
+                "minimum_daily_symbols",
+                "groups",
+                "maximum_median_absolute_rank_correlation",
+            }
+        )
+        expected_coverage_keys = frozenset(
+            {"minimum_rebalance_symbols", "minimum_median_coverage"}
+        )
+        expected_portfolio_keys = frozenset(
+            {
+                "selection_horizon_sessions",
+                "rebalance_every_sessions",
+                "top_k",
+                "initial_cash",
+                "cost_multipliers",
+                "cost_config_relative_path",
+                "cost_schedule_semantic_sha256",
+            }
+        )
+        expected_admission_keys = frozenset(
+            {
+                "minimum_mean_test_rank_ic",
+                "minimum_positive_test_folds",
+                "require_direction_consistency",
+                "require_positive_2x_cost_return",
+            }
+        )
+        if not all(
+            (
+                _has_exact_keys(research, expected_research_keys),
+                _has_exact_keys(data, expected_data_keys),
+                _has_exact_keys(universe, expected_universe_keys),
+                _has_exact_keys(factors, expected_factor_keys),
+                _has_exact_keys(sixth, _SIXTH_BATCH_SECTION_KEYS),
+                _has_exact_keys(coverage, expected_coverage_keys),
+                _has_exact_keys(portfolio, expected_portfolio_keys),
+                _has_exact_keys(admission, expected_admission_keys),
+                _has_exact_keys(walk_forward, frozenset({"folds"})),
+            )
+        ):
+            raise ValueError
+
+        folds = walk_forward["folds"]
+        valid = (
+            _is_non_empty_string(research["hypothesis_id"])
+            and research["hypothesis_id"] == _SIXTH_BATCH_HYPOTHESIS_ID
+            and _is_non_empty_string(research["hypothesis"])
+            and _is_non_empty_string(research["strategy_name"])
+            and _is_non_empty_string(research["strategy_version"])
+            and type(research["random_seed"]) is int
+            and data["snapshot_id"] == _SIXTH_BATCH_SNAPSHOT_ID
+            and type(data["warmup_start"]) is dt.date
+            and data["warmup_start"] == dt.date(2019, 1, 1)
+            and type(data["research_start"]) is dt.date
+            and data["research_start"] == dt.date(2020, 1, 1)
+            and type(data["research_end"]) is dt.date
+            and data["research_end"] == dt.date(2026, 8, 13)
+            and _is_exact_sixth_universe(universe)
+            and factors["catalog"] == _SIXTH_BATCH_CATALOG
+            and type(factors["names"]) is list
+            and tuple(factors["names"]) == SIXTH_BATCH_FACTOR_NAMES
+            and type(factors["redundancy_reference_names"]) is list
+            and tuple(factors["redundancy_reference_names"])
+            == _SIXTH_BATCH_REFERENCE_NAMES
+            and type(factors["horizons"]) is list
+            and all(type(value) is int for value in factors["horizons"])
+            and tuple(factors["horizons"]) == (1, 5, 20)
+            and _is_exact_int(factors["minimum_history_rows"], 120)
+            and _is_exact_int(factors["minimum_daily_symbols"], 100)
+            and _is_exact_int(factors["groups"], 5)
+            and _is_exact_float(
+                factors["maximum_median_absolute_rank_correlation"], 0.80
+            )
+            and sixth["schema_version"] == "m2-alpha101-sixth-batch-v1"
+            and sixth["hypothesis_id"] == _SIXTH_BATCH_HYPOTHESIS_ID
+            and type(sixth["factors"]) is list
+            and tuple(sixth["factors"]) == SIXTH_BATCH_FACTOR_NAMES
+            and _is_exact_int(sixth["correlation_window_sessions"], 10)
+            and _is_exact_int(sixth["delta_lag_sessions"], 1)
+            and sixth["alpha041_price_basis"] == "raw_cny_per_share"
+            and sixth["alpha041_vwap_formula"] == "amount_div_volume"
+            and sixth["direction_policy"] == "validation_only_per_fold"
+            and _is_exact_int(sixth["trial_budget"], 3)
+            and _is_exact_int(sixth["trial_delta"], 3)
+            and _is_exact_int(sixth["attempt_ordinal"], 1)
+            and _is_exact_int(coverage["minimum_rebalance_symbols"], 100)
+            and _is_exact_float(coverage["minimum_median_coverage"], 0.80)
+            and _is_exact_int(portfolio["selection_horizon_sessions"], 20)
+            and _is_exact_int(portfolio["rebalance_every_sessions"], 20)
+            and _is_exact_int(portfolio["top_k"], 50)
+            and _is_exact_float(portfolio["initial_cash"], 1_000_000.0)
+            and type(portfolio["cost_multipliers"]) is list
+            and tuple(
+                _is_exact_float(value, expected)
+                for value, expected in zip(
+                    portfolio["cost_multipliers"], (0.5, 1.0, 2.0), strict=False
+                )
+            )
+            == (True, True, True)
+            and len(portfolio["cost_multipliers"]) == 3
+            and portfolio["cost_config_relative_path"]
+            == "configs/research/m3_qlib_example.toml"
+            and portfolio["cost_schedule_semantic_sha256"]
+            == _SIXTH_BATCH_COST_SEMANTIC_SHA256
+            and _is_exact_float(admission["minimum_mean_test_rank_ic"], 0.01)
+            and _is_exact_int(admission["minimum_positive_test_folds"], 2)
+            and admission["require_direction_consistency"] is True
+            and admission["require_positive_2x_cost_return"] is True
+            and type(folds) is list
+            and len(folds) == 3
+            and all(
+                _is_exact_sixth_fold(value, expected)
+                for value, expected in zip(
+                    folds, _SIXTH_BATCH_FROZEN_FOLDS, strict=True
+                )
+            )
+            and type(threads) is int
+            and 1 <= threads <= 2
+        )
+    except (KeyError, TypeError, ValueError, AttributeError, IndexError):
+        valid = False
+    if not valid:
+        raise ValueError("invalid classic-factor config")
+
+
+def _is_exact_sixth_universe(universe: Mapping[str, Any]) -> bool:
+    return (
+        type(universe["freeze_start"]) is dt.date
+        and universe["freeze_start"] == dt.date(2019, 1, 1)
+        and type(universe["freeze_end"]) is dt.date
+        and universe["freeze_end"] == dt.date(2019, 12, 31)
+        and _is_exact_int(universe["top_n"], 800)
+        and _is_exact_int(universe["minimum_observations"], 120)
+        and _is_exact_float(universe["minimum_average_amount"], 20_000_000.0)
+    )
+
+
 def _validate_config(config: Mapping[str, Any], *, threads: int) -> None:
+    sixth_factors = config.get("factors") if isinstance(config, Mapping) else None
+    if (
+        isinstance(sixth_factors, Mapping)
+        and type(sixth_factors.get("names")) is list
+        and tuple(sixth_factors["names"]) == SIXTH_BATCH_FACTOR_NAMES
+    ):
+        _validate_sixth_batch_config(config, threads=threads)
+        return
     factor_config = cast(Mapping[str, Any], config["factors"])
     market_risk = cast(Mapping[str, Any], config.get("market_risk", {}))
     max_lottery = cast(Mapping[str, Any], config.get("max_lottery", {}))
@@ -2255,6 +2607,19 @@ def _report(
                 "audit-v4, R3 or any trading Gate.",
             ]
         )
+    if cast(Mapping[str, Any], config["factors"]).get("catalog") == (
+        _SIXTH_BATCH_CATALOG
+    ):
+        caveats.extend(
+            [
+                "Alpha101 #006 and #012 use adjusted open/close with raw volume; "
+                "Alpha101 #041 intentionally remains raw CNY/share versus amount/volume.",
+                "The three price-volume candidates are one frozen trial family; "
+                "directions are selected on validation only and no candidate may be substituted.",
+                "Strict exchange-session gaps, non-positive factor-specific denominators, "
+                "redundancy, coverage, schedule and two-times-cost gates are fail-closed.",
+            ]
+        )
     report: dict[str, object] = {
         "schema_version": "m2-classic-factor-report-v1",
         "conclusion": conclusion,
@@ -2293,8 +2658,12 @@ def _report(
         },
         "caveats": caveats,
     }
-    if cast(Mapping[str, Any], config["factors"]).get("catalog") == (
-        "max_lottery_fifth_batch_v1"
+    factor_catalog = cast(Mapping[str, Any], config["factors"]).get("catalog")
+    if factor_catalog == _SIXTH_BATCH_CATALOG:
+        report["alpha101_sixth_batch"] = config["alpha101_sixth_batch"]
+    if factor_catalog in (
+        "max_lottery_fifth_batch_v1",
+        _SIXTH_BATCH_CATALOG,
     ):
         expected_cost_semantic_sha256 = cast(
             Mapping[str, Any], config["portfolio"]

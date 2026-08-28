@@ -296,6 +296,39 @@ def test_redundancy_correlation_must_be_finite_numeric_not_bool(
 
 
 @pytest.mark.parametrize(
+    "bad_correlation",
+    (-0.01, 1.01),
+    ids=("negative", "greater-than-one"),
+)
+def test_redundancy_correlation_range_fails_closed_before_admission(
+    bad_correlation: float,
+) -> None:
+    summary = pl.DataFrame(
+        {"factor": ["candidate"], "research_status": ["RESEARCH_ONLY"]}
+    )
+    redundancy = pl.DataFrame(
+        {
+            "factor_a": ["candidate"],
+            "factor_b": ["reference"],
+            "median_abs_rank_corr": [bad_correlation],
+        }
+    )
+
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        apply_fourth_batch_admission_gates(
+            summary,
+            redundancy_summary=redundancy,
+            coverage_summary=pl.DataFrame(
+                {"factor": ["candidate"], "coverage_passed": [True]}
+            ),
+            schedule_alignment=pl.DataFrame(
+                {"factor": ["candidate"], "schedule_aligned": [True]}
+            ),
+            maximum_median_absolute_rank_correlation=0.80,
+        )
+
+
+@pytest.mark.parametrize(
     "pairs",
     (
         (("candidate", "reference"), ("candidate", "reference")),
@@ -542,6 +575,13 @@ def test_classic_input_identity_adds_cost_only_for_fifth_batch() -> None:
         cost_periods=periods,
         cost_semantic_sha256=semantic_sha256,
     ) == (_cost_schedule_input_digest(periods, semantic_sha256), *market_inputs)
+    assert _build_input_digests(
+        market_inputs,
+        fifth_batch=False,
+        sixth_batch=True,
+        cost_periods=periods,
+        cost_semantic_sha256=semantic_sha256,
+    ) == (_cost_schedule_input_digest(periods, semantic_sha256), *market_inputs)
 
 
 def _frozen_max_config_payload() -> bytes:
@@ -763,6 +803,277 @@ def _run_fifth_main_to_publish(
     assert main(_classic_main_args(project_root, data_root)) == 0
     assert len(captured_runs) == 1
     return captured_runs[0]
+
+
+def test_sixth_batch_main_binds_raw_config_and_cost_before_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_payload = (
+        PROJECT_ROOT
+        / "configs/research/m2_classic_daily_factors_sixth_batch.toml"
+    ).read_bytes()
+    project_root, config_path, _, data_root = _classic_project(
+        tmp_path,
+        config_payload=config_payload,
+        config_name="m2_classic_daily_factors_sixth_batch.toml",
+    )
+    factor_names = classic_runner.SIXTH_BATCH_FACTOR_NAMES
+    trade_date = dt.date(2020, 1, 2)
+    events: list[str] = []
+    captured_runs: list[object] = []
+    captured_output_payloads: list[dict[str, bytes]] = []
+
+    def factor_frame(names: tuple[str, ...]) -> pl.DataFrame:
+        values: dict[str, object] = {
+            "symbol": ["000001.SZ"],
+            "trade_date": [trade_date],
+        }
+        values.update({name: [0.0] for name in names})
+        return pl.DataFrame(values)
+
+    def snapshot_verifier(*, data_root: Path, snapshot_id: str) -> object:
+        del data_root
+        events.append("snapshot")
+        assert snapshot_id == "b79a7b5e66dee0ae439c030078414157ca6c1f3b6ce7fbe5e36ff3910c1089d2"
+        return SimpleNamespace(
+            snapshot_id=snapshot_id,
+            manifest_sha256="a" * 64,
+            stock_rows=1,
+            fund_rows=0,
+        )
+
+    def stock_reader(*_: object, **__: object) -> pl.DataFrame:
+        return pl.DataFrame({"trade_date": [trade_date]})
+
+    def sixth_compute(*_: object, **__: object) -> pl.DataFrame:
+        events.append("sixth-factor")
+        return factor_frame(factor_names)
+
+    def labels(**_: object) -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "trade_date": [trade_date],
+                "history_rows": [120],
+                "liquidity_20": [20_000_000.0],
+            }
+        )
+
+    def evaluate(**_: object) -> dict[str, pl.DataFrame]:
+        frame = pl.DataFrame({"value": [1]})
+        return {
+            "daily_ic": frame,
+            "group_returns": frame,
+            "fold_metrics": frame,
+            "targets": frame,
+            "portfolio_nav": frame,
+        }
+
+    def summarize(
+        _metrics: pl.DataFrame,
+        *,
+        factors: tuple[str, ...],
+        admission: object,
+    ) -> pl.DataFrame:
+        del admission
+        return pl.DataFrame(
+            {
+                "factor": list(factors),
+                "mean_test_rank_ic": [0.02] * len(factors),
+                "positive_test_folds": [3] * len(factors),
+                "direction_consistent": [True] * len(factors),
+                "one_x_chained_return": [0.03] * len(factors),
+                "two_x_chained_return": [0.01] * len(factors),
+                "research_status": ["RESEARCH_ONLY"] * len(factors),
+            }
+        )
+
+    def publish(
+        *, artifact_root: Path, run: object, output_payloads: dict[str, bytes]
+    ) -> tuple[Path, object, bool]:
+        captured_runs.append(run)
+        captured_output_payloads.append(output_payloads)
+        return artifact_root, run, False
+
+    def cost_binding(*_: object, **__: object) -> tuple[tuple[object, ...], str]:
+        events.append("cost")
+        return (), _COST_SEMANTIC_SHA256
+
+    monkeypatch.setattr(classic_runner, "_cost_schedule_binding", cost_binding)
+    monkeypatch.setattr(classic_runner, "verify_tushare_bulk_clean_snapshot", snapshot_verifier)
+    monkeypatch.setattr(classic_runner, "read_tushare_bulk_clean_stock_bars", stock_reader)
+    monkeypatch.setattr(
+        classic_runner,
+        "select_frozen_liquid_universe",
+        lambda *_args, **_kwargs: ("000001.SZ",),
+    )
+    monkeypatch.setattr(
+        classic_runner,
+        "compute_classic_daily_factors",
+        lambda *_args, **_kwargs: factor_frame(classic_runner.CLASSIC_FACTOR_NAMES),
+    )
+    monkeypatch.setattr(
+        classic_runner,
+        "compute_second_batch_daily_factors",
+        lambda *_args, **_kwargs: factor_frame(classic_runner.SECOND_BATCH_FACTOR_NAMES),
+    )
+    monkeypatch.setattr(
+        classic_runner,
+        "compute_third_batch_daily_factors",
+        lambda *_args, **_kwargs: factor_frame(classic_runner.THIRD_BATCH_FACTOR_NAMES),
+    )
+    monkeypatch.setattr(
+        classic_runner,
+        "compute_fourth_batch_daily_factors",
+        lambda *_args, **_kwargs: factor_frame(classic_runner.FOURTH_BATCH_FACTOR_NAMES),
+    )
+    monkeypatch.setattr(
+        classic_runner,
+        "compute_fifth_batch_daily_factors",
+        lambda *_args, **_kwargs: factor_frame(classic_runner.FIFTH_BATCH_FACTOR_NAMES),
+    )
+    monkeypatch.setattr(classic_runner, "compute_sixth_batch_daily_factors", sixth_compute)
+    monkeypatch.setattr(classic_runner, "build_next_open_factor_labels", labels)
+    monkeypatch.setattr(classic_runner, "evaluate_walk_forward", evaluate)
+    monkeypatch.setattr(classic_runner, "summarize_factors", summarize)
+    monkeypatch.setattr(
+        classic_runner,
+        "evaluate_factor_redundancy",
+        lambda *_args, **_kwargs: (
+            pl.DataFrame({"value": [1]}),
+            pl.DataFrame(
+                {
+                    "factor_a": list(factor_names),
+                    "factor_b": ["alpha158_std20"] * len(factor_names),
+                    "median_abs_rank_corr": [0.79] * len(factor_names),
+                }
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        classic_runner,
+        "evaluate_factor_coverage",
+        lambda *_args, **_kwargs: (
+            pl.DataFrame({"value": [1]}),
+            pl.DataFrame(
+                {"factor": list(factor_names), "coverage_passed": [True] * len(factor_names)}
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        classic_runner,
+        "evaluate_rebalance_schedule_alignment",
+        lambda *_args, **_kwargs: pl.DataFrame(
+            {
+                "factor": list(factor_names),
+                "fold": [1] * len(factor_names),
+                "schedule_aligned": [True] * len(factor_names),
+            }
+        ),
+    )
+    monkeypatch.setattr(classic_runner, "compute_code_sha256", lambda **_kwargs: "b" * 64)
+    monkeypatch.setattr(classic_runner, "publish_lightweight_research_run", publish)
+
+    assert main(
+        _classic_main_args(
+            project_root,
+            data_root,
+            config_name="m2_classic_daily_factors_sixth_batch.toml",
+        )
+    ) == 0
+    assert events[:2] == ["cost", "snapshot"]
+    assert events.count("sixth-factor") == 1
+    assert len(captured_runs) == 1
+    assert len(captured_output_payloads) == 1
+    assert list(captured_output_payloads[0]) == [
+        "daily_ic.parquet",
+        "factor_catalog.json",
+        "factor_summary.parquet",
+        "fold_metrics.parquet",
+        "group_returns.parquet",
+        "portfolio_nav.parquet",
+        "report.json",
+        "targets.parquet",
+        "redundancy_daily.parquet",
+        "redundancy_summary.parquet",
+        "factor_coverage_daily.parquet",
+        "factor_coverage_summary.parquet",
+        "rebalance_schedule_alignment.parquet",
+    ]
+    run = captured_runs[0]
+    assert run.config_sha256 == hashlib.sha256(config_path.read_bytes()).hexdigest()  # type: ignore[attr-defined]
+    assert run.candidate_symbols == ("000001.SZ",)  # type: ignore[attr-defined]
+    assert tuple(item.name for item in run.inputs) == (  # type: ignore[attr-defined]
+        "a-share-cost-schedule",
+        "tushare-stock-bars",
+    )
+    assert not (project_root / "artifacts-test").exists()
+
+
+@pytest.mark.parametrize(
+    ("needle", "replacement"),
+    (
+        (
+            b"correlation_window_sessions = 10",
+            b"correlation_window_sessions = 11",
+        ),
+        (
+            b"trial_delta = 3",
+            b"trial_delta = 2",
+        ),
+        (
+            b'names = ["alpha101_006", "alpha101_012", "alpha101_041"]',
+            b'names = ["alpha101_012", "alpha101_006", "alpha101_041"]',
+        ),
+        (
+            b'names = ["alpha101_006", "alpha101_012", "alpha101_041"]',
+            b'names = ["alpha101_006", "alpha101_012", "alpha101_999"]',
+        ),
+    ),
+    ids=("window-drift", "trial-drift", "factor-order-drift", "factor-name-drift"),
+)
+def test_sixth_config_identity_rejects_before_cost_snapshot_or_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    needle: bytes,
+    replacement: bytes,
+) -> None:
+    payload = (
+        PROJECT_ROOT
+        / "configs/research/m2_classic_daily_factors_sixth_batch.toml"
+    ).read_bytes()
+    assert needle in payload
+    changed = payload.replace(needle, replacement, 1)
+    project_root, _, _, data_root = _classic_project(
+        tmp_path,
+        config_payload=changed,
+        config_name="m2_classic_daily_factors_sixth_batch.toml",
+    )
+    calls: list[str] = []
+
+    def unexpected_cost(*_: object, **__: object) -> object:
+        calls.append("cost")
+        raise AssertionError("cost binding must not run")
+
+    def unexpected_snapshot(**_: object) -> object:
+        calls.append("snapshot")
+        raise AssertionError("snapshot verifier must not run")
+
+    monkeypatch.setattr(classic_runner, "_cost_schedule_binding", unexpected_cost)
+    monkeypatch.setattr(
+        classic_runner,
+        "verify_tushare_bulk_clean_snapshot",
+        unexpected_snapshot,
+    )
+    with pytest.raises(ValueError, match="invalid classic-factor config"):
+        main(
+            _classic_main_args(
+                project_root,
+                data_root,
+                config_name="m2_classic_daily_factors_sixth_batch.toml",
+            )
+        )
+    assert calls == []
+    assert not (project_root / "artifacts-test").exists()
 
 
 @pytest.mark.parametrize(
@@ -1336,6 +1647,7 @@ def test_all_classic_factor_batch_configs_are_exactly_frozen() -> None:
         PROJECT_ROOT / "configs/research/m2_classic_downside_beta_510300.toml",
         PROJECT_ROOT / "configs/research/m2_classic_daily_factors_fourth_batch.toml",
         PROJECT_ROOT / "configs/research/m2_classic_daily_factors_fifth_batch.toml",
+        PROJECT_ROOT / "configs/research/m2_classic_daily_factors_sixth_batch.toml",
     )
     configs = []
     for path in paths:
@@ -1392,6 +1704,36 @@ def test_all_classic_factor_batch_configs_are_exactly_frozen() -> None:
 
     changed = deepcopy(configs[5])
     changed["factors"]["redundancy_reference_names"].reverse()
+    with pytest.raises(ValueError, match="invalid classic-factor config"):
+        _validate_config(changed, threads=2)
+
+    for section, key, value in (
+        ("alpha101_sixth_batch", "correlation_window_sessions", 11),
+        ("alpha101_sixth_batch", "delta_lag_sessions", 2),
+        ("alpha101_sixth_batch", "alpha041_price_basis", "adjusted"),
+        ("alpha101_sixth_batch", "trial_delta", 2),
+        ("factors", "maximum_median_absolute_rank_correlation", 0.81),
+        ("coverage", "minimum_rebalance_symbols", 99),
+    ):
+        changed = deepcopy(configs[6])
+        changed[section][key] = value
+        with pytest.raises(ValueError, match="invalid classic-factor config"):
+            _validate_config(changed, threads=2)
+
+    changed = deepcopy(configs[6])
+    changed["factors"]["redundancy_reference_names"].reverse()
+    with pytest.raises(ValueError, match="invalid classic-factor config"):
+        _validate_config(changed, threads=2)
+    changed = deepcopy(configs[6])
+    changed["alpha101_sixth_batch"]["trial_budget"] = True
+    with pytest.raises(ValueError, match="invalid classic-factor config"):
+        _validate_config(changed, threads=2)
+    changed = deepcopy(configs[6])
+    changed["alpha101_sixth_batch"]["unexpected"] = 1
+    with pytest.raises(ValueError, match="invalid classic-factor config"):
+        _validate_config(changed, threads=2)
+    changed = deepcopy(configs[6])
+    del changed["alpha101_sixth_batch"]["attempt_ordinal"]
     with pytest.raises(ValueError, match="invalid classic-factor config"):
         _validate_config(changed, threads=2)
 
