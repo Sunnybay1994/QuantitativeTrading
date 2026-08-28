@@ -1942,8 +1942,6 @@ def _validate_request(request: SuccessorRuntimeRequest) -> None:
             raise ValueError
         if _terminal_path(request).parent != controlled:
             raise ValueError
-        config_identities: set[str] = set()
-        full_config_identities: set[str] = set()
         scientific_identities: set[str] = set()
         release_identities: list[tuple[str, str]] = []
         for item in request.folds:
@@ -1960,8 +1958,6 @@ def _validate_request(request: SuccessorRuntimeRequest) -> None:
             fresh_config = load_m3_config(raw_path)
             if fresh_config != config:
                 raise ValueError
-            config_identities.add(config.raw_config_sha256)
-            full_config_identities.add(config.full_config_sha256)
             scientific_identities.add(config.scientific_config_sha256)
             fresh_release = verify_g1_release(release=item.release.release)
             if fresh_release != item.release:
@@ -1974,13 +1970,12 @@ def _validate_request(request: SuccessorRuntimeRequest) -> None:
             release_identities.append(
                 (item.release.manifest.release_id, item.release.manifest_sha256)
             )
-        if len(config_identities) != 2 or len(full_config_identities) != 2:
-            raise ValueError
         # Existing summary/work contracts join folds on the scientific config
-        # projection.  Full/raw config identities remain distinct per lane.
+        # projection.  Raw/full identities are already closed independently
+        # for every fold above and need not be artificially distinct.
         if len(scientific_identities) != 1:
             raise ValueError
-        if len(release_identities) != 2:
+        if len(release_identities) != 2 or len(set(release_identities)) != 2:
             raise ValueError
         # Canonical G8 must be uniquely resolved from both fold configs and
         # equal the controlled output root before any stage / worker work.

@@ -7,7 +7,7 @@ import hashlib
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
-from typing import Literal
+from typing import Callable, Literal
 
 import pytest
 
@@ -70,6 +70,26 @@ def _release(*, project_root: Path, fold: str) -> VerifiedG1Release:
     object.__setattr__(verified, "quality_sha256", _hex(f"quality:{fold}"))
     object.__setattr__(verified, "artifact_paths", ())
     return verified
+
+
+def _release_alias(source: VerifiedG1Release, *, root: Path) -> VerifiedG1Release:
+    """Build a distinct verified wrapper with the source release identity."""
+    alias = object.__new__(VerifiedG1Release)
+    object.__setattr__(
+        alias,
+        "release",
+        SimpleNamespace(root=root, release_id=source.release.release_id),
+    )
+    object.__setattr__(
+        alias,
+        "manifest",
+        SimpleNamespace(release_id=source.manifest.release_id),
+    )
+    object.__setattr__(alias, "manifest_sha256", source.manifest_sha256)
+    object.__setattr__(alias, "quality", source.quality)
+    object.__setattr__(alias, "quality_sha256", source.quality_sha256)
+    object.__setattr__(alias, "artifact_paths", source.artifact_paths)
+    return alias
 
 
 def _public_api_substitutes(
@@ -691,6 +711,9 @@ class _DeterministicProductionBoundary:
 
 def _request(
     tmp_path: Path,
+    *,
+    same_config: bool = False,
+    same_physical: bool = False,
 ) -> tuple[
     runtime.SuccessorRuntimeRequest,
     _DeterministicProductionBoundary,
@@ -709,14 +732,22 @@ def _request(
     configs: dict[Path, LoadedM3Config] = {}
     releases: dict[str, VerifiedG1Release] = {}
     folds: list[runtime.SuccessorFoldRequest] = []
+    shared_path = project / "configs" / "shared.toml"
     scientific = _hex("scientific")
     for fold, raw_label in (("fold_001", "config-a"), ("fold_002", "config-b")):
+        if same_config:
+            raw_label = "config-a"
         raw_bytes = raw_label.encode("ascii")
         raw = hashlib.sha256(raw_bytes).hexdigest()
         full = _hex(f"full:{raw_label}")
         config = _config(raw=raw, full=full, scientific=scientific)
-        path = project / "configs" / f"{fold}.toml"
-        path.write_bytes(raw_bytes)
+        path = (
+            shared_path
+            if same_physical
+            else project / "configs" / f"{fold}.toml"
+        )
+        if not path.exists():
+            path.write_bytes(raw_bytes)
         configs[path.resolve()] = config
         release = _release(project_root=project, fold=fold)
         releases[release.release.release_id] = release
@@ -724,7 +755,11 @@ def _request(
             runtime.SuccessorFoldRequest(
                 fold=fold,
                 config=runtime.SuccessorConfigInput(
-                    relative_path=PurePosixPath(f"configs/{fold}.toml"),
+                    relative_path=(
+                        PurePosixPath("configs/shared.toml")
+                        if same_physical
+                        else PurePosixPath(f"configs/{fold}.toml")
+                    ),
                     config=config,
                 ),
                 release=release,
@@ -756,20 +791,42 @@ def _install_fixture_verifiers(
     releases: dict[str, VerifiedG1Release],
     public_apis: runtime.SuccessorPublicApiBundle,
     boundary: _DeterministicProductionBoundary | None = None,
+    load_calls: list[Path] | None = None,
+    runtime_read_calls: list[Path] | None = None,
+    release_calls: list[str] | None = None,
+    release_overrides: dict[int, VerifiedG1Release] | None = None,
+    after_load: Callable[[Path, int], None] | None = None,
 ) -> None:
     import quant.research.m3.successor_downstream_stage as downstream
     import quant.research.m3.successor_upstream_stage as upstream
 
-    monkeypatch.setattr(
-        runtime,
-        "load_m3_config",
-        lambda path: configs[path.resolve()],
-    )
-    monkeypatch.setattr(
-        runtime,
-        "verify_g1_release",
-        lambda release: releases[release.release_id],
-    )
+    def load_config(path: Path) -> LoadedM3Config:
+        if load_calls is not None:
+            load_calls.append(path.resolve())
+        result = configs[path.resolve()]
+        if after_load is not None:
+            after_load(path.resolve(), len(load_calls) if load_calls is not None else 0)
+        return result
+
+    def verify_release(release: object) -> VerifiedG1Release:
+        assert isinstance(release, SimpleNamespace)
+        if release_calls is not None:
+            release_calls.append(release.release_id)
+        if release_overrides is not None and id(release) in release_overrides:
+            return release_overrides[id(release)]
+        return releases[release.release_id]
+
+    monkeypatch.setattr(runtime, "load_m3_config", load_config)
+    monkeypatch.setattr(runtime, "verify_g1_release", verify_release)
+    if runtime_read_calls is not None:
+        original_read = runtime._read_regular_file
+
+        def read_file(path: Path) -> bytes:
+            resolved = path.resolve()
+            runtime_read_calls.append(resolved)
+            return original_read(path)
+
+        monkeypatch.setattr(runtime, "_read_regular_file", read_file)
     monkeypatch.setattr(
         runtime,
         "make_public_successor_api_bundle",
@@ -825,7 +882,33 @@ def _install_fixture_verifiers(
             downstream, "verify_successor_terminal_gate", boundary.verify_gate
         )
         boundary._stub_wave_cache.clear()
-    upstream._reset_wave_registry_for_tests()
+        upstream._reset_wave_registry_for_tests()
+
+
+def _observe_validation_rounds(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    runtime_read_calls: list[Path],
+    load_calls: list[Path],
+    release_calls: list[str],
+    validation_rounds: list[tuple[list[Path], list[Path], list[str]]],
+) -> None:
+    original_validate_request = runtime._validate_request
+
+    def validate_request(request: runtime.SuccessorRuntimeRequest) -> None:
+        read_start = len(runtime_read_calls)
+        load_start = len(load_calls)
+        release_start = len(release_calls)
+        original_validate_request(request)
+        validation_rounds.append(
+            (
+                runtime_read_calls[read_start:],
+                load_calls[load_start:],
+                release_calls[release_start:],
+            )
+        )
+
+    monkeypatch.setattr(runtime, "_validate_request", validate_request)
 
 
 def _adapter(boundary: _DeterministicProductionBoundary) -> runtime.ProductionSuccessorStageAdapter:
@@ -882,6 +965,290 @@ def test_two_fold_terminal_is_durable_and_replayable(
     assert "summary-public-run" in boundary.public_api_calls
     assert "acceptance-public-verify" in boundary.public_api_calls
     assert not tuple(request.controlled_output_root.glob(".completion.json.*.tmp"))
+
+
+def test_same_config_paths_run_two_distinct_folds_with_fresh_closure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, boundary, configs, releases = _request(
+        tmp_path, same_config=True, same_physical=True
+    )
+    (request.project_root / "configs" / "unbound.toml").write_bytes(b"unbound")
+    shared_path = (request.project_root / "configs" / "shared.toml").resolve()
+    terminal_path = (
+        request.controlled_output_root / runtime.TERMINAL_FILENAME
+    ).resolve()
+    load_calls: list[Path] = []
+    runtime_read_calls: list[Path] = []
+    release_calls: list[str] = []
+    validation_rounds: list[tuple[list[Path], list[Path], list[str]]] = []
+    _install_fixture_verifiers(
+        monkeypatch,
+        configs,
+        releases,
+        boundary.public_apis,
+        boundary,
+        load_calls=load_calls,
+        runtime_read_calls=runtime_read_calls,
+        release_calls=release_calls,
+    )
+    _observe_validation_rounds(
+        monkeypatch,
+        runtime_read_calls=runtime_read_calls,
+        load_calls=load_calls,
+        release_calls=release_calls,
+        validation_rounds=validation_rounds,
+    )
+
+    result = _run(request, boundary)
+
+    expected_release_calls = [
+        request.folds[0].release.manifest.release_id,
+        request.folds[1].release.manifest.release_id,
+    ]
+    expected_round = (
+        [shared_path, shared_path],
+        [shared_path, shared_path],
+        expected_release_calls,
+    )
+    assert validation_rounds == [expected_round, expected_round]
+    assert release_calls == expected_release_calls + expected_release_calls
+    assert [path for path in runtime_read_calls if path == shared_path] == [
+        shared_path,
+        shared_path,
+        shared_path,
+        shared_path,
+    ]
+    assert all(
+        path == shared_path
+        or path.is_relative_to(request.controlled_output_root)
+        for path in runtime_read_calls
+    )
+    assert terminal_path in runtime_read_calls
+    assert (request.project_root / "configs" / "unbound.toml").resolve() not in runtime_read_calls
+    assert len(result.folds) == 2
+    assert {fold.fold for fold in result.folds} == {"fold_001", "fold_002"}
+    assert result.folds[0].config_raw_sha256 == result.folds[1].config_raw_sha256
+    assert result.folds[0].config_full_sha256 == result.folds[1].config_full_sha256
+    assert result.folds[0].g1_release_id != result.folds[1].g1_release_id
+    work_ownership = {
+        (work.fold, work.horizon)
+        for execution in result.folds
+        for work in execution.work_identities
+    }
+    assert work_ownership == {
+        ("fold_001", 5),
+        ("fold_001", 10),
+        ("fold_002", 5),
+        ("fold_002", 10),
+    }
+    assert all(
+        work.work_key
+        == compute_work_key(
+            experiment_key=execution.experiment_key,
+            fold=work.fold,
+            horizon=work.horizon,
+        )
+        for execution in result.folds
+        for work in execution.work_identities
+    )
+    first_refs = {ref.node_id: ref for ref in result.folds[0].receipts}
+    second_refs = {ref.node_id: ref for ref in result.folds[1].receipts}
+    shared_node_ids = first_refs.keys() & second_refs.keys()
+    assert shared_node_ids
+    assert all(
+        first_refs[node_id] == second_refs[node_id]
+        and first_refs[node_id].fold is None
+        and first_refs[node_id].stage in runtime._SHARED_RECEIPT_STAGES
+        for node_id in shared_node_ids
+    )
+    assert not (first_refs.keys() & second_refs.keys()) - shared_node_ids
+    assert tuple(gate.gate for gate in result.gates) == (
+        "summary",
+        "reproducibility",
+        "readiness",
+        "acceptance",
+    )
+    for index, gate in enumerate(result.gates):
+        assert gate.identity == runtime.compute_successor_gate_identity(
+            gate=gate.gate,
+            folds=result.folds,
+            prior_gates=result.gates[:index],
+        )
+    assert len(result.attestation.folds) == 2
+    for binding, fold_request, execution in zip(
+        result.attestation.folds,
+        request.folds,
+        result.folds,
+        strict=True,
+    ):
+        assert binding.fold == execution.fold == fold_request.fold
+        assert binding.config_raw_sha256 == fold_request.config.config.raw_config_sha256
+        assert binding.config_full_sha256 == fold_request.config.config.full_config_sha256
+        assert binding.g1_release_id == fold_request.release.manifest.release_id
+        assert (
+            binding.g1_release_manifest_sha256
+            == fold_request.release.manifest_sha256
+        )
+    assert result.attestation.two_fold_identity == runtime.two_fold_identity(request)
+    assert not tuple(request.controlled_output_root.glob(".completion.json.*.tmp"))
+
+
+def test_same_config_distinct_paths_with_equal_bytes_are_accepted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, boundary, configs, releases = _request(tmp_path, same_config=True)
+    _install_fixture_verifiers(
+        monkeypatch,
+        configs,
+        releases,
+        boundary.public_apis,
+        boundary,
+    )
+
+    result = _run(request, boundary)
+
+    assert tuple(item.config.relative_path for item in request.folds) == (
+        PurePosixPath("configs/fold_001.toml"),
+        PurePosixPath("configs/fold_002.toml"),
+    )
+    assert request.folds[0].config.config == request.folds[1].config.config
+    assert result.folds[0].config_raw_sha256 == result.folds[1].config_raw_sha256
+    assert result.folds[0].config_full_sha256 == result.folds[1].config_full_sha256
+
+
+def test_same_config_replay_is_exact_and_second_fold_tamper_fails_fresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, boundary, configs, releases = _request(
+        tmp_path, same_config=True, same_physical=True
+    )
+    _install_fixture_verifiers(
+        monkeypatch,
+        configs,
+        releases,
+        boundary.public_apis,
+        boundary,
+    )
+
+    first = _run(request, boundary)
+    first_public_api_calls = tuple(boundary.public_api_calls)
+    replay = _run(request, boundary)
+
+    assert replay.reused is True
+    assert replay.terminal_path == first.terminal_path
+    assert replay.attestation == first.attestation
+    assert replay.attestation.two_fold_identity == first.attestation.two_fold_identity
+    assert (
+        tuple(boundary.public_api_calls[: len(first_public_api_calls)])
+        == first_public_api_calls
+    )
+    replay_suffix = tuple(boundary.public_api_calls[len(first_public_api_calls) :])
+    assert replay_suffix == (
+        "summary-public-verify",
+        "reproducibility-public-verify",
+        "readiness-public-verify",
+        "acceptance-public-verify",
+    )
+    assert not any(
+        call in runtime._UPSTREAM_WAVES
+        or call.endswith("-run-plan")
+        or call.endswith("-public-run")
+        or call == "publication"
+        for call in replay_suffix
+    )
+    calls_after_replay = len(boundary.public_api_calls)
+
+    config_path = request.project_root / "configs" / "shared.toml"
+    original = config_path.read_bytes()
+    config_path.write_bytes(original + b"\ndrift")
+    with pytest.raises(runtime.SuccessorRuntimeError) as error:
+        _run(request, boundary)
+    assert error.value.code == "SUCCESSOR_INPUT_INVALID"
+    assert len(boundary.public_api_calls) == calls_after_replay
+
+
+def test_same_physical_second_fold_drift_fails_before_stage_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, boundary, configs, releases = _request(
+        tmp_path, same_config=True, same_physical=True
+    )
+    shared_path = (request.project_root / "configs" / "shared.toml").resolve()
+    original = shared_path.read_bytes()
+    load_calls: list[Path] = []
+    runtime_read_calls: list[Path] = []
+    release_calls: list[str] = []
+
+    def tamper_after_first_load(path: Path, count: int) -> None:
+        if count == 1:
+            path.write_bytes(original + b"\ndrift")
+
+    _install_fixture_verifiers(
+        monkeypatch,
+        configs,
+        releases,
+        boundary.public_apis,
+        boundary,
+        load_calls=load_calls,
+        runtime_read_calls=runtime_read_calls,
+        release_calls=release_calls,
+        after_load=tamper_after_first_load,
+    )
+
+    with pytest.raises(runtime.SuccessorRuntimeError) as error:
+        _run(request, boundary)
+
+    assert error.value.code == "SUCCESSOR_INPUT_INVALID"
+    assert runtime_read_calls == [shared_path, shared_path]
+    assert load_calls == [shared_path]
+    assert len(release_calls) == 1
+    assert boundary.public_api_calls == []
+    assert not (request.controlled_output_root / runtime.TERMINAL_FILENAME).exists()
+    assert not (request.controlled_output_root / "receipts").exists()
+
+
+def test_same_config_duplicate_release_identity_fails_before_stage_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, boundary, configs, releases = _request(
+        tmp_path, same_config=True, same_physical=True
+    )
+    first_release = request.folds[0].release
+    alias = _release_alias(
+        first_release,
+        root=request.folds[1].release.release.root,
+    )
+    folds = (
+        request.folds[0],
+        replace(request.folds[1], release=alias),
+    )
+    request = replace(request, folds=folds)
+    release_overrides = {
+        id(first_release.release): first_release,
+        id(alias.release): alias,
+    }
+    _install_fixture_verifiers(
+        monkeypatch,
+        configs,
+        releases,
+        boundary.public_apis,
+        boundary,
+        release_overrides=release_overrides,
+    )
+
+    with pytest.raises(runtime.SuccessorRuntimeError) as error:
+        _run(request, boundary)
+
+    assert error.value.code == "SUCCESSOR_INPUT_INVALID"
+    assert boundary.public_api_calls == []
+    assert not (request.controlled_output_root / runtime.TERMINAL_FILENAME).exists()
+    assert not (request.controlled_output_root / "receipts").exists()
 
 
 def test_terminal_rejects_receipt_bytes_and_unknown_tree_entry(
