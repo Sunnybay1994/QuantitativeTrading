@@ -6,6 +6,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 import re
 import sqlite3
@@ -14,6 +15,7 @@ import time
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, cast
 
@@ -30,7 +32,7 @@ from quant.data.tushare_bulk import (
 )
 from quant.settings import resolve_data_root
 
-SCHEMA_VERSION = "tushare-financial-raw-audit-v3"
+SCHEMA_VERSION = "tushare-financial-raw-audit-v4"
 _RAW_CLOSURE_SCHEMA = "tushare-financial-raw-closure-v1"
 PLAN_CLOSURE_SCHEMA = "tushare-financial-plan-closure-v1"
 INVENTORY_CLOSURE_SCHEMA = "tushare-financial-current-inventory-v1"
@@ -94,6 +96,89 @@ _NUMERIC_COLUMNS: dict[str, tuple[str, ...]] = {
     "income": ("n_income", "n_income_attr_p"),
 }
 
+_FLOW_BUCKETS = ("Q1", "Q2", "Q3", "FY")
+_FLOW_FIELDS: tuple[tuple[str, str], ...] = (
+    ("cashflow", "n_cashflow_act"),
+    ("income", "n_income"),
+    ("income", "n_income_attr_p"),
+)
+_FLOW_BUCKET_MONTHS = {3: "Q1", 6: "Q2", 9: "Q3", 12: "FY"}
+_FLOW_DECIMAL_ABSOLUTE_TOLERANCE = Decimal("0.01")
+_FLOW_DECIMAL_ABSOLUTE_TOLERANCE_TEXT = "0.01"
+_FLOW_MINIMUM_CURRENT_SYMBOLS = 100
+_FLOW_MINIMUM_FISCAL_YEARS = 3
+_FLOW_MINIMUM_COMPARABLE_OBSERVATIONS = 100
+_FLOW_SOURCE_TYPE_EVIDENCE_VERSION = "tushare-financial-flow-source-type-evidence-v1"
+_FLOW_NORMALIZED_PROJECTION_VERSION = "tushare-financial-flow-normalized-projection-v1"
+_FLOW_TOKEN_ALGORITHM = "float64-decimal-str-canonical-v1"
+_FLOW_TOKEN_ALGORITHM_VERSION = "1"
+_FLOW_EARLY_EMPTY_SOURCE_EVIDENCE_SHA256 = (
+    "793cd498f4dbca6b28661417f49606323248da0cdf8e838575df9f7ef4d0d5db"
+)
+_FLOW_NORMALIZED_PROJECTION_CONTRACT = {
+    "version": _FLOW_NORMALIZED_PROJECTION_VERSION,
+    "representation": "TWO_STAGE",
+    "stage_b1": {
+        "name": "safe_source_relation",
+        "base_columns": [
+            "_flow_dataset",
+            "ts_code",
+            "ann_date",
+            "f_ann_date",
+            "end_date",
+            "report_type",
+            "comp_type",
+            "update_flag",
+            "_request_id",
+            "_source_file",
+        ],
+        "dataset_field_order": {
+            "balancesheet": ["total_assets", "total_hldr_eqy_exc_min_int"],
+            "cashflow": ["n_cashflow_act"],
+            "fina_indicator": [],
+            "income": ["n_income", "n_income_attr_p"],
+        },
+        "per_field_columns": [
+            "_flow_source_type_<field>",
+            "_flow_raw_<field>",
+            "_flow_projected_<field>",
+        ],
+        "union": "UNION_ALL_OF_SCHEMA_GROUP_PROJECTIONS",
+        "raw_file_reads_per_file": 1,
+    },
+    "stage_b2": {
+        "name": "canonical_observation_relation",
+        "python_type": "_FlowObservation",
+        "parallel_field_sequences": [
+            "source_types",
+            "raw_values",
+            "projected_values",
+            "canonical_values",
+        ],
+        "canonical_operand_fields": ["token", "category", "projected"],
+        "single_canonicalizer": "_canonicalize_operand",
+        "available_date_rule": "MAX_ANN_DATE_F_ANN_DATE",
+    },
+}
+_VARCHAR_FINITE = re.compile(
+    r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?"
+)
+_VARCHAR_NONFINITE = re.compile(r"[+-]?(?:nan|inf|infinity)", re.IGNORECASE)
+_NUMERIC_LOGICAL_TYPE = re.compile(
+    r"^(?:U?TINYINT|U?SMALLINT|U?INTEGER|U?BIGINT|HUGEINT|UHUGEINT|INT|INTEGER|"
+    r"FLOAT|REAL|DOUBLE|DECIMAL(?:\([^)]*\))?)$"
+)
+_UNTOKENIZABLE_LOGICAL_TYPE_PREFIXES = (
+    "ARRAY",
+    "BINARY",
+    "BLOB",
+    "BIT",
+    "LIST",
+    "MAP",
+    "STRUCT",
+    "UNION",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class _CompleteRequest:
@@ -109,12 +194,55 @@ class _CompleteRequest:
     metadata_sha256: str
     columns: tuple[str, ...]
     parquet_path: Path
+    relative_path: str
 
 
 @dataclass(frozen=True, slots=True)
 class _VerifiedPlan:
     closure: Mapping[str, Any]
     expected_requests: tuple[_bulk_ingest.Request, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceSchema:
+    relative_path: str
+    schema: tuple[tuple[str, str], ...]
+    economic_types: Mapping[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class _FlowSourceIdentity:
+    evidence: tuple[dict[str, Any], ...]
+    schemas: Mapping[str, _SourceSchema]
+    untokenizable: tuple[tuple[str, str, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _CanonicalOperand:
+    token: str
+    category: str
+    projected: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class _FlowObservation:
+    dataset: str
+    symbol: str
+    ann_date: dt.date
+    f_ann_date: dt.date | None
+    available_date: dt.date
+    end_date: dt.date
+    report_type: str
+    comp_type: str
+    update_flag: str
+    source_file: str
+    raw_values: tuple[object, ...]
+    projected_values: tuple[object, ...]
+    source_types: tuple[str, ...]
+    canonical_values: tuple[_CanonicalOperand, ...]
+
+
+_FlowKey = tuple[str, dt.date, str, str]
 
 
 def audit_tushare_financials(
@@ -177,62 +305,174 @@ def _audit(
     for item in complete:
         by_dataset[item.dataset].append(item)
 
+    expected_counts = cast(Mapping[str, int], plan.closure["request_counts"])
     dataset_reports: dict[str, dict[str, Any]] = {}
     blocking: list[dict[str, Any]] = []
     total_incomplete = active_lease_count
     for dataset in _DATASETS:
         dataset_rows = [row for row in rows if row[1] == dataset]
         statuses = Counter(cast(str, row[2]) for row in dataset_rows)
-        quality = _quality_summary(dataset=dataset, complete=by_dataset[dataset], threads=threads)
         incomplete = sum(statuses[name] for name in ("PENDING", "RUNNING", "RETRYABLE"))
         total_incomplete += incomplete
-        for status in ("FAILED", "SPLIT_REQUIRED"):
-            if statuses[status]:
+        for ledger_status in ("FAILED", "SPLIT_REQUIRED"):
+            if statuses[ledger_status]:
                 blocking.append(
                     {
-                        "code": f"{dataset.upper()}_LEDGER_{status}",
-                        "count": statuses[status],
-                    }
-                )
-        for field, code in (
-            ("row_count_mismatch", "LEDGER_RAW_ROW_COUNT_MISMATCH"),
-            ("missing_request_rows", "RAW_REQUEST_MISSING"),
-            ("request_symbol_mismatches", "REQUEST_SYMBOL_MISMATCH"),
-            ("request_window_mismatches", "REQUEST_WINDOW_MISMATCH"),
-            ("critical_null_rows", "CRITICAL_NULL"),
-            ("invalid_symbol_rows", "SYMBOL_FORMAT_INVALID"),
-            ("invalid_ann_date_rows", "ANN_DATE_INVALID"),
-            ("invalid_f_ann_date_rows", "F_ANN_DATE_INVALID"),
-            ("invalid_end_date_rows", "END_DATE_INVALID"),
-            ("end_after_available_rows", "END_AFTER_AVAILABLE"),
-            ("required_numeric_parse_rows", "REQUIRED_NUMERIC_PARSE_INVALID"),
-            ("required_numeric_nonfinite_rows", "REQUIRED_NUMERIC_NONFINITE"),
-            ("invalid_report_type_rows", "REPORT_TYPE_INVALID"),
-            ("invalid_comp_type_rows", "COMP_TYPE_INVALID"),
-        ):
-            if quality[field]:
-                blocking.append(
-                    {
-                        "code": f"{dataset.upper()}_{code}",
-                        "count": quality[field],
+                        "code": f"{dataset.upper()}_LEDGER_{ledger_status}",
+                        "count": statuses[ledger_status],
                     }
                 )
         dataset_reports[dataset] = {
             "request_count": len(dataset_rows),
             "status_counts": dict(sorted(statuses.items())),
             "complete_rows": sum(item.rows for item in by_dataset[dataset]),
-            "quality": quality,
+            "quality": _empty_quality_summary(),
         }
+
+    ledger_complete = (
+        active_lease_count == 0
+        and len(rows) == sum(expected_counts.values())
+        and len(complete) == sum(expected_counts.values())
+        and all(
+            len([row for row in rows if row[1] == dataset]) == expected_counts[dataset]
+            and all(
+                type(row[2]) is str and row[2] == "COMPLETE"
+                for row in rows
+                if row[1] == dataset
+            )
+            and len(by_dataset[dataset]) == expected_counts[dataset]
+            for dataset in _DATASETS
+        )
+    )
+    flow_prerequisites_closed = (
+        verify_bytes is True
+        and active_lease_count == 0
+        and ledger_complete
+    )
+    flow = _not_evaluated_flow()
+    if flow_prerequisites_closed:
+        connection = duckdb.connect(":memory:")
+        try:
+            _configure_connection(connection, threads)
+            source_identity = _flow_source_identity(
+                connection=connection, complete=complete
+            )
+            tables: dict[str, str] = {}
+            for dataset in _DATASETS:
+                dataset_complete = by_dataset[dataset]
+                tables[dataset] = _materialize_safe_projection(
+                    connection=connection,
+                    dataset=dataset,
+                    complete=dataset_complete,
+                    source_identity=source_identity,
+                )
+            for dataset in _DATASETS:
+                quality = _quality_summary(
+                    dataset=dataset,
+                    complete=by_dataset[dataset],
+                    threads=threads,
+                    connection=connection,
+                    source_identity=source_identity,
+                    table=tables[dataset],
+                )
+                dataset_reports[dataset]["quality"] = quality
+                numeric_blocked = dataset not in {"cashflow", "income"}
+                for field, code in (
+                    ("row_count_mismatch", "LEDGER_RAW_ROW_COUNT_MISMATCH"),
+                    ("missing_request_rows", "RAW_REQUEST_MISSING"),
+                    ("request_symbol_mismatches", "REQUEST_SYMBOL_MISMATCH"),
+                    ("request_window_mismatches", "REQUEST_WINDOW_MISMATCH"),
+                    ("critical_null_rows", "CRITICAL_NULL"),
+                    ("invalid_symbol_rows", "SYMBOL_FORMAT_INVALID"),
+                    ("invalid_ann_date_rows", "ANN_DATE_INVALID"),
+                    ("invalid_f_ann_date_rows", "F_ANN_DATE_INVALID"),
+                    ("invalid_end_date_rows", "END_DATE_INVALID"),
+                    ("end_after_available_rows", "END_AFTER_AVAILABLE"),
+                    ("required_numeric_parse_rows", "REQUIRED_NUMERIC_PARSE_INVALID"),
+                    ("required_numeric_nonfinite_rows", "REQUIRED_NUMERIC_NONFINITE"),
+                    ("invalid_report_type_rows", "REPORT_TYPE_INVALID"),
+                    ("invalid_comp_type_rows", "COMP_TYPE_INVALID"),
+                ):
+                    if quality[field] and (
+                        field
+                        not in {
+                            "required_numeric_parse_rows",
+                            "required_numeric_nonfinite_rows",
+                        }
+                        or numeric_blocked
+                    ):
+                        blocking.append(
+                            {
+                                "code": f"{dataset.upper()}_{code}",
+                                "count": quality[field],
+                            }
+                        )
+            untokenizable_pairs: dict[str, set[tuple[str, str]]] = {
+                dataset: set() for dataset in _DATASETS
+            }
+            for dataset, relative_path, field in source_identity.untokenizable:
+                if dataset not in untokenizable_pairs:
+                    raise ValueError
+                untokenizable_pairs[dataset].add((relative_path, field))
+            for dataset in _DATASETS:
+                pair_count = len(untokenizable_pairs[dataset])
+                if pair_count:
+                    blocking.append(
+                        {
+                            "code": f"{dataset.upper()}_FLOW_SOURCE_TYPE_UNTOKENIZABLE",
+                            "count": pair_count,
+                        }
+                    )
+            structural_closed = all(
+                all(
+                    dataset_reports[dataset]["quality"][field] == 0
+                    for field in (
+                        "row_count_mismatch",
+                        "missing_request_rows",
+                        "request_symbol_mismatches",
+                        "request_window_mismatches",
+                        "critical_null_rows",
+                        "invalid_symbol_rows",
+                        "invalid_ann_date_rows",
+                        "invalid_f_ann_date_rows",
+                        "invalid_end_date_rows",
+                        "end_after_available_rows",
+                        "invalid_report_type_rows",
+                        "invalid_comp_type_rows",
+                    )
+                )
+                for dataset in _DATASETS
+            )
+            field_domain_closed = all(
+                dataset_reports[dataset]["quality"][name] == 0
+                for dataset in ("balancesheet", "fina_indicator")
+                for name in (
+                    "required_numeric_parse_rows",
+                    "required_numeric_nonfinite_rows",
+                    "quarantined_rows",
+                )
+            ) and all(
+                dataset_reports[dataset]["quality"]["eligible_rows"]
+                == dataset_reports[dataset]["quality"]["raw_rows"]
+                for dataset in ("balancesheet", "fina_indicator")
+            )
+            if structural_closed and field_domain_closed and not source_identity.untokenizable:
+                flow = _flow_semantics(
+                    connection=connection,
+                    source_identity=source_identity,
+                    complete=complete,
+                    tables=tables,
+                )
+            else:
+                flow = _not_evaluated_flow(source_identity)
+        finally:
+            connection.close()
 
     if blocking:
         status = "BLOCKED"
     elif total_incomplete:
         status = "COLLECTING"
-    elif all(
-        report["request_count"] == report["status_counts"].get("COMPLETE", 0)
-        and report["request_count"] > 0
-        for report in dataset_reports.values()
-    ):
+    elif ledger_complete:
         status = "READY"
     else:
         status = "BLOCKED"
@@ -246,7 +486,8 @@ def _audit(
         "raw_closure": _raw_closure(complete),
         "datasets": dataset_reports,
         "blocking_issues": blocking,
-        "publication_allowed": status == "READY" and verify_bytes,
+        "flow_semantics": flow,
+        "publication_allowed": status == "READY" and verify_bytes and flow["status"] == "PASS",
     }
     after = _verify_plan(
         root=root,
@@ -642,6 +883,9 @@ def _load_complete(
         ):
             raise ValueError
         request_root = root / "raw" / "tushare" / dataset / f"request={request_id}"
+        request_directory = _require_plain_directory(request_root)
+        if request_directory != request_root:
+            raise ValueError
         if {path.name for path in request_root.iterdir()} != {
             "data.parquet",
             "metadata.json",
@@ -649,6 +893,8 @@ def _load_complete(
             raise ValueError
         parquet = request_root / "data.parquet"
         metadata_path = request_root / "metadata.json"
+        _require_plain_regular(parquet)
+        _require_plain_regular(metadata_path)
         metadata_payload = metadata_path.read_bytes()
         metadata = json.loads(metadata_payload.decode("utf-8"))
         columns = metadata.get("columns")
@@ -684,6 +930,7 @@ def _load_complete(
                 metadata_sha256=hashlib.sha256(metadata_payload).hexdigest(),
                 columns=tuple(cast(list[str], columns)),
                 parquet_path=parquet,
+                relative_path=parquet.relative_to(root).as_posix(),
             )
         )
     return result
@@ -719,10 +966,8 @@ def _raw_closure(complete: list[_CompleteRequest]) -> dict[str, Any]:
     }
 
 
-def _quality_summary(
-    *, dataset: str, complete: list[_CompleteRequest], threads: int
-) -> dict[str, Any]:
-    empty = {
+def _empty_quality_summary() -> dict[str, Any]:
+    return {
         "raw_rows": 0,
         "row_count_mismatch": 0,
         "missing_request_rows": 0,
@@ -750,18 +995,30 @@ def _quality_summary(
         "comp_type_counts": [],
         "report_type_comp_type_counts": [],
     }
+
+
+def _quality_summary(
+    *,
+    dataset: str,
+    complete: list[_CompleteRequest],
+    threads: int,
+    connection: Any,
+    source_identity: _FlowSourceIdentity,
+    table: str,
+) -> dict[str, Any]:
+    empty = _empty_quality_summary()
     if not complete:
         return empty
-    connection = duckdb.connect(":memory:")
+    active_connection = connection
     try:
-        connection.execute(f"SET threads={threads}")
-        connection.execute("SET enable_progress_bar=false")
-        connection.execute(
-            "CREATE TEMP TABLE expected_requests(request_id VARCHAR PRIMARY KEY,"
+        _configure_connection(active_connection, threads)
+        expected_table = f"_flow_expected_requests_{dataset}"
+        active_connection.execute(
+            f"CREATE TEMP TABLE {expected_table}(request_id VARCHAR PRIMARY KEY,"
             "symbol VARCHAR,start_date VARCHAR,end_date VARCHAR,expected_rows BIGINT)"
         )
-        connection.executemany(
-            "INSERT INTO expected_requests VALUES (?,?,?,?,?)",
+        active_connection.executemany(
+            f"INSERT INTO {expected_table} VALUES (?,?,?,?,?)",
             [
                 (
                     item.request_id,
@@ -773,24 +1030,21 @@ def _quality_summary(
                 for item in complete
             ],
         )
-        connection.read_parquet(
-            [str(item.parquet_path) for item in complete],
-            filename=True,
-            union_by_name=True,
-            hive_partitioning=False,
-        ).create_view("financial_raw")
-        connection.execute(
-            "CREATE TEMP VIEW base AS SELECT r.*,"
-            "regexp_extract(filename,'request=([0-9a-f]{64})',1) AS _request_id,"
+        _validate_projected_sources(
+            connection=active_connection, table=table, complete=complete
+        )
+        active_connection.execute(
+            f"CREATE TEMP VIEW _flow_base_{dataset} AS SELECT r.*,"
             "e.symbol AS _expected_symbol,e.start_date AS _start_date,"
             "e.end_date AS _window_end,e.expected_rows AS _expected_rows "
-            "FROM financial_raw r LEFT JOIN expected_requests e ON "
-            "regexp_extract(filename,'request=([0-9a-f]{64})',1)=e.request_id"
+            f"FROM {table} r LEFT JOIN {expected_table} e ON "
+            "r._request_id=e.request_id"
         )
-        actual = connection.execute(
-            "SELECT _request_id,count(*) AS actual_rows FROM base GROUP BY 1"
+        base = f"_flow_base_{dataset}"
+        actual = active_connection.execute(
+            f"SELECT _request_id,count(*) AS actual_rows FROM {base} GROUP BY 1"
         ).fetchall()
-        actual_rows = {cast(str, row[0]): cast(int, row[1]) for row in actual}
+        actual_rows = {row[0]: cast(int, row[1]) for row in actual}
         row_count_mismatch = sum(
             abs(item.rows - actual_rows.get(item.request_id, 0)) for item in complete
         )
@@ -836,7 +1090,7 @@ def _quality_summary(
             if dataset in _STATEMENTS
             else "true"
         )
-        summary = connection.execute(
+        summary = active_connection.execute(
             f"""
             SELECT count(*),
               count(*) FILTER (WHERE _request_id IS NULL),
@@ -865,7 +1119,7 @@ def _quality_summary(
                                   AND CAST({date_field} AS VARCHAR) BETWEEN _start_date AND _window_end
                                   AND NOT ({numeric_parse}) AND NOT ({numeric_nonfinite})
                                   AND {valid_dimensions})
-            FROM base
+             FROM {base}
             """
         ).fetchone()
         if summary is None:
@@ -878,37 +1132,44 @@ def _quality_summary(
             if dataset in _STATEMENTS
             else "ts_code,end_date"
         )
-        duplicates = connection.execute(
+        duplicates = active_connection.execute(
             f"SELECT count(*) FROM (SELECT {key},{available} AS available_date,"
-            "count(*) n FROM base GROUP BY ALL HAVING count(*)>1)"
+            f"count(*) n FROM {base} GROUP BY ALL HAVING count(*)>1)"
         ).fetchone()
         conflict_expression = _required_economic_struct(dataset)
         economic_conflicts = (
-            connection.execute(
+            active_connection.execute(
                 f"SELECT count(*) FROM (SELECT {key},{available} AS available_date,"
-                f"count(DISTINCT {conflict_expression}) versions FROM base "
+                f"count(DISTINCT {conflict_expression}) versions FROM {base} "
                 "GROUP BY ALL HAVING versions>1)"
             ).fetchone()
             if conflict_expression is not None
             else (0,)
         )
-        chains = connection.execute(
+        chains = active_connection.execute(
             f"SELECT count(*) FROM (SELECT {key},count(DISTINCT {available}) n "
-            "FROM base GROUP BY ALL HAVING n>1)"
+            f"FROM {base} GROUP BY ALL HAVING n>1)"
         ).fetchone()
         if duplicates is None or economic_conflicts is None or chains is None:
             raise ValueError
-        description = {
-            cast(str, row[0]): cast(str, row[1])
-            for row in connection.execute("DESCRIBE financial_raw").fetchall()
-        }
         column_payloads = {
             hashlib.sha256(
                 json.dumps(list(item.columns), separators=(",", ":")).encode()
             ).hexdigest()
             for item in complete
         }
-        dimensions = _dimension_counts(connection=connection, dataset=dataset)
+        dimensions = _dimension_counts(
+            connection=active_connection, dataset=dataset, table=base
+        )
+        source_types = {
+            name: sorted(
+                {
+                    source_identity.schemas[item.relative_path].economic_types[name]
+                    for item in complete
+                }
+            )
+            for name in _NUMERIC_COLUMNS[dataset]
+        }
         result: dict[str, Any] = {
             "raw_rows": raw_rows,
             "row_count_mismatch": row_count_mismatch,
@@ -933,17 +1194,824 @@ def _quality_summary(
             "column_set_count": len(column_payloads),
             "column_set_sha256s": sorted(column_payloads),
             "required_numeric_union_types": {
-                name: description[name] for name in _NUMERIC_COLUMNS[dataset]
+                name: "|".join(source_types[name]) for name in _NUMERIC_COLUMNS[dataset]
             },
             **dimensions,
         }
         _validate_dimension_evidence(dataset=dataset, quality=result)
         return result
     finally:
-        connection.close()
+        pass
 
 
-def _dimension_counts(*, connection: Any, dataset: str) -> dict[str, Any]:
+def _configure_connection(connection: Any, threads: int) -> None:
+    connection.execute(f"SET threads={threads}")
+    connection.execute("SET enable_progress_bar=false")
+    connection.execute("SET preserve_insertion_order=false")
+
+
+def _canonical_logical_type(value: object) -> str:
+    if type(value) is not str:
+        raise ValueError
+    text = " ".join(value.strip().upper().split())
+    if not text:
+        raise ValueError
+    return re.sub(r"\s*([(),\[\]<>:])\s*", r"\1", text)
+
+
+def _is_untokenizable_logical_type(value: str) -> bool:
+    return value.startswith(_UNTOKENIZABLE_LOGICAL_TYPE_PREFIXES) or value.endswith("[]")
+
+
+def _is_numeric_logical_type(value: str) -> bool:
+    return _NUMERIC_LOGICAL_TYPE.fullmatch(value) is not None
+
+
+def _sql_string(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _source_schema_for_file(
+    *, connection: Any, item: _CompleteRequest
+) -> _SourceSchema:
+    selector = item.parquet_path.as_posix().replace("'", "''")
+    rows = connection.execute(
+        "DESCRIBE SELECT * FROM read_parquet("
+        f"'{selector}', hive_partitioning=false)"
+    ).fetchall()
+    schema: list[tuple[str, str]] = []
+    names: set[str] = set()
+    for row in rows:
+        if len(row) < 2 or type(row[0]) is not str:
+            raise ValueError
+        name = cast(str, row[0])
+        if name in names:
+            raise ValueError
+        names.add(name)
+        schema.append((name, _canonical_logical_type(row[1])))
+    if tuple(name for name, _ in schema) != item.columns:
+        raise ValueError
+    if not _STRUCTURAL_COLUMNS[item.dataset] <= names:
+        raise ValueError
+    economic_types = {
+        field: next(logical_type for name, logical_type in schema if name == field)
+        for field in _NUMERIC_COLUMNS[item.dataset]
+    }
+    return _SourceSchema(
+        relative_path=item.relative_path,
+        schema=tuple(schema),
+        economic_types=economic_types,
+    )
+
+
+def _flow_source_identity(
+    *, connection: Any, complete: list[_CompleteRequest]
+) -> _FlowSourceIdentity:
+    schemas: dict[str, _SourceSchema] = {}
+    evidence: list[dict[str, Any]] = []
+    untokenizable: set[tuple[str, str, str]] = set()
+    for item in sorted(
+        complete,
+        key=lambda current: (_DATASETS.index(current.dataset), current.relative_path),
+    ):
+        expected_relative = (
+            f"raw/tushare/{item.dataset}/request={item.request_id}/data.parquet"
+        )
+        if item.relative_path != expected_relative or item.relative_path in schemas:
+            raise ValueError
+        schema = _source_schema_for_file(connection=connection, item=item)
+        schemas[item.relative_path] = schema
+        required_types = {
+            field: schema.economic_types[field] for field in _NUMERIC_COLUMNS[item.dataset]
+        }
+        evidence.append(
+            {
+                "dataset": item.dataset,
+                "request_id": item.request_id,
+                "relative_file": item.relative_path,
+                "schema": [
+                    {"name": name, "logical_type": logical_type}
+                    for name, logical_type in schema.schema
+                ],
+                "required_economic_types": required_types,
+            }
+        )
+        for field, logical_type in required_types.items():
+            if _is_untokenizable_logical_type(logical_type):
+                untokenizable.add((item.dataset, item.relative_path, field))
+    ordered_evidence = tuple(evidence)
+    return _FlowSourceIdentity(
+        evidence=ordered_evidence,
+        schemas=schemas,
+        untokenizable=tuple(sorted(untokenizable, key=_untokenizable_sort_key)),
+    )
+
+
+def _untokenizable_sort_key(value: tuple[str, str, str]) -> tuple[int, str, str]:
+    dataset, relative_path, field = value
+    return _DATASETS.index(dataset), relative_path, field
+
+
+def _flow_source_evidence_sha256(entries: Sequence[Mapping[str, Any]]) -> str:
+    return hashlib.sha256(
+        _canonical_json([_FLOW_SOURCE_TYPE_EVIDENCE_VERSION, list(entries)])
+    ).hexdigest()
+
+
+def _flow_projection_contract() -> dict[str, Any]:
+    return cast(
+        dict[str, Any],
+        json.loads(json.dumps(_FLOW_NORMALIZED_PROJECTION_CONTRACT)),
+    )
+
+
+def _flow_identity_fields(source_identity: _FlowSourceIdentity) -> dict[str, Any]:
+    evidence = [dict(entry) for entry in source_identity.evidence]
+    return {
+        "source_type_evidence": evidence,
+        "flow_source_type_evidence_sha256": _flow_source_evidence_sha256(evidence),
+        "normalized_projection_contract": _flow_projection_contract(),
+        "token_algorithm": _FLOW_TOKEN_ALGORITHM,
+        "token_algorithm_version": _FLOW_TOKEN_ALGORITHM_VERSION,
+    }
+
+
+def _not_evaluated_flow(
+    source_identity: _FlowSourceIdentity | None = None,
+) -> dict[str, Any]:
+    identity = (
+        _flow_identity_fields(source_identity)
+        if source_identity is not None
+        else {
+            "source_type_evidence": [],
+            "flow_source_type_evidence_sha256": _FLOW_EARLY_EMPTY_SOURCE_EVIDENCE_SHA256,
+            "normalized_projection_contract": json.loads(
+                json.dumps(_FLOW_NORMALIZED_PROJECTION_CONTRACT)
+            ),
+            "token_algorithm": _FLOW_TOKEN_ALGORITHM,
+            "token_algorithm_version": _FLOW_TOKEN_ALGORITHM_VERSION,
+        }
+    )
+    return {
+        "status": "NOT_EVALUATED",
+        "flow_decimal_absolute_tolerance": _FLOW_DECIMAL_ABSOLUTE_TOLERANCE_TEXT,
+        "minimum_current_symbols": _FLOW_MINIMUM_CURRENT_SYMBOLS,
+        "minimum_fiscal_years": _FLOW_MINIMUM_FISCAL_YEARS,
+        "minimum_comparable_observations": _FLOW_MINIMUM_COMPARABLE_OBSERVATIONS,
+        **identity,
+        "buckets": [],
+    }
+
+
+def _safe_projection_query(
+    *,
+    dataset: str,
+    complete: list[_CompleteRequest],
+    source_identity: _FlowSourceIdentity,
+) -> str:
+    grouped: dict[tuple[tuple[str, str], ...], list[_CompleteRequest]] = {}
+    for item in complete:
+        schema = source_identity.schemas.get(item.relative_path)
+        if schema is None:
+            raise ValueError
+        grouped.setdefault(schema.schema, []).append(item)
+    projections = [
+        _projection_for_schema_group(
+            dataset=dataset,
+            group=sorted(items, key=lambda item: item.relative_path),
+            source_identity=source_identity,
+        )
+        for _, items in sorted(grouped.items(), key=lambda pair: pair[0])
+    ]
+    if not projections:
+        raise ValueError
+    return " UNION ALL ".join(projections)
+
+
+def _materialize_safe_projection(
+    *,
+    connection: Any,
+    dataset: str,
+    complete: list[_CompleteRequest],
+    source_identity: _FlowSourceIdentity,
+) -> str:
+    table = f"_flow_raw_{dataset}"
+    connection.execute(f"DROP TABLE IF EXISTS {table}")
+    connection.execute(
+        f"CREATE TEMP TABLE {table} AS "
+        + _safe_projection_query(
+            dataset=dataset,
+            complete=complete,
+            source_identity=source_identity,
+        )
+    )
+    return table
+
+
+def _projection_for_schema_group(
+    *,
+    dataset: str,
+    group: list[_CompleteRequest],
+    source_identity: _FlowSourceIdentity,
+) -> str:
+    if not group:
+        raise ValueError
+    schema = source_identity.schemas[group[0].relative_path]
+    schema_names = {name for name, _ in schema.schema}
+    paths = ",".join(
+        _sql_string(item.parquet_path.as_posix())
+        for item in sorted(group, key=lambda item: item.relative_path)
+    )
+    relation = (
+        f"read_parquet([{paths}], filename=true, union_by_name=false, "
+        "hive_partitioning=false)"
+    )
+    expressions = [
+        f"{_sql_string(dataset)} AS _flow_dataset",
+        "CAST(ts_code AS VARCHAR) AS ts_code",
+        "CAST(ann_date AS VARCHAR) AS ann_date",
+        (
+            "CAST(f_ann_date AS VARCHAR) AS f_ann_date"
+            if "f_ann_date" in schema_names
+            else "NULL::VARCHAR AS f_ann_date"
+        ),
+        "CAST(end_date AS VARCHAR) AS end_date",
+        (
+            "CAST(report_type AS VARCHAR) AS report_type"
+            if "report_type" in schema_names
+            else "NULL::VARCHAR AS report_type"
+        ),
+        (
+            "CAST(comp_type AS VARCHAR) AS comp_type"
+            if "comp_type" in schema_names
+            else "NULL::VARCHAR AS comp_type"
+        ),
+        (
+            "CAST(update_flag AS VARCHAR) AS update_flag"
+            if "update_flag" in schema_names
+            else "NULL::VARCHAR AS update_flag"
+        ),
+        "regexp_extract(CAST(filename AS VARCHAR),'request=([0-9a-f]{64})',1) AS _request_id",
+        f"concat('raw/tushare/',{_sql_string(dataset)},'/request=',"
+        "regexp_extract(CAST(filename AS VARCHAR),'request=([0-9a-f]{64})',1),"
+        "'/data.parquet') AS _source_file",
+    ]
+    for field in _NUMERIC_COLUMNS[dataset]:
+        logical_type = schema.economic_types[field]
+        expressions.append(f"{_sql_string(logical_type)} AS _flow_source_type_{field}")
+        if _is_untokenizable_logical_type(logical_type):
+            expressions.append(f"NULL::VARCHAR AS _flow_raw_{field}")
+            expressions.append(f"NULL::DOUBLE AS _flow_projected_{field}")
+        else:
+            expressions.append(f"CAST({field} AS VARCHAR) AS _flow_raw_{field}")
+            expressions.append(f"TRY_CAST({field} AS DOUBLE) AS _flow_projected_{field}")
+    return "SELECT " + ",".join(expressions) + f" FROM {relation}"
+
+
+def _validate_projected_sources(
+    *, connection: Any, table: str, complete: list[_CompleteRequest]
+) -> None:
+    expected = {item.request_id: item.relative_path for item in complete}
+    if len(expected) != len(complete):
+        raise ValueError
+    rows = connection.execute(
+        f"SELECT _request_id,_source_file,count(*) FROM {table} "
+        "GROUP BY 1,2 ORDER BY 1,2"
+    ).fetchall()
+    observed: dict[str, str] = {}
+    for request_id, source_file, count in rows:
+        if (
+            type(request_id) is not str
+            or type(source_file) is not str
+            or type(count) is not int
+            or count <= 0
+            or request_id not in expected
+            or source_file != expected[request_id]
+            or request_id in observed
+        ):
+            raise ValueError
+        observed[request_id] = source_file
+    if not set(observed) <= set(expected):
+        raise ValueError
+
+
+def _canonical_numeric_token(value: float) -> str:
+    try:
+        decimal = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        raise ValueError from None
+    if decimal == 0:
+        return "0"
+    return format(decimal.normalize(), "f")
+
+
+def _nonfinite_token(lexical: str) -> str:
+    lowered = lexical.lower()
+    if "nan" in lowered:
+        return "NONFINITE:NAN"
+    return "NONFINITE:-INF" if lowered.startswith("-") else "NONFINITE:+INF"
+
+
+def _canonicalize_operand(
+    *, source_type: object, raw: object, projected: object
+) -> _CanonicalOperand:
+    if type(source_type) is not str or not source_type:
+        raise ValueError
+    logical_type = cast(str, source_type)
+    if raw is None:
+        return _CanonicalOperand("MISSING", "missing", None)
+    lexical = raw.strip() if type(raw) is str else str(raw).strip()
+    if not lexical:
+        return _CanonicalOperand("MISSING", "missing", None)
+    if logical_type == "BOOLEAN":
+        return _CanonicalOperand(
+            f"INVALID_BOOLEAN:{lexical.lower()}", "invalid", None
+        )
+    if logical_type == "VARCHAR":
+        if _VARCHAR_NONFINITE.fullmatch(lexical) is not None:
+            return _CanonicalOperand(_nonfinite_token(lexical), "nonfinite", None)
+        if _VARCHAR_FINITE.fullmatch(lexical) is None:
+            return _CanonicalOperand(f"INVALID:VARCHAR:{lexical}", "invalid", None)
+        if type(projected) is not float:
+            return _CanonicalOperand(
+                f"INVALID_OVERFLOW:{lexical}", "invalid", None
+            )
+        if not math.isfinite(cast(float, projected)):
+            return _CanonicalOperand(
+                f"INVALID_OVERFLOW:{lexical}", "invalid", None
+            )
+        return _CanonicalOperand(
+            _canonical_numeric_token(cast(float, projected)),
+            "finite",
+            cast(float, projected),
+        )
+    if _is_numeric_logical_type(logical_type):
+        if _VARCHAR_NONFINITE.fullmatch(lexical) is not None:
+            return _CanonicalOperand(_nonfinite_token(lexical), "nonfinite", None)
+        if type(projected) is not float:
+            return _CanonicalOperand(
+                f"INVALID_OVERFLOW:{lexical}", "invalid", None
+            )
+        projected_float = cast(float, projected)
+        if math.isnan(projected_float):
+            return _CanonicalOperand("NONFINITE:NAN", "nonfinite", None)
+        if math.isinf(projected_float):
+            return _CanonicalOperand(
+                f"INVALID_OVERFLOW:{lexical}", "invalid", None
+            )
+        return _CanonicalOperand(
+            _canonical_numeric_token(projected_float), "finite", projected_float
+        )
+    return _CanonicalOperand(
+        f"INVALID:{logical_type}:{lexical}", "invalid", None
+    )
+
+
+def _classify_flow_operands(operands: Sequence[_CanonicalOperand]) -> str:
+    categories = {operand.category for operand in operands}
+    if "missing" in categories:
+        return "missing_operands"
+    if "invalid" in categories:
+        return "invalid_numeric_operands"
+    if "nonfinite" in categories:
+        return "nonfinite_operands"
+    if any(
+        not _float64_cent_resolution(operand.projected)
+        for operand in operands
+    ):
+        return "float64_cent_resolution_lost"
+    return "comparable_observations"
+
+
+def _cent_resolution_from_spacing(down: Decimal, up: Decimal) -> bool:
+    return (
+        isinstance(down, Decimal)
+        and isinstance(up, Decimal)
+        and max(down, up) <= _FLOW_DECIMAL_ABSOLUTE_TOLERANCE
+    )
+
+
+def _float64_cent_resolution(value: object) -> bool:
+    if type(value) is not float or not math.isfinite(cast(float, value)):
+        return False
+    current = cast(float, value)
+    lower = math.nextafter(current, -math.inf)
+    upper = math.nextafter(current, math.inf)
+    if not math.isfinite(lower) or not math.isfinite(upper):
+        return False
+    down = abs(Decimal.from_float(current) - Decimal.from_float(lower))
+    up = abs(Decimal.from_float(upper) - Decimal.from_float(current))
+    return _cent_resolution_from_spacing(down, up)
+
+
+def _economic_decimal(value: object) -> Decimal:
+    if type(value) is not float or not math.isfinite(cast(float, value)):
+        raise ValueError
+    decimal = Decimal(str(cast(float, value)))
+    return Decimal(0) if decimal == 0 else decimal
+
+
+def _flow_mismatch(
+    *, current: _CanonicalOperand, type2: _CanonicalOperand, previous: _CanonicalOperand | None
+) -> bool:
+    if current.projected is None or type2.projected is None:
+        raise ValueError
+    current_value = _economic_decimal(current.projected)
+    type2_value = _economic_decimal(type2.projected)
+    difference = current_value - type2_value
+    if previous is not None:
+        if previous.projected is None:
+            raise ValueError
+        difference = current_value - _economic_decimal(previous.projected) - type2_value
+    return abs(difference) > _FLOW_DECIMAL_ABSOLUTE_TOLERANCE
+
+
+def _flow_date(value: object) -> dt.date:
+    if type(value) is not str or _DATE.fullmatch(cast(str, value)) is None:
+        raise ValueError
+    return dt.datetime.strptime(cast(str, value), "%Y%m%d").date()
+
+
+def _flow_observations(
+    *, connection: Any, dataset: str, table: str | None = None
+) -> tuple[_FlowObservation, ...]:
+    fields = _NUMERIC_COLUMNS[dataset]
+    selected = [
+        "ts_code",
+        "ann_date",
+        "f_ann_date",
+        "end_date",
+        "report_type",
+        "comp_type",
+        "update_flag",
+        "_source_file",
+    ]
+    for field in fields:
+        selected.extend(
+            [
+                f"_flow_raw_{field}",
+                f"_flow_projected_{field}",
+                f"_flow_source_type_{field}",
+            ]
+        )
+    rows = connection.execute(
+        f"SELECT {','.join(selected)} FROM {table or f'_flow_raw_{dataset}'}"
+    ).fetchall()
+    result: list[_FlowObservation] = []
+    for row in rows:
+        if len(row) != len(selected):
+            raise ValueError
+        symbol, ann_raw, f_ann_raw, end_raw, report_type, comp_type, update_flag, source_file = row[:8]
+        if (
+            type(symbol) is not str
+            or _SYMBOL.fullmatch(symbol) is None
+            or type(report_type) is not str
+            or _DIMENSION_CODE.fullmatch(report_type) is None
+            or type(comp_type) is not str
+            or _DIMENSION_CODE.fullmatch(comp_type) is None
+            or type(update_flag) is not str
+            or update_flag not in {"0", "1"}
+            or type(source_file) is not str
+        ):
+            raise ValueError
+        ann_date = _flow_date(ann_raw)
+        f_ann_date = None if f_ann_raw is None else _flow_date(f_ann_raw)
+        end_date = _flow_date(end_raw)
+        available_date = max(ann_date, f_ann_date or ann_date)
+        raw_values: list[object] = []
+        projected_values: list[object] = []
+        source_types: list[str] = []
+        canonical_values: list[_CanonicalOperand] = []
+        offset = 8
+        for _ in fields:
+            raw = row[offset]
+            projected = row[offset + 1]
+            source_type = row[offset + 2]
+            raw_values.append(raw)
+            projected_values.append(projected)
+            source_types.append(cast(str, source_type))
+            canonical_values.append(
+                _canonicalize_operand(
+                    source_type=source_type, raw=raw, projected=projected
+                )
+            )
+            offset += 3
+        if not (
+            len(source_types)
+            == len(raw_values)
+            == len(projected_values)
+            == len(canonical_values)
+            == len(fields)
+        ):
+            raise ValueError
+        result.append(
+            _FlowObservation(
+                dataset=dataset,
+                symbol=symbol,
+                ann_date=ann_date,
+                f_ann_date=f_ann_date,
+                available_date=available_date,
+                end_date=end_date,
+                report_type=report_type,
+                comp_type=comp_type,
+                update_flag=update_flag,
+                source_file=source_file,
+                raw_values=tuple(raw_values),
+                projected_values=tuple(projected_values),
+                source_types=tuple(source_types),
+                canonical_values=tuple(canonical_values),
+            )
+        )
+    return tuple(result)
+
+
+def _fiscal_bucket(value: dt.date) -> str | None:
+    return _FLOW_BUCKET_MONTHS.get(value.month)
+
+
+def _flow_key(observation: _FlowObservation) -> _FlowKey:
+    return (
+        observation.symbol,
+        observation.end_date,
+        observation.report_type,
+        observation.comp_type,
+    )
+
+
+def _observation_sort_key(
+    observation: _FlowObservation,
+) -> tuple[object, ...]:
+    return (
+        observation.update_flag,
+        observation.ann_date,
+        observation.f_ann_date or dt.date.min,
+        observation.source_file,
+        tuple("" if value is None else str(value) for value in observation.raw_values),
+    )
+
+
+def _select_latest_observation(
+    observations: Sequence[_FlowObservation],
+) -> tuple[_FlowObservation | None, bool]:
+    if not observations:
+        return None, False
+    latest_date = max(observation.available_date for observation in observations)
+    latest = [
+        observation
+        for observation in observations
+        if observation.available_date == latest_date
+    ]
+    tokens = {tuple(value.token for value in observation.canonical_values) for observation in latest}
+    if len(tokens) > 1:
+        return None, True
+    return max(latest, key=_observation_sort_key), False
+
+
+def _previous_end_date(end_date: dt.date, bucket: str) -> dt.date:
+    if bucket == "Q2":
+        return dt.date(end_date.year, 3, 31)
+    if bucket == "Q3":
+        return dt.date(end_date.year, 6, 30)
+    if bucket == "FY":
+        return dt.date(end_date.year, 9, 30)
+    raise ValueError
+
+
+def _flow_bucket_status(
+    *,
+    chain_applicable: bool,
+    current_candidates: int,
+    distinct_symbols: int,
+    synchronized: int,
+    previous_chain_eligible: int | None,
+    comparable: int,
+    fiscal_years: int,
+    mismatch_count: int,
+) -> str:
+    if mismatch_count > 0:
+        return "CONTRADICTED"
+    pair_coverage = current_candidates > 0 and 5 * synchronized >= 4 * current_candidates
+    chain_coverage = (
+        not chain_applicable
+        or (
+            synchronized > 0
+            and previous_chain_eligible is not None
+            and 5 * previous_chain_eligible >= 4 * synchronized
+        )
+    )
+    if (
+        pair_coverage
+        and chain_coverage
+        and distinct_symbols >= _FLOW_MINIMUM_CURRENT_SYMBOLS
+        and fiscal_years >= _FLOW_MINIMUM_FISCAL_YEARS
+        and comparable >= _FLOW_MINIMUM_COMPARABLE_OBSERVATIONS
+    ):
+        return "PASS"
+    return "INSUFFICIENT"
+
+
+def _flow_bucket(
+    *,
+    observations: Sequence[_FlowObservation],
+    field: str,
+    fiscal_bucket: str,
+) -> dict[str, Any]:
+    dataset = next(dataset for dataset, name in _FLOW_FIELDS if name == field)
+    fields = _NUMERIC_COLUMNS[dataset]
+    field_index = fields.index(field)
+    bucket_rows = [
+        observation
+        for observation in observations
+        if _fiscal_bucket(observation.end_date) == fiscal_bucket
+    ]
+    by_key: dict[_FlowKey, list[_FlowObservation]] = {}
+    for observation in observations:
+        by_key.setdefault(_flow_key(observation), []).append(observation)
+    current_groups: dict[_FlowKey, list[_FlowObservation]] = {}
+    for observation in bucket_rows:
+        if observation.report_type == "1":
+            current_groups.setdefault(_flow_key(observation), []).append(observation)
+    current_candidates = len(current_groups)
+    distinct_symbols = len({key[0] for key in current_groups})
+    latest_current_conflicts = 0
+    missing_type2 = 0
+    latest_type2_conflicts = 0
+    available_date_drift = 0
+    synchronized_pairs: list[tuple[_FlowObservation, _FlowObservation]] = []
+    for key, current_rows in sorted(current_groups.items()):
+        current, current_conflict = _select_latest_observation(current_rows)
+        if current_conflict or current is None:
+            latest_current_conflicts += 1
+            continue
+        type2_key = (current.symbol, current.end_date, "2", current.comp_type)
+        type2_rows = by_key.get(type2_key, [])
+        if not type2_rows:
+            missing_type2 += 1
+            continue
+        type2, type2_conflict = _select_latest_observation(type2_rows)
+        if type2_conflict or type2 is None:
+            latest_type2_conflicts += 1
+            continue
+        if type2.available_date != current.available_date:
+            available_date_drift += 1
+            continue
+        synchronized_pairs.append((current, type2))
+
+    missing_previous = 0
+    latest_previous_conflicts = 0
+    previous_pairs: list[tuple[_FlowObservation, _FlowObservation, _FlowObservation]] = []
+    if fiscal_bucket != "Q1":
+        for current, type2 in synchronized_pairs:
+            previous_end = _previous_end_date(current.end_date, fiscal_bucket)
+            previous_key = (current.symbol, previous_end, "1", current.comp_type)
+            previous_rows = [
+                observation
+                for observation in by_key.get(previous_key, [])
+                if observation.available_date <= current.available_date
+            ]
+            if not previous_rows:
+                missing_previous += 1
+                continue
+            previous, previous_conflict = _select_latest_observation(previous_rows)
+            if previous_conflict or previous is None:
+                latest_previous_conflicts += 1
+                continue
+            previous_pairs.append((current, type2, previous))
+
+    missing_operands = 0
+    invalid_numeric_operands = 0
+    nonfinite_operands = 0
+    float64_cent_resolution_lost = 0
+    comparable_observations = 0
+    mismatch_count = 0
+    fiscal_year_values: set[int] = set()
+    numeric_pairs: Sequence[tuple[_FlowObservation, _FlowObservation, _FlowObservation | None]]
+    if fiscal_bucket == "Q1":
+        numeric_pairs = [(current, type2, None) for current, type2 in synchronized_pairs]
+    else:
+        numeric_pairs = previous_pairs
+    for current, type2, previous in numeric_pairs:
+        operands = [current.canonical_values[field_index], type2.canonical_values[field_index]]
+        if previous is not None:
+            operands.insert(1, previous.canonical_values[field_index])
+        classification = _classify_flow_operands(operands)
+        if classification == "missing_operands":
+            missing_operands += 1
+        elif classification == "invalid_numeric_operands":
+            invalid_numeric_operands += 1
+        elif classification == "nonfinite_operands":
+            nonfinite_operands += 1
+        elif classification == "float64_cent_resolution_lost":
+            float64_cent_resolution_lost += 1
+        else:
+            comparable_observations += 1
+            fiscal_year_values.add(current.end_date.year)
+            if _flow_mismatch(
+                current=current.canonical_values[field_index],
+                type2=type2.canonical_values[field_index],
+                previous=None if previous is None else previous.canonical_values[field_index],
+            ):
+                mismatch_count += 1
+    previous_eligible = None if fiscal_bucket == "Q1" else len(previous_pairs)
+    status = _flow_bucket_status(
+        chain_applicable=fiscal_bucket != "Q1",
+        current_candidates=current_candidates,
+        distinct_symbols=distinct_symbols,
+        synchronized=len(synchronized_pairs),
+        previous_chain_eligible=previous_eligible,
+        comparable=comparable_observations,
+        fiscal_years=len(fiscal_year_values),
+        mismatch_count=mismatch_count,
+    )
+    return {
+        "dataset": dataset,
+        "field": field,
+        "fiscal_bucket": fiscal_bucket,
+        "chain_applicable": fiscal_bucket != "Q1",
+        "current_type1_candidates": current_candidates,
+        "distinct_symbols": distinct_symbols,
+        "fiscal_years": len(fiscal_year_values),
+        "synchronized_type2_pairs": len(synchronized_pairs),
+        "previous_chain_eligible": previous_eligible,
+        "missing_type2": missing_type2,
+        "missing_previous": None if fiscal_bucket == "Q1" else missing_previous,
+        "latest_current_conflicts": latest_current_conflicts,
+        "latest_type2_conflicts": latest_type2_conflicts,
+        "latest_previous_conflicts": (
+            0 if fiscal_bucket == "Q1" else latest_previous_conflicts
+        ),
+        "available_date_drift": available_date_drift,
+        "missing_operands": missing_operands,
+        "invalid_numeric_operands": invalid_numeric_operands,
+        "nonfinite_operands": nonfinite_operands,
+        "float64_cent_resolution_lost": float64_cent_resolution_lost,
+        "comparable_observations": comparable_observations,
+        "mismatch_count": mismatch_count,
+        "status": status,
+    }
+
+
+def _flow_semantics(
+    *,
+    connection: Any,
+    source_identity: _FlowSourceIdentity,
+    complete: list[_CompleteRequest] | None = None,
+    tables: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    flow_datasets = tuple(dict.fromkeys(dataset for dataset, _ in _FLOW_FIELDS))
+    if tables is None:
+        if complete is None:
+            raise ValueError
+        materialized: dict[str, str] = {}
+        for dataset in flow_datasets:
+            materialized[dataset] = _materialize_safe_projection(
+                connection=connection,
+                dataset=dataset,
+                complete=[item for item in complete if item.dataset == dataset],
+                source_identity=source_identity,
+            )
+        tables = materialized
+    if any(dataset not in tables for dataset in flow_datasets):
+        raise ValueError
+    observations: dict[str, tuple[_FlowObservation, ...]] = {
+        dataset: _flow_observations(
+            connection=connection, dataset=dataset, table=tables[dataset]
+        )
+        for dataset in flow_datasets
+    }
+    buckets: list[dict[str, Any]] = []
+    for dataset, field in _FLOW_FIELDS:
+        buckets.extend(
+            _flow_bucket(
+                observations=observations[dataset],
+                field=field,
+                fiscal_bucket=fiscal_bucket,
+            )
+            for fiscal_bucket in _FLOW_BUCKETS
+        )
+    statuses = [cast(str, bucket["status"]) for bucket in buckets]
+    flow_status = (
+        "CONTRADICTED"
+        if "CONTRADICTED" in statuses
+        else "PASS"
+        if len(statuses) == len(_FLOW_FIELDS) * len(_FLOW_BUCKETS)
+        and all(status == "PASS" for status in statuses)
+        else "INSUFFICIENT"
+    )
+    return {
+        "status": flow_status,
+        "flow_decimal_absolute_tolerance": _FLOW_DECIMAL_ABSOLUTE_TOLERANCE_TEXT,
+        "minimum_current_symbols": _FLOW_MINIMUM_CURRENT_SYMBOLS,
+        "minimum_fiscal_years": _FLOW_MINIMUM_FISCAL_YEARS,
+        "minimum_comparable_observations": _FLOW_MINIMUM_COMPARABLE_OBSERVATIONS,
+        **_flow_identity_fields(source_identity),
+        "buckets": buckets,
+    }
+
+
+def _dimension_counts(
+    *, connection: Any, dataset: str, table: str = "base"
+) -> dict[str, Any]:
     if dataset not in _STATEMENTS:
         return {
             "report_type_counts": [],
@@ -952,7 +2020,7 @@ def _dimension_counts(*, connection: Any, dataset: str) -> dict[str, Any]:
         }
     rows = connection.execute(
         "SELECT CAST(report_type AS VARCHAR),CAST(comp_type AS VARCHAR),count(*) "
-        "FROM base GROUP BY 1,2 ORDER BY 1,2"
+        f"FROM {table} GROUP BY 1,2 ORDER BY 1,2"
     ).fetchall()
     report_counts: Counter[str] = Counter()
     comp_counts: Counter[str] = Counter()
@@ -1046,13 +2114,14 @@ def _numeric_condition(dataset: str, *, parse_failure: bool) -> str:
         return "false"
     conditions = []
     for field in fields:
-        present = f"{field} IS NOT NULL AND trim(CAST({field} AS VARCHAR)) <> ''"
+        raw = f"_flow_raw_{field}"
+        present = f"{raw} IS NOT NULL AND trim(CAST({raw} AS VARCHAR)) <> ''"
         if parse_failure:
-            conditions.append(f"({present} AND try_cast({field} AS DOUBLE) IS NULL)")
+            conditions.append(f"({present} AND try_cast({raw} AS DOUBLE) IS NULL)")
         else:
             conditions.append(
-                f"({present} AND try_cast({field} AS DOUBLE) IS NOT NULL "
-                f"AND NOT isfinite(try_cast({field} AS DOUBLE)))"
+                f"({present} AND try_cast({raw} AS DOUBLE) IS NOT NULL "
+                f"AND NOT isfinite(try_cast({raw} AS DOUBLE)))"
             )
     return " OR ".join(conditions)
 
@@ -1061,7 +2130,7 @@ def _required_economic_struct(dataset: str) -> str | None:
     fields = _NUMERIC_COLUMNS[dataset]
     if not fields:
         return None
-    values = ",".join(f"{field}:={field}" for field in fields)
+    values = ",".join(f"{field}:=_flow_raw_{field}" for field in fields)
     return f"struct_pack({values})"
 
 
