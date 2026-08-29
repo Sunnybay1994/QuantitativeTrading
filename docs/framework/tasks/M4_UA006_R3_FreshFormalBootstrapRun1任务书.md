@@ -1,12 +1,13 @@
 # M4-UA006-R3 Fresh Formal Bootstrap Run1 任务书
 
 日期：2026-08-28<br>
-状态：`FROZEN / USER_A-D_AUTHORIZED / WAITING_A_EXECUTION`<br>
+状态：`FROZEN / FRESH_INITIALIZE_REOPEN_WINDOWS_ENGINEERING_VALIDATED / LOCKED_RETAINED`<br>
 task id：`M4-UA006-R3-FRESH-FORMAL-BOOTSTRAP-RUN1`
 
 ## 1. 身份、目标与终态上限
 
-- exact base / HEAD：`aa84ebc8519a34dcc83b309db6fda0f2b95dc4a5`
+- exact base：`aa84ebc8519a34dcc83b309db6fda0f2b95dc4a5`
+- current tracked HEAD：`1a25284fc2db58d165ec59b43560c53214147850`
 - branch：`codex/m4-ua006-r3-fresh-formal-bootstrap-run1`
 - worktree：`F:\AI_Coding\QuantitativeTrading\artifacts\dev_worktrees\m4-ua006-r3-fresh-formal-bootstrap-run1`
 - tracked exact3：
@@ -35,13 +36,15 @@ task id：`M4-UA006-R3-FRESH-FORMAL-BOOTSTRAP-RUN1`
 
 `F:\AI_Coding\QuantitativeTrading_runtime\m4-ua006-run1-20260827`
 
-五个配置 sibling root exact：
+五个配置 sibling root 角色 exact：
 
 1. `F:\AI_Coding\QuantitativeTrading_runtime\m4-ua006-run1-20260827\runtime`
 2. `F:\AI_Coding\QuantitativeTrading_runtime\m4-ua006-run1-20260827\broker`
 3. `F:\AI_Coding\QuantitativeTrading_runtime\m4-ua006-run1-20260827\evidence`
 4. `F:\AI_Coding\QuantitativeTrading_runtime\m4-ua006-run1-20260827\anchor`
 5. `F:\AI_Coding\QuantitativeTrading_runtime\m4-ua006-run1-20260827\log`
+
+这里的 exact5 是 semantic layout 角色集合，不表示 initialize 后五个目录都必须物理存在。真实 public bootstrap 合同冻结为：`runtime`、`broker` physical materialized exact2；`evidence`、`anchor`、`log` physical absent exact3；五个角色均须进入 `root_identities` 与 `runtime_layout_identity`，其中 absent exact3 使用 package-owned `absent-paper-runtime-root-v2` identity。禁止为了迁就旧任务书而补建 absent exact3。
 
 ignored config exact：
 
@@ -80,10 +83,10 @@ expected_schedule_selector = "formal_schedule_v1"
 
 ## 3. 用户分段授权 Gate
 
-2026-08-30，用户明确回复“按照你的建议推进”；中央将该回复接受并登记为 A-D 四项授权。授权只解除用户决策门禁，不合并执行阶段，也不替代各阶段开始前的 exact identity、no-clobber、网络、真实 I/O 与 CPU 资源准入。执行仍严格保持 A → B → 条件 C → D：A 完成并复核前不得执行 B；C 仅在 B 成功且只读身份核验通过时有效；D 只授权原样锁定保留，不能解释为清理、adopt、补写或重试权限。当前只允许等待中央下发 A 的 `CONFIG_AND_PARENT_CREATE` 执行 grant。
+2026-08-30，用户明确回复“按照你的建议推进”；中央将该回复接受并登记为 A-D 四项授权。授权只解除用户决策门禁，不合并执行阶段，也不替代各阶段开始前的 exact identity、no-clobber、网络、真实 I/O 与 CPU 资源准入。执行仍严格保持 A → B → 条件 C → D：A 完成并复核前不得执行 B；C 仅在 B 成功且只读身份核验通过时有效；D 只授权原样锁定保留，不能解释为清理、adopt、补写或重试权限。A 已完成，B 的唯一 initialize 已在 B2 消费；当前仅等待修订合同独立复核和中央对 `C_REOPEN_ONCE` 的另行裁定。
 
 - **A — CONFIG_AND_PARENT_CREATE**：允许创建上述 exact external parent，并在 exact ignored config path 写入已审阅的 947 bytes / SHA；创建后五个 child roots仍须全部不存在。不得创建 epoch、SQLite、descriptor 或运行证据。
-- **B — INITIALIZE_ONCE**：A 的 bytes/no-clobber/五根 absent 复核通过且中央另授真实 I/O/CPU 租约后，允许创建一个新的 no-clobber ignored carrier evidence root，并对 exact config/session date 执行一次且仅一次 `initialize`；由 public API 创建五根、new epoch 与 durable runtime bytes。失败不重试。
+- **B — INITIALIZE_ONCE**：A 的 bytes/no-clobber/五根 absent 复核通过且中央另授真实 I/O/CPU 租约后，允许创建一个新的 no-clobber ignored carrier evidence root，并对 exact config/session date 执行一次且仅一次 `initialize`；由 public API 物化 `runtime`、`broker` exact2、保持 `evidence`、`anchor`、`log` absent exact3，并为 semantic exact5 生成 `root_identities`、`runtime_layout_identity`、new epoch 与 durable runtime bytes。失败不重试。
 - **C — REOPEN_ONCE**：只有 initialize exit `0`、stdout/stderr/identity/根布局只读核验通过后，允许对同一 config/session date 执行一次且仅一次 `reopen`。initialize 失败、输出不完整、身份漂移或 barrier 非 OPEN 时 C 自动失效。
 - **D — LOCK_AND_RETAIN**：无论 CLI 进入后的成功或失败，允许将 exact external parent、ignored config、carrier evidence 与 partial/full runtime evidence原样标为 `LOCKED` 保留；不得自动清理、adopt、补写或重试。后续解锁/清理必须另包授权。
 
@@ -107,14 +110,14 @@ expected_schedule_selector = "formal_schedule_v1"
 
    `D:\Miniforge3\python.exe -m quant.execution.run_paper_formal_bootstrap --config <exact-config> --session-date 2026-08-27 --initialize`
 
-6. 无写只读核 initialize：exit `0`、stderr `0B`、stdout exact一行 canonical JSON、schema与exact18 keys、mode=`initialize`、session date exact、五根与new epoch闭合；失败立即 STOP，C 不得执行。
+6. 无写只读核 initialize：exit `0`、stderr `0B`、stdout exact一行 canonical JSON、schema与exact18 keys、mode=`initialize`、session date exact；物理布局必须为 `runtime`、`broker` exact2 real/non-reparse 与 `evidence`、`anchor`、`log` exact3 absent，semantic layout exact5、absent identities、`runtime_layout_identity` 与 new epoch 必须闭合。失败立即 STOP，C 不得执行。
 7. C 获批且步骤6通过后 direct call exact一次：
 
    `D:\Miniforge3\python.exe -m quant.execution.run_paper_formal_bootstrap --config <exact-config> --session-date 2026-08-27 --reopen`
 
 8. 无写只读核 reopen：exit `0`、stderr `0B`、stdout exact一行 canonical JSON、mode=`reopen`、schema/session/key集合闭合。
 9. 对 initialize/reopen 做 §6 identity 比较；随后核 exact3 tracked scope、cached0、diff-check、temp/cache/process residue并释放 `0xF00`。
-10. D 获批后保留 config、external parent五根与所有 evidence，记录 `LOCKED / OWNER_DECISION_REQUIRED`；只更新 delivery，交独立 reviewer复核，禁止自动清理或退休。
+10. D 获批后保留 config、external parent、已物化 exact2、absent exact3 事实与所有 evidence，记录 `LOCKED / OWNER_DECISION_REQUIRED`；只更新 delivery，交独立 reviewer复核，禁止自动清理或退休。
 
 任何首失败均停止后续业务调用；不自动重试、不把 partial root 补全、不调用 reopen、不删除现场。
 
@@ -139,8 +142,25 @@ expected_schedule_selector = "formal_schedule_v1"
 
 ## 8. 交付与独立审查
 
-delivery须逐阶段记录授权、时间、原生exit、stdout/stderr/summary SHA、exact18解析结果、五根/epoch/no-clobber、资源释放、Git scope、实际失败与LOCKED处置；不得复制敏感内容或路径到CLI输出引用，不得把未运行阶段写成PASS。
+delivery须逐阶段记录授权、时间、原生exit、stdout/stderr/summary SHA、exact18解析结果、physical exact2/absent exact3/semantic exact5、epoch/no-clobber、资源释放、Git scope、实际失败与LOCKED处置；不得复制敏感内容或路径到CLI输出引用，不得把未运行阶段写成PASS。
 
 independent reviewer只读核 taskbook/config SHA、A-D授权、initialize/reopen原生证据、identity分组、失败保留、exact3与禁止边界；唯一写review路径。至少补一个实现者未使用的静态反例，优先检查“initialize成功但未获C时不得隐式reopen”或“time-bound相等被误判为durable”。
 
-本任务书已记录用户对 A、B、C、D 的明确授权，但不构成任何阶段的执行资源 grant。A 的独立执行 grant 下发前，external parent、config、five roots、carrier evidence 均保持不存在，Python 调用为零；后续 B、条件 C 与 D 仍须按本任务书顺序由中央逐阶段准入。
+本任务书已记录用户对 A、B、C、D 的明确授权，但用户授权不替代逐阶段执行资源 grant。A 已按 grant 创建 external parent 与 config；B 的唯一 initialize 已在 B2 消费；当前 external parent、config、physical exact2 与 B1/B2 evidence 按 D 原样 `LOCKED_RETAINED`，absent exact3 不得补建。C 虽有用户条件授权，但在修订合同独立复核与中央 `C_REOPEN_ONCE` grant 前仍不可执行。
+
+## 9. B1/B2 执行历史与合同纠正
+
+- B1 carrier 在业务 Python 前因外层资源检查误把“affinity 与 `0xF00` 有交集”当成“affinity exact `0xF00`”而 STOP；`Python=0`、`initialize=0`。B1 leaf 永久 `LOCKED_RETAINED`，不得覆盖、追加、删除或复用。
+- B2 使用新 no-clobber leaf，外层资源检查改为 `ProcessorAffinity.ToInt64() == 0xF00`；Parser errors exact0、identity exit0/stderr0、initialize exact一次 exit0/stderr0，stdout 为 exact18 canonical JSON。该唯一 initialize 授权已经消费，禁止重跑。
+- B2 的 runner 按旧任务书对五个角色逐项要求 physical directory，在 `evidence` absent 处触发 `POSTCHECK_CONTRACT_STOP`。中央源码审计确认这是任务书预期漂移，不是 bootstrap production 失败：`paper_runtime.py` 对 absent root 生成 package-owned identity，formal execution/broker store 分别只物化 `runtime` 与 `broker`，reopen 也只要求这两个 operational roots 存在。
+- 修订后的 initialize 合同只使用 immutable B2 evidence 做只读复核：physical materialized exact2=`runtime,broker`；physical absent exact3=`evidence,anchor,log`；semantic identity exact5 全部闭合。禁止重跑 initialize、补建 absent exact3、修改 production/tests/config/external roots 或 B1/B2 evidence。
+- 独立静态复核确认 B2 evidence 满足修订合同后，中央另发 `C_REOPEN_ONCE` grant；C 已按 exact-once 合同执行并通过。initialize 与 reopen 各 exact1，两个业务调用均已消费，禁止再次调用。
+
+## 10. C reopen 终态证据
+
+- C 使用全新 no-clobber ignored leaf；runner 以 mandatory `EvidenceRoot` 绑定本轮唯一 leaf，源码不含 `--initialize` 调用，Parser errors exact0。
+- reopen 原生 exit `0`、stderr `0B`，stdout 为单行 canonical JSON、schema与 exact18 keys闭合、mode=`reopen`。
+- control exact2闭合；durable exact10与 B2 initialize逐项 exact相等；time-bound exact6逐项不同且均为 canonical lowercase 64-hex。
+- physical materialized exact2=`runtime,broker`、physical absent exact3=`evidence,anchor,log`、semantic identity exact5保持；未补建 absent exact3。
+- C 完成后 Python/pythonw=`0`、exact affinity `0xF00`=`0`；B1/B2/C evidence、external parent、config、runtime、broker按 D 永久 `LOCKED_RETAINED`，不得自动清理、adopt、追加或退休。
+- 本证据只把终态上限推进到 fresh initialize+reopen 的 Windows 工程闭包。PAPER、28日 soak、OMS/order、UA-M4-006整体 Gate和Linux Gate均保持未完成。
