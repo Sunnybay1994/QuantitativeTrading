@@ -1,8 +1,8 @@
 # Cursor CLI 接入与探测记录
 
 日期：2026-07-14  
-状态：Windows Agent 已认证；2026-08-15 至 2026-08-20（含）按用户全局指示统一使用
-`cursor-grok-4.6-high`，到期未续期则恢复暂停外部会话；WSL Agent 仍不可执行
+状态：Windows Agent 已认证；当前及后续新会话统一使用 `--model auto`，不声明或推断其底层模型；
+历史固定模型与限时模型窗口均已到期，不再作为派发依据；WSL Agent 仍不可执行
 
 ## 1. 目的与边界
 
@@ -19,12 +19,11 @@
 - `cursor-agent --help` 确认支持 headless `--print`、`--output-format`、`--model`、`--workspace`、
   `--worktree`、`--trust`、plan/ask 模式和 MCP。
 - `cursor-agent status` 确认当前 Windows CLI 已登录；本记录不保存或展示账户邮箱、认证 token 或其他身份信息。
-- `cursor-agent models` 曾确认账号可用模型包含 `cursor-grok-4.5-high`，显示名为 `Cursor Grok 4.5`，另有
-  `low`、`medium`、`high` 及对应 `fast` 变体。本项目后续若指定“Cursor Grok 4.5”，默认使用
-  `cursor-grok-4.5-high`，除非任务书或用户另有说明。自 2026-08-11 起，用户已明确要求后续新会话统一
-  使用 `--model auto`；2026-08-15 用户又临时授权本项目所有 session 在 2026-08-20（Asia/Shanghai，含）
-  前统一改用 `--model cursor-grok-4.6-high`，该时间窗内以临时授权为准，不声称其他底层模型。
-- 只读 smoke test 已用 `cursor-grok-4.5-high` 成功读取根 `pyproject.toml`，准确返回
+- `cursor-agent models` 曾确认账号提供多个具名模型及 `auto` 选项；该历史清单不定义当前选择策略。
+  自 2026-08-11 起的长期规则现恢复为：所有新 Cursor 会话统一使用 `--model auto`，不得从 `auto` 反推、
+  记录或承诺具体底层模型。旧任务书、交付、审查或 Prompt 中出现的固定模型名称仅是历史合同/运行事实，
+  不得复制为新任务的模型指令。
+- 历史只读 smoke test 曾用当时明确选择的固定模型成功读取根 `pyproject.toml`，准确返回
   `requires-python=\">=3.10\"` 与 `pytest.ini_options.testpaths=[\"tests\"]`，退出码为 0，并返回约定标记。
   测试使用 `ask` 模式，未修改文件、未运行项目 Python 工具、未联网。
 - 该次成功请求的 JSON envelope 给出请求级 usage：`inputTokens=33309`、`outputTokens=230`、
@@ -60,7 +59,7 @@ Ruff、mypy 和项目脚本都由它通过 WSL Miniforge base 执行，禁止 Wi
 ```powershell
 & "$HOME\AppData\Local\cursor-agent\cursor-agent.ps1" `
   --print --output-format json --mode ask `
-  --model cursor-grok-4.6-high --trust `
+  --model auto --trust `
   --workspace 'G:\BaiduSyncdisk\wsl\Cursor\quant' `
   $prompt
 ```
@@ -70,7 +69,7 @@ Ruff、mypy 和项目脚本都由它通过 WSL Miniforge base 执行，禁止 Wi
 ```powershell
 & "$HOME\AppData\Local\cursor-agent\cursor-agent.ps1" `
   --print --output-format json --force `
-  --model cursor-grok-4.6-high --trust `
+  --model auto --trust `
   --workspace 'G:\BaiduSyncdisk\wsl\Cursor\quant' `
   $prompt
 ```

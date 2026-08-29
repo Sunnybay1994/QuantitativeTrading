@@ -23,6 +23,10 @@
   整洁，不承担常规业务功能实现；
 - 框架开发、投研、GUI 开发三个领域经理分别维护自己的详细路线图，把目标拆成最小任务包，冻结业务合同，
   向统筹申请 exact base/worktree/资源后再向 Worker 派发；
+- 工具性质开发统一归框架开发领域，包括 compiler/toolchain、parser、wrapper、capability fixture、流式大 JSON
+  证据工具以及通用构建/承载基础设施。投研领域专注实际业务研究：投资策略、因子挖掘、经济假设、PIT 与
+  回测合同、候选比较和研究结论；投研经理不得自行创建或执行上述工具链包，需要工具能力时只提交业务需求和
+  验收边界，由统筹转交框架领域重新冻结；
 - 实现 Worker 只执行冻结任务。当前默认使用本地 Luna Worker 池；每个 Luna 顶层 session 负责为具体任务创建
   隔离 subagent，以支持上下文隔离和经批准的互斥并行。一个 Luna 可同时管理多个隔离 subagent，但同一任务只能
   绑定一个 Worker、一个实现 subagent 和一个 worktree；
@@ -34,7 +38,10 @@
   Worker/subagent 是否仍存在，以及批准路径是否出现合理的 diff/mtime 变化。统筹只处理 exact base/worktree、
   共享文件锁、CPU/真实 I/O/网络等资源、跨域冲突、架构变更、integration 合流和来源线退休；
 - 外部 `cursor-agent` 是可选 Worker。未特别指定模型时使用 `auto`；用户或统筹可按风险和能力需要显式指定
-  其他模型。实现和独立审查必须使用不同的新会话或隔离上下文；
+  其他模型。实现和独立审查必须使用不同的新会话或隔离上下文。外部 Agent 与 Luna Worker、实现 subagent
+  属于平级执行通道；任何 Worker 及其创建的 subagent 均不得自行启动、调用、委派或要求外部 Agent 继续分派。
+  外部 Agent 只能由用户、统筹 Agent，或在统筹已冻结任务后由获授权的领域经理直接派发；Worker/subagent
+  认为需要外部能力时必须 STOP 并向原派发者申请裁定，不得横向转包；
 - 本地 `GPT-5.3-Codex-Spark`（`xhigh`）是三个领域共享的受限轻任务 Worker，仅接收合同完整、改动局部、
   可用定向测试独立验收且不触碰共享 SSOT、真实数据或外部状态的任务；其详细准入/禁止矩阵和试运行规则见
   多 Agent 治理规范。模型或推理强度不扩大权限，也不替代领域经理、独立审查或统筹终验；
@@ -199,7 +206,9 @@ branch/worktree、写白名单、只读输入、资源需求、失败语义、�
 任务依赖、文件写集合和统筹分配的共享资源决定。领域经理的派发动作应尽量短：发送任务书路径、task id、
 worktree 与资源级别后即可等待，不要求 Worker 维护额外 ACK/mapping/status 协议。Worker 在自己的交付报告中记录
 实现、验证、STOP 和资源请求；领域经理只在交付文档出现、发现明确阻断或需要共享资源时继续交互。改用外部
-`cursor-agent` 时，未指定模型使用 `auto`。无论使用哪种 Worker，实现者自测都不能代替领域验收或统筹终验。
+`cursor-agent` 时，未指定模型使用 `auto`，且只能由用户、统筹或获授权领域经理直接派发。Luna Worker、其顶层
+session、实现 subagent 及其他 Worker 不得调用或委派外部 Agent；这些执行通道彼此平级，不构成可横向转包的
+上下级链。无论使用哪种 Worker，实现者自测都不能代替领域验收或统筹终验。
 
 `artifacts/agent_dispatch/`、ACK 或 session 状态可作为可选诊断信息，但不再是任务派发、身份认定或交付验收的
 强制 Gate。不能仅凭 worktree dirty 宣称完成，也不能因为缺少 ACK/status 就反复停止、重派或修复控制面；只要

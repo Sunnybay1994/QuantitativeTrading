@@ -1,7 +1,7 @@
 # M3 G1 R1C-B INDEX 身份合同返工独立复验 Prompt
 
 角色：全新外部独立复验 Agent（生产代码、测试、配置和 data 全部只读）  
-模型：`cursor-grok-4.5-high`  
+模型：`--model auto`（不得指定或推断具体 Grok 型号）
 前置：身份合同返工实现 Agent 已完全退出并提交交付报告
 
 ## 1. 唯一允许写入

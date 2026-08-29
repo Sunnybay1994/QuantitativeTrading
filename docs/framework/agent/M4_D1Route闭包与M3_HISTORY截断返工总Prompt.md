@@ -1,6 +1,9 @@
-# 可直接粘贴给外部协调 Agent 的 Prompt
+# 历史外部协调 Prompt（禁止当前派发）
 
-你是本轮外部总协调 Agent。请使用不同的全新 `cursor-grok-4.5-high`（非 fast）会话，严格执行：
+> 本文不得再直接粘贴给任何 Worker、subagent 或外部 Agent。下方多会话协调流程仅作历史记录；外部 Agent
+> 与本地 Worker/subagent 是平级执行通道，每个最小任务必须由用户、统筹或获授权领域经理分别直接派发。
+
+你是本轮外部总协调 Agent。请使用不同的全新 Cursor 会话并统一指定 `--model auto`，不得指定或推断具体 Grok 型号，严格执行：
 
 `docs/framework/agent/M4_D1Route闭包与M3_HISTORY截断返工任务单.md`
 

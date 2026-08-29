@@ -1,7 +1,7 @@
 # M4 B4-P0A 港股通 RouteContext 实现 Prompt
 
 角色：全新外部实现 Agent  
-模型：`cursor-grok-4.5-high`（非 fast）  
+模型：`--model auto`（不得指定或推断具体 Grok 型号）
 启动条件：R1C source-tree 写会话和其全部 WSL pytest 子进程已经退出
 
 请先完整阅读：

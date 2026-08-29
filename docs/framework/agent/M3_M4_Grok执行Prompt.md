@@ -1,11 +1,16 @@
-# Cursor Grok 执行 Prompt
+# Cursor Auto 执行 Prompt
 
-本文件提供单包实现和独立初验 Prompt 模板。实现和独立初验不得由同一会话承担。完整 M3/M4 协调执行请直接使用 [`CURSOR_GROK_M3_M4总执行Prompt.md`](CURSOR_GROK_M3_M4总执行Prompt.md)。
+本文件提供单包实现和独立初验 Prompt 模板。实现和独立初验不得由同一会话承担。历史 M3/M4 协调合同可参考
+[`CURSOR_GROK_M3_M4总执行Prompt.md`](CURSOR_GROK_M3_M4总执行Prompt.md)，但该文档不得整体派发。
+
+派发边界：Prompt A 与 Prompt B 必须由用户、统筹或获授权领域经理分别直接派给两个平级执行者。收到任一
+Prompt 的 Worker、subagent 或外部 Agent 都不得自行启动、调用或委派另一外部 Agent；需要后续角色时应 STOP
+并回报原派发者。
 
 ## Prompt A：R1B 实现会话
 
 ```text
-你是本项目的外部实现 Agent。模型使用 cursor-grok-4.5-high（非 fast）。Cursor Agent 进程运行在 Windows，但所有项目命令必须进入 WSL：
+你是本项目的外部实现 Agent。模型统一使用 --model auto；不得指定或推断具体 Grok 型号。Cursor Agent 进程运行在 Windows，但所有项目命令必须进入 WSL：
 cd /mnt/g/BaiduSyncdisk/wsl/Cursor/quant
 主体命令使用 /home/mabw/miniforge3/bin/conda run -n base <command>；禁止 Windows Python/conda。
 
@@ -38,7 +43,7 @@ cd /mnt/g/BaiduSyncdisk/wsl/Cursor/quant
 ## Prompt B：R1B 独立初验新会话
 
 ```text
-你是未参与实现的外部独立初验 Agent。必须是全新 Cursor 会话；高风险审查使用 cursor-grok-4.5-high（非 fast）。Windows 只启动 Agent，所有项目命令在 WSL /mnt/g/BaiduSyncdisk/wsl/Cursor/quant 下用 WSL Miniforge base 执行，禁止 Windows Python/conda。
+你是未参与实现的外部独立初验 Agent。必须是全新 Cursor 会话并统一使用 --model auto；不得指定或推断具体 Grok 型号。Windows 只启动 Agent，所有项目命令在 WSL /mnt/g/BaiduSyncdisk/wsl/Cursor/quant 下用 WSL Miniforge base 执行，禁止 Windows Python/conda。
 
 本轮只审查 M3 G1-R1B。除创建 docs/framework/agent/M3_G1_R1B可恢复工作流服务骨架独立初验报告.md 外，生产代码、实现者测试、配置和其他文档全部只读。不得替实现者修复。
 

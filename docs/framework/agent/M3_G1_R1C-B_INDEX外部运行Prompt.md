@@ -1,7 +1,7 @@
 # M3 G1 R1C-B INDEX 外部运行 Prompt
 
 角色：外部真实运行 Agent（唯一数据写者）  
-模型：`cursor-grok-4.5-high`（非 fast）  
+模型：`--model auto`（不得指定或推断具体 Grok 型号）
 状态：用户已明确授权 INDEX；禁止启动 HISTORY
 
 ## 任务

@@ -1,7 +1,10 @@
-# M3/M4 Cursor Grok 交接清单
+# M3/M4 Cursor Auto 交接清单
 
 更新日期：2026-07-15  
-目标模型：Windows 原生 `cursor-agent` 的非 fast `cursor-grok-4.5-high`；简单、只读初验可由用户决定使用 `auto`。项目命令必须切换到 WSL 路径并使用 WSL Miniforge 环境。
+目标模型：Windows 原生 `cursor-agent` 的 `--model auto`；所有新实现与独立初验会话均统一使用 `auto`，不得指定或推断具体 Grok 型号。项目命令必须切换到 WSL 路径并使用 WSL Miniforge 环境。文件名为兼容既有链接保留。
+
+派发边界：本清单只供用户、统筹或获授权领域经理拆分并直接派发平级执行任务。Worker、其创建的 subagent
+以及任何外部 Agent 均不得依据本清单再启动、调用或委派另一个外部 Agent。
 
 ## 1. 开工前必读顺序
 

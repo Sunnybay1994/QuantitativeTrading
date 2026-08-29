@@ -1,7 +1,7 @@
 # M3 G1 R1C-B INDEX 独立复验 Prompt
 
 角色：全新外部独立复验 Agent（代码和数据只读）  
-模型：`cursor-grok-4.5-high`（非 fast）  
+模型：`--model auto`（不得指定或推断具体 Grok 型号）
 前置：INDEX 写入 Agent 已完全退出
 
 ## 任务边界

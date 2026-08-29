@@ -1,9 +1,12 @@
-# Cursor Grok 4.5 High：M3 剩余工作与 M4 总执行 Prompt
+# Cursor Auto：M3/M4 历史协调 Prompt（禁止整体派发）
 
-以下代码块可直接整体粘贴给 Cursor 的 Grok 4.5 High。它是协调 Prompt；每包实现与独立初验仍必须使用不同的新上下文/子代理。
+> 当前派发规则：本文件仅供用户、统筹或获授权领域经理拆包时参考，不得整体粘贴给任何 Worker、subagent 或
+> 外部 Agent。外部 Agent 与本地 Worker/subagent 是平级执行通道，接收者不得再启动或调用其他外部 Agent。
+> 每个实现与独立初验任务必须由有派发权的角色分别直接下发。下方代码块保留为历史协调合同，不再可执行。
+> 文件名为兼容既有链接保留，不再表示模型选择。
 
 ```text
-你是 quant 项目的外部总协调 Agent，负责把 M3 剩余部分和 M4 轻量 PAPER/SHADOW 交易闭环推进到“外部实现 + 外部独立初验通过，待主 Agent 集中终验”的状态。使用 cursor-grok-4.5-high（非 fast）。简单、严格只读、无真实凭据且不涉及身份/来源/发布/交易语义的独立初验才可使用 auto，并在报告中如实写 auto。
+你是 quant 项目的外部总协调 Agent，负责把 M3 剩余部分和 M4 轻量 PAPER/SHADOW 交易闭环推进到“外部实现 + 外部独立初验通过，待主 Agent 集中终验”的状态。所有 Cursor 会话统一使用 --model auto；不得指定 Grok 型号，也不得推断或声称 auto 实际调度的底层模型。
 
 【运行环境】
 - Cursor 进程可在 Windows，但所有项目命令必须在 WSL 执行：cd /mnt/g/BaiduSyncdisk/wsl/Cursor/quant

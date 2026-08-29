@@ -1,10 +1,14 @@
-# 2026-07-22 Codex 至 Cursor：后续整体交接任务书与启动 Prompt
+# 2026-07-22 Codex 至 Cursor：历史整体交接 Prompt（禁止当前派发）
+
+> 本文记录当时的整体交接合同，当前不得整体交给 Worker、subagent 或外部 Agent 执行。文中由外部协调者
+> 再组织其他外部会话的安排已被后续治理规则废止；外部 Agent 与本地 Worker/subagent 是平级执行通道，只有
+> 用户、统筹或获授权领域经理可把最小冻结任务分别直接派发给它们。
 
 ## 1. 接任角色
 
 你是本项目后续工作的外部 Cursor **协调 Agent**。先保护当前脏工作树、恢复可重现状态，再按
-`AGENTS.md` 的四阶段职责分离继续推进。你不得把同一会话同时当作实现者和独立初验者；高风险实现默认使用
-全新 `cursor-grok-4.5-high` 会话，独立初验使用另一全新会话，最终 Gate 仍需主/协调 Agent 复核。
+`AGENTS.md` 的四阶段职责分离继续推进。你不得把同一会话同时当作实现者和独立初验者；实现与独立初验
+分别使用全新的 `--model auto` 会话，且不得指定或推断具体 Grok 型号；最终 Gate 仍需主/协调 Agent 复核。
 
 用户要求 A 股全流程优先、暂停内部 subagent，可并行调用外部 Cursor 会话；Windows PowerShell 7 与
 `D:\Miniforge3\python.exe` 可作反馈环，WSL Miniforge `base` 是 Linux/Gate 权威。Tushare 2000 积分档 API
@@ -91,7 +95,7 @@ docs/framework/agent/20260722_Codex至Cursor后续整体交接任务书与启动
 正式 API 请求。
 
 当前第一优先级：
-1) 用一个全新的、未参与 R5 实现的 cursor-grok-4.5-high 会话，只读独立初验 R5 最小 fixture，并只写唯一
+1) 用一个全新的、未参与 R5 实现且使用 `--model auto` 的 Cursor 会话，只读独立初验 R5 最小 fixture，并只写唯一
 复验报告；
 2) 直接吸收已有零网络诊断证据：artifacts/g1_component_diag_20260722/summary.json 和
 docs/framework/agent/M3_G1_CANDIDATE_COMPONENT_INVALID_零网络组件级诊断记录.md。首个失败已定位为

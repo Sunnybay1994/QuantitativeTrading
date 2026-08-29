@@ -1,4 +1,8 @@
-# 2026-07-24 Windows 原生接任交接：任务书与启动 Prompt
+# 2026-07-24 Windows 原生接任交接：历史 Prompt（禁止当前派发）
+
+> 本文仅保留当时的接任证据。当前不得整体派给 Worker、subagent 或外部 Agent；文中外部协调者再组织其他
+> 外部会话的模式已废止。外部 Agent 与本地 Worker/subagent 平级，只能由用户、统筹或获授权领域经理分别
+> 直接派发冻结任务。
 
 > 交接点：上一外部 Cursor 协调会话 → **同一 Windows 工作区** 新会话接任继续跑。  
 > 环境已是 Windows（`F:\…` + `D:\Miniforge3\python.exe`），**不是**「再切到 Windows」。WSL2 本阶段仍先不管。  
@@ -90,7 +94,7 @@
    - **通过标准**：正式 stage 状态机绿灯 + 可复现日志；仍 **不** 自动宣称 Codex 终验。
 
 3. **职责分离**  
-   高风险实现 / 独立初验仍宜分会话（`cursor-grok-4.5-high`）；用户已授权协调者在 Windows 上直接解阻时，可直改但必须同步合同文档与测试。
+   高风险实现 / 独立初验仍宜使用不同的新会话，且统一使用 `--model auto`；用户已授权协调者在 Windows 上直接解阻时，可直改但必须同步合同文档与测试。
 
 4. **仍勿进入**  
    REFERENCE / PREPARE / PUBLISH（PUBLISH 需经探针的 WSL2 ext4；用户说先不管 WSL2）。

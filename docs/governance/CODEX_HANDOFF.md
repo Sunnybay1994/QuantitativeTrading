@@ -370,8 +370,15 @@
 - 按绿地项目处理：生产代码不得 import `archive/legacy_pre_greenfield/`；`data/legacy/` 不参与默认发现。
 - 代码、数据和产物分离：`src/`、`data/`、`artifacts/`、`archive/` 各自有明确职责。
 - 复杂里程碑采用“主 Agent 冻结任务书 → 外部实现 → 不同外部会话独立初验 → 主 Agent 终验”，初验失败必须返工复验。
-- 外部 `cursor-agent` 从 Windows 启动，但项目命令固定进入 WSL Miniforge；高风险任务使用非 fast
-  `cursor-grok-4.5-high`。
+- 外部 `cursor-agent` 从 Windows 启动，但项目命令固定进入 WSL Miniforge；所有新会话统一使用
+  `--model auto`，不得把旧任务文档中的固定 Grok 型号继续作为当前派发指令，也不得推断 `auto` 的底层模型。
+- 外部 Agent 与 Luna Worker、实现 subagent 属于平级执行通道。Worker 及其创建的 subagent 不得自行启动、
+  调用、恢复或委派外部 Agent；需要外部能力时必须 STOP 并回报原派发者，只能由用户、统筹或获授权领域经理
+  在冻结任务边界后直接派发。
+- 用户于 2026-08-30 重申领域边界：compiler/toolchain/parser/wrapper/capability fixture、流式大 JSON 证据工具
+  等工具性质开发统一归框架领域；投研经理只负责策略、因子、经济假设、PIT/回测合同与研究结论。此前待批的
+  M2 C1B compiler/wrapper 包转框架线重新冻结，投研线不得继续创建或执行；新框架包在另行授权前继续保持
+  no-network/install/download、无 C1A fallback、R3/exact9/data 未读且 large-input 未执行。
 
 ### 2.2 M1 数据层
 
