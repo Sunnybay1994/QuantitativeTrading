@@ -1,5 +1,35 @@
 # Codex 项目迁移交接
 
+### 2026-09-07 新统筹接管摘要（当前权威快照，覆盖下文旧停止点）
+
+- 用户已指定当前“项目统筹调度”任务接替原项目统筹/中央 Agent。框架、投研、GUI 三个领域经理已切换
+  协调入口；既有 taskbook、Worker/subagent、worktree、脏文件、证据以及 `STOP/LOCKED` 状态不变。
+  Git 管理的 `tasks/deliveries/reviews` 继续是生命周期权威，session/ACK/mapping 只作诊断。
+- 当前集成线为根 `main@3ac097f0b361de9e9078b079bae66fff6644a7b0`。投研经理先将既有研究报告与
+  R21 runner 任务书 exact2 收口为纯文档提交 `a7091e48d1e1c89a37d719141a173ac8f4b13a9f`；随后统筹把
+  GUI G1-D2 source `9144452b39a61212c389e1f0729e9176b2187813` 以 no-ff 合入 `3ac097f`。
+  合流后 GUI 定向 pytest 在项目内隔离 basetemp 为 `26 passed, 2 skipped`；两个 skip 分别受当前 Windows
+  symlink/只读 base 缺 Streamlit 条件约束，来源线既有受控环境 AppTest 证据仍为 `9 passed, 0 skipped`；
+  Ruff 与两生产文件 mypy 均通过。首次 pytest 的 26 个 setup error 全部来自系统 pytest 临时目录访问拒绝，
+  改用项目内 ignored basetemp 后闭合，不归类为产品失败。
+- GUI G1-D2、`governance-research-specific-tools-boundary` 与 `m2-s2-etf-voltarget-forward1` 三条已合流、
+  tracked clean、无正式 ignored evidence/占用进程的短来源线已 archive-first 退休；归档标签分别为
+  `archive/gui-g1-d2-run-search-20260907`、
+  `archive/governance-research-specific-tools-boundary-20260907` 和
+  `archive/m2-s2-etf-voltarget-forward1-20260907`。其他含 `agent_runs`、validation evidence、本地 formal config、
+  未合流提交或不明确 owner 的 worktree 全部保留，不为目录数量批量清理。
+- 当前投研第一业务队列是用户已明确授权的 exact11 ETF 截至 2026-08-31 价格与分红补齐：既有来源、
+  no-clobber 隔离 raw/candidate、完整历史重建与重叠/接缝/集合闭包验证；不得覆盖 canonical clean，
+  不运行回测、trial、PAPER 或交易。框架/data 经理负责形成任务包并向统筹申请 exact worktree、网络与数据
+  I/O 资源；投研经理负责经济口径与结果验收，不重复创建 writer。
+- R21 因子计算已经合流，但 runner 接入任务仍为 `DESIGN_PENDING_REVIEW_AND_PUBLIC_RECEIPT_API`；公共
+  attempt receipt、pre-label schedule、诊断 schema 与运行身份未闭合前，不读取未来收益 label、不执行经济
+  evaluation/publish。公共 receipt Windows successor 的唯一 Parser 门禁为 `PARSER_ERRORS=10 / exit 2`，
+  保持 `PRODUCT_NOT_EVALUATED`，旧链不得 patch、重试或另建 carrier。
+- M3 旧 retained 仍是 `terminal FAILED / LOCKED`，不恢复、不重跑、不清理；M4 真实 bootstrap、PAPER、
+  28 日 soak 与 Linux/ext4 Gate 均未被本次接管或 GUI 合流推进。当前没有 Python/pytest/data writer 长进程；
+  后续资源仍逐任务 fresh 核验与发锁。
+
 ### 2026-08-16 当前续写摘要（覆盖下文旧停止点）
 
 - 当前项目集成线为 `codex/project-integration@本文件所在提交`；物理 worktree 目录仍沿用历史名称
