@@ -70,6 +70,14 @@ R21 CLI仍必须在snapshot之前拒绝：snapshot verifier、repository reader�
 
 - 已合流公共receipt API及其Windows验证身份；start/terminal payload、run input顺序与恢复禁止合同。
 - pre-label schedule的exact terminal holding boundary及与现有label/evaluation日期网格的等价规则。
+  必须在读取收益前，以当时已知的calendar×eligibility形成逐日期网格，显式保留全市场eligibility为零的日期。
+  当前target builder按筛选后panel中存在的日期排序并每20个日期抽样；内部全市场缺日会压缩日期序列，
+  从而可能移动后续调仓日。不得静默把该行为称为每20个完整交易session，也不得让内部缺日隐式改变sampling。
+  最终采用既有eligible-date经济身份，还是严格session经济身份，仍须经理/中央在首次收益读取前裁定、
+  注册对应identity并绑定配置与日期计划；两者未被本次修订选定，不得观察收益后择优或混用。
+  必测完整calendar中第21/41位置及相邻位置全市场eligibility缺日：必须显式STOP，或按事前注册的
+  不同identity处理；不得以两个都已压缩的日期结果相等作为PASS。terminal尾部排除与内部缺日分别验证，
+  不借未来label/exit价格是否可用来补造pre-label日期计划。
 - R21原任务要求的component成员计数、pair coverage、null reason、残差增量、非微盘/Mainboard-VW、
   成交额及极端volume诊断的权威输入、schema、输出位置与不可得状态；因子值列不能冒充这些明细。
 - code dependency exact paths、report schema/selection metric、output集合与最终summary字段顺序。
@@ -104,3 +112,10 @@ run产物或消费holdout。exact命令、解释器、临时目录及资源在�
 独立零写设计初验指出两项需改：组装投影不能留给实现者选择，纯准备不得误开main入口。
 本次已补列序/唯一列来源/schema预期及五类I/O与经济调用0-call；原初验历史保留。
 schema实际fixture验证仍UNRUN，完整接入的第5节仍未闭合，不将本修订写成实现准入或最终REVIEW_PASS。
+
+本次共享写窗口基线为main `f8238471809915589d7f5a15378edc579f00acf5`。只读源码核对发现：
+`run_classic_factors.py`在label构造后按history/liquidity筛选panel；
+`classic_factor_evaluation.py`的target builder对panel存在日期取每20项，随后处理terminal边界。
+因此全市场内部eligibility缺日可能改变步长，两个同样压缩的计划一致不能证明严格session身份。
+本次仅第5节登记收益前待裁定身份及21/41位置反例，不修改实现，不认定已有运行发生了该问题；
+没有读取真实数据、运行Python或消费trial，测试仍UNRUN。
