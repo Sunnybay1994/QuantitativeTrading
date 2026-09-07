@@ -94,3 +94,29 @@ global cache0 或 Temp-absent。
 `R21_WINDOWS_PRODUCT_STAGES_PASS / CONTROL_CONTRACT_DEVIATION_RECORDED / CACHE_RETAINED / ECONOMIC_UNASSESSED / TRIAL0`。
 它不关闭 Linux Gate、不提供经济有效性证据，也不授权策略 run、PAPER 或 LIVE。追加前 delivery 4713 bytes 的
 UTF-8 raw prefix 保持逐字不变；本文件仍为历史追加，不伪造 V3/V4/V5 独立日志或完整合规证据。
+
+## 2026-09-07 自主接续：开发包合流与定向回归
+
+依据用户自主推进要求，源提交a3fc2d692b03345c5e52373f1c6ee45388db2ed7经新的只读独立上下文
+r21_integration_readiness_review复核：source parent即fresh main ab78a059044d49e2d8f3e94dd5b1087f55a9f86e，
+exact6全部新增、scope/diff及公共rank blob闭合，未发现合流冲突。静态review不替代以下运行证据。
+
+no-ff merge为f0f5b73c9de74283104f19069d52d32fdcd45e96，父提交精确为上述main和source；
+预测merge-tree与实际tree一致。保留源历史，不退休、不清理source证据/cache。
+新Windows开发回归root：artifacts/agent_runs/r21-integration-autonomous-20260907-1；
+temp：artifacts/validation_tmp/r21-integration-autonomous-20260907-1（保留）。
+
+- R21 unit、cross_sectional_rank unit及shared rank consumer integration：29 passed/196 warnings/2.92s，native0；
+- Ruff仅R21 production/test，显式--no-cache：native0；mypy仅R21 production、独立temp cache：native0；
+- chunk234458/f18465；summary SHA256=ea1319af0ecf4ad7dff912abee6cfab766295db26305f76a07c75a8ff9baca21；
+  manifest SHA256=9b2bd8a7dfbbd8b012a7035549c4c93ceed1054d754599b4f45b5199dde6915c；
+- BelowNormal/F00/threads2；finally恢复Normal/FFF、Python0；main scope/cached0/diff PASS，无经济I/O/trial。
+
+状态为R21_DEVELOPMENT_INTEGRATED_WINDOWS_VALIDATED / RUNNER_NOT_CONNECTED / ECONOMIC_UNASSESSED。
+目前run_classic_factors尚不接受eleventh catalog，也未接因子计算、固定方向、code/report身份及public receipt；
+配置存在不等于可运行。后续业务接线须单独冻结，并证明receipt missing/existing/drift时labels/evaluate均0-call。
+不允许仅加catalog白名单就运行，不把本29项fixture结果称为因子有效；Linux Gate与经济试验仍独立待验。
+
+新增独立只读文档/证据复核r21_integration_readiness_review返回PASS：29项结果、三阶段exit、summary/manifest摘要、
+Windows-only与runner未接/经济未评估边界一致。该review未重新执行测试或独立观测运行中资源采样；
+运行中资源边界由本次执行方负责，不能把静态复核扩称为另一次运行验证。
