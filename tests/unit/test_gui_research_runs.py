@@ -3,6 +3,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+from typing import Literal, Sequence, cast
 
 import polars as pl
 import pytest
@@ -11,6 +12,7 @@ from quant.gui.research_runs import (
     ResearchRunSummary,
     diagnose_research_run_comparison,
     discover_research_runs,
+    filter_research_runs,
     load_comparison_nav_projection,
     load_nav_projection,
     verify_research_run,
@@ -59,6 +61,7 @@ def _publish_run(
         ("fold_count", 1),
         ("net_sharpe", 0.75),
     ),
+    caveats: tuple[str, ...] = ("Research-only fixture.",),
     nav_payload: bytes | None = None,
     include_nav: bool = True,
 ) -> tuple[Path, Path]:
@@ -107,7 +110,7 @@ def _publish_run(
         ),
         outputs=(),
         aggregate_metrics=aggregate_metrics,
-        caveats=("Research-only fixture.",),
+        caveats=caveats,
     )
     outputs = {"report.json": b"{}"}
     if include_nav:
@@ -127,6 +130,224 @@ def _only_run(artifact_root: Path):  # type: ignore[no-untyped-def]
     assert catalog.issues == ()
     assert len(catalog.runs) == 1
     return catalog.runs[0]
+
+
+def test_filter_default_is_stable_and_preserves_order_and_identity(
+    tmp_path: Path,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    _publish_run(
+        tmp_path,
+        artifact_root=artifact_root,
+        case="filter-order-a",
+        strategy_name="filter_strategy_a",
+    )
+    _publish_run(
+        tmp_path,
+        artifact_root=artifact_root,
+        case="filter-order-b",
+        strategy_name="filter_strategy_b",
+    )
+    catalog = discover_research_runs(artifact_root)
+    all_conclusions = ("REJECTED", "RESEARCH_ONLY", "PAPER_CANDIDATE")
+    all_strategies = tuple(
+        run.manifest.strategy_name for run in catalog.runs
+    )
+
+    filtered = filter_research_runs(
+        catalog.runs,
+        conclusions=all_conclusions,
+        strategies=all_strategies,
+        query=" \t\n",
+        caveat_presence="ALL",
+    )
+
+    assert filtered == catalog.runs
+    assert all(
+        filtered_run is catalog_run
+        for filtered_run, catalog_run in zip(filtered, catalog.runs, strict=True)
+    )
+
+
+def test_filter_literal_query_matches_only_allowed_manifest_labels(
+    tmp_path: Path,
+) -> None:
+    artifact_root, _ = _publish_run(tmp_path)
+    run = _only_run(artifact_root)
+    choices = {
+        "conclusions": (run.manifest.conclusion,),
+        "strategies": (run.manifest.strategy_name,),
+        "caveat_presence": "ALL",
+    }
+    queries = (
+        run.manifest.run_id[:12].upper(),
+        run.manifest.hypothesis_id.upper(),
+        run.manifest.strategy_name.upper(),
+        run.manifest.strategy_version,
+        f"{run.manifest.strategy_name} {run.manifest.strategy_version}".upper(),
+    )
+
+    for query in queries:
+        filtered = filter_research_runs((run,), query=query, **choices)
+        assert filtered == (run,)
+        assert filtered[0] is run
+
+
+def test_filter_query_does_not_search_non_label_manifest_fields(
+    tmp_path: Path,
+) -> None:
+    artifact_root, _ = _publish_run(tmp_path)
+    run = _only_run(artifact_root)
+    choices = {
+        "conclusions": (run.manifest.conclusion,),
+        "strategies": (run.manifest.strategy_name,),
+        "caveat_presence": "ALL",
+    }
+
+    for query in (
+        "verified immutable evidence",
+        "research-only fixture",
+        run.manifest.config_relative_path,
+        run.manifest.config_sha256,
+        "net_sharpe",
+    ):
+        assert filter_research_runs((run,), query=query, **choices) == ()
+
+
+def test_filter_caveat_presence_is_exact_and_composable(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "artifacts"
+    _publish_run(
+        tmp_path,
+        artifact_root=artifact_root,
+        case="filter-present",
+        strategy_name="filter_strategy_present",
+        caveats=("present",),
+    )
+    _publish_run(
+        tmp_path,
+        artifact_root=artifact_root,
+        case="filter-absent",
+        strategy_name="filter_strategy_absent",
+        caveats=(),
+    )
+    catalog = discover_research_runs(artifact_root)
+    all_strategies = tuple(run.manifest.strategy_name for run in catalog.runs)
+
+    all_runs = filter_research_runs(
+        catalog.runs,
+        conclusions=("RESEARCH_ONLY",),
+        strategies=all_strategies,
+        caveat_presence="ALL",
+    )
+    present = filter_research_runs(
+        catalog.runs,
+        conclusions=("RESEARCH_ONLY",),
+        strategies=all_strategies,
+        caveat_presence="PRESENT",
+    )
+    absent = filter_research_runs(
+        catalog.runs,
+        conclusions=("RESEARCH_ONLY",),
+        strategies=all_strategies,
+        caveat_presence="ABSENT",
+    )
+
+    assert all_runs == catalog.runs
+    assert tuple(run.manifest.strategy_name for run in present) == (
+        "filter_strategy_present",
+    )
+    assert tuple(run.manifest.strategy_name for run in absent) == (
+        "filter_strategy_absent",
+    )
+    assert filter_research_runs(
+        catalog.runs,
+        conclusions=(),
+        strategies=all_strategies,
+    ) == ()
+    assert filter_research_runs(
+        catalog.runs,
+        conclusions=("RESEARCH_ONLY",),
+        strategies=(),
+    ) == ()
+    assert filter_research_runs(
+        catalog.runs,
+        conclusions=("RESEARCH_ONLY",),
+        strategies=("filter_strategy_present",),
+        query="filter_strategy_absent",
+        caveat_presence="PRESENT",
+    ) == ()
+
+
+def test_filter_preserves_duplicate_inputs_order_and_identity(tmp_path: Path) -> None:
+    _, selected, _ = _publish_comparison_runs(tmp_path)
+    repeated = (selected[1], selected[0], selected[1])
+
+    filtered = filter_research_runs(
+        repeated,
+        conclusions=("RESEARCH_ONLY",),
+        strategies=(
+            selected[0].manifest.strategy_name,
+            selected[1].manifest.strategy_name,
+        ),
+    )
+
+    assert len(filtered) == 3
+    assert filtered == repeated
+    assert all(
+        filtered_run is expected_run
+        for filtered_run, expected_run in zip(filtered, repeated, strict=True)
+    )
+
+
+def test_filter_rejects_invalid_caveat_mode_before_iterating() -> None:
+    class ExplodingRuns:
+        def __iter__(self):  # type: ignore[no-untyped-def]
+            raise AssertionError("invalid mode must fail before iterating runs")
+
+    with pytest.raises(ValueError, match="caveat_presence"):
+        filter_research_runs(
+            cast(Sequence[ResearchRunSummary], ExplodingRuns()),
+            conclusions=(),
+            strategies=(),
+            caveat_presence=cast(Literal["ALL", "PRESENT", "ABSENT"], "INVALID"),
+        )
+
+
+def test_filter_is_manifest_only_and_does_not_verify_or_access_run_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact_root, _ = _publish_run(tmp_path)
+    run = _only_run(artifact_root)
+
+    def fail_on_call(*_: object, **__: object) -> None:
+        raise AssertionError("overview filtering must not verify output or NAV")
+
+    for name in (
+        "verify_research_run",
+        "verify_research_run_comparison",
+        "load_nav_projection",
+        "load_comparison_nav_projection",
+        "_read_regular_bytes",
+    ):
+        monkeypatch.setattr(f"quant.gui.research_runs.{name}", fail_on_call)
+
+    class ForbiddenRunRoot:
+        def __getattr__(self, name: str) -> object:
+            raise AssertionError(f"filter accessed run_root.{name}")
+
+    isolated = ResearchRunSummary(
+        run_root=cast(Path, ForbiddenRunRoot()),
+        manifest=run.manifest,
+    )
+    filtered = filter_research_runs(
+        (isolated,),
+        conclusions=(run.manifest.conclusion,),
+        strategies=(run.manifest.strategy_name,),
+    )
+
+    assert filtered == (isolated,)
+    assert filtered[0] is isolated
 
 
 def _publish_comparison_runs(

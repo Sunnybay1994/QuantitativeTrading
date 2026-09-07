@@ -12,7 +12,7 @@ import re
 import stat
 from dataclasses import dataclass, fields
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal, Sequence, cast
+from typing import Any, Collection, Literal, Sequence, cast
 
 import polars as pl
 
@@ -64,6 +64,51 @@ class ResearchRunCatalog:
     runs_root: Path
     runs: tuple[ResearchRunSummary, ...]
     issues: tuple[CatalogIssue, ...]
+
+
+def filter_research_runs(
+    runs: Sequence[ResearchRunSummary],
+    *,
+    conclusions: Collection[str],
+    strategies: Collection[str],
+    query: str = "",
+    caveat_presence: Literal["ALL", "PRESENT", "ABSENT"] = "ALL",
+) -> tuple[ResearchRunSummary, ...]:
+    """Filter canonical run summaries without reading any run files."""
+    if caveat_presence not in ("ALL", "PRESENT", "ABSENT"):
+        raise ValueError(f"invalid caveat_presence: {caveat_presence!r}")
+    if not conclusions or not strategies:
+        return ()
+
+    normalized_query = query.strip().casefold()
+    filtered: list[ResearchRunSummary] = []
+    for run in runs:
+        manifest = run.manifest
+        if (
+            manifest.conclusion not in conclusions
+            or manifest.strategy_name not in strategies
+        ):
+            continue
+        has_caveats = bool(manifest.caveats)
+        if (
+            (caveat_presence == "PRESENT" and not has_caveats)
+            or (caveat_presence == "ABSENT" and has_caveats)
+        ):
+            continue
+        if normalized_query:
+            searchable = (
+                manifest.run_id,
+                manifest.hypothesis_id,
+                manifest.strategy_name,
+                manifest.strategy_version,
+                f"{manifest.strategy_name} {manifest.strategy_version}",
+            )
+            if not any(
+                normalized_query in value.casefold() for value in searchable
+            ):
+                continue
+        filtered.append(run)
+    return tuple(filtered)
 
 
 @dataclass(frozen=True)
@@ -1111,6 +1156,7 @@ __all__ = [
     "conclusion_counts",
     "diagnose_research_run_comparison",
     "discover_research_runs",
+    "filter_research_runs",
     "load_comparison_nav_projection",
     "load_nav_projection",
     "verify_research_run",

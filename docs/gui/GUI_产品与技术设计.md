@@ -7,7 +7,7 @@ GUI 是现有框架之上的“研究工作台 + 运维控制面”，不是第�
 
 1. 当前有多少份可读轻量研究运行，各自处于什么研究结论；
 2. 哪些运行清单自洽，哪些因损坏或危险路径被阻塞；
-3. 研究覆盖到什么日期，可按结论和策略怎样快速缩小范围；
+3. 研究覆盖到什么日期，可按结论、策略、清单标签与 caveat 是否存在怎样快速缩小范围；
 4. 选中运行的假设、时间语义、fold、成本压力、指标、caveat 和输出证据是什么。
 
 G0 的核心来源只有不可变 `run.json` 及其列出的精确输出。目录时间、UI 缓存、session state 和图表计算都不
@@ -17,8 +17,8 @@ G0 的核心来源只有不可变 `run.json` 及其列出的精确输出。目�
 
 ### G0 / G1 页面
 
-- **运行总览**：运行数、结论分布、最大 `data_end`、异常条目数；提供结论和策略两个高信号筛选器，以及
-  运行明细表。
+- **运行总览**：运行数、结论分布、最大 `data_end`、异常条目数；提供结论、策略、manifest 标签文字和
+  caveat 是否存在筛选，以及运行明细表。筛选只改变投影，不改变顶部全量 catalog 卡片。
 - **运行详情**：展示假设、策略/版本、universe、数据窗口、`close → next_session_open → close`、fold、
   成本倍数、聚合指标、caveat、input/output 摘要。
 - **证据钻取**：用户显式触发输出完整性校验；只有通过后才加载 1.0× 成本 NAV 曲线和有限明细。
@@ -147,10 +147,28 @@ manifest output 末字节后精确 fail-closed，且不产生关系面板资格�
 文件 SHA-256 未变，临时根和进程已清理，因此 G1-D1 验收闭合并可形成 exact 7 路径安全提交。该证据不是
 既存坏 run；浏览器、全量回归与 WSL Gate 仍未运行。
 
+## 5.3 G1-D2 运行总览检索合同
+
+G1-D2 只在现有 canonical `ResearchRunSummary` 上增加运行总览的轻量检索，不建立第二份 manifest parser 或
+索引。`filter_research_runs` 是唯一纯筛选入口：结论和策略使用 manifest 值的 exact membership，空选择直接
+返回空 tuple；输入运行按原序单次遍历返回，并保持 `ResearchRunSummary` 对象 identity。
+
+文字检索先对用户 query 做 `strip().casefold()`，然后只做 literal substring 匹配。可搜索值严格限定为
+`run_id`、`hypothesis_id`、`strategy_name`、`strategy_version` 和
+`strategy_name strategy_version`；不搜索 hypothesis 正文、caveat 内容、路径、digest、metric、input/output
+或 NAV。空白 query 等同于空 query。caveat 过滤的机器值严格为 `ALL`、`PRESENT`、`ABSENT`，分别表示不筛选、
+`manifest.caveats` 非空和为空；非法值立即抛出 `ValueError`。
+
+总览保留结论、策略 multiselect 的标签、默认值和语义，新增 `搜索运行`（最多 128 字符）与 `Caveat` 单选
+（用户标签为 `全部`、`仅有 caveat`、`仅无 caveat`）。六张 KPI 卡始终统计完整 canonical catalog；表格上方
+同时显示当前匹配数与 catalog 总数。纯筛选路径不触发 output verifier、NAV projection、hash 或运行产物读取，
+不使用 session state、cache、query parameter 或隐藏状态；无匹配时只显示清晰空态，不表达优先级、质量、排名、
+推荐或准入结论。
+
 ## 6. UI 与运行安全
 
 - 页面持续显示“只读、无 PAPER/LIVE 权限”；不出现暗示可晋级或交易的主按钮。
-- 普通筛选器只改变投影；完整性校验是显式动作，但仍无外部写副作用。
+- 普通筛选器只改变投影并只消费 canonical manifest 摘要；完整性校验是显式动作，但仍无外部写副作用。
 - 不用 `st.session_state`、缓存或 MLflow tag 保存权威运行状态；G0/G1 不启用缓存。
 - Streamlit rerun 只重做有界只读操作；长数据任务、训练和回测未来必须提交到外置、持久化 worker。
 - G0/G1 不 import 任一 M2 `run_*` 私有 helper，也不复制策略、回测或准入逻辑；后续运行入口只接另行冻结的
