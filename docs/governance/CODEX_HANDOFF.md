@@ -23,17 +23,18 @@
   不运行回测、trial、PAPER 或交易。框架/data 经理负责形成任务包并向统筹申请 exact worktree、网络与数据
   I/O 资源；投研经理负责经济口径与结果验收，不重复创建 writer。
   初始任务书已以 `f8238471809915589d7f5a15378edc579f00acf5` 进入 main；唯一 source worktree 为
-  `codex/m2-etf-exact11-isolated-total-return-backfill-r1@b9c64e164bd309ff0f30e59060e0abcfb130d016`，
+  `codex/m2-etf-exact11-isolated-total-return-backfill-r1@c06b77632cf65db90d39d5897c664f372a2d9736`，
   其 Phase1A 已冻结 calendar/clean/static 只读输入、raw 路径二阶段申请和独立 exact6 no-clobber evidence
   合同。当前仍未授 Python/CPU、真实 data read、network 或执行；没有可直接复用的现成 inventory CLI，
-  framework/data 经理正准备最小 runner/tests 写集与资源申请，投研经理独立只读复核 Phase1A。
+  最小 runner/tests exact2 已冻结，并由 framework/data 经理派给唯一现有 Luna Worker 1 的新隔离 subagent
+  做 `STATIC_ONLY` 实现；验证、真实 Phase1A data read 与 network 仍未授权。
 - R21 因子计算已经合流，但 runner 接入任务仍为 `DESIGN_PENDING_REVIEW_AND_PUBLIC_RECEIPT_API`；公共
   attempt receipt、pre-label schedule、诊断 schema 与运行身份未闭合前，不读取未来收益 label、不执行经济
   evaluation/publish。公共 receipt Windows successor 的唯一 Parser 门禁为 `PARSER_ERRORS=10 / exit 2`，
   保持 `PRODUCT_NOT_EVALUATED`，旧链不得 patch、重试或另建 carrier。
-  投研经理已在 main `216c1977f824b871dcaba1308cafa9a0278d8e69` 补充内部全市场 eligibility 缺日的
-  schedule identity 反例，并给出“R21 新 strict canonical-session identity、旧 batch 不迁移”的只读建议；
-  该建议尚未由中央裁定，不构成实现或经济运行授权。
+  投研经理先在 `216c1977` 补充内部全市场 eligibility 缺日反例；中央随后采纳“R21 新 strict
+  canonical-session identity、旧 batch 不迁移”的设计，并由 `73a1bb01767435d401bf671f0d939b2a84bfc54b`
+  写回任务书。该裁定只关闭 schedule 设计歧义，不构成公共 receipt、实现或经济运行授权。
 - M3 旧 retained 仍是 `terminal FAILED / LOCKED`，不恢复、不重跑、不清理；M4 真实 bootstrap、PAPER、
   28 日 soak 与 Linux/ext4 Gate 均未被本次接管或 GUI 合流推进。当前没有 Python/pytest/data writer 长进程；
   后续资源仍逐任务 fresh 核验与发锁。
