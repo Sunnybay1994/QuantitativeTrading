@@ -26,8 +26,10 @@
   `codex/m2-etf-exact11-isolated-total-return-backfill-r1@c06b77632cf65db90d39d5897c664f372a2d9736`，
   其 Phase1A 已冻结 calendar/clean/static 只读输入、raw 路径二阶段申请和独立 exact6 no-clobber evidence
   合同。当前仍未授 Python/CPU、真实 data read、network 或执行；没有可直接复用的现成 inventory CLI，
-  最小 runner/tests exact2 已冻结，并由 framework/data 经理派给唯一现有 Luna Worker 1 的新隔离 subagent
-  做 `STATIC_ONLY` 实现；验证、真实 Phase1A data read 与 network 仍未授权。
+  最小 runner/tests exact2 已冻结。framework/data 经理向唯一现有 Luna Worker 1 派发并按中央裁定向同一
+  Worker 最短重发一次，两次 turn 都以空 items 结束，未创建可确认的隔离 subagent、diff 或 delivery；当前
+  状态为 `DISPATCH_NO_PROGRESS / STOP`，不是实现失败。禁止第三次重发、替换 Worker 或由顶层接管代码；
+  验证、真实 Phase1A data read 与 network 仍未授权。
 - R21 因子计算已经合流，但 runner 接入任务仍为 `DESIGN_PENDING_REVIEW_AND_PUBLIC_RECEIPT_API`；公共
   attempt receipt、pre-label schedule、诊断 schema 与运行身份未闭合前，不读取未来收益 label、不执行经济
   evaluation/publish。公共 receipt Windows successor 的唯一 Parser 门禁为 `PARSER_ERRORS=10 / exit 2`，
