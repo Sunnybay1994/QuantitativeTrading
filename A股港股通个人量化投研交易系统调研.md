@@ -492,7 +492,7 @@ flowchart LR
 Python 3.13，因此不采用不受支持的 Qlib 源码硬装。`py312` 是当前需要 Python 3.12 的工具隔离环境，已完成
 Qlib 0.9.7 官方 wheel、关键 import、依赖与 readiness 验收；完整数据/provider Gate 尚未运行。具体通用环境
 边界、G0/G1 决策、工具哈希和取数计划见
-[`docs/framework/M3实施与Agent交接.md`](docs/framework/M3实施与Agent交接.md)。
+[`docs/archive/2026-07至09_多Agent治理期/framework/M3实施与Agent交接.md`](docs/archive/2026-07至09_多Agent治理期/framework/M3实施与Agent交接.md)（已归档冻结）。
 
 ### 4.8 港股通名单与日历的落地口径（2026-07-11）
 

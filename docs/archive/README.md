@@ -1,5 +1,9 @@
 # 已归档项目文档
 
-本目录保存已被更细、更新的任务书替代的历史规划。它们仅用于追溯决策演化，不是当前实现依据。
+本目录只保存历史材料，用于追溯决策演化；**不是任何当前规则、任务或状态的依据**。
 
-当前工作请从 [`../README.md`](../README.md)、[`../CODEX_HANDOFF.md`](../governance/CODEX_HANDOFF.md) 和 [`../M3实施与Agent交接.md`](../framework/M3实施与Agent交接.md) 进入；详细过程证据位于 [`../agent/`](../governance/README.md)。本目录中的状态总览、任务书和协调材料均为历史证据，不再作为当前执行入口。
+- [`2026-07至09_多Agent治理期/`](2026-07至09_多Agent治理期/README.md)：旧 AGENTS、旧路线图、多 Agent 治理规范、
+  约 1,200 份任务书/交付/审查/验收报告、GUI 与 formal 身份方法论。
+- `agent-history/`、`M3_*任务单.md`：更早的 M3 任务书与状态总览。
+
+当前工作从 [`../START_HERE.md`](../START_HERE.md) 进入。

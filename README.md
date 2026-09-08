@@ -7,13 +7,13 @@
 
 | 文档 | 内容 |
 |---|---|
-| [AGENTS.md](AGENTS.md) | 智能体行为、代码协作、SSOT 与文档同步准则 |
+| [docs/START_HERE.md](docs/START_HERE.md) | **新 Agent 从这里开始**：环境、入口、启动 prompt |
+| [AGENTS.md](AGENTS.md) | 智能体行为准则（v2：单 Agent、业务优先、反过度工程化） |
+| [项目实施路线图.md](项目实施路线图.md) | 当前阶段目标、本周任务、冻结清单、结果台账（v4） |
 | [A股港股通个人量化投研交易系统调研.md](A股港股通个人量化投研交易系统调研.md) | 技术选型依据与模块设计("为什么") |
-| [项目实施路线图.md](项目实施路线图.md) | M0–M5 里程碑与验收标准("何时做、做到什么程度") |
-| [正式产物身份、数据溯源与可复现性方法论.md](正式产物身份、数据溯源与可复现性方法论.md) | 产物身份方法、能力边界与研究快线/formal 稳线的取舍 |
-| [docs/README.md](docs/README.md) | 顶层文档、Agent 过程证据和归档文档导航 |
-| [docs/framework/M3实施与Agent交接.md](docs/framework/M3实施与Agent交接.md) | M3 模块、函数契约、可分派任务包与 G0–G9 验收矩阵 |
-| [docs/framework/M3_M4实施总规划.md](docs/framework/M3_M4实施总规划.md) | M3 剩余关键路径、M4 纸面交易闭环与 Grok 分包顺序 |
+| [docs/research/研究流程精简版.md](docs/research/研究流程精简版.md) | 一个假设怎么从想法到结论 |
+| [docs/项目审查与流程重构报告_20260908.md](docs/项目审查与流程重构报告_20260908.md) | 2026-09-08 流程诊断与重构决定 |
+| [docs/archive/](docs/archive/2026-07至09_多Agent治理期/README.md) | 2026-07 至 09 多 Agent 治理期的全部历史文档，只读 |
 
 ## 目录结构
 
@@ -37,8 +37,7 @@ quant/
 ├─ tests/                    # unit / integration / fixtures(黄金数据集)
 ├─ data/                     # raw / clean / features / qlib / legacy(不进 Git)
 ├─ artifacts/                # 回测、模型、报告及历史实验产物(不进 Git)
-├─ docs/                     # 顶层入口；agent/ 过程证据；archive/ 历史文档
-└─ archive/                  # 绿地重建前旧代码/Notebook；生产代码不得引用
+└─ docs/                     # START_HERE、研究流程与假设卡(research/)、历史归档(archive/)
 ```
 
 ## 架构铁律
@@ -53,21 +52,22 @@ quant/
 
 ## 快速开始
 
-```bash
-# Gate / 平台特有终验：WSL Miniforge base（Python >= 3.10）
-conda activate base
-pip install -e ".[dev]"          # 核心 + 测试
-pip install -e ".[data]"         # M1:Tushare + 免费校验源
-pip install -e ".[research]"     # M3:MLflow/LightGBM/QuantStats
-# 主体仍使用 base；版本不兼容工具仅按 AGENTS.md §8 的独立环境规则执行。
-# Qlib 0.9.7 已在 py312 验收；不要在 base 安装，相关命令使用：
-# /home/mabw/miniforge3/bin/conda run -n py312 <command>
+唯一运行环境：Windows 原生 Miniforge（`D:\Miniforge3\python.exe`，Python 3.13）。WSL / Linux Gate /
+py312 环境已冻结，不再是任何任务的验收条件。
 
-python -m pytest -q              # 运行契约单测
+```powershell
+cd F:\AI_Coding\QuantitativeTrading
+$env:PYTHONPATH = "F:\AI_Coding\QuantitativeTrading\src"
+D:\Miniforge3\python.exe -m pip install -e ".[dev,data,research]"   # 首次或依赖变化时
+D:\Miniforge3\python.exe -m pytest tests/unit/test_lightweight_research_run.py -q   # 冒烟
 
-# Windows 普通开发反馈环（不替代 WSL Gate）：
-# D:\Miniforge3\python.exe -m pytest tests/unit/test_m3_journal_lock.py -q
+# ETF 策略 walk-forward
+D:\Miniforge3\python.exe -m quant.research.run_s1_walk_forward --config configs/research/m2_s2_volatility_target.toml
+# 全市场因子评估
+D:\Miniforge3\python.exe -m quant.research.run_classic_factors --config configs/research/m2_classic_daily_factors.toml --threads 8
 ```
+
+下文的 M1/M3 CLI 说明是历史能力记录，其中 M3 G1 与港股通部分已冻结（见路线图 §3）。
 
 ### M3 G1 工作流 CLI（R1C）
 
@@ -186,7 +186,7 @@ python -m quant.data.tushare_bulk probe --priority all --requests-per-minute 100
 
 全量初始化先生成脱敏权限报告和 dry-run 计划；在计划仍标记
 `historical_download_authorized=false` 时不得直接启动历史下载。完整分层、增量和资源方案见
-[`M2_DATA_R1_Tushare全量初始化与增量数据方案.md`](docs/research/agent/M2_DATA_R1_Tushare全量初始化与增量数据方案.md)。
+[`M2_DATA_R1_Tushare全量初始化与增量数据方案.md`](docs/archive/2026-07至09_多Agent治理期/research/agent/M2_DATA_R1_Tushare全量初始化与增量数据方案.md)。
 
 P1 raw 回补使用共享 SQLite ledger；`prepare` 只生成确定请求，`run` 每次执行有界数量，完整 raw 已存在时
 只验真而不再次联网：
@@ -435,13 +435,14 @@ python -m quant.data.query_universe \
 
 沪港通没有与深交所同等稳定的逐日机器接口，因此使用版本化、人工复核的上交所年度公告配置叠加沪市基础日历生成；配置保留公告 URL、文号、发布日期、全日及半日例外。深港通仍直接使用深交所机器接口，两条路由互不冒充。日历审计会检查双路由差异，以及港股通开通但内地或香港基础市场休市的非法状态。
 
-## 当前状态（2026-08-15）
+## 当前状态（2026-09-08）
 
-策略研究是当前前台主线。M1 已完成 Windows A 股/ETF 与 HK60 不复权研究数据闭环：v2c journal 8/8、v3 发布 36,361 行，SH/SZ mixed available-history 均为 0 missing/0 unexpected；licensed 港股公司行动、复权/总回报和港股 PAPER 保留为第二波。M3 的资源受限 honest 300 public CLI 已完整通过首发、completed resume、零写边界与 teardown，并正在补两折 retained summary/reproducibility 证据。M4 已完成 Windows formal runtime/policy/account、broker/OMS store、只读 broker snapshot、gateway dispatch、ExecutionService composition、verified schedule 与 operator runner；真实 PAPER 与 28 日 soak 仍等待 `PAPER_CANDIDATE` 和当日 receipt-backed opening facts。Linux/ext4 按用户指示暂不纳入当前完成范围。
-
-下面保留 2026-08-13 的详细阶段快照供审计；其中关于 honest CLI 与 UA-M4-003 的停止点已由上段终态覆盖。
-
-M0 已通过验收；M1 已完成 Windows A 股/ETF 主闭环、双路由港股通事实、五日自然调度和 HK60 mixed-source 不复权研究行情闭环；HK licensed 公司行动与复权/总回报属于未来 formal 第二波。M2 的数据契约、策略接口、统一日频回测、walk-forward、成本压力、轻量不可覆盖 `run.json` 和目标缺口诊断已经达到**投研框架 MVP 完成**；策略研究已拆到独立 worktree，可与本集成线并行。Tushare 股票/基金日线及复权因子四类历史 raw 已闭合，逐行互斥的版本化 clean snapshot 已真实发布并完成 no-clobber 重放；它尚未自动替换任何策略或 PAPER source selector。研究、PAPER 和 formal 复用同一 Schema、市场规则、费用和账户计算；候选晋级时通过正式入口受控重跑，不能把轻量产物原地冒充正式产物。M3 已具备 Windows G1 正式发布物、G2–G7 formal artifact/fresh verifier、G8 StageRunner/tracking/reproducibility 与 fake full DAG，G9A–G9G 的 Windows fake 工程闭包已完成；honest 300 证券、三成本场景 public CLI 已在最终 revision 上完成同一次首发与 completed resume。M4 formal runtime/policy/binding/account/store、snapshot、gateway、service、schedule 和 operator runner 已完成 Windows 工程闭环；第一波 A 股/ETF PAPER 仍等待策略会话提供首个 `PAPER_CANDIDATE` 和真实 clean opening facts，任务注册、真实启动及 28 日 soak 受 `UA-M4-002` 的既有授权与前置事实共同约束。`py312` 已验收 Qlib 0.9.7 兼容性且 base 未变；Linux/ext4 当前按用户指示暂不实施。详见[路线图](项目实施路线图.md)、[方法论](正式产物身份、数据溯源与可复现性方法论.md)和[持续审批事项](docs/governance/用户待批示与参与事项.md)。研究阶段可使用本地 ignored Tushare token，启用实盘前必须轮换。
+项目于 2026-09-08 从多 Agent 分层治理切换为单 Agent 业务优先模式。可用资产：A 股全市场日线/复权因子/`daily_basic`
+（至 2026-08-14）、11 只 ETF 总回报研究价格（至 2026-07-10，待补齐）、177,184 个财务请求 raw（待发布 clean）、
+统一日频事件回测器、ETF 与全市场因子两个 walk-forward 入口、37 个不可覆盖研究 run。尚无策略进入模拟盘，
+尚无实盘。当前阶段目标（至 2026-09-30）：数据补到最新、按预注册规则选出首个 `PAPER_CANDIDATE` 或以 S0 等权
+进入每日模拟盘并产出手工订单清单。详见[路线图](项目实施路线图.md) §0–§1。M3 Qlib formal 链、港股通、
+Linux/WSL Gate、GUI、receipt/identity 体系已冻结（路线图 §3）。研究阶段可使用本地 ignored Tushare token，启用实盘前必须轮换。
 
 ## M2 基线策略（工程闭环完成，策略有效性继续观察）
 
@@ -606,7 +607,7 @@ python -m quant.reporting.quantstats_report \
 `artifacts/research/m2/s0/`，其中 `quantstats/` 保存两份 HTML tear sheet。
 QuantStats 是 `research` 可选依赖，不进入交易运行时依赖。统一日频事件模拟器已覆盖 ETF/股票涨跌停拒单、
 股票 T+1、停牌估值和版本化费用压力；成本参数仍是研究假设，真实券商账单校准属于后续 M4 运维边界。详见
-[`M2 U1 最终验收报告`](docs/research/agent/M2_U1统一股票ETF日频事件模拟器主Agent最终验收报告.md)。
+[`M2 U1 最终验收报告`](docs/archive/2026-07至09_多Agent治理期/research/agent/M2_U1统一股票ETF日频事件模拟器主Agent最终验收报告.md)。
 S0 的数据与收益口径由下述独立指数检查验收。
 
 独立指数校验使用中证指数官方 2026-03-31 事实表的沪深300 YTD `-3.89%`。
