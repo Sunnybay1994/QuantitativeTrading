@@ -66,18 +66,24 @@ R21 CLI仍必须在snapshot之前拒绝：snapshot verifier、repository reader�
 6. 复用既有成本/evaluator/coverage/冗余计算，不把references的无效值变为候选替补，不填未来null outcome。
    h1/h5只诊断，h20主口径及原R21任务要求不得被容易通过的新门禁替代。
 
-## 5. 待冻结项（未闭合前不得派完整实现）
+## 5. 已冻结schedule与剩余待冻结项（未闭合前不得派完整实现）
 
 - 已合流公共receipt API及其Windows验证身份；start/terminal payload、run input顺序与恢复禁止合同。
-- pre-label schedule的exact terminal holding boundary及与现有label/evaluation日期网格的等价规则。
-  必须在读取收益前，以当时已知的calendar×eligibility形成逐日期网格，显式保留全市场eligibility为零的日期。
-  当前target builder按筛选后panel中存在的日期排序并每20个日期抽样；内部全市场缺日会压缩日期序列，
-  从而可能移动后续调仓日。不得静默把该行为称为每20个完整交易session，也不得让内部缺日隐式改变sampling。
-  最终采用既有eligible-date经济身份，还是严格session经济身份，仍须经理/中央在首次收益读取前裁定、
-  注册对应identity并绑定配置与日期计划；两者未被本次修订选定，不得观察收益后择优或混用。
-  必测完整calendar中第21/41位置及相邻位置全市场eligibility缺日：必须显式STOP，或按事前注册的
-  不同identity处理；不得以两个都已压缩的日期结果相等作为PASS。terminal尾部排除与内部缺日分别验证，
-  不借未来label/exit价格是否可用来补造pre-label日期计划。
+- 中央已选定R21新schedule身份：strict canonical-session，不再保留eligible-date作为本次可选执行方案。
+  权威SH/SZ共同calendar必须独立验证；现有bars日期union不得冒充canonical calendar。
+  每fold在任何eligibility筛选前，以首个test canonical session锚定，计划index为0、20、40……；
+  S为权威session序列，i为该计划signal在S中的位置，entry=S[i+1]，h20 exit=S[i+21]。
+  只排除无完整holding或exit超过test_end的连续尾部，不缩短holding，不因内部hole重新确定相位。
+  pre-label已知calendar×eligibility日期网格必须完整显式保留；仅当其与canonical测试日期网格一致时
+  才可复用现有builder。内部全市场eligibility缺日STOP；个别证券缺失只进入成员/coverage，不缩日历。
+  计划日候选不足冻结数量不得以continue冒充成功，不替补缺失outcome、不跳期、不前填。
+  日历identity、fold锚、step、universe、eligibility/date-grid摘要、planned与excluded-tail日期，
+  连同config/cost/code必须在收益读取前闭合并绑定attempt start；不借future labels或exit价格可用性反推计划。
+  R21须在首次收益读取前注册该新schedule identity并绑定配置；具体序列化/API身份仍随公共receipt准入冻结，
+  不由本次文档猜接口。旧batch/旧run不迁移、不重标，跨口径比较另立任务，不观察收益后切换方案。
+  必测完整calendar中第21/41位置及相邻位置的全市场eligibility缺日：本身份必须STOP，不移动后续调仓日；
+  两个都已压缩的日期结果相等不是PASS。另验单只缺日不缩日历、fold首日不能延后锚定、
+  exit恰等test_end保留/超界仅裁连续尾部，内部hole与尾部必须分别判定。
 - R21原任务要求的component成员计数、pair coverage、null reason、残差增量、非微盘/Mainboard-VW、
   成交额及极端volume诊断的权威输入、schema、输出位置与不可得状态；因子值列不能冒充这些明细。
 - code dependency exact paths、report schema/selection metric、output集合与最终summary字段顺序。
@@ -119,3 +125,8 @@ schema实际fixture验证仍UNRUN，完整接入的第5节仍未闭合，不将�
 因此全市场内部eligibility缺日可能改变步长，两个同样压缩的计划一致不能证明严格session身份。
 本次仅第5节登记收益前待裁定身份及21/41位置反例，不修改实现，不认定已有运行发生了该问题；
 没有读取真实数据、运行Python或消费trial，测试仍UNRUN。
+
+2026-09-08中央在main `f52b5792546f709a46bee5941ba65fbaf5bd4b7c` 的exact1写窗口采纳严格session方案。
+本次仅更新第5节及本记录，前述“待裁定”是历史状态，现由严格canonical-session新身份裁定替代。
+公共receipt API、完整接入其他明细及独立实现准入仍未闭合；本裁定不授权data读取、labels、evaluate、publish
+或trial，不改变旧batch。测试、真实日历/eligibility网格核验仍UNRUN，不把设计裁定写成运行验证通过。
