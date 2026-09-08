@@ -106,9 +106,10 @@ Worker 只执行已经冻结的具体任务，不决定业务路线或扩大架�
 - 每个 `task_id` 在任一时刻只能绑定一个 Luna Worker、一个实现 subagent 和一个 worktree。未经明确 STOP、
   身份闭包和统筹重分配，不得把同一任务同时派给另一个 Luna Worker；
 - 多个任务只有在依赖已满足、写路径互斥且资源窗口允许时才可并行；否则顺序执行；
-- 顶层 turn 在创建 subagent 并把任务书路径交给它后即可结束并恢复 idle，不等待 subagent 完整结束；
-- subagent 在分配的交付报告路径记录实现、验证、STOP、资源请求和剩余风险。完成后只需向领域经理发送
-  `DELIVERY_READY <path>` 或等价短提示并退出，不长期保持 `active`；
+- 顶层 turn 在创建 subagent 时传入自己的准确父任务 thread ID 和交付路径；确认子任务可用的主动通知
+  通道后即可结束并恢复 idle，不要求持续等待 subagent 完整结束；
+- subagent 在分配的交付报告路径记录实现、验证、STOP、资源请求和剩余风险。先完成报告，再按下述
+  主动通知协议向原父任务发送一次短提示并退出，不长期保持 `active`；父任务收件后推进领域验收；
 - Worker、Luna 顶层 session 及其创建的任何 subagent 均不得自行启动、调用、委派、恢复或要求外部 Agent
   接续工作，也不得把外部 Agent 当作自己的下级 reviewer/implementer。认为任务需要外部能力时必须 STOP，
   将需求和最小边界提交原派发者，由用户、统筹或获授权领域经理另行决定是否直接派发平级外部 Worker。
@@ -142,6 +143,21 @@ resource=STATIC_ONLY|RESOURCE_GRANTED
 Worker 开始后可立即创建交付报告并标记 `IN_PROGRESS`，随后在同一文件更新 `RESOURCE_WAIT / STOP / DELIVERED`、
 changed paths、验证结果、真实证据边界和残留。完成时发送 `DELIVERY_READY <path>`；领域经理读取文档验收，不要求
 Worker 回传完整日志或维持额外状态心跳。
+
+默认采用“交付后主动通知”，不单独依赖 subagent final 的自动转交：
+
+- 派发者传入准确的父任务 ID；这是通知路由，不新增 ACK/mapping Gate，不猜测或借用其他任务 ID。
+- subagent 先写完获批交付/STOP 报告，再使用可调用的 `send_message_to_thread` 向原父任务发送一次
+  `DELIVERY_READY <task_id> <absolute-report-path>` 或 `STOP <task_id> <absolute-report-path>`。
+  消息请求原父任务读取报告并继续已获授权的下一步，不包含完整日志，不另行派发实现。
+- 父任务收到后先核对报告版本和实际证据；若该版本已处理，不重复执行。Worker 顶层向原领域经理的
+  收件通知沿用同一原则；不广播给全部 session，不要求 ACK，不等待消息确认后才退出。
+- `send_message` 仅作为运行中父 agent 的消息通道，不能假定它会唤醒已结束的顶层任务。若子任务没有
+  可唤醒父任务的工具，父任务不得仅靠提前结束 turn 等通知：改用有界等待和一次原子任务/报告核对。
+- 通知明确失败时保留失败事实并返回报告路径，由原父任务做一次定向补救；超时或结果不明先核收件，
+  不盲目重发、不重跑交付任务、不创建替代 Worker。安全拒绝不得换通道绕过。
+- 默认不设置常驻 heartbeat、不作空轮询；仅在通知异常时启用必要的只读核对。通知是续办触发器，
+  不替代文档验收，也不证明资源已释放；资源释放仍核对应 child/进程退出及实际占用。
 
 #### 2.4.2 轻量活性观察与异常处理
 
