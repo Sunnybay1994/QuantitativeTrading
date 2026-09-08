@@ -250,3 +250,125 @@ schema实际fixture验证仍UNRUN，完整接入的第5节仍未闭合，不将�
 `636cf4fff98b9bda3d4d35c475cd4210a8db00e7`授exact1窗口，本次仅澄清5.1及本历史，
 保留原P2结论，补专属拒绝与故障注入反例；提交后交同reviewer零写复验。
 本次仅静态hygiene/diff检查，未实施trace、运行Python/测试、读取data或消费trial。
+
+## 8. SinglePassTrace最小实现准入
+
+2026-09-08同一独立设计reviewer复验DESIGN_REVIEW_PASS / P0=0 / P1=0 / P2=0，关闭唯一P2；
+该结论是设计审查，不是运行验证。实现完整引用5.1三表、flags、专属拒绝及兼容性合同，不复制公式。
+统筹冻结base `eba75446b6a8dbcb1c3d3f9cffbadbb0b5a2f64a`，branch `codex/m2-r21-single-pass-trace`，
+source `F:\AI_Coding\QuantitativeTrading\artifacts\dev_worktrees\m2-r21-single-pass-trace`。
+这是第6节之外单独批准的窄factor trace包，不授权完整runner接入或宣称R21最终目标完成。
+
+经理先仅提交本文；随后Luna Worker 3（01a03730-623a-7fd3-b4c4-6f3ad99c97c5）创建唯一隔离实现subagent。
+实现只写并可提交exact3：
+
+- `src/quant/factors/classic_eleventh_batch.py`
+- `tests/unit/test_classic_eleventh_batch.py`
+- `docs/research/deliveries/M2_R21_SinglePassTrace交付报告.md`
+
+原独立审查上下文另仅写`docs/research/reviews/M2_R21_SinglePassTrace独立初验报告.md`；实现者不得写review。
+同模块公共导出允许；不修改__init__、runner、receipt、labels、rank helper、配置或其他路径。
+不借用或替换ETF实现者，不创建第二现场；主线只读。任务书提交后实现阶段只读。
+
+允许source cwd内Windows fixture-only定向验证，解释器固定`D:\Miniforge3\python.exe`，
+单进程，`POLARS_MAX_THREADS=2`、`OMP_NUM_THREADS=1`。原生命令顺序：
+
+1. `D:\Miniforge3\python.exe -m pytest -q tests/unit/test_classic_eleventh_batch.py -p no:cacheprovider --basetemp=artifacts/agent_runs/m2-r21-single-pass-trace/pytest-<fresh-attempt>`
+2. `D:\Miniforge3\python.exe -m ruff check --no-cache src/quant/factors/classic_eleventh_batch.py tests/unit/test_classic_eleventh_batch.py`
+3. `D:\Miniforge3\python.exe -m mypy --cache-dir artifacts/agent_runs/m2-r21-single-pass-trace/mypy src/quant/factors/classic_eleventh_batch.py`
+
+fresh-attempt是每次不重复的验证标识，禁止复用已占用pytest目录；日志/产物/cache仅在source内
+`artifacts/agent_runs/m2-r21-single-pass-trace`，设置`PYTHONDONTWRITEBYTECODE=1`避免源码目录cache。
+保留原生stdout/stderr/exit并在delivery记录命令、环境、代码身份及实际结果，失败证据保留不覆盖。
+缺依赖如实STOP，不安装或换解释器；禁止xdist/全量测试/网络/真实data/既有run读取/trial/交易。
+反例及行为验证遵守5.1，保留已有手算oracle，不以共享核心自比较替代独立预期。
+Windows结果不冒充Linux Gate或经济有效性。交付后实现者退出，由原独立上下文审查及经理领域验收，
+再向统筹提交source SHA与证据；Worker不得合流、退休或删除现场。
+
+## 9. SinglePassTrace REWORK1 与新验证准入
+
+2026-09-08原独立初验为REVIEW_FAIL / P0=0 / P1=2 / P2=0，详见
+[原审查报告](../reviews/M2_R21_SinglePassTrace独立初验报告.md)。报告6918 bytes，
+SHA256为`5d05d6bb119c29c8c523777893a9263617ed0966d6ba64dc4e0fb0db855f6a1f`。
+审查输入HEAD为`085e04488ba1d25bfdb1e3ef497efa148b9e8511`；保留implementation
+`6fd05834cca189df50b9fa2542df5da56f73e023`及后续delivery提交，不重写历史。
+
+### 9.1 现象、根因与最小返工
+
+1. 批准证据根当前仅有mypy缓存，没有原生stdout/stderr/exit或所述三个pytest attempt目录。
+   这是验证留存合同缺口，不证明历史未执行，也不能独立证明所报23pass、Ruff/mypy通过或导入路径。
+   原报告作为历史保留；delivery追加更正，明确旧验证不可独立核验，禁止补造旧日志、退出码或SHA。
+2. 测试只有数值相等/equals/approx，没有§5.1要求的零值符号位检查。以原审查报告的非退化零相关
+   六期rank矩阵为独立数学oracle，经真实bars和公共rank路径生成零值；不得mock rank绕过构造。
+   legacy、trace.factors、trace.observations均须先断言目标值非null且等于零，再用
+   `math.copysign(1.0, value) == 1.0`或等价位检查逐项证明正零，不能让空的零值集合导致vacuum PASS。
+   保留完整独立rank矩阵预期和既有手算oracle；生产不变，不以放宽容差修fixture。
+3. 补齐已冻结trace乱序三表恒等及独立的非finite中间态、pair_count=6但ss=null拒绝反例。
+   沿既有测试注入边界，不新增生产注入接口；旧入口拒绝域、原bar结果及普通null语义不变，
+   trace异常不能返回partial mapping。有限异常ss单一反例不能代替上述不同分支。
+
+以上均由原Worker 3恢复同一原实现subagent；禁止第二实现链。实现唯一可写：
+`tests/unit/test_classic_eleventh_batch.py`及`docs/research/deliveries/M2_R21_SinglePassTrace交付报告.md`。
+production、公共rank、配置、taskbook、roadmap及review在实现阶段只读。若反例证明必须改production，
+先STOP提交最小反例申请扩围，不自行修公式。经理本轮仅追加本文并提交本文及原review。
+
+### 9.2 fixture-only 定向复验
+
+统筹同时批准本轮定向复验，不要求先再走一次静态交付。沿用§8的解释器、三个产品命令顺序、
+单进程和线程上限；不得变更测试范围、安装依赖或运行经济入口。新证据根唯一为source内
+`artifacts/agent_runs/m2-r21-single-pass-trace-rework1/`，旧根及缓存全部保留，不清理或覆盖。
+每次尝试在新根内用独立未占用子目录，pytest basetemp及mypy cache均指向该次目录内；
+pytest仍禁cacheprovider、Ruff仍--no-cache，PYTHONDONTWRITEBYTECODE=1。
+
+在产品阶段前保存实际argv、cwd、解释器身份、生产/测试bytes与SHA，环境仅记录白名单
+POLARS_MAX_THREADS、OMP_NUM_THREADS、PYTHONDONTWRITEBYTECODE、PYTHONPATH。
+PYTHONPATH明确指向当前source/src；只做本模块冷导入，保存实际module.__file__，验证它解析到
+当前source的冻结生产文件，不能仅凭环境声明推断。不得输出完整环境、凭据或加载真实数据。
+导入身份不符即停止产品阶段，不能把main的结果计入本轮。
+
+各阶段真实stdout、stderr、原生exit分别在该次目录新建留存；未运行阶段标UNRUN。
+结果引用实际代码身份与attempt，失败不覆盖；修测试后需新的attempt。新运行不是旧证据恢复，
+delivery必须把历史不可核验与新可核验结果分开。证据采集采用最小原生命令方式，不新建通用carrier框架。
+本节不授权真实data、网络、ETF、receipt、labels、evaluate、publish、trial、PAPER或LIVE。
+
+通过条件：两项P1及既冻反例的测试闭合，§8三项产品验证有独立可读取的原生证据及worktree导入身份；
+同一原独立审查上下文复验，只写原review追加历史。通过上限仅Windows development validation；
+未获统筹合流，不合并或退休source，完整R21接入及经济有效性继续未完成。
+
+## 10. SinglePassTrace REWORK2 最小验收修正
+
+2026-09-08原review追加REWORK1结论为REVIEW_FAIL / P0=0 / P1=2 / P2=1；
+review为12224 bytes，SHA256=`ea004bcccd02d1916883f745161278673f872b6cf2bcc8ce98651a1ff5a3d3f0`。
+原数学正零、异常及乱序反例已闭合；新证据根原生28 passed、Ruff及production mypy exit0有效，
+但不替代缺失的产品前导入闸门。统筹批准本节一次最小返工，不改变生产公式或经济合同。
+
+### 10.1 原链最小修改
+
+- 原Worker 3恢复同一实现subagent，仅写原test与delivery；production、rank、config、taskbook、
+  roadmap、review全部只读，不创建第二实现链。
+- 普通unit的`test_runtime_import_identity_is_current_worktree`移除无条件Windows解释器路径断言，
+  保留平台中性的当前source模块定位验证；不得用skip隐藏Linux不兼容，不改其他数学测试。
+- delivery恢复提交`085e04488ba1d25bfdb1e3ef497efa148b9e8511`中的历史原文，随后仅追加更正及
+  REWORK1/REWORK2真实证据。旧声明明确标为不可独立核验，但不删除或改写；禁止补造历史日志。
+- 本轮根因：运行环境准入误放入可移植unit；pytest内断言不能追认产品前未执行的冷导入；
+  历史更正采用替换而非追加。通过条件分别是普通unit无Windows绑定、独立前置真实身份留存、
+  原文可逐字与历史commit比较且追加纠正不混淆新旧结论。
+
+### 10.2 新证据与窄验证顺序
+
+只使用source内新no-clobber根`artifacts/agent_runs/m2-r21-single-pass-trace-rework2/`，
+保留所有旧根；任何阶段失败即STOP，不覆盖或盲重跑。沿用§9.2解释器、source cwd/PYTHONPATH、
+单进程、线程上限及环境白名单，禁止输出完整环境。先保存输入bytes/SHA及实际argv/cwd。
+
+1. 独立`D:\Miniforge3\python.exe`子进程只冷导入`quant.factors.classic_eleventh_batch`，
+   保存实际`sys.executable`、`module.__file__`及该文件bytes/SHA，逐字核当前source生产身份
+   `26009 / 3c28d5a6dbec36b9bbde06ab86f0d2a4deeaefd8798a03c10e117bc9f98c528d`；
+   路径及解释器必须为本source与冻结Windows解释器，真实stdout/stderr/native exit独立留存。
+   不读取真实data，不调用factor计算；身份不符则后两阶段零调用。
+2. `D:\Miniforge3\python.exe -m pytest -q tests/unit/test_classic_eleventh_batch.py::test_runtime_import_identity_is_current_worktree -p no:cacheprovider --basetemp=artifacts/agent_runs/m2-r21-single-pass-trace-rework2/pytest`
+3. `D:\Miniforge3\python.exe -m ruff check --no-cache tests/unit/test_classic_eleventh_batch.py`
+
+每阶段独立原生stdout/stderr/exit，不新建通用carrier。只复用REWORK1中未变数学测试及production
+mypy证据；须以diff证明相应代码/测试未改，不能声称新测试文件整体SHA未变或本轮全量重跑。
+不授权production修改、full suite、网络、真实数据、ETF、labels/evaluate/publish/trial或交易。
+完成后原实现者退出，由原reviewer仅追加原review复验，再申请提交/合流；本授权不含stage/commit。
