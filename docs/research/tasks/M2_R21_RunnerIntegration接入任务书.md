@@ -118,6 +118,73 @@ single-pass trace仅为**建议的最小扩围**：经另行批准才可在eleve
 
 上述未决项是同一最终接入目标的前置，不是将目标缩减为纯helper或绕开经济验证。
 
+### 5.1 single-pass trace接口方案（待独立设计审查，非实现授权）
+
+建议在同一factor模块提供`compute_eleventh_batch_daily_factors_with_trace(bars, *, sessions)`，
+返回exact三表mapping：`factors`、`component_counts`、`observations`。旧公共函数签名及三列输出不变，
+两入口共用一个计算核心；每次公共调用只构造一次特征、调用一次公共rank helper、计算一次相关。
+旧入口不必物化诊断表；新入口从同次long_form/ranked/grid投影，不复制rank/correlation或另算公式。
+返回类型封装及新增public export仍待独立设计审查，不由本文自动批准生产扩围。
+
+三表列序与dtype方案如下；未标nullable者不得null，全部按所列键稳定升序，禁止运行时学习schema：
+
+- `factors`：symbol=String、trade_date=Date、alpha101_002=Float64(nullable)。键与旧结果exact相同，
+  仅实际输入bar keys；完整grid中的无bar行不能新增factor键。新旧结果列序/dtype/值/null/正零必须一致。
+- `component_counts`：trade_date=Date、component=String、grid_symbols=UInt32、finite_values=UInt32、
+  ranked_values=UInt32；键trade_date/component，component仅volume_change、intraday_return。
+  每日两个component都保留；grid_symbols是输入symbol×calendar网格数，不是eligibility证券数。
+  finite_values来自同次long_form，ranked_values来自同次ranked；n<2时ranked_values=0，
+  n>=2时ranked_values=finite_values，即使全部ties也如此。
+- `observations`：symbol=String、trade_date=Date、bar_present=Boolean、volume_change=Float64(nullable)、
+  intraday_return=Float64(nullable)、volume_rank=Float64(nullable)、return_rank=Float64(nullable)、
+  window_ready=Boolean、pair_count=Int64(nullable)、volume_ss=Float64(nullable)、return_ss=Float64(nullable)、
+  alpha101_002=Float64(nullable)、primary_reason=String，随后追加下表列（顺序不变）。
+  键symbol/trade_date，覆盖输入symbols×完整sessions。feature/rank/ss均投影自同次中间关系；
+  有bar键上的因子值必须与factors逐值相同。trace零值沿用最终正零归一，不另算一份相关值。
+
+| 追加列（顺序） | dtype/null | 逐行触发定义 |
+| --- | --- | --- |
+| session_index | UInt32/non-null | 传入sessions的零基位置，每symbol相同calendar，不按有bar日期编号。 |
+| current_bar_missing | Boolean/non-null | 当前grid未匹配bar即true；与bar_present互补。 |
+| lag1_bar_missing | Boolean/nullable | index<1为null，否则前一canonical位置未匹配bar为true。 |
+| lag2_bar_missing | Boolean/nullable | index<2为null，否则前两canonical位置未匹配bar为true。 |
+| current_volume_zero | Boolean/nullable | 当前bar缺失为null，否则volume==0；null不得填0。 |
+| lag2_volume_zero | Boolean/nullable | index<2或lag2 bar缺失为null，否则lag2 volume==0。 |
+| volume_rank_members_lt2 | Boolean/non-null | 同date volume_change的finite_values<2，不等价于本symbol值缺失。 |
+| return_rank_members_lt2 | Boolean/non-null | 同date intraday_return的finite_values<2，不等价于本symbol值缺失。 |
+
+原计算的volume_change实际依赖current与lag1 bar存在，以及current/lag2 volume为正；lag2缺bar自然不可用。
+lag1 volume为0但bar存在不额外使当前volume_change失效，不得增加该限制。负volume、非法schema及非finite
+仍沿原入口拒绝边界处理，不转成局部zero flag。rank的null同时取决于本值和该component成员数，
+单看members_lt2不能反推全部null原因。flags是逐行事实、可并存，不构造第二套窗口归因算法。
+
+终点i的相关窗口exact为完整calendar的[i-5,i]；i<5时window_ready=false且pair_count=null，
+其后window_ready=true、pair_count在0..6。窗口ready不代表构造预热完成：窗口中volume_change可能回看至i-7，
+所以index5/6仍不足8个session。缺bar不压缩窗口，不对仅有bar的子表滚动。
+PAIR_INCOMPLETE可从窗口内逐行flags解释，不能用终点flags冒充整窗口唯一原因。
+
+primary_reason按以下顺序拟定，独立审查前不能用于运行：
+
+1. 当前bar缺失：MISSING_CURRENT_BAR。
+2. 否则session_index<7：WARMUP_LT8_SESSIONS。
+3. 否则pair_count!=6：PAIR_INCOMPLETE。
+4. 否则两ss均<=0：BOTH_VARIANCES_NONPOSITIVE。
+5. 否则volume_ss<=0：VOLUME_VARIANCE_NONPOSITIVE。
+6. 否则return_ss<=0：RETURN_VARIANCE_NONPOSITIVE。
+7. 否则VALID；须与当前bar存在且最终因子非null、finite严格等价，并通过原正零归一后再核对。
+
+微负ss不得伪称精确零或clamp；VALID不能仅凭方差predicate跳过旧函数最终有限性检查。
+pair_count=6而ss不可解释、reason与最终值矛盾均不得发布矛盾trace，但中间态新增检查不得扩大旧入口拒绝范围。
+若trace一致性拒绝与旧入口兼容发生冲突，必须回设计审查裁定；不得擅自给旧入口加失败条件。
+旧入口原有错误顺序和输入拒绝范围保持，未运行fixture不声称上述兼容性已获证明。
+
+必测新旧入口输出恒等及一次rank调用；乱序输入结果不变；无bar grid行不新增factor键；
+index0/1未定义lag为null而非已知缺失；index5/6窗口ready但warmup；lag1缺bar使下一位置feature null；
+lag1 bar存在但volume0且两端正值不能误加过滤；窗口旧位置缺pair而当前flags正常不能误标VALID；
+单成员rank null与多成员全ties rank有效/方差非正分开；零值须比较符号位，两个入口均正零。
+负volume、nonfinite及schema拒绝回归不减弱，不能只用新旧入口共享同一错误实现的相等断言代替独立oracle。
+本方案不解决残差、PIT市值/板块、分层阈值或经济执行权限，完整接入目标保持不变。
+
 ## 6. 最小候选写范围与验证
 
 经理仅本文；未来实现候选仅`src/quant/research/run_classic_factors.py`、
@@ -163,3 +230,9 @@ schema实际fixture验证仍UNRUN，完整接入的第5节仍未闭合，不将�
 未暴露trace和未冻结经济设计；三类coverage不可互证。single-pass trace保留为另行扩围建议，
 不修改第6节候选白名单、不批准新增接口。残差/PIT市值板块/分层阈值仍未冻结，完整接入仍未完成。
 本次仅文档diff、引用存在性与字节卫生检查；Python、测试、data/labels/evaluate/publish及trial均未执行。
+
+2026-09-08中央复核main `129de5c5aa3487bb457b41188c7c94ee672d3cc9` 后授exact1文档窗口。
+新增5.1三表及逐行flags方案，源码证据为eleventh的lag1 presence条件、最终finite检查和正零归一；
+既有missing-lag1与first-value-session-eight测试只作文本映射，未重跑。接口仍待独立设计审查，
+第6节runner-only候选范围不自动扩大；新增中间态检查与旧入口拒绝范围的潜在冲突必须回审查。
+仅文档静态检查，无生产/测试实现、Python、数据、trial或ETF派发；历史设计及STOP边界均保留。
