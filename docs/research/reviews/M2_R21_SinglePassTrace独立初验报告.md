@@ -83,3 +83,142 @@
 当前为 `IMPLEMENTED_PENDING_REVIEW_REWORK_AND_VERIFIABLE_WINDOWS_EVIDENCE / ECONOMIC_UNASSESSED / TRIAL0`。
 不是Linux Gate、完整runner接入、因子有效性或交易准入。原实现者返工/证据补齐后由同一独立上下文复验；
 未获中央新授权不得补跑。本报告不自填其自身SHA，写后身份由只读检查返回。
+
+## REWORK1 同一独立上下文复验
+
+结论：`REVIEW_FAIL / P0=0 / P1=2 / P2=1`。原数学正零P1已关闭；新原生结果确实存在，
+但冷导入前置未执行且新增普通测试硬编码解释器，不能将本轮判为完整合同通过。前述FAIL历史原样保留。
+
+### 身份与可见证据
+
+开始HEAD为 `557815c888b3886b76d810bb514b671e46add581`，原source/branch，dirty仅test与delivery。
+完整读取source任务书§9、旧review及delivery变更，未使用main替代合同。
+production raw SHA为 `3c28d5a6dbec36b9bbde06ab86f0d2a4deeaefd8798a03c10e117bc9f98c528d`；
+test raw SHA为 `99ee73c0d7e7b460c98c6a007082c8835fc4da5d2f4040e71f016261ca7ac82f`，与preflight相符。
+本次只读证据根为source内 `artifacts/agent_runs/m2-r21-single-pass-trace-rework1`。
+
+独立读取三个attempt-20260908-01的stdout/stderr/exit文件：pytest为28 passed、468 warnings、4.49s，exit0；
+Ruff为All checks passed、exit0；mypy为1 source file无问题、exit0；三份stderr均空。
+preflight记录cwd、解释器文件身份、白名单环境与argv，Ruff含--no-cache，mypy为新root内cache。
+这证明本轮有可读取的新Windows阶段结果，不是旧23pass或旧失败证据恢复。
+
+### 原P1-2与已冻结追加反例闭合
+
+- test约449–530行真实bars构造采用共同open128、整数差和指数volume；真实rank薄spy返回原结果，
+  三证券两组件的六期rank均与独立完整矩阵精确相等，没有fake rank。
+- 目标A的u/r手算ss为1/1.5、cross为0。三个目标值分别通过item提取，空或多行不能通过；
+  随后非null、等于0、copysign=+1，legacy/factors/observations都受检，拒绝空集合vacuous PASS。
+- trace三表乱序恒等已加入；非finite cross_ss与pair6 ss-null分别故障注入，legacy保持原bar结果，
+  trace抛错且returned仍None。既有finite无barss注入及独立数学oracle保留。production未改。
+
+独立对抗分析：若只删除observations的正零归一，数值equals仍可能通过，但该目标的copysign检查会失败；
+若把trace验证移进两入口共同core，则新增注入后的legacy相等调用会抛错，不能通过。以上是源码级反例分析，
+本review没有运行mutation或测试。
+
+### P1-R1：普通unit新增机器专属解释器断言
+
+位置：test_classic_eleventh_batch.py:103–105。
+
+- 现象：test_runtime_import_identity_is_current_worktree无条件要求sys.executable为D:\Miniforge3\python.exe。
+- 根因：把本次Windows执行准入身份写入可跨平台执行的普通业务unit，混淆验证环境与产品测试契约。
+- 最小独立反例：合法WSL base解释器/home/mabw/miniforge3/bin/python加载当前checkout正确模块；
+  Path(sys.executable)与Windows字面路径必不相等，该unit失败，即使所有因子行为完全正确。
+  本例为静态必然性判断，未启动WSL。
+- 规则/最小修订：解释器exact identity应由本次获批preflight采集，不应无条件固化进普通unit。
+  删除该机器路径断言；如保留module路径测试，应保持平台无关。不要以跳过全部业务测试修复。
+- 通过条件：普通unit不再依赖该Windows盘符；任务环境身份仍在独立preflight中严格核验。
+
+### P1-R2：产品前冷导入身份前置未闭合
+
+位置：任务书§9.2；rework1_preflight.md的module identity行；delivery约108、140行。
+
+- 现象：preflight只记expected and runtime-asserted路径；实际身份验证被放在pytest测试中，
+  delivery明确cold未运行。未见产品阶段前的冷导入实际module.__file__输出及独立exit。
+- 证据解释：源码断言加28pass支持pytest阶段实际导入与当前worktree一致，不能将它推断为
+  先于产品执行的冷导入闸门，或声称保存了原生实际路径输出。
+- 最小反例：模块误从main解析且该test失败时，pytest默认仍可继续其他测试；这不满足
+  “导入身份不符即停止产品阶段”。不能仅将pytest内断言通过替代冻结时序。
+- 修订/通过条件：原实现链如实追加控制偏差；由中央另授fresh窗口，在产品前以限定冷导入
+  保存实际解释器/module.__file__/生产identity与exit，不符则三产品阶段UNRUN。
+  如中央选择接受替代证据，必须先明确裁定合同偏差，review不得自行追认。本轮结果不抹除。
+
+### P2-R3：delivery并非追加更正，历史段落被替换
+
+位置：delivery HEAD到working diff，85行新增/20行删除；任务书§9.1要求原报告历史保留并追加更正。
+
+- 现象：原“验证环境与结果”、原三个attempt与命令等被替换为摘要，虽然正确声明不可核验，
+  但不满足原文保留。Git历史仍可恢复，不是证据永久丢失。
+- 最小修订：恢复HEAD中的完整旧delivery作为前缀，将本轮不可核验更正、结果和偏差仅追加于末尾；
+  不重写旧FAIL/通过声明的时态。通过条件为原前缀逐字不变、新内容明确覆盖当前状态。
+
+本轮仍只证明上述新Windows阶段结果；完整Windows合同待修，Linux Gate/runner/经济有效性均未完成。
+仅追加本review，零Python/测试/真实data/network/stage/commit，不授权任何补跑或清理。
+
+## REWORK2 与 execution-correction1 最终定向复验
+
+`REVIEW_FAIL / P0=0 / P1=0 / P2=1`。原REWORK1两项P1及历史保留P2已关闭；
+仅余测试SHA记录转录错误。无需因该文字错误重新运行产品，但须在获批范围追加更正后复核。
+
+### 输入与旧问题闭合
+
+本source HEAD仍为 `557815c888b3886b76d810bb514b671e46add581`。读取source任务书§10、
+delivery的REWORK2 STOP及correction全文相关段落、新根各argv/script/stdout/stderr/exit/preflight；
+未运行任何Python或测试。开始review SHA为 `ea004bcccd02d1916883f745161278673f872b6cf2bcc8ce98651a1ff5a3d3f0`。
+
+- 普通unit现仅验证相对ROOT的实际模块路径，无Windows解释器硬编码、无skip；原平台污染P1关闭。
+- 当前test原生bytes为43625，实际SHA为
+  `7202adfc3b84a073122c6d4f9d125d178d7f7a0fc1216c3ababb4a06a677d376`。
+  只在内存逆向加回REWORK1的import sys及原解释器断言，得到43725 bytes和
+  `99ee73c0d7e7b460c98c6a007082c8835fc4da5d2f4040e71f016261ca7ac82f`。
+  因而数学、正零、异常、乱序测试其余内容逐字未改，可依§10复用REWORK1的28pass证据，未声称新全文件SHA不变。
+- production无diff，actual SHA仍为
+  `3c28d5a6dbec36b9bbde06ab86f0d2a4deeaefd8798a03c10e117bc9f98c528d`，26009 bytes；production mypy证据可复用。
+- delivery前缀逐字匹配085e044历史提交的完整原文（Git文本LF前缀比较为true）；原历史保留P2关闭。
+  旧验证不可独立核验与REWORK2 SyntaxError STOP仍明确保留，不冒充旧失败恢复。
+
+### 独立读取的新执行证据
+
+根：`artifacts/agent_runs/m2-r21-single-pass-trace-rework2-execution-correction1`。
+冷导入argv为executable/-c/完整script三元素，脚本只import目标模块及读取生产文件身份，不调用因子。
+原生stdout实际显示D:\Miniforge3\python.exe、当前source的module.__file__、26009 bytes及正确production SHA；
+stderr空、exit0。随后identity pytest原生1 passed in 2.23s、exit0；test-only Ruff为All checks passed、exit0，stderr均空。
+preflight记录先保存各阶段证据、前阶段exit0才进入后阶段。独立冷导入前置已与pytest内断言分离，原时序P1关闭。
+此前REWORK2冷导入stderr确为SyntaxError（脚本文本仅import）、exit1；本次新成功没有替代该历史事实。
+本轮只核已有顺序记录及原生证据，不把文件存在性当作独立进程审计或声称重新观察了执行全过程。
+
+### 唯一P2-R4：test SHA被转录成62字符
+
+位置：delivery约147及219行；execution_correction1_preflight.md的test SHA256行。
+
+- 实际Get-FileHash为64字符：
+  `7202adfc3b84a073122c6d4f9d125d178d7f7a0fc1216c3ababb4a06a677d376`。
+- 上述记录写成62字符：
+  `7202adfc3b84a073122c6d4f9d125d178d7f7a0fc1216c3abb4a06a677d376`。
+- 根因边界：身份字符串转录错误，不是本轮证实测试文件漂移；不能把不合法长度的字符串当有效SHA256。
+- 最小修订：原链在delivery末尾追加唯一勘误，明确列出错误位置、原62字符值、实际64字符值及核验依据；
+  保留旧preflight和历史文字，不覆写原始执行证据。明确该错误不影响已核原生结果和数学diff复用，但原SHA记录无效。
+- 通过条件：勘误正确绑定当前test bytes/SHA，经原review只读复核；本项不要求重跑、不授权改test/production或清理root。
+
+独立对抗分析：若只凭delivery及preflight相互一致判定身份，两份共同复制的62字符错误仍会被误判通过。
+本次以实际文件散列和逆向REWORK1精确散列闭包交叉核验，拒绝该同源错误，不猜补字符。
+
+仅追加本review，其余只读。当前新Windows冷导入/identity/Ruff阶段有效，数学及production mypy按冻结diff复用；
+review待上述文字勘误，不宣称Linux Gate、完整runner接入、经济有效或交易准入。
+
+## DELIVERY_ONLY_ERRATUM 最终文本复核
+
+`REVIEW_PASS / P0=0 / P1=0 / P2=0`。仅复核上节唯一P2-R4，现已关闭；不重审或重跑此前已闭合项。
+
+source HEAD仍为 `557815c888b3886b76d810bb514b671e46add581`。
+delivery当前22337 bytes，SHA256为
+`b600a02558c4d57074b041e2029bf23a3a6070f030ffd550f5a13fad0d4154bd`，与冻结勘误输入一致。
+末尾勘误逐处列明delivery两处及execution-correction preflight的旧62字符错误，保留历史，
+明确唯一正确64字符SHA为
+`7202adfc3b84a073122c6d4f9d125d178d7f7a0fc1216c3ababb4a06a677d376`，与本轮实际Get-FileHash完全一致。
+production实际SHA仍为
+`3c28d5a6dbec36b9bbde06ab86f0d2a4deeaefd8798a03c10e117bc9f98c528d`；test未变。
+勘误没有把旧错误preflight转述为原本正确，也没有把新运行冒充旧证据恢复。
+
+本结论仅为SinglePassTrace包独立初验通过，证据上限保持Windows development validation；
+不代表统筹合流、Linux Gate、完整R21 runner接入、经济有效性或PAPER/LIVE准入。
+本轮只追加本review，未执行Python/测试/网络/真实data，未stage/commit；提交仍由原授权链另行办理。

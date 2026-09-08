@@ -71,6 +71,38 @@ def _relation_bars(sessions: tuple[dt.date, ...], *, reverse: bool) -> pl.DataFr
     return _bars(sessions, volumes=volumes, price_differences=differences, common_open=128.0)
 
 
+def _zero_correlation_bars(sessions: tuple[dt.date, ...]) -> pl.DataFrame:
+    volume_deltas = {
+        "600001.SH": [1.0, 2.0, 3.0, 1.0, 2.0, 3.0],
+        "600002.SH": [2.0, 3.0, 1.0, 2.0, 3.0, 1.0],
+        "600003.SH": [3.0, 1.0, 2.0, 3.0, 1.0, 2.0],
+    }
+    return_differences = {
+        "600001.SH": [1.0, 3.0, 1.0, 3.0, 1.0, 3.0],
+        "600002.SH": [2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
+        "600003.SH": [3.0, 1.0, 3.0, 1.0, 3.0, 1.0],
+    }
+    volumes: dict[str, list[float]] = {}
+    differences: dict[str, list[float]] = {}
+    for index, symbol in enumerate(volume_deltas):
+        log_values = [4.0 + index, 4.5 + index]
+        for delta in volume_deltas[symbol]:
+            log_values.append(log_values[-2] + delta)
+        volumes[symbol] = [math.exp(value) for value in log_values]
+        differences[symbol] = [0.0, 0.0] + return_differences[symbol]
+    return _bars(
+        sessions,
+        volumes=volumes,
+        returns={symbol: [0.0] * len(sessions) for symbol in volume_deltas},
+        price_differences=differences,
+        common_open=128.0,
+    )
+
+
+def test_runtime_import_identity_is_current_worktree() -> None:
+    assert Path(eleventh.__file__).resolve() == ROOT / "src/quant/factors/classic_eleventh_batch.py"
+
+
 def test_public_identity_exact8_and_output_contract() -> None:
     sessions = _sessions(8)
     result = compute_eleventh_batch_daily_factors(_pattern_bars(sessions), sessions=sessions)
@@ -413,6 +445,100 @@ def test_trace_calls_public_rank_once_and_keeps_one_long_form(monkeypatch: pytes
     assert calls[0].select(pl.struct("signal_date", "component", "symbol").is_duplicated().any()).item() is False
 
 
+def test_zero_correlation_is_positive_zero_across_legacy_trace_and_observations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sessions = _sessions(8)
+    bars = _zero_correlation_bars(sessions)
+    legacy = compute_eleventh_batch_daily_factors(bars, sessions=sessions)
+
+    captured: list[pl.DataFrame] = []
+    original = eleventh.rank_cross_sectional_components
+
+    def spy(frame: pl.DataFrame) -> pl.DataFrame:
+        ranked = original(frame)
+        captured.append(ranked)
+        return ranked
+
+    monkeypatch.setattr(eleventh, "rank_cross_sectional_components", spy)
+    trace = compute_eleventh_batch_daily_factors_with_trace(bars, sessions=sessions)
+
+    assert len(captured) == 1
+    expected_ranks = {
+        ("volume_change", "600001.SH"): [0.0, 0.5, 1.0, 0.0, 0.5, 1.0],
+        ("volume_change", "600002.SH"): [0.5, 1.0, 0.0, 0.5, 1.0, 0.0],
+        ("volume_change", "600003.SH"): [1.0, 0.0, 0.5, 1.0, 0.0, 0.5],
+        ("intraday_return", "600001.SH"): [0.0, 1.0, 0.0, 1.0, 0.0, 1.0],
+        ("intraday_return", "600002.SH"): [0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+        ("intraday_return", "600003.SH"): [1.0, 0.0, 1.0, 0.0, 1.0, 0.0],
+    }
+    ranks = captured[0]
+    for (component, symbol), expected in expected_ranks.items():
+        actual = (
+            ranks.filter(
+                (pl.col("component") == component)
+                & (pl.col("symbol") == symbol)
+                & pl.col("signal_date").is_in(list(sessions[2:]))
+            )
+            .sort("signal_date")
+            .get_column("normalized_rank")
+            .to_list()
+        )
+        assert actual == expected
+
+    u = [0.0, 0.5, 1.0, 0.0, 0.5, 1.0]
+    r = [0.0, 1.0, 0.0, 1.0, 0.0, 1.0]
+    u_mean = sum(u) / len(u)
+    r_mean = sum(r) / len(r)
+    volume_ss = sum((value - u_mean) ** 2 for value in u)
+    return_ss = sum((value - r_mean) ** 2 for value in r)
+    cross_ss = sum((volume - u_mean) * (returned - r_mean) for volume, returned in zip(u, r, strict=True))
+    assert volume_ss == 1.0
+    assert return_ss == 1.5
+    assert cross_ss == 0.0
+    assert -cross_ss / math.sqrt(volume_ss * return_ss) == 0.0
+
+    def target_value(frame: pl.DataFrame, column: str) -> float | None:
+        return (
+            frame.filter(
+                (pl.col("symbol") == "600001.SH")
+                & (pl.col("trade_date") == sessions[-1])
+            )
+            .get_column(column)
+            .item()
+        )
+
+    for value in (
+        target_value(legacy, "alpha101_002"),
+        target_value(trace["factors"], "alpha101_002"),
+        target_value(trace["observations"], "alpha101_002"),
+    ):
+        assert value is not None
+        assert value == 0.0
+        assert math.copysign(1.0, value) == 1.0
+    assert (
+        trace["observations"]
+        .filter(
+            (pl.col("symbol") == "600001.SH")
+            & (pl.col("trade_date") == sessions[-1])
+        )
+        .get_column("primary_reason")
+        .item()
+        == "VALID"
+    )
+
+
+def test_trace_three_tables_are_identical_for_permuted_bar_rows() -> None:
+    sessions = _sessions(8)
+    bars = _pattern_bars(sessions)
+    expected = compute_eleventh_batch_daily_factors_with_trace(bars, sessions=sessions)
+    actual = compute_eleventh_batch_daily_factors_with_trace(bars.reverse(), sessions=sessions)
+
+    assert list(actual) == ["factors", "component_counts", "observations"]
+    for key in actual:
+        assert actual[key].equals(expected[key])
+
+
 def test_trace_calendar_superset_keeps_factor_keys_and_exposes_no_bar_grid_rows() -> None:
     base_sessions = _sessions(8)
     sessions = (*base_sessions, base_sessions[-1] + dt.timedelta(days=1))
@@ -608,6 +734,80 @@ def test_trace_only_unbarred_ss_anomaly_rejects_without_changing_legacy(monkeypa
     assert compute_eleventh_batch_daily_factors(bars, sessions=sessions).equals(expected)
     with pytest.raises(ValueError, match="unexplained intermediate"):
         compute_eleventh_batch_daily_factors_with_trace(bars, sessions=sessions)
+
+
+def test_trace_nonfinite_intermediate_rejects_without_partial_or_legacy_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sessions = _sessions(8)
+    bars = _pattern_bars(sessions)
+    expected = compute_eleventh_batch_daily_factors(bars, sessions=sessions)
+    original_core = eleventh._compute_eleventh_batch_core
+
+    def inject(
+        frame: pl.DataFrame,
+        *,
+        sessions: tuple[dt.date, ...],
+    ) -> object:
+        computation = original_core(frame, sessions=sessions)
+        injected_grid = computation.grid.with_columns(
+            pl.when(
+                pl.col("_bar_present").is_not_null() & (pl.col("_session_index") == 7)
+            )
+            .then(float("nan"))
+            .otherwise(pl.col("_cross_ss"))
+            .alias("_cross_ss")
+        )
+        return eleventh._EleventhBatchComputation(
+            factors=computation.factors,
+            grid=injected_grid,
+        )
+
+    monkeypatch.setattr(eleventh, "_compute_eleventh_batch_core", inject)
+    assert compute_eleventh_batch_daily_factors(bars, sessions=sessions).equals(expected)
+    returned: object | None = None
+    with pytest.raises(ValueError, match="unexplained intermediate"):
+        returned = compute_eleventh_batch_daily_factors_with_trace(bars, sessions=sessions)
+    assert returned is None
+
+
+def test_trace_pair_count_six_with_null_ss_rejects_without_partial_or_legacy_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sessions = _sessions(8)
+    bars = _pattern_bars(sessions)
+    expected = compute_eleventh_batch_daily_factors(bars, sessions=sessions)
+    baseline = compute_eleventh_batch_daily_factors_with_trace(bars, sessions=sessions)
+    assert baseline["observations"].filter(pl.col("session_index") == 7).get_column("pair_count").to_list() == [6, 6, 6]
+    original_core = eleventh._compute_eleventh_batch_core
+
+    def inject(
+        frame: pl.DataFrame,
+        *,
+        sessions: tuple[dt.date, ...],
+    ) -> object:
+        computation = original_core(frame, sessions=sessions)
+        injected_grid = computation.grid.with_columns(
+            pl.when(
+                (pl.col("_bar_present").is_not_null())
+                & (pl.col("_session_index") == 7)
+                & (pl.col("_pair_count") == 6)
+            )
+            .then(pl.lit(None, dtype=pl.Float64))
+            .otherwise(pl.col("_u_ss"))
+            .alias("_u_ss")
+        )
+        return eleventh._EleventhBatchComputation(
+            factors=computation.factors,
+            grid=injected_grid,
+        )
+
+    monkeypatch.setattr(eleventh, "_compute_eleventh_batch_core", inject)
+    assert compute_eleventh_batch_daily_factors(bars, sessions=sessions).equals(expected)
+    returned: object | None = None
+    with pytest.raises(ValueError, match="unexplained intermediate"):
+        returned = compute_eleventh_batch_daily_factors_with_trace(bars, sessions=sessions)
+    assert returned is None
 
 
 def test_config_exact_identity_contract() -> None:
