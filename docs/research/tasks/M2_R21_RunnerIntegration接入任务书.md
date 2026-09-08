@@ -250,3 +250,37 @@ schema实际fixture验证仍UNRUN，完整接入的第5节仍未闭合，不将�
 `636cf4fff98b9bda3d4d35c475cd4210a8db00e7`授exact1窗口，本次仅澄清5.1及本历史，
 保留原P2结论，补专属拒绝与故障注入反例；提交后交同reviewer零写复验。
 本次仅静态hygiene/diff检查，未实施trace、运行Python/测试、读取data或消费trial。
+
+## 8. SinglePassTrace最小实现准入
+
+2026-09-08同一独立设计reviewer复验DESIGN_REVIEW_PASS / P0=0 / P1=0 / P2=0，关闭唯一P2；
+该结论是设计审查，不是运行验证。实现完整引用5.1三表、flags、专属拒绝及兼容性合同，不复制公式。
+统筹冻结base `eba75446b6a8dbcb1c3d3f9cffbadbb0b5a2f64a`，branch `codex/m2-r21-single-pass-trace`，
+source `F:\AI_Coding\QuantitativeTrading\artifacts\dev_worktrees\m2-r21-single-pass-trace`。
+这是第6节之外单独批准的窄factor trace包，不授权完整runner接入或宣称R21最终目标完成。
+
+经理先仅提交本文；随后Luna Worker 3（01a03730-623a-7fd3-b4c4-6f3ad99c97c5）创建唯一隔离实现subagent。
+实现只写并可提交exact3：
+
+- `src/quant/factors/classic_eleventh_batch.py`
+- `tests/unit/test_classic_eleventh_batch.py`
+- `docs/research/deliveries/M2_R21_SinglePassTrace交付报告.md`
+
+原独立审查上下文另仅写`docs/research/reviews/M2_R21_SinglePassTrace独立初验报告.md`；实现者不得写review。
+同模块公共导出允许；不修改__init__、runner、receipt、labels、rank helper、配置或其他路径。
+不借用或替换ETF实现者，不创建第二现场；主线只读。任务书提交后实现阶段只读。
+
+允许source cwd内Windows fixture-only定向验证，解释器固定`D:\Miniforge3\python.exe`，
+单进程，`POLARS_MAX_THREADS=2`、`OMP_NUM_THREADS=1`。原生命令顺序：
+
+1. `D:\Miniforge3\python.exe -m pytest -q tests/unit/test_classic_eleventh_batch.py -p no:cacheprovider --basetemp=artifacts/agent_runs/m2-r21-single-pass-trace/pytest-<fresh-attempt>`
+2. `D:\Miniforge3\python.exe -m ruff check --no-cache src/quant/factors/classic_eleventh_batch.py tests/unit/test_classic_eleventh_batch.py`
+3. `D:\Miniforge3\python.exe -m mypy --cache-dir artifacts/agent_runs/m2-r21-single-pass-trace/mypy src/quant/factors/classic_eleventh_batch.py`
+
+fresh-attempt是每次不重复的验证标识，禁止复用已占用pytest目录；日志/产物/cache仅在source内
+`artifacts/agent_runs/m2-r21-single-pass-trace`，设置`PYTHONDONTWRITEBYTECODE=1`避免源码目录cache。
+保留原生stdout/stderr/exit并在delivery记录命令、环境、代码身份及实际结果，失败证据保留不覆盖。
+缺依赖如实STOP，不安装或换解释器；禁止xdist/全量测试/网络/真实data/既有run读取/trial/交易。
+反例及行为验证遵守5.1，保留已有手算oracle，不以共享核心自比较替代独立预期。
+Windows结果不冒充Linux Gate或经济有效性。交付后实现者退出，由原独立上下文审查及经理领域验收，
+再向统筹提交source SHA与证据；Worker不得合流、退休或删除现场。
