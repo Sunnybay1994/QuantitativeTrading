@@ -84,8 +84,35 @@ R21 CLI仍必须在snapshot之前拒绝：snapshot verifier、repository reader�
   必测完整calendar中第21/41位置及相邻位置的全市场eligibility缺日：本身份必须STOP，不移动后续调仓日；
   两个都已压缩的日期结果相等不是PASS。另验单只缺日不缩日历、fold首日不能延后锚定、
   exit恰等test_end保留/超界仅裁连续尾部，内部hole与尾部必须分别判定。
-- R21原任务要求的component成员计数、pair coverage、null reason、残差增量、非微盘/Mainboard-VW、
-  成交额及极端volume诊断的权威输入、schema、输出位置与不可得状态；因子值列不能冒充这些明细。
+- 完整诊断需求仍以`M2_RESEARCH_R21_Alpha101002量价背离任务书.md`第7节为权威，评价口径引用
+  `docs/research/投研评价指标与市场状态研究方法.md`；下表仅登记接入影响，不复制公式或另建SSOT。
+
+| 诊断 | 当前权威来源与可复用部分 | 尚缺合同与当前不可得状态 |
+| --- | --- | --- |
+| component成员计数 | `classic_eleventh_batch.py`的`long_form`与`ranked`中间关系；`cross_sectional_rank.py`定义rank成员语义 | 公共结果只有symbol/trade_date/alpha101_002，未暴露trace；`TRACE_OUTPUT_NOT_EXPOSED`。建议按date×component区分候选键数、finite值数、rank可定义数；finite成员只有1时rank可定义数不能算1。 |
+| 内部6期pair coverage | 同一因子计算的`_pair_count`及窗口完整性 | `TRACE_OUTPUT_NOT_EXPOSED`；建议保留每symbol/date的窗口ready及0..6配对计数，不完整窗口不能伪记为完整窗口的0配对。精确dtype/schema仍待冻结。 |
+| null/零方差原因 | 同一计算中的bar存在性、lag、正volume、rank成员及`_u_ss/_r_ss` | `TRACE_OUTPUT_NOT_EXPOSED`；最终null不能反推唯一原因。warmup、缺session/bar、非正volume、rank成员不足、pair不足、单侧/双侧零方差的flags和primary reason优先级待冻。原有负volume、非finite、schema整调用拒绝不能降成局部null。 |
+| 与references的RankCorr | `classic_factor_evaluation.py::evaluate_factor_redundancy`的daily成员数/相关系数及summary相关中位数 | 数值计算可复用，但joint-finite筛选后存活日期不是完整计划或对称coverage证明；须另用计划/成员网格识别遗漏日期。 |
+| 残差增量 | 目前没有#002对五个references的权威残差API；`max_daily_basic_control.py`是MAX专属控制，不可复制私有回归冒充通用实现 | `NOT_EVALUATED / RESIDUAL_SPEC_UNFROZEN`。rank/raw变量、联合或逐项controls、共同样本、截距、病态矩阵/minimum样本及增量评价身份待裁定；RankCorr不能替代残差要求，不能按测试收益挑controls或新增候选。 |
+| 非微盘/Mainboard-VW | `schemas.py`中Bar1d没有市值/板块；DailyBasic1d有市值类契约，但不证明本地覆盖 | `NOT_EVALUATED / POINT_IN_TIME_SIZE_BOARD_INPUT_UNBOUND`。须绑定PIT市值snapshot/join、历史板块和分位点参考总体。Top800/成交额不能冒充非微盘，等权不能冒充VW，流通市值与free-float口径不能互换；新输入另行准入。 |
+| 成交额分层 | Bar1d.amount及既有liquidity_20计算可作为候选解释变量；受保护证券级panel可复用评价逻辑 | `DIAGNOSTIC_SPEC_UNFROZEN`。层数/分位点、current或lagged、缺失和ties须事前冻；保持primary排序与持仓不变。已有聚合group_returns不能重建证券分层，成交额代理不能证明冲击成本或容量。 |
+| 极端volume变化 | 同一因子计算中的volume变化中间量，不在runner重算另一套特征 | `TRACE_OUTPUT_NOT_EXPOSED / DIAGNOSTIC_SPEC_UNFROZEN`。绝对/有符号阈值或分位点、窗口、成员/ties待冻；全样本primary保留，排除极端值只能独立诊断，不能重排后择优。 |
+
+三类coverage必须分别命名、保留各自分母与日期网格，禁止相互替代：
+
+1. component内部6期pair coverage衡量构造窗口中两rank的共同有效观测；不涉及未来收益。
+2. 因子可用率复用`run_classic_factors.py::evaluate_factor_coverage`的eligible_rows/valid_rows及coverage，
+   但其现有scheduled_rebalance依赖label后panel/exit_date_20；R21必须先闭合本节收益前严格session计划，
+   不直接继承压缩日期或以未来exit可用性定义分母。
+3. 未来label配对coverage来自`classic_factor_evaluation.py::evaluate_factor_period`的
+   factor_count/paired_count/coverage_numerator/coverage_denominator/coverage_status；只在receipt与经济授权后评价。
+   它不能证明内部6期窗口完整，也不能用内部pair_count证明未来label可用。
+
+single-pass trace仅为**建议的最小扩围**：经另行批准才可在eleventh factor及其定向测试增加显式诊断出口，
+复用一次计算的中间关系，并保持原三列公共结果及行为不变。不是已批准API，不隐式扩大第6节白名单；
+禁止runner复制log/rank算法、重算一套诊断或运行时截取私有locals。诊断网格可包含无bar键，
+但不得把这些键加回原因子结果。trace schema、null优先级、残差、PIT size/board、分层和极端阈值未冻结前，
+完整R21诊断仍不具备实现准入；字段契约和静态可复用函数均不证明真实数据已具备。
 - code dependency exact paths、report schema/selection metric、output集合与最终summary字段顺序。
 - 在独立worktree冻结exact base/owner。建议branch `codex/m2-r21-runner-integration`；当前未创建。
 
@@ -130,3 +157,9 @@ schema实际fixture验证仍UNRUN，完整接入的第5节仍未闭合，不将�
 本次仅更新第5节及本记录，前述“待裁定”是历史状态，现由严格canonical-session新身份裁定替代。
 公共receipt API、完整接入其他明细及独立实现准入仍未闭合；本裁定不授权data读取、labels、evaluate、publish
 或trial，不改变旧batch。测试、真实日历/eligibility网格核验仍UNRUN，不把设计裁定写成运行验证通过。
+
+2026-09-08基于main `fb24263911a7773cc844de73d14625d91d13b740`，在中央exact1窗口仅补第5节诊断影响矩阵
+和本记录。只读核对factor/rank、runner/evaluator、MAX专属控制及schema权威来源，区分可复用输出、
+未暴露trace和未冻结经济设计；三类coverage不可互证。single-pass trace保留为另行扩围建议，
+不修改第6节候选白名单、不批准新增接口。残差/PIT市值板块/分层阈值仍未冻结，完整接入仍未完成。
+本次仅文档diff、引用存在性与字节卫生检查；Python、测试、data/labels/evaluate/publish及trial均未执行。
