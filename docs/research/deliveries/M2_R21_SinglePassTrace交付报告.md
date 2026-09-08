@@ -87,5 +87,6 @@ promotion 或任何交易准入。
 - task: `M2-R21-SINGLE-PASS-TRACE`
 - branch: `codex/m2-r21-single-pass-trace`
 - exact base / pre-implementation HEAD: `b6998b7e9960eb089bf4e07034f9ed86c94fcbd0`
+- implementation source commit: `6fd05834cca189df50b9fa2542df5da56f73e023`
 - parent of implementation source commit: `b6998b7e9960eb089bf4e07034f9ed86c94fcbd0`
-- commit identity is recorded after the exact3 commit in the final delivery update.
+- the final documentation-only follow-up commit carries this completed delivery report; the implementation source identity above remains unchanged.
