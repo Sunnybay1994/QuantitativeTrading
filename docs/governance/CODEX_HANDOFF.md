@@ -1,5 +1,32 @@
 # Codex 项目迁移交接
 
+### 2026-09-08 R21 trace 合流与 ETF 在途状态（覆盖下文旧快照）
+
+- R21 SinglePassTrace source `3037dee198c383ccd10c8e7b52008fbf92f24468` 已经领域验收及原独立
+  reviewer 最终 `REVIEW_PASS / P0=P1=P2=0`，统筹 latest-main merge-tree 通过后 no-ff 合入
+  `883aa97d9e3179444741ac2b1efaa311a886b466`。仅三表 trace、原因子兼容及测试/合同/交付/审查文档，
+  不包含完整 runner、公共 receipt、残差诊断或经济运行。
+- 统筹在根 main 以 `D:\Miniforge3\python.exe`、`PYTHONPATH=F:\AI_Coding\QuantitativeTrading\src`、
+  `POLARS_MAX_THREADS=2`、`OMP_NUM_THREADS=1`、`PYTHONDONTWRITEBYTECODE=1` 运行冷导入，确认实际
+  module 位于根 src；定向 `pytest -q tests/unit/test_classic_eleventh_batch.py
+  tests/unit/test_cross_sectional_rank.py -p no:cacheprovider --basetemp <evidence>/pytest-temp`
+  为 `40 passed, 468 warnings`；生产+test Ruff `--no-cache` 通过，生产 mypy 指定隔离 cache 通过。
+  四阶段 native exit 均 0，stdout/stderr/exit 留在
+  `artifacts/agent_runs/m2-r21-trace-integration-20260908/`。warnings 为 Pandera/Polars concat 弃用告警，
+  未修改依赖；这些是 Windows 开发集成证据，不关闭 Linux Gate。
+- main 与 source 的 production/test Git blobs 分别同为 `08f9dae5e13fe4240d34db2fafacdcd540f5a9ea`、
+  `6f28093ad1bcc655b8e8e4fec481dcb25add89e8`。main checkout 为 CRLF、source 为 mixed，故文件 SHA
+  不直接复用：本次 main production SHA256 `d6fe9ae1e060e1eeab4332c7d16d85f98001a25ef8da5c36a2af0e1cfd9176ab`，
+  test SHA256 `d45cf11432876119c326a7abf95acd0859439beaae822ef694505da6346dfd55`。
+- R21 source tracked clean，但含原失败/成功验证证据，状态 `INTEGRATED / RETAINED_EVIDENCE`，不标 RETIRED，
+  不删除 source 或 ignored evidence。原 delivery/review 保留失败、返工和 SHA 勘误历史。
+- ETF 最新静态复验仍 `REVIEW_FAIL / P1=1`（测试覆盖不足）；已批准原 Worker 1 的原 subagent
+  `01a07e54-d06c-7bf0-b520-5bd1225ce828` 仅 test+delivery 的 `STATIC_REWORK3`。生产冻结 SHA256
+  `3d4047c48a2d33610d3cd989ffa42fe4ca2cb8849b9ee3f05b283987c20eb52e`；Python/data/network 仍 0。
+  框架经理接原独立 reviewer 复验，通过后另申请 fixture；尚未完成真实补数。
+- 投研 residual 数值提案仅为待独立审查基线，`SOLVER_AUTHORITY_UNBOUND`；NumPy 只是在 research optional
+  group 显式声明的待审批提案，不安装、不扩 core，不绕过公共 receipt 或经济准入。
+
 ### 2026-09-08 ETF 派发状态更正
 
 当前 fresh 读取已返回原 Worker 1 的完整历史：首次派发成功创建唯一隔离实现者
