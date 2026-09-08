@@ -140,7 +140,8 @@ single-pass trace仅为**建议的最小扩围**：经另行批准才可在eleve
   window_ready=Boolean、pair_count=Int64(nullable)、volume_ss=Float64(nullable)、return_ss=Float64(nullable)、
   alpha101_002=Float64(nullable)、primary_reason=String，随后追加下表列（顺序不变）。
   键symbol/trade_date，覆盖输入symbols×完整sessions。feature/rank/ss均投影自同次中间关系；
-  有bar键上的因子值必须与factors逐值相同。trace零值沿用最终正零归一，不另算一份相关值。
+  有bar键上的因子值必须与factors逐值相同。正零归一仅用于factors与observations的alpha101_002，
+  不另算一份相关值；其他中间列忠实投影，不额外修改零的符号、clamp或重算。
 
 | 追加列（顺序） | dtype/null | 逐行触发定义 |
 | --- | --- | --- |
@@ -174,9 +175,16 @@ primary_reason按以下顺序拟定，独立审查前不能用于运行：
 7. 否则VALID；须与当前bar存在且最终因子非null、finite严格等价，并通过原正零归一后再核对。
 
 微负ss不得伪称精确零或clamp；VALID不能仅凭方差predicate跳过旧函数最终有限性检查。
-pair_count=6而ss不可解释、reason与最终值矛盾均不得发布矛盾trace，但中间态新增检查不得扩大旧入口拒绝范围。
-若trace一致性拒绝与旧入口兼容发生冲突，必须回设计审查裁定；不得擅自给旧入口加失败条件。
-旧入口原有错误顺序和输入拒绝范围保持，未运行fixture不声称上述兼容性已获证明。
+共同计算核心及legacy入口保持原错误顺序：先投影原bar keys，再执行原最终因子有限性检查及正零归一；
+不得将全grid诊断检查放入共同入口。普通null与有限微负ss忠实保留，微负按NONPOSITIVE解释，
+不将预热或pair不足所致普通null当异常。非finite中间态、pair_count=6但ss为null等不可解释状态，
+以及reason与最终值矛盾，仅由trace分支专属拒绝，整个新入口不返回partial三表。
+该专属拒绝即使只由无bar grid行触发，也不得反向扩大legacy入口的拒绝范围。
+这是已明确的两入口诊断严格度差异，不授权改变旧计算数值或错误顺序；未运行fixture不声称兼容性已获证明。
+
+另补测试专属故障注入：以缺bar fixture或calendar末尾超集为基础，仅使无bar grid行的ss异常，
+原bar结果保持不变；legacy结果和拒绝行为须不变，trace依上述专属规则拒绝且无partial三表。
+该反例检验检查的作用域，不表示正常输入已发现该数值bug，也不允许在生产新增注入入口。
 
 必测新旧入口输出恒等及一次rank调用；乱序输入结果不变；无bar grid行不新增factor键；
 index0/1未定义lag为null而非已知缺失；index5/6窗口ready但warmup；lag1缺bar使下一位置feature null；
@@ -236,3 +244,9 @@ schema实际fixture验证仍UNRUN，完整接入的第5节仍未闭合，不将�
 既有missing-lag1与first-value-session-eight测试只作文本映射，未重跑。接口仍待独立设计审查，
 第6节runner-only候选范围不自动扩大；新增中间态检查与旧入口拒绝范围的潜在冲突必须回审查。
 仅文档静态检查，无生产/测试实现、Python、数据、trial或ETF派发；历史设计及STOP边界均保留。
+
+2026-09-08同一独立reviewer给出DESIGN_REVIEW_NEEDS_CLARIFICATION（P0=0/P1=0/P2=1）：
+指出trace检查及正零规范作用域不够明确；未发现确定算法矛盾。中央在main
+`636cf4fff98b9bda3d4d35c475cd4210a8db00e7`授exact1窗口，本次仅澄清5.1及本历史，
+保留原P2结论，补专属拒绝与故障注入反例；提交后交同reviewer零写复验。
+本次仅静态hygiene/diff检查，未实施trace、运行Python/测试、读取data或消费trial。
