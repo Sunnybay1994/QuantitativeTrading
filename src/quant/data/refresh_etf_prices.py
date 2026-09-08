@@ -12,9 +12,10 @@ import polars as pl
 
 from quant.data.calendar import expected_open_dates
 from quant.data.connectors.tushare import TushareConnector
-from quant.data.mappers import AkshareResearchPriceMapper
+from quant.data.mappers import AkshareResearchPriceMapper, TushareBarMapper
 from quant.data.research_price import validate_research_prices
-from quant.data.storage import CleanResearchPriceStore, RawStore
+from quant.data.storage import CleanBarStore, CleanResearchPriceStore, RawStore
+from quant.domain import Bar1dSchema
 
 
 def build_prices(daily: pl.DataFrame, dividends: pl.DataFrame) -> pl.DataFrame:
@@ -97,17 +98,23 @@ def refresh(
         pl.col("symbol").is_in(symbols)
     )
     latest = old.group_by("symbol").agg(pl.col("trade_date").max())
-    if latest.height != len(symbols):
+    bar_root = data_root / "clean/bar_1d"
+    old_bars = pl.read_parquet(str(bar_root / "date=*/*.parquet")).filter(
+        pl.col("symbol").is_in(symbols)
+    )
+    bar_latest = old_bars.group_by("symbol").agg(pl.col("trade_date").max().alias("last_bar"))
+    if latest.height != len(symbols) or bar_latest.height != len(symbols):
         raise ValueError("Existing ETF pool is incomplete")
-    last = latest["trade_date"].min()
-    assert isinstance(last, dt.date)
+    price_last, bar_last = latest["trade_date"].min(), bar_latest["last_bar"].min()
+    assert isinstance(price_last, dt.date) and isinstance(bar_last, dt.date)
+    last = min(price_last, bar_last)
     if last >= end:
-        return {"new_rows": 0, "latest_date": str(last), "message": "no-op"}
+        return {"new_rows": 0, "new_bar_rows": 0, "latest_date": str(last), "message": "no-op"}
     start = last - dt.timedelta(days=45)
     dates = expected_open_dates(data_root, symbols, start, end)
     end = max(dates)
     if last >= end:
-        return {"new_rows": 0, "latest_date": str(last), "message": "no-op"}
+        return {"new_rows": 0, "new_bar_rows": 0, "latest_date": str(last), "message": "no-op"}
     connector = TushareConnector(config_path=Path("configs/tushare.local.toml"))
     store = RawStore(data_root / "raw")
     daily_frames: list[pl.DataFrame] = []
@@ -119,7 +126,14 @@ def refresh(
                             "end_date": end.strftime("%Y%m%d")}, daily_frames),
             ("fund_div", {"ts_code": symbol}, dividend_frames),
         ):
-            frame = connector.query_raw(api, **params)
+            for attempt in range(3):
+                try:
+                    frame = connector.query_raw(api, **params)
+                    break
+                except Exception:
+                    if attempt == 2:
+                        raise RuntimeError(f"ETF {api} request failed for {symbol}") from None
+                    time.sleep(attempt + 1)
             snapshot = store.write(source="tushare", table=api, frame=frame, parameters=params)
             paths.append(str(snapshot.data_path))
             if not frame.is_empty():
@@ -134,20 +148,30 @@ def refresh(
     if not quality.passed or quality.rows != quality.expected_rows:
         raise ValueError(f"Incomplete ETF prices: {quality}")
     incoming, checks = join_seam(candidate, old)
+    bars = Bar1dSchema.validate(TushareBarMapper().map(daily.with_columns(
+        pl.col("ts_code").alias("_request_symbol"),
+        pl.col("ts_code").str.split(".").list.last().alias("_market"),
+    )))
+    incoming_bars = bars.join(bar_latest, on="symbol").filter(
+        pl.col("trade_date") > pl.col("last_bar")
+    ).drop("last_bar")
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     output = artifact_root / "data_quality" / "etf_refresh" / stamp
     output.mkdir(parents=True, exist_ok=False)
     # Save the anchor observations and incoming prices so the source switch is reproducible.
     old.filter(pl.col("trade_date") >= start).write_parquet(output / "old_overlap.parquet")
     incoming.write_parquet(output / "new_prices.parquet")
+    incoming_bars.write_parquet(output / "new_bars.parquet")
     summary = {
         "symbols": len(symbols), "previous_date": str(last), "latest_date": str(end),
         "new_rows": incoming.height, "new_dates": incoming["trade_date"].n_unique(),
+        "new_bar_rows": incoming_bars.height,
         "overlap_checks": checks, "raw_paths": paths,
         "formula": "TR[t] = TR[t-1] * (close[t] + cash_dividend[t]) / close[t-1]",
         "artifact_path": str(output),
     }
     CleanResearchPriceStore(root).upsert(incoming)
+    CleanBarStore(bar_root).upsert(incoming_bars)
     (output / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary
 

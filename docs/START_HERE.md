@@ -35,7 +35,7 @@ D:\Miniforge3\python.exe -m quant.research.run_s1_walk_forward --config configs/
 # 全市场因子评估（RankIC / 分组 / Top50 成本后收益）
 D:\Miniforge3\python.exe -m quant.research.run_classic_factors --config configs/research/m2_classic_daily_factors.toml --threads 8
 
-# 数据补齐（阶段 A 任务 A3 完成后应只需这一条）
+# 数据补齐（股票三表、ETF 总回报价格与成交行情；17点前取上一开市日）
 D:\Miniforge3\python.exe -m quant.data.refresh --to today
 ```
 
