@@ -1,0 +1,108 @@
+[research]
+hypothesis_id = "b31_pead40_20260909"
+hypothesis = "Positive SUE8 above the previous announcement quarter's 90th percentile predicts 40-session post-announcement drift."
+strategy_name = "b31_pead40"
+strategy_version = "v1"
+random_seed = 20260909
+
+[data]
+refresh_config = "configs/data/refresh.toml"
+warmup_start = 2023-01-01
+research_start = 2023-07-01
+research_end = 2026-09-08
+financial_snapshot = "b7_halfyear_20260909"
+history_start = 2017-01-01
+
+[universe]
+name = "liquid_top800_2019"
+freeze_start = 2019-01-01
+freeze_end = 2019-12-31
+top_n = 800
+minimum_observations = 120
+minimum_average_amount = 20000000.0
+
+[event]
+formula = "B17 unchanged SUE8: (delta_q - mean(previous8delta)) / std(previous8delta, ddof=1)"
+trigger = "first_observed_available_date_per_symbol_period_consolidated_industrial"
+multiple_periods_same_day = "latest_period_only"
+old_period_announcement = "exclude_if_not_latest_known_period"
+maximum_report_lag_days = 180
+revision = "no_new_event_and_never_rewrite_frozen_score"
+signal = "announcement_day_close"
+execution = "strictly_next_exchange_open"
+threshold = "previous_calendar_quarter_valid_eligible_event_sue_quantile_0.9_linear"
+minimum_threshold_events = 100
+insufficient_threshold = "skip_both_pead_and_all_event_comparator"
+positive_sue_required = true
+eligibility = "historical_non_ST_name_and_prior_close_20_session_average_amount_at_least_20million"
+minimum_price_history = 120
+
+[portfolio]
+initial_cash = 1000000.0
+slots = 50
+new_event_weight = 0.02
+holding_sessions = 40
+expiry = "sell_at_entry_session_index_plus_40_open"
+blocked_exit = "retry_every_open_until_sold"
+blocked_entry = "one_attempt_only_no_chase"
+overlap = "skip_new_announcement_while_symbol_held_no_extension"
+priority = "announcement_date_then_symbol_no_score_tiebreak"
+allocation = "up_to_2percent_open_equity_per_event_capped_by_unallocated_equity_equal_share"
+existing_holdings = "preserve_quantity_except_dividend_odd_lot_trim_to_board_lot_on_next_order_day"
+cash = "uninvested_cash_zero_return"
+fold_tail = "only_admit_events_with_scheduled_expiry_within_fold"
+benchmark = "510300.SH"
+comparison = "all_valid_same_eligible_announcement_events_without_sue_sign_or_threshold_same_slots"
+stock_dividend_withholding = 0.20
+delisted_holding_recovery = 0.0
+cost_multipliers = [0.5, 1.0, 2.0]
+
+[costs.a_share]
+commission_rate = 0.00025
+commission_min = 5.0
+stamp_tax_sell = 0.0005
+transfer_fee = 0.00001
+slippage = 0.001
+effective_from = 2023-08-28
+
+[costs.etf]
+commission_rate = 0.00025
+commission_min = 5.0
+slippage = 0.001
+effective_from = 2023-01-01
+
+[admission]
+minimum_positive_excess_folds = 2
+comparison = "all_events"
+minimum_compounded_excess_1x = 0.0
+minimum_compounded_return_2x = 0.0
+maximum_drawdown_2x = 0.30
+maximum_conclusion = "RESEARCH_ONLY"
+# Fixed single hypothesis, no parameter search. All market periods have been seen previously.
+# Quarterly past-only threshold, net-income SUE and 40-session hold are local adaptations.
+source_sue = "https://pages.stern.nyu.edu/~jlivnat/JAE%20submission.pdf"
+source_pead = "https://pages.stern.nyu.edu/~jlivnat/jar%20resubmit.pdf"
+
+[[walk_forward.folds]]
+train_start = 2023-07-01
+train_end = 2023-09-30
+validation_start = 2023-10-01
+validation_end = 2023-12-31
+test_start = 2024-01-01
+test_end = 2024-12-31
+
+[[walk_forward.folds]]
+train_start = 2023-07-01
+train_end = 2023-12-31
+validation_start = 2024-01-01
+validation_end = 2024-12-31
+test_start = 2025-01-01
+test_end = 2025-12-31
+
+[[walk_forward.folds]]
+train_start = 2023-07-01
+train_end = 2024-12-31
+validation_start = 2025-01-01
+validation_end = 2025-12-31
+test_start = 2026-01-01
+test_end = 2026-09-08
