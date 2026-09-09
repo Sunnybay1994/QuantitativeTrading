@@ -227,35 +227,31 @@ def _require_finite_nonnegative(name: str, value: float) -> None:
         raise ValueError(f"{name} 必须是非负有限数")
 
 
-def _require_finite_nonnegative(name: str, value: float) -> None:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(value)
-        or value < 0
-    ):
-        raise ValueError(f"{name} 必须是非负有限数")
-
-
 @dataclass(frozen=True)
 class EtfCostModel:
     commission_rate: float
     commission_min: float
     slippage: float
     effective_from: dt.date
+    slippage_per_share: float = 0.0
 
     def __post_init__(self) -> None:
         _require_finite_nonnegative("commission_rate", self.commission_rate)
         _require_finite_nonnegative("commission_min", self.commission_min)
         _require_finite_nonnegative("slippage", self.slippage)
+        _require_finite_nonnegative("slippage_per_share", self.slippage_per_share)
+        if self.slippage and self.slippage_per_share:
+            raise ValueError("Choose either fractional or per-share ETF slippage")
         if self.slippage >= 1:
             raise ValueError("滑点必须小于 1")
 
     def execution_price(self, open_price: float, side: str) -> float:
+        if open_price <= self.slippage_per_share:
+            raise ValueError("ETF price must exceed per-share slippage")
         if side == "BUY":
-            return open_price * (1 + self.slippage)
+            return open_price * (1 + self.slippage) + self.slippage_per_share
         if side == "SELL":
-            return open_price * (1 - self.slippage)
+            return open_price * (1 - self.slippage) - self.slippage_per_share
         raise ValueError(f"未知方向: {side}")
 
     def fee(self, notional: float, date: dt.date) -> float:
@@ -279,6 +275,7 @@ class EtfCostModel:
             commission_min=self.commission_min * multiplier,
             slippage=self.slippage * multiplier,
             effective_from=self.effective_from,
+            slippage_per_share=self.slippage_per_share * multiplier,
         )
 
 

@@ -48,6 +48,7 @@ def read_etf_dividends(
 def etf_session_states(
     bars: pl.DataFrame, dividends: pl.DataFrame, *, limit_fraction: float = 0.10, slippage: float = 0.0,
     official_limits: pl.DataFrame | None = None,
+    slippage_per_share: float = 0.0,
 ) -> dict[tuple[dt.date, str], DailyMarketState]:
     """Fixed pool: 10% daily bands, 0.001 tick, ex-dividend reference adjustment.
 
@@ -61,8 +62,8 @@ def etf_session_states(
             raise ValueError("ETF price bands missing; refresh ETF data first")
         return {(r["trade_date"], r["symbol"]): DailyMarketState(
             suspended=r["volume"] <= 0,
-            at_upper_limit=r["open"] * (1 + slippage) >= r["up_limit"] - 1e-9,
-            at_lower_limit=r["open"] * (1 - slippage) <= r["down_limit"] + 1e-9,
+            at_upper_limit=r["open"] * (1 + slippage) + slippage_per_share >= r["up_limit"] - 1e-9,
+            at_lower_limit=r["open"] * (1 - slippage) - slippage_per_share <= r["down_limit"] + 1e-9,
         ) for r in joined.iter_rows(named=True)}
     cash_div = {(r["ex_date"], r["symbol"]): r["div_cash"]
                 for r in dividends.iter_rows(named=True)}
@@ -80,8 +81,8 @@ def etf_session_states(
                           .quantize(Decimal("0.001"), rounding=ROUND_HALF_UP))
             states[(date, symbol)] = DailyMarketState(
                 suspended=row["volume"] <= 0,
-                at_upper_limit=row["open"] * (1 + slippage) >= upper - 1e-9,
-                at_lower_limit=row["open"] * (1 - slippage) <= lower + 1e-9,
+                at_upper_limit=row["open"] * (1 + slippage) + slippage_per_share >= upper - 1e-9,
+                at_lower_limit=row["open"] * (1 - slippage) - slippage_per_share <= lower + 1e-9,
             )
         previous[symbol] = row["close"]
     return states
