@@ -1,0 +1,154 @@
+name = "HK_CONNECT_WATCH_V1"
+frozen_as_of = 2026-09-09
+purpose = "Current eligible observation pool; historical membership is not inferred"
+eligibility_source = "data/clean/connect_snapshot/route=SH_CONNECT/date=2026-09-09/data.parquet"
+
+[[members]]
+symbol = "00001.HK"
+yahoo_symbol = "0001.HK"
+name = "长和"
+
+[[members]]
+symbol = "00002.HK"
+yahoo_symbol = "0002.HK"
+name = "中电控股"
+
+[[members]]
+symbol = "00003.HK"
+yahoo_symbol = "0003.HK"
+name = "香港中华煤气"
+
+[[members]]
+symbol = "00005.HK"
+yahoo_symbol = "0005.HK"
+name = "汇丰控股"
+
+[[members]]
+symbol = "00006.HK"
+yahoo_symbol = "0006.HK"
+name = "电能实业"
+
+[[members]]
+symbol = "00016.HK"
+yahoo_symbol = "0016.HK"
+name = "新鸿基地产"
+
+[[members]]
+symbol = "00027.HK"
+yahoo_symbol = "0027.HK"
+name = "银河娱乐"
+
+[[members]]
+symbol = "00066.HK"
+yahoo_symbol = "0066.HK"
+name = "港铁公司"
+
+[[members]]
+symbol = "00175.HK"
+yahoo_symbol = "0175.HK"
+name = "吉利汽车"
+
+[[members]]
+symbol = "00267.HK"
+yahoo_symbol = "0267.HK"
+name = "中信股份"
+
+[[members]]
+symbol = "00386.HK"
+yahoo_symbol = "0386.HK"
+name = "中国石油化工股份"
+
+[[members]]
+symbol = "00388.HK"
+yahoo_symbol = "0388.HK"
+name = "香港交易所"
+
+[[members]]
+symbol = "00669.HK"
+yahoo_symbol = "0669.HK"
+name = "创科实业"
+
+[[members]]
+symbol = "00700.HK"
+yahoo_symbol = "0700.HK"
+name = "腾讯控股"
+
+[[members]]
+symbol = "00762.HK"
+yahoo_symbol = "0762.HK"
+name = "中国联通"
+
+[[members]]
+symbol = "01088.HK"
+yahoo_symbol = "1088.HK"
+name = "中国神华"
+
+[[members]]
+symbol = "00857.HK"
+yahoo_symbol = "0857.HK"
+name = "中国石油股份"
+
+[[members]]
+symbol = "00883.HK"
+yahoo_symbol = "0883.HK"
+name = "中国海洋石油"
+
+[[members]]
+symbol = "00939.HK"
+yahoo_symbol = "0939.HK"
+name = "建设银行"
+
+[[members]]
+symbol = "00941.HK"
+yahoo_symbol = "0941.HK"
+name = "中国移动"
+
+[[members]]
+symbol = "00981.HK"
+yahoo_symbol = "0981.HK"
+name = "中芯国际"
+
+[[members]]
+symbol = "01299.HK"
+yahoo_symbol = "1299.HK"
+name = "友邦保险"
+
+[[members]]
+symbol = "01398.HK"
+yahoo_symbol = "1398.HK"
+name = "工商银行"
+
+[[members]]
+symbol = "01810.HK"
+yahoo_symbol = "1810.HK"
+name = "小米集团－Ｗ"
+
+[[members]]
+symbol = "02318.HK"
+yahoo_symbol = "2318.HK"
+name = "中国平安"
+
+[[members]]
+symbol = "02382.HK"
+yahoo_symbol = "2382.HK"
+name = "舜宇光学科技"
+
+[[members]]
+symbol = "03690.HK"
+yahoo_symbol = "3690.HK"
+name = "美团－Ｗ"
+
+[[members]]
+symbol = "02015.HK"
+yahoo_symbol = "2015.HK"
+name = "理想汽车－Ｗ"
+
+[[members]]
+symbol = "09988.HK"
+yahoo_symbol = "9988.HK"
+name = "阿里巴巴－Ｗ"
+
+[[members]]
+symbol = "09999.HK"
+yahoo_symbol = "9999.HK"
+name = "网易"

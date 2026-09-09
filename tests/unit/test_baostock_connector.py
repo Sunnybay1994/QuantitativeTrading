@@ -104,6 +104,23 @@ class FakeBaostock:
         )
 
 
+def test_intraday_detects_error_at_end_of_response():
+    class Interrupted(Response):
+        def next(self):
+            self.error_code = "10002007"
+            self.error_msg = "connection interrupted"
+            return False
+
+    class Client(FakeBaostock):
+        def query_history_k_data_plus(self, code, fields, **kwargs):
+            return Interrupted(fields=fields.split(","))
+
+    client = Client()
+    with pytest.raises(BaostockResponseError, match="minute response completion"):
+        BaostockConnector(client).fetch_intraday("600000.SH", dt.date(2020, 1, 1), dt.date(2026, 9, 8))
+    assert client.logout_calls == 1
+
+
 def test_baostock_bar_query_uses_unadjusted_daily_and_logs_out():
     client = FakeBaostock()
     raw = BaostockConnector(client).fetch_bar_1d(

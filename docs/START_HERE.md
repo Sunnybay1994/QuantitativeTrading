@@ -47,8 +47,14 @@ D:\Miniforge3\python.exe -m quant.data.publish_tushare_financials --workers 8
 # S0 模拟盘（先刷新数据）
 D:\Miniforge3\python.exe -m quant.execution.paper_ledger --to today
 
-# 数据补齐（股票三表、ETF 总回报价格与成交行情；17点前取上一开市日）
+# 数据补齐（日频 + 个股/ETF/港股分钟线；17点前取上一完整日）
 D:\Miniforge3\python.exe -m quant.data.refresh --to today
+
+# 仅分钟数据；BaoStock 单连接串行，首次历史回填时间较长
+D:\Miniforge3\python.exe -m quant.data.intraday --to today
+
+# 只刷新日频（例如分钟历史回填仍在后台运行时）
+D:\Miniforge3\python.exe -m quant.data.refresh --to today --no-intraday
 ```
 
 run 产物在 `artifacts/research/runs/<run_id>/`；`run.json` 有假设、config/code 哈希、结论。

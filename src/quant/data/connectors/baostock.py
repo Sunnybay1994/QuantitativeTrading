@@ -120,6 +120,20 @@ class BaostockConnector(BaseConnector):
     ) -> pl.DataFrame:
         raise NotImplementedError("BaoStock 公司行动口径尚未接入")
 
+    def fetch_intraday(self, symbol: str, start: dt.date, end: dt.date) -> pl.DataFrame:
+        """Fetch unadjusted five-minute bars; supplier time denotes bar end."""
+        _validate_range(start, end)
+        with self._session():
+            result = self.client.query_history_k_data_plus(
+                _to_baostock_code(symbol),
+                "date,time,code,open,high,low,close,volume,amount,adjustflag",
+                start_date=start.isoformat(), end_date=end.isoformat(),
+                frequency="5", adjustflag="3",
+            )
+            frame = _result_to_polars(result, "query_history_k_data_plus")
+            _ensure_success(result, "minute response completion")
+            return frame
+
     def fetch_adjust_factors(
         self, symbols: list[str], start: dt.date, end: dt.date
     ) -> pl.DataFrame:

@@ -1,0 +1,8 @@
+# HKEX securities-market half days in the current minute-history window.
+sources = [
+  "https://www.hkex.com.hk/eng/prod/dataprod/Documents/2024%20HKEX%20Calendar.pdf",
+  "https://www.hkex.com.hk/-/media/HKEX-Market/News/HKEX-Calendar/2025-HKEX-Calendar_r.pdf",
+  "https://www.hkex.com.hk/-/media/HKEX-Market/Mutual-Market/Stock-Connect/Reference-Materials/Trading-Hour%2C-Trading-and-Settlement-Calendar/2026-Calendar_pdf_e.pdf",
+]
+dates = [2024-02-09, 2024-12-24, 2024-12-31, 2025-01-28, 2025-12-24, 2025-12-31,
+         2026-02-16, 2026-12-24, 2026-12-31]

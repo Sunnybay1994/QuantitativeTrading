@@ -31,3 +31,23 @@ def test_failure_stops_before_etf_refresh(monkeypatch, tmp_path: Path):
     with pytest.raises(RuntimeError, match="unavailable stock response"):
         refresh.run_refresh(to="2026-09-08", data_root=tmp_path, artifact_root=tmp_path,
                             config=config, now=dt.datetime(2026, 9, 8, 20, tzinfo=refresh.SHANGHAI))
+
+
+def test_refresh_minutes_uses_requested_day_when_mainland_closed(monkeypatch, tmp_path):
+    config = tmp_path / "refresh.toml"
+    config.write_text('etf_config = "configs/research/m2_s2_volatility_target.toml"')
+    monkeypatch.setattr(refresh, "latest_session", lambda **kw: dt.date(2026, 9, 8))
+    monkeypatch.setattr(refresh, "refresh_stocks", lambda **kw: {"new_dates": 0, "new_rows": 0})
+    monkeypatch.setattr(refresh, "refresh_etfs", lambda **kw: {"new_rows": 0, "new_bar_rows": 0})
+    monkeypatch.setattr(refresh, "refresh_limits", lambda **kw: 0)
+    dates = []
+
+    def minutes(**kwargs):
+        dates.append(kwargs["end"])
+        return {"changed_rows": 15, "errors": []}
+
+    monkeypatch.setattr(refresh, "refresh_intraday", minutes)
+    result = refresh.run_refresh(to="2026-09-09", data_root=tmp_path, artifact_root=tmp_path,
+        config=config, now=dt.datetime(2026, 9, 9, 20, tzinfo=refresh.SHANGHAI))
+    assert dates == [dt.date(2026, 9, 9)]
+    assert result["message"] == "updated" and result["intraday_changed_rows"] == 15

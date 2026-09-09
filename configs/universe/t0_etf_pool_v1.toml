@@ -1,0 +1,115 @@
+name = "T0_ETF_POOL_V1"
+frozen_as_of = 2026-09-09
+metadata_source = "data/raw/tushare/fund_basic/date=2026-09-09/052802.899052Z-eb8c18f319c1.parquet"
+
+[[members]]
+symbol = "159920.SZ"
+yahoo_symbol = "159920.SZ"
+name = "华夏恒生ETF(QDII)"
+t0_category = "cross_border"
+t_plus_zero = true
+rule_source = "https://investor.szse.cn/knowledge/fund/trade/t20191030_571642.html"
+
+[[members]]
+symbol = "159934.SZ"
+yahoo_symbol = "159934.SZ"
+name = "易方达黄金ETF"
+t0_category = "gold"
+t_plus_zero = true
+rule_source = "https://investor.szse.cn/knowledge/fund/trade/t20191030_571642.html"
+
+[[members]]
+symbol = "159941.SZ"
+yahoo_symbol = "159941.SZ"
+name = "广发纳斯达克100ETF(QDII)"
+t0_category = "cross_border"
+t_plus_zero = true
+rule_source = "https://investor.szse.cn/knowledge/fund/trade/t20191030_571642.html"
+
+[[members]]
+symbol = "511010.SH"
+yahoo_symbol = "511010.SS"
+name = "国泰上证5年期国债ETF"
+t0_category = "bond"
+t_plus_zero = true
+rule_source = "https://www.sse.com.cn/assortment/fund/etf/question/"
+
+[[members]]
+symbol = "511260.SH"
+yahoo_symbol = "511260.SS"
+name = "国泰上证10年期国债ETF"
+t0_category = "bond"
+t_plus_zero = true
+rule_source = "https://www.sse.com.cn/assortment/fund/etf/question/"
+
+[[members]]
+symbol = "511380.SH"
+yahoo_symbol = "511380.SS"
+name = "博时中证可转债及可交换债券ETF"
+t0_category = "bond"
+t_plus_zero = true
+rule_source = "https://www.sse.com.cn/assortment/fund/etf/question/"
+
+[[members]]
+symbol = "511880.SH"
+yahoo_symbol = "511880.SS"
+name = "银华货币ETF-A"
+t0_category = "money"
+t_plus_zero = true
+rule_source = "https://www.sse.com.cn/assortment/fund/etf/question/"
+
+[[members]]
+symbol = "511990.SH"
+yahoo_symbol = "511990.SS"
+name = "华宝现金添益货币ETF-A"
+t0_category = "money"
+t_plus_zero = true
+rule_source = "https://www.sse.com.cn/assortment/fund/etf/question/"
+
+[[members]]
+symbol = "513050.SH"
+yahoo_symbol = "513050.SS"
+name = "易方达中证海外中国互联网50ETF(QDII)"
+t0_category = "cross_border"
+t_plus_zero = true
+rule_source = "https://www.sse.com.cn/assortment/fund/etf/question/"
+
+[[members]]
+symbol = "513100.SH"
+yahoo_symbol = "513100.SS"
+name = "国泰纳斯达克100ETF(QDII)"
+t0_category = "cross_border"
+t_plus_zero = true
+rule_source = "https://www.sse.com.cn/assortment/fund/etf/question/"
+
+[[members]]
+symbol = "513180.SH"
+yahoo_symbol = "513180.SS"
+name = "华夏恒生科技ETF(QDII)"
+t0_category = "cross_border"
+t_plus_zero = true
+rule_source = "https://www.sse.com.cn/assortment/fund/etf/question/"
+
+[[members]]
+symbol = "513330.SH"
+yahoo_symbol = "513330.SS"
+name = "华夏恒生互联网科技业ETF(QDII)"
+t0_category = "cross_border"
+t_plus_zero = true
+rule_source = "https://www.sse.com.cn/assortment/fund/etf/question/"
+
+[[members]]
+symbol = "513500.SH"
+yahoo_symbol = "513500.SS"
+name = "博时标普500ETF(QDII)"
+t0_category = "cross_border"
+t_plus_zero = true
+rule_source = "https://www.sse.com.cn/assortment/fund/etf/question/"
+
+[[members]]
+symbol = "518880.SH"
+yahoo_symbol = "518880.SS"
+name = "华安易富黄金ETF"
+t0_category = "gold"
+t_plus_zero = true
+rule_source = "https://www.sse.com.cn/assortment/fund/etf/question/"

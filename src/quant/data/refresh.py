@@ -14,6 +14,7 @@ import polars as pl
 from quant.data.calendar import expected_open_dates
 from quant.data.connectors.tushare import TushareConnector
 from quant.data.etf_limits import refresh_limits
+from quant.data.intraday import refresh_intraday
 from quant.data.mappers import TushareCalendarMapper
 from quant.data.refresh_etf_prices import refresh as refresh_etfs
 from quant.data.refresh_stocks import refresh as refresh_stocks
@@ -56,7 +57,7 @@ def latest_session(*, data_root: Path, through: dt.date) -> dt.date:
 
 def run_refresh(
     *, to: str, data_root: Path, artifact_root: Path, config: Path,
-    now: dt.datetime | None = None,
+    now: dt.datetime | None = None, intraday: bool = True,
 ) -> dict[str, Any]:
     through = completed_date(to, now or dt.datetime.now(SHANGHAI))
     end = latest_session(data_root=data_root, through=through)
@@ -69,11 +70,15 @@ def run_refresh(
     universe = tomllib.loads(Path(settings["etf_config"]).read_text(encoding="utf-8"))["universe"]
     symbols = sorted({s for value in universe.values() if isinstance(value, list) for s in value})
     limit_rows = refresh_limits(data_root=data_root, symbols=symbols, end=end)
-    changed = stocks["new_dates"] or etfs["new_rows"] or etfs["new_bar_rows"] or limit_rows
+    minutes = refresh_intraday(data_root=data_root, end=through) if intraday else {}
+    changed = (stocks["new_dates"] or etfs["new_rows"] or etfs["new_bar_rows"] or limit_rows
+               or minutes.get("changed_rows", 0))
     return {"latest_session": str(end), "message": "updated" if changed else "no-op",
             "stock_new_dates": stocks["new_dates"], "stock_new_rows": stocks["new_rows"],
             "etf_price_new_rows": etfs["new_rows"], "etf_bar_new_rows": etfs["new_bar_rows"],
             "etf_limit_new_rows": limit_rows,
+            "intraday_changed_rows": minutes.get("changed_rows", 0),
+            "intraday_errors": minutes.get("errors", []),
             "stock_artifact": stocks.get("artifact_path"), "etf_artifact": etfs.get("artifact_path")}
 
 
@@ -83,10 +88,13 @@ def main() -> None:
     parser.add_argument("--data-root", type=Path, default=Path("data"))
     parser.add_argument("--artifact-root", type=Path, default=Path("artifacts"))
     parser.add_argument("--config", type=Path, default=Path("configs/data/refresh.toml"))
+    parser.add_argument("--intraday", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
-    print(json.dumps(run_refresh(to=args.to, data_root=args.data_root,
-                                  artifact_root=args.artifact_root, config=args.config),
-                     ensure_ascii=False))
+    result = run_refresh(to=args.to, data_root=args.data_root, artifact_root=args.artifact_root,
+                         config=args.config, intraday=args.intraday)
+    print(json.dumps(result, ensure_ascii=False))
+    if result["intraday_errors"]:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
