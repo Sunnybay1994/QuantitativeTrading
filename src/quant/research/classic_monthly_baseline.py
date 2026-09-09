@@ -370,11 +370,11 @@ def run_baseline(
         extra_outputs.append((f"{paired_comparison}_targets", paired_targets))
     selected = sorted(set(targets.get_column("symbol")) | (
         set() if paired_targets is None else set(paired_targets.get_column("symbol"))))
-    execution_dates = sorted(targets.get_column("execution_date").unique().to_list())
-    data_execution_dates = sorted(set(execution_dates) | (
+    primary_execution_dates = sorted(targets.get_column("execution_date").unique().to_list())
+    execution_dates = sorted(set(primary_execution_dates) | (
         set() if paired_targets is None else set(paired_targets["execution_date"])))
     limits, suspensions, dividends, instruments = prepare_stock_execution_inputs(
-        data_root=data_root, symbols=selected, execution_dates=data_execution_dates, start=start, end=end,
+        data_root=data_root, symbols=selected, execution_dates=execution_dates, start=start, end=end,
         output=data_root / "clean/stock_execution" / config["research"]["hypothesis_id"],
     )
     dividends = dividends.with_columns((pl.col("div_cash") * (1 - portfolio["stock_dividend_withholding"])).alias("div_cash"))
@@ -509,7 +509,7 @@ def run_baseline(
     )
     report = {"hypothesis_id": config["research"]["hypothesis_id"], "conclusion": conclusion,
               "period": [str(start), str(end)], "sessions": sum(sum(f.test_start <= date <= f.test_end for date in all_sessions) for f in folds), "universe": len(candidates),
-              "selected_symbols": len(selected), "rebalance_count": len(execution_dates),
+              "selected_symbols": len(selected), "rebalance_count": len(primary_execution_dates),
               "results": results, "factor_diagnostics": diagnostic_rows, "redundancy": redundancy_rows, "excess_return_1x": excess,
               "dividend_withholding_assumption": portfolio["stock_dividend_withholding"],
               "caveat": caveat}
