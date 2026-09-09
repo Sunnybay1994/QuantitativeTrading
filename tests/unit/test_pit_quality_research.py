@@ -105,6 +105,43 @@ def test_monthly_signal_dates_exclude_a_truncated_final_month() -> None:
     ) == (dt.date(2025, 1, 31), dt.date(2025, 2, 28))
 
 
+def test_monthly_financial_input_keeps_announcement_lag_and_sparse_dates(monkeypatch, tmp_path):
+    from quant.research import monthly_financial_factors as monthly
+
+    histories = dict(zip(("income", "balancesheet", "cashflow"), _histories()))
+    for name, frame in histories.items():
+        histories[name] = frame.with_columns([
+            pl.when(pl.col(column) == dt.date(2024, 4, 22))
+            .then(pl.lit(dt.date(2024, 4, 30))).otherwise(pl.col(column)).alias(column)
+            for column in ("ann_date", "f_ann_date", "available_date")
+        ])
+    queries = []
+
+    def read(*, data_root, query):
+        assert data_root == tmp_path
+        queries.append(query)
+        return histories[query.dataset]
+
+    monkeypatch.setattr(monthly, "read_tushare_financial_history", read)
+    result, inputs = monthly.read_monthly_financial_factors(
+        data_root=tmp_path, settings={
+            "snapshot_id": "test_version", "history_start": dt.date(2017, 1, 1),
+            "company_type": "1", "signal_frequency": "completed_month_end",
+            "availability": "strictly_before_signal_date", "missing_quarter": "null",
+            "allowed_report_types": ["1"],
+        }, candidates=("000001.SZ",),
+        sessions=(dt.date(2024, 4, 30), dt.date(2024, 5, 6),
+                  dt.date(2024, 5, 31), dt.date(2024, 6, 3)),
+        start=dt.date(2024, 4, 1), end=dt.date(2024, 6, 3),
+    )
+    assert set(inputs) == {"income", "balancesheet", "cashflow"}
+    assert len(queries) == 3
+    assert all(q.start_period == dt.date(2017, 1, 1) and q.snapshot_id == "test_version"
+               and q.symbols == ("000001.SZ",) for q in queries)
+    assert result.factors["trade_date"].to_list() == [dt.date(2024, 4, 30), dt.date(2024, 5, 31)]
+    assert result.factors["pit_roe_ttm"].to_list() == [None, pytest.approx(56 / 55)]
+
+
 def test_same_day_announcement_is_excluded_then_enters_next_signal() -> None:
     income, balance, cash = _histories()
     result = build_pit_quality_signal_values(
