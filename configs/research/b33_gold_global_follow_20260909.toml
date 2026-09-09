@@ -1,0 +1,54 @@
+[research]
+hypothesis_id = "b33-gold-global-follow-design-screen-20260909"
+hypothesis = "Positive completed GC daily returns known before China open predict profitable same-day gold ETF continuation from 09:35 to 14:55 beyond three times trading cost."
+symbols = ["518880.SH", "159934.SZ"]
+design_start = 2026-01-01
+design_end = 2026-03-31
+source = "baostock"
+frequency = "5m"
+
+[signal]
+reference_symbol = "GC=F"
+reference_frequency = "1d"
+reference_selection = "latest_available_at_strictly_before_09:30_Asia/Shanghai"
+reference_return_threshold = 0.005
+maximum_reference_age_calendar_days = 4
+reference_age = "china_trade_date_minus_reference_date"
+missing_reference_return = "no_signal_no_fallback"
+weekends = "no_synthetic_rows"
+entry = "09:35_bar_open"
+exit = "14:55_bar_open"
+direction = "long_only"
+required_bars = 48
+maximum_round_trips_per_day = 1
+baseline = "every_complete_session_same_entry_exit_ignoring_reference"
+
+[costs]
+order_budget = 100000.0
+board_lot = 100
+tick_size = 0.001
+commission_rate = 0.00025
+commission_min = 5.0
+slippage_ticks_per_side = 1.0
+spread_ticks_assumption = 1.0
+cost_multipliers = [0.5, 1.0, 2.0]
+
+[screen]
+minimum_gross_to_cost = 3.0
+minimum_signals = 20
+apply_per_symbol = true
+conclusion_if_failed = "REJECTED"
+conclusion_if_passed = "RESEARCH_ONLY"
+
+[next_stage]
+requires_design_pass = true
+validation_start = 2026-04-01
+validation_end = 2026-06-30
+test_start = 2026-07-01
+test_end = 2026-09-08
+requires_separate_preregistration = true
+required_delay_minutes = [0, 1, 3]
+# This run is a design-cost screen only. No delay replay or formal walk-forward.
+
+[execution]
+auto_trade = false

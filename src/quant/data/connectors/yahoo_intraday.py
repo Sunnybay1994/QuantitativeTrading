@@ -6,7 +6,7 @@ import httpx
 
 
 def fetch_chart(symbol: str, frequency: str) -> dict[str, Any]:
-    ranges = {"1m": "7d", "5m": "60d", "60m": "730d"}
+    ranges = {"1m": "7d", "5m": "60d", "60m": "730d", "1d": "2y"}
     if frequency not in ranges:
         raise ValueError("Unsupported Yahoo frequency")
     response = httpx.get(
