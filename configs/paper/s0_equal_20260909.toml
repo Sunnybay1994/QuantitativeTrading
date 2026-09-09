@@ -1,0 +1,102 @@
+[meta]
+config_version = "1.0.0"
+purpose = "M2 S0/S1 reproducible baseline"
+
+[data]
+historical_raw_price_source = "akshare_sina"
+incremental_raw_price_source = "baostock"
+dividend_source = "akshare_sina"
+adjustment = "total_return_dividend"
+start_date = 2023-01-01
+end_date = 2026-09-08
+minimum_history_observations = 121
+
+[universe]
+name = "ETF_POOL_M2_V1"
+frozen_as_of = 2026-07-12
+wide = ["510300.SH", "159919.SZ", "510500.SH", "159922.SZ"]
+industry = ["512880.SH", "512170.SH", "515790.SH"]
+hong_kong_theme = ["513060.SH", "513330.SH", "513180.SH", "159920.SZ"]
+
+[strategy.equal_weight]
+rebalance = "month_end_signal_next_session_open"
+cash_buffer = 0.00
+
+[backtest]
+initial_cash = 1000000.0
+valuation_timing = "close"
+execution_timing = "next_session_open"
+
+[benchmark.csi300]
+symbol = "000300.SH"
+tracked_etf = "510300.SH"
+official_as_of = 2026-03-31
+official_ytd_return = -0.0389
+official_tolerance = 0.0001
+official_source = "https://oss-ch.csindex.com.cn/static/html/csindex/public/uploads/indices/detail/files/en/000300factsheeten.pdf"
+
+[strategy.etf_trend]
+equal_weight_baseline = true
+momentum_windows = [20, 60, 120]
+regression_window = 60
+top_k = 2
+cash_buffer = 0.00
+factor_version = "trend_v1"
+signal_timing = "close"
+execution_timing = "next_session_open"
+
+[walk_forward]
+follow_up_start = 2026-07-11
+frozen_parameters = [{top_k = 3, regression_window = 60}, {top_k = 2, regression_window = 60}, {top_k = 2, regression_window = 60}]
+enabled = true
+train_months = 24
+validation_months = 6
+test_months = 6
+step_months = 6
+selection_metric = "net_sharpe"
+cost_multipliers = [0.5, 1.0, 2.0]
+
+[walk_forward.grid]
+top_k = [1, 2, 3]
+regression_window = [40, 60, 90]
+
+[costs.a_share]
+# 研究假设，不代表任一券商最终费率；实盘前必须按券商验收结果新增有效期版本。
+commission_rate = 0.00025
+commission_min = 5.0
+stamp_tax_sell = 0.0005
+transfer_fee = 0.00001
+slippage = 0.001
+effective_from = 2026-01-01
+
+[costs.etf]
+# 二级市场 ETF 研究假设；覆盖当前回测样本，不计股票印花税，实盘前按券商账单校准。
+commission_rate = 0.00025
+commission_min = 5.0
+slippage = 0.001
+effective_from = 2023-01-01
+
+[research]
+hypothesis_id = "s0-equal-follow-up-20260908"
+hypothesis = "Frozen monthly equal-weight ETF comparator, including the July to September holdout."
+strategy_kind = "etf_trend"
+strategy_version = "1.0.0"
+conclusion = "RESEARCH_ONLY"
+random_seed = 0
+
+[admission]
+all_historical_folds_positive_1x = true
+minimum_positive_historical_fold_fraction_2x = 0.5
+per_fold_better_drawdown_or_calmar_than_s0 = true
+new_oos_minimum_excess_over_s0 = -0.02
+maximum_annualized_one_way_turnover = 3.0
+turnover_definition = "gross traded notional / (2 * initial cash) * 252 / sessions; includes initial deployment"
+oos_account_start = "fresh cash; first signal previous session close; thereafter month-end"
+
+[paper]
+name = "s0_equal"
+start_date = 2026-10-01
+auto_trade = false
+sell_only = false
+initial_cash = 1000000.0
+selection_reason = "Roadmap section 1.2 fallback: no active ETF candidate passes the preregistered criteria."
