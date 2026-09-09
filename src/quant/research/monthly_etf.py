@@ -23,8 +23,10 @@ from quant.research.lightweight_run import (
 )
 from quant.research.run_s1_walk_forward import metrics
 from quant.strategies.monthly_etf import MonthlyEtfStrategy
+from quant.strategies.inverse_volatility import InverseVolatilityStrategy
 
 CODE_PATHS = (
+    "src/quant/strategies/inverse_volatility.py",
     "src/quant/data/publish_cross_asset_etfs.py", "src/quant/data/refresh_etf_prices.py",
     "src/quant/research/monthly_etf.py", "src/quant/strategies/monthly_etf.py",
     "src/quant/research/classic_monthly_baseline.py", "src/quant/research/run_s1_walk_forward.py",
@@ -71,7 +73,7 @@ def completed_month_prices(prices: pl.DataFrame, calendar: pl.DataFrame) -> pl.D
 
 def monthly_targets(
     prices: pl.DataFrame, calendar: pl.DataFrame, *, start: dt.date, end: dt.date,
-    candidates: tuple[str, ...], name: str, strategy: MonthlyEtfStrategy | None,
+    candidates: tuple[str, ...], name: str, strategy: MonthlyEtfStrategy | InverseVolatilityStrategy | None,
 ) -> pl.DataFrame:
     sessions = calendar.filter((pl.col("market") == "SH") & pl.col("is_open"))["date"].sort().to_list()
     pairs = [(prior, day) for prior, day in zip(sessions, sessions[1:])
@@ -80,7 +82,13 @@ def monthly_targets(
     frames = []
     for as_of, execution in pairs:
         if strategy is not None:
-            target = strategy.target_weights(as_of, monthly)
+            if isinstance(strategy, InverseVolatilityStrategy):
+                cutoff = monthly.filter(pl.col("trade_date") <= as_of)["trade_date"].max()
+                if cutoff is None:
+                    raise ValueError("No completed month for volatility allocation")
+                target = strategy.target_weights(as_of, prices.filter(pl.col("trade_date") <= cutoff))
+            else:
+                target = strategy.target_weights(as_of, monthly)
         else:
             target = pl.DataFrame({"as_of": [as_of] * len(candidates), "symbol": candidates,
                 "strategy": [name] * len(candidates), "strategy_version": ["v1"] * len(candidates),
@@ -124,9 +132,17 @@ def main() -> None:
     if any(a.test_end >= b.test_start for a, b in zip(folds, folds[1:])):
         raise ValueError("Test folds must be disjoint")
     definition = config["strategy"]
-    strategy = MonthlyEtfStrategy(candidates, definition["kind"], definition["lookback_months"],
-        definition["skip_months"], definition["top_k"], name=spec["strategy_name"],
-        absolute_momentum_filter=definition.get("absolute_momentum_filter", False))
+    strategy: MonthlyEtfStrategy | InverseVolatilityStrategy
+    if definition["kind"] == "inverse_volatility":
+        if (definition["return_definition"] != "simple_total_return"
+            or definition["standard_deviation_ddof"] != 1 or definition["zero_volatility"] != "reject"
+            or definition["weight_cap"] != "none"):
+            raise ValueError("Unsupported inverse-volatility definition")
+        strategy = InverseVolatilityStrategy(candidates, definition["lookback_sessions"], name=spec["strategy_name"])
+    else:
+        strategy = MonthlyEtfStrategy(candidates, definition["kind"], definition["lookback_months"],
+            definition["skip_months"], definition["top_k"], name=spec["strategy_name"],
+            absolute_momentum_filter=definition.get("absolute_momentum_filter", False))
     results: list[dict[str, Any]] = []
     validations: list[dict[str, Any]] = []
     targets_out: list[pl.DataFrame] = []
