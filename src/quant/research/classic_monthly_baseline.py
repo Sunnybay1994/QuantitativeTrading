@@ -48,6 +48,8 @@ CODE_PATHS = (
     "src/quant/factors/revenue_growth.py",
     "src/quant/factors/profit_growth.py",
     "src/quant/factors/profit_acceleration.py",
+    "src/quant/factors/current_ratio.py",
+    "src/quant/research/monthly_current_ratio.py",
     "src/quant/factors/leverage.py",
     "src/quant/research/monthly_leverage.py",
     "src/quant/research/monthly_profit_acceleration.py",
@@ -219,6 +221,14 @@ def run_baseline(
                         or portfolio.get("retention_rank") != 75 or portfolio["top_k"] != 50
                         or "turnover_variability" not in config):
         raise ValueError("B28 requires fixed negative CV20 Top50 with Top75 retention")
+    if config.get("financials", {}).get("factor_family") == "current_ratio":
+        expected_current_ratio = {"formula": "total_cur_assets / total_cur_liab",
+            "period": "latest_known_same_statement_period",
+            "valid_values": "finite_nonnegative_current_assets_positive_current_liabilities"}
+        if (any(config.get("current_ratio", {}).get(k) != v for k, v in expected_current_ratio.items())
+            or config["factors"]["names"] != ["pit_current_ratio"]
+            or config["factors"]["directions"] != [1]):
+            raise ValueError("Unsupported current_ratio configuration")
     if config.get("financials", {}).get("factor_family") == "leverage":
         expected_leverage = {"formula": "total_liab / total_assets",
             "period": "latest_known_same_statement_period",
