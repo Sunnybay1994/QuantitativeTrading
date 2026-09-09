@@ -23,9 +23,12 @@ from quant.research.lightweight_run import (
 )
 from quant.research.run_s1_walk_forward import metrics
 from quant.strategies.monthly_etf import MonthlyEtfStrategy
+from quant.strategies.weekly_etf_reversal import WeeklyEtfReversalStrategy
+from quant.research.weekly_etf_targets import weekly_targets
 from quant.strategies.inverse_volatility import InverseVolatilityStrategy
 
 CODE_PATHS = (
+    "src/quant/strategies/weekly_etf_reversal.py", "src/quant/research/weekly_etf_targets.py",
     "src/quant/strategies/inverse_volatility.py",
     "src/quant/data/publish_cross_asset_etfs.py", "src/quant/data/refresh_etf_prices.py",
     "src/quant/research/monthly_etf.py", "src/quant/strategies/monthly_etf.py",
@@ -132,8 +135,19 @@ def main() -> None:
     if any(a.test_end >= b.test_start for a, b in zip(folds, folds[1:])):
         raise ValueError("Test folds must be disjoint")
     definition = config["strategy"]
-    strategy: MonthlyEtfStrategy | InverseVolatilityStrategy
-    if definition["kind"] == "inverse_volatility":
+    strategy: MonthlyEtfStrategy | InverseVolatilityStrategy | WeeklyEtfReversalStrategy
+    weekly = definition["kind"] == "weekly_reversal"
+    if weekly:
+        expected = {"lookback_sessions": 5, "top_k": 3,
+            "rebalance": "week_end_close_next_session_open",
+            "initial_deployment": "latest_completed_week_before_first_execution",
+            "return_definition": "simple_total_return", "tie_break": "symbol_ascending", "missing_price": "reject"}
+        if (any(definition.get(k) != v for k, v in expected.items())
+            or portfolio.get("paired_comparison") != "weekly_equal_weight_same_pool"
+            or portfolio["cost_multipliers"] != [0.5, 1.0, 2.0]):
+            raise ValueError("Unsupported weekly reversal definition")
+        strategy = WeeklyEtfReversalStrategy(candidates, name=spec["strategy_name"])
+    elif definition["kind"] == "inverse_volatility":
         if (definition["return_definition"] != "simple_total_return"
             or definition["standard_deviation_ddof"] != 1 or definition["zero_volatility"] != "reject"
             or definition["weight_cap"] != "none"):
@@ -154,9 +168,17 @@ def main() -> None:
             ("validation", fold.validation_start, fold.validation_end, [1.]),
             ("test", fold.test_start, fold.test_end, portfolio["cost_multipliers"]),
         ):
-            targets_by_comparison = {comparison: monthly_targets(prices, calendar, start=start, end=end,
-                candidates=candidates, name=spec["strategy_name"] if comparison == "strategy" else "s0_monthly",
-                strategy=strategy if comparison == "strategy" else None) for comparison in ("strategy", "s0")}
+            if isinstance(strategy, WeeklyEtfReversalStrategy):
+                targets_by_comparison = {comparison: weekly_targets(prices, calendar, start=start, end=end,
+                    candidates=candidates, name=spec["strategy_name"] if comparison == "strategy" else "s0_weekly",
+                    strategy=strategy if comparison == "strategy" else None)
+                    for comparison in ("strategy", "s0_weekly")}
+                targets_by_comparison["s0"] = monthly_targets(prices, calendar, start=start, end=end,
+                    candidates=candidates, name="s0_monthly", strategy=None)
+            else:
+                targets_by_comparison = {comparison: monthly_targets(prices, calendar, start=start, end=end,
+                    candidates=candidates, name=spec["strategy_name"] if comparison == "strategy" else "s0_monthly",
+                    strategy=strategy if comparison == "strategy" else None) for comparison in ("strategy", "s0")}
             sessions = calendar.filter((pl.col("market") == "SH") & pl.col("is_open")
                 & pl.col("date").is_between(start, end))["date"].sort().to_list()
             for comparison, targets in targets_by_comparison.items():
@@ -171,7 +193,7 @@ def main() -> None:
                 for comparison, targets in targets_by_comparison.items():
                     nav, trades, rejects = replay(bars=bars, calendar=calendar, instruments=instruments,
                         targets=targets, dividends=dividends, market_states=states, config=scenario,
-                        sessions=sessions, name=spec["strategy_name"] if comparison == "strategy" else "s0_monthly")
+                        sessions=sessions, name=spec["strategy_name"] if comparison == "strategy" else ("s0_weekly" if comparison == "s0_weekly" else "s0_monthly"))
                     score = metrics(nav, trades, initial_cash=portfolio["initial_cash"])
                     score.pop("target_gap_count", None)
                     score.pop("absolute_target_gap_notional", None)
@@ -193,7 +215,7 @@ def main() -> None:
         pl.concat(frames, how="diagonal_relaxed").write_parquet(buffer)
         outputs[f"{name}.parquet"] = buffer.getvalue()
     aggregate = []
-    for comparison in ("strategy", "s0"):
+    for comparison in (("strategy", "s0", "s0_weekly") if weekly else ("strategy", "s0")):
         for multiplier in portfolio["cost_multipliers"]:
             value = math.prod(1 + r["total_return"] for r in results
                              if r["comparison"] == comparison and r["cost_multiplier"] == multiplier) - 1
