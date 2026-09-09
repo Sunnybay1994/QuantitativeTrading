@@ -32,6 +32,8 @@ from quant.research.run_classic_factors import select_frozen_liquid_universe
 from quant.research.run_s1_walk_forward import metrics
 
 CODE_PATHS = (
+    "src/quant/factors/asset_growth.py",
+    "src/quant/research/monthly_asset_growth.py",
     "src/quant/factors/earnings_surprise.py",
     "src/quant/research/monthly_sue.py",
     "src/quant/research/monthly_intraday_factors.py",
@@ -151,6 +153,12 @@ def run_baseline(
     data_root: Path, artifact_root: Path,
 ) -> int:
     data, universe, portfolio = config["data"], config["universe"], config["portfolio"]
+    if config.get("financials", {}).get("factor_family") == "asset_growth":
+        expected_growth = {"formula": "total_assets_t / total_assets_t-4q - 1",
+                           "lag_quarters": 4, "required_assets": "both_positive",
+                           "missing_comparable_period": "null"}
+        if any(config.get("asset_growth", {}).get(k) != v for k, v in expected_growth.items()):
+            raise ValueError("Unsupported asset growth formula configuration")
     if config.get("financials", {}).get("factor_family") == "sue8":
         expected_sue = {
             "formula": "(delta_q - mean(delta_q-1..delta_q-8)) / std(delta_q-1..delta_q-8)",

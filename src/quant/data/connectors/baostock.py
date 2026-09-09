@@ -5,6 +5,7 @@ import importlib
 import socket
 from contextlib import contextmanager
 from typing import Any, Iterator
+from unittest.mock import patch
 
 import polars as pl
 
@@ -159,7 +160,28 @@ class BaostockConnector(BaseConnector):
         previous_timeout = socket.getdefaulttimeout()
         try:
             socket.setdefaulttimeout(45.0)
-            login_result = self.client.login()
+            client = self.client
+            if getattr(client, "__name__", "") == "baostock":
+                transport = importlib.import_module("baostock.util.socketutil")
+                context = importlib.import_module("baostock.common.context")
+                original_connect = transport.SocketUtil.connect
+
+                def connect(instance: Any) -> None:
+                    original_connect(instance)
+                    raw = getattr(context, "default_socket", None)
+                    if raw is not None:
+                        setattr(context, "default_socket", _BaoStockEOFSocket(raw))
+
+                # Patch only the SDK's connection creation during this serial login.
+                # The socket remains guarded through queries and logout.
+                with patch.object(transport.SocketUtil, "connect", connect):
+                    login_result = client.login()
+                if getattr(login_result, "error_code", None) != "0":
+                    raw = getattr(context, "default_socket", None)
+                    if raw is not None:
+                        raw.close()
+            else:
+                login_result = client.login()
         finally:
             socket.setdefaulttimeout(previous_timeout)
         _ensure_success(login_result, "login")
@@ -171,6 +193,22 @@ class BaostockConnector(BaseConnector):
 
 class BaostockResponseError(RuntimeError):
     """BaoStock 返回非零错误码。"""
+
+
+class _BaoStockEOFSocket:
+    """Turn peer closure into failure before the SDK enters its empty-recv loop."""
+
+    def __init__(self, connection: Any) -> None:
+        self.connection = connection
+
+    def recv(self, size: int) -> bytes:
+        chunk: bytes = self.connection.recv(size)
+        if not chunk:
+            raise ConnectionError("BaoStock peer closed the connection")
+        return chunk
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.connection, name)
 
 
 def _result_to_polars(result: Any, action: str) -> pl.DataFrame:

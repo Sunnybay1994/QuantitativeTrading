@@ -15,6 +15,66 @@ from quant.data.mappers import (
 )
 
 
+def test_sdk_peer_eof_exits_after_one_read(monkeypatch):
+    from quant.data.connectors.baostock import _BaoStockEOFSocket
+
+    transport = pytest.importorskip("baostock.util.socketutil")
+
+    class ClosedPeer:
+        reads = 0
+
+        def send(self, data):
+            return len(data)
+
+        def recv(self, size):
+            self.reads += 1
+            assert self.reads == 1, "SDK tried to read EOF again"
+            return b""
+
+    peer = ClosedPeer()
+    monkeypatch.setattr(transport.context, "default_socket", _BaoStockEOFSocket(peer), raising=False)
+    assert transport.send_msg("fixture") is None
+    assert peer.reads == 1
+
+
+def test_eof_guard_preserves_bytes_and_timeout():
+    from quant.data.connectors.baostock import _BaoStockEOFSocket
+
+    class Peer:
+        def recv(self, size):
+            if size == 1:
+                return b"x"
+            raise TimeoutError("fixture timeout")
+
+    guarded = _BaoStockEOFSocket(Peer())
+    assert guarded.recv(1) == b"x"
+    with pytest.raises(TimeoutError):
+        guarded.recv(2)
+
+
+def test_real_sdk_login_installs_eof_guard_and_restores_connect(monkeypatch):
+    from types import SimpleNamespace
+    from quant.data.connectors.baostock import _BaoStockEOFSocket
+
+    transport = pytest.importorskip("baostock.util.socketutil")
+    peer = SimpleNamespace(close=lambda: None)
+
+    def connect(instance):
+        transport.context.default_socket = peer
+
+    monkeypatch.setattr(transport.SocketUtil, "connect", connect)
+
+    def login():
+        transport.SocketUtil().connect()
+        assert isinstance(transport.context.default_socket, _BaoStockEOFSocket)
+        return Response()
+
+    client = SimpleNamespace(__name__="baostock", login=login, logout=lambda: None)
+    with BaostockConnector(client)._session():
+        assert transport.SocketUtil.connect is connect
+    assert transport.SocketUtil.connect is connect
+
+
 def test_login_socket_timeout_is_bounded_and_process_default_restored():
     previous = socket.getdefaulttimeout()
 

@@ -28,7 +28,10 @@ def read_monthly_financial_factors(
         raise ValueError("Unsupported financial factor configuration")
     histories: dict[str, pl.DataFrame] = {}
     sue = settings.get("factor_family") == "sue8"
-    datasets: tuple[FinancialFactorDataset, ...] = ("income",) if sue else ("income", "balancesheet", "cashflow")
+    growth = settings.get("factor_family") == "asset_growth"
+    datasets: tuple[FinancialFactorDataset, ...] = (
+        ("income",) if sue else ("balancesheet",) if growth else ("income", "balancesheet", "cashflow")
+    )
     for dataset in datasets:
         histories[dataset] = read_tushare_financial_history(
             data_root=data_root, query=TushareFinancialHistoryQuery(
@@ -37,6 +40,14 @@ def read_monthly_financial_factors(
                 symbols=candidates,
             ),
         )
+    if growth:
+        from quant.research.monthly_asset_growth import build_monthly_asset_growth
+
+        return build_monthly_asset_growth(
+            balance_history=histories["balancesheet"],
+            signal_dates=monthly_signal_sessions(sessions, start=start, end=end),
+            candidate_symbols=candidates,
+        ), histories
     if sue:
         from quant.research.monthly_sue import build_monthly_sue
 
