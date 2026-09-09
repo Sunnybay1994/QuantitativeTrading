@@ -1,5 +1,7 @@
 import datetime as dt
 import math
+import tomllib
+from pathlib import Path
 
 import polars as pl
 import pytest
@@ -9,6 +11,7 @@ from quant.data.intraday_bars import SCHEMA, TZ
 from quant.factors.intraday_low_frequency import (
     FACTOR_NAMES, compute_intraday_low_frequency_factors,
 )
+from quant.research.monthly_intraday_factors import read_monthly_intraday_factors
 
 
 def _day(day: dt.date, symbol: str = "600000.SH", flat: bool = False) -> pl.DataFrame:
@@ -38,6 +41,32 @@ def test_complete_day_hand_calculation_and_no_overnight_return():
     for factor, value in zip(FACTOR_NAMES, expected):
         assert result[factor].to_list() == [None, pytest.approx(value)]
     assert result["valid_day"].to_list() == [True, True]
+
+
+def test_monthly_reader_preserves_factor_values_and_hashes_consumed_bars(tmp_path):
+    settings = tomllib.loads(Path("configs/research/b8_tail_amount_20260909.toml").read_text(
+        encoding="utf-8"))["intraday"]
+    settings["window_sessions"] = 2
+    days = (dt.date(2026, 1, 5), dt.date(2026, 1, 6))
+    minute = pl.concat([_day(day) for day in days])
+    directory = tmp_path / "clean/bar_intraday/freq=5m/source=baostock/symbol=600000.SH"
+    directory.mkdir(parents=True)
+    path = directory / "data.parquet"
+    minute.write_parquet(path)
+    daily_bars = pl.DataFrame({"symbol": ["600000.SH"] * 2, "trade_date": days, "volume": [480., 480.]})
+    args = dict(data_root=tmp_path, settings=settings, candidates=("600000.SH",),
+                sessions=days, start=days[0], end=days[-1], daily_bars=daily_bars)
+    daily, digest = read_monthly_intraday_factors(**args)
+    assert_frame_equal(daily, compute_intraday_low_frequency_factors(minute, sessions=days, window=2))
+    assert (digest.rows, digest.min_date, digest.max_date) == (96, days[0], days[-1])
+    # Storage row order cannot change the consumed input, but a price/amount revision does.
+    minute.reverse().write_parquet(path)
+    assert read_monthly_intraday_factors(**args)[1] == digest
+    minute.with_columns(pl.col("amount") * 1.01).write_parquet(path)
+    assert read_monthly_intraday_factors(**args)[1].content_sha256 != digest.content_sha256
+    minute.filter(pl.col("trade_date") == days[0]).write_parquet(path)
+    with pytest.raises(ValueError, match="known traded"):
+        read_monthly_intraday_factors(**args)
 
 
 def test_missing_bar_missing_day_and_future_invariance():

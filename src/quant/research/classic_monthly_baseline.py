@@ -25,13 +25,16 @@ from quant.research.classic_factor_composite import (
 from quant.research.classic_factor_evaluation import evaluate_factor_period, evaluate_factor_redundancy
 from quant.research.factor_labels import build_next_open_factor_labels
 from quant.research.lightweight_run import (
-    LightweightResearchRunV1, ResearchFoldV1, canonical_json_bytes, compute_code_sha256,
+    LightweightResearchRunV1, ResearchFoldV1, ResearchInputDigestV1, canonical_json_bytes, compute_code_sha256,
     dataframe_input_digest, publish_lightweight_research_run,
 )
 from quant.research.run_classic_factors import select_frozen_liquid_universe
 from quant.research.run_s1_walk_forward import metrics
 
 CODE_PATHS = (
+    "src/quant/research/monthly_intraday_factors.py",
+    "src/quant/data/stock_intraday_repository.py",
+    "src/quant/factors/intraday_low_frequency.py",
     "src/quant/research/run_classic_factor_composite.py",
     "src/quant/research/classic_monthly_baseline.py",
     "src/quant/research/classic_factor_composite.py",
@@ -172,6 +175,18 @@ def run_baseline(
     factors = compute_classic_daily_factors(bars)
     extra_inputs: list[tuple[str, pl.DataFrame, tuple[str, ...], str]] = []
     extra_outputs: list[tuple[str, pl.DataFrame]] = []
+    extra_digests: list[ResearchInputDigestV1] = []
+    if "intraday" in config:
+        from quant.research.monthly_intraday_factors import read_monthly_intraday_factors
+
+        intraday, minute_digest = read_monthly_intraday_factors(
+            data_root=data_root, settings=config["intraday"], candidates=candidates,
+            sessions=all_sessions, start=data["warmup_start"], end=end, daily_bars=bars,
+        )
+        factors = factors.join(intraday, on=["symbol", "trade_date"], how="left", validate="1:1")
+        extra_digests.append(minute_digest)
+        extra_outputs.append(("intraday_factors", intraday))
+        print(f"Computed minute factors from {minute_digest.rows} bars", flush=True)
     if "financials" in config:
         from quant.research.monthly_financial_factors import read_monthly_financial_factors
 
@@ -315,6 +330,8 @@ def run_baseline(
         if "financials" in config else
         "Historical replication within a fixed liquid universe; the IVOL regressors are local size/value proxies."
         if "b3" in config else
+        "Five-minute historical replication in the frozen liquid pool; incomplete sessions invalidate the rolling factors."
+        if "intraday" in config else
         "The component selection used earlier research; this is an exploratory baseline."
     )
     report = {"hypothesis_id": config["research"]["hypothesis_id"], "conclusion": conclusion,
@@ -346,7 +363,7 @@ def run_baseline(
         signal_timing="close", execution_timing="next_session_open", valuation_timing="close",
         folds=tuple(folds), cost_multipliers=tuple(portfolio["cost_multipliers"]),
         selection_metric="fixed_equal_zscore",
-        inputs=tuple(sorted((dataframe_input_digest(name=name, frame=frame, sort_by=sort, date_column=date)
+        inputs=tuple(sorted([*extra_digests, *(dataframe_input_digest(name=name, frame=frame, sort_by=sort, date_column=date)
                      for name, frame, sort, date in (
                          ("bars", bars, ("trade_date", "symbol"), "trade_date"),
                          ("benchmark-bars", benchmark_bars, ("trade_date", "symbol"), "trade_date"),
@@ -358,7 +375,7 @@ def run_baseline(
                          ("limits", limits, ("trade_date", "symbol"), "trade_date"),
                          ("suspensions", suspensions, ("trade_date", "symbol"), "trade_date"),
                          *extra_inputs,
-                     )), key=lambda item: item.name)), outputs=(), aggregate_metrics=(
+                     ))], key=lambda item: item.name)), outputs=(), aggregate_metrics=(
                          ("excess_return_1x", excess), ("net_return_1x", one_return),
                          ("net_return_2x", two_return)),
         caveats=(report["caveat"],),
