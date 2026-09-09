@@ -122,6 +122,25 @@ def replay(
             pl.concat(trades, how="vertical_relaxed"), pl.concat(rejections, how="vertical_relaxed"))
 
 
+def meets_portfolio_candidate(results: list[dict[str, Any]], admission: dict[str, Any]) -> bool:
+    """Apply the roadmap's return, cost, turnover and drawdown rules to each fold."""
+    one = [row for row in results if row["comparison"] == "top50" and row["cost_multiplier"] == 1]
+    by_key = {(row["fold"], row["comparison"], row["cost_multiplier"]): row for row in results}
+    if not one:
+        return False
+    for row in one:
+        benchmark = by_key.get((row["fold"], "510300", 1))
+        double = by_key.get((row["fold"], "top50", 2))
+        if benchmark is None or double is None:
+            return False
+        if not (row["cagr"] - benchmark["cagr"] >= admission["minimum_annual_excess_1x"]
+                and double["total_return"] > 0
+                and row["annualized_one_way_turnover"] <= admission["maximum_annual_one_way_turnover"]
+                and -row["max_drawdown"] <= -benchmark["max_drawdown"] * admission["maximum_drawdown_ratio_to_benchmark"]):
+            return False
+    return True
+
+
 def run_baseline(
     *, config: dict[str, Any], config_path: Path, project_root: Path,
     data_root: Path, artifact_root: Path,
@@ -188,6 +207,7 @@ def run_baseline(
     targets = pl.concat([build_monthly_zscore_targets(
         scored, sessions=all_sessions, start=fold.test_start, end=fold.test_end, top_k=portfolio["top_k"],
         strategy_name=config["research"]["strategy_name"],
+        retention_rank=portfolio.get("retention_rank"),
     ).with_columns(pl.lit(fold.fold).alias("fold")) for fold in folds])
     selected = sorted(targets.get_column("symbol").unique().to_list())
     execution_dates = sorted(targets.get_column("execution_date").unique().to_list())
@@ -286,7 +306,10 @@ def run_baseline(
                   and sum(r["rank_ic_mean"] > 0 for r in primary) >= config["admission"]["minimum_positive_test_folds"]
                   and max(r["median_abs_rank_corr"] for r in redundancy_rows)
                   < config["admission"]["maximum_absolute_rank_correlation"])
-    conclusion: Literal["RESEARCH_ONLY", "REJECTED"] = "RESEARCH_ONLY" if passed else "REJECTED"
+    conclusion: Literal["RESEARCH_ONLY", "REJECTED", "PAPER_CANDIDATE"] = "RESEARCH_ONLY" if passed else "REJECTED"
+    if (config["admission"].get("maximum_conclusion") == "PAPER_CANDIDATE"
+        and meets_portfolio_candidate(results, config["admission"])):
+        conclusion = "PAPER_CANDIDATE"
     caveat = (
         "Monthly PIT replication using a fixed historical financial snapshot; most August 2026 signals still use Q1 statements."
         if "financials" in config else

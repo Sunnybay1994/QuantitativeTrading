@@ -49,23 +49,31 @@ def build_equal_weight_zscore_composite(
 
 def build_monthly_zscore_targets(
     panel: pl.DataFrame, *, sessions: tuple[dt.date, ...], start: dt.date,
-    end: dt.date, top_k: int, strategy_name: str,
+    end: dt.date, top_k: int, strategy_name: str, retention_rank: int | None = None,
 ) -> pl.DataFrame:
     """Take Top-K at the prior close for initial deployment and month changes."""
+    retention_rank = top_k if retention_rank is None else retention_rank
+    if top_k < 1 or retention_rank < top_k:
+        raise ValueError("Retention rank must be at least Top-K")
+    previous: set[str] = set()
     signals = [(day, following) for day, following in zip(sessions, sessions[1:])
                if start <= following <= end
                and (day < start or day.month != following.month)]
     rows: list[dict[str, object]] = []
     for as_of, execution_date in signals:
-        selected = panel.filter(pl.col("trade_date") == as_of).sort(
+        ranked = panel.filter(pl.col("trade_date") == as_of).sort(
             "equal_zscore", "symbol", descending=[True, False],
-        ).head(top_k)
+        )
+        retained = ranked.head(retention_rank).filter(pl.col("symbol").is_in(sorted(previous)))
+        selected = pl.concat([retained, ranked.filter(~pl.col("symbol").is_in(retained["symbol"].implode()))
+                              .head(top_k - retained.height)])
         if selected.height != top_k:
             raise ValueError(f"Insufficient complete factors on {as_of}")
         rows.extend({"as_of": as_of, "execution_date": execution_date,
                      "strategy": strategy_name, "strategy_version": "v1",
                      "symbol": symbol, "weight": 1.0 / top_k}
                     for symbol in selected.get_column("symbol"))
+        previous = set(selected.get_column("symbol"))
     if not rows:
         raise ValueError("No monthly signals in the requested window")
     return pl.DataFrame(rows).sort("execution_date", "symbol")
