@@ -190,7 +190,11 @@ def run_baseline(
 ) -> int:
     data, universe, portfolio = config["data"], config["universe"], config["portfolio"]
     cv20_buffer = config["admission"].get("comparison") == "cv20_unbuffered"
-    if cv20_buffer and (config["factors"]["names"] != ["turnover_cv20"]
+    cv20_bimonthly = config["admission"].get("comparison") == "cv20_monthly_buffered"
+    if cv20_bimonthly and (portfolio.get("execution_months") != [1, 3, 5, 7, 9, 11]
+                           or config["admission"].get("maximum_fold_turnover") != 6.0):
+        raise ValueError("B30 requires fixed odd execution months and a 6x turnover limit")
+    if (cv20_buffer or cv20_bimonthly) and (config["factors"]["names"] != ["turnover_cv20"]
                         or config["factors"]["directions"] != [-1]
                         or portfolio.get("retention_rank") != 75 or portfolio["top_k"] != 50
                         or "turnover_variability" not in config):
@@ -340,6 +344,7 @@ def run_baseline(
         scored, sessions=all_sessions, start=fold.test_start, end=fold.test_end, top_k=portfolio["top_k"],
         strategy_name=config["research"]["strategy_name"],
         retention_rank=portfolio.get("retention_rank"),
+        execution_months=(1, 3, 5, 7, 9, 11) if cv20_bimonthly else None,
     ).with_columns(pl.lit(fold.fold).alias("fold")) for fold in folds])
     paired_targets: pl.DataFrame | None = None
     paired_comparison, paired_strategy = "three_factor", "b25_paired_three_factor_baseline"
@@ -352,18 +357,24 @@ def run_baseline(
         if cv20_buffer:
             paired_components = (("turnover_cv20", -1),)
             paired_comparison, paired_strategy = "cv20_unbuffered", "b28_paired_cv20_unbuffered"
+        if cv20_bimonthly:
+            paired_components = (("turnover_cv20", -1),)
+            paired_comparison, paired_strategy = "cv20_monthly_buffered", "b30_paired_cv20_monthly_buffered"
         paired_scores = build_equal_weight_zscore_composite(scored,
             component_directions=paired_components)
         paired_targets = pl.concat([build_monthly_zscore_targets(
             paired_scores, sessions=all_sessions, start=fold.test_start, end=fold.test_end,
             top_k=portfolio["top_k"], strategy_name=paired_strategy,
+            retention_rank=75 if cv20_bimonthly else None,
         ).with_columns(pl.lit(fold.fold).alias("fold")) for fold in folds])
         extra_outputs.append((f"{paired_comparison}_targets", paired_targets))
     selected = sorted(set(targets.get_column("symbol")) | (
         set() if paired_targets is None else set(paired_targets.get_column("symbol"))))
     execution_dates = sorted(targets.get_column("execution_date").unique().to_list())
+    data_execution_dates = sorted(set(execution_dates) | (
+        set() if paired_targets is None else set(paired_targets["execution_date"])))
     limits, suspensions, dividends, instruments = prepare_stock_execution_inputs(
-        data_root=data_root, symbols=selected, execution_dates=execution_dates, start=start, end=end,
+        data_root=data_root, symbols=selected, execution_dates=data_execution_dates, start=start, end=end,
         output=data_root / "clean/stock_execution" / config["research"]["hypothesis_id"],
     )
     dividends = dividends.with_columns((pl.col("div_cash") * (1 - portfolio["stock_dividend_withholding"])).alias("div_cash"))
@@ -463,10 +474,12 @@ def run_baseline(
                   and sum(r["rank_ic_mean"] > 0 for r in primary) >= config["admission"]["minimum_positive_test_folds"]
                   and max(r["median_abs_rank_corr"] for r in redundancy_rows)
                   < config["admission"]["maximum_absolute_rank_correlation"])
-    elif cv20_buffer:
+    elif cv20_buffer or cv20_bimonthly:
         from quant.research.monthly_cv20_buffer import summarize_cv20_buffer
 
-        portfolio_admission = summarize_cv20_buffer(results)
+        portfolio_admission = summarize_cv20_buffer(
+            results, comparison=paired_comparison,
+            maximum_fold_turnover=6.0 if cv20_bimonthly else None)
         passed = portfolio_admission["passed"]
     else:
         portfolio_admission = portfolio_admission_summary(results, config["admission"].get("comparison", "510300"))

@@ -50,15 +50,19 @@ def build_equal_weight_zscore_composite(
 def build_monthly_zscore_targets(
     panel: pl.DataFrame, *, sessions: tuple[dt.date, ...], start: dt.date,
     end: dt.date, top_k: int, strategy_name: str, retention_rank: int | None = None,
+    execution_months: tuple[int, ...] | None = None,
 ) -> pl.DataFrame:
     """Take Top-K at the prior close for initial deployment and month changes."""
     retention_rank = top_k if retention_rank is None else retention_rank
     if top_k < 1 or retention_rank < top_k:
         raise ValueError("Retention rank must be at least Top-K")
+    if execution_months is not None and execution_months != (1, 3, 5, 7, 9, 11):
+        raise ValueError("Only the fixed B30 odd-month execution schedule is supported")
     previous: set[str] = set()
     signals = [(day, following) for day, following in zip(sessions, sessions[1:])
                if start <= following <= end
-               and (day < start or day.month != following.month)]
+               and (day < start or (day.month != following.month
+                    and (execution_months is None or following.month in execution_months)))]
     rows: list[dict[str, object]] = []
     for as_of, execution_date in signals:
         ranked = panel.filter(pl.col("trade_date") == as_of).sort(
