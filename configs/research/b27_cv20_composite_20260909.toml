@@ -1,0 +1,131 @@
+# B27 is a new historical composition experiment; B25 is unchanged.
+# Only the inclusion of negative CV20 changes from the paired three-factor baseline.
+[research]
+hypothesis_id = "b27-cv20-four-factor-monthly-top50-20260909"
+hypothesis = "Adding negative CV20 to the fixed STD20 (-), ROC20 (+), RSV20 (-) monthly Top50 baseline, with equal z-score component weights, improves 1x compounded return over the same eligible-pool three-factor baseline while keeping 1x and 2x compounded returns positive. No window, direction or weight selection is performed."
+strategy_name = "b27_cv20_four_factor_top50"
+strategy_version = "v1"
+random_seed = 20260909
+
+[data]
+refresh_config = "configs/data/refresh.toml"
+warmup_start = 2023-01-01
+research_start = 2023-07-01
+research_end = 2026-09-08
+
+[universe]
+name = "liquid_top800_2019"
+freeze_start = 2019-01-01
+freeze_end = 2019-12-31
+top_n = 800
+minimum_observations = 120
+minimum_average_amount = 20000000.0
+
+[factors]
+names = ["alpha158_std20", "alpha158_roc20", "alpha158_rsv20", "turnover_cv20"]
+directions = [-1, 1, -1, -1]
+minimum_history_rows = 120
+minimum_daily_symbols = 100
+
+[composite]
+method = "equal_weight_zscore_monthly"
+standard_deviation_ddof = 0
+zero_variance_component = "zero"
+missing_component = "exclude_symbol"
+winsorization = "none"
+
+[turnover_variability]
+formula = "std(turnover_rate / 100, last_20_exchange_sessions, ddof=0) / mean(turnover_rate / 100, last_20_exchange_sessions)"
+input_table = "daily_basic"
+input_column = "turnover_rate"
+window_sessions = 20
+parameter_grid = [20]
+minimum_valid_sessions = 20
+missing_session = "null_window_not_previous_20_observations"
+valid_values = "finite_nonnegative_with_positive_mean"
+zero_turnover = "retain_only_if_reported_do_not_impute"
+signal_frequency = "completed_month_end"
+availability = "signal_date_close"
+label = "next_session_open_to_open_20_sessions_later"
+drop_labels_crossing_fold_end = true
+direction_selection = "fixed_negative_no_validation_flip"
+source = "https://doi.org/10.1016/S0304-405X(00)00080-5"
+formula_reference = "https://faculty.ucr.edu/~abarinov/Turnover%20Variability%20(JBF%20R3).pdf"
+adaptation = "US 36-month monthly turnover variability to China 20-session daily turnover variability; turnover_rate uses unrestricted circulating shares, not total outstanding shares."
+
+[portfolio]
+top_k = 50
+initial_cash = 1000000.0
+cost_multipliers = [0.5, 1.0, 2.0]
+rebalance = "month_end_close_next_session_open"
+benchmark = "510300.SH"
+benchmark_rebalance = "buy_and_hold"
+stock_dividend_withholding = 0.20
+delisted_holding_recovery = 0.0
+initial_signal = "previous_session_close"
+
+[costs.a_share]
+commission_rate = 0.00025
+commission_min = 5.0
+stamp_tax_sell = 0.0005
+transfer_fee = 0.00001
+slippage = 0.001
+effective_from = 2023-08-28
+
+[costs.etf]
+commission_rate = 0.00025
+commission_min = 5.0
+slippage = 0.001
+effective_from = 2023-01-01
+
+[admission]
+comparison = "three_factor"
+maximum_conclusion = "RESEARCH_ONLY"
+require_positive_1x_compounded_return = true
+require_positive_2x_compounded_return = true
+require_positive_paired_1x_compounded_increment = true
+# Each threshold is strict > 0 across the three disjoint test folds compounded.
+# Report every fold even if the compound criterion passes; no single-factor IC
+# admission or redundancy selection is performed in this composition experiment.
+
+[eligibility]
+historical_exchange_name = true
+exclude_st_or_delisting_name = true
+unknown_historical_name = "exclude"
+
+[evaluation]
+rank_ic_horizon_sessions = 20
+rank_ic_sampling = "completed_month_end_only"
+groups = 5
+report = ["rank_ic", "icir", "fold_signs", "group_monotonicity", "top50_cost_returns", "cagr", "sharpe", "max_drawdown", "one_way_turnover", "excess_510300", "redundancy"]
+execution_engine = "quant.backtest.daily_account"
+execution_rules = ["A_share_T_plus_1", "board_lot", "suspension_no_fill", "price_limit_no_fill", "next_session_open"]
+baseline = "same_eligible_universe_STD20_ROC20_RSV20_monthly_and_510300"
+baseline_costs = "same_config_same_engine_same_folds"
+
+[[walk_forward.folds]]
+train_start = 2023-07-01
+train_end = 2023-09-30
+validation_start = 2023-10-01
+validation_end = 2023-12-31
+test_start = 2024-01-01
+test_end = 2024-12-31
+
+[[walk_forward.folds]]
+train_start = 2023-07-01
+train_end = 2023-12-31
+validation_start = 2024-01-01
+validation_end = 2024-12-31
+test_start = 2025-01-01
+test_end = 2025-12-31
+
+[[walk_forward.folds]]
+train_start = 2023-07-01
+train_end = 2024-12-31
+validation_start = 2025-01-01
+validation_end = 2025-12-31
+test_start = 2026-01-01
+test_end = 2026-09-08
+
+[execution]
+auto_trade = false

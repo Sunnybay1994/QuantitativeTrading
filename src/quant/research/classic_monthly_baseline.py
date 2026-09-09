@@ -32,6 +32,9 @@ from quant.research.run_classic_factors import select_frozen_liquid_universe
 from quant.research.run_s1_walk_forward import metrics
 
 CODE_PATHS = (
+    "src/quant/factors/information_discreteness.py",
+    "src/quant/research/monthly_information_discreteness.py",
+    "src/quant/data/calendar.py",
     "src/quant/factors/turnover_variability.py",
     "src/quant/factors/classic_second_batch.py",
     "src/quant/factors/liquidity.py",
@@ -156,6 +159,30 @@ def meets_portfolio_candidate(results: list[dict[str, Any]], admission: dict[str
     return True
 
 
+def validate_turnover_components(names: list[str], directions: list[int]) -> None:
+    """Permit only B25 and its one-variable B27 composite extension."""
+    if (names, directions) not in (
+        (["turnover_cv20"], [-1]),
+        (["alpha158_std20", "alpha158_roc20", "alpha158_rsv20", "turnover_cv20"], [-1, 1, -1, -1]),
+    ):
+        raise ValueError("CV20 direction and component sets are fixed before test evaluation")
+
+
+def portfolio_admission_summary(results: list[dict[str, Any]], comparison: str = "510300") -> dict[str, Any]:
+    """Require profitable 1x/2x replay and 1x compounded excess over the named replay."""
+    selected = [r for r in results if r["comparison"] == comparison and r["cost_multiplier"] == 1.0]
+    primary = [r for r in results if r["comparison"] == "top50" and r["cost_multiplier"] == 1.0]
+    stress = [r for r in results if r["comparison"] == "top50" and r["cost_multiplier"] == 2.0]
+    if (not primary or {r["fold"] for r in selected} != {r["fold"] for r in primary}
+            or {r["fold"] for r in stress} != {r["fold"] for r in primary}):
+        raise ValueError("Admission comparison requires a complete actual replay")
+    one = math.prod(1 + r["total_return"] for r in primary) - 1
+    two = math.prod(1 + r["total_return"] for r in stress) - 1
+    excess = one - (math.prod(1 + r["total_return"] for r in selected) - 1)
+    return {"comparison": comparison, "excess_return_1x": excess,
+            "passed": one > 0 and two > 0 and excess > 0}
+
+
 def run_baseline(
     *, config: dict[str, Any], config_path: Path, project_root: Path,
     data_root: Path, artifact_root: Path,
@@ -215,11 +242,28 @@ def run_baseline(
     extra_inputs: list[tuple[str, pl.DataFrame, tuple[str, ...], str]] = []
     extra_outputs: list[tuple[str, pl.DataFrame]] = []
     extra_digests: list[ResearchInputDigestV1] = []
+    if "information_discreteness" in config:
+        from quant.data.calendar import expected_open_dates
+        from quant.research.monthly_information_discreteness import build_monthly_information_discreteness
+
+        if config["factors"]["names"] != ["information_discreteness"] or config["factors"]["directions"] != [-1]:
+            raise ValueError("Information discreteness direction and formula are fixed before test evaluation")
+        history_start = config["information_discreteness"]["formation_history_start"]
+        formation_bars = read_stock_data(data_root=data_root, config=refresh_config, table="bar_1d",
+                                         start=history_start, end=end, symbols=list(candidates))
+        formation_sessions = tuple(sorted(expected_open_dates(data_root, list(candidates), history_start, end)))
+        monthly = build_monthly_information_discreteness(
+            bars=formation_bars, sessions=formation_sessions, start=data["research_start"], end=end,
+            settings=config["information_discreteness"],
+        )
+        factors = factors.join(monthly, on=["symbol", "trade_date"], how="inner", validate="1:1")
+        extra_inputs.append(("formation-bars", formation_bars, ("trade_date", "symbol"), "trade_date"))
+        extra_outputs.append(("information_monthly_factors", monthly))
+        print(f"Computed information discreteness on {monthly['trade_date'].n_unique()} month ends", flush=True)
     if "turnover_variability" in config:
         from quant.research.monthly_turnover_variability import build_monthly_turnover_variability
 
-        if config["factors"]["names"] != ["turnover_cv20"] or config["factors"]["directions"] != [-1]:
-            raise ValueError("CV20 direction and formula are fixed before test evaluation")
+        validate_turnover_components(config["factors"]["names"], config["factors"]["directions"])
         basic = read_stock_data(data_root=data_root, config=refresh_config, table="daily_basic",
                                 start=data["warmup_start"], end=end, symbols=list(candidates))
         monthly = build_monthly_turnover_variability(
@@ -279,6 +323,11 @@ def run_baseline(
         # Both strategies rank the same complete-case stock cohort.
         eligible = eligible.filter(pl.all_horizontal(pl.col(name).is_finite() for name in
             ("turnover_cv20", "alpha158_std20", "alpha158_roc20", "alpha158_rsv20")))
+    if "information_discreteness" in config:
+        from quant.research.monthly_information_discreteness import select_information_winners
+
+        eligible = select_information_winners(eligible)
+        extra_outputs.append(("information_winner_pool", eligible))
     scored = build_equal_weight_zscore_composite(eligible, component_directions=directions)
     targets = pl.concat([build_monthly_zscore_targets(
         scored, sessions=all_sessions, start=fold.test_start, end=fold.test_end, top_k=portfolio["top_k"],
@@ -286,14 +335,20 @@ def run_baseline(
         retention_rank=portfolio.get("retention_rank"),
     ).with_columns(pl.lit(fold.fold).alias("fold")) for fold in folds])
     paired_targets: pl.DataFrame | None = None
-    if "turnover_variability" in config:
+    paired_comparison, paired_strategy = "three_factor", "b25_paired_three_factor_baseline"
+    if "turnover_variability" in config or "information_discreteness" in config:
+        paired_components: tuple[tuple[str, int], ...] = (
+            ("alpha158_std20", -1), ("alpha158_roc20", 1), ("alpha158_rsv20", -1))
+        if "information_discreteness" in config:
+            paired_components = (("pret_12m_skip1m", 1),)
+            paired_comparison, paired_strategy = "momentum", "b26_paired_momentum_baseline"
         paired_scores = build_equal_weight_zscore_composite(scored,
-            component_directions=(("alpha158_std20", -1), ("alpha158_roc20", 1), ("alpha158_rsv20", -1)))
+            component_directions=paired_components)
         paired_targets = pl.concat([build_monthly_zscore_targets(
             paired_scores, sessions=all_sessions, start=fold.test_start, end=fold.test_end,
-            top_k=portfolio["top_k"], strategy_name="b25_paired_three_factor_baseline",
+            top_k=portfolio["top_k"], strategy_name=paired_strategy,
         ).with_columns(pl.lit(fold.fold).alias("fold")) for fold in folds])
-        extra_outputs.append(("three_factor_targets", paired_targets))
+        extra_outputs.append((f"{paired_comparison}_targets", paired_targets))
     selected = sorted(set(targets.get_column("symbol")) | (
         set() if paired_targets is None else set(paired_targets.get_column("symbol"))))
     execution_dates = sorted(targets.get_column("execution_date").unique().to_list())
@@ -334,9 +389,9 @@ def run_baseline(
                 ("510300", benchmark_bars, benchmark_instruments, benchmark_targets.filter(pl.col("fold") == fold.fold).drop("fold"), benchmark_dividends, benchmark_states, benchmark_name),
             ]
             if paired_targets is not None:
-                comparisons.append(("three_factor", stock_bars, instruments,
+                comparisons.append((paired_comparison, stock_bars, instruments,
                     paired_targets.filter(pl.col("fold") == fold.fold).drop("fold"), dividends,
-                    stock_states, "b25_paired_three_factor_baseline"))
+                    stock_states, paired_strategy))
             for comparison, bar_data, master, weights, events, states, name in comparisons:
                 nav, fills, rejected = replay(bars=bar_data, calendar=calendar, instruments=master,
                     targets=weights, dividends=events, market_states=states, config=scenario,
@@ -390,18 +445,30 @@ def run_baseline(
                          if row["comparison"] == comparison and row["cost_multiplier"] == multiplier) - 1
     one_return, two_return = compounded("top50", 1.0), compounded("top50", 2.0)
     excess = one_return - compounded("510300", 1.0)
-    passed = one_return > 0 and two_return > 0 and excess > 0
+    portfolio_admission: dict[str, Any] = {}
+    passed = False
     if "minimum_mean_test_rank_ic" in config["admission"]:
         primary = [r for r in diagnostic_rows if r["period"] == "test" and r["factor"] == directions[0][0]]
         passed = (sum(r["rank_ic_mean"] for r in primary) / len(primary) >= config["admission"]["minimum_mean_test_rank_ic"]
                   and sum(r["rank_ic_mean"] > 0 for r in primary) >= config["admission"]["minimum_positive_test_folds"]
                   and max(r["median_abs_rank_corr"] for r in redundancy_rows)
                   < config["admission"]["maximum_absolute_rank_correlation"])
+    else:
+        portfolio_admission = portfolio_admission_summary(results, config["admission"].get("comparison", "510300"))
+        passed = portfolio_admission["passed"]
+    information_pair: dict[str, Any] = {}
+    if "information_discreteness" in config:
+        from quant.research.monthly_information_discreteness import summarize_information_pair
+
+        information_pair = summarize_information_pair(results, config["admission"])
+        passed = passed and information_pair["passed"]
     conclusion: Literal["RESEARCH_ONLY", "REJECTED", "PAPER_CANDIDATE"] = "RESEARCH_ONLY" if passed else "REJECTED"
     if (config["admission"].get("maximum_conclusion") == "PAPER_CANDIDATE"
         and meets_portfolio_candidate(results, config["admission"])):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
+        "FIP uses a fixed 252-session formation/21-session skip and monthly A-share rebalancing rather than the paper's calendar-month formation and six-month holding."
+        if "information_discreteness" in config else
         "CV20 is a short-window A-share adaptation of monthly US turnover variability; the historical market periods were used in prior research."
         if "turnover_variability" in config else
         "Monthly PIT replication using a fixed historical financial snapshot; financial freshness varies by issuer."
@@ -418,6 +485,10 @@ def run_baseline(
               "results": results, "factor_diagnostics": diagnostic_rows, "redundancy": redundancy_rows, "excess_return_1x": excess,
               "dividend_withholding_assumption": portfolio["stock_dividend_withholding"],
               "caveat": caveat}
+    if information_pair:
+        report["information_pair"] = information_pair
+    if portfolio_admission:
+        report["portfolio_admission"] = portfolio_admission
     outputs = {"report.json": canonical_json_bytes(report)}
     for name, frame in (("nav", pl.concat(navs, how="vertical_relaxed")),
                         ("trades", pl.concat(trades, how="vertical_relaxed")),
@@ -437,7 +508,8 @@ def run_baseline(
         config_sha256=hashlib.sha256(config_path.read_bytes()).hexdigest(),
         code_sha256=compute_code_sha256(project_root=project_root, relative_paths=CODE_PATHS),
         universe_name=universe["name"], universe_frozen_as_of=universe["freeze_end"],
-        candidate_symbols=candidates, data_start=data["warmup_start"], data_end=end,
+        candidate_symbols=candidates,
+        data_start=config.get("information_discreteness", {}).get("formation_history_start", data["warmup_start"]), data_end=end,
         signal_timing="close", execution_timing="next_session_open", valuation_timing="close",
         folds=tuple(folds), cost_multipliers=tuple(portfolio["cost_multipliers"]),
         selection_metric="fixed_equal_zscore",
