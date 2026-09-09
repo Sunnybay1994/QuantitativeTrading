@@ -1,0 +1,91 @@
+[research]
+hypothesis_id = "b32-fixed-stock-forward-observation-20260909"
+conclusion = "RESEARCH_ONLY"
+purpose = "Observe fixed B28 CV20 Top75-buffer monthly targets against paired same-effective-pool STD-/ROC+/RSV- monthly targets; neither is a PAPER_CANDIDATE."
+frozen_backtest_cv20 = "artifacts/research/runs/9f181d7b2d92a6ef59608076b663e050812025ee4fcd2f392dcaefa6c052ef00"
+no_parameter_changes_through = 2026-11-30
+
+[paper]
+start_date = 2026-09-10
+initial_signal_date = 2026-09-09
+end_date = 2026-11-30
+initial_cash = 1000000.0
+auto_trade = false
+sell_only = false
+halt = false
+initial_holdings = "empty"
+signal = "initial_completed_close_then_completed_month_end_close"
+execution = "next_exchange_session_open"
+valuation = "daily_close_cash_plus_holdings_plus_dividend_receivables"
+daily_inputs_ready_hour_shanghai = 21
+halt_behavior = "value_and_settle_but_no_orders_or_fills; missed_rebalance_not_retried"
+sell_only_behavior = "permit_reductions_and_exits_only_no_new_or_increased_positions"
+unfilled_orders = "record_rejection_no_retry_until_next_scheduled_rebalance"
+missing_held_or_target_bar = "fail_without_advancing_unless_officially_suspended"
+end_behavior = "mark_final_date_do_not_force_liquidate_or_create_post_window_targets"
+
+[data]
+refresh_config = "configs/data/refresh.toml"
+warmup_start = 2023-01-01
+input_cutoff = "truncate_bars_and_daily_basic_at_each_signal_date_before_computation"
+execution_source = "new_daily_Tushare_stock_basic_stk_limit_suspend_d_and_dividend_ex_date_snapshots"
+name_rule = "effective_historical_name_from_daily_refreshed_namechange_snapshot"
+
+[universe]
+name = "liquid_top800_2019"
+freeze_start = 2019-01-01
+freeze_end = 2019-12-31
+top_n = 800
+minimum_observations = 120
+minimum_average_amount = 20000000.0
+same_effective_pool = ["turnover_cv20", "alpha158_std20", "alpha158_roc20", "alpha158_rsv20"]
+minimum_history_rows = 120
+minimum_daily_symbols = 100
+historical_exchange_name = true
+exclude_st_or_delisting_name = true
+unknown_historical_name = "exclude"
+
+[signal]
+turnover_window_sessions = 20
+turnover_ddof = 0
+turnover_missing_session = "null_window_not_previous_20_observations"
+turnover_zero_values = "retain_only_reported_zero_positive_window_mean_required"
+composite = "equal_weight_zscore_ddof0_no_winsorization"
+ranking_ties = "symbol_ascending"
+top_k = 50
+target_weight = 0.02
+insufficient_effective_pool = "fail_keep_previous_snapshot"
+buffer_membership = "previous_scheduled_target_members_not_actual_fills"
+
+[[accounts]]
+name = "b32_cv20_buffer75"
+components = ["turnover_cv20"]
+directions = [-1]
+retention_rank = 75
+
+[[accounts]]
+name = "b32_paired_three_factor"
+components = ["alpha158_std20", "alpha158_roc20", "alpha158_rsv20"]
+directions = [-1, 1, -1]
+retention_rank = 50
+
+[portfolio]
+stock_dividend_withholding = 0.20
+delisted_holding_recovery = 0.0
+budget = "sell_first_then_symbol_sorted_buys_capped_by_available_cash_including_fees"
+board_lots = "instrument_metadata_shared_daily_simulator"
+
+[costs.a_share]
+commission_rate = 0.00025
+commission_min = 5.0
+stamp_tax_sell = 0.0005
+transfer_fee = 0.00001
+slippage = 0.001
+effective_from = 2023-08-28
+
+[costs.etf]
+# Required by the shared simulator signature; these accounts contain only stocks.
+commission_rate = 0.00025
+commission_min = 5.0
+slippage = 0.001
+effective_from = 2023-01-01

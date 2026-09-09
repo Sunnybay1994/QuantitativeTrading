@@ -47,6 +47,10 @@ D:\Miniforge3\python.exe -m quant.data.publish_tushare_financials --workers 8
 # S0 模拟盘（先刷新数据）
 D:\Miniforge3\python.exe -m quant.execution.paper_ledger --to today
 
+# B32 A股双账户固定前向观察（每日21点后；RESEARCH_ONLY）
+D:\Miniforge3\python.exe -m quant.execution.stock_paper --to today
+D:\Miniforge3\python.exe -m quant.reporting.stock_paper_monthly
+
 # 数据补齐（日频 + 个股/ETF/港股分钟线；17点前取上一完整日）
 D:\Miniforge3\python.exe -m quant.data.refresh --to today
 
