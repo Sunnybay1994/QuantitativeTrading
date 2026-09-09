@@ -15,6 +15,7 @@ import polars as pl
 
 from quant.data.etf_paper_inputs import etf_session_states, read_etf_dividends
 from quant.data.etf_research_inputs import read_etf_research_inputs
+from quant.data.publish_cross_asset_etfs import read_cross_asset_etfs
 from quant.research.classic_monthly_baseline import replay
 from quant.research.lightweight_run import (
     LightweightResearchRunV1, ResearchFoldV1, canonical_json_bytes, compute_code_sha256,
@@ -24,12 +25,41 @@ from quant.research.run_s1_walk_forward import metrics
 from quant.strategies.monthly_etf import MonthlyEtfStrategy
 
 CODE_PATHS = (
+    "src/quant/data/publish_cross_asset_etfs.py", "src/quant/data/refresh_etf_prices.py",
     "src/quant/research/monthly_etf.py", "src/quant/strategies/monthly_etf.py",
     "src/quant/research/classic_monthly_baseline.py", "src/quant/research/run_s1_walk_forward.py",
     "src/quant/backtest/daily_account.py", "src/quant/backtest/daily_simulator.py",
     "src/quant/backtest/rules.py", "src/quant/backtest/costs.py",
     "src/quant/data/etf_paper_inputs.py", "src/quant/data/etf_research_inputs.py",
 )
+
+
+def read_inputs(data_root: Path, candidates: tuple[str, ...], data: dict[str, Any]) -> tuple[
+    pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame,
+]:
+    if "cross_asset_snapshot" not in data:
+        bars, prices, calendar, instruments = read_etf_research_inputs(
+            data_root, list(candidates), data["start"], data["end"])
+        return bars, prices, calendar, instruments, read_etf_dividends(data_root, list(candidates), data["start"])
+    frames = read_cross_asset_etfs(data_root, data["cross_asset_snapshot"])
+    calendar = frames["calendar"]
+    selected = []
+    for label in ("bars", "prices"):
+        frame = frames[label].filter(pl.col("symbol").is_in(list(candidates))
+            & pl.col("trade_date").is_between(data["start"], data["end"]))
+        for symbol in candidates:
+            expected = calendar.filter((pl.col("market") == symbol[-2:]) & pl.col("is_open")
+                & pl.col("date").is_between(data["start"], data["end"]))["date"].to_list()
+            observed = frame.filter(pl.col("symbol") == symbol)["trade_date"].to_list()
+            if not expected or len(observed) != len(expected) or set(observed) != set(expected):
+                raise ValueError(f"Incomplete cross-asset {label}: {symbol}")
+        selected.append(frame)
+    instruments = frames["instruments"].filter(pl.col("symbol").is_in(list(candidates)))
+    if instruments.height != len(candidates) or set(instruments["symbol"]) != set(candidates):
+        raise ValueError("Missing cross-asset instruments")
+    dividends = frames["dividends"].filter(pl.col("symbol").is_in(list(candidates))
+        & (pl.col("ex_date") >= data["start"]))
+    return selected[0], selected[1], calendar, instruments, dividends
 
 
 def completed_month_prices(prices: pl.DataFrame, calendar: pl.DataFrame) -> pl.DataFrame:
@@ -89,8 +119,7 @@ def main() -> None:
     config = tomllib.loads(args.config.read_text(encoding="utf-8"))
     spec, data, portfolio = config["research"], config["data"], config["portfolio"]
     candidates = tuple(sorted(config["universe"]["symbols"]))
-    bars, prices, calendar, instruments = read_etf_research_inputs(args.data_root, list(candidates), data["start"], data["end"])
-    dividends = read_etf_dividends(args.data_root, list(candidates), data["start"])
+    bars, prices, calendar, instruments, dividends = read_inputs(args.data_root, candidates, data)
     folds = tuple(ResearchFoldV1(fold=i + 1, **row) for i, row in enumerate(config["walk_forward"]["folds"]))
     if any(a.test_end >= b.test_start for a, b in zip(folds, folds[1:])):
         raise ValueError("Test folds must be disjoint")
@@ -141,7 +170,7 @@ def main() -> None:
     conclusion: Literal["PAPER_CANDIDATE", "REJECTED"] = "PAPER_CANDIDATE" if all(checks.values()) else "REJECTED"
     report = {"hypothesis_id": spec["hypothesis_id"], "conclusion": conclusion, "admission": checks,
         "results": results, "validation_results": validations, "parameters": definition,
-        "caveat": "The fixed 11-ETF pool is retrospective; results require confirmation in forward paper trading."}
+        "caveat": "The fixed ETF pool is retrospective; results require confirmation in forward paper trading."}
     outputs = {"report.json": canonical_json_bytes(report), "config.toml": args.config.read_bytes()}
     for name, frames in (("nav", navs), ("trades", trades_out), ("rejections", rejects_out), ("targets", targets_out)):
         buffer = io.BytesIO()

@@ -5,6 +5,7 @@ import polars as pl
 import pytest
 
 import quant.data.publish_cross_asset_etfs as module
+from quant.research.monthly_etf import read_inputs
 
 
 def test_publication_refuses_missing_trading_day_before_writing_clean(tmp_path, monkeypatch):
@@ -26,3 +27,20 @@ def test_publication_refuses_missing_trading_day_before_writing_clean(tmp_path, 
     with pytest.raises(ValueError, match="Incomplete cross-asset bars"):
         module.publish(data_root=tmp_path, capture=capture, name="sample", start=days[0], end=days[-1])
     assert not (tmp_path / "clean/etf_cross_asset/sample").exists()
+
+
+def test_research_rejects_truncated_snapshot_instead_of_shortening_test(tmp_path):
+    root = tmp_path / "clean/etf_cross_asset/sample"
+    root.mkdir(parents=True)
+    (root / "summary.json").write_text("{}", encoding="utf-8")
+    days = [dt.date(2026, 1, 5), dt.date(2026, 1, 6)]
+    for label, frame in {
+        "bars": pl.DataFrame({"symbol": ["511010.SH"], "trade_date": days[:1]}),
+        "prices": pl.DataFrame({"symbol": ["511010.SH"], "trade_date": days[:1]}),
+        "calendar": pl.DataFrame({"market": ["SH"] * 2, "is_open": [True] * 2, "date": days}),
+        "instruments": pl.DataFrame({"symbol": ["511010.SH"]}),
+        "dividends": pl.DataFrame(schema={"symbol": pl.String, "ex_date": pl.Date}),
+    }.items():
+        frame.write_parquet(root / f"{label}.parquet")
+    with pytest.raises(ValueError, match="Incomplete cross-asset bars"):
+        read_inputs(tmp_path, ("511010.SH",), {"cross_asset_snapshot": "sample", "start": days[0], "end": days[-1]})
