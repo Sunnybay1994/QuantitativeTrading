@@ -32,6 +32,8 @@ from quant.research.run_classic_factors import select_frozen_liquid_universe
 from quant.research.run_s1_walk_forward import metrics
 
 CODE_PATHS = (
+    "src/quant/factors/earnings_surprise.py",
+    "src/quant/research/monthly_sue.py",
     "src/quant/research/monthly_intraday_factors.py",
     "src/quant/data/stock_intraday_repository.py",
     "src/quant/factors/intraday_low_frequency.py",
@@ -149,6 +151,16 @@ def run_baseline(
     data_root: Path, artifact_root: Path,
 ) -> int:
     data, universe, portfolio = config["data"], config["universe"], config["portfolio"]
+    if config.get("financials", {}).get("factor_family") == "sue8":
+        expected_sue = {
+            "formula": "(delta_q - mean(delta_q-1..delta_q-8)) / std(delta_q-1..delta_q-8)",
+            "quarter_value": "single_quarter_n_income_attr_p",
+            "seasonal_difference_lag": 4, "prior_window": 8,
+            "standard_deviation_ddof": 1, "missing_quarter": "null",
+            "zero_standard_deviation": "null",
+        }
+        if any(config.get("sue", {}).get(k) != v for k, v in expected_sue.items()):
+            raise ValueError("Unsupported SUE formula configuration")
     if (not config["walk_forward"]["folds"]
         or config["composite"]["standard_deviation_ddof"] != 0
         or config["composite"]["winsorization"] != "none"

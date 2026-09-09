@@ -89,11 +89,13 @@ def select_pit_quality_revisions_as_of(
     dataset: Literal["income", "balancesheet", "cashflow"],
     as_of: dt.date,
     allowed_report_types: tuple[str, ...],
+    history_quarters: int = 5,
 ) -> FinancialPITSelection:
     """Select the industrial-statement revision chain used by PIT quality factors."""
     try:
         if (
-            type(allowed_report_types) is not tuple
+            type(history_quarters) is not int or not 5 <= history_quarters <= 32
+            or type(allowed_report_types) is not tuple
             or not allowed_report_types
             or allowed_report_types != tuple(sorted(allowed_report_types))
             or len(allowed_report_types) != len(set(allowed_report_types))
@@ -107,6 +109,7 @@ def select_pit_quality_revisions_as_of(
             allowed_report_types=allowed_report_types,
             required_comp_type="1",
             bind_flow_chain=dataset in {"income", "cashflow"},
+            history_quarters=history_quarters,
         )
     except (FinancialPITError, PolarsError, TypeError, ValueError):
         pass
@@ -121,6 +124,7 @@ def _select(
     allowed_report_types: tuple[str, ...] | None = None,
     required_comp_type: str | None = None,
     bind_flow_chain: bool = False,
+    history_quarters: int = 5,
 ) -> FinancialPITSelection:
     if (
         not isinstance(frame, pl.DataFrame)
@@ -190,6 +194,7 @@ def _select(
             symbol="symbol" if clean_contract else "ts_code",
             economic=economic,
             as_of=as_of,
+            history_quarters=history_quarters,
         )
     else:
         latest = known.group_by(keys).agg(pl.col("available_date").max())
@@ -235,6 +240,7 @@ def _select_flow_revision_chains(
     symbol: str,
     economic: list[str],
     as_of: dt.date,
+    history_quarters: int = 5,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Bind each cumulative flow row to the predecessor known by its successor."""
     group = [symbol, "report_type", "comp_type"]
@@ -274,7 +280,7 @@ def _select_flow_revision_chains(
     conflict_frames: list[pl.DataFrame] = []
     resolved_frames: list[pl.DataFrame] = []
     request_keys = [*group, "_desired_quarter", "_depth", "_cutoff"]
-    for depth in range(5):
+    for depth in range(history_quarters):
         if active.is_empty():
             break
         eligible = (
@@ -347,7 +353,7 @@ def _select_flow_revision_chains(
             pl.concat(resolved_frames, how="diagonal_relaxed")
             .group_by(group)
             .agg(pl.col("_depth").n_unique().alias("_chain_depths"))
-            .filter(pl.col("_chain_depths") == 5)
+            .filter(pl.col("_chain_depths") == history_quarters)
             .select(group)
         )
         selected = (
