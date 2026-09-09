@@ -1,0 +1,82 @@
+[research]
+hypothesis_id = "b11-absolute-filter-20260909"
+hypothesis = "Keep the B4 12-1 Top3 ranking and fixed one-third sleeves; invest a selected sleeve only when its latest complete 12-month total return is strictly positive, otherwise hold that sleeve in zero-interest cash. Isolate the absolute-filter increment against B4 and the same-pool S0. This is a stock-ETF variant, not the cross-asset GEM allocation."
+strategy_name = "b11_absolute_filter"
+strategy_version = "v1"
+random_seed = 20260909
+
+[data]
+start = 2023-01-01
+end = 2026-09-08
+
+[universe]
+name = "ETF_POOL_M2_V1"
+frozen_as_of = 2026-07-12
+symbols = ['510300.SH', '159919.SZ', '510500.SH', '159922.SZ', '512880.SH', '512170.SH', '515790.SH', '513060.SH', '513330.SH', '513180.SH', '159920.SZ']
+
+[strategy]
+kind = "relative_momentum"
+absolute_momentum_filter = true
+# Absolute return is price at month m divided by month m-12 minus one.
+# Select Top3 first; failed sleeves remain cash without replacement or renormalization.
+# Source: https://www.optimalmomentum.com/dual-relative-absolute-momentum/
+lookback_months = 12
+skip_months = 1
+top_k = 3
+rebalance = "month_end_close_next_session_open"
+initial_deployment = "latest_completed_month_as_of_previous_session"
+# Parameters are literature-fixed; there is no selection grid or test retuning.
+
+[portfolio]
+initial_cash = 1000000.0
+cost_multipliers = [0.5, 1.0, 2.0]
+benchmark = "monthly_equal_weight_same_pool"
+
+[costs.etf]
+commission_rate = 0.00025
+commission_min = 5.0
+slippage = 0.0
+slippage_per_share = 0.001
+# One tick per side, including spread crossing. Applied equally to strategy and S0.
+effective_from = 2023-01-01
+
+[costs.a_share]
+commission_rate = 0.00025
+commission_min = 5.0
+stamp_tax_sell = 0.0005
+transfer_fee = 0.00001
+slippage = 0.001
+effective_from = 2023-08-28
+
+[admission]
+all_1x_folds_positive = true
+minimum_2x_positive_fold_fraction = 0.5
+all_folds_better_drawdown_or_calmar_than_s0 = true
+maximum_annualized_one_way_turnover = 3.0
+forward_start = 2026-07-11
+forward_maximum_shortfall_to_s0 = 0.02
+# Absolute turnover limit applies to each test fold, including the short follow-up.
+
+[[walk_forward.folds]]
+train_start = 2023-01-01
+train_end = 2024-12-31
+validation_start = 2025-01-01
+validation_end = 2025-06-30
+test_start = 2025-07-01
+test_end = 2025-12-31
+
+[[walk_forward.folds]]
+train_start = 2023-07-01
+train_end = 2025-06-30
+validation_start = 2025-07-01
+validation_end = 2025-12-31
+test_start = 2026-01-01
+test_end = 2026-06-30
+
+[[walk_forward.folds]]
+train_start = 2023-07-01
+train_end = 2025-06-30
+validation_start = 2025-07-01
+validation_end = 2025-12-31
+test_start = 2026-07-11
+test_end = 2026-09-08
