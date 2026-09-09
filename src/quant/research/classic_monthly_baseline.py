@@ -48,6 +48,7 @@ CODE_PATHS = (
     "src/quant/factors/revenue_growth.py",
     "src/quant/factors/profit_growth.py",
     "src/quant/factors/profit_acceleration.py",
+    "src/quant/factors/market_size.py",
     "src/quant/factors/current_ratio.py",
     "src/quant/research/monthly_current_ratio.py",
     "src/quant/factors/leverage.py",
@@ -300,9 +301,9 @@ def run_baseline(
     if any(a.test_end >= b.test_start for a, b in zip(folds, folds[1:])):
         raise ValueError("Test folds must be chronological and disjoint")
     refresh_config = project_root / data["refresh_config"]
-    if "small_value_quality" in config:
+    if "small_value_quality" in config or "market_size" in config:
         if universe.get("selection") != "historical_presence_with_signal_date_eligibility":
-            raise ValueError("B38 requires the full historical SH/SZ universe")
+            raise ValueError("Small-size studies require the full historical SH/SZ universe")
         bars = read_stock_data(data_root=data_root, config=refresh_config, table="bar_1d",
                                start=data["warmup_start"], end=end)
         bars = bars.filter(pl.col("symbol").str.contains(r"^[0-9]{6}\.(SH|SZ)$"))
@@ -327,6 +328,21 @@ def run_baseline(
     extra_inputs: list[tuple[str, pl.DataFrame, tuple[str, ...], str]] = []
     extra_outputs: list[tuple[str, pl.DataFrame]] = []
     extra_digests: list[ResearchInputDigestV1] = []
+    if "market_size" in config:
+        from quant.factors.market_size import compute_market_size
+
+        settings = config["market_size"]
+        if (settings["formula"] != "ln(total_market_value)"
+            or settings["valid_values"] != "finite_positive_total_market_value"
+            or config["factors"]["names"] != ["log_total_market_value"]
+            or config["factors"]["directions"] != [-1]):
+            raise ValueError("B44 uses fixed negative log total market value")
+        basic = read_stock_data(data_root=data_root, config=refresh_config, table="daily_basic",
+                                start=data["warmup_start"], end=end, symbols=list(candidates))
+        size_values = compute_market_size(basic)
+        factors = factors.join(size_values, on=["symbol", "trade_date"], how="left", validate="1:1")
+        extra_inputs.append(("daily-basic", basic, ("trade_date", "symbol"), "trade_date"))
+        extra_outputs.append(("market_size_factors", size_values))
     if "small_value_quality" in config:
         settings = config["small_value_quality"]
         if (settings["small_fraction"] != .30 or settings["value_fraction"] != .50
@@ -652,6 +668,8 @@ def run_baseline(
         and meets_portfolio_candidate(results, config["admission"])):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
+        "Historical full SH/SZ size replication with signal-date eligibility; these historical periods were used in prior studies."
+        if "market_size" in config else
         "Full historical SH/SZ presence with signal-date eligibility; this positive-ROE treatment is a historical small-value comparison, not a prospective result."
         if "small_value_quality" in config else
         "252-session adjusted daily-high proximity with monthly A-share Top50 holding adapts the US 52-week-high study; historical periods were inspected previously."
