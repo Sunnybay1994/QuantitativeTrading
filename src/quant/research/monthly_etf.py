@@ -96,7 +96,8 @@ def main() -> None:
         raise ValueError("Test folds must be disjoint")
     definition = config["strategy"]
     strategy = MonthlyEtfStrategy(candidates, definition["kind"], definition["lookback_months"],
-        definition["skip_months"], definition["top_k"], name=spec["strategy_name"])
+        definition["skip_months"], definition["top_k"], name=spec["strategy_name"],
+        absolute_momentum_filter=definition.get("absolute_momentum_filter", False))
     results: list[dict[str, Any]] = []
     validations: list[dict[str, Any]] = []
     targets_out: list[pl.DataFrame] = []

@@ -20,6 +20,7 @@ class MonthlyEtfStrategy(Strategy):
     top_k: int = 3
     name: str = "monthly_etf"
     version: str = "v1"
+    absolute_momentum_filter: bool = False
 
     def __post_init__(self) -> None:
         if not self.candidates or len(set(self.candidates)) != len(self.candidates):
@@ -30,6 +31,8 @@ class MonthlyEtfStrategy(Strategy):
             raise ValueError("Invalid monthly strategy or selection count")
         if self.kind == "sma" and self.skip_months:
             raise ValueError("SMA uses the current completed month")
+        if self.absolute_momentum_filter and self.kind != "relative_momentum":
+            raise ValueError("Absolute momentum filter requires relative momentum")
 
     def target_weights(self, as_of: dt.date, data: pl.DataFrame) -> pl.DataFrame:
         """Each SMA sleeve keeps its fixed pool weight or cash; momentum takes Top-K."""
@@ -37,6 +40,7 @@ class MonthlyEtfStrategy(Strategy):
         needed = self.lookback_months if self.kind == "sma" else self.lookback_months + 1
         last_date = available["trade_date"].max()
         scores = {}
+        absolute_positive = {}
         for symbol in self.candidates:
             frame = available.filter(pl.col("symbol") == symbol).tail(needed)
             months = [d.year * 12 + d.month for d in frame["trade_date"]]
@@ -50,10 +54,13 @@ class MonthlyEtfStrategy(Strategy):
                 scores[symbol] = float(values[-1] / values.mean() - 1)
             else:
                 scores[symbol] = float(values[-1 - self.skip_months] / values[0] - 1)
+                absolute_positive[symbol] = values[-1] > values[0]
         if self.kind == "sma":
             weights = {s: 1 / len(self.candidates) if scores[s] > 0 else 0. for s in self.candidates}
         else:
             selected = sorted(scores, key=lambda s: (-scores[s], s))[:self.top_k]
             weights = {s: 1 / self.top_k if s in selected else 0. for s in self.candidates}
+            if self.absolute_momentum_filter:
+                weights = {s: w if absolute_positive[s] else 0. for s, w in weights.items()}
         return pl.DataFrame({"as_of": [as_of] * len(weights), "strategy": [self.name] * len(weights),
             "strategy_version": [self.version] * len(weights), "symbol": list(weights), "weight": list(weights.values())})
