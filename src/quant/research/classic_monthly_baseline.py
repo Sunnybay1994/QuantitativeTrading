@@ -48,6 +48,7 @@ CODE_PATHS = (
     "src/quant/factors/revenue_growth.py",
     "src/quant/factors/profit_growth.py",
     "src/quant/factors/profit_acceleration.py",
+    "src/quant/factors/revenue_acceleration.py",
     "src/quant/factors/return_skewness.py",
     "src/quant/factors/market_size.py",
     "src/quant/factors/current_ratio.py",
@@ -55,6 +56,7 @@ CODE_PATHS = (
     "src/quant/factors/leverage.py",
     "src/quant/research/monthly_leverage.py",
     "src/quant/research/monthly_profit_acceleration.py",
+    "src/quant/research/monthly_revenue_acceleration.py",
     "src/quant/research/monthly_profit_growth.py",
     "src/quant/research/monthly_revenue_growth.py",
     "src/quant/research/monthly_gross_margin.py",
@@ -239,6 +241,15 @@ def run_baseline(
             or config["factors"]["names"] != ["pit_liabilities_to_assets"]
             or config["factors"]["directions"] != [-1]):
             raise ValueError("Unsupported leverage configuration")
+    if config.get("financials", {}).get("factor_family") == "revenue_acceleration":
+        expected_acceleration = {"formula": "growth_q - growth_q_lag1",
+            "growth_definition": "(revenue_q - revenue_q_lag4) / revenue_q_lag4",
+            "required_single_quarters": 6, "pit_history_quarters": 7,
+            "valid_values": "six_finite_nonnegative_consecutive_single_quarters_positive_two_yoy_denominators"}
+        if (any(config.get("revenue_acceleration", {}).get(k) != v for k, v in expected_acceleration.items())
+            or config["factors"]["names"] != ["pit_revenue_acceleration"]
+            or config["factors"]["directions"] != [1]):
+            raise ValueError("Unsupported revenue acceleration configuration")
     if config.get("financials", {}).get("factor_family") == "profit_acceleration":
         expected_acceleration = {"formula": "growth_q - growth_q_lag1",
             "growth_definition": "(parent_profit_q - parent_profit_q_lag4) / abs(parent_profit_q_lag4)",

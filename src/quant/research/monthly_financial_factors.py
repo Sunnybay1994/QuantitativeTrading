@@ -35,9 +35,10 @@ def read_monthly_financial_factors(
     margin = settings.get("factor_family") == "gross_margin"
     revenue_growth = settings.get("factor_family") == "revenue_growth"
     profit_growth = settings.get("factor_family") == "profit_growth"
+    revenue_acceleration = settings.get("factor_family") == "revenue_acceleration"
     profit_acceleration = settings.get("factor_family") == "profit_acceleration"
     datasets: tuple[FinancialFactorDataset, ...] = (
-        ("income",) if sue or margin or revenue_growth or profit_growth or profit_acceleration
+        ("income",) if sue or margin or revenue_growth or profit_growth or profit_acceleration or revenue_acceleration
         else ("balancesheet",) if growth or leverage or current_ratio else
         ("income", "balancesheet") if gross else ("income", "balancesheet", "cashflow")
     )
@@ -47,8 +48,8 @@ def read_monthly_financial_factors(
                 snapshot_id=settings["snapshot_id"], dataset=dataset,
                 start_period=settings["history_start"], end_period=end,
                 symbols=candidates,
-                extra_fields=(("revenue",) if revenue_growth else ("revenue", "oper_cost"))
-                if (gross or margin or revenue_growth) and dataset == "income"
+                extra_fields=(("revenue",) if revenue_growth or revenue_acceleration else ("revenue", "oper_cost"))
+                if (gross or margin or revenue_growth or revenue_acceleration) and dataset == "income"
                 else ("total_liab",) if leverage else ("total_cur_assets", "total_cur_liab") if current_ratio else (),
             ),
         )
@@ -64,6 +65,13 @@ def read_monthly_financial_factors(
 
         return build_monthly_leverage(
             balance_history=histories["balancesheet"],
+            signal_dates=monthly_signal_sessions(sessions, start=start, end=end), candidate_symbols=candidates,
+        ), histories
+    if revenue_acceleration:
+        from quant.research.monthly_revenue_acceleration import build_monthly_revenue_acceleration
+
+        return build_monthly_revenue_acceleration(
+            income_history=histories["income"],
             signal_dates=monthly_signal_sessions(sessions, start=start, end=end), candidate_symbols=candidates,
         ), histories
     if profit_acceleration:
