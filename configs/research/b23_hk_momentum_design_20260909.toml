@@ -1,0 +1,38 @@
+[research]
+hypothesis_id = "b23-hk-five-session-momentum-design-20260909"
+hypothesis = "The three strongest positive 20-session total-return signals in the fixed HK observation pool predict five-session gross returns exceeding three times 0.4% round-trip cost."
+pool_config = "configs/universe/hk_connect_watch_v1.toml"
+design_start = 2023-11-01
+design_end = 2024-04-30
+source = "yahoo"
+frequency = "60m"
+# Own-past-return motivation, not an exact replication of the 12-month futures paper:
+# https://www.aqr.com/Insights/Research/Journal-Article/Time-Series-Momentum
+# Current observation membership is retrospective; no historical Connect eligibility is inferred.
+
+[signal]
+lookback_sessions = 20
+top_k = 3
+positive_only = true
+signal_bar_start = "13:30"
+entry_bar_start = "14:30"
+entry = "next_full_session_after_signal"
+hold_full_sessions = 5
+calendar = "HK_full_sessions"
+return_definition = "cash_dividends_no_split_events"
+# Split events fail the reader until historical price and dividend units are verified.
+missing_signal_pool = "skip_cycle"
+missing_execution_quote = "fail"
+# Non-overlapping five-session cycles; at most three buys and three sells on a rebalance day.
+# Half days do not offer the fixed afternoon execution time and are excluded by calendar.
+
+[costs]
+round_trip_fraction = 0.004
+cost_multipliers = [0.5, 1.0, 2.0]
+# Project cost-map assumption, per-notional design estimate; no account or broker connection.
+
+[screen]
+minimum_gross_to_cost = 3.0
+minimum_trades = 20
+maximum_conclusion = "RESEARCH_ONLY"
+# Failure stops before validation/test; success requires a new preregistered account/delay study.
