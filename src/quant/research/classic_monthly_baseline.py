@@ -47,6 +47,8 @@ CODE_PATHS = (
     "src/quant/factors/gross_margin.py",
     "src/quant/factors/revenue_growth.py",
     "src/quant/factors/profit_growth.py",
+    "src/quant/factors/profit_acceleration.py",
+    "src/quant/research/monthly_profit_acceleration.py",
     "src/quant/research/monthly_profit_growth.py",
     "src/quant/research/monthly_revenue_growth.py",
     "src/quant/research/monthly_gross_margin.py",
@@ -215,6 +217,15 @@ def run_baseline(
                         or portfolio.get("retention_rank") != 75 or portfolio["top_k"] != 50
                         or "turnover_variability" not in config):
         raise ValueError("B28 requires fixed negative CV20 Top50 with Top75 retention")
+    if config.get("financials", {}).get("factor_family") == "profit_acceleration":
+        expected_acceleration = {"formula": "growth_q - growth_q_lag1",
+            "growth_definition": "(parent_profit_q - parent_profit_q_lag4) / abs(parent_profit_q_lag4)",
+            "required_single_quarters": 6, "pit_history_quarters": 7,
+            "valid_values": "six_finite_consecutive_single_quarters_nonzero_two_yoy_denominators"}
+        if (any(config.get("profit_acceleration", {}).get(k) != v for k, v in expected_acceleration.items())
+            or config["factors"]["names"] != ["pit_profit_acceleration"]
+            or config["factors"]["directions"] != [1]):
+            raise ValueError("Unsupported profit acceleration configuration")
     if config.get("financials", {}).get("factor_family") == "profit_growth":
         expected_profit = {"formula": "(parent_profit_ttm - parent_profit_ttm_lag4) / abs(parent_profit_ttm_lag4)",
             "window_quarters": 4, "comparison_lag_quarters": 4,

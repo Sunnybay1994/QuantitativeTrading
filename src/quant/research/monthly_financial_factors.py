@@ -33,8 +33,10 @@ def read_monthly_financial_factors(
     margin = settings.get("factor_family") == "gross_margin"
     revenue_growth = settings.get("factor_family") == "revenue_growth"
     profit_growth = settings.get("factor_family") == "profit_growth"
+    profit_acceleration = settings.get("factor_family") == "profit_acceleration"
     datasets: tuple[FinancialFactorDataset, ...] = (
-        ("income",) if sue or margin or revenue_growth or profit_growth else ("balancesheet",) if growth else
+        ("income",) if sue or margin or revenue_growth or profit_growth or profit_acceleration
+        else ("balancesheet",) if growth else
         ("income", "balancesheet") if gross else ("income", "balancesheet", "cashflow")
     )
     for dataset in datasets:
@@ -47,6 +49,13 @@ def read_monthly_financial_factors(
                 if (gross or margin or revenue_growth) and dataset == "income" else (),
             ),
         )
+    if profit_acceleration:
+        from quant.research.monthly_profit_acceleration import build_monthly_profit_acceleration
+
+        return build_monthly_profit_acceleration(
+            income_history=histories["income"],
+            signal_dates=monthly_signal_sessions(sessions, start=start, end=end), candidate_symbols=candidates,
+        ), histories
     if profit_growth:
         from quant.research.monthly_profit_growth import build_monthly_profit_growth
 
