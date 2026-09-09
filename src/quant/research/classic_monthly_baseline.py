@@ -195,6 +195,9 @@ def run_baseline(
             sessions=all_sessions, start=data["research_start"], end=end,
         )
         factors = factors.join(financial.factors, on=["symbol", "trade_date"], how="inner", validate="1:1")
+        required = config["financials"].get("ranking_requires_factors", [])
+        if required:
+            factors = factors.filter(pl.all_horizontal(pl.col(name).is_finite() for name in required))
         extra_inputs.extend((f"financial-{name}", frame,
                              ("symbol", "end_date", "available_date", "report_type", "comp_type"),
                              "available_date") for name, frame in histories.items())
@@ -326,7 +329,7 @@ def run_baseline(
         and meets_portfolio_candidate(results, config["admission"])):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
-        "Monthly PIT replication using a fixed historical financial snapshot; most August 2026 signals still use Q1 statements."
+        "Monthly PIT replication using a fixed historical financial snapshot; financial freshness varies by issuer."
         if "financials" in config else
         "Historical replication within a fixed liquid universe; the IVOL regressors are local size/value proxies."
         if "b3" in config else
