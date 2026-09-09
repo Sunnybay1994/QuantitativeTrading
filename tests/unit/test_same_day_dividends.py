@@ -32,3 +32,18 @@ def test_resolves_issuer_verified_dividend_implementations(symbol, date, amounts
     changed = pl.DataFrame(rows).with_columns((pl.col("div_cash") + .01).alias("div_cash"))
     with pytest.raises(ValueError, match="Unexpected dividend"):
         resolve_same_day_dividends(changed)
+
+
+def test_final_implementation_after_record_date_is_not_double_counted():
+    ex = dt.date(2025, 7, 7)
+    rows = [{"symbol": "003001.SZ", "ex_date": ex, "ann_date": ann,
+        "record_date": dt.date(2025, 7, 4), "pay_date": ex, "share_list_date": ex,
+        "div_cash": .2814904, "share_ratio": .3992772}
+        for ann in (dt.date(2025, 6, 30), dt.date(2025, 7, 5))]
+    result = resolve_same_day_dividends(pl.DataFrame(rows))
+    assert result.height == 1
+    assert result["ann_date"][0] == dt.date(2025, 7, 5)
+    assert result["div_cash"][0] == .2814904
+    assert result["share_ratio"][0] == .3992772
+    with pytest.raises(ValueError, match="Unexpected dividend"):
+        resolve_same_day_dividends(pl.DataFrame(rows).with_columns(pl.lit(.3).alias("div_cash")))

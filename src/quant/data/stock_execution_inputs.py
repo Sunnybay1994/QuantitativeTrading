@@ -31,6 +31,19 @@ def resolve_same_day_dividends(frame: pl.DataFrame) -> pl.DataFrame:
     for symbol, ex_date, _ in duplicates.iter_rows():
         match = (pl.col("symbol") == symbol) & (pl.col("ex_date") == ex_date)
         group = frame.filter(match)
+        if (symbol, ex_date) == ("003001.SZ", dt.date(2025, 7, 7)):
+            # 2025-057 revises the same plan after record date but before ex-date.
+            # Vendor backfills final amounts into both implementation-notice rows.
+            expected = {
+                "ann_date": [dt.date(2025, 6, 30), dt.date(2025, 7, 5)],
+                "record_date": [dt.date(2025, 7, 4)], "pay_date": [ex_date],
+                "share_list_date": [ex_date], "div_cash": [.2814904], "share_ratio": [.3992772],
+            }
+            if group.height != 2 or any(sorted(group[c].unique().to_list()) != values
+                                       for c, values in expected.items()):
+                raise ValueError(f"Unexpected dividend implementation details: {symbol} {ex_date}")
+            frame = pl.concat([frame.filter(~match), group.sort("ann_date").tail(1)])
+            continue
         resolution = resolutions.get((symbol, ex_date))
         if resolution is None:
             raise ValueError(f"Conflicting stock dividend implementations: {symbol} {ex_date}")
@@ -125,7 +138,9 @@ def prepare_stock_execution_inputs(
     dividend_frame = resolve_same_day_dividends(dividend_frame)
     if dividend_frame.filter(
         pl.col("ann_date").is_null() | pl.col("record_date").is_null()
-        | (pl.col("ann_date") > pl.col("record_date"))
+        # Final implementation terms can be adjusted during the weekend between
+        # record and ex-date. The account consumes them only on ex-date.
+        | (pl.col("ann_date") > pl.col("ex_date"))
         | (pl.col("record_date") >= pl.col("ex_date"))
         | ((pl.col("div_cash") > 0) & (pl.col("pay_date").is_null() | (pl.col("pay_date") < pl.col("ex_date"))))
         | ((pl.col("share_ratio") > 0) & (pl.col("share_list_date").is_null() | (pl.col("share_list_date") < pl.col("ex_date"))))
