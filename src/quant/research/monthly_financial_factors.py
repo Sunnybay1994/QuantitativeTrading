@@ -31,8 +31,9 @@ def read_monthly_financial_factors(
     growth = settings.get("factor_family") == "asset_growth"
     gross = settings.get("factor_family") == "gross_profitability"
     margin = settings.get("factor_family") == "gross_margin"
+    revenue_growth = settings.get("factor_family") == "revenue_growth"
     datasets: tuple[FinancialFactorDataset, ...] = (
-        ("income",) if sue or margin else ("balancesheet",) if growth else
+        ("income",) if sue or margin or revenue_growth else ("balancesheet",) if growth else
         ("income", "balancesheet") if gross else ("income", "balancesheet", "cashflow")
     )
     for dataset in datasets:
@@ -41,9 +42,17 @@ def read_monthly_financial_factors(
                 snapshot_id=settings["snapshot_id"], dataset=dataset,
                 start_period=settings["history_start"], end_period=end,
                 symbols=candidates,
-                extra_fields=("revenue", "oper_cost") if (gross or margin) and dataset == "income" else (),
+                extra_fields=(("revenue",) if revenue_growth else ("revenue", "oper_cost"))
+                if (gross or margin or revenue_growth) and dataset == "income" else (),
             ),
         )
+    if revenue_growth:
+        from quant.research.monthly_revenue_growth import build_monthly_revenue_growth
+
+        return build_monthly_revenue_growth(
+            income_history=histories["income"],
+            signal_dates=monthly_signal_sessions(sessions, start=start, end=end), candidate_symbols=candidates,
+        ), histories
     if margin:
         from quant.research.monthly_gross_margin import build_monthly_gross_margin
 
