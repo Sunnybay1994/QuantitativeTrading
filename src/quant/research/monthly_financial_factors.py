@@ -29,6 +29,7 @@ def read_monthly_financial_factors(
     histories: dict[str, pl.DataFrame] = {}
     sue = settings.get("factor_family") == "sue8"
     growth = settings.get("factor_family") == "asset_growth"
+    leverage = settings.get("factor_family") == "leverage"
     gross = settings.get("factor_family") == "gross_profitability"
     margin = settings.get("factor_family") == "gross_margin"
     revenue_growth = settings.get("factor_family") == "revenue_growth"
@@ -36,7 +37,7 @@ def read_monthly_financial_factors(
     profit_acceleration = settings.get("factor_family") == "profit_acceleration"
     datasets: tuple[FinancialFactorDataset, ...] = (
         ("income",) if sue or margin or revenue_growth or profit_growth or profit_acceleration
-        else ("balancesheet",) if growth else
+        else ("balancesheet",) if growth or leverage else
         ("income", "balancesheet") if gross else ("income", "balancesheet", "cashflow")
     )
     for dataset in datasets:
@@ -46,9 +47,17 @@ def read_monthly_financial_factors(
                 start_period=settings["history_start"], end_period=end,
                 symbols=candidates,
                 extra_fields=(("revenue",) if revenue_growth else ("revenue", "oper_cost"))
-                if (gross or margin or revenue_growth) and dataset == "income" else (),
+                if (gross or margin or revenue_growth) and dataset == "income"
+                else ("total_liab",) if leverage else (),
             ),
         )
+    if leverage:
+        from quant.research.monthly_leverage import build_monthly_leverage
+
+        return build_monthly_leverage(
+            balance_history=histories["balancesheet"],
+            signal_dates=monthly_signal_sessions(sessions, start=start, end=end), candidate_symbols=candidates,
+        ), histories
     if profit_acceleration:
         from quant.research.monthly_profit_acceleration import build_monthly_profit_acceleration
 
