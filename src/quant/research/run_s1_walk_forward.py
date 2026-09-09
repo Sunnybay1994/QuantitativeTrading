@@ -19,6 +19,7 @@ from quant.backtest import (
     schedule_next_trading_day,
     simulate_etf_targets_with_diagnostics,
 )
+from quant.data.etf_research_inputs import read_etf_research_inputs
 from quant.factors import compute_trend_factors_from_prices
 from quant.portfolio import (
     retain_ranked_target_selection,
@@ -50,6 +51,7 @@ _HYPOTHESIS = (
 )
 _STRATEGY_KIND: Literal["etf_trend"] = "etf_trend"
 _CODE_PATHS = (
+    "src/quant/data/etf_research_inputs.py",
     "src/quant/backtest/costs.py",
     "src/quant/backtest/simulator.py",
     "src/quant/backtest/timing.py",
@@ -133,36 +135,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     if not folds:
         raise ValueError("历史长度不足以形成完整 walk-forward 折")
+    follow_up = walk.get("follow_up_start")
+    if follow_up is not None:
+        previous = folds[-1]
+        if follow_up <= previous.test_end or follow_up > data_end:
+            raise ValueError("follow_up_start 必须在已完成测试折之后且不晚于数据末日")
+        folds.append(Fold(
+            len(folds) + 1, previous.train_start, previous.train_end,
+            previous.validation_start, previous.validation_end, follow_up, data_end,
+        ))
+    frozen_parameters = walk.get("frozen_parameters")
+    if follow_up is not None and frozen_parameters is None:
+        raise ValueError("新增样本外必须预先冻结每折参数")
+    if frozen_parameters is not None and len(frozen_parameters) != len(folds):
+        raise ValueError("frozen_parameters 必须与折数一致")
     candidates = _candidates(config)
-    bars = pl.read_parquet(
-        data_root / "clean" / "bar_1d" / "date=*" / "data.parquet"
-    ).filter(
-        pl.col("symbol").is_in(candidates)
-        & pl.col("trade_date").is_between(data_start, data_end, closed="both")
-        & (
-            ((pl.col("trade_date") < dt.date(2026, 1, 1)) & (pl.col("source") == "akshare"))
-            | ((pl.col("trade_date") >= dt.date(2026, 1, 1)) & (pl.col("source") == "baostock"))
-        )
+    bars, prices, calendars, instruments = read_etf_research_inputs(
+        data_root, candidates, data_start, data_end,
     )
-    prices = pl.read_parquet(
-        data_root / "clean" / "research_price_1d" / "date=*" / "data.parquet"
-    ).filter(
-        pl.col("symbol").is_in(candidates)
-        & (pl.col("adjustment_method") == "TOTAL_RETURN_DIVIDEND")
-        & pl.col("trade_date").is_between(data_start, data_end, closed="both")
-    )
-    calendars = pl.concat([
-        pl.read_parquet(
-            data_root / "clean" / "trade_calendar" / f"market={market}" / "data.parquet"
-        )
-        for market in ("SH", "SZ")
-    ])
-    instruments = pl.concat([
-        pl.read_parquet(
-            data_root / "clean" / "instrument" / f"market={market}" / "data.parquet"
-        )
-        for market in ("SH", "SZ")
-    ]).filter(pl.col("symbol").is_in(candidates))
     _require_symbol_coverage(bars, candidates, "成交行情")
     _require_symbol_coverage(prices, candidates, "总回报价格")
 
@@ -185,7 +175,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     for fold in folds:
         validation_scores: list[tuple[Parameters, dict[str, float]]] = []
-        for params in grid:
+        fold_grid = (
+            [Parameters(**frozen_parameters[fold.fold - 1])]
+            if frozen_parameters is not None else grid
+        )
+        for params in fold_grid:
             validation = evaluate_window(
                 bars=bars,
                 prices=prices,
@@ -333,6 +327,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         baseline_one_x_results.append(baseline_one_x)
         fold_reports.append({
             "fold": fold.fold,
+            "sample": "new_oos" if follow_up == fold.test_start else "historical_test",
             "train": [fold.train_start.isoformat(), fold.train_end.isoformat()],
             "validation": [
                 fold.validation_start.isoformat(), fold.validation_end.isoformat()
@@ -367,20 +362,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         1 + result["total_return"] for result in baseline_one_x_results
     ) - 1
     caveats: tuple[str, ...] = (
-        "参数仅在每折验证集选择，测试集不参与选择",
-        "规则策略的训练段仅用于因子预热，不拟合模型参数",
-        "ETF_POOL_M2_V1 于 2026-07-12 才冻结，历史回看仍有候选池后见偏差",
-        "ETF 涨跌停状态仍依赖现有输入覆盖；缺失时不得据此晋级 PAPER",
-        "M2 兼容模拟器的目标缺口只覆盖整手、现金和缺开盘价；晋级 PAPER 前仍须用统一日频或 formal 执行模拟补齐停牌、涨跌停与 T+1 拒单",
-        "成本参数尚未用券商账单校准",
+        "兼容回测器未完整模拟停牌、涨跌停和 T+1；候选进入模拟盘前须补统一成交规则验证。",
     )
-    if volatility_target is not None:
-        lookback, target_volatility, annualization_sessions = volatility_target
-        caveats += (
-            "波动率目标仅使用信号日可见的总回报价格，"
-            f"回看 {lookback} 个共同收益观测、年化 {annualization_sessions} 日、"
-            f"目标 {target_volatility:.2%}，只降风险且不加杠杆",
-        )
     aggregate = {
         "compounded_test_return": compounded_return,
         "positive_folds": sum(result["total_return"] > 0 for result in one_x_results),
@@ -525,7 +508,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     print(json.dumps({
         "output": str(output), "run_id": completed.run_id, "reused": reused,
-        **report,
+        "aggregate_1x": aggregate,
     }, ensure_ascii=False))
     return 0
 
@@ -627,6 +610,12 @@ def build_window_targets(
     rebalance_months: int = 1,
 ) -> pl.DataFrame:
     """Compute one target schedule that all cost scenarios must share."""
+    if strategy_config.get("equal_weight_baseline", False):
+        return build_equal_weight_targets(
+            prices=prices, calendars=calendars, candidates=candidates,
+            start=start, end=end, cash_buffer=strategy_config["cash_buffer"],
+            strategy_name=strategy_name, rebalance_months=rebalance_months,
+        )
     signal_dates = _monthly_signal_dates(
         prices,
         start=start,
@@ -891,7 +880,8 @@ def metrics(
     target_gaps: pl.DataFrame | None = None,
 ) -> dict[str, float]:
     unit = nav.get_column("unit_nav")
-    returns = unit.pct_change().drop_nulls()
+    anchored = pl.concat([pl.Series("unit_nav", [1.0]), unit])
+    returns = anchored.pct_change().drop_nulls()
     standard_deviation = cast(float, returns.std()) if returns.len() > 1 else 0.0
     annualized_volatility = standard_deviation * math.sqrt(252)
     sharpe = (
@@ -899,7 +889,8 @@ def metrics(
         if standard_deviation > 0
         else 0.0
     )
-    drawdown = unit / unit.cum_max() - 1
+    drawdown = anchored / anchored.cum_max() - 1
+    cagr = float(unit[-1]) ** (252 / nav.height) - 1
     traded = trades.get_column("notional").sum()
     gross_traded_notional = 0.0 if traded is None else float(traded)
     unresolved_gaps = (
@@ -914,6 +905,8 @@ def metrics(
     )
     return {
         "total_return": float(unit[-1] - 1),
+        "cagr": cagr,
+        "annualized_one_way_turnover": gross_traded_notional / (2 * initial_cash) * 252 / nav.height,
         "sharpe": sharpe,
         "annualized_volatility": annualized_volatility,
         "max_drawdown": cast(float, drawdown.min()),

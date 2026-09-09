@@ -1,6 +1,7 @@
 import datetime as dt
 
 import polars as pl
+import pytest
 
 from quant.research.run_s1_walk_forward import (
     _CODE_PATHS,
@@ -69,6 +70,17 @@ def test_metrics_include_unresolved_target_gap_diagnostics() -> None:
 
     assert result["target_gap_count"] == 1.0
     assert result["absolute_target_gap_notional"] == 100.0
+
+
+def test_metrics_include_initial_loss_and_annualize_deployment_turnover() -> None:
+    nav = pl.DataFrame({
+        "unit_nav": [0.9, 0.95], "equity": [900.0, 950.0],
+        "cumulative_fees": [1.0, 1.0],
+    })
+    result = metrics(nav, pl.DataFrame({"notional": [1000.0]}), initial_cash=1000.0)
+    assert result["max_drawdown"] == pytest.approx(-0.1)
+    assert result["annualized_one_way_turnover"] == 63.0
+    assert result["cagr"] == pytest.approx(0.95 ** 126 - 1)
 
 
 def test_signal_dates_support_bimonthly_single_variable_comparison() -> None:

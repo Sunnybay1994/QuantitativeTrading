@@ -1,0 +1,100 @@
+[meta]
+config_version = "1.4.0"
+purpose = "M2 S2 monthly regime trend with a minimum two-ETF breadth"
+
+[research]
+hypothesis_id = "s2-monthly-minimum-breadth-v1"
+hypothesis = "Excluding Top-K=1 from the otherwise unchanged monthly regime-filtered ETF walk-forward grid can reduce the concentrated first test fold drawdown while preserving positive net returns in both frozen test folds and not worsening the second fold drawdown."
+strategy_kind = "etf_regime_trend"
+strategy_version = "1.3.0"
+conclusion = "RESEARCH_ONLY"
+random_seed = 0
+
+# Pre-registered before the run; the raw TOML bytes, including these comments,
+# are bound by config_sha256.  Baseline run:
+# f5674056ea7b2944be2ce03db5d0e44b40506b68e316acf961945f899b24cb00
+# Pass only if all three conditions hold:
+# 1. both frozen test-fold net returns remain positive;
+# 2. fold 1 maximum drawdown improves versus the baseline;
+# 3. fold 2 maximum drawdown is no worse than the baseline.
+
+[data]
+historical_raw_price_source = "akshare_sina"
+incremental_raw_price_source = "baostock"
+dividend_source = "akshare_sina"
+adjustment = "total_return_dividend"
+start_date = 2023-01-01
+end_date = 2026-09-08
+minimum_history_observations = 121
+
+[universe]
+name = "ETF_POOL_M2_V1"
+frozen_as_of = 2026-07-12
+wide = ["510300.SH", "159919.SZ", "510500.SH", "159922.SZ"]
+industry = ["512880.SH", "512170.SH", "515790.SH"]
+hong_kong_theme = ["513060.SH", "513330.SH", "513180.SH", "159920.SZ"]
+
+[strategy.equal_weight]
+rebalance = "month_end_signal_next_session_open"
+cash_buffer = 0.00
+
+[strategy.etf_regime_trend]
+regime_symbol = "510300.SH"
+momentum_windows = [20, 60, 120]
+regression_window = 60
+top_k = 2
+cash_buffer = 0.10
+factor_version = "trend_v1"
+signal_timing = "close"
+execution_timing = "next_session_open"
+
+[backtest]
+initial_cash = 1000000.0
+valuation_timing = "close"
+execution_timing = "next_session_open"
+
+[benchmark.csi300]
+symbol = "000300.SH"
+tracked_etf = "510300.SH"
+official_as_of = 2026-03-31
+official_ytd_return = -0.0389
+official_tolerance = 0.0001
+official_source = "https://oss-ch.csindex.com.cn/static/html/csindex/public/uploads/indices/detail/files/en/000300factsheeten.pdf"
+
+[walk_forward]
+follow_up_start = 2026-07-11
+frozen_parameters = [{top_k = 2, regression_window = 60}, {top_k = 2, regression_window = 60}, {top_k = 2, regression_window = 60}]
+enabled = true
+train_months = 24
+validation_months = 6
+test_months = 6
+step_months = 6
+selection_metric = "net_sharpe"
+cost_multipliers = [0.5, 1.0, 2.0]
+
+[walk_forward.grid]
+top_k = [2, 3]
+regression_window = [40, 60, 90]
+
+[costs.a_share]
+commission_rate = 0.00025
+commission_min = 5.0
+stamp_tax_sell = 0.0005
+transfer_fee = 0.00001
+slippage = 0.001
+effective_from = 2026-01-01
+
+[costs.etf]
+commission_rate = 0.00025
+commission_min = 5.0
+slippage = 0.001
+effective_from = 2023-01-01
+
+[admission]
+all_historical_folds_positive_1x = true
+minimum_positive_historical_fold_fraction_2x = 0.5
+per_fold_better_drawdown_or_calmar_than_s0 = true
+new_oos_minimum_excess_over_s0 = -0.02
+maximum_annualized_one_way_turnover = 3.0
+turnover_definition = "gross traded notional / (2 * initial cash) * 252 / sessions; includes initial deployment"
+oos_account_start = "fresh cash; first signal previous session close; thereafter month-end"
