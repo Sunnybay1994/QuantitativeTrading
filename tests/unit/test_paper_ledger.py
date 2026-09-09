@@ -50,6 +50,30 @@ def test_dividend_is_equity_on_ex_date_but_not_spendable_until_pay_date():
     assert state["nav"][-1]["unit_nav"] == 1.0
 
 
+def test_weekend_final_dividend_terms_apply_once_on_monday_ex_date():
+    kwargs, state = inputs()
+    friday, monday, tuesday = dt.date(2025, 7, 4), dt.date(2025, 7, 7), dt.date(2025, 7, 8)
+    dates = {D1: friday, D2: monday, D3: tuesday}
+    kwargs["bars"] = kwargs["bars"].with_columns(pl.col("trade_date").replace_strict(dates))
+    kwargs["calendar"] = kwargs["calendar"].with_columns(pl.col("date").replace_strict(dates))
+    kwargs["market_states"] = {(dates[day], symbol): value
+                                for (day, symbol), value in kwargs["market_states"].items()}
+    kwargs["instruments"] = kwargs["instruments"].with_columns(pl.lit("STOCK").alias("instrument_type"))
+    kwargs["dividends"] = pl.DataFrame({"symbol": [SYMBOL],
+        "ann_date": [dt.date(2025, 7, 5)], "record_date": [friday], "ex_date": [monday],
+        "pay_date": [monday], "div_cash": [.2814904], "share_ratio": [.3992772],
+        "share_list_date": [monday]})
+    state, _ = advance(date=friday, state=state, **kwargs)
+    assert state["cash"] == 100.0
+    assert state["holdings"][SYMBOL]["quantity"] == 100
+    state, _ = advance(date=monday, state=state, **kwargs)
+    assert state["cash"] == pytest.approx(128.14904)
+    assert state["holdings"][SYMBOL]["quantity"] == 139
+    state, _ = advance(date=tuesday, state=state, **kwargs)
+    assert state["cash"] == pytest.approx(128.14904)
+    assert state["holdings"][SYMBOL]["quantity"] == 139
+
+
 def test_sell_only_keeps_current_quantity_when_target_requests_more():
     kwargs, state = inputs()
     kwargs["config"]["paper"]["sell_only"] = True
