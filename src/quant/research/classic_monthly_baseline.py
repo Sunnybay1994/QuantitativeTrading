@@ -32,6 +32,12 @@ from quant.research.run_classic_factors import select_frozen_liquid_universe
 from quant.research.run_s1_walk_forward import metrics
 
 CODE_PATHS = (
+    "src/quant/factors/turnover_variability.py",
+    "src/quant/factors/classic_second_batch.py",
+    "src/quant/factors/liquidity.py",
+    "src/quant/research/monthly_turnover_variability.py",
+    "src/quant/factors/gross_margin.py",
+    "src/quant/research/monthly_gross_margin.py",
     "src/quant/factors/gross_profitability.py",
     "src/quant/research/monthly_gross_profitability.py",
     "src/quant/factors/asset_growth.py",
@@ -155,6 +161,11 @@ def run_baseline(
     data_root: Path, artifact_root: Path,
 ) -> int:
     data, universe, portfolio = config["data"], config["universe"], config["portfolio"]
+    if config.get("financials", {}).get("factor_family") == "gross_margin":
+        expected_margin = {"formula": "(revenue_ttm - oper_cost_ttm) / revenue_ttm",
+                           "window_quarters": 4, "valid_values": "positive_ttm_revenue_nonnegative_ttm_cost"}
+        if any(config.get("gross_margin", {}).get(k) != v for k, v in expected_margin.items()):
+            raise ValueError("Unsupported gross margin configuration")
     if config.get("financials", {}).get("factor_family") == "gross_profitability":
         expected_gross = {"formula": "(revenue_ttm - oper_cost_ttm) / total_assets_t",
                           "window_quarters": 4, "assets_period": "same_as_latest_income",
@@ -204,6 +215,21 @@ def run_baseline(
     extra_inputs: list[tuple[str, pl.DataFrame, tuple[str, ...], str]] = []
     extra_outputs: list[tuple[str, pl.DataFrame]] = []
     extra_digests: list[ResearchInputDigestV1] = []
+    if "turnover_variability" in config:
+        from quant.research.monthly_turnover_variability import build_monthly_turnover_variability
+
+        if config["factors"]["names"] != ["turnover_cv20"] or config["factors"]["directions"] != [-1]:
+            raise ValueError("CV20 direction and formula are fixed before test evaluation")
+        basic = read_stock_data(data_root=data_root, config=refresh_config, table="daily_basic",
+                                start=data["warmup_start"], end=end, symbols=list(candidates))
+        monthly = build_monthly_turnover_variability(
+            bars=bars, daily_basic=basic, sessions=all_sessions, candidates=candidates,
+            start=data["research_start"], end=end, settings=config["turnover_variability"],
+        )
+        factors = factors.join(monthly, on=["symbol", "trade_date"], how="inner", validate="1:1")
+        extra_inputs.append(("daily-basic", basic, ("trade_date", "symbol"), "trade_date"))
+        extra_outputs.append(("turnover_monthly_factors", monthly))
+        print(f"Computed CV20 and comparators on {monthly['trade_date'].n_unique()} month ends", flush=True)
     if "intraday" in config:
         from quant.research.monthly_intraday_factors import read_monthly_intraday_factors
 
@@ -249,13 +275,27 @@ def run_baseline(
         names = read_name_history(data_root, list(candidates), end)
         eligible = exclude_historical_risk_names(eligible, names)
         extra_inputs.append(("name-history", names, ("symbol", "start_date", "name"), "start_date"))
+    if "turnover_variability" in config:
+        # Both strategies rank the same complete-case stock cohort.
+        eligible = eligible.filter(pl.all_horizontal(pl.col(name).is_finite() for name in
+            ("turnover_cv20", "alpha158_std20", "alpha158_roc20", "alpha158_rsv20")))
     scored = build_equal_weight_zscore_composite(eligible, component_directions=directions)
     targets = pl.concat([build_monthly_zscore_targets(
         scored, sessions=all_sessions, start=fold.test_start, end=fold.test_end, top_k=portfolio["top_k"],
         strategy_name=config["research"]["strategy_name"],
         retention_rank=portfolio.get("retention_rank"),
     ).with_columns(pl.lit(fold.fold).alias("fold")) for fold in folds])
-    selected = sorted(targets.get_column("symbol").unique().to_list())
+    paired_targets: pl.DataFrame | None = None
+    if "turnover_variability" in config:
+        paired_scores = build_equal_weight_zscore_composite(scored,
+            component_directions=(("alpha158_std20", -1), ("alpha158_roc20", 1), ("alpha158_rsv20", -1)))
+        paired_targets = pl.concat([build_monthly_zscore_targets(
+            paired_scores, sessions=all_sessions, start=fold.test_start, end=fold.test_end,
+            top_k=portfolio["top_k"], strategy_name="b25_paired_three_factor_baseline",
+        ).with_columns(pl.lit(fold.fold).alias("fold")) for fold in folds])
+        extra_outputs.append(("three_factor_targets", paired_targets))
+    selected = sorted(set(targets.get_column("symbol")) | (
+        set() if paired_targets is None else set(paired_targets.get_column("symbol"))))
     execution_dates = sorted(targets.get_column("execution_date").unique().to_list())
     limits, suspensions, dividends, instruments = prepare_stock_execution_inputs(
         data_root=data_root, symbols=selected, execution_dates=execution_dates, start=start, end=end,
@@ -289,10 +329,15 @@ def run_baseline(
             )
             benchmark_states = etf_session_states(benchmark_bars, benchmark_dividends,
                                                   slippage=scenario["costs"]["etf"]["slippage"])
-            for comparison, bar_data, master, weights, events, states, name in (
+            comparisons = [
                 ("top50", stock_bars, instruments, targets.filter(pl.col("fold") == fold.fold).drop("fold"), dividends, stock_states, config["research"]["strategy_name"]),
                 ("510300", benchmark_bars, benchmark_instruments, benchmark_targets.filter(pl.col("fold") == fold.fold).drop("fold"), benchmark_dividends, benchmark_states, benchmark_name),
-            ):
+            ]
+            if paired_targets is not None:
+                comparisons.append(("three_factor", stock_bars, instruments,
+                    paired_targets.filter(pl.col("fold") == fold.fold).drop("fold"), dividends,
+                    stock_states, "b25_paired_three_factor_baseline"))
+            for comparison, bar_data, master, weights, events, states, name in comparisons:
                 nav, fills, rejected = replay(bars=bar_data, calendar=calendar, instruments=master,
                     targets=weights, dividends=events, market_states=states, config=scenario,
                     sessions=sessions, name=name)
@@ -357,6 +402,8 @@ def run_baseline(
         and meets_portfolio_candidate(results, config["admission"])):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
+        "CV20 is a short-window A-share adaptation of monthly US turnover variability; the historical market periods were used in prior research."
+        if "turnover_variability" in config else
         "Monthly PIT replication using a fixed historical financial snapshot; financial freshness varies by issuer."
         if "financials" in config else
         "Historical replication within a fixed liquid universe; the IVOL regressors are local size/value proxies."
