@@ -32,6 +32,7 @@ from quant.research.run_classic_factors import select_frozen_liquid_universe
 from quant.research.run_s1_walk_forward import metrics
 
 CODE_PATHS = (
+    "src/quant/factors/high52.py",
     "src/quant/factors/overnight_decomposition.py",
     "src/quant/research/monthly_lowvol_reversal.py",
     "src/quant/research/monthly_cv20_buffer.py",
@@ -263,6 +264,23 @@ def run_baseline(
     extra_inputs: list[tuple[str, pl.DataFrame, tuple[str, ...], str]] = []
     extra_outputs: list[tuple[str, pl.DataFrame]] = []
     extra_digests: list[ResearchInputDigestV1] = []
+    if "high52" in config:
+        from quant.data.calendar import expected_open_dates
+        from quant.factors.high52 import compute_high52
+
+        settings = config["high52"]
+        if (settings["high_window_sessions"] != 252 or settings["momentum_window_sessions"] != 126
+            or config["factors"]["names"] != ["high52_proximity"]
+            or config["factors"]["directions"] != [1]):
+            raise ValueError("B37 uses fixed positive 252-session high proximity against 126-session momentum")
+        history_start = settings["formation_history_start"]
+        formation_bars = read_stock_data(data_root=data_root, config=refresh_config, table="bar_1d",
+                                         start=history_start, end=end, symbols=list(candidates))
+        formation_sessions = tuple(sorted(expected_open_dates(data_root, list(candidates), history_start, end)))
+        high_values = compute_high52(formation_bars, sessions=formation_sessions)
+        factors = factors.join(high_values, on=["symbol", "trade_date"], how="left", validate="1:1")
+        extra_inputs.append(("formation-bars", formation_bars, ("trade_date", "symbol"), "trade_date"))
+        extra_outputs.append(("high52_factors", high_values))
     if "overnight_decomposition" in config:
         from quant.factors.overnight_decomposition import compute_overnight_decomposition
 
@@ -366,6 +384,9 @@ def run_baseline(
     if "overnight_decomposition" in config:
         eligible = eligible.filter(pl.all_horizontal(pl.col(name).is_finite() for name in
             ("overnight_return_20", "intraday_return_20", "total_return_20")))
+    if "high52" in config:
+        eligible = eligible.filter(pl.all_horizontal(pl.col(name).is_finite() for name in
+            ("high52_proximity", "momentum_126")))
     scored = build_equal_weight_zscore_composite(eligible, component_directions=directions)
     primary_scored = scored
     if low_volatility_filter:
@@ -384,7 +405,7 @@ def run_baseline(
     paired_targets: pl.DataFrame | None = None
     paired_comparison, paired_strategy = "three_factor", "b25_paired_three_factor_baseline"
     if ("turnover_variability" in config or "information_discreteness" in config
-        or low_volatility_filter or "overnight_decomposition" in config):
+        or low_volatility_filter or "overnight_decomposition" in config or "high52" in config):
         paired_components: tuple[tuple[str, int], ...] = (
             ("alpha158_std20", -1), ("alpha158_roc20", 1), ("alpha158_rsv20", -1))
         if "information_discreteness" in config:
@@ -402,6 +423,9 @@ def run_baseline(
         if "overnight_decomposition" in config:
             paired_components = (("total_return_20", -1),)
             paired_comparison, paired_strategy = "total_reversal", "b36_paired_total_return_reversal"
+        if "high52" in config:
+            paired_components = (("momentum_126", 1),)
+            paired_comparison, paired_strategy = "momentum_126", "b37_paired_six_month_momentum"
         paired_scores = build_equal_weight_zscore_composite(scored,
             component_directions=paired_components)
         paired_targets = pl.concat([build_monthly_zscore_targets(
@@ -537,6 +561,8 @@ def run_baseline(
         and meets_portfolio_candidate(results, config["admission"])):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
+        "252-session adjusted daily-high proximity with monthly A-share Top50 holding adapts the US 52-week-high study; historical periods were inspected previously."
+        if "high52" in config else
         "Daily adjusted-open decomposition and monthly A-share holding adapt the overnight/intraday idea; these historical periods were inspected previously."
         if "overnight_decomposition" in config else
         "FIP uses a fixed 252-session formation/21-session skip and monthly A-share rebalancing rather than the paper's calendar-month formation and six-month holding."
