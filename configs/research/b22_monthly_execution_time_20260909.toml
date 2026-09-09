@@ -1,0 +1,33 @@
+[research]
+hypothesis_id = "b22-fixed-monthly-execution-0935-20260909"
+hypothesis = "Executing frozen monthly allocation targets at 09:35 instead of 09:30 improves net results under the same costs and account rules."
+baseline_config = "configs/research/b16_cross_asset_inverse_volatility60_20260909.toml"
+maximum_conclusion = "RESEARCH_ONLY"
+# The historical B16 conclusion stays REJECTED. This is execution research, not a new admission test.
+
+[execution]
+source = "yahoo"
+frequency = "5m"
+baseline_time = "09:30"
+alternative_time = "09:35"
+cost_multipliers = [0.5, 1.0, 2.0]
+allocations = ["inverse_volatility", "equal_weight"]
+missing_quote = "fail"
+price_range_tolerance = 0.001
+# Both times use the same minute source; retain official daily closing marks and actual ETF price bands.
+# Weights are fixed before the trading day; quantities may differ with the execution price.
+# No inference of an actual 1/3 minute fill from 5-minute OHLC.
+
+[screen]
+all_test_cost_cases_improve = true
+test_max_drawdown_not_worse = true
+# Any failure => REJECTED; pass => RESEARCH_ONLY, never PAPER_CANDIDATE.
+
+[split]
+train_start = 2026-06-18
+train_end = 2026-06-30
+validation_start = 2026-07-01
+validation_end = 2026-07-31
+test_start = 2026-08-01
+test_end = 2026-09-08
+# No time grid and no selection on these periods. Minute availability limits this exploratory study.
