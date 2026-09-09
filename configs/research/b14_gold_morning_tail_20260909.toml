@@ -1,0 +1,40 @@
+[research]
+hypothesis_id = "b14-gold-morning-tail-design-screen-20260909"
+hypothesis = "A positive return from the prior daily close to 10:00 predicts positive 14:30-to-14:55 gold ETF return with mean gross profit at least three times round-trip cost in the design sample."
+symbols = ["518880.SH", "159934.SZ"]
+design_start = 2026-01-01
+design_end = 2026-03-31
+source = "baostock"
+frequency = "5m"
+
+[signal]
+observation_end = "10:00"
+reference = "previous_daily_close"
+comparison = "return_strictly_positive"
+entry = "14:30_bar_open"
+exit = "14:55_bar_open"
+maximum_round_trips_per_day = 1
+minimum_holding_bars = 5
+required_bars = 48
+# Gao-Han-Li-Zhou first-half-hour return includes the overnight move.
+# Executable variant exits before the final close; no close-fill assumption.
+# https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2440866
+
+[costs]
+order_budget = 100000.0
+board_lot = 100
+tick_size = 0.001
+commission_rate = 0.00025
+commission_min = 5.0
+slippage_ticks_per_side = 1.0
+spread_ticks_assumption = 1.0
+cost_multipliers = [0.5, 1.0, 2.0]
+
+[screen]
+minimum_gross_to_cost = 3.0
+minimum_signals = 20
+conclusion_if_failed = "REJECTED"
+conclusion_if_passed = "RESEARCH_ONLY"
+# Design screen only; cost-adjusted per-signal estimates are not account backtests.
+# If the optimistic scheduled-open gross edge fails, do not run validation/test or delay tuning.
+# The local cost-map tick screen chose the two gold ETFs; no retrospective OOS claim.
