@@ -12,6 +12,7 @@ import polars as pl
 
 from quant.backtest import EtfCostModel
 from quant.backtest.daily_account import advance as advance
+from quant.data.etf_limits import read_limits
 from quant.data.etf_paper_inputs import etf_session_states, read_etf_dividends
 from quant.data.etf_research_inputs import read_etf_research_inputs
 from quant.data.refresh import SHANGHAI, completed_date, latest_session
@@ -110,7 +111,10 @@ def run(*, config_path: Path, data_root: Path, output: Path, end: dt.date,
     first = next(d for d in sessions if d >= start)
     previous = max(d for d in sessions if d < first)
     dividends = read_etf_dividends(data_root, symbols, config["data"]["start_date"])
-    market_states = etf_session_states(bars, dividends, slippage=config["costs"]["etf"]["slippage"])
+    market_states = etf_session_states(
+        bars.filter(pl.col("trade_date").is_between(first, end)), dividends,
+        slippage=config["costs"]["etf"]["slippage"], official_limits=read_limits(data_root),
+    )
     snapshots = sorted(p for p in output.glob("????-??-??/state.json") if p.parent.name <= str(end))
     state: dict[str, Any] = {"cash": paper["initial_cash"], "holdings": {}, "receivables": [],
                              "pending": [], "nav": [], "cumulative_fees": 0.0}

@@ -13,6 +13,7 @@ import polars as pl
 
 from quant.data.calendar import expected_open_dates
 from quant.data.connectors.tushare import TushareConnector
+from quant.data.etf_limits import refresh_limits
 from quant.data.mappers import TushareCalendarMapper
 from quant.data.refresh_etf_prices import refresh as refresh_etfs
 from quant.data.refresh_stocks import refresh as refresh_stocks
@@ -65,10 +66,14 @@ def run_refresh(
         stocks = refresh_stocks(end=end, data_root=data_root, artifact_root=artifact_root, config=config)
         etfs = refresh_etfs(end=end, data_root=data_root, artifact_root=artifact_root,
                             config=Path(settings["etf_config"]))
-    changed = stocks["new_dates"] or etfs["new_rows"] or etfs["new_bar_rows"]
+    universe = tomllib.loads(Path(settings["etf_config"]).read_text(encoding="utf-8"))["universe"]
+    symbols = sorted({s for value in universe.values() if isinstance(value, list) for s in value})
+    limit_rows = refresh_limits(data_root=data_root, symbols=symbols, end=end)
+    changed = stocks["new_dates"] or etfs["new_rows"] or etfs["new_bar_rows"] or limit_rows
     return {"latest_session": str(end), "message": "updated" if changed else "no-op",
             "stock_new_dates": stocks["new_dates"], "stock_new_rows": stocks["new_rows"],
             "etf_price_new_rows": etfs["new_rows"], "etf_bar_new_rows": etfs["new_bar_rows"],
+            "etf_limit_new_rows": limit_rows,
             "stock_artifact": stocks.get("artifact_path"), "etf_artifact": etfs.get("artifact_path")}
 
 
