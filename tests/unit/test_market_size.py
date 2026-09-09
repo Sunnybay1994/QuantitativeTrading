@@ -36,3 +36,15 @@ def test_negative_size_selects_smallest_next_session_without_future_leakage():
     assert result["symbol"].to_list() == ["B", "C"]
     assert result.equals(targets(pl.concat([sample(), future])))
     assert result["as_of"][0] < result["execution_date"][0]
+
+
+def test_circulating_size_uses_its_own_column_and_can_reverse_total_size_rank():
+    frame = sample().head(3).with_columns(pl.Series("circulating_market_value", [5., 8., 7.]))
+    total = compute_market_size(frame)
+    circulating = compute_market_size(frame, column="circulating_market_value")
+    assert total.sort("log_total_market_value", "symbol")["symbol"].to_list() == ["B", "C", "A"]
+    assert circulating.sort("log_circulating_market_value")["symbol"].to_list() == ["A", "C", "B"]
+    invalid = frame.with_columns(pl.Series("circulating_market_value", [0., None, float("inf")]))
+    assert compute_market_size(invalid, column="circulating_market_value")["log_circulating_market_value"].null_count() == 3
+    with pytest.raises(ValueError, match="Unsupported"):
+        compute_market_size(frame, column="pb")

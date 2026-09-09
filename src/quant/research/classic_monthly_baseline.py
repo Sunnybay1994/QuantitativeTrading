@@ -345,14 +345,16 @@ def run_baseline(
         from quant.factors.market_size import compute_market_size
 
         settings = config["market_size"]
-        if (settings["formula"] != "ln(total_market_value)"
-            or settings["valid_values"] != "finite_positive_total_market_value"
-            or config["factors"]["names"] != ["log_total_market_value"]
+        column = settings.get("column", "total_market_value")
+        if (column not in {"total_market_value", "circulating_market_value"}
+            or settings["formula"] != f"ln({column})"
+            or settings["valid_values"] != f"finite_positive_{column}"
+            or config["factors"]["names"] != [f"log_{column}"]
             or config["factors"]["directions"] != [-1]):
-            raise ValueError("B44 uses fixed negative log total market value")
+            raise ValueError("Size studies use fixed negative log market value")
         basic = read_stock_data(data_root=data_root, config=refresh_config, table="daily_basic",
                                 start=data["warmup_start"], end=end, symbols=list(candidates))
-        size_values = compute_market_size(basic)
+        size_values = compute_market_size(basic, column=column)
         factors = factors.join(size_values, on=["symbol", "trade_date"], how="left", validate="1:1")
         extra_inputs.append(("daily-basic", basic, ("trade_date", "symbol"), "trade_date"))
         extra_outputs.append(("market_size_factors", size_values))
