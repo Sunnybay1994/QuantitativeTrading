@@ -1,0 +1,32 @@
+[research]
+hypothesis_id = "b5-etf-cost-map-20260909"
+purpose = "Descriptive cost and session screening, before choosing an intraday strategy. Daily volatility is not expected trade profit."
+as_of = 2026-09-08
+universe = "configs/universe/t0_etf_pool_v1.toml"
+
+[costs]
+order_budget = 100000.0
+board_lot = 100
+tick_size = 0.001
+commission_rate = 0.00025
+commission_min = 5.0
+slippage_ticks_per_side = 1.0
+spread_ticks_assumption = 1.0
+# The one-tick-per-side execution allowance includes crossing the assumed spread.
+# Do not add the spread a second time. It is an assumption, not a quote observation.
+cost_multipliers = [0.5, 1.0, 2.0]
+
+[statistics]
+lookback_sessions = 60
+profile_start = 2023-09-01
+minimum_valid_daily_rows = 45
+hourly_max_daily_volume_deviation = 0.10
+price_tolerance = 0.00101
+exclude_adjustment_reference_changes_from_overnight = true
+profile_symbols = ["518880.SH", "159934.SZ"]
+
+[screen]
+minimum_tick_ratio_for_5m = 20.0
+minimum_daily_volatility_for_5m = 0.008
+minimum_expected_gross_profit_to_cost = 3.0
+maximum_conclusion = "RESEARCH_ONLY"
