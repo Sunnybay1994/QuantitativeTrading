@@ -51,6 +51,12 @@ CODE_PATHS = (
     "src/quant/data/stock_execution_inputs.py",
     "src/quant/data/etf_paper_inputs.py",
     "src/quant/data/etf_research_inputs.py",
+    "src/quant/research/monthly_financial_factors.py",
+    "src/quant/research/pit_quality_research.py",
+    "src/quant/data/financial_repository.py",
+    "src/quant/data/financial_pit.py",
+    "src/quant/data/financial_clean.py",
+    "src/quant/factors/pit_quality.py",
 )
 
 
@@ -147,6 +153,21 @@ def run_baseline(
     factors = compute_classic_daily_factors(bars)
     extra_inputs: list[tuple[str, pl.DataFrame, tuple[str, ...], str]] = []
     extra_outputs: list[tuple[str, pl.DataFrame]] = []
+    if "financials" in config:
+        from quant.research.monthly_financial_factors import read_monthly_financial_factors
+
+        financial, histories = read_monthly_financial_factors(
+            data_root=data_root, settings=config["financials"], candidates=candidates,
+            sessions=all_sessions, start=data["research_start"], end=end,
+        )
+        factors = factors.join(financial.factors, on=["symbol", "trade_date"], how="inner", validate="1:1")
+        extra_inputs.extend((f"financial-{name}", frame,
+                             ("symbol", "end_date", "available_date", "report_type", "comp_type"),
+                             "available_date") for name, frame in histories.items())
+        extra_outputs.extend((("financial_factors", financial.factors),
+                              ("financial_eligibility", financial.eligibility),
+                              ("financial_quarantined", financial.quarantined)))
+        print(f"Computed {financial.factors['trade_date'].n_unique()} monthly PIT cross-sections", flush=True)
     if "b3" in config:
         basic = read_stock_data(data_root=data_root, config=refresh_config, table="daily_basic",
                                 start=data["warmup_start"], end=end, symbols=list(candidates))
@@ -266,12 +287,19 @@ def run_baseline(
                   and max(r["median_abs_rank_corr"] for r in redundancy_rows)
                   < config["admission"]["maximum_absolute_rank_correlation"])
     conclusion: Literal["RESEARCH_ONLY", "REJECTED"] = "RESEARCH_ONLY" if passed else "REJECTED"
+    caveat = (
+        "Monthly PIT replication using a fixed historical financial snapshot; most August 2026 signals still use Q1 statements."
+        if "financials" in config else
+        "Historical replication within a fixed liquid universe; the IVOL regressors are local size/value proxies."
+        if "b3" in config else
+        "The component selection used earlier research; this is an exploratory baseline."
+    )
     report = {"hypothesis_id": config["research"]["hypothesis_id"], "conclusion": conclusion,
               "period": [str(start), str(end)], "sessions": sum(sum(f.test_start <= date <= f.test_end for date in all_sessions) for f in folds), "universe": len(candidates),
               "selected_symbols": len(selected), "rebalance_count": len(execution_dates),
               "results": results, "factor_diagnostics": diagnostic_rows, "redundancy": redundancy_rows, "excess_return_1x": excess,
               "dividend_withholding_assumption": portfolio["stock_dividend_withholding"],
-              "caveat": ("Historical replication within a fixed liquid universe; the IVOL regressors are local size/value proxies." if "b3" in config else "The component selection used earlier research; this is an exploratory baseline.")}
+              "caveat": caveat}
     outputs = {"report.json": canonical_json_bytes(report)}
     for name, frame in (("nav", pl.concat(navs, how="vertical_relaxed")),
                         ("trades", pl.concat(trades, how="vertical_relaxed")),
