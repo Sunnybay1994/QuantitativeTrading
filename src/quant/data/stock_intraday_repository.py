@@ -41,3 +41,30 @@ def read_stock_five_minute_pool(
     if gaps.height:
         raise ValueError(f"Minute history missing {gaps.height} known traded symbol-days")
     return result
+
+
+def reconcile_five_minute_days(
+    minute: pl.DataFrame, daily: pl.DataFrame, *, close_tolerance: float,
+    volume_tolerance: float, amount_tolerance: float,
+) -> pl.DataFrame:
+    """Flag inconsistent source days without modifying minute or daily prices."""
+    if min(close_tolerance, volume_tolerance, amount_tolerance) < 0:
+        raise ValueError("Negative daily reconciliation tolerance")
+    key = ["symbol", "trade_date"]
+    totals = minute.sort("symbol", "bar_start").group_by(key).agg(
+        pl.col("close").last().alias("minute_close"),
+        pl.col("volume").sum().alias("minute_volume"),
+        pl.col("amount").sum().alias("minute_amount"),
+    ).join(daily.select(*key, "close", "volume", "amount"), on=key, how="left", validate="m:1")
+    return totals.with_columns(
+        (pl.col("minute_close") - pl.col("close")).abs().alias("daily_close_error"),
+        (pl.col("minute_volume") / pl.col("volume") - 1).abs().alias("daily_volume_error"),
+        (pl.col("minute_amount") / pl.col("amount") - 1).abs().alias("daily_amount_error"),
+    ).with_columns((
+        pl.all_horizontal([pl.col(c).is_finite() & (pl.col(c) > 0) for c in ("close", "volume", "amount")])
+        & (pl.col("daily_close_error") <= close_tolerance + 1e-8)
+        & (pl.col("daily_volume_error") <= volume_tolerance + 1e-10)
+        & (pl.col("daily_amount_error") <= amount_tolerance + 1e-10)
+    ).fill_null(False).alias("daily_reconciled")).select(
+        *key, "daily_reconciled", "daily_close_error", "daily_volume_error", "daily_amount_error",
+    ).sort(key)

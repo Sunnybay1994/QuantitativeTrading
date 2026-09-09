@@ -49,6 +49,8 @@ def compute_intraday_low_frequency_factors(
         & ((pl.col("volume") > 0) == (pl.col("amount") > 0)))
     if "session_complete" in frame.columns:
         valid = valid & pl.col("session_complete")
+    if "daily_reconciled" in frame.columns:
+        valid = valid & pl.col("daily_reconciled")
     frame = frame.with_columns(
         minute.alias("_minute"), valid.fill_null(False).alias("_valid"),
         (pl.col("close") / pl.coalesce(pl.col("close").shift(1).over(_KEY), "open")).log().alias("_r"),

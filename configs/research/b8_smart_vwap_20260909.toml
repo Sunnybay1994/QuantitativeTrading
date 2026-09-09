@@ -75,6 +75,12 @@ exclude_st_or_delisting_name = true
 unknown_historical_name = "exclude"
 
 [intraday]
+daily_reference = "tushare_unadjusted"
+maximum_daily_close_error = 0.01
+maximum_daily_volume_relative_error = 0.01
+maximum_daily_amount_relative_error = 0.01
+inconsistent_day = "invalidate_rolling_window"
+# Input QA added before B8 results: 1 stock tick and 1% daily amount/volume tolerance.
 source = "baostock"
 frequency = "5m"
 window_sessions = 20

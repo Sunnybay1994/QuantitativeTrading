@@ -8,6 +8,7 @@ import pytest
 from polars.testing import assert_frame_equal
 
 from quant.data.intraday_bars import SCHEMA, TZ
+from quant.data.stock_intraday_repository import reconcile_five_minute_days
 from quant.factors.intraday_low_frequency import (
     FACTOR_NAMES, compute_intraday_low_frequency_factors,
 )
@@ -43,6 +44,26 @@ def test_complete_day_hand_calculation_and_no_overnight_return():
     assert result["valid_day"].to_list() == [True, True]
 
 
+@pytest.mark.parametrize("field", ["close", "volume", "amount"])
+def test_daily_disagreement_invalidates_window_without_changing_raw(field):
+    days = tuple(dt.date(2026, 1, d) for d in (5, 6, 7, 8))
+    minute = pl.concat([_day(day) for day in days])
+    original = minute.clone()
+    reference = minute.group_by("symbol", "trade_date").agg(
+        pl.col("close").last(), pl.col("volume").sum(), pl.col("amount").sum())
+    reference = reference.with_columns(pl.when(pl.col("trade_date") == days[1])
+        .then(pl.col(field) * 1.02).otherwise(pl.col(field)).alias(field))
+    quality = reconcile_five_minute_days(minute, reference, close_tolerance=.01,
+                                        volume_tolerance=.01, amount_tolerance=.01)
+    assert quality["daily_reconciled"].to_list() == [True, False, True, True]
+    result = compute_intraday_low_frequency_factors(minute.join(
+        quality.select("symbol", "trade_date", "daily_reconciled"), on=["symbol", "trade_date"]),
+        sessions=days, window=2)
+    assert result["valid_day"].to_list() == [True, False, True, True]
+    assert result[FACTOR_NAMES[0]].is_null().to_list() == [True, True, True, False]
+    assert_frame_equal(minute, original)
+
+
 def test_monthly_reader_preserves_factor_values_and_hashes_consumed_bars(tmp_path):
     settings = tomllib.loads(Path("configs/research/b8_tail_amount_20260909.toml").read_text(
         encoding="utf-8"))["intraday"]
@@ -53,11 +74,14 @@ def test_monthly_reader_preserves_factor_values_and_hashes_consumed_bars(tmp_pat
     directory.mkdir(parents=True)
     path = directory / "data.parquet"
     minute.write_parquet(path)
-    daily_bars = pl.DataFrame({"symbol": ["600000.SH"] * 2, "trade_date": days, "volume": [480., 480.]})
+    daily_bars = minute.group_by("symbol", "trade_date").agg(
+        pl.col("close").last(), pl.col("volume").sum(), pl.col("amount").sum())
     args = dict(data_root=tmp_path, settings=settings, candidates=("600000.SH",),
                 sessions=days, start=days[0], end=days[-1], daily_bars=daily_bars)
     daily, digest = read_monthly_intraday_factors(**args)
-    assert_frame_equal(daily, compute_intraday_low_frequency_factors(minute, sessions=days, window=2))
+    expected = compute_intraday_low_frequency_factors(minute, sessions=days, window=2)
+    assert_frame_equal(daily.select(expected.columns), expected)
+    assert daily["daily_reconciled"].all()
     assert (digest.rows, digest.min_date, digest.max_date) == (96, days[0], days[-1])
     # Storage row order cannot change the consumed input, but a price/amount revision does.
     minute.reverse().write_parquet(path)
