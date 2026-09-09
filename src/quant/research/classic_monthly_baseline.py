@@ -32,6 +32,7 @@ from quant.research.run_classic_factors import select_frozen_liquid_universe
 from quant.research.run_s1_walk_forward import metrics
 
 CODE_PATHS = (
+    "src/quant/research/monthly_lowvol_reversal.py",
     "src/quant/research/monthly_cv20_buffer.py",
     "src/quant/factors/information_discreteness.py",
     "src/quant/research/monthly_information_discreteness.py",
@@ -191,6 +192,14 @@ def run_baseline(
     data, universe, portfolio = config["data"], config["universe"], config["portfolio"]
     cv20_buffer = config["admission"].get("comparison") == "cv20_unbuffered"
     cv20_bimonthly = config["admission"].get("comparison") == "cv20_monthly_buffered"
+    low_volatility_filter = config.get("low_volatility_filter")
+    if low_volatility_filter and (
+        "b3" not in config or config["factors"]["names"] != ["reversal_20"]
+        or config["factors"]["directions"] != [1]
+        or low_volatility_filter["column"] != "realized_volatility_60"
+        or config["admission"].get("comparison") != "reversal_unfiltered"
+    ):
+        raise ValueError("B35 requires low-volatility filtering with paired reversal ranking")
     if cv20_bimonthly and (portfolio.get("execution_months") != [1, 3, 5, 7, 9, 11]
                            or config["admission"].get("maximum_fold_turnover") != 6.0):
         raise ValueError("B30 requires fixed odd execution months and a 6x turnover limit")
@@ -339,16 +348,27 @@ def run_baseline(
 
         eligible = select_information_winners(eligible)
         extra_outputs.append(("information_winner_pool", eligible))
+    if low_volatility_filter:
+        eligible = eligible.filter(pl.all_horizontal(pl.col(name).is_finite() for name in
+            ("realized_volatility_60", "reversal_20")))
     scored = build_equal_weight_zscore_composite(eligible, component_directions=directions)
+    primary_scored = scored
+    if low_volatility_filter:
+        from quant.research.monthly_lowvol_reversal import select_low_volatility_pool
+
+        primary_scored = select_low_volatility_pool(
+            scored, keep_fraction=low_volatility_filter["keep_fraction"],
+            minimum_candidates=low_volatility_filter["minimum_candidates"])
+        extra_outputs.append(("low_volatility_pool", primary_scored))
     targets = pl.concat([build_monthly_zscore_targets(
-        scored, sessions=all_sessions, start=fold.test_start, end=fold.test_end, top_k=portfolio["top_k"],
+        primary_scored, sessions=all_sessions, start=fold.test_start, end=fold.test_end, top_k=portfolio["top_k"],
         strategy_name=config["research"]["strategy_name"],
         retention_rank=portfolio.get("retention_rank"),
         execution_months=(1, 3, 5, 7, 9, 11) if cv20_bimonthly else None,
     ).with_columns(pl.lit(fold.fold).alias("fold")) for fold in folds])
     paired_targets: pl.DataFrame | None = None
     paired_comparison, paired_strategy = "three_factor", "b25_paired_three_factor_baseline"
-    if "turnover_variability" in config or "information_discreteness" in config:
+    if "turnover_variability" in config or "information_discreteness" in config or low_volatility_filter:
         paired_components: tuple[tuple[str, int], ...] = (
             ("alpha158_std20", -1), ("alpha158_roc20", 1), ("alpha158_rsv20", -1))
         if "information_discreteness" in config:
@@ -360,6 +380,9 @@ def run_baseline(
         if cv20_bimonthly:
             paired_components = (("turnover_cv20", -1),)
             paired_comparison, paired_strategy = "cv20_monthly_buffered", "b30_paired_cv20_monthly_buffered"
+        if low_volatility_filter:
+            paired_components = (("reversal_20", 1),)
+            paired_comparison, paired_strategy = "reversal_unfiltered", "b35_paired_unfiltered_reversal"
         paired_scores = build_equal_weight_zscore_composite(scored,
             component_directions=paired_components)
         paired_targets = pl.concat([build_monthly_zscore_targets(
@@ -432,7 +455,7 @@ def run_baseline(
                                                          pl.lit(multiplier).alias("cost_multiplier")))
                 print(f"Completed fold {fold.fold} {comparison} cost {multiplier}x", flush=True)
     # Direction diagnostics do not select or alter the already frozen component weights.
-    panel = build_next_open_factor_labels(factor_values=scored, bars=bars,
+    panel = build_next_open_factor_labels(factor_values=primary_scored, bars=bars,
                                           sessions=all_sessions, horizons=(20,))
     diagnostic_rows: list[dict[str, Any]] = []
     daily_diagnostics: list[pl.DataFrame] = []
