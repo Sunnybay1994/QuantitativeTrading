@@ -1,0 +1,60 @@
+[research]
+hypothesis_id = "b29-hk-connect-feasible-momentum-design-20260909"
+hypothesis = "Rebuild B23 with historical SH/SZ buy eligibility and Southbound 14:30 execution dates; positive Top3 20-HK-session momentum held five executable Southbound sessions should average gross return at least three times 0.4% round-trip cost."
+study_kind = "execution_feasibility_revision_not_single_factor_increment"
+parent_config = "configs/research/b23_hk_momentum_design_20260909.toml"
+pool_config = "configs/universe/hk_connect_watch_v1.toml"
+design_start = 2023-11-01
+design_end = 2024-04-30
+source = "yahoo"
+frequency = "60m"
+pool_limitation = "Current 30-name observation pool is retrospectively chosen; historical route filters do not repair survivorship or selection bias."
+
+[signal]
+lookback_sessions = 20
+top_k = 3
+positive_only = true
+signal_bar_start = "13:30"
+entry_bar_start = "14:30"
+signal_session = "latest_completed_full_HK_session_strictly_before_entry"
+lookback_calendar = "HK_full_sessions_not_Southbound_sessions"
+signal_available = "after_signal_session_close"
+# Keep B23's prior completed HK-day 13:30 bar close; never use entry-day prices for ranking.
+return_definition = "cash_dividends_no_split_events"
+missing_signal_pool = "skip_cycle_all_slots_cash"
+rank_ties = "symbol_ascending"
+insufficient_positive_eligible = "choose_up_to_top3_keep_each_slot_one_third_remainder_cash"
+
+[execution]
+calendar_snapshot = "official_20260909_v1"
+eligibility_snapshot = "combined_20260909_v1"
+anchor = "first_can_execute_1430_day_on_or_after_design_start"
+hold_executable_sessions = 5
+cycle_stride = 5
+calendar_field = "can_execute_1430"
+end_boundary = "only_cycles_with_full_scheduled_exit_on_or_before_design_end"
+buy_eligibility = "at_entry_date_either_SH_CONNECT_or_SZ_CONNECT"
+route_preference = ["SH_CONNECT", "SZ_CONNECT"]
+unknown_eligibility = "fail"
+# Choose a route at entry; sell held shares through that same route.
+# A removal bans new purchases, not liquidation of previously acquired listed shares.
+loss_of_buy_eligibility = "hold_until_scheduled_exit_sell_on_original_route_no_new_buys"
+sell_route_rule_source = "https://docs.static.szse.cn/www/lawrules/rule/inno/szhk/W020220624712925559099.pdf"
+sell_only_rule_source = "https://investor.szse.cn/video/t20161228_537609.html"
+missing_execution_quote = "fail_entire_run_preserve_error_no_trade_deletion_or_price_fill"
+repeat_selected = "sell_then_rebuy_same_symbol_at_rebalance_charge_full_round_trip_per_cycle"
+# At most three sells and three buys per rebalance. This is equal-notional trade
+# screening, not an account/board-lot/FX/quota backtest. Splits fail the data reader.
+
+[costs]
+round_trip_fraction = 0.004
+cost_multipliers = [0.5, 1.0, 2.0]
+
+[screen]
+minimum_gross_to_cost = 3.0
+minimum_trades = 20
+maximum_conclusion = "RESEARCH_ONLY"
+failure_conclusion = "REJECTED"
+selection_statistic = "mean_executed_trade_gross_return_divided_by_round_trip_cost"
+cash_reporting = "also_report_cycle_return_with_fixed_one_third_slots_cash_zero"
+# No parameter search, validation/test expansion or deletion of B23's eight bad trades.
