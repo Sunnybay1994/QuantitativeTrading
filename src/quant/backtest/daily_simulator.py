@@ -79,7 +79,7 @@ def simulate_daily_targets(
         not isinstance(initial_cash, (int, float))
         or isinstance(initial_cash, bool)
         or not math.isfinite(float(initial_cash))
-        or initial_cash <= 0
+        or initial_cash < 0
     ):
         raise ValueError("BACKTEST_ACCOUNT_INVARIANT_BROKEN")
     if not isinstance(strategy, str) or not strategy:

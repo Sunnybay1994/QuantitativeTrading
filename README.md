@@ -73,3 +73,7 @@ D:\Miniforge3\python.exe -m quant.research.run_classic_factors --config configs/
 数据刷新同时覆盖沪深股票日线、复权因子、daily_basic，以及 11 只 ETF 的成交行情和总回报价格。
 股票增量保存在 `data/clean/tushare_incremental/`，可通过 `quant.data.refresh_stocks.read_stock_data`
 与历史快照合并读取。详细配置见 `configs/data/refresh.toml`。
+
+## S0 模拟盘
+
+`D:\Miniforge3\python.exe -m quant.execution.paper_ledger --to today` 生成每日持仓、净值和订单参考；先运行数据刷新命令。前向首日 2026-10-08，详见 [运行说明](docs/research/模拟盘运行.md)。
