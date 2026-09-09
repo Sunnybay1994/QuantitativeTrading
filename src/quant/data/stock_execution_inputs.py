@@ -12,6 +12,39 @@ from quant.data.mappers import TushareInstrumentMapper
 from quant.data.storage import RawStore
 
 
+def resolve_same_day_dividends(frame: pl.DataFrame) -> pl.DataFrame:
+    """Resolve observed vendor ambiguities using issuer implementation notices."""
+    # Sources and rationale: docs/research/同日分红数据修正_20260909.md.
+    # Values are per-share cash for ordinary circulating shareholders.
+    resolutions = {
+        ("002352.SZ", dt.date(2024, 11, 7)): ([0.4, 1.0, 1.4], 1.4, 0.0),
+        ("300760.SZ", dt.date(2025, 5, 29)): ([0.56, 1.41], 1.97, 0.0),
+        ("300760.SZ", dt.date(2026, 5, 28)): ([0.31, 1.25], 1.56, 0.0),
+        ("600188.SH", dt.date(2023, 7, 17)): ([1.23, 3.07], 4.3, 0.5),
+        ("600600.SH", dt.date(2023, 7, 14)): ([0.5, 1.8], 1.8, 0.0),
+        ("600720.SH", dt.date(2024, 6, 13)): ([0.1104, 0.257], 0.3674, 0.0),
+        ("600989.SH", dt.date(2024, 7, 24)): ([0.265, 0.3158], 0.3158, 0.0),
+        ("603259.SH", dt.date(2025, 5, 21)): ([0.35, 0.98169], 1.33169, 0.0),
+    }
+    frame = frame.unique()
+    duplicates = frame.group_by("symbol", "ex_date").len().filter(pl.col("len") > 1)
+    for symbol, ex_date, _ in duplicates.iter_rows():
+        match = (pl.col("symbol") == symbol) & (pl.col("ex_date") == ex_date)
+        group = frame.filter(match)
+        resolution = resolutions.get((symbol, ex_date))
+        if resolution is None:
+            raise ValueError(f"Conflicting stock dividend implementations: {symbol} {ex_date}")
+        amounts, cash, shares = resolution
+        if (sorted(group["div_cash"].to_list()) != amounts
+            or group.select("ann_date", "record_date", "pay_date").unique().height != 1
+            or group["share_ratio"].sum() != shares):
+            raise ValueError(f"Unexpected dividend implementation details: {symbol} {ex_date}")
+        combined = group.sort("share_ratio", descending=True).head(1).with_columns(
+            pl.lit(cash).alias("div_cash"), pl.lit(shares).alias("share_ratio"))
+        frame = pl.concat([frame.filter(~match), combined])
+    return frame.sort("symbol", "ex_date")
+
+
 def prepare_stock_execution_inputs(
     *, data_root: Path, symbols: list[str], execution_dates: list[dt.date],
     start: dt.date, end: dt.date, output: Path,
@@ -89,21 +122,7 @@ def prepare_stock_execution_inputs(
         pl.col("cash_div_tax").cast(pl.Float64).fill_null(0.0).alias("div_cash"),
         pl.col("stk_div").cast(pl.Float64).fill_null(0.0).alias("share_ratio"),
     ).filter(pl.col("ex_date").is_between(start, end)).unique()
-    duplicate_keys = dividend_frame.group_by("symbol", "ex_date").len().filter(pl.col("len") > 1)
-    for symbol, ex_date, _ in duplicate_keys.iter_rows():
-        group = dividend_frame.filter((pl.col("symbol") == symbol) & (pl.col("ex_date") == ex_date))
-        # Mindray's annual and first interim distributions were implemented together.
-        # Company announcement 2026-026 (CNINFO 1225320390) confirms 0.31 + 1.25 per share.
-        if (symbol, ex_date) != ("300760.SZ", dt.date(2026, 5, 28)):
-            raise ValueError("Conflicting stock dividend implementations")
-        if sorted(group.get_column("div_cash").to_list()) != [0.31, 1.25]:
-            raise ValueError("Unexpected Mindray dividend amounts")
-        combined = group.head(1).with_columns(
-            pl.lit(1.56).alias("div_cash"), pl.lit(0.0).alias("share_ratio"))
-        dividend_frame = pl.concat([
-            dividend_frame.filter(~((pl.col("symbol") == symbol) & (pl.col("ex_date") == ex_date))),
-            combined,
-        ])
+    dividend_frame = resolve_same_day_dividends(dividend_frame)
     if dividend_frame.filter(
         pl.col("ann_date").is_null() | pl.col("record_date").is_null()
         | (pl.col("ann_date") > pl.col("record_date"))
