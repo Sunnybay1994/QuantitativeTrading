@@ -327,7 +327,7 @@ def test_cost_identity_rejects_before_data_or_artifact(
 
     monkeypatch.setattr(pit_runner, "verify_tushare_bulk_clean_snapshot", unexpected_verifier)
     monkeypatch.setattr(pit_runner, "verify_tushare_daily_basic_snapshot", unexpected_verifier)
-    monkeypatch.setattr(pit_runner, "verify_tushare_financial_snapshot", unexpected_verifier)
+    monkeypatch.setattr(pit_runner, "load_financial_publication", unexpected_verifier)
     with pytest.raises(ValueError, match=message):
         main(_main_args(project_root, data_root))
     assert verifier_calls == []
@@ -372,7 +372,7 @@ def test_main_and_cost_config_each_use_one_stable_payload(
         pit_runner, "verify_tushare_bulk_clean_snapshot", stop_at_first_verifier
     )
     monkeypatch.setattr(pit_runner, "verify_tushare_daily_basic_snapshot", unexpected_verifier)
-    monkeypatch.setattr(pit_runner, "verify_tushare_financial_snapshot", unexpected_verifier)
+    monkeypatch.setattr(pit_runner, "load_financial_publication", unexpected_verifier)
     with pytest.raises(RuntimeError, match="SNAPSHOT_SENTINEL"):
         main(_main_args(project_root, data_root))
     assert reads == {config_path.resolve(): 1, cost_path.resolve(): 1}

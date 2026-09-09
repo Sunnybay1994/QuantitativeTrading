@@ -11,6 +11,68 @@ from polars.exceptions import PolarsError
 FinancialCleanDataset = Literal["income", "balancesheet", "cashflow", "fina_indicator"]
 FinancialFactorDataset = Literal["income", "balancesheet", "cashflow"]
 
+
+def normalize_financial_publication(
+    frame: pl.DataFrame, *, dataset: str,
+) -> tuple[pl.DataFrame, pl.DataFrame, int]:
+    """Keep research fields and revision dates, quarantining invalid essential values."""
+    if dataset not in _ALL_DATASETS:
+        raise ValueError("Unknown financial dataset")
+    structural = list(_STRUCTURAL_COLUMNS[dataset])
+    if not set(structural) <= set(frame.columns):
+        raise ValueError("Financial structural columns missing")
+    labels = {*structural, "end_type", "source_file"}
+    numeric = [c for c in frame.columns if c not in labels]
+    required = _ECONOMIC_COLUMNS[dataset]
+    if not set(required) <= set(numeric):
+        raise ValueError("Required financial values missing")
+    work = frame.with_columns([
+        pl.col(c).cast(pl.String).str.strip_chars().replace("", None) for c in frame.columns
+    ])
+    invalid = {
+        c: (pl.col(c).is_not_null()
+            & ~pl.col(c).cast(pl.Float64, strict=False).is_finite().fill_null(False))
+        for c in numeric
+    }
+    nulls = work.select(pl.sum_horizontal(
+        [invalid[c].sum() for c in numeric if c not in required] or [pl.lit(0)]
+    )).item()
+    work = work.with_columns(
+        pl.any_horizontal([invalid[c] for c in required] or [pl.lit(False)]).alias("_bad_numeric"),
+        *[pl.col(c).cast(pl.Float64, strict=False).fill_nan(None).alias(c) for c in numeric],
+        *[pl.col(c).str.to_date("%Y%m%d", strict=False).alias("_" + c)
+          for c in ("ann_date", "end_date")],
+    ).with_columns([
+        pl.when(pl.col(c).is_finite()).then(pl.col(c)).otherwise(None).alias(c) for c in numeric
+    ])
+    if dataset in _STATEMENTS:
+        work = work.with_columns(pl.col("f_ann_date").str.to_date("%Y%m%d", strict=False).alias("_f_ann_date"))
+        available = pl.max_horizontal("_ann_date", "_f_ann_date")
+        invalid_extra = ((pl.col("f_ann_date").is_not_null() & pl.col("_f_ann_date").is_null())
+                         | ~pl.col("report_type").is_in([str(i) for i in range(1, 13)]).fill_null(False)
+                         | ~pl.col("comp_type").is_in(["1", "2", "3", "4", "7"]).fill_null(False)
+                         | ~pl.col("update_flag").is_in(["0", "1"]).fill_null(False))
+    else:
+        available = pl.col("_ann_date")
+        invalid_extra = pl.lit(False)
+    work = work.with_columns(available.alias("available_date"))
+    work = work.with_columns(
+        pl.when(~pl.col("ts_code").str.contains(r"^[0-9]{6}\.(SH|SZ)$").fill_null(False))
+        .then(pl.lit("SYMBOL_INVALID"))
+        .when(pl.col("_ann_date").is_null() | pl.col("_end_date").is_null() | invalid_extra)
+        .then(pl.lit("DATE_OR_REPORT_TYPE_INVALID"))
+        .when(pl.col("_end_date") > pl.col("available_date"))
+        .then(pl.lit("END_AFTER_AVAILABLE"))
+        .when(pl.col("_bad_numeric")).then(pl.lit("REQUIRED_NUMERIC_INVALID"))
+        .otherwise(None).alias("quarantine_reason")
+    ).with_columns(pl.col("ts_code").alias("symbol"), pl.col("_ann_date").alias("ann_date"),
+                   pl.col("_end_date").alias("end_date"), pl.lit("tushare").alias("source"))
+    if dataset in _STATEMENTS:
+        work = work.with_columns(pl.col("_f_ann_date").alias("f_ann_date"))
+    work = work.drop("ts_code", *[c for c in work.columns if c.startswith("_")])
+    return (work.filter(pl.col("quarantine_reason").is_null()).drop("quarantine_reason"),
+            work.filter(pl.col("quarantine_reason").is_not_null()), int(nulls))
+
 _STATEMENTS = frozenset({"income", "balancesheet", "cashflow"})
 _ALL_DATASETS = _STATEMENTS | {"fina_indicator"}
 _STRUCTURAL_COLUMNS: dict[str, tuple[str, ...]] = {

@@ -41,6 +41,9 @@ D:\Miniforge3\python.exe -m quant.research.run_classic_factor_composite --config
 # 全市场因子评估（RankIC / 分组 / Top50 成本后收益）
 D:\Miniforge3\python.exe -m quant.research.run_classic_factors --config configs/research/m2_classic_daily_factors.toml --threads 8
 
+# 财务四表 clean 重建（自动生成新版本名，保留 raw）
+D:\Miniforge3\python.exe -m quant.data.publish_tushare_financials --workers 8
+
 # S0 模拟盘（先刷新数据）
 D:\Miniforge3\python.exe -m quant.execution.paper_ledger --to today
 

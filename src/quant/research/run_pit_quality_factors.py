@@ -25,7 +25,7 @@ from quant.data.financial_repository import (
 )
 from quant.data.publish_tushare_bulk_clean import verify_tushare_bulk_clean_snapshot
 from quant.data.publish_tushare_daily_basic import verify_tushare_daily_basic_snapshot
-from quant.data.publish_tushare_financials import verify_tushare_financial_snapshot
+from quant.data.publish_tushare_financials import load_financial_publication
 from quant.factors import (
     CLASSIC_FACTOR_NAMES,
     DAILY_VALUE_FACTOR_NAMES,
@@ -67,7 +67,6 @@ _REFERENCE_FACTORS = CLASSIC_FACTOR_NAMES + DAILY_VALUE_FACTOR_NAMES + ("log_tot
 _CODE_PATHS = (
     "src/quant/data/audit_tushare_bulk_clean.py",
     "src/quant/data/audit_tushare_daily_basic.py",
-    "src/quant/data/audit_tushare_financials.py",
     "src/quant/data/clean_snapshot_repository.py",
     "src/quant/data/daily_basic_repository.py",
     "src/quant/data/financial_clean.py",
@@ -131,9 +130,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     daily_snapshot = verify_tushare_daily_basic_snapshot(
         data_root=data_root, snapshot_id=args.daily_basic_snapshot_id
     )
-    financial_snapshot = verify_tushare_financial_snapshot(
+    financial_snapshot = load_financial_publication(
         data_root=data_root, snapshot_id=args.financial_snapshot_id
     )
+    financial_content_sha256 = financial_snapshot.content_sha256
 
     freeze_bars = read_tushare_bulk_clean_stock_bars(
         data_root=data_root,
@@ -302,7 +302,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         daily_snapshot_id=daily_snapshot.snapshot_id,
         daily_manifest_sha256=daily_snapshot.manifest_sha256,
         financial_snapshot_id=financial_snapshot.snapshot_id,
-        financial_manifest_sha256=financial_snapshot.manifest_sha256,
+        financial_data_sha256=financial_content_sha256,
         financial_dataset_rows=financial_snapshot.dataset_rows,
         candidates=candidates,
         signal_dates=signal_dates,
@@ -377,7 +377,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 rows=financial_rows,
                 min_date=history_start,
                 max_date=history_end,
-                content_sha256=financial_snapshot.manifest_sha256,
+                content_sha256=financial_content_sha256,
             ),
             ResearchInputDigestV1(
                 name="tushare-stock-bars",
@@ -836,7 +836,7 @@ def _report(
     daily_snapshot_id: str,
     daily_manifest_sha256: str,
     financial_snapshot_id: str,
-    financial_manifest_sha256: str,
+    financial_data_sha256: str,
     financial_dataset_rows: tuple[tuple[str, int], ...],
     candidates: tuple[str, ...],
     signal_dates: tuple[dt.date, ...],
@@ -856,7 +856,7 @@ def _report(
         "daily_basic_snapshot_id": daily_snapshot_id,
         "daily_basic_manifest_sha256": daily_manifest_sha256,
         "financial_snapshot_id": financial_snapshot_id,
-        "financial_manifest_sha256": financial_manifest_sha256,
+        "financial_data_sha256": financial_data_sha256,
         "financial_dataset_rows": dict(financial_dataset_rows),
         "candidate_symbol_count": len(candidates),
         "signal_date_count": len(signal_dates),
