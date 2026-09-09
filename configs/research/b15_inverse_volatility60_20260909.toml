@@ -1,0 +1,80 @@
+[research]
+hypothesis_id = "b15-inverse-volatility60-20260909"
+hypothesis = "Replace same-pool equal weights with weights proportional to inverse trailing 60-session sample standard deviation of simple total returns, using 61 daily total-return prices through the latest completed month end. Fully invest across the same 11 ETFs without caps or leverage; fail on zero or unavailable volatility. No parameter grid."
+strategy_name = "b15_inverse_volatility60"
+strategy_version = "v1"
+random_seed = 20260909
+
+[data]
+start = 2023-01-01
+end = 2026-09-08
+
+[universe]
+name = "ETF_POOL_M2_V1"
+frozen_as_of = 2026-07-12
+symbols = ['510300.SH', '159919.SZ', '510500.SH', '159922.SZ', '512880.SH', '512170.SH', '515790.SH', '513060.SH', '513330.SH', '513180.SH', '159920.SZ']
+
+[strategy]
+kind = "inverse_volatility"
+lookback_sessions = 60
+return_definition = "simple_total_return"
+standard_deviation_ddof = 1
+zero_volatility = "reject"
+weight_cap = "none"
+rebalance = "month_end_close_next_session_open"
+initial_deployment = "latest_completed_month_as_of_previous_session"
+# Fixed agenda parameter; no validation or test tuning.
+
+[portfolio]
+initial_cash = 1000000.0
+cost_multipliers = [0.5, 1.0, 2.0]
+benchmark = "monthly_equal_weight_same_pool"
+
+[costs.etf]
+commission_rate = 0.00025
+commission_min = 5.0
+slippage = 0.0
+slippage_per_share = 0.001
+# One tick per side, including spread crossing. Applied equally to strategy and S0.
+effective_from = 2023-01-01
+
+[costs.a_share]
+commission_rate = 0.00025
+commission_min = 5.0
+stamp_tax_sell = 0.0005
+transfer_fee = 0.00001
+slippage = 0.001
+effective_from = 2023-08-28
+
+[admission]
+all_1x_folds_positive = true
+minimum_2x_positive_fold_fraction = 0.5
+all_folds_better_drawdown_or_calmar_than_s0 = true
+maximum_annualized_one_way_turnover = 3.0
+forward_start = 2026-07-11
+forward_maximum_shortfall_to_s0 = 0.02
+# Absolute turnover limit applies to each test fold, including the short follow-up.
+
+[[walk_forward.folds]]
+train_start = 2023-01-01
+train_end = 2024-12-31
+validation_start = 2025-01-01
+validation_end = 2025-06-30
+test_start = 2025-07-01
+test_end = 2025-12-31
+
+[[walk_forward.folds]]
+train_start = 2023-07-01
+train_end = 2025-06-30
+validation_start = 2025-07-01
+validation_end = 2025-12-31
+test_start = 2026-01-01
+test_end = 2026-06-30
+
+[[walk_forward.folds]]
+train_start = 2023-07-01
+train_end = 2025-06-30
+validation_start = 2025-07-01
+validation_end = 2025-12-31
+test_start = 2026-07-11
+test_end = 2026-09-08
