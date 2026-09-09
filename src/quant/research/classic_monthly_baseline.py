@@ -48,6 +48,7 @@ CODE_PATHS = (
     "src/quant/factors/revenue_growth.py",
     "src/quant/factors/profit_growth.py",
     "src/quant/factors/profit_acceleration.py",
+    "src/quant/factors/return_skewness.py",
     "src/quant/factors/market_size.py",
     "src/quant/factors/current_ratio.py",
     "src/quant/research/monthly_current_ratio.py",
@@ -328,6 +329,18 @@ def run_baseline(
     extra_inputs: list[tuple[str, pl.DataFrame, tuple[str, ...], str]] = []
     extra_outputs: list[tuple[str, pl.DataFrame]] = []
     extra_digests: list[ResearchInputDigestV1] = []
+    if "return_skewness" in config:
+        from quant.factors.return_skewness import compute_return_skewness
+
+        settings = config["return_skewness"]
+        if (settings["window_sessions"] != 20 or settings["bias_correction"] is not True
+            or settings["return_type"] != "adjusted_close_simple_return"
+            or settings["minimum_return_std"] != 1e-12
+            or config["factors"]["names"] != ["return_skew20"] or config["factors"]["directions"] != [-1]):
+            raise ValueError("B45 requires fixed negative 20-session adjusted-return skew")
+        skew = compute_return_skewness(bars, sessions=all_sessions)
+        factors = factors.join(skew, on=["symbol", "trade_date"], how="left", validate="1:1")
+        extra_outputs.append(("return_skew_factors", skew))
     if "market_size" in config:
         from quant.factors.market_size import compute_market_size
 
@@ -668,6 +681,8 @@ def run_baseline(
         and meets_portfolio_candidate(results, config["admission"])):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
+        "Daily-return skew is distinct from intraday realized skew; this is a historical replication in previously inspected periods."
+        if "return_skewness" in config else
         "Historical full SH/SZ size replication with signal-date eligibility; these historical periods were used in prior studies."
         if "market_size" in config else
         "Full historical SH/SZ presence with signal-date eligibility; this positive-ROE treatment is a historical small-value comparison, not a prospective result."
