@@ -22,11 +22,27 @@ from quant.research.run_s1_walk_forward import _candidates
 def next_targets(
     date: dt.date, next_session: dt.date, first_session: dt.date,
     symbols: list[str], config: dict[str, Any],
+    prices: pl.DataFrame | None = None, calendar: pl.DataFrame | None = None,
 ) -> list[dict[str, Any]]:
     if not config["paper"].get("enabled", True):
         return []
     if next_session < first_session or (date.month == next_session.month and next_session != first_session):
         return []
+    if config.get("strategy", {}).get("kind") == "inverse_volatility":
+        from quant.research.monthly_etf import completed_month_prices
+        from quant.strategies.inverse_volatility import InverseVolatilityStrategy
+
+        if prices is None or calendar is None:
+            raise ValueError("Inverse-volatility targets require total-return prices and calendar")
+        monthly = completed_month_prices(prices, calendar).filter(pl.col("trade_date") <= date)
+        cutoff = monthly["trade_date"].max()
+        if cutoff is None:
+            raise ValueError("No completed month for inverse-volatility targets")
+        target = InverseVolatilityStrategy(tuple(sorted(symbols)), config["strategy"]["lookback_sessions"],
+            name=config["paper"]["name"]).target_weights(date, prices.filter(pl.col("trade_date") <= cutoff))
+        return [{"as_of": str(date), "execution_date": str(next_session),
+                 "strategy": row["strategy"], "strategy_version": row["strategy_version"],
+                 "symbol": row["symbol"], "weight": row["weight"]} for row in target.to_dicts()]
     return [{"as_of": str(date), "execution_date": str(next_session),
              "strategy": config["paper"]["name"], "strategy_version": "1.0.0",
              "symbol": s, "weight": 1.0 / len(symbols)} for s in sorted(symbols)]
@@ -78,8 +94,10 @@ def run(*, config_path: Path, data_root: Path, output: Path, end: dt.date,
     config_text = config_path.read_text(encoding="utf-8")
     config = tomllib.loads(config_text)
     paper = config["paper"]
-    if paper["auto_trade"] is not False or paper["name"] != "s0_equal":
-        raise ValueError("Only the frozen S0 paper baseline is supported")
+    if paper["auto_trade"] is not False or paper["name"] not in {
+        "s0_equal", "b20_inverse_volatility", "b20_equal_weight",
+    }:
+        raise ValueError("Only the frozen paper baseline and B20 observation are supported")
     if rehearsal_start is not None:
         output = output / "rehearsal"
     output.mkdir(parents=True, exist_ok=True)
@@ -102,18 +120,28 @@ def run(*, config_path: Path, data_root: Path, output: Path, end: dt.date,
     existing_snapshot = (output / str(end) / "state.json").exists()
     if existing_snapshot and original_controls == controls:
         return {"output": str(output / str(end)), "message": "no-op"}
-    symbols = _candidates(config)
-    bars, _, calendars, instruments = read_etf_research_inputs(
-        data_root, symbols, config["data"]["start_date"], end,
-    )
+    symbols = config["universe"].get("symbols") or _candidates(config)
+    data_start = config["data"].get("start_date") or config["data"]["start"]
+    if "cross_asset_daily_prefix" in config["data"]:
+        from quant.research.monthly_etf import read_inputs
+
+        bars, prices, calendars, instruments, dividends = read_inputs(data_root, tuple(symbols), {
+            "cross_asset_snapshot": f"{config['data']['cross_asset_daily_prefix']}_{end:%Y%m%d}",
+            "start": data_start, "end": end,
+        })
+    else:
+        bars, prices, calendars, instruments = read_etf_research_inputs(
+            data_root, symbols, data_start, end,
+        )
+        dividends = read_etf_dividends(data_root, symbols, data_start)
     sessions = sorted(calendars.filter(pl.col("is_open")).get_column("date").unique().to_list())
     start = rehearsal_start or paper["start_date"]
     first = next(d for d in sessions if d >= start)
     previous = max(d for d in sessions if d < first)
-    dividends = read_etf_dividends(data_root, symbols, config["data"]["start_date"])
     market_states = etf_session_states(
         bars.filter(pl.col("trade_date").is_between(first, end)), dividends,
         slippage=config["costs"]["etf"]["slippage"], official_limits=read_limits(data_root),
+        slippage_per_share=config["costs"]["etf"].get("slippage_per_share", 0.0),
     )
     snapshots = sorted(p for p in output.glob("????-??-??/state.json") if p.parent.name <= str(end))
     state: dict[str, Any] = {"cash": paper["initial_cash"], "holdings": {}, "receivables": [],
@@ -125,7 +153,7 @@ def run(*, config_path: Path, data_root: Path, output: Path, end: dt.date,
         if state["nav"] and state["nav"][0]["date"] != str(first):
             raise ValueError("Account start changed; use another rehearsal directory")
     if end >= first and last_date < first and not state["pending"]:
-        state["pending"] = next_targets(previous, first, first, symbols, config)
+        state["pending"] = next_targets(previous, first, first, symbols, config, prices, calendars)
     process_dates = [d for d in sessions if first <= d <= end and d > last_date]
     if not process_dates:
         process_dates = [end]
@@ -139,7 +167,7 @@ def run(*, config_path: Path, data_root: Path, output: Path, end: dt.date,
         state["trading_enabled"] = paper["enabled"]
         state["sell_only"] = paper["sell_only"]
         following = next(d for d in sessions if d > date)
-        state["pending"] = next_targets(date, following, first, symbols, config)
+        state["pending"] = next_targets(date, following, first, symbols, config, prices, calendars)
         folder = output / str(date)
         folder.mkdir(exist_ok=True)
         estimates = order_estimates(state, bars.filter(pl.col("trade_date") == date), config)
@@ -157,7 +185,8 @@ def run(*, config_path: Path, data_root: Path, output: Path, end: dt.date,
         if result is not None:
             result.trades.write_csv(folder / "fills.csv")
             result.rejections.write_csv(folder / "rejections.csv")
-        lines = [f"# S0 模拟盘订单参考：{date}", "", "价格使用信号日收盘价，实际股数须按下一开市日价格及现金复核。", "",
+        title = "S0 模拟盘" if paper["name"] == "s0_equal" else "B20 前向观察"
+        lines = [f"# {title}订单参考：{date}", "", "价格使用信号日收盘价，实际股数须按下一开市日价格及现金复核。", "",
                  "| 证券 | 方向 | 股数 | 参考价 | 参考金额 |", "|---|---|---:|---:|---:|"]
         lines += [f"| {r['symbol']} | {r['side']} | {r['quantity']} | {r['reference_price']:.3f} | {r['reference_amount']:.2f} |"
                   for r in estimates.iter_rows(named=True)]

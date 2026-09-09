@@ -1,0 +1,76 @@
+[research]
+hypothesis_id = "b20-fixed-three-asset-forward-20260909"
+hypothesis = "Prospectively observe the unchanged three-asset inverse-volatility allocation against same-pool equal weights from the next trading session. Evaluate once at the fixed endpoint; retain the rejected B16 historical result."
+strategy_name = "b20_inverse_volatility"
+strategy_version = "v1"
+random_seed = 20260909
+
+[data]
+start = 2023-01-01
+end = 2026-11-30
+cross_asset_daily_prefix = "b20_forward"
+
+[universe]
+name = "CROSS_ASSET_ETF_V1"
+frozen_as_of = 2026-09-09
+symbols = ["510300.SH", "511010.SH", "518880.SH"]
+
+[strategy]
+kind = "inverse_volatility"
+lookback_sessions = 60
+return_definition = "simple_total_return"
+standard_deviation_ddof = 1
+zero_volatility = "reject"
+weight_cap = "none"
+rebalance = "month_end_close_next_session_open"
+initial_deployment = "latest_completed_month_as_of_previous_session"
+
+[portfolio]
+initial_cash = 1000000.0
+cost_multipliers = [0.5, 1.0, 2.0]
+benchmark = "monthly_equal_weight_same_pool"
+
+[costs.etf]
+commission_rate = 0.00025
+commission_min = 5.0
+slippage = 0.0
+slippage_per_share = 0.001
+effective_from = 2023-01-01
+
+[costs.a_share]
+commission_rate = 0.00025
+commission_min = 5.0
+stamp_tax_sell = 0.0005
+transfer_fee = 0.00001
+slippage = 0.001
+effective_from = 2023-08-28
+
+[forward]
+start_date = 2026-09-10
+assessment_date = 2026-11-30
+minimum_sessions = 40
+initial_cash = 1000000.0
+auto_trade = false
+sell_only = false
+assessment = "once_at_fixed_endpoint"
+historical_reference = "configs/research/b16_cross_asset_inverse_volatility60_20260909.toml"
+historical_conclusion = "REJECTED"
+# This is a new prospective experiment, not a rewrite of B16's failed historical criteria.
+
+[admission]
+all_1x_folds_positive = true
+minimum_2x_positive_fold_fraction = 0.5
+all_folds_better_drawdown_or_calmar_than_s0 = true
+maximum_annualized_one_way_turnover = 3.0
+forward_start = 2026-09-10
+forward_maximum_shortfall_to_s0 = 0.02
+# Gross traded notional / (2 * initial cash) * 252 / actual sessions, INCLUDING initial deployment.
+# No early admission or endpoint changes based on interim results.
+
+[[walk_forward.folds]]
+train_start = 2023-01-01
+train_end = 2024-12-31
+validation_start = 2025-01-01
+validation_end = 2026-09-09
+test_start = 2026-09-10
+test_end = 2026-11-30
