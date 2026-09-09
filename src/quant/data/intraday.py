@@ -168,7 +168,7 @@ def refresh_intraday(*, data_root: Path, end: dt.date, stocks: bool = True,
                 print(f"BaoStock {index}/{len(symbols)} {symbol}: {exc}", flush=True)
     if yahoo:
         members = []
-        for name in ("t0_etf_pool_v1", "hk_connect_watch_v1"):
+        for name in ("t0_etf_pool_v1", "hk_connect_watch_v1", "daily_etf_execution_watch_v1"):
             members += tomllib.loads(Path(f"configs/universe/{name}.toml").read_text(encoding="utf-8"))["members"]
         for member in members[:limit]:
             for frequency in ("1m", "5m", "60m"):

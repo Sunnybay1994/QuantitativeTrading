@@ -1,0 +1,10 @@
+name = "DAILY_ETF_EXECUTION_WATCH_V1"
+frozen_as_of = 2026-09-09
+purpose = "Minute observations for execution of daily allocation targets."
+# The Treasury and gold legs are already captured by T0_ETF_POOL_V1.
+
+[[members]]
+symbol = "510300.SH"
+yahoo_symbol = "510300.SS"
+name = "华泰柏瑞沪深300ETF"
+t_plus_zero = false
