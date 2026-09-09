@@ -75,6 +75,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     config_payload = config_path.read_bytes()
     with config_path.open("rb") as stream:
         config = cast(dict[str, Any], tomllib.load(stream))
+    if config.get("composite", {}).get("method") == "equal_weight_zscore_monthly":
+        from quant.research.classic_monthly_baseline import run_baseline
+
+        return run_baseline(config=config, config_path=config_path, project_root=project_root,
+                            data_root=data_root, artifact_root=artifact_root)
     _validate_config(config, threads=args.threads)
 
     data = cast(Mapping[str, Any], config["data"])

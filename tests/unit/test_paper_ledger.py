@@ -115,3 +115,45 @@ def test_slippage_cannot_push_a_fill_outside_the_daily_band():
         .then(9.899).otherwise(pl.col("open")).alias("open"))
     assert not etf_session_states(bars, kwargs["dividends"])[(D2, SYMBOL)].at_upper_limit
     assert etf_session_states(bars, kwargs["dividends"], slippage=0.001)[(D2, SYMBOL)].at_upper_limit
+
+
+def test_bonus_shares_cannot_be_sold_before_listing():
+    kwargs, state = inputs()
+    kwargs["instruments"] = kwargs["instruments"].with_columns(pl.lit("STOCK").alias("instrument_type"))
+    kwargs["dividends"] = kwargs["dividends"].with_columns(
+        pl.lit(0.0).alias("div_cash"), pl.lit(0.5).alias("share_ratio"),
+        pl.lit(D3).alias("share_list_date"))
+    kwargs["bars"] = kwargs["bars"].with_columns([
+        pl.when(pl.col("trade_date") >= D2).then(20 / 3).otherwise(pl.col(c)).alias(c)
+        for c in ("open", "high", "low", "close")])
+    state["pending"] = [{"as_of": str(D1), "execution_date": str(D2), "symbol": SYMBOL,
+                         "strategy": "s0_equal", "strategy_version": "v1", "weight": 0.0}]
+    state, result = advance(date=D2, state=state, **kwargs)
+    assert state["holdings"][SYMBOL]["quantity"] == 150
+    assert result.trades.is_empty()
+    assert result.rejections.get_column("reason").to_list() == ["T_PLUS_ONE"]
+    state["pending"] = [{"as_of": str(D2), "execution_date": str(D3), "symbol": SYMBOL,
+                         "strategy": "s0_equal", "strategy_version": "v1", "weight": 0.0}]
+    state, result = advance(date=D3, state=state, **kwargs)
+    assert result.trades.get_column("quantity").to_list() == [150]
+    assert state["cash"] == pytest.approx(1100.0)
+    assert state["nav"][-1]["unit_nav"] == pytest.approx(1.0)
+
+
+def test_research_replay_rejects_missing_open_using_only_prior_mark():
+    from quant.research.classic_monthly_baseline import replay
+
+    kwargs, _ = inputs()
+    kwargs["bars"] = kwargs["bars"].filter(pl.col("trade_date") != D2)
+    states = dict(kwargs["market_states"])
+    states[(D2, SYMBOL)] = DailyMarketState(suspended=True)
+    targets = pl.DataFrame({"as_of": [D1], "execution_date": [D2], "symbol": [SYMBOL],
+        "strategy": ["test"], "strategy_version": ["v1"], "weight": [1.0]})
+    config = {"portfolio": {"initial_cash": 1100.0}, "costs": kwargs["config"]["costs"]}
+    nav, trades, rejections = replay(bars=kwargs["bars"], calendar=kwargs["calendar"],
+        instruments=kwargs["instruments"], targets=targets, dividends=kwargs["dividends"],
+        market_states=states, config=config, sessions=[D2, D3], name="test")
+    assert trades.is_empty()
+    assert rejections.get_column("reason").to_list() == ["SUSPENDED"]
+    assert nav.get_column("equity").to_list() == [1100.0, 1100.0]
+    assert nav.get_column("position_count").to_list() == [0, 0]

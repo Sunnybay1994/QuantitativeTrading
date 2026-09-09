@@ -32,6 +32,9 @@ Tushare token 在 `configs/tushare.local.toml`（已 gitignore）。不打印、
 # ETF 策略 walk-forward（S0/S1/S2 系列；config 决定假设）
 D:\Miniforge3\python.exe -m quant.research.run_s1_walk_forward --config configs/research/m2_s2_volatility_target.toml
 
+# A 股三因子月度 Top50（阶段 A 基线）
+D:\Miniforge3\python.exe -m quant.research.run_classic_factor_composite --config configs/research/a7_monthly_zscore_20260909.toml --threads 4
+
 # 全市场因子评估（RankIC / 分组 / Top50 成本后收益）
 D:\Miniforge3\python.exe -m quant.research.run_classic_factors --config configs/research/m2_classic_daily_factors.toml --threads 8
 

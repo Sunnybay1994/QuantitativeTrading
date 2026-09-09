@@ -25,6 +25,52 @@ COMPOSITE_COMPONENTS = (
 COMPOSITE_NAME = "alpha158_std_roc_rsv_equal_rank"
 
 
+def build_equal_weight_zscore_composite(
+    panel: pl.DataFrame, *, component_directions: tuple[tuple[str, int], ...],
+    output_name: str = "equal_zscore",
+) -> pl.DataFrame:
+    """Standardize complete cases within each signal-date cross-section."""
+    if not component_directions or any(d not in {-1, 1} for _, d in component_directions):
+        raise ValueError("Invalid z-score component directions")
+    if len({name for name, _ in component_directions}) != len(component_directions):
+        raise ValueError("Duplicate z-score components")
+    complete = panel.filter(pl.all_horizontal([
+        pl.col(name).is_not_null() & pl.col(name).is_finite()
+        for name, _ in component_directions
+    ]))
+    scores = []
+    for name, direction in component_directions:
+        sigma = pl.col(name).std(ddof=0).over("trade_date")
+        scores.append(pl.when(sigma > 0).then(
+            direction * (pl.col(name) - pl.col(name).mean().over("trade_date")) / sigma
+        ).otherwise(0.0))
+    return complete.with_columns((pl.sum_horizontal(scores) / len(scores)).alias(output_name))
+
+
+def build_monthly_zscore_targets(
+    panel: pl.DataFrame, *, sessions: tuple[dt.date, ...], start: dt.date,
+    end: dt.date, top_k: int, strategy_name: str,
+) -> pl.DataFrame:
+    """Take Top-K at the prior close for initial deployment and month changes."""
+    signals = [(day, following) for day, following in zip(sessions, sessions[1:])
+               if start <= following <= end
+               and (day < start or day.month != following.month)]
+    rows: list[dict[str, object]] = []
+    for as_of, execution_date in signals:
+        selected = panel.filter(pl.col("trade_date") == as_of).sort(
+            "equal_zscore", "symbol", descending=[True, False],
+        ).head(top_k)
+        if selected.height != top_k:
+            raise ValueError(f"Insufficient complete factors on {as_of}")
+        rows.extend({"as_of": as_of, "execution_date": execution_date,
+                     "strategy": strategy_name, "strategy_version": "v1",
+                     "symbol": symbol, "weight": 1.0 / top_k}
+                    for symbol in selected.get_column("symbol"))
+    if not rows:
+        raise ValueError("No monthly signals in the requested window")
+    return pl.DataFrame(rows).sort("execution_date", "symbol")
+
+
 def infer_validation_component_directions(
     panel: pl.DataFrame,
     *,

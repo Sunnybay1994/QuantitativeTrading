@@ -1,0 +1,166 @@
+"""Capture the stock execution facts needed by a concrete monthly backtest."""
+
+import datetime as dt
+import json
+import time
+from pathlib import Path
+
+import polars as pl
+
+from quant.data.connectors.tushare import TushareConnector
+from quant.data.mappers import TushareInstrumentMapper
+from quant.data.storage import RawStore
+
+
+def prepare_stock_execution_inputs(
+    *, data_root: Path, symbols: list[str], execution_dates: list[dt.date],
+    start: dt.date, end: dt.date, output: Path,
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    """Keep raw requests, then publish dividends, price bands, suspensions and instruments."""
+    output.mkdir(parents=True, exist_ok=True)
+    connector = TushareConnector(config_path=Path("configs/tushare.local.toml"))
+    store = RawStore(data_root / "raw")
+    cache: dict[tuple[str, str], Path] = {}
+    for api in ("dividend", "stk_limit", "suspend_d", "stock_basic"):
+        for path in sorted((data_root / "raw/tushare" / api).glob("date=*/*.json")):
+            meta = json.loads(path.read_text(encoding="utf-8"))
+            key = (api, json.dumps(meta["parameters"], sort_keys=True))
+            cache[key] = path.with_suffix(".parquet")
+    used = []
+
+    def request(api: str, **params: str) -> pl.DataFrame:
+        key = (api, json.dumps(params, sort_keys=True))
+        if key in cache:
+            path = cache[key]
+            frame = pl.read_parquet(path)
+        else:
+            for attempt in range(3):
+                try:
+                    frame = connector.query_raw(api, **params)
+                    break
+                except Exception:
+                    if attempt == 2:
+                        raise RuntimeError(f"Tushare {api} request failed") from None
+                    time.sleep(attempt + 1)
+            path = store.write(source="tushare", table=api, frame=frame, parameters=params).data_path
+            cache[key] = path
+            time.sleep(0.35)
+        used.append(str(path))
+        return frame
+
+    limits, suspensions = [], []
+    for date in execution_dates:
+        raw = request("stk_limit", trade_date=date.strftime("%Y%m%d"))
+        if raw.is_empty() or raw.height >= 5800:
+            raise ValueError("Missing or truncated stock price bands")
+        limits.append(raw)
+        suspensions.append(request("suspend_d", trade_date=date.strftime("%Y%m%d")))
+    limit_frame = pl.concat(limits, how="diagonal_relaxed").select(
+        pl.col("ts_code").alias("symbol"), pl.col("trade_date").str.to_date("%Y%m%d"),
+        pl.col("up_limit").cast(pl.Float64), pl.col("down_limit").cast(pl.Float64),
+    ).filter(pl.col("symbol").is_in(symbols))
+    if limit_frame.select("symbol", "trade_date").is_duplicated().any():
+        raise ValueError("Duplicate stock price bands")
+    suspend_frame = pl.concat(suspensions, how="diagonal_relaxed")
+    if suspend_frame.is_empty():
+        suspend_frame = pl.DataFrame(schema={"symbol": pl.String, "trade_date": pl.Date})
+    else:
+        suspend_frame = suspend_frame.filter(pl.col("suspend_type") == "S").select(
+            pl.col("ts_code").alias("symbol"), pl.col("trade_date").str.to_date("%Y%m%d"),
+        ).unique().filter(pl.col("symbol").is_in(symbols))
+    dividends = []
+    for index, symbol in enumerate(symbols):
+        frame = request("dividend", ts_code=symbol)
+        if frame.height >= 2000:
+            raise ValueError("Truncated stock dividends")
+        if not frame.is_empty():
+            dividends.append(frame)
+        if (index + 1) % 50 == 0:
+            print(f"Captured dividends {index + 1}/{len(symbols)}", flush=True)
+    dividend_frame = pl.concat(dividends, how="diagonal_relaxed").filter(
+        (pl.col("div_proc") == "实施") & pl.col("ex_date").is_not_null()
+    ).select(
+        pl.col("ts_code").alias("symbol"),
+        pl.col("imp_ann_date").str.to_date("%Y%m%d").alias("ann_date"),
+        pl.col("record_date").str.to_date("%Y%m%d"),
+        pl.col("ex_date").str.to_date("%Y%m%d"),
+        pl.col("pay_date").str.to_date("%Y%m%d"),
+        pl.col("div_listdate").str.to_date("%Y%m%d").alias("share_list_date"),
+        pl.col("cash_div_tax").cast(pl.Float64).fill_null(0.0).alias("div_cash"),
+        pl.col("stk_div").cast(pl.Float64).fill_null(0.0).alias("share_ratio"),
+    ).filter(pl.col("ex_date").is_between(start, end)).unique()
+    duplicate_keys = dividend_frame.group_by("symbol", "ex_date").len().filter(pl.col("len") > 1)
+    for symbol, ex_date, _ in duplicate_keys.iter_rows():
+        group = dividend_frame.filter((pl.col("symbol") == symbol) & (pl.col("ex_date") == ex_date))
+        # Mindray's annual and first interim distributions were implemented together.
+        # Company announcement 2026-026 (CNINFO 1225320390) confirms 0.31 + 1.25 per share.
+        if (symbol, ex_date) != ("300760.SZ", dt.date(2026, 5, 28)):
+            raise ValueError("Conflicting stock dividend implementations")
+        if sorted(group.get_column("div_cash").to_list()) != [0.31, 1.25]:
+            raise ValueError("Unexpected Mindray dividend amounts")
+        combined = group.head(1).with_columns(
+            pl.lit(1.56).alias("div_cash"), pl.lit(0.0).alias("share_ratio"))
+        dividend_frame = pl.concat([
+            dividend_frame.filter(~((pl.col("symbol") == symbol) & (pl.col("ex_date") == ex_date))),
+            combined,
+        ])
+    if dividend_frame.filter(
+        pl.col("ann_date").is_null() | pl.col("record_date").is_null()
+        | (pl.col("ann_date") > pl.col("record_date"))
+        | (pl.col("record_date") >= pl.col("ex_date"))
+        | ((pl.col("div_cash") > 0) & (pl.col("pay_date").is_null() | (pl.col("pay_date") < pl.col("ex_date"))))
+        | ((pl.col("share_ratio") > 0) & (pl.col("share_list_date").is_null() | (pl.col("share_list_date") < pl.col("ex_date"))))
+    ).height:
+        raise ValueError("Incomplete stock dividend dates")
+    # 000793 restructuring shares go to the administrator/investors/creditors,
+    # not ordinary holders (company announcement 2026-038, SZSE 2026-06-22).
+    dividend_frame = dividend_frame.with_columns(pl.when(
+        (pl.col("symbol") == "000793.SZ") & (pl.col("ex_date") == dt.date(2026, 6, 22))
+    ).then(0.0).otherwise(pl.col("share_ratio")).alias("share_ratio"))
+    basic = pl.concat([
+        request("stock_basic", list_status=status, fields="ts_code,name,list_date,delist_date")
+        .with_columns(pl.lit(status).alias("_request_list_status"))
+        for status in ("L", "D", "P")
+    ], how="diagonal_relaxed")
+    instruments = pl.concat([TushareInstrumentMapper(m).map(basic) for m in ("SH", "SZ")]).filter(
+        pl.col("symbol").is_in(symbols)
+    )
+    if instruments.height != len(symbols):
+        raise ValueError("Stock instrument coverage missing")
+    for name, frame in (("limits", limit_frame), ("suspensions", suspend_frame),
+                        ("dividends", dividend_frame), ("instruments", instruments)):
+        frame.write_parquet(output / f"{name}.parquet")
+    (output / "sources.json").write_text(json.dumps(used, indent=2), encoding="utf-8")
+    return limit_frame, suspend_frame, dividend_frame, instruments
+
+
+def stock_session_states(
+    *, bars: pl.DataFrame, limits: pl.DataFrame, suspensions: pl.DataFrame,
+    sessions: list[dt.date], symbols: list[str], execution_dates: list[dt.date],
+    slippage: float,
+):
+    """Use vendor bands on order sessions; absent quotes cannot execute."""
+    from quant.backtest.rules import DailyMarketState
+
+    quotes = {(r["trade_date"], r["symbol"]): r for r in bars.iter_rows(named=True)}
+    bands = {(r["trade_date"], r["symbol"]): r for r in limits.iter_rows(named=True)}
+    stopped = set(suspensions.select("trade_date", "symbol").iter_rows())
+    order_dates = set(execution_dates)
+    states = {}
+    for date in sessions:
+        for symbol in symbols:
+            key = (date, symbol)
+            bar = quotes.get(key)
+            if bar is None or bar["volume"] <= 0 or key in stopped:
+                states[key] = DailyMarketState(suspended=True)
+            elif date in order_dates:
+                band = bands.get(key)
+                if band is None or band["down_limit"] is None or band["up_limit"] is None:
+                    raise ValueError(f"Missing stock price band: {symbol} {date}")
+                states[key] = DailyMarketState(
+                    at_upper_limit=bar["open"] * (1 + slippage) >= band["up_limit"] - 1e-9,
+                    at_lower_limit=bar["open"] * (1 - slippage) <= band["down_limit"] + 1e-9,
+                )
+            else:
+                states[key] = DailyMarketState()
+    return states
