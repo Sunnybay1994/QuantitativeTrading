@@ -32,6 +32,7 @@ from quant.research.run_classic_factors import select_frozen_liquid_universe
 from quant.research.run_s1_walk_forward import metrics
 
 CODE_PATHS = (
+    "src/quant/research/monthly_small_value_quality.py",
     "src/quant/factors/high52.py",
     "src/quant/factors/overnight_decomposition.py",
     "src/quant/research/monthly_lowvol_reversal.py",
@@ -248,14 +249,25 @@ def run_baseline(
     if any(a.test_end >= b.test_start for a, b in zip(folds, folds[1:])):
         raise ValueError("Test folds must be chronological and disjoint")
     refresh_config = project_root / data["refresh_config"]
-    freeze_bars = read_stock_data(data_root=data_root, config=refresh_config, table="bar_1d",
-                                 start=universe["freeze_start"], end=universe["freeze_end"])
-    candidates = select_frozen_liquid_universe(
-        freeze_bars, top_n=universe["top_n"], minimum_observations=universe["minimum_observations"],
-        minimum_average_amount=universe["minimum_average_amount"],
-    )
-    bars = read_stock_data(data_root=data_root, config=refresh_config, table="bar_1d",
-                          start=data["warmup_start"], end=end, symbols=list(candidates))
+    if "small_value_quality" in config:
+        if universe.get("selection") != "historical_presence_with_signal_date_eligibility":
+            raise ValueError("B38 requires the full historical SH/SZ universe")
+        bars = read_stock_data(data_root=data_root, config=refresh_config, table="bar_1d",
+                               start=data["warmup_start"], end=end)
+        bars = bars.filter(pl.col("symbol").str.contains(r"^[0-9]{6}\.(SH|SZ)$"))
+        candidates = tuple(sorted(bars["symbol"].unique().to_list()))
+        # Enumeration includes delisted and later-listed codes. Only signal-date
+        # history, names, liquidity and PIT financials determine eligibility below.
+        freeze_bars = bars
+    else:
+        freeze_bars = read_stock_data(data_root=data_root, config=refresh_config, table="bar_1d",
+                                     start=universe["freeze_start"], end=universe["freeze_end"])
+        candidates = select_frozen_liquid_universe(
+            freeze_bars, top_n=universe["top_n"], minimum_observations=universe["minimum_observations"],
+            minimum_average_amount=universe["minimum_average_amount"],
+        )
+        bars = read_stock_data(data_root=data_root, config=refresh_config, table="bar_1d",
+                              start=data["warmup_start"], end=end, symbols=list(candidates))
     benchmark_bars, _, calendar, benchmark_instruments = read_etf_research_inputs(
         data_root, [portfolio["benchmark"]], data["warmup_start"], end,
     )
@@ -264,6 +276,19 @@ def run_baseline(
     extra_inputs: list[tuple[str, pl.DataFrame, tuple[str, ...], str]] = []
     extra_outputs: list[tuple[str, pl.DataFrame]] = []
     extra_digests: list[ResearchInputDigestV1] = []
+    if "small_value_quality" in config:
+        settings = config["small_value_quality"]
+        if (settings["small_fraction"] != .30 or settings["value_fraction"] != .50
+            or settings["quality_threshold"] != 0.0 or settings["quality_operator"] != "strictly_greater"
+            or settings["minimum_candidates"] != 50
+            or config["factors"]["names"] != ["circulating_market_value"]
+            or config["factors"]["directions"] != [-1]):
+            raise ValueError("B38 uses fixed small/value ranks and the positive-ROE treatment")
+        basic = read_stock_data(data_root=data_root, config=refresh_config, table="daily_basic",
+                                start=data["warmup_start"], end=end, symbols=list(candidates))
+        factors = factors.join(basic.select("symbol", "trade_date", "pb", "circulating_market_value"),
+                               on=["symbol", "trade_date"], how="left", validate="1:1")
+        extra_inputs.append(("daily-basic", basic, ("trade_date", "symbol"), "trade_date"))
     if "high52" in config:
         from quant.data.calendar import expected_open_dates
         from quant.factors.high52 import compute_high52
@@ -387,8 +412,19 @@ def run_baseline(
     if "high52" in config:
         eligible = eligible.filter(pl.all_horizontal(pl.col(name).is_finite() for name in
             ("high52_proximity", "momentum_126")))
+    if "small_value_quality" in config:
+        eligible = eligible.filter(pl.all_horizontal(pl.col(name).is_finite() for name in
+            ("circulating_market_value", "pb", "pit_roe_ttm"))
+            & (pl.col("circulating_market_value") > 0) & (pl.col("pb") > 0))
     scored = build_equal_weight_zscore_composite(eligible, component_directions=directions)
     primary_scored = scored
+    paired_scoring_pool = scored
+    if "small_value_quality" in config:
+        from quant.research.monthly_small_value_quality import select_small_value_quality
+
+        primary_scored, paired_scoring_pool = select_small_value_quality(scored)
+        extra_outputs.extend((("small_value_positive_roe_pool", primary_scored),
+                              ("small_value_unfiltered_pool", paired_scoring_pool)))
     if low_volatility_filter:
         from quant.research.monthly_lowvol_reversal import select_low_volatility_pool
 
@@ -405,7 +441,8 @@ def run_baseline(
     paired_targets: pl.DataFrame | None = None
     paired_comparison, paired_strategy = "three_factor", "b25_paired_three_factor_baseline"
     if ("turnover_variability" in config or "information_discreteness" in config
-        or low_volatility_filter or "overnight_decomposition" in config or "high52" in config):
+        or low_volatility_filter or "overnight_decomposition" in config or "high52" in config
+        or "small_value_quality" in config):
         paired_components: tuple[tuple[str, int], ...] = (
             ("alpha158_std20", -1), ("alpha158_roc20", 1), ("alpha158_rsv20", -1))
         if "information_discreteness" in config:
@@ -426,7 +463,10 @@ def run_baseline(
         if "high52" in config:
             paired_components = (("momentum_126", 1),)
             paired_comparison, paired_strategy = "momentum_126", "b37_paired_six_month_momentum"
-        paired_scores = build_equal_weight_zscore_composite(scored,
+        if "small_value_quality" in config:
+            paired_components = (("circulating_market_value", -1),)
+            paired_comparison, paired_strategy = "small_value_unfiltered", "b38_paired_small_value_unfiltered"
+        paired_scores = build_equal_weight_zscore_composite(paired_scoring_pool,
             component_directions=paired_components)
         paired_targets = pl.concat([build_monthly_zscore_targets(
             paired_scores, sessions=all_sessions, start=fold.test_start, end=fold.test_end,
@@ -561,6 +601,8 @@ def run_baseline(
         and meets_portfolio_candidate(results, config["admission"])):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
+        "Full historical SH/SZ presence with signal-date eligibility; this positive-ROE treatment is a historical small-value comparison, not a prospective result."
+        if "small_value_quality" in config else
         "252-session adjusted daily-high proximity with monthly A-share Top50 holding adapts the US 52-week-high study; historical periods were inspected previously."
         if "high52" in config else
         "Daily adjusted-open decomposition and monthly A-share holding adapt the overnight/intraday idea; these historical periods were inspected previously."
