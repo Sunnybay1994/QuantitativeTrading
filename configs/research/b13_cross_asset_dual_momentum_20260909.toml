@@ -1,0 +1,86 @@
+[research]
+hypothesis_id = "b13-cross-asset-dual-momentum-20260909"
+hypothesis = "At each completed month end rank stock, Treasury-bond and gold ETFs by 12-month total return; hold the single highest-return asset only if its return is strictly positive, otherwise zero-interest cash. Compare to monthly equal weight in the same three assets. Fixed 12-month cross-asset dual-momentum replication, without a parameter grid."
+strategy_name = "b13_cross_asset_dual_momentum"
+strategy_version = "v1"
+random_seed = 20260909
+
+[data]
+cross_asset_snapshot = "b13_20260909"
+start = 2023-01-01
+end = 2026-09-08
+
+[universe]
+name = "CROSS_ASSET_ETF_V1"
+frozen_as_of = 2026-09-09
+symbols = ['510300.SH', '511010.SH', '518880.SH']
+
+[strategy]
+kind = "relative_momentum"
+absolute_momentum_filter = true
+# Absolute return is price at month m divided by month m-12 minus one.
+# Select Top1 first; if its return is zero or negative, hold only cash.
+# Source: https://www.optimalmomentum.com/dual-relative-absolute-momentum/
+lookback_months = 12
+skip_months = 0
+top_k = 1
+rebalance = "month_end_close_next_session_open"
+initial_deployment = "latest_completed_month_as_of_previous_session"
+# Parameters are literature-fixed; there is no selection grid or test retuning.
+
+[portfolio]
+initial_cash = 1000000.0
+cost_multipliers = [0.5, 1.0, 2.0]
+benchmark = "monthly_equal_weight_same_pool"
+
+[costs.etf]
+commission_rate = 0.00025
+commission_min = 5.0
+slippage = 0.0
+slippage_per_share = 0.001
+# One tick per side, including spread crossing. Applied equally to strategy and S0.
+# SSE bond/gold guides: tick 0.001 yuan, daily price bands 10%.
+# https://etf.sse.com.cn/ruleguide/guide/c/5287915.shtml
+# https://www.sse.com.cn/assortment/fund/etf/rules/c/c_20150911_3985190.shtml
+effective_from = 2023-01-01
+
+[costs.a_share]
+commission_rate = 0.00025
+commission_min = 5.0
+stamp_tax_sell = 0.0005
+transfer_fee = 0.00001
+slippage = 0.001
+effective_from = 2023-08-28
+
+[admission]
+all_1x_folds_positive = true
+minimum_2x_positive_fold_fraction = 0.5
+all_folds_better_drawdown_or_calmar_than_s0 = true
+maximum_annualized_one_way_turnover = 3.0
+forward_start = 2026-07-11
+forward_maximum_shortfall_to_s0 = 0.02
+# Absolute turnover limit applies to each test fold, including the short follow-up.
+
+[[walk_forward.folds]]
+train_start = 2023-01-01
+train_end = 2024-12-31
+validation_start = 2025-01-01
+validation_end = 2025-06-30
+test_start = 2025-07-01
+test_end = 2025-12-31
+
+[[walk_forward.folds]]
+train_start = 2023-07-01
+train_end = 2025-06-30
+validation_start = 2025-07-01
+validation_end = 2025-12-31
+test_start = 2026-01-01
+test_end = 2026-06-30
+
+[[walk_forward.folds]]
+train_start = 2023-07-01
+train_end = 2025-06-30
+validation_start = 2025-07-01
+validation_end = 2025-12-31
+test_start = 2026-07-11
+test_end = 2026-09-08
