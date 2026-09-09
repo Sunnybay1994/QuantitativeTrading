@@ -32,6 +32,7 @@ from quant.research.run_classic_factors import select_frozen_liquid_universe
 from quant.research.run_s1_walk_forward import metrics
 
 CODE_PATHS = (
+    "src/quant/research/monthly_cv20_buffer.py",
     "src/quant/factors/information_discreteness.py",
     "src/quant/research/monthly_information_discreteness.py",
     "src/quant/data/calendar.py",
@@ -188,6 +189,12 @@ def run_baseline(
     data_root: Path, artifact_root: Path,
 ) -> int:
     data, universe, portfolio = config["data"], config["universe"], config["portfolio"]
+    cv20_buffer = config["admission"].get("comparison") == "cv20_unbuffered"
+    if cv20_buffer and (config["factors"]["names"] != ["turnover_cv20"]
+                        or config["factors"]["directions"] != [-1]
+                        or portfolio.get("retention_rank") != 75 or portfolio["top_k"] != 50
+                        or "turnover_variability" not in config):
+        raise ValueError("B28 requires fixed negative CV20 Top50 with Top75 retention")
     if config.get("financials", {}).get("factor_family") == "gross_margin":
         expected_margin = {"formula": "(revenue_ttm - oper_cost_ttm) / revenue_ttm",
                            "window_quarters": 4, "valid_values": "positive_ttm_revenue_nonnegative_ttm_cost"}
@@ -342,6 +349,9 @@ def run_baseline(
         if "information_discreteness" in config:
             paired_components = (("pret_12m_skip1m", 1),)
             paired_comparison, paired_strategy = "momentum", "b26_paired_momentum_baseline"
+        if cv20_buffer:
+            paired_components = (("turnover_cv20", -1),)
+            paired_comparison, paired_strategy = "cv20_unbuffered", "b28_paired_cv20_unbuffered"
         paired_scores = build_equal_weight_zscore_composite(scored,
             component_directions=paired_components)
         paired_targets = pl.concat([build_monthly_zscore_targets(
@@ -453,6 +463,11 @@ def run_baseline(
                   and sum(r["rank_ic_mean"] > 0 for r in primary) >= config["admission"]["minimum_positive_test_folds"]
                   and max(r["median_abs_rank_corr"] for r in redundancy_rows)
                   < config["admission"]["maximum_absolute_rank_correlation"])
+    elif cv20_buffer:
+        from quant.research.monthly_cv20_buffer import summarize_cv20_buffer
+
+        portfolio_admission = summarize_cv20_buffer(results)
+        passed = portfolio_admission["passed"]
     else:
         portfolio_admission = portfolio_admission_summary(results, config["admission"].get("comparison", "510300"))
         passed = portfolio_admission["passed"]
