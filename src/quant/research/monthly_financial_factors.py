@@ -29,8 +29,10 @@ def read_monthly_financial_factors(
     histories: dict[str, pl.DataFrame] = {}
     sue = settings.get("factor_family") == "sue8"
     growth = settings.get("factor_family") == "asset_growth"
+    gross = settings.get("factor_family") == "gross_profitability"
     datasets: tuple[FinancialFactorDataset, ...] = (
-        ("income",) if sue else ("balancesheet",) if growth else ("income", "balancesheet", "cashflow")
+        ("income",) if sue else ("balancesheet",) if growth else
+        ("income", "balancesheet") if gross else ("income", "balancesheet", "cashflow")
     )
     for dataset in datasets:
         histories[dataset] = read_tushare_financial_history(
@@ -38,8 +40,16 @@ def read_monthly_financial_factors(
                 snapshot_id=settings["snapshot_id"], dataset=dataset,
                 start_period=settings["history_start"], end_period=end,
                 symbols=candidates,
+                extra_fields=("revenue", "oper_cost") if gross and dataset == "income" else (),
             ),
         )
+    if gross:
+        from quant.research.monthly_gross_profitability import build_monthly_gross_profitability
+
+        return build_monthly_gross_profitability(
+            income_history=histories["income"], balance_history=histories["balancesheet"],
+            signal_dates=monthly_signal_sessions(sessions, start=start, end=end), candidate_symbols=candidates,
+        ), histories
     if growth:
         from quant.research.monthly_asset_growth import build_monthly_asset_growth
 

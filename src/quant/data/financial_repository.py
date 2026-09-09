@@ -17,6 +17,7 @@ class TushareFinancialHistoryQuery:
     end_period: dt.date
     symbols: tuple[str, ...]
     threads: int = 2
+    extra_fields: tuple[str, ...] = ()
 
 
 def read_tushare_financial_history(*, data_root: Path, query: TushareFinancialHistoryQuery) -> pl.DataFrame:
@@ -29,6 +30,10 @@ def read_tushare_financial_history(*, data_root: Path, query: TushareFinancialHi
     economics = {"income": ["n_income", "n_income_attr_p"],
                  "balancesheet": ["total_assets", "total_hldr_eqy_exc_min_int"],
                  "cashflow": ["n_cashflow_act"]}[query.dataset]
+    allowed_extra = {"revenue", "oper_cost"} if query.dataset == "income" else set()
+    if len(set(query.extra_fields)) != len(query.extra_fields) or not set(query.extra_fields) <= allowed_extra:
+        raise ValueError("Unsupported financial fields")
+    economics.extend(query.extra_fields)
     path = data_root / "clean/tushare_financials" / query.snapshot_id / f"{query.dataset}.parquet"
     return pl.scan_parquet(path).filter(
         pl.col("symbol").is_in(list(query.symbols))

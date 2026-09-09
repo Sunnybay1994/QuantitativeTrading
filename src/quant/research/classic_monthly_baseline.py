@@ -32,6 +32,8 @@ from quant.research.run_classic_factors import select_frozen_liquid_universe
 from quant.research.run_s1_walk_forward import metrics
 
 CODE_PATHS = (
+    "src/quant/factors/gross_profitability.py",
+    "src/quant/research/monthly_gross_profitability.py",
     "src/quant/factors/asset_growth.py",
     "src/quant/research/monthly_asset_growth.py",
     "src/quant/factors/earnings_surprise.py",
@@ -153,6 +155,12 @@ def run_baseline(
     data_root: Path, artifact_root: Path,
 ) -> int:
     data, universe, portfolio = config["data"], config["universe"], config["portfolio"]
+    if config.get("financials", {}).get("factor_family") == "gross_profitability":
+        expected_gross = {"formula": "(revenue_ttm - oper_cost_ttm) / total_assets_t",
+                          "window_quarters": 4, "assets_period": "same_as_latest_income",
+                          "valid_values": "nonnegative_ttm_revenue_and_cost_positive_assets"}
+        if any(config.get("gross_profitability", {}).get(k) != v for k, v in expected_gross.items()):
+            raise ValueError("Unsupported gross profitability configuration")
     if config.get("financials", {}).get("factor_family") == "asset_growth":
         expected_growth = {"formula": "total_assets_t / total_assets_t-4q - 1",
                            "lag_quarters": 4, "required_assets": "both_positive",
