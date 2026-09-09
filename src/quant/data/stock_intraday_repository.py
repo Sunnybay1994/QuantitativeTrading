@@ -1,4 +1,4 @@
-"""Read local five-minute stock history for low-frequency factors."""
+"""Read local stock minute history for low-frequency factors."""
 
 import datetime as dt
 from pathlib import Path
@@ -6,16 +6,22 @@ from pathlib import Path
 import polars as pl
 
 
-def read_stock_five_minute_bars(
-    data_root: Path, *, symbol: str, start: dt.date, end: dt.date,
-    source: str = "baostock",
+def read_stock_intraday_bars(
+    data_root: Path,
+    *,
+    symbol: str,
+    start: dt.date,
+    end: dt.date,
+    frequency: str,
+    source: str,
 ) -> pl.DataFrame:
-    if (len(symbol) != 9 or not symbol[:6].isdigit() or symbol[6:] not in (".SH", ".SZ")
+    if (len(symbol) != 9 or not symbol[:6].isdigit()
+        or symbol[6:] not in (".SH", ".SZ", ".BJ")
         or start > end):
         raise ValueError("Invalid A-share minute history query")
-    if source not in ("baostock", "tdx"):
-        raise ValueError("Unsupported stock minute source")
-    path = (data_root / f"clean/bar_intraday/freq=5m/source={source}"
+    if frequency not in {"1m", "5m"} or source not in {"baostock", "tdx"}:
+        raise ValueError("Unsupported minute history frequency or source")
+    path = (data_root / f"clean/bar_intraday/freq={frequency}/source={source}"
             / f"symbol={symbol}" / "data.parquet")
     frame = pl.scan_parquet(path).filter(pl.col("trade_date").is_between(start, end)).collect()
     if not frame.is_empty() and set(frame["symbol"]) != {symbol}:
@@ -23,19 +29,34 @@ def read_stock_five_minute_bars(
     return frame
 
 
+def read_stock_five_minute_bars(
+    data_root: Path, *, symbol: str, start: dt.date, end: dt.date,
+    source: str = "baostock",
+) -> pl.DataFrame:
+    return read_stock_intraday_bars(
+        data_root,
+        symbol=symbol,
+        start=start,
+        end=end,
+        frequency="5m",
+        source=source,
+    )
+
+
 def read_stock_five_minute_pool(
     data_root: Path, *, symbols: tuple[str, ...], start: dt.date, end: dt.date,
-    expected_traded_days: pl.DataFrame,
+    expected_traded_days: pl.DataFrame, source: str = "baostock",
 ) -> pl.DataFrame:
     """Read the entire requested pool; partial backfills must not shrink a study."""
     if not symbols or len(set(symbols)) != len(symbols):
         raise ValueError("Invalid minute history pool")
     missing = [symbol for symbol in symbols if not (
-        data_root / "clean/bar_intraday/freq=5m/source=baostock" / f"symbol={symbol}" / "data.parquet"
+        data_root / f"clean/bar_intraday/freq=5m/source={source}" / f"symbol={symbol}" / "data.parquet"
     ).is_file()]
     if missing:
         raise FileNotFoundError(f"Minute history pending for {len(missing)} symbols; first: {missing[:5]}")
-    result = pl.concat([read_stock_five_minute_bars(data_root, symbol=symbol, start=start, end=end)
+    result = pl.concat([read_stock_five_minute_bars(
+        data_root, symbol=symbol, start=start, end=end, source=source)
                         for symbol in symbols], how="diagonal_relaxed")
     expected = expected_traded_days.filter(pl.col("symbol").is_in(list(symbols))
         & pl.col("trade_date").is_between(start, end)).select("symbol", "trade_date").unique()
