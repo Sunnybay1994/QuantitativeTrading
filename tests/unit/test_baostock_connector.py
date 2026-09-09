@@ -1,6 +1,7 @@
 """BaoStock 连接器测试，不访问真实网络。"""
 
 import datetime as dt
+import socket
 
 import polars as pl
 import pytest
@@ -12,6 +13,20 @@ from quant.data.mappers import (
     BaostockCalendarMapper,
     BaostockInstrumentMapper,
 )
+
+
+def test_login_socket_timeout_is_bounded_and_process_default_restored():
+    previous = socket.getdefaulttimeout()
+
+    class FailedLogin:
+        def login(self):
+            assert socket.getdefaulttimeout() == 45.0
+            raise TimeoutError("fixture login timeout")
+
+    with pytest.raises(TimeoutError):
+        with BaostockConnector(FailedLogin())._session():
+            pytest.fail("A failed login cannot enter the session")
+    assert socket.getdefaulttimeout() == previous
 
 
 class Response:

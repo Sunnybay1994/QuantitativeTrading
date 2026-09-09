@@ -2,6 +2,7 @@
 
 import datetime as dt
 import importlib
+import socket
 from contextlib import contextmanager
 from typing import Any, Iterator
 
@@ -153,7 +154,14 @@ class BaostockConnector(BaseConnector):
 
     @contextmanager
     def _session(self) -> Iterator[None]:
-        login_result = self.client.login()
+        # BaoStock creates its socket at login without any timeout. Bound that
+        # socket's connect/read waits; restore the process default immediately.
+        previous_timeout = socket.getdefaulttimeout()
+        try:
+            socket.setdefaulttimeout(45.0)
+            login_result = self.client.login()
+        finally:
+            socket.setdefaulttimeout(previous_timeout)
         _ensure_success(login_result, "login")
         try:
             yield
