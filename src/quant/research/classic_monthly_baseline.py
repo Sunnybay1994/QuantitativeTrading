@@ -32,6 +32,7 @@ from quant.research.run_classic_factors import select_frozen_liquid_universe
 from quant.research.run_s1_walk_forward import metrics
 
 CODE_PATHS = (
+    "src/quant/factors/overnight_decomposition.py",
     "src/quant/research/monthly_lowvol_reversal.py",
     "src/quant/research/monthly_cv20_buffer.py",
     "src/quant/factors/information_discreteness.py",
@@ -262,6 +263,17 @@ def run_baseline(
     extra_inputs: list[tuple[str, pl.DataFrame, tuple[str, ...], str]] = []
     extra_outputs: list[tuple[str, pl.DataFrame]] = []
     extra_digests: list[ResearchInputDigestV1] = []
+    if "overnight_decomposition" in config:
+        from quant.factors.overnight_decomposition import compute_overnight_decomposition
+
+        settings = config["overnight_decomposition"]
+        if (settings["window_sessions"] != 20
+            or config["factors"]["names"] != ["overnight_return_20"]
+            or config["factors"]["directions"] != [-1]):
+            raise ValueError("B36 uses fixed 20-session negative overnight-return ranking")
+        decomposed = compute_overnight_decomposition(bars, sessions=all_sessions)
+        factors = factors.join(decomposed, on=["symbol", "trade_date"], how="left", validate="1:1")
+        extra_outputs.append(("overnight_decomposition", decomposed))
     if "information_discreteness" in config:
         from quant.data.calendar import expected_open_dates
         from quant.research.monthly_information_discreteness import build_monthly_information_discreteness
@@ -351,6 +363,9 @@ def run_baseline(
     if low_volatility_filter:
         eligible = eligible.filter(pl.all_horizontal(pl.col(name).is_finite() for name in
             ("realized_volatility_60", "reversal_20")))
+    if "overnight_decomposition" in config:
+        eligible = eligible.filter(pl.all_horizontal(pl.col(name).is_finite() for name in
+            ("overnight_return_20", "intraday_return_20", "total_return_20")))
     scored = build_equal_weight_zscore_composite(eligible, component_directions=directions)
     primary_scored = scored
     if low_volatility_filter:
@@ -368,7 +383,8 @@ def run_baseline(
     ).with_columns(pl.lit(fold.fold).alias("fold")) for fold in folds])
     paired_targets: pl.DataFrame | None = None
     paired_comparison, paired_strategy = "three_factor", "b25_paired_three_factor_baseline"
-    if "turnover_variability" in config or "information_discreteness" in config or low_volatility_filter:
+    if ("turnover_variability" in config or "information_discreteness" in config
+        or low_volatility_filter or "overnight_decomposition" in config):
         paired_components: tuple[tuple[str, int], ...] = (
             ("alpha158_std20", -1), ("alpha158_roc20", 1), ("alpha158_rsv20", -1))
         if "information_discreteness" in config:
@@ -383,6 +399,9 @@ def run_baseline(
         if low_volatility_filter:
             paired_components = (("reversal_20", 1),)
             paired_comparison, paired_strategy = "reversal_unfiltered", "b35_paired_unfiltered_reversal"
+        if "overnight_decomposition" in config:
+            paired_components = (("total_return_20", -1),)
+            paired_comparison, paired_strategy = "total_reversal", "b36_paired_total_return_reversal"
         paired_scores = build_equal_weight_zscore_composite(scored,
             component_directions=paired_components)
         paired_targets = pl.concat([build_monthly_zscore_targets(
@@ -518,6 +537,8 @@ def run_baseline(
         and meets_portfolio_candidate(results, config["admission"])):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
+        "Daily adjusted-open decomposition and monthly A-share holding adapt the overnight/intraday idea; these historical periods were inspected previously."
+        if "overnight_decomposition" in config else
         "FIP uses a fixed 252-session formation/21-session skip and monthly A-share rebalancing rather than the paper's calendar-month formation and six-month holding."
         if "information_discreteness" in config else
         "CV20 is a short-window A-share adaptation of monthly US turnover variability; the historical market periods were used in prior research."
