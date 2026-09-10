@@ -806,7 +806,7 @@ def run_baseline(
                                 ("roe_stability", "pit_quarterly_roe_volatility"),
                                 ("low_beta", "market_beta_60_vs_510300"),
                                 ("lowvol60", "realized_volatility_60"),
-                                ("alpha101_026", "alpha101_026"), ("alpha101_046", "alpha101_046"), ("alpha101_055", "alpha101_055")):
+                                ("alpha101_026", "alpha101_026"), ("alpha101_046", "alpha101_046"), ("alpha101_055", "alpha101_055"), ("alpha101_006", "alpha101_006")):
         if (f"{family}_composition" in config or (family == "cash_roa" and cash_roa_buffer)
             or (family == "alpha101_026" and alpha101_026_buffer)
             or (family == "alpha101_055" and alpha101_055_buffer)):
@@ -865,7 +865,7 @@ def run_baseline(
         or "cash_yield_composition" in config or "roe_stability_composition" in config
         or "low_beta_composition" in config or "lowvol60_composition" in config
         or "alpha101_026_composition" in config or "alpha101_046_composition" in config or "alpha101_055_composition" in config
-        or alpha101_026_buffer or alpha101_055_buffer or cash_roa_buffer):
+        or "alpha101_006_composition" in config or alpha101_026_buffer or alpha101_055_buffer or cash_roa_buffer):
         paired_components: tuple[tuple[str, int], ...] = (
             ("alpha158_std20", -1), ("alpha158_roc20", 1), ("alpha158_rsv20", -1))
         if cash_roa_buffer:
@@ -884,6 +884,8 @@ def run_baseline(
             paired_strategy = "b65_paired_three_factor_lowvol60_cohort"
         if "alpha101_026_composition" in config:
             paired_strategy = "b69_paired_three_factor_alpha101_026_cohort"
+        if "alpha101_006_composition" in config:
+            paired_strategy = "b79_paired_three_factor_alpha101_006_cohort"
         if "alpha101_055_composition" in config:
             paired_strategy = "b75_paired_three_factor_alpha101_055_cohort"
         if "alpha101_046_composition" in config:
@@ -1055,6 +1057,8 @@ def run_baseline(
         and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_zscore", "debt_ebitda", "low_beta", "turnover_change", "return_turnover", "lowvol120", "lowvol60_composition", "momentum_12_1", "alpha101_001", "alpha101_026", "alpha101_046", "alpha101_054", "alpha101_055", "alpha101_006")) or passed)):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
+        "Frozen Alpha101 #6 is added to three equal-zscore factors on the same complete cohort; historical periods were inspected previously."
+        if "alpha101_006_composition" in config else
         "Alpha101 #6 reuses the strict ten-session adjusted-open/raw-volume correlation in monthly long-only Top50; historical periods were inspected previously."
         if "alpha101_006" in config else
         "Odd execution months with Top75 retention are compared with the frozen monthly Alpha101 #55 portfolio; historical periods were inspected previously."

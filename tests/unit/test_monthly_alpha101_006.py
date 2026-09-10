@@ -35,3 +35,20 @@ def test_fixed_config_and_no_self_redundancy():
         changed[section][key]=value
         with pytest.raises(ValueError):
             validate_alpha101_006(changed)
+
+
+def test_composition_preserves_factor_and_requires_matched_positive_increment():
+    config=tomllib.loads(Path('configs/research/b79_alpha101_006_composite_20260910.toml').read_text())
+    prior=tomllib.loads(Path('configs/research/b78_alpha101_006_20260910.toml').read_text())
+    for section in ('alpha101_006','data','universe','costs','walk_forward','portfolio'):
+        assert config[section]==prior[section]
+    validate_alpha101_006(config)
+    for section,key,value in [('factors','directions',[-1,-1,-1,1]),
+        ('alpha101_006_composition','eligibility','three_factor_only'),
+        ('alpha101_006_composition','weights','equal_rank'),('admission','comparison','510300'),
+        ('admission','require_positive_paired_1x_compounded_increment',False),
+        ('admission','minimum_mean_test_rank_ic',.03),('portfolio','retention_rank',75)]:
+        changed=copy.deepcopy(config)
+        changed[section][key]=value
+        with pytest.raises(ValueError):
+            validate_alpha101_006(changed)
