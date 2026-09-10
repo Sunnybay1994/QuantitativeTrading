@@ -93,3 +93,29 @@ def test_intraday_config_preserves_control_and_rejects_scope_changes():
         changed[section][key]=value
         with pytest.raises(ValueError):
             validate_overnight_comparison(changed)
+
+
+def test_intraday_composition_preserves_frozen_inputs_and_direction():
+    import copy
+    from pathlib import Path
+    import tomllib
+
+    from quant.research.classic_monthly_baseline import validate_overnight_comparison
+
+    config = tomllib.loads(Path('configs/research/b89_intraday_reversal_composite_20260910.toml').read_text())
+    prior = tomllib.loads(Path('configs/research/b88_intraday_reversal_20260910.toml').read_text())
+    for section in ('data', 'universe', 'costs', 'walk_forward', 'portfolio', 'composite',
+                    'eligibility', 'overnight_decomposition'):
+        assert config[section] == prior[section]
+    assert validate_overnight_comparison(config) == 'intraday'
+    for section, key, value in [
+        ('factors', 'directions', [-1, 1, -1, 1]),
+        ('overnight_decomposition', 'component', 'overnight'),
+        ('intraday_reversal_composition', 'eligibility', 'available_only'),
+        ('intraday_reversal_composition', 'paired_baseline', 'total_reversal'),
+        ('admission', 'comparison', 'total_reversal'),
+    ]:
+        changed = copy.deepcopy(config)
+        changed[section][key] = value
+        with pytest.raises(ValueError):
+            validate_overnight_comparison(changed)

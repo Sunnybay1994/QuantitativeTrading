@@ -311,6 +311,13 @@ def portfolio_admission_summary(results: list[dict[str, Any]], comparison: str =
 def validate_overnight_comparison(config: dict[str, Any]) -> str:
     settings = config["overnight_decomposition"]
     component = settings.get("component", "overnight")
+    composition = "intraday_reversal_composition" in config
+    expected_names = (["alpha158_std20", "alpha158_roc20", "alpha158_rsv20", "intraday_return_20"]
+                      if composition else [f"{component}_return_20"])
+    if composition and (component != "intraday" or config["intraday_reversal_composition"] != {
+        "method": "equal_weight_zscore", "paired_baseline": "three_factor",
+        "eligibility": "complete_four_factor_and_decomposition_pool"}):
+        raise ValueError("Intraday composition requires the fixed complete-cohort three-factor comparison")
     expected = {"window_sessions": 20, "parameter_grid": [20],
         "price_adjustment": "same_date_factor_on_open_and_close",
         "missing_session": "invalidate_component_and_total_return_windows",
@@ -318,11 +325,11 @@ def validate_overnight_comparison(config: dict[str, Any]) -> str:
         "paired_pool": "same_complete_overnight_intraday_total_return_and_historical_name_pool"}
     if (component not in ("overnight", "intraday")
         or any(settings.get(k) != v for k, v in expected.items())
-        or config["factors"]["names"] != [f"{component}_return_20"]
-        or config["factors"]["directions"] != [-1]
+        or config["factors"]["names"] != expected_names
+        or config["factors"]["directions"] != ([-1, 1, -1, -1] if composition else [-1])
         or config["portfolio"]["top_k"] != 50 or config["portfolio"].get("retention_rank", 50) != 50
         or "execution_months" in config["portfolio"]
-        or config["admission"].get("comparison") != "total_reversal"
+        or config["admission"].get("comparison") != ("three_factor" if composition else "total_reversal")
         or any(config["admission"].get(k) is not True for k in (
             "positive_net_return_1x", "positive_net_return_2x", "positive_paired_compound_increment_1x"))):
         raise ValueError("Decomposition comparison requires fixed negative 20-session ranking and a complete paired pool")
@@ -877,6 +884,10 @@ def run_baseline(
     if "overnight_decomposition" in config:
         eligible = eligible.filter(pl.all_horizontal(pl.col(name).is_finite() for name in
             ("overnight_return_20", "intraday_return_20", "total_return_20")))
+        if "intraday_reversal_composition" in config:
+            eligible = eligible.filter(pl.all_horizontal(pl.col(name).is_finite() for name in
+                ("alpha158_std20", "alpha158_roc20", "alpha158_rsv20")))
+            extra_outputs.append(("intraday_reversal_composition_pool", eligible))
     if "high52" in config:
         eligible = eligible.filter(pl.all_horizontal(pl.col(name).is_finite() for name in
             ("high52_proximity", "momentum_126")))
@@ -979,7 +990,9 @@ def run_baseline(
         if low_volatility_filter:
             paired_components = (("reversal_20", 1),)
             paired_comparison, paired_strategy = "reversal_unfiltered", "b35_paired_unfiltered_reversal"
-        if "overnight_decomposition" in config:
+        if "intraday_reversal_composition" in config:
+            paired_strategy = "b89_paired_three_factor_intraday_cohort"
+        elif "overnight_decomposition" in config:
             paired_components = (("total_return_20", -1),)
             paired_comparison = "total_reversal"
             paired_strategy = ("b88_paired_total_return_reversal" if config["overnight_decomposition"].get("component") == "intraday"
