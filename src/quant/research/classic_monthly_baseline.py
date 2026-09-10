@@ -32,6 +32,8 @@ from quant.research.run_classic_factors import select_frozen_liquid_universe
 from quant.research.run_s1_walk_forward import metrics
 
 CODE_PATHS = (
+    "src/quant/factors/turnover_change.py",
+    "src/quant/research/monthly_turnover_change.py",
     "src/quant/research/monthly_small_value_quality.py",
     "src/quant/factors/high52.py",
     "src/quant/factors/overnight_decomposition.py",
@@ -391,6 +393,10 @@ def run_baseline(
         if any(config.get("quarterly_roe_stability", {}).get(k) != v for k, v in expected_roe_stability.items()):
             raise ValueError("Unsupported quarterly ROE stability configuration")
         validate_roe_stability_components(config)
+    if "turnover_change" in config:
+        from quant.research.monthly_turnover_change import validate_turnover_change
+
+        validate_turnover_change(config)
     if "low_beta" in config:
         from quant.research.monthly_low_beta import validate_low_beta
 
@@ -587,6 +593,17 @@ def run_baseline(
         extra_inputs.append(("formation-bars", formation_bars, ("trade_date", "symbol"), "trade_date"))
         extra_outputs.append(("information_monthly_factors", monthly))
         print(f"Computed information discreteness on {monthly['trade_date'].n_unique()} month ends", flush=True)
+    if "turnover_change" in config:
+        from quant.research.monthly_turnover_change import build_monthly_turnover_change
+
+        basic = read_stock_data(data_root=data_root, config=refresh_config, table="daily_basic",
+                                start=data["warmup_start"], end=end, symbols=list(candidates))
+        monthly = build_monthly_turnover_change(basic, sessions=all_sessions, candidates=candidates,
+            start=data["research_start"], end=end)
+        factors = factors.join(monthly, on=["symbol", "trade_date"], how="inner", validate="1:1")
+        extra_inputs.append(("daily-basic", basic, ("trade_date", "symbol"), "trade_date"))
+        extra_outputs.append(("turnover_change_factors", monthly))
+        print(f"Computed abnormal turnover on {monthly['trade_date'].n_unique()} month ends", flush=True)
     if "turnover_variability" in config:
         from quant.research.monthly_turnover_variability import build_monthly_turnover_variability
 
@@ -877,9 +894,11 @@ def run_baseline(
     conclusion: Literal["RESEARCH_ONLY", "REJECTED", "PAPER_CANDIDATE"] = "RESEARCH_ONLY" if passed else "REJECTED"
     if (config["admission"].get("maximum_conclusion") == "PAPER_CANDIDATE"
         and meets_portfolio_candidate(results, config["admission"])
-        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_zscore", "debt_ebitda", "low_beta")) or passed)):
+        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_zscore", "debt_ebitda", "low_beta", "turnover_change")) or passed)):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
+        "Fixed 20/120-session turnover ratio adapts the roadmap and the literature 20/250 ratio; historical periods were inspected previously."
+        if "turnover_change" in config else
         "Sixty-session log-return market beta to total-return 510300 is a local monthly long-only low-beta adaptation; historical periods were inspected previously."
         if "low_beta" in config else
         "Annual provider interest-bearing debt/EBITDA with positive earnings and industrial income-period anchoring; historical periods were inspected previously."
