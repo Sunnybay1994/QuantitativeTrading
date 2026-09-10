@@ -1,0 +1,5 @@
+id = "alpha158_rsv10"
+expr = "(adj_close - ts_min(adj_low, 10)) / (ts_max(adj_high, 10) - ts_min(adj_low, 10) + 1e-12)"
+family = "alpha158"
+direction = -1
+source_ref = "https://github.com/microsoft/qlib/blob/main/qlib/contrib/data/loader.py"

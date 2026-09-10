@@ -1,0 +1,5 @@
+id = "alpha158_klow2"
+expr = "(where(open < close, open, close) - low) / (high - low + 1e-12)"
+family = "alpha158"
+direction = 1
+source_ref = "https://github.com/microsoft/qlib/blob/main/qlib/contrib/data/loader.py"

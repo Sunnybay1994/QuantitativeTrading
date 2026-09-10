@@ -1,0 +1,5 @@
+id = "alpha158_ma60"
+expr = "ts_mean(adj_close, 60) / adj_close"
+family = "alpha158"
+direction = 1
+source_ref = "https://github.com/microsoft/qlib/blob/main/qlib/contrib/data/loader.py"

@@ -62,7 +62,7 @@ def test_batch_matches_existing_twelve_factors_and_split_adjustments():
         assert_frame_equal(result.select(columns).sort("symbol", "trade_date"),
                            baseline.select(columns).sort("symbol", "trade_date"),
                            rel_tol=1e-8, abs_tol=1e-10)
-    assert len(definitions) == 20
+    assert set(CLASSIC_FACTOR_NAMES) <= {row.id for row in definitions}
 
 
 def test_remaining_migrated_formulas_match_existing_functions():
