@@ -1,0 +1,34 @@
+"""Fixed monthly Alpha101 #26 with the existing #6 as a redundancy control."""
+
+import datetime as dt
+from typing import Any
+
+import polars as pl
+
+from quant.factors.alpha101_026 import compute_alpha101_026
+from quant.factors.classic_sixth_batch import compute_sixth_batch_daily_factors
+from quant.research.pit_quality_research import monthly_signal_sessions
+
+
+def validate_alpha101_026(config: dict[str, Any]) -> None:
+    expected = {"rank_sessions": 5, "correlation_sessions": 5, "maximum_sessions": 3,
+        "minimum_valid_bars": 11, "high_price": "high_times_adj_factor", "volume": "raw_shares",
+        "time_series_rank": "average_rank_minus_one_over_four", "constant_correlation": "null",
+        "missing_session": "invalidate_11_bar_window", "zero_volume": "invalid_bar",
+        "signal_frequency": "completed_month_end"}
+    if (any(config.get("alpha101_026", {}).get(k) != v for k, v in expected.items())
+        or config["factors"]["names"] != ["alpha101_026"] or config["factors"]["directions"] != [1]
+        or config["portfolio"]["top_k"] != 50 or config["portfolio"].get("retention_rank", 50) != 50
+        or "execution_months" in config["portfolio"]
+        or "alpha101_006" not in config["admission"]["redundancy_references"]):
+        raise ValueError("Alpha101 #26 requires fixed positive monthly Top50, 5/5/3 windows and #6 control")
+
+
+def build_monthly_alpha101_026(
+    bars: pl.DataFrame, *, sessions: tuple[dt.date, ...], start: dt.date, end: dt.date,
+) -> pl.DataFrame:
+    dates = monthly_signal_sessions(sessions, start=start, end=end)
+    primary = compute_alpha101_026(bars, sessions=sessions).filter(pl.col("trade_date").is_in(dates))
+    reference = compute_sixth_batch_daily_factors(bars, sessions=sessions).filter(
+        pl.col("trade_date").is_in(dates)).select("symbol", "trade_date", "alpha101_006")
+    return primary.join(reference, on=["symbol", "trade_date"], how="left", validate="1:1")
