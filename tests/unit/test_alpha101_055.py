@@ -103,3 +103,19 @@ def test_config_fixed_and_duplicates_rejected():
             validate_alpha101_055(changed)
     with pytest.raises(ValueError,match='Duplicate'):
         compute_alpha101_055(pl.concat([sample(),sample().head(1)]),sessions=DATES)
+
+
+def test_composition_preserves_rank_cohort_and_requires_matched_increment():
+    config=tomllib.loads(Path('configs/research/b75_alpha101_055_composite_20260910.toml').read_text())
+    prior=tomllib.loads(Path('configs/research/b74_alpha101_055_20260910.toml').read_text())
+    for section in ('alpha101_055','data','universe','costs','walk_forward','portfolio'):
+        assert config[section]==prior[section]
+    validate_alpha101_055(config)
+    for section,key,value in [('alpha101_055','rank_cohort','complete_four_factor'),
+        ('alpha101_055_composition','weights','optimized'),('alpha101_055_composition','eligibility','three_factor_only'),
+        ('admission','comparison','510300'),('admission','require_positive_paired_1x_compounded_increment',False),
+        ('portfolio','retention_rank',75)]:
+        changed=copy.deepcopy(config)
+        changed[section][key]=value
+        with pytest.raises(ValueError):
+            validate_alpha101_055(changed)

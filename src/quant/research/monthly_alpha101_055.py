@@ -17,13 +17,25 @@ def validate_alpha101_055(config: dict[str, Any]) -> None:
         "rank_cohort": "each_expression_finite_in_frozen_universe", "singleton_rank": .5,
         "flat_range": "null", "constant_correlation": "null", "missing_session": "invalidate_17_bar_window",
         "zero_volume": "invalid_bar", "signal_frequency": "completed_month_end"}
+    composition = "alpha101_055_composition" in config
+    names, directions = (["alpha158_std20", "alpha158_roc20", "alpha158_rsv20", "alpha101_055"],
+                         [-1, 1, -1, 1]) if composition else (["alpha101_055"], [1])
     if (any(config.get("alpha101_055", {}).get(k) != v for k, v in expected.items())
-        or config["factors"]["names"] != ["alpha101_055"]
-        or config["factors"]["directions"] != [1]
+        or config["factors"]["names"] != names
+        or config["factors"]["directions"] != directions
         or config["portfolio"]["top_k"] != 50
         or config["portfolio"].get("retention_rank", 50) != 50
         or "execution_months" in config["portfolio"]):
         raise ValueError("Alpha101 #55 requires fixed 12/6 windows, positive direction and monthly Top50")
+    if composition and (
+        config["alpha101_055_composition"] != {"comparison": "three_factor", "eligibility": "complete_four_factor",
+                                               "weights": "equal_zscore"}
+        or config["admission"].get("comparison") != "three_factor"
+        or "minimum_mean_test_rank_ic" in config["admission"]
+        or any(config["admission"].get(k) is not True for k in (
+            "require_positive_1x_compounded_return", "require_positive_2x_compounded_return",
+            "require_positive_paired_1x_compounded_increment"))):
+        raise ValueError("Alpha101 #55 composition requires a complete matched cohort and positive paired increment")
 
 
 def build_monthly_alpha101_055(
