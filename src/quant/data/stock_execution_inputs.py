@@ -54,13 +54,40 @@ def resolve_same_day_dividends(frame: pl.DataFrame) -> pl.DataFrame:
     for symbol, ex_date, _ in duplicates.iter_rows():
         match = (pl.col("symbol") == symbol) & (pl.col("ex_date") == ex_date)
         group = frame.filter(match)
-        if (symbol, ex_date) == ("000818.SZ", dt.date(2011, 1, 25)):
-            # The restructuring transfers 60% of new shares to creditors.
-            if (sorted(group["share_ratio"].to_list()) != [.4, 1.]
+        restructuring = {
+            ("000818.SZ", dt.date(2011,1,25)): ([.4,1.],.4),
+            ("000615.SZ", dt.date(2025,12,29)): ([.1,1.34278],.1),
+        }.get((symbol, ex_date))
+        if restructuring is not None:
+            # Total capital expansion differs from ordinary shareholders' entitlement.
+            ratios, ordinary_ratio = restructuring
+            if (sorted(group["share_ratio"].to_list()) != ratios
                 or group["div_cash"].to_list() != [0.,0.]
                 or group.drop("share_ratio").unique().height != 1):
                 raise ValueError(f"Unexpected restructuring distribution: {symbol} {ex_date}")
-            frame = pl.concat([frame.filter(~match), group.filter(pl.col("share_ratio") == .4)])
+            frame = pl.concat([frame.filter(~match), group.filter(pl.col("share_ratio") == ordinary_ratio)])
+            continue
+        if (symbol, ex_date) == ("600211.SH", dt.date(2010,9,7)):
+            if (group.height != 2 or group["share_ratio"].to_list() != [.1,.1]
+                or sorted(group["ann_date"].to_list()) != [dt.date(2010,6,24),dt.date(2010,9,1)]
+                or sorted(group["share_list_date"].to_list()) != [ex_date,dt.date(2010,9,8)]
+                or group.drop("ann_date","share_list_date").unique().height != 1):
+                raise ValueError(f"Unexpected share reform distribution: {symbol} {ex_date}")
+            selected = group.filter(pl.col("ann_date") == dt.date(2010,9,1))
+            if selected["share_list_date"].item() != dt.date(2010,9,8):
+                raise ValueError("Unexpected share reform listing date")
+            frame = pl.concat([frame.filter(~match), selected])
+            continue
+        if (symbol, ex_date) == ("000033.SZ", dt.date(2016,4,15)):
+            if (sorted(group["share_ratio"].to_list()) != [.3045457,.30454572]
+                or sorted(group["share_list_date"].to_list()) != [ex_date,dt.date(2017,5,24)]
+                or group.drop("share_ratio","share_list_date").unique().height != 1):
+                raise ValueError(f"Unexpected restructuring distribution: {symbol} {ex_date}")
+            # Initial notice keeps new shares non-tradable while listing is suspended.
+            selected = group.filter(pl.col("share_list_date") == dt.date(2017,5,24))
+            if selected["share_ratio"].item() != .3045457:
+                raise ValueError("Unexpected new-share ratio")
+            frame = pl.concat([frame.filter(~match), selected])
             continue
         if (symbol, ex_date) == ("300325.SZ", dt.date(2016, 6, 16)):
             # Share issuance changed the implemented cash from .04 to .03937.

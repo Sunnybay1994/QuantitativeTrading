@@ -51,6 +51,7 @@ def test_verified_cash_totals_and_share_listing(symbol,date,amounts,shares,expec
 
 @pytest.mark.parametrize("symbol,date,cash,shares,ann,expected_cash,expected_shares", [
     ("000818.SZ","2011-01-25",[0.,0.],[.4,1.],["2011-01-20"]*2,0.,.4),
+    ("000615.SZ","2025-12-29",[0.,0.],[.1,1.34278],["2025-12-23"]*2,0.,.1),
     ("300325.SZ","2016-06-16",[.03937,.04],[0.,0.],["2016-06-07","2016-06-08"],.03937,0.),
 ])
 def test_restructuring_and_revised_distribution_keep_only_ordinary_entitlement(
@@ -66,3 +67,28 @@ def test_restructuring_and_revised_distribution_keep_only_ordinary_entitlement(
     assert result["div_cash"].item()==expected_cash and result["share_ratio"].item()==expected_shares
     with pytest.raises(ValueError):
         resolve_same_day_dividends(frame.with_columns((pl.col("share_ratio")+.01).alias("share_ratio")))
+
+
+@pytest.mark.parametrize("symbol,ex,ann,shares,listing,expected_ann,expected_ratio", [
+    ("600211.SH", "2010-09-07", ["2010-06-24", "2010-09-01"], [.1, .1],
+     ["2010-09-07", "2010-09-08"], "2010-09-01", .1),
+    ("000033.SZ", "2016-04-15", ["2016-04-09"] * 2, [.30454572, .3045457],
+     ["2016-04-15", "2017-05-24"], "2016-04-09", .3045457),
+])
+def test_share_reform_preserves_final_notice_and_tradability(
+    symbol, ex, ann, shares, listing, expected_ann, expected_ratio,
+):
+    date = dt.date.fromisoformat(ex)
+    frame = pl.DataFrame({"symbol": [symbol] * 2, "ex_date": [date] * 2,
+        "ann_date": [dt.date.fromisoformat(a) for a in ann],
+        "record_date": [date - dt.timedelta(days=1)] * 2,
+        "pay_date": [date] * 2, "div_cash": [0.] * 2, "share_ratio": shares,
+        "share_list_date": [dt.date.fromisoformat(a) for a in listing]})
+    result = resolve_same_day_dividends(frame)
+    assert result.height == 1
+    assert result["ann_date"].item() == dt.date.fromisoformat(expected_ann)
+    assert result["share_list_date"].item() == dt.date.fromisoformat(listing[1])
+    assert result["share_ratio"].item() == expected_ratio
+    with pytest.raises(ValueError):
+        resolve_same_day_dividends(frame.with_columns(
+            pl.lit(date + dt.timedelta(days=1)).alias("share_list_date")))
