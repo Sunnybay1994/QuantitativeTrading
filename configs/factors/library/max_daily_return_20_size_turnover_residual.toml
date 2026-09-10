@@ -1,0 +1,5 @@
+id = "max_daily_return_20_size_turnover_residual"
+expr = "max_daily_return_20_size_turnover_residual"
+family = "legacy_special"
+direction = -1
+source_ref = "src/quant/factors/max_daily_basic_control.py; configs/research/m2_max_daily_basic_controls.toml"

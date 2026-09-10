@@ -1,0 +1,5 @@
+id = "alpha101_007_cny_amount_gate"
+expr = "alpha101_007_cny_amount_gate"
+family = "legacy_special"
+direction = 1
+source_ref = "src/quant/factors/classic_tenth_batch.py; local CNY amount adaptation, separate from faithful Alpha101 #007"

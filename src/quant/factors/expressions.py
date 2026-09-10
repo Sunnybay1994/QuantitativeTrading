@@ -47,7 +47,8 @@ def required_history(expression: str) -> int:
             # Intrinsic windows remain additive when a consumer nests another window.
             return {"market_beta_60_vs_510300": 60, "downside_beta_60_vs_510300": 60,
                     "amihud_illiquidity_monthly": 62, "free_float_turnover_level_monthly": 62,
-                    "free_float_turnover_abnormal_12m": 400}.get(node.id, 0)
+                    "free_float_turnover_abnormal_12m": 400, "alpha101_007_cny_amount_gate": 66,
+                    "max_daily_return_20_size_turnover_residual": 20, "ivol_ff3_60": 100}.get(node.id, 0)
         if isinstance(node, ast.Constant):
             return 0
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):

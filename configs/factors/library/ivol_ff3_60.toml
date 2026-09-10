@@ -1,0 +1,5 @@
+id = "ivol_ff3_60"
+expr = "ivol_ff3_60"
+family = "legacy_special"
+direction = -1
+source_ref = "src/quant/factors/reversal_volatility.py; configs/research/b3_reversal20_20260909.toml; low idiosyncratic volatility"
