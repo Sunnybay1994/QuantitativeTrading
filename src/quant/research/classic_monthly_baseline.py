@@ -208,6 +208,25 @@ def validate_cash_factor_components(
         raise ValueError("Cash factor direction and component sets are fixed")
 
 
+
+def validate_roe_stability_components(config: dict[str, Any]) -> None:
+    """B55 is a single factor; B56 adds that same negative component to the baseline."""
+    composition = "roe_stability_composition" in config
+    names, directions = (["alpha158_std20", "alpha158_roc20", "alpha158_rsv20",
+                          "pit_quarterly_roe_volatility"], [-1, 1, -1, -1]) if composition else (
+                              ["pit_quarterly_roe_volatility"], [-1])
+    if (config.get("financials", {}).get("factor_family") != "quarterly_roe_stability"
+        or config["factors"]["names"] != names or config["factors"]["directions"] != directions):
+        raise ValueError("ROE stability components and directions are fixed")
+    if composition and (
+        config["roe_stability_composition"] != {
+            "comparison": "three_factor", "eligibility": "complete_four_factor", "weights": "equal_zscore"}
+        or config["admission"].get("comparison") != "three_factor"
+        or config["portfolio"].get("retention_rank", 50) != 50
+        or config["portfolio"]["top_k"] != 50 or "execution_months" in config["portfolio"]):
+        raise ValueError("ROE stability composition requires the fixed same-pool monthly baseline")
+
+
 def validate_cash_roa_buffer(config: dict[str, Any]) -> None:
     """The B53 treatment changes only retention from Top50 to Top100."""
     if (config.get("financials", {}).get("factor_family") != "cash_roa"
@@ -339,10 +358,9 @@ def run_baseline(
             "maximum_age_months": 6, "window_anchor": "latest_known_income_period",
             "missing_quarter": "omit_within_fixed_calendar_window",
             "flow_predecessor": "latest_revision_known_by_successor_publication"}
-        if (any(config.get("quarterly_roe_stability", {}).get(k) != v for k, v in expected_roe_stability.items())
-            or config["factors"]["names"] != ["pit_quarterly_roe_volatility"]
-            or config["factors"]["directions"] != [-1]):
+        if any(config.get("quarterly_roe_stability", {}).get(k) != v for k, v in expected_roe_stability.items()):
             raise ValueError("Unsupported quarterly ROE stability configuration")
+        validate_roe_stability_components(config)
     if config.get("financials", {}).get("factor_family") == "annual_cash_profitability":
         expected_annual = {
             "formula": "(n_income + depr_fa_coga_dpba - change_working_capital - c_pay_acq_const_fiolta) / total_assets",
@@ -578,7 +596,8 @@ def run_baseline(
         names = read_name_history(data_root, list(candidates), end)
         eligible = exclude_historical_risk_names(eligible, names)
         extra_inputs.append(("name-history", names, ("symbol", "start_date", "name"), "start_date"))
-    for family, cash_factor in (("cash_roa", "pit_cash_roa_ttm"), ("cash_yield", "pit_cash_yield_ttm")):
+    for family, cash_factor in (("cash_roa", "pit_cash_roa_ttm"), ("cash_yield", "pit_cash_yield_ttm"),
+                                ("roe_stability", "pit_quarterly_roe_volatility")):
         if f"{family}_composition" in config or (family == "cash_roa" and cash_roa_buffer):
             eligible = eligible.filter(pl.all_horizontal(pl.col(name).is_finite() for name in
                 (cash_factor, "alpha158_std20", "alpha158_roc20", "alpha158_rsv20")))
@@ -632,7 +651,7 @@ def run_baseline(
     if ("turnover_variability" in config or "information_discreteness" in config
         or low_volatility_filter or "overnight_decomposition" in config or "high52" in config
         or "small_value_quality" in config or "cash_roa_composition" in config
-        or "cash_yield_composition" in config or cash_roa_buffer):
+        or "cash_yield_composition" in config or "roe_stability_composition" in config or cash_roa_buffer):
         paired_components: tuple[tuple[str, int], ...] = (
             ("alpha158_std20", -1), ("alpha158_roc20", 1), ("alpha158_rsv20", -1))
         if cash_roa_buffer:
@@ -643,6 +662,8 @@ def run_baseline(
             paired_strategy = "b51_paired_three_factor_cash_roa_cohort"
         if "cash_yield_composition" in config:
             paired_strategy = "b52_paired_three_factor_cash_yield_cohort"
+        if "roe_stability_composition" in config:
+            paired_strategy = "b56_paired_three_factor_roe_stability_cohort"
         if "information_discreteness" in config:
             paired_components = (("pret_12m_skip1m", 1),)
             paired_comparison, paired_strategy = "momentum", "b26_paired_momentum_baseline"
@@ -797,7 +818,7 @@ def run_baseline(
     conclusion: Literal["RESEARCH_ONLY", "REJECTED", "PAPER_CANDIDATE"] = "RESEARCH_ONLY" if passed else "REJECTED"
     if (config["admission"].get("maximum_conclusion") == "PAPER_CANDIDATE"
         and meets_portfolio_candidate(results, config["admission"])
-        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer")) or passed)):
+        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition")) or passed)):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
         "Daily-return skew is distinct from intraday realized skew; this is a historical replication in previously inspected periods."

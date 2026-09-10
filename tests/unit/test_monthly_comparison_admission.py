@@ -75,3 +75,30 @@ def test_paired_comparison_does_not_change_default_benchmark_semantics():
 @pytest.mark.parametrize("one,two,comparator", [(0., .05, -.1), (.1, 0., 0.), (.1, -.01, 0.), (.1, .05, .1)])
 def test_portfolio_admission_requires_strict_positive_profit_and_excess(one, two, comparator):
     assert portfolio_admission_summary(results(one, two, comparator), "three_factor")["passed"] is False
+
+
+def test_roe_stability_composition_keeps_fixed_direction_and_paired_pool():
+    import copy
+    import tomllib
+    from pathlib import Path
+
+    from quant.research.classic_monthly_baseline import validate_roe_stability_components
+
+    root = Path(__file__).resolve().parents[2]
+    single = tomllib.loads((root / 'configs/research/b55_quarterly_roe_stability_20260910.toml').read_text(encoding='utf-8'))
+    config = tomllib.loads((root / 'configs/research/b56_roe_stability_composite_20260910.toml').read_text(encoding='utf-8'))
+    validate_roe_stability_components(single)
+    validate_roe_stability_components(config)
+    for section, key, value in (
+        ('factors', 'directions', [-1, 1, -1, 1]),
+        ('factors', 'names', single['factors']['names']),
+        ('roe_stability_composition', 'eligibility', 'three_factor_only'),
+        ('admission', 'comparison', '510300'),
+        ('portfolio', 'retention_rank', 100),
+        ('portfolio', 'execution_months', [1, 3, 5, 7, 9, 11]),
+        ('portfolio', 'top_k', 40),
+    ):
+        changed = copy.deepcopy(config)
+        changed[section][key] = value
+        with pytest.raises(ValueError, match='ROE stability'):
+            validate_roe_stability_components(changed)
