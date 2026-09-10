@@ -70,6 +70,8 @@ CODE_PATHS = (
     "src/quant/research/monthly_annual_profitability.py",
     "src/quant/factors/annual_zscore.py",
     "src/quant/research/monthly_annual_zscore.py",
+    "src/quant/factors/debt_ebitda.py",
+    "src/quant/research/monthly_debt_ebitda.py",
     "src/quant/data/quarterly_parent_income.py",
     "src/quant/factors/quarterly_roe_stability.py",
     "src/quant/research/monthly_quarterly_roe_stability.py",
@@ -387,6 +389,10 @@ def run_baseline(
         if any(config.get("quarterly_roe_stability", {}).get(k) != v for k, v in expected_roe_stability.items()):
             raise ValueError("Unsupported quarterly ROE stability configuration")
         validate_roe_stability_components(config)
+    if config.get("financials", {}).get("factor_family") == "debt_ebitda":
+        from quant.research.monthly_debt_ebitda import validate_debt_ebitda
+
+        validate_debt_ebitda(config)
     if config.get("financials", {}).get("factor_family") == "annual_zscore":
         from quant.research.monthly_annual_zscore import validate_annual_zscore
 
@@ -606,7 +612,7 @@ def run_baseline(
         if required:
             factors = factors.filter(pl.all_horizontal(pl.col(name).is_finite() for name in required))
         extra_inputs.extend((f"financial-{name}", frame,
-                             ("symbol", "end_date", "available_date", "report_type", "comp_type"),
+                             tuple(c for c in ("symbol", "end_date", "available_date", "report_type", "comp_type") if c in frame.columns),
                              "available_date") for name, frame in histories.items())
         extra_outputs.extend((("financial_factors", financial.factors),
                               ("financial_eligibility", financial.eligibility),
@@ -850,9 +856,11 @@ def run_baseline(
     conclusion: Literal["RESEARCH_ONLY", "REJECTED", "PAPER_CANDIDATE"] = "RESEARCH_ONLY" if passed else "REJECTED"
     if (config["admission"].get("maximum_conclusion") == "PAPER_CANDIDATE"
         and meets_portfolio_candidate(results, config["admission"])
-        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_zscore")) or passed)):
+        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_zscore", "debt_ebitda")) or passed)):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
+        "Annual provider interest-bearing debt/EBITDA with positive earnings and industrial income-period anchoring; historical periods were inspected previously."
+        if "debt_ebitda" in config else
         "QMJ appendix Z-score with Chinese annual retained-earnings mapping and exact signal-date market value; historical periods were inspected previously."
         if "annual_zscore" in config else
         "Daily-return skew is distinct from intraday realized skew; this is a historical replication in previously inspected periods."

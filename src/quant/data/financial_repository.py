@@ -44,3 +44,18 @@ def read_tushare_financial_history(*, data_root: Path, query: TushareFinancialHi
              "comp_type", "update_flag", *economics, "source").sort(
                  "symbol", "end_date", "available_date", "report_type", "comp_type", "update_flag", "ann_date"
              ).collect()
+
+
+def read_debt_ebitda_history(
+    *, data_root: Path, snapshot_id: str, symbols: tuple[str, ...],
+    start_period: dt.date, end_period: dt.date,
+) -> pl.DataFrame:
+    """Read published provider debt and EBITDA together, retaining indicator revisions."""
+    if (not snapshot_id or Path(snapshot_id).name != snapshot_id or snapshot_id in ('.', '..')
+        or not symbols or start_period > end_period):
+        raise ValueError('Invalid debt/EBITDA history query')
+    path = data_root / 'clean/tushare_financials' / snapshot_id / 'fina_indicator.parquet'
+    return pl.scan_parquet(path).filter(pl.col('symbol').is_in(symbols)
+        & pl.col('end_date').is_between(start_period, end_period)).select(
+            'symbol', 'ann_date', 'available_date', 'end_date', 'interestdebt', 'ebitda', 'source'
+        ).sort('symbol', 'end_date', 'available_date').collect()

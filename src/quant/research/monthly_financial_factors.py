@@ -8,7 +8,7 @@ import polars as pl
 
 from quant.data.financial_clean import FinancialFactorDataset
 from quant.data.financial_repository import (
-    TushareFinancialHistoryQuery, read_tushare_financial_history,
+    TushareFinancialHistoryQuery, read_tushare_financial_history, read_debt_ebitda_history,
 )
 from quant.research.pit_quality_research import (
     PITQualitySignalResult, build_pit_quality_signal_values, monthly_signal_sessions,
@@ -28,6 +28,18 @@ def read_monthly_financial_factors(
         or settings["allowed_report_types"] != ["1"]):
         raise ValueError("Unsupported financial factor configuration")
     histories: dict[str, pl.DataFrame] = {}
+    if settings.get("factor_family") == "debt_ebitda":
+        from quant.research.monthly_debt_ebitda import build_monthly_debt_ebitda
+
+        histories["income"] = read_tushare_financial_history(data_root=data_root,
+            query=TushareFinancialHistoryQuery(snapshot_id=settings["snapshot_id"], dataset="income",
+                start_period=settings["history_start"], end_period=end, symbols=candidates))
+        histories["fina_indicator"] = read_debt_ebitda_history(data_root=data_root,
+            snapshot_id=settings["snapshot_id"], symbols=candidates,
+            start_period=settings["history_start"], end_period=end)
+        return build_monthly_debt_ebitda(income_history=histories["income"],
+            indicator_history=histories["fina_indicator"], candidate_symbols=candidates,
+            signal_dates=monthly_signal_sessions(sessions, start=start, end=end)), histories
     annual_zscore = settings.get("factor_family") == "annual_zscore"
     roe_stability = settings.get("factor_family") == "quarterly_roe_stability"
     annual_profitability = settings.get("factor_family") == "annual_profitability"
