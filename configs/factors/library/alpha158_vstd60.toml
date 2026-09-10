@@ -1,0 +1,5 @@
+id = "alpha158_vstd60"
+expr = "ts_std(volume, 60) / (volume + 1e-12)"
+family = "alpha158"
+direction = 1
+source_ref = "https://github.com/microsoft/qlib/blob/main/qlib/contrib/data/loader.py"

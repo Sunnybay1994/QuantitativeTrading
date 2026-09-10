@@ -1,0 +1,5 @@
+id = "alpha158_cntp60"
+expr = "ts_mean(where(delta(adj_close, 1) > 0, 1, 0), 60)"
+family = "alpha158"
+direction = 1
+source_ref = "https://github.com/microsoft/qlib/blob/main/qlib/contrib/data/loader.py"

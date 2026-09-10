@@ -1,0 +1,5 @@
+id = "alpha158_sumn5"
+expr = "ts_sum(where(delta(adj_close, 1) < 0, -delta(adj_close, 1), 0), 5) / (ts_sum(abs(delta(adj_close, 1)), 5) + 1e-12)"
+family = "alpha158"
+direction = 1
+source_ref = "https://github.com/microsoft/qlib/blob/main/qlib/contrib/data/loader.py"
