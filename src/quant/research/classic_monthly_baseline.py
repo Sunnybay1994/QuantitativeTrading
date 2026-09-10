@@ -32,6 +32,8 @@ from quant.research.run_classic_factors import select_frozen_liquid_universe
 from quant.research.run_s1_walk_forward import metrics
 
 CODE_PATHS = (
+    "src/quant/factors/alpha101_054.py",
+    "src/quant/research/monthly_alpha101_054.py",
     "src/quant/factors/alpha101_046.py",
     "src/quant/research/monthly_alpha101_046.py",
     "src/quant/research/monthly_momentum_12_1.py",
@@ -406,6 +408,10 @@ def run_baseline(
         if any(config.get("quarterly_roe_stability", {}).get(k) != v for k, v in expected_roe_stability.items()):
             raise ValueError("Unsupported quarterly ROE stability configuration")
         validate_roe_stability_components(config)
+    if "alpha101_054" in config:
+        from quant.research.monthly_alpha101_054 import validate_alpha101_054
+
+        validate_alpha101_054(config)
     if "alpha101_046" in config:
         from quant.research.monthly_alpha101_046 import validate_alpha101_046
 
@@ -616,6 +622,13 @@ def run_baseline(
         decomposed = compute_overnight_decomposition(bars, sessions=all_sessions)
         factors = factors.join(decomposed, on=["symbol", "trade_date"], how="left", validate="1:1")
         extra_outputs.append(("overnight_decomposition", decomposed))
+    if "alpha101_054" in config:
+        from quant.research.monthly_alpha101_054 import build_monthly_alpha101_054
+
+        monthly = build_monthly_alpha101_054(bars, sessions=all_sessions, start=data["research_start"], end=end)
+        factors = factors.join(monthly, on=["symbol", "trade_date"], how="inner", validate="1:1")
+        extra_outputs.append(("alpha101_054_factors", monthly))
+        print(f"Computed Alpha101 #54 on {monthly['trade_date'].n_unique()} month ends", flush=True)
     if "alpha101_046" in config:
         from quant.research.monthly_alpha101_046 import build_monthly_alpha101_046
 
@@ -1003,9 +1016,11 @@ def run_baseline(
     conclusion: Literal["RESEARCH_ONLY", "REJECTED", "PAPER_CANDIDATE"] = "RESEARCH_ONLY" if passed else "REJECTED"
     if (config["admission"].get("maximum_conclusion") == "PAPER_CANDIDATE"
         and meets_portfolio_candidate(results, config["admission"])
-        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_zscore", "debt_ebitda", "low_beta", "turnover_change", "return_turnover", "lowvol120", "lowvol60_composition", "momentum_12_1", "alpha101_001", "alpha101_026", "alpha101_046")) or passed)):
+        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_zscore", "debt_ebitda", "low_beta", "turnover_change", "return_turnover", "lowvol120", "lowvol60_composition", "momentum_12_1", "alpha101_001", "alpha101_026", "alpha101_046", "alpha101_054")) or passed)):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
+        "Alpha101 #54 uses fixed same-day OHLC ratios in monthly long-only Top50; historical periods were inspected previously."
+        if "alpha101_054" in config else
         "Frozen Alpha101 #46 is added to three equal-zscore factors on the same complete cohort; historical periods were inspected previously."
         if "alpha101_046_composition" in config else
         "Alpha101 #46 fixes CNY thresholds and signal-day adjustment units for monthly long-only holdings; historical periods were inspected previously."
