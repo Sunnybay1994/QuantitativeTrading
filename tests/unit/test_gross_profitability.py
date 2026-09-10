@@ -86,3 +86,19 @@ def test_optional_revenue_columns_preserved_without_changing_default(tmp_path: P
     with pytest.raises(ValueError, match="Unsupported financial fields"):
         read_tushare_financial_history(data_root=tmp_path, query=TushareFinancialHistoryQuery(
             **kwargs, extra_fields=("unknown",)))
+
+
+def test_optional_long_term_debt_keeps_missing_values(tmp_path: Path):
+    _, balances = histories()
+    balances = balances.with_columns(pl.lit(10.0).alias('lt_borr'), pl.lit(None, dtype=pl.Float64).alias('bond_payable'))
+    root = tmp_path / 'clean/tushare_financials/fixture'
+    root.mkdir(parents=True)
+    balances.write_parquet(root / 'balancesheet.parquet')
+    query = TushareFinancialHistoryQuery(
+        snapshot_id='fixture', dataset='balancesheet', start_period=dt.date(2022, 1, 1),
+        end_period=dt.date(2024, 12, 31), symbols=('000001.SZ',), extra_fields=('lt_borr', 'bond_payable'))
+    result = read_tushare_financial_history(data_root=tmp_path, query=query)
+    assert result.height == balances.height
+    assert result['lt_borr'].to_list() == [10.0] * result.height
+    assert result['bond_payable'].null_count() == result.height
+    assert result.select((pl.col('lt_borr') + pl.col('bond_payable')).alias('debt'))['debt'].null_count() == result.height
