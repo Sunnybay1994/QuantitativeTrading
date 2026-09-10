@@ -12,6 +12,18 @@ from quant.data.mappers import TushareInstrumentMapper
 from quant.data.storage import RawStore
 
 
+def deduplicate_dividend_notices(frame: pl.DataFrame) -> pl.DataFrame:
+    """Same reporting period and identical terms are one implemented plan.
+
+    Keep the latest implementation notice; do not move revised terms earlier.
+    Different periods or economic terms still require explicit resolution.
+    """
+    # The downstream mapper already treats absent cash in share-only plans as zero.
+    frame = frame.with_columns(*[pl.col(c).fill_null(0.0) for c in ("cash_div", "cash_div_tax") if c in frame.columns])
+    keys = [column for column in frame.columns if column not in {"ann_date", "imp_ann_date"}]
+    return frame.sort("imp_ann_date", nulls_last=True).unique(subset=keys, keep="last", maintain_order=True)
+
+
 def resolve_same_day_dividends(frame: pl.DataFrame) -> pl.DataFrame:
     """Resolve observed vendor ambiguities using issuer implementation notices."""
     # Sources and rationale: docs/research/同日分红数据修正_20260909.md.
@@ -27,6 +39,12 @@ def resolve_same_day_dividends(frame: pl.DataFrame) -> pl.DataFrame:
         ("600720.SH", dt.date(2024, 6, 13)): ([0.1104, 0.257], 0.3674, 0.0),
         ("600989.SH", dt.date(2024, 7, 24)): ([0.265, 0.3158], 0.3158, 0.0),
         ("603259.SH", dt.date(2025, 5, 21)): ([0.35, 0.98169], 1.33169, 0.0),
+        ("601088.SH", dt.date(2017, 7, 10)): ([2.51, 2.97], 2.97, 0.0),
+        ("601966.SH", dt.date(2025, 7, 10)): ([0.014, 0.07], 0.084, 0.0),
+        ("601966.SH", dt.date(2024, 6, 14)): ([0.091, 0.286], 0.377, 0.0),
+        ("600317.SH", dt.date(2014, 6, 16)): ([0.329, 0.529], 0.529, 2.0),
+        ("002043.SZ", dt.date(2026, 6, 1)): ([0.132, 0.18], 0.312, 0.0),
+        ("000738.SZ", dt.date(2013, 6, 14)): ([0.021, 0.041], 0.062, 0.0),
     }
     frame = frame.unique()
     duplicates = frame.group_by("symbol", "ex_date").len().filter(pl.col("len") > 1)
@@ -154,9 +172,10 @@ def prepare_stock_execution_inputs(
             dividends.append(frame)
         if (index + 1) % 50 == 0:
             print(f"Captured dividends {index + 1}/{len(symbols)}", flush=True)
-    dividend_frame = pl.concat(dividends, how="diagonal_relaxed").filter(
+    dividend_raw = pl.concat(dividends, how="diagonal_relaxed").filter(
         (pl.col("div_proc") == "实施") & pl.col("ex_date").is_not_null()
-    ).select(
+    )
+    dividend_frame = deduplicate_dividend_notices(dividend_raw).select(
         pl.col("ts_code").alias("symbol"),
         pl.col("imp_ann_date").str.to_date("%Y%m%d").alias("ann_date"),
         pl.col("record_date").str.to_date("%Y%m%d"),

@@ -1,0 +1,46 @@
+import polars as pl
+import datetime as dt
+import pytest
+
+from quant.data.stock_execution_inputs import deduplicate_dividend_notices, resolve_same_day_dividends
+
+
+def test_identical_plan_keeps_latest_notice_without_merging_other_periods_or_terms():
+    row = {"ts_code":"300120.SZ", "end_date":"20131231", "ann_date":"20140328",
+        "imp_ann_date":"20140604", "ex_date":"20140611", "div_proc":"实施",
+        "cash_div_tax":.1001865, "stk_div":.2003731}
+    frame = pl.DataFrame([row, {**row,"ann_date":"20140425","imp_ann_date":"20140605"},
+        {**row,"end_date":"20130630"}, {**row,"cash_div_tax":.2}])
+    result = deduplicate_dividend_notices(frame)
+    assert result.height == 3
+    same = result.filter((pl.col("end_date")=="20131231") & (pl.col("cash_div_tax")==.1001865))
+    assert same["imp_ann_date"].item() == "20140605"
+    # An unknown or post-ex implementation date must survive for validation.
+    invalid = deduplicate_dividend_notices(pl.DataFrame([row,{**row,"imp_ann_date":None}]))
+    assert invalid["imp_ann_date"].item() is None
+    late = deduplicate_dividend_notices(pl.DataFrame([row,{**row,"imp_ann_date":"20140612"}]))
+    assert late["imp_ann_date"].item() == "20140612"
+    share_only = {**row,"cash_div_tax":0.0,"cash_div":0.0}
+    assert deduplicate_dividend_notices(pl.DataFrame([share_only,
+        {**share_only,"cash_div_tax":None,"cash_div":None,"imp_ann_date":"20140605"}])).height == 1
+
+
+@pytest.mark.parametrize("symbol,date,amounts,shares,expected", [
+    ("601088.SH","2017-07-10",[2.51,2.97],[0.,0.],2.97),
+    ("601966.SH","2025-07-10",[.014,.07],[0.,0.],.084),
+    ("601966.SH","2024-06-14",[.091,.286],[0.,0.],.377),
+    ("600317.SH","2014-06-16",[.329,.529],[0.,2.],.529),
+    ("002043.SZ","2026-06-01",[.132,.18],[0.,0.],.312),
+    ("000738.SZ","2013-06-14",[.021,.041],[0.,0.],.062),
+])
+def test_verified_cash_totals_and_share_listing(symbol,date,amounts,shares,expected):
+    ex = dt.date.fromisoformat(date)
+    frame = pl.DataFrame({"symbol":[symbol]*2,"ex_date":[ex]*2,
+        "ann_date":[ex-dt.timedelta(days=7)]*2,"record_date":[ex-dt.timedelta(days=3)]*2,
+        "pay_date":[ex]*2,"div_cash":amounts,"share_ratio":shares,
+        "share_list_date":[ex+dt.timedelta(days=1) if share else None for share in shares]})
+    result = resolve_same_day_dividends(frame)
+    assert result.height == 1 and result["div_cash"].item() == expected
+    assert result["share_ratio"].item() == sum(shares)
+    if sum(shares):
+        assert result["share_list_date"].item() == ex+dt.timedelta(days=1)
