@@ -1,0 +1,5 @@
+id = "realized_volatility_120"
+expr = "ts_std((adj_close/delay(adj_close,1)-1),120)*sqrt(252)"
+family = "legacy_daily"
+direction = -1
+source_ref = "src/quant/factors/reversal_volatility.py"

@@ -1,0 +1,5 @@
+id = "turnover_ratio20_120"
+expr = "ts_mean(where(turnover_rate>=0,turnover_rate,0/0),20)/ts_mean(where(turnover_rate>=0,turnover_rate,0/0),120)"
+family = "legacy_daily"
+direction = -1
+source_ref = "src/quant/factors/turnover_change.py"

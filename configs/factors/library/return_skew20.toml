@@ -1,0 +1,5 @@
+id = "return_skew20"
+expr = "where(ts_std0((adj_close/delay(adj_close,1)-1),20)>0.000000000001,ts_skew((adj_close/delay(adj_close,1)-1),20),0/0)"
+family = "legacy_daily"
+direction = -1
+source_ref = "src/quant/factors/return_skewness.py"

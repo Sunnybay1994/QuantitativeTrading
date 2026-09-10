@@ -1,0 +1,5 @@
+id = "daily_ep_ttm_positive"
+expr = "where(pe_ttm>0,1/pe_ttm,0/0)"
+family = "legacy_daily"
+direction = 1
+source_ref = "src/quant/factors/daily_value.py"

@@ -1,0 +1,5 @@
+id = "high52_proximity"
+expr = "adj_close/ts_max(where(high>=close,adj_high,0/0),252)"
+family = "legacy_daily"
+direction = 1
+source_ref = "src/quant/factors/high52.py"

@@ -1,0 +1,5 @@
+id = "annualized_realized_volatility_60"
+expr = "ts_std(log(adj_close/delay(adj_close,1)),60)*sqrt(252)"
+family = "legacy_daily"
+direction = -1
+source_ref = "src/quant/factors/risk.py"

@@ -1,0 +1,5 @@
+id = "momentum_126"
+expr = "where(ts_sum(where(high>=close,adj_close,0/0)>0,127)==127,adj_close/delay(adj_close,126)-1,0/0)"
+family = "legacy_daily"
+direction = 1
+source_ref = "src/quant/factors/high52.py"

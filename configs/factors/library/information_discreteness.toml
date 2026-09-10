@@ -1,0 +1,5 @@
+id = "information_discreteness"
+expr = "-sign(delay(where(volume>0,adj_close,0/0)/delay(where(volume>0,adj_close,0/0),252)-1,21))*delay(ts_sum(sign((where(volume>0,adj_close,0/0)/delay(where(volume>0,adj_close,0/0),1)-1)),252),21)/252"
+family = "legacy_daily"
+direction = -1
+source_ref = "src/quant/factors/information_discreteness.py"

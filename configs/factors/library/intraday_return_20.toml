@@ -1,0 +1,5 @@
+id = "intraday_return_20"
+expr = "exp(ts_sum(where(delay(adj_close,1)>0,log(adj_close/adj_open),0/0),20))-1"
+family = "legacy_daily"
+direction = -1
+source_ref = "src/quant/factors/overnight_decomposition.py"

@@ -27,10 +27,10 @@ _ROLLING = {
     "ts_mean": "rolling_mean", "ts_sum": "rolling_sum", "ts_std": "rolling_std",
     "ts_min": "rolling_min", "ts_max": "rolling_max",
 }
-_UNARY = {"abs", "log", "sign", "sqrt", "rank", "scale"}
+_UNARY = {"abs", "log", "exp", "sign", "sqrt", "rank", "scale"}
 _WINDOW = set(_ROLLING) | {
     "ts_rank", "ts_corr", "ts_cov", "ts_argmax", "ts_argmin", "decay_linear",
-    "delay", "delta", "ts_std0", "ts_slope", "ts_rsquare", "ts_resi", "ts_quantile", "ts_product",
+    "delay", "delta", "ts_std0", "ts_skew", "ts_slope", "ts_rsquare", "ts_resi", "ts_quantile", "ts_product",
 }
 
 
@@ -120,6 +120,10 @@ class ExpressionEngine:
                 return getattr(x, _ROLLING[name])(window_size=n, min_samples=n).over("symbol")
             if name == "ts_std0":
                 return x.rolling_std(n, min_samples=n, ddof=0).over("symbol")
+            if name == "ts_skew":
+                if n < 3:
+                    raise ValueError("Skewness requires at least three sessions")
+                return x.rolling_skew(n, min_samples=n, bias=False).over("symbol")
             if name == "ts_product":
                 return reduce(operator.mul, (x.shift(lag).over("symbol") for lag in range(n)))
             if name == "ts_quantile":
@@ -220,7 +224,7 @@ class ExpressionEngine:
             return pl.when(x.is_not_null()).then(
                 pl.when(x).then(self._node(args[1])).otherwise(self._node(args[2]))
             )
-        if name in {"abs", "sign", "sqrt", "log"}:
+        if name in {"abs", "sign", "sqrt", "log", "exp"}:
             expr = getattr(x, name)()
             if name == "log":
                 return pl.when(x > 0).then(expr)
@@ -234,10 +238,18 @@ def evaluate_expressions(panel: pl.DataFrame, expressions: dict[str, str]) -> pl
     """Evaluate on a unique, padded (symbol, trade_date) panel."""
     if panel.select(pl.struct("symbol", "trade_date").is_duplicated().any()).item():
         raise ValueError("Duplicate factor input keys")
-    engine = ExpressionEngine(panel.sort("symbol", "trade_date"))
-    columns = {name: engine.compile(expr) for name, expr in expressions.items()}
-    return engine.frame.select(
-        "symbol", "trade_date",
-        *[pl.when(expr.is_finite()).then(expr).cast(pl.Float64).alias(name)
-          for name, expr in columns.items()],
-    ).collect()
+    ordered = panel.sort("symbol", "trade_date")
+    output = ordered.select("symbol", "trade_date")
+    items = list(expressions.items())
+    # A single 321-factor plan overflows the native Windows stack. Each group
+    # shares its subexpressions, while bounding the optimizer's plan depth.
+    for first in range(0, len(items), 64):
+        engine = ExpressionEngine(ordered)
+        columns = {name: engine.compile(expr) for name, expr in items[first:first + 64]}
+        values = engine.frame.select(
+            "symbol", "trade_date",
+            *[pl.when(expr.is_finite()).then(expr).cast(pl.Float64).alias(name)
+              for name, expr in columns.items()],
+        ).collect().drop("symbol", "trade_date")
+        output = output.hstack(values)
+    return output

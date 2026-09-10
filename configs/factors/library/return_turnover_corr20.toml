@@ -1,0 +1,5 @@
+id = "return_turnover_corr20"
+expr = "where(ts_std0(where(where(turnover_rate>=0,turnover_rate,0/0)>=0,(adj_close/delay(adj_close,1)-1),0/0),20)>0.000001,where(ts_std0(where((adj_close/delay(adj_close,1)-1)==(adj_close/delay(adj_close,1)-1),where(turnover_rate>=0,turnover_rate,0/0),0/0),20)>0.000001,ts_corr(where(where(turnover_rate>=0,turnover_rate,0/0)>=0,(adj_close/delay(adj_close,1)-1),0/0),where((adj_close/delay(adj_close,1)-1)==(adj_close/delay(adj_close,1)-1),where(turnover_rate>=0,turnover_rate,0/0),0/0),20),0/0),0/0)"
+family = "legacy_daily"
+direction = -1
+source_ref = "src/quant/factors/return_turnover_correlation.py"

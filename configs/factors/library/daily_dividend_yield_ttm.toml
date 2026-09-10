@@ -1,0 +1,5 @@
+id = "daily_dividend_yield_ttm"
+expr = "dividend_yield_ttm/100"
+family = "legacy_daily"
+direction = 1
+source_ref = "src/quant/factors/daily_value.py"

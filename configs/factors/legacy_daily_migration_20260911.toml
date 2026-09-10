@@ -1,0 +1,123 @@
+batch = "legacy_daily_seventeen"
+scope = "Migrate existing formulas; maintain complete exchange-session windows; BP and two size columns already registered"
+selection = "P3 battery thresholds; signed directions frozen before evaluation"
+defaults = "Value yields and past-return comparators positive; size and volatility negative; previously used strategy directions preserved"
+
+[[factors]]
+id = "daily_ep_ttm_positive"
+expr = "where(pe_ttm>0,1/pe_ttm,0/0)"
+family = "legacy_daily"
+direction = 1
+source_ref = "src/quant/factors/daily_value.py"
+
+[[factors]]
+id = "daily_sp_ttm_positive"
+expr = "where(ps_ttm>0,1/ps_ttm,0/0)"
+family = "legacy_daily"
+direction = 1
+source_ref = "src/quant/factors/daily_value.py"
+
+[[factors]]
+id = "daily_dividend_yield_ttm"
+expr = "dividend_yield_ttm/100"
+family = "legacy_daily"
+direction = 1
+source_ref = "src/quant/factors/daily_value.py"
+
+[[factors]]
+id = "realized_volatility_60"
+expr = "ts_std((adj_close/delay(adj_close,1)-1),60)*sqrt(252)"
+family = "legacy_daily"
+direction = -1
+source_ref = "src/quant/factors/reversal_volatility.py"
+
+[[factors]]
+id = "realized_volatility_120"
+expr = "ts_std((adj_close/delay(adj_close,1)-1),120)*sqrt(252)"
+family = "legacy_daily"
+direction = -1
+source_ref = "src/quant/factors/reversal_volatility.py"
+
+[[factors]]
+id = "high52_proximity"
+expr = "adj_close/ts_max(where(high>=close,adj_high,0/0),252)"
+family = "legacy_daily"
+direction = 1
+source_ref = "src/quant/factors/high52.py"
+
+[[factors]]
+id = "momentum_126"
+expr = "where(ts_sum(where(high>=close,adj_close,0/0)>0,127)==127,adj_close/delay(adj_close,126)-1,0/0)"
+family = "legacy_daily"
+direction = 1
+source_ref = "src/quant/factors/high52.py"
+
+[[factors]]
+id = "turnover_ratio20_120"
+expr = "ts_mean(where(turnover_rate>=0,turnover_rate,0/0),20)/ts_mean(where(turnover_rate>=0,turnover_rate,0/0),120)"
+family = "legacy_daily"
+direction = -1
+source_ref = "src/quant/factors/turnover_change.py"
+
+[[factors]]
+id = "return_skew20"
+expr = "where(ts_std0((adj_close/delay(adj_close,1)-1),20)>0.000000000001,ts_skew((adj_close/delay(adj_close,1)-1),20),0/0)"
+family = "legacy_daily"
+direction = -1
+source_ref = "src/quant/factors/return_skewness.py"
+
+[[factors]]
+id = "return_turnover_corr20"
+expr = "where(ts_std0(where(where(turnover_rate>=0,turnover_rate,0/0)>=0,(adj_close/delay(adj_close,1)-1),0/0),20)>0.000001,where(ts_std0(where((adj_close/delay(adj_close,1)-1)==(adj_close/delay(adj_close,1)-1),where(turnover_rate>=0,turnover_rate,0/0),0/0),20)>0.000001,ts_corr(where(where(turnover_rate>=0,turnover_rate,0/0)>=0,(adj_close/delay(adj_close,1)-1),0/0),where((adj_close/delay(adj_close,1)-1)==(adj_close/delay(adj_close,1)-1),where(turnover_rate>=0,turnover_rate,0/0),0/0),20),0/0),0/0)"
+family = "legacy_daily"
+direction = -1
+source_ref = "src/quant/factors/return_turnover_correlation.py"
+
+[[factors]]
+id = "information_discreteness"
+expr = "-sign(delay(where(volume>0,adj_close,0/0)/delay(where(volume>0,adj_close,0/0),252)-1,21))*delay(ts_sum(sign((where(volume>0,adj_close,0/0)/delay(where(volume>0,adj_close,0/0),1)-1)),252),21)/252"
+family = "legacy_daily"
+direction = -1
+source_ref = "src/quant/factors/information_discreteness.py"
+
+[[factors]]
+id = "pret_12m_skip1m"
+expr = "where(delay(ts_sum(sign((where(volume>0,adj_close,0/0)/delay(where(volume>0,adj_close,0/0),1)-1))*0+1,252),21)==252,delay(where(volume>0,adj_close,0/0)/delay(where(volume>0,adj_close,0/0),252)-1,21),0/0)"
+family = "legacy_daily"
+direction = 1
+source_ref = "src/quant/factors/information_discreteness.py"
+
+[[factors]]
+id = "overnight_return_20"
+expr = "exp(ts_sum(log(adj_open/delay(adj_close,1)),20))-1"
+family = "legacy_daily"
+direction = -1
+source_ref = "src/quant/factors/overnight_decomposition.py"
+
+[[factors]]
+id = "intraday_return_20"
+expr = "exp(ts_sum(where(delay(adj_close,1)>0,log(adj_close/adj_open),0/0),20))-1"
+family = "legacy_daily"
+direction = -1
+source_ref = "src/quant/factors/overnight_decomposition.py"
+
+[[factors]]
+id = "total_return_20"
+expr = "exp(ts_sum(log(adj_open/delay(adj_close,1)),20)+ts_sum(where(delay(adj_close,1)>0,log(adj_close/adj_open),0/0),20))-1"
+family = "legacy_daily"
+direction = 1
+source_ref = "src/quant/factors/overnight_decomposition.py"
+
+[[factors]]
+id = "reversal_20"
+expr = "where(ts_sum(sign((adj_close/delay(adj_close,1)-1))*0+1,20)==20,1-adj_close/delay(adj_close,20),0/0)"
+family = "legacy_daily"
+direction = 1
+source_ref = "src/quant/factors/reversal_volatility.py"
+
+[[factors]]
+id = "annualized_realized_volatility_60"
+expr = "ts_std(log(adj_close/delay(adj_close,1)),60)*sqrt(252)"
+family = "legacy_daily"
+direction = -1
+source_ref = "src/quant/factors/risk.py"

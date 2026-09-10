@@ -43,6 +43,8 @@ def prepared(bars: pl.DataFrame) -> pl.DataFrame:
         *[(pl.col(name) * pl.col("adj_factor")).alias(f"adj_{name}")
           for name in ("open", "high", "low", "close")],
         pl.lit(2.0).alias("turnover_rate"), pl.lit(10.0).alias("pb"),
+        pl.lit(12.0).alias("pe_ttm"), pl.lit(3.0).alias("ps_ttm"),
+        pl.lit(1.0).alias("dividend_yield_ttm"),
         pl.lit(100.0).alias("total_market_value"), pl.lit(50.0).alias("circulating_market_value"),
     )
 
