@@ -1,4 +1,4 @@
-"""Continuous B93 risk, calendar-year and preregistered shock-window statistics."""
+"""Continuous risk, calendar-year and preregistered shock-window statistics."""
 
 import argparse
 import datetime as dt
@@ -87,9 +87,13 @@ def analyze(*, run: Path, config: Path, data_root: Path, output: Path) -> dict[s
     report = json.loads((run / 'report.json').read_text(encoding='utf-8'))
     if report['hypothesis_id'] != settings['research']['hypothesis_id']:
         raise ValueError('Config differs from source experiment')
-    expected = {(1, c, m) for c in ('top50', 'three_factor', '510300') for m in (.5, 1., 2.)}
+    comparisons = protocol.get('comparisons', ['top50', 'three_factor', '510300'])
+    if (not isinstance(comparisons, list) or any(not isinstance(c, str) or not c for c in comparisons)
+        or len(set(comparisons)) != len(comparisons) or not {'top50', '510300'}.issubset(comparisons)):
+        raise ValueError('Invalid full-cycle comparison list')
+    expected = {(1, c, m) for c in comparisons for m in (.5, 1., 2.)}
     if {(r['fold'], r['comparison'], r['cost_multiplier']) for r in report['results']} != expected:
-        raise ValueError('Require all nine full-cycle replay cases')
+        raise ValueError('Require all configured full-cycle replay cases')
     navs, trades, rejected = (pl.read_parquet(run / f'{name}.parquet') for name in ('nav', 'trades', 'rejections'))
     if navs['fold'].unique().to_list() != [1]:
         raise ValueError('Expected one continuous test period')
@@ -99,7 +103,7 @@ def analyze(*, run: Path, config: Path, data_root: Path, output: Path) -> dict[s
     regimes = benchmark_regimes(bars)
     total, years, windows, attribution = [], [], [], []
     daily_frames = []
-    for comparison in ('top50', 'three_factor', '510300'):
+    for comparison in comparisons:
         for multiplier in (.5, 1., 2.):
             mask = (pl.col('comparison') == comparison) & (pl.col('cost_multiplier') == multiplier)
             nav = navs.filter(mask).sort('date')
