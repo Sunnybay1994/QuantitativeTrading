@@ -1,0 +1,5 @@
+id = "alpha101_033"
+expr = "1 - open / close"
+family = "alpha101"
+direction = 1
+source_ref = "src/quant/factors/classic.py"

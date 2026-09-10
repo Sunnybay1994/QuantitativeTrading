@@ -1,0 +1,5 @@
+id = "turnover_cv20"
+expr = "ts_std0(where(turnover_rate >= 0, turnover_rate, 0 / 0), 20) / ts_mean(where(turnover_rate >= 0, turnover_rate, 0 / 0), 20)"
+family = "liquidity"
+direction = -1
+source_ref = "src/quant/factors/turnover_variability.py"

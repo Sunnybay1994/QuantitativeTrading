@@ -1,0 +1,5 @@
+id = "log_total_market_value"
+expr = "where(total_market_value > 0, log(total_market_value), 0 / 0)"
+family = "size"
+direction = -1
+source_ref = "src/quant/factors/market_size.py"

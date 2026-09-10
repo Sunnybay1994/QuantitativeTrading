@@ -1,0 +1,5 @@
+id = "alpha101_002"
+expr = "-ts_corr(rank(delta(log(volume), 2)), rank((close - open) / open), 6)"
+family = "alpha101"
+direction = 1
+source_ref = "src/quant/factors/classic_eleventh_batch.py"

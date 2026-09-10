@@ -1,0 +1,5 @@
+id = "alpha158_vma20"
+expr = "ts_mean(volume, 20) / volume"
+family = "alpha158"
+direction = 1
+source_ref = "src/quant/factors/classic.py"

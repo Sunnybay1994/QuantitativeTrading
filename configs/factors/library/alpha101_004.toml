@@ -1,0 +1,5 @@
+id = "alpha101_004"
+expr = "-ts_rank(rank(adj_low), 9)"
+family = "alpha101"
+direction = 1
+source_ref = "src/quant/factors/classic_eighth_batch.py"

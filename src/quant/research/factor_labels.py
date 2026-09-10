@@ -46,7 +46,9 @@ def build_next_open_factor_labels(
             row[f"execution_date_{horizon}"] = sessions[entry] if entry < len(sessions) else None
             row[f"exit_date_{horizon}"] = sessions[exit_] if exit_ < len(sessions) else None
         calendar_rows.append(row)
-    calendar = pl.DataFrame(calendar_rows)
+    calendar = pl.DataFrame(calendar_rows, schema_overrides={
+        name: pl.Date for name in calendar_rows[0]
+    })
     opens = clean_bars.select(
         "symbol",
         "trade_date",

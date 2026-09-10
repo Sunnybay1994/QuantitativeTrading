@@ -33,6 +33,9 @@ Tushare token 在 `configs/tushare.local.toml`（已 gitignore）。不打印、
 ## 常用入口
 
 ```powershell
+# 因子库全市场历史/每日增量（P1已完成；相同数据再次运行no-op）
+D:\Miniforge3\python.exe -m quant.factors.compute --factors all --from 2010-01-01 --to today
+
 # ETF 策略 walk-forward（S0/S1/S2 系列；config 决定假设）
 D:\Miniforge3\python.exe -m quant.research.run_s1_walk_forward --config configs/research/m2_s2_volatility_target.toml
 

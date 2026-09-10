@@ -1,0 +1,5 @@
+id = "alpha158_roc20"
+expr = "delay(adj_close, 20) / adj_close"
+family = "alpha158"
+direction = 1
+source_ref = "src/quant/factors/classic.py"

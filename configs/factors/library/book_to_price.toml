@@ -1,0 +1,5 @@
+id = "book_to_price"
+expr = "where(pb > 0, 1 / pb, 0 / 0)"
+family = "valuation"
+direction = 1
+source_ref = "daily_basic PB positive reciprocal; legacy value input"

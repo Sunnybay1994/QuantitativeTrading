@@ -1,0 +1,5 @@
+id = "max_daily_return_20"
+expr = "ts_max(adj_close / delay(adj_close, 1) - 1, 20)"
+family = "price_volume"
+direction = -1
+source_ref = "src/quant/factors/classic_fifth_batch.py"

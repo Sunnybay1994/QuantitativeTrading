@@ -11,6 +11,7 @@ __pycache__/
 data/raw/*
 data/clean/*
 data/features/*
+data/factors/*
 data/qlib/*
 data/legacy/*
 data/run_state/*

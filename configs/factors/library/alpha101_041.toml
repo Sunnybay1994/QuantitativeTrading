@@ -1,0 +1,5 @@
+id = "alpha101_041"
+expr = "sqrt(high * low) - amount / volume"
+family = "alpha101"
+direction = 1
+source_ref = "src/quant/factors/classic_sixth_batch.py"

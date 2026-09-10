@@ -1,0 +1,5 @@
+id = "alpha101_012"
+expr = "sign(delta(volume, 1)) * -delta(adj_close, 1)"
+family = "alpha101"
+direction = 1
+source_ref = "src/quant/factors/classic_sixth_batch.py"

@@ -1,0 +1,5 @@
+id = "alpha101_009"
+expr = "where(ts_min(delta(adj_close, 1), 5) > 0, delta(adj_close, 1), where(ts_max(delta(adj_close, 1), 5) < 0, delta(adj_close, 1), -delta(adj_close, 1)))"
+family = "alpha101"
+direction = 1
+source_ref = "src/quant/factors/classic_seventh_batch.py"
