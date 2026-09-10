@@ -66,6 +66,9 @@ CODE_PATHS = (
     "src/quant/research/monthly_cash_roa.py",
     "src/quant/research/monthly_annual_cash_profitability.py",
     "src/quant/factors/annual_cash_profitability.py",
+    "src/quant/data/quarterly_parent_income.py",
+    "src/quant/factors/quarterly_roe_stability.py",
+    "src/quant/research/monthly_quarterly_roe_stability.py",
     "src/quant/factors/gross_profitability.py",
     "src/quant/research/monthly_gross_profitability.py",
     "src/quant/factors/asset_growth.py",
@@ -329,6 +332,17 @@ def run_baseline(
             "comparison": "three_factor", "eligibility": "complete_four_factor", "weights": "equal_zscore"}
             or config["admission"].get("comparison") != "three_factor"):
             raise ValueError("Cash yield composition requires the paired complete-case baseline")
+    if config.get("financials", {}).get("factor_family") == "quarterly_roe_stability":
+        expected_roe_stability = {
+            "formula": "std(single_quarter_parent_income / same_period_parent_equity)",
+            "window_quarters": 60, "minimum_valid_quarters": 12, "standard_deviation_ddof": 1,
+            "maximum_age_months": 6, "window_anchor": "latest_known_income_period",
+            "missing_quarter": "omit_within_fixed_calendar_window",
+            "flow_predecessor": "latest_revision_known_by_successor_publication"}
+        if (any(config.get("quarterly_roe_stability", {}).get(k) != v for k, v in expected_roe_stability.items())
+            or config["factors"]["names"] != ["pit_quarterly_roe_volatility"]
+            or config["factors"]["directions"] != [-1]):
+            raise ValueError("Unsupported quarterly ROE stability configuration")
     if config.get("financials", {}).get("factor_family") == "annual_cash_profitability":
         expected_annual = {
             "formula": "(n_income + depr_fa_coga_dpba - change_working_capital - c_pay_acq_const_fiolta) / total_assets",

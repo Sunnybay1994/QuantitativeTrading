@@ -28,6 +28,7 @@ def read_monthly_financial_factors(
         or settings["allowed_report_types"] != ["1"]):
         raise ValueError("Unsupported financial factor configuration")
     histories: dict[str, pl.DataFrame] = {}
+    roe_stability = settings.get("factor_family") == "quarterly_roe_stability"
     annual_cash = settings.get("factor_family") == "annual_cash_profitability"
     sue = settings.get("factor_family") == "sue8"
     growth = settings.get("factor_family") == "asset_growth"
@@ -46,7 +47,7 @@ def read_monthly_financial_factors(
         ("income",) if sue or margin or revenue_growth or profit_growth or profit_acceleration or revenue_acceleration
         else ("balancesheet",) if growth or leverage or current_ratio else
         ("cashflow", "balancesheet") if cash_roa else
-        ("income", "balancesheet") if gross else ("income", "balancesheet", "cashflow")
+        ("income", "balancesheet") if gross or roe_stability else ("income", "balancesheet", "cashflow")
     )
     for dataset in datasets:
         histories[dataset] = read_tushare_financial_history(
@@ -61,6 +62,13 @@ def read_monthly_financial_factors(
                 else ("total_liab",) if leverage else ("total_cur_assets", "total_cur_liab") if current_ratio else (),
             ),
         )
+    if roe_stability:
+        from quant.research.monthly_quarterly_roe_stability import build_monthly_quarterly_roe_stability
+
+        return build_monthly_quarterly_roe_stability(
+            income_history=histories["income"], balance_history=histories["balancesheet"],
+            signal_dates=monthly_signal_sessions(sessions, start=start, end=end), candidate_symbols=candidates,
+        ), histories
     if annual_cash:
         from quant.research.monthly_annual_cash_profitability import build_monthly_annual_cash_profitability
 
