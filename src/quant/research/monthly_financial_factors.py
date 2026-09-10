@@ -28,6 +28,7 @@ def read_monthly_financial_factors(
         or settings["allowed_report_types"] != ["1"]):
         raise ValueError("Unsupported financial factor configuration")
     histories: dict[str, pl.DataFrame] = {}
+    annual_zscore = settings.get("factor_family") == "annual_zscore"
     roe_stability = settings.get("factor_family") == "quarterly_roe_stability"
     annual_profitability = settings.get("factor_family") == "annual_profitability"
     annual_cash = settings.get("factor_family") == "annual_cash_profitability"
@@ -48,7 +49,7 @@ def read_monthly_financial_factors(
         ("income",) if sue or margin or revenue_growth or profit_growth or profit_acceleration or revenue_acceleration
         else ("balancesheet",) if growth or leverage or current_ratio else
         ("cashflow", "balancesheet") if cash_roa else
-        ("income", "balancesheet") if gross or roe_stability else ("income", "balancesheet", "cashflow")
+        ("income", "balancesheet") if gross or roe_stability or annual_zscore else ("income", "balancesheet", "cashflow")
     )
     for dataset in datasets:
         histories[dataset] = read_tushare_financial_history(
@@ -56,13 +57,26 @@ def read_monthly_financial_factors(
                 snapshot_id=settings["snapshot_id"], dataset=dataset,
                 start_period=settings["history_start"], end_period=end,
                 symbols=candidates,
-                extra_fields=("depr_fa_coga_dpba", "c_pay_acq_const_fiolta") if (annual_cash or annual_profitability) and dataset == "cashflow"
+                extra_fields=("ebit", "revenue") if annual_zscore and dataset == "income"
+                else ("total_cur_assets", "total_cur_liab", "surplus_rese", "undistr_porfit")
+                if annual_zscore and dataset == "balancesheet"
+                else ("depr_fa_coga_dpba", "c_pay_acq_const_fiolta") if (annual_cash or annual_profitability) and dataset == "cashflow"
                 else ("total_cur_assets", "total_cur_liab", "money_cap", "st_borr", "taxes_payable")
                 if (annual_cash or annual_profitability) and dataset == "balancesheet" else (("revenue",) if revenue_growth or revenue_acceleration else ("revenue", "oper_cost"))
                 if (gross or margin or revenue_growth or revenue_acceleration or annual_profitability) and dataset == "income"
                 else ("total_liab",) if leverage else ("total_cur_assets", "total_cur_liab") if current_ratio else (),
             ),
         )
+    if annual_zscore:
+        from quant.research.monthly_annual_zscore import build_monthly_annual_zscore
+
+        if daily_basic is None:
+            raise ValueError("Annual Z-score requires signal-date daily basic")
+        return build_monthly_annual_zscore(
+            income_history=histories["income"], balance_history=histories["balancesheet"],
+            daily_basic=daily_basic,
+            signal_dates=monthly_signal_sessions(sessions, start=start, end=end), candidate_symbols=candidates,
+        ), histories
     if roe_stability:
         from quant.research.monthly_quarterly_roe_stability import build_monthly_quarterly_roe_stability
 

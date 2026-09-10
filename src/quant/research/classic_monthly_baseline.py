@@ -68,6 +68,8 @@ CODE_PATHS = (
     "src/quant/factors/annual_cash_profitability.py",
     "src/quant/factors/annual_profitability.py",
     "src/quant/research/monthly_annual_profitability.py",
+    "src/quant/factors/annual_zscore.py",
+    "src/quant/research/monthly_annual_zscore.py",
     "src/quant/data/quarterly_parent_income.py",
     "src/quant/factors/quarterly_roe_stability.py",
     "src/quant/research/monthly_quarterly_roe_stability.py",
@@ -385,6 +387,10 @@ def run_baseline(
         if any(config.get("quarterly_roe_stability", {}).get(k) != v for k, v in expected_roe_stability.items()):
             raise ValueError("Unsupported quarterly ROE stability configuration")
         validate_roe_stability_components(config)
+    if config.get("financials", {}).get("factor_family") == "annual_zscore":
+        from quant.research.monthly_annual_zscore import validate_annual_zscore
+
+        validate_annual_zscore(config)
     if config.get("financials", {}).get("factor_family") == "annual_profitability":
         validate_annual_profitability(config)
     if config.get("financials", {}).get("factor_family") == "annual_cash_profitability":
@@ -587,7 +593,7 @@ def run_baseline(
         from quant.research.monthly_financial_factors import read_monthly_financial_factors
 
         cash_yield_basic = None
-        if config["financials"].get("factor_family") == "cash_yield":
+        if config["financials"].get("factor_family") in {"cash_yield", "annual_zscore"}:
             cash_yield_basic = read_stock_data(data_root=data_root, config=refresh_config, table="daily_basic",
                                               start=data["warmup_start"], end=end, symbols=list(candidates))
             extra_inputs.append(("daily-basic", cash_yield_basic, ("trade_date", "symbol"), "trade_date"))
@@ -844,9 +850,11 @@ def run_baseline(
     conclusion: Literal["RESEARCH_ONLY", "REJECTED", "PAPER_CANDIDATE"] = "RESEARCH_ONLY" if passed else "REJECTED"
     if (config["admission"].get("maximum_conclusion") == "PAPER_CANDIDATE"
         and meets_portfolio_candidate(results, config["admission"])
-        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability")) or passed)):
+        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_zscore")) or passed)):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
+        "QMJ appendix Z-score with Chinese annual retained-earnings mapping and exact signal-date market value; historical periods were inspected previously."
+        if "annual_zscore" in config else
         "Daily-return skew is distinct from intraday realized skew; this is a historical replication in previously inspected periods."
         if "return_skewness" in config else
         "Historical full SH/SZ size replication with signal-date eligibility; these historical periods were used in prior studies."
