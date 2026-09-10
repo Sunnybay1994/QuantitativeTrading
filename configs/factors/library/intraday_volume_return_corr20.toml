@@ -1,0 +1,5 @@
+id = "intraday_volume_return_corr20"
+expr = "ts_mean(minute_volume_return_corr,20)"
+family = "minute_low_frequency"
+direction = -1
+source_ref = "configs/factors/intraday_expansion_20260911.toml"

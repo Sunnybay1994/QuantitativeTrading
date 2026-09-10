@@ -9,11 +9,13 @@ FACTOR_NAMES = (
     "intraday_skew20", "intraday_open_amount20",
 )
 _DAILY = ("tail_amount", "smart_vwap", "skew", "open_amount")
+EXTRA_DAILY = ("realized_vol", "kurtosis", "open_return", "volume_return_corr", "return_autocorr")
+DAILY_NAMES = _DAILY + EXTRA_DAILY
 _KEY = ["symbol", "trade_date"]
 
 
 def compute_intraday_low_frequency_factors(
-    bars: pl.DataFrame, *, sessions: tuple[dt.date, ...], window: int = 20,
+    bars: pl.DataFrame, *, sessions: tuple[dt.date, ...], window: int = 20, expanded: bool = False,
 ) -> pl.DataFrame:
     """Compute complete-day factors and means over consecutive exchange sessions.
 
@@ -23,11 +25,13 @@ def compute_intraday_low_frequency_factors(
     """
     if window < 1 or not sessions or sessions != tuple(sorted(set(sessions))):
         raise ValueError("Invalid minute-factor calendar or rolling window")
+    daily_names = DAILY_NAMES if expanded else _DAILY
+    factor_names = FACTOR_NAMES + tuple(f"intraday_{name}20" for name in EXTRA_DAILY) if expanded else FACTOR_NAMES
     if bars.is_empty():
         return pl.DataFrame(schema={"symbol": pl.String, "trade_date": pl.Date,
             "bars_in_day": pl.UInt32, "valid_day": pl.Boolean,
-            **{f"daily_{name}": pl.Float64 for name in _DAILY},
-            **{name: pl.Float64 for name in FACTOR_NAMES}})
+            **{f"daily_{name}": pl.Float64 for name in daily_names},
+            **{name: pl.Float64 for name in factor_names}})
     if (bars.select("symbol", "trade_date", "bar_start", "bar_end").null_count().sum_horizontal().item()
         or bars.select("symbol", "bar_start").is_duplicated().any()
         or bars.schema["bar_start"] != pl.Datetime("us", "Asia/Shanghai")
@@ -56,6 +60,7 @@ def compute_intraday_low_frequency_factors(
         (pl.col("close") / pl.coalesce(pl.col("close").shift(1).over(_KEY), "open")).log().alias("_r"),
     ).with_columns(
         pl.when(pl.col("volume") > 0).then(pl.col("_r").abs() / pl.col("volume").sqrt()).alias("_smart"),
+        pl.col("_r").shift(1).over(_KEY).alias("_previous_r"),
     ).with_columns(
         (pl.col("_smart").rank(method="ordinal", descending=True).over(_KEY) <= 10).fill_null(False).alias("_chosen"),
     )
@@ -68,6 +73,10 @@ def compute_intraday_low_frequency_factors(
         pl.col("volume").filter(pl.col("_chosen")).sum().alias("_smart_volume"),
         pl.col("_chosen").sum().alias("_chosen_count"),
         pl.col("_r").pow(2).sum().alias("_r2"), pl.col("_r").pow(3).sum().alias("_r3"),
+        pl.col("_r").pow(4).sum().alias("_r4"),
+        (pl.col("close").filter(pl.col("_minute") < 600).last() / pl.col("open").first() - 1).alias("daily_open_return"),
+        pl.corr("_r", "volume").alias("daily_volume_return_corr"),
+        pl.corr("_r", "_previous_r").alias("daily_return_autocorr"),
     ).with_columns(
         (pl.col("valid_day") & (pl.col("bars_in_day") == 48) & (pl.col("_amount") > 0)
          & (pl.col("_volume") > 0)).alias("valid_day"),
@@ -78,9 +87,11 @@ def compute_intraday_low_frequency_factors(
             (pl.col("_smart_amount") / pl.col("_smart_volume"))
             / (pl.col("_amount") / pl.col("_volume"))).alias("daily_smart_vwap"),
         pl.when(pl.col("_r2") > 0).then(48**0.5 * pl.col("_r3") / pl.col("_r2").pow(1.5)).alias("daily_skew"),
+        pl.col("_r2").sqrt().alias("daily_realized_vol"),
+        pl.when(pl.col("_r2") > 0).then(48 * pl.col("_r4") / pl.col("_r2").pow(2)).alias("daily_kurtosis"),
     ).with_columns([
         pl.when(pl.col("valid_day") & pl.col(f"daily_{name}").is_finite())
-        .then(pl.col(f"daily_{name}")).otherwise(None).alias(f"daily_{name}") for name in _DAILY
+        .then(pl.col(f"daily_{name}")).otherwise(None).alias(f"daily_{name}") for name in daily_names
     ])
     calendar = pl.DataFrame({"trade_date": list(sessions), "_session": range(len(sessions))})
     daily = daily.join(calendar, on="trade_date", how="left", validate="m:1").sort(_KEY)
@@ -89,6 +100,6 @@ def compute_intraday_low_frequency_factors(
     consecutive = pl.col("_session") - pl.col("_session").shift(window - 1).over("symbol") == window - 1
     daily = daily.with_columns([
         pl.when(consecutive).then(pl.col(f"daily_{name}").rolling_mean(window, min_samples=window).over("symbol"))
-        .otherwise(None).alias(factor) for name, factor in zip(_DAILY, FACTOR_NAMES)
+        .otherwise(None).alias(factor) for name, factor in zip(daily_names, factor_names)
     ])
-    return daily.select(*_KEY, "bars_in_day", "valid_day", *[f"daily_{name}" for name in _DAILY], *FACTOR_NAMES)
+    return daily.select(*_KEY, "bars_in_day", "valid_day", *[f"daily_{name}" for name in daily_names], *factor_names)

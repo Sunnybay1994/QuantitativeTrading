@@ -23,6 +23,8 @@ from quant.factors.library import load_library
 from quant.research.factor_labels import build_next_open_factor_labels
 from quant.research.factor_financials import attach_financial_factors, financial_input_names
 from quant.factors.pit_quality import PIT_QUALITY_FACTOR_NAMES
+from quant.data.factor_intraday_inputs import read_factor_minute_inputs
+from quant.research.factor_intraday import attach_minute_factors, minute_input_names
 
 
 HORIZONS = (1, 5, 10, 20, 60)
@@ -86,6 +88,10 @@ def run(
                 expanded=bool(set(financial_names) - set(PIT_QUALITY_FACTOR_NAMES)),
                 share_changes="pit_annual_fscore" in financial_names)
             panel = attach_financial_factors(panel, histories, financial_names)
+        minute_names = minute_input_names(tuple(row.expr for row in pending))
+        if minute_names:
+            panel = attach_minute_factors(panel, read_factor_minute_inputs(data_root, bars),
+                tuple(day for day in sessions if read_start <= day <= read_end), minute_names)
         keys = bars.filter(pl.col("trade_date").is_between(low, high)).select("symbol", "trade_date")
         row_counts = {}
         if pending:
