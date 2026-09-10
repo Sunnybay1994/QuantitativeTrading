@@ -9,6 +9,7 @@ from typing import Any
 
 import polars as pl
 
+from quant.data.industry_history import attach_industry
 from quant.data.refresh_stocks import read_stock_data
 from quant.data.stock_paper_inputs import read_stock_paper_calendar
 
@@ -18,6 +19,16 @@ def available_sessions(data_root: Path, through: dt.date) -> tuple[dt.date, ...]
     return tuple(calendar.filter(pl.col("is_open") & (pl.col("date") <= through))[
         "date"
     ].unique().sort().to_list())
+
+
+def read_factor_industry(data_root: Path, panel: pl.DataFrame) -> pl.DataFrame:
+    """Attach the latest publication using both dated Shenwan source versions."""
+    for summary_path in sorted((data_root / "clean/tushare_industry").glob("*/summary.json"), reverse=True):
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        if summary.get("with_current"):
+            intervals = pl.read_parquet(summary_path.parent / "intervals.parquet")
+            return attach_industry(panel, intervals)
+    raise ValueError("Publish industry history with --with-current before computing industry factors")
 
 
 def read_factor_inputs(

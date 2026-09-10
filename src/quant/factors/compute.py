@@ -13,7 +13,7 @@ from typing import Any
 import polars as pl
 
 from quant.data.factor_panels import (
-    available_sessions, check_definition, panel_complete, read_coverage, read_factor_inputs,
+    available_sessions, check_definition, panel_complete, read_coverage, read_factor_inputs, read_factor_industry,
     write_panel,
 )
 from quant.data.refresh import SHANGHAI, completed_date
@@ -75,6 +75,8 @@ def run(
         first_index = bisect.bisect_left(sessions, min(intervals))
         read_start = sessions[max(0, first_index - lookback)]
         panel, bars = read_factor_inputs(data_root, refresh_config, read_start, read_end, sessions)
+        if any("ind_neutralize" in row.expr for row in pending):
+            panel = read_factor_industry(data_root, panel)
         keys = bars.filter(pl.col("trade_date").is_between(low, high)).select("symbol", "trade_date")
         row_counts = {}
         if pending:

@@ -1,9 +1,11 @@
 import datetime as dt
+import json
 from pathlib import Path
 
 import polars as pl
 
 from quant.data.industry_history import attach_industry, membership_intervals, publish_industry_history
+from quant.data.factor_panels import read_factor_industry
 
 
 def taxonomy():
@@ -91,3 +93,19 @@ def test_publish_reads_both_supplier_schemas_and_requires_complete_pages(tmp_pat
     output = pl.read_parquet(Path(result["output"]) / "intervals.parquet")
     assert result["with_current"] and result["symbols"] == 1
     assert output["industry_l1"].to_list() == ["SW2014:old", "SW2021:new"]
+
+
+def test_factor_reader_uses_complete_source_versions_only(tmp_path: Path):
+    import pytest
+    panel = pl.DataFrame({"symbol": ["000001.SZ"], "trade_date": [dt.date(2022, 1, 1)]})
+    with pytest.raises(ValueError, match="with-current"):
+        read_factor_industry(tmp_path, panel)
+    root = tmp_path / "clean/tushare_industry/20220901"
+    root.mkdir(parents=True)
+    members = pl.DataFrame({"con_code": ["000001.SZ"], "index_code": ["shared"],
+                            "in_date": ["19910403"], "out_date": [None], "is_new": ["Y"]})
+    intervals, _ = membership_intervals(taxonomy(), members, as_of=dt.date(2022, 1, 1))
+    intervals.write_parquet(root / "intervals.parquet")
+    (root / "summary.json").write_text(json.dumps({"with_current": True}))
+    joined = read_factor_industry(tmp_path, panel)
+    assert joined["industry_l1"].to_list() == ["SW2021:new"]
