@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 import operator
 from collections.abc import Callable
+from functools import reduce
 
 import numpy as np
 import polars as pl
@@ -29,7 +30,7 @@ _ROLLING = {
 _UNARY = {"abs", "log", "sign", "sqrt", "rank", "scale"}
 _WINDOW = set(_ROLLING) | {
     "ts_rank", "ts_corr", "ts_cov", "ts_argmax", "ts_argmin", "decay_linear",
-    "delay", "delta", "ts_std0", "ts_slope", "ts_rsquare", "ts_resi", "ts_quantile",
+    "delay", "delta", "ts_std0", "ts_slope", "ts_rsquare", "ts_resi", "ts_quantile", "ts_product",
 }
 
 
@@ -119,6 +120,8 @@ class ExpressionEngine:
                 return getattr(x, _ROLLING[name])(window_size=n, min_samples=n).over("symbol")
             if name == "ts_std0":
                 return x.rolling_std(n, min_samples=n, ddof=0).over("symbol")
+            if name == "ts_product":
+                return reduce(operator.mul, (x.shift(lag).over("symbol") for lag in range(n)))
             if name == "ts_quantile":
                 probability = args[1]
                 if (not isinstance(probability, ast.Constant)
@@ -180,7 +183,7 @@ class ExpressionEngine:
                 weights = [float(i) for i in range(1, n + 1)]
                 complete = x.is_not_null().cast(pl.Int32).rolling_sum(n, min_samples=n).over("symbol") == n
                 return pl.when(complete).then(
-                    x.fill_null(0).rolling_sum(n, weights=weights, min_samples=n).over("symbol") / sum(weights)
+                    x.cast(pl.Float64).fill_null(0).rolling_sum(n, weights=weights, min_samples=n).over("symbol") / sum(weights)
                 )
             if name in {"ts_argmax", "ts_argmin"}:
                 # First extremum, one-based index from the oldest observation.
