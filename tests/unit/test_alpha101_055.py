@@ -101,8 +101,24 @@ def test_config_fixed_and_duplicates_rejected():
         changed[section][key]=value
         with pytest.raises(ValueError):
             validate_alpha101_055(changed)
+
     with pytest.raises(ValueError,match='Duplicate'):
         compute_alpha101_055(pl.concat([sample(),sample().head(1)]),sessions=DATES)
+
+
+def test_buffer_changes_only_prior_target_retention():
+    config=tomllib.loads(Path('configs/research/b76_alpha101_055_buffer75_20260910.toml').read_text())
+    prior=tomllib.loads(Path('configs/research/b75_alpha101_055_composite_20260910.toml').read_text())
+    for section in ('alpha101_055','data','universe','costs','walk_forward','factors','composite'):
+        assert config[section]==prior[section]
+    assert {k:v for k,v in config['portfolio'].items() if k!='retention_rank'}==prior['portfolio']
+    validate_alpha101_055(config)
+    for section,key,value in [('portfolio','retention_rank',100),('alpha101_055','rank_cohort','complete_four_factor'),
+        ('alpha101_055_buffer','retention_rule','actual_holdings'),('admission','require_lower_turnover_every_fold',False)]:
+        changed=copy.deepcopy(config)
+        changed[section][key]=value
+        with pytest.raises(ValueError):
+            validate_alpha101_055(changed)
 
 
 def test_composition_preserves_rank_cohort_and_requires_matched_increment():

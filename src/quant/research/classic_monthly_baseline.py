@@ -311,6 +311,7 @@ def run_baseline(
 ) -> int:
     data, universe, portfolio = config["data"], config["universe"], config["portfolio"]
     cash_roa_buffer = "cash_roa_buffer" in config
+    alpha101_055_buffer = "alpha101_055_buffer" in config
     alpha101_026_buffer = "alpha101_026_buffer" in config
     if cash_roa_buffer:
         validate_cash_roa_buffer(config)
@@ -794,7 +795,8 @@ def run_baseline(
                                 ("lowvol60", "realized_volatility_60"),
                                 ("alpha101_026", "alpha101_026"), ("alpha101_046", "alpha101_046"), ("alpha101_055", "alpha101_055")):
         if (f"{family}_composition" in config or (family == "cash_roa" and cash_roa_buffer)
-            or (family == "alpha101_026" and alpha101_026_buffer)):
+            or (family == "alpha101_026" and alpha101_026_buffer)
+            or (family == "alpha101_055" and alpha101_055_buffer)):
             eligible = eligible.filter(pl.all_horizontal(pl.col(name).is_finite() for name in
                 (cash_factor, "alpha158_std20", "alpha158_roc20", "alpha158_rsv20")))
             extra_outputs.append((f"{family}_composition_pool", eligible))
@@ -850,7 +852,7 @@ def run_baseline(
         or "cash_yield_composition" in config or "roe_stability_composition" in config
         or "low_beta_composition" in config or "lowvol60_composition" in config
         or "alpha101_026_composition" in config or "alpha101_046_composition" in config or "alpha101_055_composition" in config
-        or alpha101_026_buffer or cash_roa_buffer):
+        or alpha101_026_buffer or alpha101_055_buffer or cash_roa_buffer):
         paired_components: tuple[tuple[str, int], ...] = (
             ("alpha158_std20", -1), ("alpha158_roc20", 1), ("alpha158_rsv20", -1))
         if cash_roa_buffer:
@@ -873,6 +875,10 @@ def run_baseline(
             paired_strategy = "b75_paired_three_factor_alpha101_055_cohort"
         if "alpha101_046_composition" in config:
             paired_strategy = "b72_paired_three_factor_alpha101_046_cohort"
+        if alpha101_055_buffer:
+            paired_components = (("alpha158_std20", -1), ("alpha158_roc20", 1),
+                                 ("alpha158_rsv20", -1), ("alpha101_055", 1))
+            paired_comparison, paired_strategy = "alpha101_055_unbuffered", "b76_paired_unbuffered_alpha101_055"
         if alpha101_026_buffer:
             paired_components = (("alpha158_std20", -1), ("alpha158_roc20", 1),
                                  ("alpha158_rsv20", -1), ("alpha101_026", 1))
@@ -1012,7 +1018,7 @@ def run_baseline(
                   and sum(r["rank_ic_mean"] > 0 for r in primary) >= config["admission"]["minimum_positive_test_folds"]
                   and max(r["median_abs_rank_corr"] for r in redundancy_rows)
                   < config["admission"]["maximum_absolute_rank_correlation"])
-    elif cv20_buffer or cv20_bimonthly or cash_roa_buffer or alpha101_026_buffer:
+    elif cv20_buffer or cv20_bimonthly or cash_roa_buffer or alpha101_026_buffer or alpha101_055_buffer:
         from quant.research.monthly_cv20_buffer import summarize_cv20_buffer
 
         portfolio_admission = summarize_cv20_buffer(
@@ -1034,6 +1040,8 @@ def run_baseline(
         and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_zscore", "debt_ebitda", "low_beta", "turnover_change", "return_turnover", "lowvol120", "lowvol60_composition", "momentum_12_1", "alpha101_001", "alpha101_026", "alpha101_046", "alpha101_054", "alpha101_055")) or passed)):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
+        "Fixed Top75 retention of prior four-factor targets is compared with the frozen Alpha101 #55 unbuffered portfolio; historical periods were inspected previously."
+        if alpha101_055_buffer else
         "Frozen Alpha101 #55 is added to three equal-zscore factors on the same complete cohort; historical periods were inspected previously."
         if "alpha101_055_composition" in config else
         "Alpha101 #55 uses fixed 12/6 windows and daily cross-sectional ranks in monthly long-only Top50; historical periods were inspected previously."
