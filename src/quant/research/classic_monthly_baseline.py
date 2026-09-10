@@ -32,6 +32,10 @@ from quant.research.run_classic_factors import select_frozen_liquid_universe
 from quant.research.run_s1_walk_forward import metrics
 
 CODE_PATHS = (
+    "src/quant/factors/annual_fscore.py",
+    "src/quant/factors/common_equity_issuance.py",
+    "src/quant/research/monthly_annual_fscore.py",
+    "src/quant/data/publish_share_changes.py",
     "src/quant/research/monthly_alpha101_006.py",
     "src/quant/research/monthly_alpha101_012.py",
     "src/quant/research/monthly_alpha101_041.py",
@@ -354,6 +358,10 @@ def run_baseline(
     data, universe, portfolio = config["data"], config["universe"], config["portfolio"]
     if "overnight_decomposition" in config:
         validate_overnight_comparison(config)
+    if "annual_fscore" in config:
+        from quant.research.monthly_annual_fscore import validate_annual_fscore
+
+        validate_annual_fscore(config)
     intraday_reversal_buffer = "intraday_reversal_buffer" in config
     intraday_reversal_bimonthly = intraday_reversal_buffer and config["admission"].get("comparison") == "intraday_reversal_monthly_buffered"
     cash_roa_buffer = "cash_roa_buffer" in config
@@ -846,8 +854,9 @@ def run_baseline(
         if required:
             factors = factors.filter(pl.all_horizontal(pl.col(name).is_finite() for name in required))
         extra_inputs.extend((f"financial-{name}", frame,
-                             tuple(c for c in ("symbol", "end_date", "available_date", "report_type", "comp_type") if c in frame.columns),
-                             "available_date") for name, frame in histories.items())
+                             tuple(c for c in ("symbol", "end_date", "available_date", "ann_date", "event_date", "report_type", "comp_type") if c in frame.columns),
+                             "ann_date" if name == "share_change_events" else "end" if name == "share_change_coverage"
+                             else "available_date") for name, frame in histories.items())
         extra_outputs.extend((("financial_factors", financial.factors),
                               ("financial_eligibility", financial.eligibility),
                               ("financial_quarantined", financial.quarantined)))
@@ -1155,9 +1164,11 @@ def run_baseline(
     conclusion: Literal["RESEARCH_ONLY", "REJECTED", "PAPER_CANDIDATE"] = "RESEARCH_ONLY" if passed else "REJECTED"
     if (config["admission"].get("maximum_conclusion") == "PAPER_CANDIDATE"
         and meets_portfolio_candidate(results, config["admission"])
-        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_zscore", "debt_ebitda", "low_beta", "turnover_change", "return_turnover", "lowvol120", "lowvol60_composition", "momentum_12_1", "alpha101_001", "alpha101_026", "alpha101_046", "alpha101_054", "alpha101_055", "alpha101_006", "alpha101_012", "alpha101_041", "overnight_decomposition")) or passed)):
+        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_fscore", "annual_zscore", "debt_ebitda", "low_beta", "turnover_change", "return_turnover", "lowvol120", "lowvol60_composition", "momentum_12_1", "alpha101_001", "alpha101_026", "alpha101_046", "alpha101_054", "alpha101_055", "alpha101_006", "alpha101_012", "alpha101_041", "overnight_decomposition")) or passed)):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
+        "Local nine-signal annual F-score uses complete debt fields and reported issuance events in the full frozen pool; historical periods were inspected previously."
+        if "annual_fscore" in config else
         "Fixed odd-month executions retain the Top75 buffer and compare with monthly executions; historical periods were inspected previously."
         if intraday_reversal_bimonthly else
         "Fixed Top75 prior-target retention is compared with the frozen intraday-reversal composite; historical periods were inspected previously."

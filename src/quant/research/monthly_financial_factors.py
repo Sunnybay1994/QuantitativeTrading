@@ -28,6 +28,26 @@ def read_monthly_financial_factors(
         or settings["allowed_report_types"] != ["1"]):
         raise ValueError("Unsupported financial factor configuration")
     histories: dict[str, pl.DataFrame] = {}
+    if settings.get("factor_family") == "annual_fscore":
+        from quant.data.publish_share_changes import read_share_change_coverage, read_share_change_history
+        from quant.research.monthly_annual_fscore import build_monthly_annual_fscore
+
+        snapshot = settings["share_changes_snapshot"]
+        if not snapshot or Path(snapshot).name != snapshot or snapshot in (".", ".."):
+            raise ValueError("Invalid share-change snapshot")
+        for dataset in ("income", "balancesheet", "cashflow"):
+            extra = (("revenue", "oper_cost") if dataset == "income" else
+                     ("total_cur_assets", "total_cur_liab", "lt_borr", "bond_payable") if dataset == "balancesheet" else ())
+            histories[dataset] = read_tushare_financial_history(data_root=data_root,
+                query=TushareFinancialHistoryQuery(snapshot_id=settings["snapshot_id"], dataset=dataset,
+                    start_period=settings["history_start"], end_period=end, symbols=candidates, extra_fields=extra))
+        event_root = data_root / "clean/cninfo_share_changes" / snapshot
+        histories["share_change_events"] = read_share_change_history(snapshot=event_root, symbols=candidates)
+        histories["share_change_coverage"] = read_share_change_coverage(snapshot=event_root)
+        return build_monthly_annual_fscore(income_history=histories["income"], cash_history=histories["cashflow"],
+            balance_history=histories["balancesheet"], events=histories["share_change_events"],
+            event_coverage=histories["share_change_coverage"], candidate_symbols=candidates,
+            signal_dates=monthly_signal_sessions(sessions, start=start, end=end)), histories
     if settings.get("factor_family") == "debt_ebitda":
         from quant.research.monthly_debt_ebitda import build_monthly_debt_ebitda
 
