@@ -1,0 +1,579 @@
+{
+  "as_of": "2026-09-10",
+  "start": "2023-01-01",
+  "end": "2026-09-10",
+  "quota_reserve": 5,
+  "selection": "80 SH/SZ stocks: retain 2 already charged probes, then rank by latest 60-day median traded CNY amount (minimum 50 observations); exclude ST/delisting names. 15 existing research ETFs. Current selection is not a historical PIT universe.",
+  "members": [
+    {
+      "symbol": "518880.SH",
+      "kind": "etf",
+      "median_amount_cny": null,
+      "name": null
+    },
+    {
+      "symbol": "159934.SZ",
+      "kind": "etf",
+      "median_amount_cny": null,
+      "name": null
+    },
+    {
+      "symbol": "510300.SH",
+      "kind": "etf",
+      "median_amount_cny": null,
+      "name": null
+    },
+    {
+      "symbol": "300308.SZ",
+      "kind": "stock",
+      "median_amount_cny": 34597897485.549995,
+      "name": "中际旭创"
+    },
+    {
+      "symbol": "603986.SH",
+      "kind": "stock",
+      "median_amount_cny": 26852523462.5,
+      "name": "兆易创新"
+    },
+    {
+      "symbol": "300502.SZ",
+      "kind": "stock",
+      "median_amount_cny": 22783122453.85,
+      "name": "新易盛"
+    },
+    {
+      "symbol": "002384.SZ",
+      "kind": "stock",
+      "median_amount_cny": 16954594816.45,
+      "name": "东山精密"
+    },
+    {
+      "symbol": "688256.SH",
+      "kind": "stock",
+      "median_amount_cny": 16305246588.5,
+      "name": "寒武纪"
+    },
+    {
+      "symbol": "600487.SH",
+      "kind": "stock",
+      "median_amount_cny": 13920983744.0,
+      "name": "亨通光电"
+    },
+    {
+      "symbol": "600584.SH",
+      "kind": "stock",
+      "median_amount_cny": 12506463379.0,
+      "name": "长电科技"
+    },
+    {
+      "symbol": "688008.SH",
+      "kind": "stock",
+      "median_amount_cny": 12496204578.5,
+      "name": "澜起科技"
+    },
+    {
+      "symbol": "300394.SZ",
+      "kind": "stock",
+      "median_amount_cny": 12340467166.3,
+      "name": "天孚通信"
+    },
+    {
+      "symbol": "000725.SZ",
+      "kind": "stock",
+      "median_amount_cny": 11793730500.95,
+      "name": "京东方A"
+    },
+    {
+      "symbol": "600176.SH",
+      "kind": "stock",
+      "median_amount_cny": 10908236738.5,
+      "name": "中国巨石"
+    },
+    {
+      "symbol": "688012.SH",
+      "kind": "stock",
+      "median_amount_cny": 10367069138.5,
+      "name": "中微公司"
+    },
+    {
+      "symbol": "600183.SH",
+      "kind": "stock",
+      "median_amount_cny": 10294713362.5,
+      "name": "生益科技"
+    },
+    {
+      "symbol": "300750.SZ",
+      "kind": "stock",
+      "median_amount_cny": 10138198808.755001,
+      "name": "宁德时代"
+    },
+    {
+      "symbol": "002156.SZ",
+      "kind": "stock",
+      "median_amount_cny": 9510591237.935001,
+      "name": "通富微电"
+    },
+    {
+      "symbol": "300476.SZ",
+      "kind": "stock",
+      "median_amount_cny": 9500424899.244999,
+      "name": "胜宏科技"
+    },
+    {
+      "symbol": "600522.SH",
+      "kind": "stock",
+      "median_amount_cny": 9116687657.5,
+      "name": "中天科技"
+    },
+    {
+      "symbol": "688981.SH",
+      "kind": "stock",
+      "median_amount_cny": 9068145689.0,
+      "name": "中芯国际"
+    },
+    {
+      "symbol": "002371.SZ",
+      "kind": "stock",
+      "median_amount_cny": 8927776365.075,
+      "name": "北方华创"
+    },
+    {
+      "symbol": "300408.SZ",
+      "kind": "stock",
+      "median_amount_cny": 8920619874.240002,
+      "name": "三环集团"
+    },
+    {
+      "symbol": "000938.SZ",
+      "kind": "stock",
+      "median_amount_cny": 8799857465.645,
+      "name": "紫光股份"
+    },
+    {
+      "symbol": "601138.SH",
+      "kind": "stock",
+      "median_amount_cny": 8739637169.5,
+      "name": "工业富联"
+    },
+    {
+      "symbol": "001309.SZ",
+      "kind": "stock",
+      "median_amount_cny": 8720888970.240002,
+      "name": "德明利"
+    },
+    {
+      "symbol": "688525.SH",
+      "kind": "stock",
+      "median_amount_cny": 8495074665.999999,
+      "name": "佰维存储"
+    },
+    {
+      "symbol": "301308.SZ",
+      "kind": "stock",
+      "median_amount_cny": 8328605320.795,
+      "name": "江波龙"
+    },
+    {
+      "symbol": "603259.SH",
+      "kind": "stock",
+      "median_amount_cny": 8251059792.0,
+      "name": "药明康德"
+    },
+    {
+      "symbol": "601899.SH",
+      "kind": "stock",
+      "median_amount_cny": 8242959221.0,
+      "name": "紫金矿业"
+    },
+    {
+      "symbol": "300285.SZ",
+      "kind": "stock",
+      "median_amount_cny": 8127550969.635,
+      "name": "国瓷材料"
+    },
+    {
+      "symbol": "002281.SZ",
+      "kind": "stock",
+      "median_amount_cny": 8031274230.754999,
+      "name": "光迅科技"
+    },
+    {
+      "symbol": "002475.SZ",
+      "kind": "stock",
+      "median_amount_cny": 7873872632.325,
+      "name": "立讯精密"
+    },
+    {
+      "symbol": "159920.SZ",
+      "kind": "etf",
+      "median_amount_cny": null,
+      "name": null
+    },
+    {
+      "symbol": "159941.SZ",
+      "kind": "etf",
+      "median_amount_cny": null,
+      "name": null
+    },
+    {
+      "symbol": "511010.SH",
+      "kind": "etf",
+      "median_amount_cny": null,
+      "name": null
+    },
+    {
+      "symbol": "511260.SH",
+      "kind": "etf",
+      "median_amount_cny": null,
+      "name": null
+    },
+    {
+      "symbol": "511380.SH",
+      "kind": "etf",
+      "median_amount_cny": null,
+      "name": null
+    },
+    {
+      "symbol": "511880.SH",
+      "kind": "etf",
+      "median_amount_cny": null,
+      "name": null
+    },
+    {
+      "symbol": "511990.SH",
+      "kind": "etf",
+      "median_amount_cny": null,
+      "name": null
+    },
+    {
+      "symbol": "513050.SH",
+      "kind": "etf",
+      "median_amount_cny": null,
+      "name": null
+    },
+    {
+      "symbol": "513100.SH",
+      "kind": "etf",
+      "median_amount_cny": null,
+      "name": null
+    },
+    {
+      "symbol": "513180.SH",
+      "kind": "etf",
+      "median_amount_cny": null,
+      "name": null
+    },
+    {
+      "symbol": "513330.SH",
+      "kind": "etf",
+      "median_amount_cny": null,
+      "name": null
+    },
+    {
+      "symbol": "513500.SH",
+      "kind": "etf",
+      "median_amount_cny": null,
+      "name": null
+    },
+    {
+      "symbol": "600000.SH",
+      "kind": "stock",
+      "median_amount_cny": 674446980.0,
+      "name": "浦发银行"
+    },
+    {
+      "symbol": "002027.SZ",
+      "kind": "stock",
+      "median_amount_cny": 856811717.46,
+      "name": "分众传媒"
+    },
+    {
+      "symbol": "300604.SZ",
+      "kind": "stock",
+      "median_amount_cny": 7717107349.825,
+      "name": "长川科技"
+    },
+    {
+      "symbol": "688041.SH",
+      "kind": "stock",
+      "median_amount_cny": 7652823085.0,
+      "name": "海光信息"
+    },
+    {
+      "symbol": "002463.SZ",
+      "kind": "stock",
+      "median_amount_cny": 7506773411.1,
+      "name": "沪电股份"
+    },
+    {
+      "symbol": "688498.SH",
+      "kind": "stock",
+      "median_amount_cny": 7364534831.5,
+      "name": "源杰科技"
+    },
+    {
+      "symbol": "688347.SH",
+      "kind": "stock",
+      "median_amount_cny": 7175905113.0,
+      "name": "华虹宏力"
+    },
+    {
+      "symbol": "002185.SZ",
+      "kind": "stock",
+      "median_amount_cny": 7158461839.955,
+      "name": "华天科技"
+    },
+    {
+      "symbol": "000977.SZ",
+      "kind": "stock",
+      "median_amount_cny": 7115982123.835,
+      "name": "浪潮信息"
+    },
+    {
+      "symbol": "000988.SZ",
+      "kind": "stock",
+      "median_amount_cny": 7094127959.059999,
+      "name": "华工科技"
+    },
+    {
+      "symbol": "000636.SZ",
+      "kind": "stock",
+      "median_amount_cny": 6840757372.125,
+      "name": "风华高科"
+    },
+    {
+      "symbol": "301526.SZ",
+      "kind": "stock",
+      "median_amount_cny": 6471808170.005,
+      "name": "国际复材"
+    },
+    {
+      "symbol": "300274.SZ",
+      "kind": "stock",
+      "median_amount_cny": 6384847524.85,
+      "name": "阳光电源"
+    },
+    {
+      "symbol": "300223.SZ",
+      "kind": "stock",
+      "median_amount_cny": 6337467184.65,
+      "name": "北京君正"
+    },
+    {
+      "symbol": "000021.SZ",
+      "kind": "stock",
+      "median_amount_cny": 6230076116.39,
+      "name": "深科技"
+    },
+    {
+      "symbol": "600667.SH",
+      "kind": "stock",
+      "median_amount_cny": 6150484689.0,
+      "name": "太极实业"
+    },
+    {
+      "symbol": "300475.SZ",
+      "kind": "stock",
+      "median_amount_cny": 6057165648.975,
+      "name": "香农芯创"
+    },
+    {
+      "symbol": "002428.SZ",
+      "kind": "stock",
+      "median_amount_cny": 6004328319.914999,
+      "name": "云南锗业"
+    },
+    {
+      "symbol": "688766.SH",
+      "kind": "stock",
+      "median_amount_cny": 5972383564.0,
+      "name": "普冉股份"
+    },
+    {
+      "symbol": "300059.SZ",
+      "kind": "stock",
+      "median_amount_cny": 5632137104.7300005,
+      "name": "东方财富"
+    },
+    {
+      "symbol": "600105.SH",
+      "kind": "stock",
+      "median_amount_cny": 5528647428.0,
+      "name": "永鼎股份"
+    },
+    {
+      "symbol": "300857.SZ",
+      "kind": "stock",
+      "median_amount_cny": 5500074257.93,
+      "name": "协创数据"
+    },
+    {
+      "symbol": "002407.SZ",
+      "kind": "stock",
+      "median_amount_cny": 5467542836.155001,
+      "name": "多氟多"
+    },
+    {
+      "symbol": "601869.SH",
+      "kind": "stock",
+      "median_amount_cny": 5453576201.5,
+      "name": "长飞光纤"
+    },
+    {
+      "symbol": "002409.SZ",
+      "kind": "stock",
+      "median_amount_cny": 5316676313.52,
+      "name": "雅克科技"
+    },
+    {
+      "symbol": "688072.SH",
+      "kind": "stock",
+      "median_amount_cny": 5293173335.5,
+      "name": "拓荆科技"
+    },
+    {
+      "symbol": "000657.SZ",
+      "kind": "stock",
+      "median_amount_cny": 5288867136.43,
+      "name": "中钨高新"
+    },
+    {
+      "symbol": "688146.SH",
+      "kind": "stock",
+      "median_amount_cny": 5087864503.0,
+      "name": "中船特气"
+    },
+    {
+      "symbol": "000063.SZ",
+      "kind": "stock",
+      "median_amount_cny": 5012755466.93,
+      "name": "中兴通讯"
+    },
+    {
+      "symbol": "002008.SZ",
+      "kind": "stock",
+      "median_amount_cny": 4978566419.175,
+      "name": "大族激光"
+    },
+    {
+      "symbol": "600519.SH",
+      "kind": "stock",
+      "median_amount_cny": 4906207971.5,
+      "name": "贵州茅台"
+    },
+    {
+      "symbol": "600206.SH",
+      "kind": "stock",
+      "median_amount_cny": 4905988174.5,
+      "name": "有研新材"
+    },
+    {
+      "symbol": "603019.SH",
+      "kind": "stock",
+      "median_amount_cny": 4707272406.5,
+      "name": "中科曙光"
+    },
+    {
+      "symbol": "300666.SZ",
+      "kind": "stock",
+      "median_amount_cny": 4670223530.8,
+      "name": "江丰电子"
+    },
+    {
+      "symbol": "301217.SZ",
+      "kind": "stock",
+      "median_amount_cny": 4648177678.24,
+      "name": "铜冠铜箔"
+    },
+    {
+      "symbol": "300433.SZ",
+      "kind": "stock",
+      "median_amount_cny": 4610126687.08,
+      "name": "蓝思科技"
+    },
+    {
+      "symbol": "603993.SH",
+      "kind": "stock",
+      "median_amount_cny": 4598091398.5,
+      "name": "洛阳钼业"
+    },
+    {
+      "symbol": "600276.SH",
+      "kind": "stock",
+      "median_amount_cny": 4595872040.0,
+      "name": "恒瑞医药"
+    },
+    {
+      "symbol": "603083.SH",
+      "kind": "stock",
+      "median_amount_cny": 4579480274.0,
+      "name": "剑桥科技"
+    },
+    {
+      "symbol": "688521.SH",
+      "kind": "stock",
+      "median_amount_cny": 4543175954.0,
+      "name": "芯原股份"
+    },
+    {
+      "symbol": "002436.SZ",
+      "kind": "stock",
+      "median_amount_cny": 4465715117.12,
+      "name": "兴森科技"
+    },
+    {
+      "symbol": "300136.SZ",
+      "kind": "stock",
+      "median_amount_cny": 4402325428.915,
+      "name": "信维通信"
+    },
+    {
+      "symbol": "002916.SZ",
+      "kind": "stock",
+      "median_amount_cny": 4256632317.285,
+      "name": "深南电路"
+    },
+    {
+      "symbol": "688048.SH",
+      "kind": "stock",
+      "median_amount_cny": 4218417530.5,
+      "name": "长光华芯"
+    },
+    {
+      "symbol": "601318.SH",
+      "kind": "stock",
+      "median_amount_cny": 4143545809.0,
+      "name": "中国平安"
+    },
+    {
+      "symbol": "603629.SH",
+      "kind": "stock",
+      "median_amount_cny": 4130952522.5,
+      "name": "利通电子"
+    },
+    {
+      "symbol": "002851.SZ",
+      "kind": "stock",
+      "median_amount_cny": 4072290042.145,
+      "name": "麦格米特"
+    },
+    {
+      "symbol": "688017.SH",
+      "kind": "stock",
+      "median_amount_cny": 4035068151.5,
+      "name": "绿的谐波"
+    },
+    {
+      "symbol": "300058.SZ",
+      "kind": "stock",
+      "median_amount_cny": 3944962219.425,
+      "name": "蓝色光标"
+    },
+    {
+      "symbol": "688361.SH",
+      "kind": "stock",
+      "median_amount_cny": 3907557437.0,
+      "name": "中科飞测"
+    }
+  ]
+}
