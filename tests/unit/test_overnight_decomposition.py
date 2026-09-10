@@ -53,3 +53,43 @@ def test_duplicate_input_rejected():
     days, bars = sample()
     with pytest.raises(ValueError, match="Duplicate"):
         compute_overnight_decomposition(pl.concat([bars, bars.head(1)]), sessions=days)
+
+
+def test_twenty_session_intraday_matches_scalar_product_and_shared_gap_rule():
+    import math
+
+    days=tuple(dt.date(2024,1,1)+dt.timedelta(days=i) for i in range(23))
+    bars=pl.DataFrame([dict(symbol='A',trade_date=d,open=10.+i%3,
+        close=(10.+i%3)*(1.+((i%5)-2)*.01),adj_factor=1.+(i>=10)) for i,d in enumerate(days)])
+    result=compute_overnight_decomposition(bars,sessions=days)
+    expected=math.prod(row['close']/row['open'] for row in bars.slice(1,20).to_dicts())-1
+    assert result['intraday_return_20'][20]==pytest.approx(expected,abs=1e-12)
+    gap=compute_overnight_decomposition(bars.filter(pl.col('trade_date')!=days[10]),sessions=days)
+    assert all(gap[c][20] is None for c in ('overnight_return_20','intraday_return_20','total_return_20'))
+
+
+def test_intraday_config_preserves_control_and_rejects_scope_changes():
+    import copy
+    from pathlib import Path
+    import tomllib
+
+    from quant.research.classic_monthly_baseline import validate_overnight_comparison
+
+    config=tomllib.loads(Path('configs/research/b88_intraday_reversal_20260910.toml').read_text())
+    prior=tomllib.loads(Path('configs/research/b36_overnight_reversal_20260909.toml').read_text())
+    for section in ('data','universe','costs','walk_forward','portfolio','composite','eligibility'):
+        assert config[section]==prior[section]
+    assert validate_overnight_comparison(prior)=='overnight'
+    assert validate_overnight_comparison(config)=='intraday'
+    assert prior['admission']['maximum_conclusion']=='RESEARCH_ONLY'
+    assert config['admission']['maximum_conclusion']=='PAPER_CANDIDATE'
+    assert config['admission']['maximum_annual_one_way_turnover']==6.
+    for section,key,value in [('overnight_decomposition','component','both'),
+        ('overnight_decomposition','parameter_grid',[10,20]),('overnight_decomposition','window_sessions',10),
+        ('factors','names',['overnight_return_20']),('factors','directions',[1]),
+        ('overnight_decomposition','paired_pool','available_only'),('portfolio','retention_rank',75),
+        ('admission','comparison','510300'),('admission','positive_paired_compound_increment_1x',False)]:
+        changed=copy.deepcopy(config)
+        changed[section][key]=value
+        with pytest.raises(ValueError):
+            validate_overnight_comparison(changed)

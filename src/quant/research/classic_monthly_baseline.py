@@ -308,11 +308,34 @@ def portfolio_admission_summary(results: list[dict[str, Any]], comparison: str =
             "passed": one > 0 and two > 0 and excess > 0}
 
 
+def validate_overnight_comparison(config: dict[str, Any]) -> str:
+    settings = config["overnight_decomposition"]
+    component = settings.get("component", "overnight")
+    expected = {"window_sessions": 20, "parameter_grid": [20],
+        "price_adjustment": "same_date_factor_on_open_and_close",
+        "missing_session": "invalidate_component_and_total_return_windows",
+        "availability": "signal_date_close", "direction": "fixed_negative_no_flip",
+        "paired_pool": "same_complete_overnight_intraday_total_return_and_historical_name_pool"}
+    if (component not in ("overnight", "intraday")
+        or any(settings.get(k) != v for k, v in expected.items())
+        or config["factors"]["names"] != [f"{component}_return_20"]
+        or config["factors"]["directions"] != [-1]
+        or config["portfolio"]["top_k"] != 50 or config["portfolio"].get("retention_rank", 50) != 50
+        or "execution_months" in config["portfolio"]
+        or config["admission"].get("comparison") != "total_reversal"
+        or any(config["admission"].get(k) is not True for k in (
+            "positive_net_return_1x", "positive_net_return_2x", "positive_paired_compound_increment_1x"))):
+        raise ValueError("Decomposition comparison requires fixed negative 20-session ranking and a complete paired pool")
+    return str(component)
+
+
 def run_baseline(
     *, config: dict[str, Any], config_path: Path, project_root: Path,
     data_root: Path, artifact_root: Path,
 ) -> int:
     data, universe, portfolio = config["data"], config["universe"], config["portfolio"]
+    if "overnight_decomposition" in config:
+        validate_overnight_comparison(config)
     cash_roa_buffer = "cash_roa_buffer" in config
     alpha101_041_buffer = "alpha101_041_buffer" in config
     alpha101_012_buffer = "alpha101_012_buffer" in config
@@ -641,11 +664,6 @@ def run_baseline(
     if "overnight_decomposition" in config:
         from quant.factors.overnight_decomposition import compute_overnight_decomposition
 
-        settings = config["overnight_decomposition"]
-        if (settings["window_sessions"] != 20
-            or config["factors"]["names"] != ["overnight_return_20"]
-            or config["factors"]["directions"] != [-1]):
-            raise ValueError("B36 uses fixed 20-session negative overnight-return ranking")
         decomposed = compute_overnight_decomposition(bars, sessions=all_sessions)
         factors = factors.join(decomposed, on=["symbol", "trade_date"], how="left", validate="1:1")
         extra_outputs.append(("overnight_decomposition", decomposed))
@@ -963,7 +981,9 @@ def run_baseline(
             paired_comparison, paired_strategy = "reversal_unfiltered", "b35_paired_unfiltered_reversal"
         if "overnight_decomposition" in config:
             paired_components = (("total_return_20", -1),)
-            paired_comparison, paired_strategy = "total_reversal", "b36_paired_total_return_reversal"
+            paired_comparison = "total_reversal"
+            paired_strategy = ("b88_paired_total_return_reversal" if config["overnight_decomposition"].get("component") == "intraday"
+                               else "b36_paired_total_return_reversal")
         if "high52" in config:
             paired_components = (("momentum_126", 1),)
             paired_comparison, paired_strategy = "momentum_126", "b37_paired_six_month_momentum"
@@ -1103,7 +1123,7 @@ def run_baseline(
     conclusion: Literal["RESEARCH_ONLY", "REJECTED", "PAPER_CANDIDATE"] = "RESEARCH_ONLY" if passed else "REJECTED"
     if (config["admission"].get("maximum_conclusion") == "PAPER_CANDIDATE"
         and meets_portfolio_candidate(results, config["admission"])
-        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_zscore", "debt_ebitda", "low_beta", "turnover_change", "return_turnover", "lowvol120", "lowvol60_composition", "momentum_12_1", "alpha101_001", "alpha101_026", "alpha101_046", "alpha101_054", "alpha101_055", "alpha101_006", "alpha101_012", "alpha101_041")) or passed)):
+        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_zscore", "debt_ebitda", "low_beta", "turnover_change", "return_turnover", "lowvol120", "lowvol60_composition", "momentum_12_1", "alpha101_001", "alpha101_026", "alpha101_046", "alpha101_054", "alpha101_055", "alpha101_006", "alpha101_012", "alpha101_041", "overnight_decomposition")) or passed)):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
         "Fixed Top75 retention of prior four-factor targets is compared with the frozen Alpha101 #41 unbuffered portfolio; historical periods were inspected previously."
