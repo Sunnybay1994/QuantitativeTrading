@@ -5,6 +5,23 @@ import pytest
 from quant.data.stock_execution_inputs import deduplicate_dividend_notices, resolve_same_day_dividends
 
 
+def test_shixian_capital_expansion_is_an_ordinary_holder_loss():
+    frame = pl.DataFrame({"symbol": ["600462.SH"] * 2,
+        "ann_date": [dt.date(2012,10,31)] * 2,
+        "record_date": [dt.date(2012,10,25)] * 2,
+        "ex_date": [dt.date(2012,11,2)] * 2,
+        "pay_date": [None] * 2, "div_cash": [0.] * 2,
+        "share_ratio": [.3] * 2,
+        "share_list_date": [dt.date(2012,11,5),dt.date(2012,11,19)]})
+    result = resolve_same_day_dividends(frame)
+    assert result.height == 1 and result["share_ratio"].item() == -.2
+    assert result["record_date"].item() == dt.date(2012,2,8)
+    assert result["ex_date"].item() == dt.date(2012,10,30)
+    assert result["ann_date"].item() <= result["ex_date"].item()
+    with pytest.raises(ValueError):
+        resolve_same_day_dividends(frame.with_columns(pl.lit(.4).alias("share_ratio")))
+
+
 def test_identical_plan_keeps_latest_notice_without_merging_other_periods_or_terms():
     row = {"ts_code":"300120.SZ", "end_date":"20131231", "ann_date":"20140328",
         "imp_ann_date":"20140604", "ex_date":"20140611", "div_proc":"实施",

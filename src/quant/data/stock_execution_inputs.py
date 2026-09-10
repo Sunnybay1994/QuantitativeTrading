@@ -54,6 +54,25 @@ def resolve_same_day_dividends(frame: pl.DataFrame) -> pl.DataFrame:
     for symbol, ex_date, _ in duplicates.iter_rows():
         match = (pl.col("symbol") == symbol) & (pl.col("ex_date") == ex_date)
         group = frame.filter(match)
+        if (symbol, ex_date) == ("600462.SH", dt.date(2012,11,2)):
+            if (group.height != 2 or group["share_ratio"].to_list() != [.3,.3]
+                or sorted(group["share_list_date"].to_list()) != [dt.date(2012,11,5),dt.date(2012,11,19)]
+                or group["ann_date"].unique().to_list() != [dt.date(2012,10,31)]
+                or group["record_date"].unique().to_list() != [dt.date(2012,10,25)]
+                or group["div_cash"].to_list() != [0.,0.]
+                or group.drop("share_list_date").unique().height != 1):
+                raise ValueError("Unexpected Shixian restructuring distribution")
+            # Ordinary holders surrender 20% of existing shares; the 30%
+            # capital expansion belongs entirely to investors/creditors.
+            # Recognize on the session after the Oct 29 completion notice.
+            corrected = group.head(1).with_columns(
+                pl.lit(dt.date(2012,10,30)).alias("ann_date"),
+                pl.lit(dt.date(2012,10,30)).alias("ex_date"),
+                pl.lit(dt.date(2012,2,8)).alias("record_date"),
+                pl.lit(None, dtype=pl.Date).alias("share_list_date"),
+                pl.lit(-.2).alias("share_ratio"))
+            frame = pl.concat([frame.filter(~match), corrected])
+            continue
         restructuring = {
             ("000818.SZ", dt.date(2011,1,25)): ([.4,1.],.4),
             ("000615.SZ", dt.date(2025,12,29)): ([.1,1.34278],.1),
@@ -231,8 +250,11 @@ def prepare_stock_execution_inputs(
         pl.col("div_listdate").str.to_date("%Y%m%d").alias("share_list_date"),
         pl.col("cash_div_tax").cast(pl.Float64).fill_null(0.0).alias("div_cash"),
         pl.col("stk_div").cast(pl.Float64).fill_null(0.0).alias("share_ratio"),
-    ).filter(pl.col("ex_date").is_between(start, end)).unique()
-    dividend_frame = resolve_same_day_dividends(dividend_frame)
+    ).filter(pl.col("ex_date").is_between(start, end) | (
+        (pl.col("symbol") == "600462.SH") & (pl.col("ex_date") == dt.date(2012,11,2))
+        & pl.lit(start <= dt.date(2012,10,30) <= end)
+    )).unique()
+    dividend_frame = resolve_same_day_dividends(dividend_frame).filter(pl.col("ex_date").is_between(start, end))
     dividend_frame = ordinary_holder_distributions(dividend_frame)
     invalid_dates = dividend_frame.filter(
         pl.col("ann_date").is_null() | pl.col("record_date").is_null()

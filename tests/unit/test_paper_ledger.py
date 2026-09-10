@@ -50,6 +50,48 @@ def test_dividend_is_equity_on_ex_date_but_not_spendable_until_pay_date():
     assert state["nav"][-1]["unit_nav"] == 1.0
 
 
+def test_delayed_share_surrender_reduces_nav_without_compensating_mark():
+    kwargs, initial = inputs()
+    kwargs["bars"] = kwargs["bars"].with_columns([
+        pl.lit(10.).alias(c) for c in ("open", "high", "low", "close")])
+    kwargs["dividends"] = kwargs["dividends"].with_columns(
+        pl.lit(D3).alias("ex_date"), pl.lit(D3).alias("ann_date"),
+        pl.lit(0.).alias("div_cash"), pl.lit(-.2).alias("share_ratio"))
+    initial["holdings"][SYMBOL]["quantity"] = 103
+    state, _ = advance(date=D1, state=initial, **kwargs)
+    assert state["holdings"][SYMBOL]["quantity"] == 103
+    assert state["nav"][-1]["equity"] == 1130.
+    state, _ = advance(date=D2, state=state, **kwargs)
+    assert state["holdings"][SYMBOL]["quantity"] == 103
+    state, _ = advance(date=D3, state=state, **kwargs)
+    assert state["holdings"][SYMBOL]["quantity"] == 82
+    assert state["holdings"][SYMBOL]["mark_price"] == 10.
+    assert state["cash"] == 100.
+    assert state["nav"][-1]["equity"] == 920.
+    assert not state.get("share_reduction_entitlements")
+    with pytest.raises(ValueError, match="record-date holdings snapshot"):
+        advance(date=D3, state=initial, **kwargs)
+
+
+def test_reduction_rejects_changed_holdings_and_preserves_zero_entitlement():
+    kwargs, state = inputs()
+    kwargs["dividends"] = kwargs["dividends"].with_columns(
+        pl.lit(D3).alias("ex_date"), pl.lit(0.).alias("div_cash"),
+        pl.lit(-.2).alias("share_ratio"))
+    state, _ = advance(date=D1, state=state, **kwargs)
+    state["holdings"][SYMBOL]["quantity"] = 50
+    with pytest.raises(ValueError, match="holdings changed"):
+        advance(date=D3, state=state, **kwargs)
+    kwargs, empty = inputs()
+    kwargs["dividends"] = kwargs["dividends"].with_columns(
+        pl.lit(D3).alias("ex_date"), pl.lit(0.).alias("div_cash"),
+        pl.lit(-.2).alias("share_ratio"))
+    empty["holdings"] = {}
+    empty, _ = advance(date=D1, state=empty, **kwargs)
+    empty, _ = advance(date=D3, state=empty, **kwargs)
+    assert not empty["holdings"] and empty["cash"] == 100.
+
+
 def test_weekend_final_dividend_terms_apply_once_on_monday_ex_date():
     kwargs, state = inputs()
     friday, monday, tuesday = dt.date(2025, 7, 4), dt.date(2025, 7, 7), dt.date(2025, 7, 8)
