@@ -15,6 +15,16 @@ def test_buffer_admission_uses_paired_compounds():
     assert result['excess_return_1x'] == pytest.approx(1.12**3 - 1.1**3)
 
 
+def test_negative_single_cost_return_does_not_pass_on_relative_improvement():
+    sample = rows()
+    for row in sample:
+        if row["comparison"] == "cv20_unbuffered":
+            row["total_return"] = -.10
+        elif row["cost_multiplier"] == 1:
+            row["total_return"] = -.05
+    assert summarize_cv20_buffer(sample)["passed"] is False
+
+
 @pytest.mark.parametrize('change', ['equal_turnover', 'higher_turnover', 'equal_return', 'zero_stress', 'missing_pair'])
 def test_buffer_rejects_failed_fixed_conditions(change):
     sample = rows()

@@ -203,6 +203,21 @@ def validate_cash_factor_components(
         raise ValueError("Cash factor direction and component sets are fixed")
 
 
+def validate_cash_roa_buffer(config: dict[str, Any]) -> None:
+    """The B53 treatment changes only retention from Top50 to Top100."""
+    if (config.get("financials", {}).get("factor_family") != "cash_roa"
+        or config["cash_roa_buffer"] != {
+            "comparison": "cash_roa_unbuffered", "retention_rule": "prior_targets_top100_then_fill"}
+        or config["admission"].get("comparison") != "cash_roa_unbuffered"
+        or config["portfolio"].get("retention_rank") != 100
+        or config["portfolio"]["top_k"] != 50
+        or "execution_months" in config["portfolio"]
+        or "cash_roa_composition" in config or "cash_yield_composition" in config):
+        raise ValueError("B53 requires fixed monthly Top50 with Top100 retention")
+    validate_cash_factor_components(config["factors"]["names"], config["factors"]["directions"],
+                                    True, factor="pit_cash_roa_ttm")
+
+
 def portfolio_admission_summary(results: list[dict[str, Any]], comparison: str = "510300") -> dict[str, Any]:
     """Require profitable 1x/2x replay and 1x compounded excess over the named replay."""
     selected = [r for r in results if r["comparison"] == comparison and r["cost_multiplier"] == 1.0]
@@ -223,6 +238,9 @@ def run_baseline(
     data_root: Path, artifact_root: Path,
 ) -> int:
     data, universe, portfolio = config["data"], config["universe"], config["portfolio"]
+    cash_roa_buffer = "cash_roa_buffer" in config
+    if cash_roa_buffer:
+        validate_cash_roa_buffer(config)
     cv20_buffer = config["admission"].get("comparison") == "cv20_unbuffered"
     cv20_bimonthly = config["admission"].get("comparison") == "cv20_monthly_buffered"
     low_volatility_filter = config.get("low_volatility_filter")
@@ -315,10 +333,10 @@ def run_baseline(
                              "valid_values": "finite_ocf_both_assets_positive"}
         if any(config.get("cash_roa", {}).get(k) != v for k, v in expected_cash_roa.items()):
             raise ValueError("Unsupported cash ROA configuration")
-        composition = "cash_roa_composition" in config
+        composition = "cash_roa_composition" in config or cash_roa_buffer
         validate_cash_factor_components(config["factors"]["names"], config["factors"]["directions"],
                                         composition, factor="pit_cash_roa_ttm")
-        if composition and (config["cash_roa_composition"] != {
+        if "cash_roa_composition" in config and (config["cash_roa_composition"] != {
             "comparison": "three_factor", "eligibility": "complete_four_factor", "weights": "equal_zscore"}
             or config["admission"].get("comparison") != "three_factor"):
             raise ValueError("Cash ROA composition requires the paired complete-case baseline")
@@ -535,7 +553,7 @@ def run_baseline(
         eligible = exclude_historical_risk_names(eligible, names)
         extra_inputs.append(("name-history", names, ("symbol", "start_date", "name"), "start_date"))
     for family, cash_factor in (("cash_roa", "pit_cash_roa_ttm"), ("cash_yield", "pit_cash_yield_ttm")):
-        if f"{family}_composition" in config:
+        if f"{family}_composition" in config or (family == "cash_roa" and cash_roa_buffer):
             eligible = eligible.filter(pl.all_horizontal(pl.col(name).is_finite() for name in
                 (cash_factor, "alpha158_std20", "alpha158_roc20", "alpha158_rsv20")))
             extra_outputs.append((f"{family}_composition_pool", eligible))
@@ -588,9 +606,13 @@ def run_baseline(
     if ("turnover_variability" in config or "information_discreteness" in config
         or low_volatility_filter or "overnight_decomposition" in config or "high52" in config
         or "small_value_quality" in config or "cash_roa_composition" in config
-        or "cash_yield_composition" in config):
+        or "cash_yield_composition" in config or cash_roa_buffer):
         paired_components: tuple[tuple[str, int], ...] = (
             ("alpha158_std20", -1), ("alpha158_roc20", 1), ("alpha158_rsv20", -1))
+        if cash_roa_buffer:
+            paired_components = (("alpha158_std20", -1), ("alpha158_roc20", 1),
+                                 ("alpha158_rsv20", -1), ("pit_cash_roa_ttm", 1))
+            paired_comparison, paired_strategy = "cash_roa_unbuffered", "b53_paired_unbuffered_cash_roa"
         if "cash_roa_composition" in config:
             paired_strategy = "b51_paired_three_factor_cash_roa_cohort"
         if "cash_yield_composition" in config:
@@ -730,7 +752,7 @@ def run_baseline(
                   and sum(r["rank_ic_mean"] > 0 for r in primary) >= config["admission"]["minimum_positive_test_folds"]
                   and max(r["median_abs_rank_corr"] for r in redundancy_rows)
                   < config["admission"]["maximum_absolute_rank_correlation"])
-    elif cv20_buffer or cv20_bimonthly:
+    elif cv20_buffer or cv20_bimonthly or cash_roa_buffer:
         from quant.research.monthly_cv20_buffer import summarize_cv20_buffer
 
         portfolio_admission = summarize_cv20_buffer(
@@ -749,7 +771,7 @@ def run_baseline(
     conclusion: Literal["RESEARCH_ONLY", "REJECTED", "PAPER_CANDIDATE"] = "RESEARCH_ONLY" if passed else "REJECTED"
     if (config["admission"].get("maximum_conclusion") == "PAPER_CANDIDATE"
         and meets_portfolio_candidate(results, config["admission"])
-        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition")) or passed)):
+        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer")) or passed)):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
         "Daily-return skew is distinct from intraday realized skew; this is a historical replication in previously inspected periods."

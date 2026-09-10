@@ -3,6 +3,29 @@ import pytest
 from quant.research.classic_monthly_baseline import portfolio_admission_summary, validate_turnover_components
 
 
+def test_cash_roa_buffer_config_keeps_rank_and_control_fixed():
+    import copy
+    import tomllib
+    from pathlib import Path
+
+    from quant.research.classic_monthly_baseline import validate_cash_roa_buffer
+
+    path = Path(__file__).resolve().parents[2] / "configs/research/b53_cash_roa_buffer100_20260910.toml"
+    config = tomllib.loads(path.read_text(encoding="utf-8"))
+    validate_cash_roa_buffer(config)
+    for section, key, value in (
+        ("portfolio", "retention_rank", 75),
+        ("portfolio", "top_k", 40),
+        ("portfolio", "execution_months", [1, 3, 5, 7, 9, 11]),
+        ("financials", "factor_family", "cash_yield"),
+        ("admission", "comparison", "three_factor"),
+    ):
+        changed = copy.deepcopy(config)
+        changed[section][key] = value
+        with pytest.raises(ValueError, match="B53"):
+            validate_cash_roa_buffer(changed)
+
+
 @pytest.mark.parametrize("factor", ["pit_cash_roa_ttm", "pit_cash_yield_ttm"])
 def test_cash_single_factor_and_composition_are_fixed(factor):
     from quant.research.classic_monthly_baseline import validate_cash_factor_components
