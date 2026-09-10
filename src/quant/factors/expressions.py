@@ -171,8 +171,11 @@ class ExpressionEngine:
                     return pl.lit(None, dtype=pl.Float64)
                 fn = pl.rolling_corr if name == "ts_corr" else pl.rolling_cov
                 y = self._node(args[1])
-                x_range = (x.rolling_max(n, min_samples=n) - x.rolling_min(n, min_samples=n)).over("symbol")
-                y_range = (y.rolling_max(n, min_samples=n) - y.rolling_min(n, min_samples=n)).over("symbol")
+                # Arithmetic paths can make the same price differ by one ULP.
+                # Use the ranking precision for the constant-window decision.
+                stable_x, stable_y = x.round_sig_figs(10), y.round_sig_figs(10)
+                x_range = (stable_x.rolling_max(n, min_samples=n) - stable_x.rolling_min(n, min_samples=n)).over("symbol")
+                y_range = (stable_y.rolling_max(n, min_samples=n) - stable_y.rolling_min(n, min_samples=n)).over("symbol")
                 result = fn(x, y, window_size=n, min_samples=n, ddof=1).over("symbol")
                 if name == "ts_corr":
                     return pl.when((x_range > 0) & (y_range > 0)).then(result.clip(-1, 1))
