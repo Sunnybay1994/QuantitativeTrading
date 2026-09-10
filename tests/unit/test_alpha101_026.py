@@ -152,3 +152,45 @@ def test_four_factor_complete_pool_is_restandardized_for_three_factor_control() 
             start=dt.date(2023,2,1),end=dt.date(2023,2,1),top_k=2,strategy_name='fixture')
         assert 'D' not in targets['symbol'].to_list()
         assert targets['weight'].sum()==1.
+
+
+def test_top75_buffer_configuration_keeps_scores_and_requires_lower_turnover() -> None:
+    base=tomllib.loads(Path('configs/research/b69_alpha101_026_composite_20260910.toml').read_text())
+    config=tomllib.loads(Path('configs/research/b70_alpha101_026_buffer75_20260910.toml').read_text())
+    for section in ('alpha101_026','factors','composite','data','universe','costs','walk_forward'):
+        assert config[section]==base[section]
+    validate_alpha101_026(config)
+    for section,key,value in [('portfolio','retention_rank',100),('portfolio','execution_months',[1,3,5,7,9,11]),
+        ('alpha101_026_buffer','retention_rule','actual_holdings_top75'),
+        ('admission','comparison','three_factor'),('admission','require_lower_turnover_every_fold',False)]:
+        changed=copy.deepcopy(config)
+        changed[section][key]=value
+        with pytest.raises(ValueError):
+            validate_alpha101_026(changed)
+
+
+def test_top75_retains_prior_targets_then_fills_and_resets_each_fold() -> None:
+    from quant.research.classic_factor_composite import build_monthly_zscore_targets
+
+    dates=[dt.date(2023,1,31),dt.date(2023,2,28),dt.date(2023,3,31)]
+    executions=[dt.date(2023,2,1),dt.date(2023,3,1),dt.date(2023,4,1)]
+    sessions=tuple(sorted(dates+executions))
+    rows=[]
+    for month,date in enumerate(dates):
+        for i in range(1,81):
+            rank=i if month==0 else (i+25 if i<=50 else i-50 if i<=75 else i)
+            if month==2 and i==1:
+                rank=81
+            rows.append(dict(symbol=f'S{i:02d}',trade_date=date,equal_zscore=-float(rank)))
+    panel=pl.DataFrame(rows)
+    args=dict(sessions=sessions,start=executions[0],end=executions[-1],top_k=50,strategy_name='fixture')
+    buffered=build_monthly_zscore_targets(panel,retention_rank=75,**args)
+    initial={f'S{i:02d}' for i in range(1,51)}
+    assert set(buffered.filter(pl.col('as_of')==dates[0])['symbol'])==initial
+    assert set(buffered.filter(pl.col('as_of')==dates[1])['symbol'])==initial
+    assert set(buffered.filter(pl.col('as_of')==dates[2])['symbol'])==(initial-{'S01'})|{'S51'}
+    restarted=build_monthly_zscore_targets(panel,retention_rank=75,
+        **{**args,'start':executions[1],'end':executions[1]})
+    plain=build_monthly_zscore_targets(panel,**{**args,'start':executions[1],'end':executions[1]})
+    assert restarted.equals(plain)
+    assert set(restarted['symbol'])!=initial
