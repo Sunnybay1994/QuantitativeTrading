@@ -3,6 +3,21 @@ import pytest
 from quant.research.classic_monthly_baseline import portfolio_admission_summary, validate_turnover_components
 
 
+def test_cash_roa_single_factor_and_composition_are_fixed():
+    from quant.research.classic_monthly_baseline import validate_cash_roa_components
+
+    names = ["alpha158_std20", "alpha158_roc20", "alpha158_rsv20", "pit_cash_roa_ttm"]
+    validate_cash_roa_components(["pit_cash_roa_ttm"], [1], False)
+    validate_cash_roa_components(names, [-1, 1, -1, 1], True)
+    for invalid_names, directions, composition in (
+        (names, [-1, 1, -1, -1], True),
+        (names, [-1, 1, -1, 1], False),
+        (["pit_cash_roa_ttm"], [1], True),
+    ):
+        with pytest.raises(ValueError, match="fixed"):
+            validate_cash_roa_components(invalid_names, directions, composition)
+
+
 def test_exact_b25_and_b27_components_only():
     validate_turnover_components(["turnover_cv20"], [-1])
     names = ["alpha158_std20", "alpha158_roc20", "alpha158_rsv20", "turnover_cv20"]
