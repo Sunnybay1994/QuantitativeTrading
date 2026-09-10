@@ -7,6 +7,35 @@ import numpy as np
 import polars as pl
 
 
+def _annualized_total_volatility(window: int, annualization: int) -> pl.Expr:
+    return pl.col("_return").rolling_std(window, ddof=1).over("symbol") * annualization ** .5
+
+
+def compute_total_volatility_windows(
+    bars: pl.DataFrame, *, sessions: tuple[dt.date, ...],
+) -> pl.DataFrame:
+    """Fixed 60/120-session total volatility; reuse the B3 standard-deviation rule."""
+    keys = ["symbol", "trade_date"]
+    if not sessions or tuple(sorted(set(sessions))) != sessions:
+        raise ValueError("Sessions must be nonempty, unique and increasing")
+    if bars.select(keys).is_duplicated().any():
+        raise ValueError("Duplicate stock bars")
+    if bars.select(pl.any_horizontal(pl.col(k).is_null() for k in keys).any()).item():
+        raise ValueError("Missing stock bar keys")
+    price = pl.col("close") * pl.col("adj_factor")
+    grid = bars.select("symbol").unique().join(pl.DataFrame({"trade_date": sessions}), how="cross").join(
+        bars.select(*keys, "close", "adj_factor"), on=keys, how="left", validate="1:1",
+    ).sort(*keys).with_columns(
+        pl.when(pl.all_horizontal(pl.col(c).is_finite() & (pl.col(c) > 0) for c in ("close", "adj_factor"))
+                & price.is_finite()).then(price).otherwise(None).alias("_price"),
+    ).with_columns((pl.col("_price") / pl.col("_price").shift(1).over("symbol") - 1).alias("_return"))
+    grid = grid.with_columns(pl.when(pl.col("_return").is_finite()).then(pl.col("_return"))
+                             .otherwise(None).alias("_return"))
+    return grid.with_columns(
+        *(_annualized_total_volatility(w, 252).alias(f"realized_volatility_{w}") for w in (60, 120)),
+    ).select(*keys, "realized_volatility_60", "realized_volatility_120")
+
+
 def rolling_residual_volatility(
     y: np.ndarray, x: np.ndarray, *, window: int, annualization: int,
 ) -> np.ndarray:
@@ -90,8 +119,7 @@ def compute_reversal_volatility_factors(
         pl.when(pl.col("_return").is_not_null().cast(pl.Int64).rolling_sum(reversal).over("symbol") == reversal)
         .then(1 - pl.col("_price") / pl.col("_price").shift(reversal).over("symbol"))
         .otherwise(None).alias("reversal_20"),
-        (pl.col("_return").rolling_std(volatility, ddof=1).over("symbol")
-         * settings["annualization_sessions"] ** .5).alias("realized_volatility_60"),
+        _annualized_total_volatility(volatility, settings["annualization_sessions"]).alias("realized_volatility_60"),
     )
     proxies = size_value_proxy_returns(grid, minimum_bucket_symbols=settings["proxy_minimum_bucket_symbols"])
     paired = grid.join(proxies, on="trade_date", how="left").sort("symbol", "trade_date")

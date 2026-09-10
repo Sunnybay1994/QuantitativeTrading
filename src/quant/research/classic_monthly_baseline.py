@@ -32,6 +32,7 @@ from quant.research.run_classic_factors import select_frozen_liquid_universe
 from quant.research.run_s1_walk_forward import metrics
 
 CODE_PATHS = (
+    "src/quant/research/monthly_lowvol120.py",
     "src/quant/factors/return_turnover_correlation.py",
     "src/quant/research/monthly_return_turnover.py",
     "src/quant/factors/classic_third_batch.py",
@@ -396,6 +397,10 @@ def run_baseline(
         if any(config.get("quarterly_roe_stability", {}).get(k) != v for k, v in expected_roe_stability.items()):
             raise ValueError("Unsupported quarterly ROE stability configuration")
         validate_roe_stability_components(config)
+    if "lowvol120" in config:
+        from quant.research.monthly_lowvol120 import validate_lowvol120
+
+        validate_lowvol120(config)
     if "return_turnover" in config:
         from quant.research.monthly_return_turnover import validate_return_turnover
 
@@ -600,6 +605,13 @@ def run_baseline(
         extra_inputs.append(("formation-bars", formation_bars, ("trade_date", "symbol"), "trade_date"))
         extra_outputs.append(("information_monthly_factors", monthly))
         print(f"Computed information discreteness on {monthly['trade_date'].n_unique()} month ends", flush=True)
+    if "lowvol120" in config:
+        from quant.research.monthly_lowvol120 import build_monthly_lowvol120
+
+        monthly = build_monthly_lowvol120(bars, sessions=all_sessions, start=data["research_start"], end=end)
+        factors = factors.join(monthly, on=["symbol", "trade_date"], how="inner", validate="1:1")
+        extra_outputs.append(("lowvol120_factors", monthly))
+        print(f"Computed low volatility on {monthly['trade_date'].n_unique()} month ends", flush=True)
     if "return_turnover" in config:
         from quant.research.monthly_return_turnover import build_monthly_return_turnover
 
@@ -912,9 +924,11 @@ def run_baseline(
     conclusion: Literal["RESEARCH_ONLY", "REJECTED", "PAPER_CANDIDATE"] = "RESEARCH_ONLY" if passed else "REJECTED"
     if (config["admission"].get("maximum_conclusion") == "PAPER_CANDIDATE"
         and meets_portfolio_candidate(results, config["admission"])
-        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_zscore", "debt_ebitda", "low_beta", "turnover_change", "return_turnover")) or passed)):
+        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_zscore", "debt_ebitda", "low_beta", "turnover_change", "return_turnover", "lowvol120")) or passed)):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
+        "Fixed 120-session sample return volatility is a local low-risk replication with 60-session redundancy control; historical periods were inspected previously."
+        if "lowvol120" in config else
         "Fixed daily return/same-day turnover correlation adapts the synchronous price-volume idea; historical periods were inspected previously."
         if "return_turnover" in config else
         "Fixed 20/120-session turnover ratio adapts the roadmap and the literature 20/250 ratio; historical periods were inspected previously."
