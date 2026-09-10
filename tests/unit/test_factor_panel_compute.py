@@ -21,10 +21,14 @@ def test_incremental_matches_full_batch_and_second_call_is_noop(tmp_path, monkey
 
     monkeypatch.setattr(compute, "read_factor_inputs", read)
     config = tmp_path / "refresh.toml"
-    config.write_text('financial_snapshot="fixture"\nfinancial_share_changes_snapshot="fixture"\n')
+    config.write_text('financial_snapshot="fixture"\nfinancial_share_changes_snapshot="fixture"\nfactor_benchmark_snapshot="fixture"\n')
     common = {"refresh_config": config, "library": Path("configs/factors/library"),
               "selected": "all", "start": sessions[0], "artifact_root": tmp_path / "artifacts"}
     for name in ("increment", "full"):
+        benchmark_root = tmp_path / name / "clean/factor_benchmark/fixture"
+        benchmark_root.mkdir(parents=True)
+        bars.filter(pl.col("symbol") == bars["symbol"][0]).with_columns(
+            pl.lit("510300.SH").alias("symbol")).write_parquet(benchmark_root / "bars.parquet")
         industry_root = tmp_path / name / "clean/tushare_industry/fixture"
         industry_root.mkdir(parents=True)
         bars.select("symbol").unique().with_columns(

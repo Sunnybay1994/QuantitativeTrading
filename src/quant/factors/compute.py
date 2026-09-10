@@ -25,6 +25,8 @@ from quant.research.factor_financials import attach_financial_factors, financial
 from quant.factors.pit_quality import PIT_QUALITY_FACTOR_NAMES
 from quant.data.factor_intraday_inputs import read_factor_minute_inputs
 from quant.research.factor_intraday import attach_minute_factors, minute_input_names
+from quant.data.factor_benchmark import read_factor_benchmark
+from quant.research.factor_market import attach_market_factors, market_input_names
 
 
 HORIZONS = (1, 5, 10, 20, 60)
@@ -92,6 +94,11 @@ def run(
         if minute_names:
             panel = attach_minute_factors(panel, read_factor_minute_inputs(data_root, bars),
                 tuple(day for day in sessions if read_start <= day <= read_end), minute_names)
+        market_names = market_input_names(tuple(row.expr for row in pending))
+        if market_names:
+            panel = attach_market_factors(panel, bars,
+                read_factor_benchmark(data_root, refresh_config, read_start, read_end),
+                tuple(day for day in sessions if read_start <= day <= read_end), market_names)
         keys = bars.filter(pl.col("trade_date").is_between(low, high)).select("symbol", "trade_date")
         row_counts = {}
         if pending:

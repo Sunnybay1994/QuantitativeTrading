@@ -1,0 +1,5 @@
+id = "market_beta_60_vs_510300"
+expr = "market_beta_60_vs_510300"
+family = "legacy_market_risk"
+direction = -1
+source_ref = "src/quant/factors/classic_market_risk.py; low systematic risk comparator"
