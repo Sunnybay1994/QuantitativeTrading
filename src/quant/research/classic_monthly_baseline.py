@@ -32,6 +32,7 @@ from quant.research.run_classic_factors import select_frozen_liquid_universe
 from quant.research.run_s1_walk_forward import metrics
 
 CODE_PATHS = (
+    "src/quant/research/monthly_momentum_12_1.py",
     "src/quant/research/monthly_lowvol120.py",
     "src/quant/factors/return_turnover_correlation.py",
     "src/quant/research/monthly_return_turnover.py",
@@ -397,6 +398,10 @@ def run_baseline(
         if any(config.get("quarterly_roe_stability", {}).get(k) != v for k, v in expected_roe_stability.items()):
             raise ValueError("Unsupported quarterly ROE stability configuration")
         validate_roe_stability_components(config)
+    if "momentum_12_1" in config:
+        from quant.research.monthly_momentum_12_1 import validate_momentum_12_1
+
+        validate_momentum_12_1(config)
     if "lowvol60_composition" in config:
         from quant.research.monthly_lowvol120 import validate_lowvol60_composition
 
@@ -591,6 +596,20 @@ def run_baseline(
         decomposed = compute_overnight_decomposition(bars, sessions=all_sessions)
         factors = factors.join(decomposed, on=["symbol", "trade_date"], how="left", validate="1:1")
         extra_outputs.append(("overnight_decomposition", decomposed))
+    if "momentum_12_1" in config:
+        from quant.data.calendar import expected_open_dates
+        from quant.research.monthly_momentum_12_1 import build_monthly_momentum_12_1
+
+        history_start = config["momentum_12_1"]["formation_history_start"]
+        formation_bars = read_stock_data(data_root=data_root, config=refresh_config, table="bar_1d",
+                                         start=history_start, end=end, symbols=list(candidates))
+        formation_sessions = tuple(sorted(expected_open_dates(data_root, list(candidates), history_start, end)))
+        monthly = build_monthly_momentum_12_1(formation_bars, sessions=formation_sessions,
+            start=data["research_start"], end=end)
+        factors = factors.join(monthly, on=["symbol", "trade_date"], how="inner", validate="1:1")
+        extra_inputs.append(("formation-bars", formation_bars, ("trade_date", "symbol"), "trade_date"))
+        extra_outputs.append(("momentum_12_1_factors", monthly))
+        print(f"Computed twelve-minus-one momentum on {monthly['trade_date'].n_unique()} month ends", flush=True)
     if "information_discreteness" in config:
         from quant.data.calendar import expected_open_dates
         from quant.research.monthly_information_discreteness import build_monthly_information_discreteness
@@ -931,9 +950,11 @@ def run_baseline(
     conclusion: Literal["RESEARCH_ONLY", "REJECTED", "PAPER_CANDIDATE"] = "RESEARCH_ONLY" if passed else "REJECTED"
     if (config["admission"].get("maximum_conclusion") == "PAPER_CANDIDATE"
         and meets_portfolio_candidate(results, config["admission"])
-        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_zscore", "debt_ebitda", "low_beta", "turnover_change", "return_turnover", "lowvol120", "lowvol60_composition")) or passed)):
+        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_zscore", "debt_ebitda", "low_beta", "turnover_change", "return_turnover", "lowvol120", "lowvol60_composition", "momentum_12_1")) or passed)):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
+        "Fixed 231-return formation and 21-session skip approximate prior 2-12 month momentum; historical periods were inspected previously."
+        if "momentum_12_1" in config else
         "Frozen B3 sixty-session low volatility is added to a matched three-factor cohort; historical periods were inspected previously."
         if "lowvol60_composition" in config else
         "Fixed 120-session sample return volatility is a local low-risk replication with 60-session redundancy control; historical periods were inspected previously."
@@ -1000,7 +1021,7 @@ def run_baseline(
         code_sha256=compute_code_sha256(project_root=project_root, relative_paths=CODE_PATHS),
         universe_name=universe["name"], universe_frozen_as_of=universe["freeze_end"],
         candidate_symbols=candidates,
-        data_start=config.get("information_discreteness", {}).get("formation_history_start", data["warmup_start"]), data_end=end,
+        data_start=config.get("information_discreteness", config.get("momentum_12_1", {})).get("formation_history_start", data["warmup_start"]), data_end=end,
         signal_timing="close", execution_timing="next_session_open", valuation_timing="close",
         folds=tuple(folds), cost_multipliers=tuple(portfolio["cost_multipliers"]),
         selection_metric="fixed_equal_zscore",
