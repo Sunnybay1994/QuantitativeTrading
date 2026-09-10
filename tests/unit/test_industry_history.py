@@ -22,8 +22,8 @@ def test_version_availability_parent_changes_and_exit_boundary():
     members = pl.DataFrame([{"con_code": "000001.SZ", "index_code": "shared",
                              "in_date": "19910403", "out_date": "20220104", "is_new": "N"}])
     out, stats = membership_intervals(taxonomy(), members, as_of=dt.date(2022, 1, 10))
-    assert out["valid_from"].to_list() == [dt.date(2014, 1, 1), dt.date(2021, 12, 13)]
-    assert out["valid_to"].to_list() == [dt.date(2021, 12, 13), dt.date(2022, 1, 4)]
+    assert out["valid_from"].to_list() == [dt.date(2014, 1, 1), dt.date(2021, 8, 2)]
+    assert out["valid_to"].to_list() == [dt.date(2021, 8, 2), dt.date(2022, 1, 4)]
     assert out["industry_l1"].to_list() == ["SW2014:old", "SW2021:new"]
     assert stats["conflict_calendar_days"] == 0
 
@@ -65,7 +65,7 @@ def test_source_version_prevents_stale_current_and_backdated_new_classification(
     ])
     out, _ = membership_intervals(taxonomy(), members, as_of=dt.date(2023, 1, 3))
     assert out["valid_from"].to_list() == [dt.date(2014, 1, 1), dt.date(2023, 1, 1)]
-    assert out["valid_to"].to_list() == [dt.date(2021, 12, 13), dt.date(2023, 1, 4)]
+    assert out["valid_to"].to_list() == [dt.date(2021, 8, 2), dt.date(2023, 1, 4)]
     assert out["industry_l1"].to_list() == ["SW2014:old", "SW2021:new"]
 
 
@@ -109,3 +109,11 @@ def test_factor_reader_uses_complete_source_versions_only(tmp_path: Path):
     (root / "summary.json").write_text(json.dumps({"with_current": True}))
     joined = read_factor_industry(tmp_path, panel)
     assert joined["industry_l1"].to_list() == ["SW2021:new"]
+
+
+def test_supplier_placeholder_is_not_an_a_share():
+    members = pl.DataFrame({"con_code": ["T00018.SH", "900901.SH", "000001.SZ"],
+                            "index_code": ["shared"] * 3, "in_date": ["20220101"] * 3,
+                            "out_date": [None] * 3, "is_new": ["Y"] * 3})
+    out, stats = membership_intervals(taxonomy(), members, as_of=dt.date(2022, 1, 3))
+    assert out["symbol"].to_list() == ["000001.SZ"] and stats["excluded_members"] == 2

@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import argparse
 import json
+import re
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,7 @@ from typing import Any
 import polars as pl
 
 
-_SWITCH = dt.date(2021, 12, 13)
+_SWITCH = dt.date(2021, 8, 2)  # First session after the 2021-07-31 classification announcement.
 _VERSIONS = {"SW2014": (dt.date(2014, 1, 1), _SWITCH), "SW2021": (_SWITCH, dt.date.max)}
 _COLUMNS = {"symbol": pl.String, "valid_from": pl.Date, "valid_to": pl.Date,
             "industry_l1": pl.String, "industry_l2": pl.String, "industry_l3": pl.String}
@@ -23,7 +24,7 @@ def membership_intervals(
 ) -> tuple[pl.DataFrame, dict[str, int]]:
     """Use [from, to), clamp version availability, and omit ambiguous intervals.
 
-    2014 starts at classification launch; 2021 switches at the index migration.
+    2014 starts at classification launch; 2021 starts after its public announcement.
     Exit dates are conservatively excluded, including Friday exits before a
     Monday migration. No classification is inferred before 2014 or after as_of.
     """
@@ -53,7 +54,7 @@ def membership_intervals(
     excluded = 0
     for row in members.iter_rows(named=True):
         symbol = row["con_code"]
-        if not isinstance(symbol, str) or not symbol.endswith((".SH", ".SZ")):
+        if not isinstance(symbol, str) or not re.fullmatch(r"(?:6[0-9]{5}\.SH|[03][0-9]{5}\.SZ)", symbol):
             excluded += 1
             continue
         if not row["in_date"] or (row["is_new"] == "N" and not row["out_date"]):
