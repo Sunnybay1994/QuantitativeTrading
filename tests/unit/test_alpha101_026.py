@@ -111,3 +111,44 @@ def test_configuration_rejects_direction_windows_and_missing_control() -> None:
         changed[section][key]=value
         with pytest.raises(ValueError,match='fixed positive'):
             validate_alpha101_026(changed)
+
+
+def test_composition_fixes_b68_values_weights_and_paired_admission() -> None:
+    single=tomllib.loads(Path('configs/research/b68_alpha101_026_20260910.toml').read_text())
+    config=tomllib.loads(Path('configs/research/b69_alpha101_026_composite_20260910.toml').read_text())
+    assert config['alpha101_026']==single['alpha101_026']
+    validate_alpha101_026(config)
+    for section,key,value in [('factors','directions',[-1,1,-1,-1]),
+        ('alpha101_026_composition','weights','optimized'),
+        ('alpha101_026_composition','eligibility','three_factor_only'),
+        ('admission','require_positive_paired_1x_compounded_increment',False),
+        ('admission','comparison','510300'),('portfolio','retention_rank',75)]:
+        changed=copy.deepcopy(config)
+        changed[section][key]=value
+        with pytest.raises(ValueError):
+            validate_alpha101_026(changed)
+
+
+def test_four_factor_complete_pool_is_restandardized_for_three_factor_control() -> None:
+    from quant.research.classic_factor_composite import (
+        build_equal_weight_zscore_composite, build_monthly_zscore_targets,
+    )
+
+    date=dt.date(2023,1,31)
+    names=['alpha158_std20','alpha158_roc20','alpha158_rsv20','alpha101_026']
+    directions=[-1,1,-1,1]
+    data=[[1.,2.,3.,999.],[3.,1.,2.,999.],[2.,3.,1.,-999.],[.9,.1,.4,None]]
+    panel=pl.DataFrame({'symbol':['A','B','C','D'],'trade_date':[date]*4,**dict(zip(names,data,strict=True))})
+    primary=build_equal_weight_zscore_composite(panel,component_directions=tuple(zip(names,directions,strict=True)))
+    paired=build_equal_weight_zscore_composite(primary,component_directions=tuple(zip(names[:3],directions[:3],strict=True)))
+    assert primary['symbol'].to_list()==paired['symbol'].to_list()==['A','B','C']
+    for i in range(3):
+        z=[direction*(values[i]-statistics.mean(values[:3]))/statistics.pstdev(values[:3])
+           for direction,values in zip(directions,data,strict=True)]
+        assert primary['equal_zscore'][i]==pytest.approx(statistics.mean(z))
+        assert paired['equal_zscore'][i]==pytest.approx(statistics.mean(z[:3]))
+    for scores in (primary,paired):
+        targets=build_monthly_zscore_targets(scores,sessions=(date,dt.date(2023,2,1)),
+            start=dt.date(2023,2,1),end=dt.date(2023,2,1),top_k=2,strategy_name='fixture')
+        assert 'D' not in targets['symbol'].to_list()
+        assert targets['weight'].sum()==1.
