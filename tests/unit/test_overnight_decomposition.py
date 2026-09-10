@@ -150,3 +150,31 @@ def test_intraday_buffer_preserves_b89_scores_and_rejects_changed_controls():
     changed['intraday_reversal_composition'] = prior['intraday_reversal_composition']
     with pytest.raises(ValueError):
         validate_overnight_comparison(changed)
+
+
+def test_intraday_bimonthly_keeps_buffer_and_fixed_monthly_comparison():
+    import copy
+    from pathlib import Path
+    import tomllib
+
+    from quant.research.classic_monthly_baseline import validate_overnight_comparison
+
+    config = tomllib.loads(Path('configs/research/b91_intraday_reversal_bimonthly_20260910.toml').read_text())
+    prior = tomllib.loads(Path('configs/research/b90_intraday_reversal_buffer75_20260910.toml').read_text())
+    for section in ('data', 'universe', 'costs', 'walk_forward', 'factors', 'composite',
+                    'eligibility', 'overnight_decomposition'):
+        assert config[section] == prior[section]
+    assert {k: v for k, v in config['portfolio'].items() if k != 'execution_months'} == prior['portfolio']
+    assert validate_overnight_comparison(config) == 'intraday'
+    for section, key, value in [
+        ('portfolio', 'execution_months', [2, 4, 6, 8, 10, 12]),
+        ('portfolio', 'execution_months', None),
+        ('portfolio', 'retention_rank', 50),
+        ('intraday_reversal_buffer', 'paired_baseline', 'intraday_reversal_unbuffered'),
+        ('admission', 'comparison', 'intraday_reversal_unbuffered'),
+        ('admission', 'require_lower_turnover_every_fold', False),
+    ]:
+        changed = copy.deepcopy(config)
+        changed[section][key] = value
+        with pytest.raises(ValueError):
+            validate_overnight_comparison(changed)

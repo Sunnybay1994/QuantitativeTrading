@@ -312,10 +312,13 @@ def validate_overnight_comparison(config: dict[str, Any]) -> str:
     settings = config["overnight_decomposition"]
     component = settings.get("component", "overnight")
     buffered = "intraday_reversal_buffer" in config
+    bimonthly = buffered and config["admission"].get("comparison") == "intraday_reversal_monthly_buffered"
     composition = "intraday_reversal_composition" in config or buffered
     expected_names = (["alpha158_std20", "alpha158_roc20", "alpha158_rsv20", "intraday_return_20"]
                       if composition else [f"{component}_return_20"])
     comparison = "intraday_reversal_unbuffered" if buffered else "three_factor"
+    if bimonthly:
+        comparison = "intraday_reversal_monthly_buffered"
     experiment = {"method": "equal_weight_zscore", "paired_baseline": comparison,
                   "eligibility": "complete_four_factor_and_decomposition_pool"}
     if buffered:
@@ -335,7 +338,8 @@ def validate_overnight_comparison(config: dict[str, Any]) -> str:
         or config["factors"]["names"] != expected_names
         or config["factors"]["directions"] != ([-1, 1, -1, -1] if composition else [-1])
         or config["portfolio"]["top_k"] != 50 or config["portfolio"].get("retention_rank", 50) != (75 if buffered else 50)
-        or "execution_months" in config["portfolio"]
+        or (config["portfolio"].get("execution_months") != [1, 3, 5, 7, 9, 11] if bimonthly
+            else "execution_months" in config["portfolio"])
         or config["admission"].get("comparison") != (comparison if composition else "total_reversal")
         or any(config["admission"].get(k) is not True for k in (
             "positive_net_return_1x", "positive_net_return_2x", "positive_paired_compound_increment_1x"))):
@@ -351,6 +355,7 @@ def run_baseline(
     if "overnight_decomposition" in config:
         validate_overnight_comparison(config)
     intraday_reversal_buffer = "intraday_reversal_buffer" in config
+    intraday_reversal_bimonthly = intraday_reversal_buffer and config["admission"].get("comparison") == "intraday_reversal_monthly_buffered"
     cash_roa_buffer = "cash_roa_buffer" in config
     alpha101_041_buffer = "alpha101_041_buffer" in config
     alpha101_012_buffer = "alpha101_012_buffer" in config
@@ -923,7 +928,7 @@ def run_baseline(
         primary_scored, sessions=all_sessions, start=fold.test_start, end=fold.test_end, top_k=portfolio["top_k"],
         strategy_name=config["research"]["strategy_name"],
         retention_rank=portfolio.get("retention_rank"),
-        execution_months=(1, 3, 5, 7, 9, 11) if cv20_bimonthly or alpha101_055_bimonthly or alpha101_006_bimonthly else None,
+        execution_months=(1, 3, 5, 7, 9, 11) if cv20_bimonthly or alpha101_055_bimonthly or alpha101_006_bimonthly or intraday_reversal_bimonthly else None,
     ).with_columns(pl.lit(fold.fold).alias("fold")) for fold in folds])
     paired_targets: pl.DataFrame | None = None
     paired_comparison, paired_strategy = "three_factor", "b25_paired_three_factor_baseline"
@@ -1002,6 +1007,8 @@ def run_baseline(
             paired_components = (("alpha158_std20", -1), ("alpha158_roc20", 1),
                                  ("alpha158_rsv20", -1), ("intraday_return_20", -1))
             paired_comparison, paired_strategy = "intraday_reversal_unbuffered", "b90_paired_unbuffered_intraday_reversal"
+            if intraday_reversal_bimonthly:
+                paired_comparison, paired_strategy = "intraday_reversal_monthly_buffered", "b91_paired_monthly_intraday_reversal"
         elif "intraday_reversal_composition" in config:
             paired_strategy = "b89_paired_three_factor_intraday_cohort"
         elif "overnight_decomposition" in config:
@@ -1020,7 +1027,7 @@ def run_baseline(
         paired_targets = pl.concat([build_monthly_zscore_targets(
             paired_scores, sessions=all_sessions, start=fold.test_start, end=fold.test_end,
             top_k=portfolio["top_k"], strategy_name=paired_strategy,
-            retention_rank=75 if cv20_bimonthly or alpha101_055_bimonthly or alpha101_006_bimonthly else None,
+            retention_rank=75 if cv20_bimonthly or alpha101_055_bimonthly or alpha101_006_bimonthly or intraday_reversal_bimonthly else None,
         ).with_columns(pl.lit(fold.fold).alias("fold")) for fold in folds])
         extra_outputs.append((f"{paired_comparison}_targets", paired_targets))
     selected = sorted(set(targets.get_column("symbol")) | (
@@ -1134,7 +1141,7 @@ def run_baseline(
 
         portfolio_admission = summarize_cv20_buffer(
             results, comparison=paired_comparison,
-            maximum_fold_turnover=6.0 if cv20_bimonthly or alpha101_055_bimonthly or alpha101_006_bimonthly else None)
+            maximum_fold_turnover=6.0 if cv20_bimonthly or alpha101_055_bimonthly or alpha101_006_bimonthly or intraday_reversal_bimonthly else None)
         passed = portfolio_admission["passed"]
     else:
         portfolio_admission = portfolio_admission_summary(results, config["admission"].get("comparison", "510300"))
@@ -1151,6 +1158,8 @@ def run_baseline(
         and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_zscore", "debt_ebitda", "low_beta", "turnover_change", "return_turnover", "lowvol120", "lowvol60_composition", "momentum_12_1", "alpha101_001", "alpha101_026", "alpha101_046", "alpha101_054", "alpha101_055", "alpha101_006", "alpha101_012", "alpha101_041", "overnight_decomposition")) or passed)):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
+        "Fixed odd-month executions retain the Top75 buffer and compare with monthly executions; historical periods were inspected previously."
+        if intraday_reversal_bimonthly else
         "Fixed Top75 prior-target retention is compared with the frozen intraday-reversal composite; historical periods were inspected previously."
         if intraday_reversal_buffer else
         "Fixed Top75 retention of prior four-factor targets is compared with the frozen Alpha101 #41 unbuffered portfolio; historical periods were inspected previously."
