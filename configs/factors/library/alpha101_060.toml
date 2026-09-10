@@ -1,0 +1,5 @@
+id = "alpha101_060"
+expr = "-2 * scale(rank(((adj_close - adj_low) - (adj_high - adj_close)) / (adj_high - adj_low) * volume)) + scale(rank(ts_argmax(adj_close, 10)))"
+family = "alpha101"
+direction = 1
+source_ref = "https://arxiv.org/pdf/1601.00991"

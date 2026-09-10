@@ -1,0 +1,5 @@
+id = "alpha101_057"
+expr = "-(adj_close - (amount / volume * adj_factor)) / decay_linear(rank(ts_argmax(adj_close, 30)), 2)"
+family = "alpha101"
+direction = 1
+source_ref = "https://arxiv.org/pdf/1601.00991"

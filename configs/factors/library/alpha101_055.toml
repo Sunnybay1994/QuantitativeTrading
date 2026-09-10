@@ -1,0 +1,5 @@
+id = "alpha101_055"
+expr = "-ts_corr(rank((adj_close - ts_min(adj_low, 12)) / (ts_max(adj_high, 12) - ts_min(adj_low, 12))), rank(volume), 6)"
+family = "alpha101"
+direction = 1
+source_ref = "https://arxiv.org/pdf/1601.00991"

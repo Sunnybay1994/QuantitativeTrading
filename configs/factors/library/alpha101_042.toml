@@ -1,0 +1,5 @@
+id = "alpha101_042"
+expr = "rank((amount / volume * adj_factor) - adj_close) / rank((amount / volume * adj_factor) + adj_close)"
+family = "alpha101"
+direction = 1
+source_ref = "https://arxiv.org/pdf/1601.00991"

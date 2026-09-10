@@ -1,0 +1,5 @@
+id = "alpha101_053"
+expr = "-delta(((adj_close - adj_low) - (adj_high - adj_close)) / (adj_close - adj_low), 9)"
+family = "alpha101"
+direction = 1
+source_ref = "https://arxiv.org/pdf/1601.00991"

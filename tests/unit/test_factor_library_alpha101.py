@@ -80,6 +80,7 @@ def reference(panel):
         return x.rolling(n, min_periods=n).cov(y).mask(constant, 0)
 
     def trank(x, n):
+        x = x.map(lambda value: float(f"{value:.10g}"))
         return x.rolling(n, min_periods=n).apply(
             lambda a: (np.sum(a < a[-1]) + (np.sum(a == a[-1]) - 1) / 2) / (n - 1), raw=True,
         )

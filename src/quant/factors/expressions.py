@@ -158,6 +158,7 @@ class ExpressionEngine:
             if name == "ts_rank":
                 if n < 2:
                     raise ValueError("ts_rank needs at least two sessions")
+                x = x.round_sig_figs(10)
                 complete = x.is_not_null().cast(pl.Int32).rolling_sum(n, min_samples=n).over("symbol") == n
                 return pl.when(complete).then(
                     (x.rolling_rank(n, min_samples=n).over("symbol") - 1) / (n - 1)

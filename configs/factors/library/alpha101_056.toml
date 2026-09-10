@@ -1,0 +1,5 @@
+id = "alpha101_056"
+expr = "-rank(ts_sum((adj_close / delay(adj_close, 1) - 1), 10) / ts_sum(ts_sum((adj_close / delay(adj_close, 1) - 1), 2), 3)) * rank((adj_close / delay(adj_close, 1) - 1) * total_market_value)"
+family = "alpha101"
+direction = 1
+source_ref = "https://arxiv.org/pdf/1601.00991"
