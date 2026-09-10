@@ -72,3 +72,26 @@ def test_composition_freezes_cohort_directions_and_paired_admission():
             validate_alpha101_041(changed)
 
 
+
+
+def test_buffer_changes_only_retention_and_requires_lower_turnover():
+    config=tomllib.loads(Path('configs/research/b87_alpha101_041_buffer75_20260910.toml').read_text())
+    prior=tomllib.loads(Path('configs/research/b86_alpha101_041_composite_20260910.toml').read_text())
+    for section in ('alpha101_041','data','universe','costs','walk_forward','factors','composite'):
+        assert config[section]==prior[section]
+    assert {k:v for k,v in config['portfolio'].items() if k!='retention_rank'}==prior['portfolio']
+    validate_alpha101_041(config)
+    for section,key,value in [('portfolio','retention_rank',100),
+        ('portfolio','execution_months',[1,3,5,7,9,11]),
+        ('alpha101_041_buffer','retention_rule','actual_holdings'),
+        ('admission','require_lower_turnover_every_fold',False),('admission','comparison','three_factor')]:
+        changed=copy.deepcopy(config)
+        changed[section][key]=value
+        with pytest.raises(ValueError):
+            validate_alpha101_041(changed)
+    changed=copy.deepcopy(config)
+    changed['alpha101_041_composition']=prior['alpha101_041_composition']
+    with pytest.raises(ValueError):
+        validate_alpha101_041(changed)
+
+
