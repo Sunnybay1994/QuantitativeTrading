@@ -73,6 +73,22 @@ def resolve_same_day_dividends(frame: pl.DataFrame) -> pl.DataFrame:
     return frame.sort("symbol", "ex_date")
 
 
+def ordinary_holder_distributions(frame: pl.DataFrame) -> pl.DataFrame:
+    """Exclude verified restructuring shares that ordinary shareholders do not receive."""
+    for symbol, date, ratio in (
+        ("002219.SZ", dt.date(2022, 6, 23), .75),
+        ("002309.SZ", dt.date(2024, 12, 24), 2.45),
+        ("000793.SZ", dt.date(2026, 6, 22), 1.2),
+    ):
+        match = (pl.col("symbol") == symbol) & (pl.col("ex_date") == date)
+        event = frame.filter(match)
+        if event.height and (event.height != 1 or event["share_ratio"].item() != ratio
+                             or event["div_cash"].item() != 0.0):
+            raise ValueError(f"Unexpected restructuring distribution: {symbol} {date}")
+        frame = frame.with_columns(pl.when(match).then(0.0).otherwise(pl.col("share_ratio")).alias("share_ratio"))
+    return frame
+
+
 def prepare_stock_execution_inputs(
     *, data_root: Path, symbols: list[str], execution_dates: list[dt.date],
     start: dt.date, end: dt.date, output: Path,
@@ -151,7 +167,8 @@ def prepare_stock_execution_inputs(
         pl.col("stk_div").cast(pl.Float64).fill_null(0.0).alias("share_ratio"),
     ).filter(pl.col("ex_date").is_between(start, end)).unique()
     dividend_frame = resolve_same_day_dividends(dividend_frame)
-    if dividend_frame.filter(
+    dividend_frame = ordinary_holder_distributions(dividend_frame)
+    invalid_dates = dividend_frame.filter(
         pl.col("ann_date").is_null() | pl.col("record_date").is_null()
         # Final implementation terms can be adjusted during the weekend between
         # record and ex-date. The account consumes them only on ex-date.
@@ -159,13 +176,10 @@ def prepare_stock_execution_inputs(
         | (pl.col("record_date") >= pl.col("ex_date"))
         | ((pl.col("div_cash") > 0) & (pl.col("pay_date").is_null() | (pl.col("pay_date") < pl.col("ex_date"))))
         | ((pl.col("share_ratio") > 0) & (pl.col("share_list_date").is_null() | (pl.col("share_list_date") < pl.col("ex_date"))))
-    ).height:
-        raise ValueError("Incomplete stock dividend dates")
-    # 000793 restructuring shares go to the administrator/investors/creditors,
-    # not ordinary holders (company announcement 2026-038, SZSE 2026-06-22).
-    dividend_frame = dividend_frame.with_columns(pl.when(
-        (pl.col("symbol") == "000793.SZ") & (pl.col("ex_date") == dt.date(2026, 6, 22))
-    ).then(0.0).otherwise(pl.col("share_ratio")).alias("share_ratio"))
+    )
+    if invalid_dates.height:
+        examples = invalid_dates.select("symbol", "ex_date").head(5).to_dicts()
+        raise ValueError(f"Incomplete stock dividend dates: {examples}")
     basic = pl.concat([
         request("stock_basic", list_status=status, fields="ts_code,name,list_date,delist_date")
         .with_columns(pl.lit(status).alias("_request_list_status"))

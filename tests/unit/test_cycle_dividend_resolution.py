@@ -3,7 +3,7 @@ import datetime as dt
 import polars as pl
 import pytest
 
-from quant.data.stock_execution_inputs import resolve_same_day_dividends
+from quant.data.stock_execution_inputs import ordinary_holder_distributions, resolve_same_day_dividends
 
 
 @pytest.mark.parametrize(('symbol', 'date', 'values', 'expected'), [
@@ -31,3 +31,14 @@ def test_eve_distribution_has_one_cash_and_share_credit():
     assert result['share_ratio'].item() == .9008738
     with pytest.raises(ValueError):
         resolve_same_day_dividends(frame.with_columns(pl.lit(.9).alias('share_ratio')))
+
+
+@pytest.mark.parametrize(('symbol', 'date', 'ratio'), [
+    ('002219.SZ', dt.date(2022, 6, 23), .75),
+    ('002309.SZ', dt.date(2024, 12, 24), 2.45),
+])
+def test_restructuring_does_not_credit_investor_or_creditor_shares(symbol, date, ratio):
+    frame = pl.DataFrame({'symbol': [symbol], 'ex_date': [date], 'div_cash': [0.], 'share_ratio': [ratio]})
+    assert ordinary_holder_distributions(frame)['share_ratio'].item() == 0.
+    with pytest.raises(ValueError):
+        ordinary_holder_distributions(frame.with_columns(pl.lit(ratio+.01).alias('share_ratio')))
