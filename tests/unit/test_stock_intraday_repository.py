@@ -3,7 +3,23 @@ import datetime as dt
 import polars as pl
 import pytest
 
-from quant.data.stock_intraday_repository import read_stock_five_minute_pool
+from quant.data.stock_intraday_repository import (
+    read_stock_five_minute_bars, read_stock_five_minute_pool,
+)
+
+
+def test_explicit_tdx_read_does_not_substitute_default_source(tmp_path):
+    day = dt.date(2026, 9, 8)
+    query = dict(symbol="000001.SZ", start=day, end=day)
+    for source, price in (("baostock", 10.), ("tdx", 11.)):
+        directory = tmp_path / f"clean/bar_intraday/freq=5m/source={source}/symbol=000001.SZ"
+        directory.mkdir(parents=True)
+        pl.DataFrame({"symbol": ["000001.SZ"], "trade_date": [day], "close": [price]}).write_parquet(
+            directory / "data.parquet")
+    assert read_stock_five_minute_bars(tmp_path, **query)["close"].item() == 10.
+    assert read_stock_five_minute_bars(tmp_path, **query, source="tdx")["close"].item() == 11.
+    with pytest.raises(ValueError, match="Unsupported"):
+        read_stock_five_minute_bars(tmp_path, **query, source="../other")
 
 
 def test_pool_requires_all_files_and_applies_date_and_symbol_scope(tmp_path):
