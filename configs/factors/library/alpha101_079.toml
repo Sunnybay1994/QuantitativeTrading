@@ -1,0 +1,5 @@
+id = "alpha101_079"
+expr = "where(rank(delta(ind_neutralize(adj_close * 0.60733 + adj_open * (1 - 0.60733), industry_l1), 1)) < rank(ts_corr(ts_rank((amount / volume * adj_factor), 3), ts_rank(ts_mean(amount, 150), 9), 14)), 1, 0)"
+family = "alpha101"
+direction = 1
+source_ref = "https://arxiv.org/pdf/1601.00991"

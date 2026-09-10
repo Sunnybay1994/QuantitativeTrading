@@ -1,0 +1,5 @@
+id = "alpha101_069"
+expr = "-(rank(ts_max(delta(ind_neutralize((amount / volume * adj_factor), industry_l2), 2), 4)) ** ts_rank(ts_corr(adj_close * 0.490655 + (amount / volume * adj_factor) * (1 - 0.490655), ts_mean(amount, 20), 4), 9))"
+family = "alpha101"
+direction = 1
+source_ref = "https://arxiv.org/pdf/1601.00991"

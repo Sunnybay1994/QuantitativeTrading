@@ -21,6 +21,15 @@ def test_incremental_matches_full_batch_and_second_call_is_noop(tmp_path, monkey
     monkeypatch.setattr(compute, "read_factor_inputs", read)
     common = {"refresh_config": Path("unused"), "library": Path("configs/factors/library"),
               "selected": "all", "start": sessions[0], "artifact_root": tmp_path / "artifacts"}
+    for name in ("increment", "full"):
+        industry_root = tmp_path / name / "clean/tushare_industry/fixture"
+        industry_root.mkdir(parents=True)
+        bars.select("symbol").unique().with_columns(
+            pl.lit(sessions[0]).alias("valid_from"),
+            pl.lit(sessions[-1] + dt.timedelta(days=1)).alias("valid_to"),
+            *[pl.lit("sector").alias(f"industry_l{n}") for n in (1, 2, 3)],
+        ).write_parquet(industry_root / "intervals.parquet")
+        (industry_root / "summary.json").write_text(json.dumps({"with_current": True}))
     compute.run(**common, data_root=tmp_path / "increment", end=sessions[40])
     increment = compute.run(**common, data_root=tmp_path / "increment", end=sessions[-1])
     compute.run(**common, data_root=tmp_path / "full", end=sessions[-1])

@@ -1,0 +1,5 @@
+id = "alpha101_087"
+expr = "-where(rank(decay_linear(delta(adj_close * 0.369701 + (amount / volume * adj_factor) * (1 - 0.369701), 1), 2)) > ts_rank(decay_linear(abs(ts_corr(ind_neutralize(ts_mean(amount, 81), industry_l2), adj_close, 13)), 4), 14), rank(decay_linear(delta(adj_close * 0.369701 + (amount / volume * adj_factor) * (1 - 0.369701), 1), 2)), ts_rank(decay_linear(abs(ts_corr(ind_neutralize(ts_mean(amount, 81), industry_l2), adj_close, 13)), 4), 14))"
+family = "alpha101"
+direction = 1
+source_ref = "https://arxiv.org/pdf/1601.00991"

@@ -1,0 +1,5 @@
+id = "alpha101_048"
+expr = "ind_neutralize(ts_corr(delta(adj_close, 1), delta(delay(adj_close, 1), 1), 250) * delta(adj_close, 1) / adj_close, industry_l3) / ts_sum((delta(adj_close, 1) / delay(adj_close, 1)) ** 2, 250)"
+family = "alpha101"
+direction = 1
+source_ref = "https://arxiv.org/pdf/1601.00991"

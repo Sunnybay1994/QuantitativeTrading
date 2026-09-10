@@ -1,0 +1,5 @@
+id = "alpha101_059"
+expr = "-ts_rank(decay_linear(ts_corr(ind_neutralize((amount / volume * adj_factor), industry_l2), volume, 4), 16), 8)"
+family = "alpha101"
+direction = 1
+source_ref = "https://arxiv.org/pdf/1601.00991"
