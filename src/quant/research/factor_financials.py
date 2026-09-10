@@ -18,8 +18,15 @@ def attach_quality_factors(panel: pl.DataFrame, histories: dict[str, pl.DataFram
     symbols = tuple(panel["symbol"].unique().sort().to_list())
     if not dates or not symbols:
         raise ValueError("Financial factors require a nonempty daily panel")
-    frames = {name: histories[name].filter(pl.col("symbol").is_in(symbols))
-              for name in ("income", "balancesheet", "cashflow")}
+    structural = ["symbol", "ann_date", "f_ann_date", "available_date", "end_date",
+                  "report_type", "comp_type", "update_flag", "source"]
+    required = {"income": ["n_income", "n_income_attr_p"],
+                "balancesheet": ["total_assets", "total_hldr_eqy_exc_min_int"],
+                "cashflow": ["n_cashflow_act"]}
+    # Revision identity must use this family's fields, not unrelated columns
+    # added by another financial consumer sharing the input scan.
+    frames = {name: histories[name].filter(pl.col("symbol").is_in(symbols)).select(
+        *structural, *columns) for name, columns in required.items()}
     publications = pl.concat([frame.select("symbol", "available_date")
                               for frame in frames.values()]).unique()
 

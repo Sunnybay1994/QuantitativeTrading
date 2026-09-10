@@ -40,6 +40,12 @@ def test_announcements_conflicting_revisions_and_missing_bars_match_daily_resele
     cutoff = dt.date(2024, 4, 25)
     assert_frame_equal(actual.filter(pl.col("trade_date") <= cutoff), attach_quality_factors(
         panel.filter(pl.col("trade_date") <= cutoff), histories))
+    wide = {name: frame.with_columns(pl.lit(1.).alias("unrelated_measure"))
+            for name, frame in histories.items()}
+    duplicate = wide["income"].filter(pl.col("end_date") == dt.date(2023, 6, 30)).with_columns(
+        pl.lit(2.).alias("unrelated_measure"))
+    wide["income"] = pl.concat([wide["income"], duplicate])
+    assert_frame_equal(actual, attach_quality_factors(panel, wide))
 
 
 def test_quality_batch_reads_history_and_increment_matches_full(tmp_path, monkeypatch):
