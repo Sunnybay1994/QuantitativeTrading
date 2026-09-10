@@ -1,0 +1,169 @@
+[research]
+hypothesis_id = "b95-annual-fscore-nine-full-cycle-20260910"
+hypothesis = "On the pre-2014 universe and continuous 2020-2026 test, higher local annual nine-signal F-score predicts next-open 20-session returns and may qualify a monthly Top50 portfolio under the frozen IC, cost, turnover and drawdown rules. Full frozen Top800 complete-case cohort; no parameter search. Local net-income and long-borrowing-plus-bond mapping; historical periods previously inspected and forward evidence required."
+strategy_name = "b95_annual_fscore_nine_full_cycle"
+strategy_version = "v1"
+random_seed = 20260910
+
+[data]
+refresh_config = "configs/data/refresh.toml"
+warmup_start = 2013-01-01
+research_start = 2014-04-01
+research_end = 2026-09-10
+
+[universe]
+name = "liquid_top800_2013"
+freeze_start = 2013-01-01
+freeze_end = 2013-12-31
+top_n = 800
+minimum_observations = 120
+minimum_average_amount = 20000000.0
+
+[factors]
+names = ["pit_annual_fscore"]
+directions = [1]
+minimum_history_rows = 120
+minimum_daily_symbols = 100
+
+[composite]
+method = "equal_weight_zscore_monthly"
+standard_deviation_ddof = 0
+zero_variance_component = "zero"
+missing_component = "exclude_symbol"
+winsorization = "none"
+
+[portfolio]
+top_k = 50
+initial_cash = 1000000.0
+cost_multipliers = [0.5, 1.0, 2.0]
+rebalance = "month_end_close_next_session_open"
+benchmark = "510300.SH"
+benchmark_rebalance = "buy_and_hold"
+stock_dividend_withholding = 0.20
+# Unsold holdings are written down fully on the first session after delisting.
+# Added during execution-data debugging, before any fold results were produced.
+delisted_holding_recovery = 0.0
+initial_signal = "previous_session_close"
+
+[costs.a_share]
+commission_rate = 0.00025
+commission_min = 5.0
+stamp_tax_sell = 0.0005
+transfer_fee = 0.00001
+slippage = 0.001
+effective_from = 2015-08-01
+historical_statutory_fees = true
+
+[costs.etf]
+commission_rate = 0.00025
+commission_min = 5.0
+slippage = 0.001
+effective_from = 2013-01-01
+
+[admission]
+minimum_mean_test_rank_ic = 0.03
+minimum_positive_test_folds = 1
+maximum_absolute_rank_correlation = 0.8
+redundancy_references = ["alpha158_std20", "alpha158_roc20", "alpha158_rsv20"]
+maximum_conclusion = "RESEARCH_ONLY"
+minimum_annual_excess_1x = 0.03
+maximum_annual_one_way_turnover = 6.0
+maximum_drawdown_ratio_to_benchmark = 1.5
+# Historical factor replication: no new prospective sample is claimed.
+# RESEARCH_ONLY requires IC and redundancy conditions; PAPER additionally requires all portfolio rules.
+# All three cost scenarios and the 510300 comparison are reported even after rejection.
+
+[eligibility]
+historical_exchange_name = true
+exclude_st_or_delisting_name = true
+unknown_historical_name = "exclude"
+
+[financials]
+snapshot_id = "b7_halfyear_20260909"
+factor_family = "annual_fscore"
+share_changes_snapshot = "20260910_cycle2013"
+share_change_notices = "configs/data/share_change_notice_resolutions_20260910.json"
+history_start = 2010-01-01
+allowed_report_types = ["1"]
+company_type = "1"
+signal_frequency = "completed_month_end"
+availability = "strictly_before_signal_date"
+missing_quarter = "null"
+# Monthly sparse RankIC observations, horizon 20 sessions; no daily forward-fill.
+# All nine binary signals are required; no missing-value imputation or parameter grid.
+# Type 1 is consolidated cumulative; conflicting revisions and invalid denominators are excluded.
+
+# Start chosen from input coverage only: Jan/Feb/Mar 2014 have 84/88/98 complete
+# eligible names, below the unchanged 100-name minimum. April 2014 onward passes.
+# No return labels, IC or account results inspected to choose this start.
+[[walk_forward.folds]]
+train_start = 2014-04-01
+train_end = 2018-12-31
+validation_start = 2019-01-01
+validation_end = 2019-12-31
+test_start = 2020-01-01
+test_end = 2026-09-10
+
+[annual_fscore]
+components = ["positive_roa", "positive_cfo", "improving_roa", "cash_above_income", "lower_leverage", "improving_liquidity", "no_common_equity_issue", "improving_gross_margin", "improving_asset_turnover"]
+aggregation = "sum_all_nine_binary_signals"
+minimum_components = 9
+maximum_age_months = 18
+latest_annual_period = "latest_known_income_period_no_fallback"
+net_income_mapping = "n_income"
+roa_cfo_denominator = "beginning_year_total_assets"
+long_term_debt_mapping = "lt_borr_plus_bond_payable_both_explicit_nonnegative"
+leverage_denominator = "average_beginning_end_year_total_assets"
+liquidity = "total_cur_assets_div_total_cur_liab"
+gross_margin = "revenue_minus_oper_cost_div_revenue"
+asset_turnover = "revenue_div_beginning_year_total_assets"
+change_rule = "strict_improvement"
+issuance_window = "anchor_fiscal_year"
+issuance_availability = "announcement_strictly_before_signal_and_event_in_completed_fiscal_year"
+issuance_codes = ["015004", "015005", "015012", "015992"]
+non_issuance_codes = ["015009", "015010", "015011", "015013", "015016", "015019", "015021", "015023", "015027", "015043", "015997", "015998"]
+ambiguous_issuance = "null_unless_explicit_issuance_already_proves_zero"
+empty_or_unseen_event_history = "null"
+universe_adaptation = "full_frozen_top800_without_high_book_to_market_screen"
+missing_component = "exclude_symbol"
+source = "https://www.ivey.uwo.ca/media/3775523/value_investing_the_use_of_historical_financial_statement_information.pdf"
+# Local annual factor evaluation; the original paper selected high book-to-market firms.
+# n_income is the local net-income mapping; leases/other long-term obligations are not reconstructed.
+# No null debt is treated as zero. All current/prior ratios require finite valid inputs.
+# RankIC requires at least 100 symbols; the unchanged Top50 builder needs at least 50.
+
+[cycle_validation]
+comparisons = ["top50", "510300"]
+purpose = "Fixed nine-signal F-score under a pre-2014 universe; continuous 2020-2026 capital across bull, bear, reversal and shocks. Training includes April 2014-2018; validation 2019; no fit or selection is performed in this robustness replay."
+universe_reason = "2019 liquidity membership cannot be used to evaluate 2014-2018; select Top800 using only 2013 and preserve delisted members."
+historical_reuse = "Previously examined dates are retrospective evidence, never a fresh prospective holdout."
+cost_scenarios = [0.5, 1.0, 2.0]
+continuous_nav = true
+reset_at_calendar_year_boundary = false
+report = ["annual_return", "cagr", "sharpe", "max_drawdown", "worst_day", "worst_5_sessions", "expected_shortfall_95", "longest_underwater_sessions", "peak_trough_recovery", "rejected_orders_by_reason", "turnover", "510300"]
+regime_definition = "510300 completed-close above/below trailing 200-session mean and mean above/below its value 20 sessions earlier; otherwise transition. Attribution only, never a trading signal."
+stress_window_rule = "Fixed windows below plus mechanical worst 1/5-session observations across the whole test; keep portfolio holdings and prior NAV at every window boundary."
+
+[[cycle_validation.stress_windows]]
+name = "2020_pandemic_shock_and_rebound"
+start = 2020-01-20
+end = 2020-04-30
+
+[[cycle_validation.stress_windows]]
+name = "2022_full_year_drawdown"
+start = 2022-01-01
+end = 2022-12-31
+
+[[cycle_validation.stress_windows]]
+name = "2024_early_year_selloff"
+start = 2024-01-01
+end = 2024-02-08
+
+[[cycle_validation.stress_windows]]
+name = "2024_september_october_reversal"
+start = 2024-09-18
+end = 2024-10-31
+
+
+[execution]
+auto_trade = false
