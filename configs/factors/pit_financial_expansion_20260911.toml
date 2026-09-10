@@ -1,0 +1,22 @@
+# Fixed before computing the three added financial ratios.
+# Other PIT batch formulas reuse the existing versioned research definitions.
+evaluation = "Full-history P3 battery; no ratio parameter selection"
+report_types = ["1"]
+company_type = "1"
+availability = "announcement strictly before daily signal"
+history_quarters = 5
+
+[ratios.pit_net_margin_ttm]
+formula = "n_income_TTM / revenue_TTM"
+direction = 1
+invalid = "null unless both TTM chains are consecutive and revenue_TTM is positive"
+
+[ratios.pit_asset_turnover_ttm]
+formula = "revenue_TTM / mean(total_assets_t, total_assets_t_minus_4q)"
+direction = 1
+invalid = "null unless the revenue TTM chain is consecutive and nonnegative and both asset endpoints are positive"
+
+[ratios.pit_cash_to_liabilities_ttm]
+formula = "n_cashflow_act_TTM / total_liab_at_same_report_period"
+direction = 1
+invalid = "null unless the cash TTM chain is consecutive and matching total liabilities are positive"

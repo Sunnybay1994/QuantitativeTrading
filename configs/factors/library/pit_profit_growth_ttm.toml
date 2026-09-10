@@ -1,0 +1,5 @@
+id = "pit_profit_growth_ttm"
+expr = "pit_profit_growth_ttm"
+family = "pit_financial"
+direction = 1
+source_ref = "src/quant/research/monthly_profit_growth.py"

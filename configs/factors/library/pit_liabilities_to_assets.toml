@@ -1,0 +1,5 @@
+id = "pit_liabilities_to_assets"
+expr = "pit_liabilities_to_assets"
+family = "pit_financial"
+direction = -1
+source_ref = "src/quant/research/monthly_leverage.py"

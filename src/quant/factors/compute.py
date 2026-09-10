@@ -21,7 +21,8 @@ from quant.data.refresh import SHANGHAI, completed_date
 from quant.factors.expressions import evaluate_expressions
 from quant.factors.library import load_library
 from quant.research.factor_labels import build_next_open_factor_labels
-from quant.research.factor_financials import attach_quality_factors
+from quant.research.factor_financials import attach_financial_factors, financial_input_names
+from quant.factors.pit_quality import PIT_QUALITY_FACTOR_NAMES
 
 
 HORIZONS = (1, 5, 10, 20, 60)
@@ -79,8 +80,12 @@ def run(
         panel, bars = read_factor_inputs(data_root, refresh_config, read_start, read_end, sessions)
         if any("ind_neutralize" in row.expr for row in pending):
             panel = read_factor_industry(data_root, panel)
-        if any(row.family == "pit_quality" for row in pending):
-            panel = attach_quality_factors(panel, read_factor_financial_history(data_root, refresh_config, panel))
+        financial_names = financial_input_names(tuple(row.expr for row in pending))
+        if financial_names:
+            histories = read_factor_financial_history(data_root, refresh_config, panel,
+                expanded=bool(set(financial_names) - set(PIT_QUALITY_FACTOR_NAMES)),
+                share_changes="pit_annual_fscore" in financial_names)
+            panel = attach_financial_factors(panel, histories, financial_names)
         keys = bars.filter(pl.col("trade_date").is_between(low, high)).select("symbol", "trade_date")
         row_counts = {}
         if pending:

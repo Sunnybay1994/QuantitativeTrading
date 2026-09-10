@@ -1,0 +1,5 @@
+id = "pit_cash_roa_ttm"
+expr = "pit_cash_roa_ttm"
+family = "pit_financial"
+direction = 1
+source_ref = "src/quant/research/monthly_cash_roa.py"

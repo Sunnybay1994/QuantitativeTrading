@@ -1,0 +1,5 @@
+id = "pit_profit_acceleration"
+expr = "pit_profit_acceleration"
+family = "pit_financial"
+direction = 1
+source_ref = "src/quant/research/monthly_profit_acceleration.py"

@@ -7,6 +7,7 @@ from polars.testing import assert_frame_equal
 
 from quant.factors import compute
 from tests.unit.test_factor_expressions import prepared, sample_bars
+from tests.unit.test_factor_financials import _expanded_histories
 
 
 def test_incremental_matches_full_batch_and_second_call_is_noop(tmp_path, monkeypatch):
@@ -19,7 +20,9 @@ def test_incremental_matches_full_batch_and_second_call_is_noop(tmp_path, monkey
         return prepared(subset), subset
 
     monkeypatch.setattr(compute, "read_factor_inputs", read)
-    common = {"refresh_config": Path("unused"), "library": Path("configs/factors/library"),
+    config = tmp_path / "refresh.toml"
+    config.write_text('financial_snapshot="fixture"\nfinancial_share_changes_snapshot="fixture"\n')
+    common = {"refresh_config": config, "library": Path("configs/factors/library"),
               "selected": "all", "start": sessions[0], "artifact_root": tmp_path / "artifacts"}
     for name in ("increment", "full"):
         industry_root = tmp_path / name / "clean/tushare_industry/fixture"
@@ -30,6 +33,19 @@ def test_incremental_matches_full_batch_and_second_call_is_noop(tmp_path, monkey
             *[pl.lit("sector").alias(f"industry_l{n}") for n in (1, 2, 3)],
         ).write_parquet(industry_root / "intervals.parquet")
         (industry_root / "summary.json").write_text(json.dumps({"with_current": True}))
+        financial_root = tmp_path / name / "clean/tushare_financials/fixture"
+        financial_root.mkdir(parents=True)
+        for table, frame in _expanded_histories().items():
+            frame.write_parquet(financial_root / f"{table}.parquet")
+        pl.DataFrame(schema={"symbol": pl.String, "ann_date": pl.Date, "available_date": pl.Date,
+            "end_date": pl.Date, "interestdebt": pl.Float64, "ebitda": pl.Float64,
+            "source": pl.String}).write_parquet(financial_root / "fina_indicator.parquet")
+        share_root = tmp_path / name / "clean/cninfo_share_changes/fixture"
+        share_root.mkdir(parents=True)
+        pl.DataFrame(schema={"symbol": pl.String, "event_date": pl.Date, "ann_date": pl.Date,
+            "change_type_codes": pl.String}).write_parquet(share_root / "events.parquet")
+        pl.DataFrame(schema={"symbol": pl.String, "start": pl.Date, "end": pl.Date,
+            "empty_response": pl.Boolean}).write_parquet(share_root / "request_coverage.parquet")
     compute.run(**common, data_root=tmp_path / "increment", end=sessions[40])
     increment = compute.run(**common, data_root=tmp_path / "increment", end=sessions[-1])
     compute.run(**common, data_root=tmp_path / "full", end=sessions[-1])

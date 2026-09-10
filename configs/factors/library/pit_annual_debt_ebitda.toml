@@ -1,0 +1,5 @@
+id = "pit_annual_debt_ebitda"
+expr = "pit_annual_debt_ebitda"
+family = "pit_financial"
+direction = -1
+source_ref = "src/quant/research/monthly_debt_ebitda.py"

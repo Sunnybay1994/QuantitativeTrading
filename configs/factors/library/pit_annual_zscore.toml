@@ -1,0 +1,5 @@
+id = "pit_annual_zscore"
+expr = "pit_annual_zscore"
+family = "pit_financial"
+direction = 1
+source_ref = "src/quant/factors/annual_zscore.py"

@@ -1,0 +1,5 @@
+id = "pit_roa_ttm"
+expr = "pit_roa_ttm"
+family = "pit_financial"
+direction = 1
+source_ref = "src/quant/factors/pit_quality.py"

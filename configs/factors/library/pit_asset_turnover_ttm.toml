@@ -1,0 +1,5 @@
+id = "pit_asset_turnover_ttm"
+expr = "pit_asset_turnover_ttm"
+family = "pit_financial"
+direction = 1
+source_ref = "configs/factors/pit_financial_expansion_20260911.toml"

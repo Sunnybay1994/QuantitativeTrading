@@ -1,0 +1,5 @@
+id = "pit_asset_growth_yoy"
+expr = "pit_asset_growth_yoy"
+family = "pit_financial"
+direction = -1
+source_ref = "src/quant/research/monthly_asset_growth.py"

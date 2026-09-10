@@ -50,9 +50,10 @@ def prepared(bars: pl.DataFrame) -> pl.DataFrame:
 def test_batch_matches_existing_twelve_factors_and_split_adjustments():
     bars = sample_bars()
     definitions = load_library(Path("configs/factors/library"))
-    panel = prepared(bars).with_columns(
-        *[pl.lit("sector").alias(f"industry_l{n}") for n in (1, 2, 3)])
-    result = evaluate_expressions(panel, {row.id: row.expr for row in definitions})
+    panel = prepared(bars)
+    baseline_names = set(CLASSIC_FACTOR_NAMES) | set(SECOND_BATCH_FACTOR_NAMES) | set(SIXTH_BATCH_FACTOR_NAMES)
+    assert baseline_names <= {row.id for row in definitions}
+    result = evaluate_expressions(panel, {row.id: row.expr for row in definitions if row.id in baseline_names})
     sessions = tuple(sorted(bars["trade_date"].unique()))
     for baseline, names in (
         (compute_classic_daily_factors(bars), CLASSIC_FACTOR_NAMES),
@@ -68,10 +69,12 @@ def test_batch_matches_existing_twelve_factors_and_split_adjustments():
 
 def test_remaining_migrated_formulas_match_existing_functions():
     bars = sample_bars()
-    panel = prepared(bars).with_columns(
-        *[pl.lit("sector").alias(f"industry_l{n}") for n in (1, 2, 3)])
+    panel = prepared(bars)
     definitions = load_library(Path("configs/factors/library"))
-    result = evaluate_expressions(panel, {row.id: row.expr for row in definitions})
+    baseline_names = {"alpha101_004", "max_daily_return_20", "alpha101_009", "alpha101_002",
+                      "turnover_cv20", "log_total_market_value", "log_circulating_market_value", "book_to_price"}
+    assert baseline_names <= {row.id for row in definitions}
+    result = evaluate_expressions(panel, {row.id: row.expr for row in definitions if row.id in baseline_names})
     sessions = tuple(sorted(bars["trade_date"].unique()))
     for function, name in (
         (compute_eighth_batch_daily_factors, "alpha101_004"),

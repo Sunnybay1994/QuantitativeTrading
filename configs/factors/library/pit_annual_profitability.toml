@@ -1,0 +1,5 @@
+id = "pit_annual_profitability"
+expr = "pit_annual_profitability"
+family = "pit_financial"
+direction = 1
+source_ref = "src/quant/factors/annual_profitability.py"

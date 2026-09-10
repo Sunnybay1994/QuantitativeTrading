@@ -1,0 +1,5 @@
+id = "pit_cash_profit_quality_ttm"
+expr = "pit_cash_profit_quality_ttm"
+family = "pit_financial"
+direction = 1
+source_ref = "src/quant/factors/pit_quality.py"

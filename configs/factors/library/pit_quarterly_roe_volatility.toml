@@ -1,0 +1,5 @@
+id = "pit_quarterly_roe_volatility"
+expr = "pit_quarterly_roe_volatility"
+family = "pit_financial"
+direction = -1
+source_ref = "src/quant/research/monthly_quarterly_roe_stability.py"

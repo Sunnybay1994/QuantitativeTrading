@@ -1,0 +1,5 @@
+id = "pit_gross_margin_ttm"
+expr = "pit_gross_margin_ttm"
+family = "pit_financial"
+direction = 1
+source_ref = "src/quant/research/monthly_gross_margin.py"
