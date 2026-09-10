@@ -33,6 +33,8 @@ from quant.research.run_s1_walk_forward import metrics
 
 CODE_PATHS = (
     "src/quant/research/monthly_momentum_12_1.py",
+    "src/quant/research/monthly_alpha101_001.py",
+    "src/quant/factors/alpha101_001.py",
     "src/quant/research/monthly_lowvol120.py",
     "src/quant/factors/return_turnover_correlation.py",
     "src/quant/research/monthly_return_turnover.py",
@@ -398,6 +400,10 @@ def run_baseline(
         if any(config.get("quarterly_roe_stability", {}).get(k) != v for k, v in expected_roe_stability.items()):
             raise ValueError("Unsupported quarterly ROE stability configuration")
         validate_roe_stability_components(config)
+    if "alpha101_001" in config:
+        from quant.research.monthly_alpha101_001 import validate_alpha101_001
+
+        validate_alpha101_001(config)
     if "momentum_12_1" in config:
         from quant.research.monthly_momentum_12_1 import validate_momentum_12_1
 
@@ -596,6 +602,13 @@ def run_baseline(
         decomposed = compute_overnight_decomposition(bars, sessions=all_sessions)
         factors = factors.join(decomposed, on=["symbol", "trade_date"], how="left", validate="1:1")
         extra_outputs.append(("overnight_decomposition", decomposed))
+    if "alpha101_001" in config:
+        from quant.research.monthly_alpha101_001 import build_monthly_alpha101_001
+
+        monthly = build_monthly_alpha101_001(bars, sessions=all_sessions, start=data["research_start"], end=end)
+        factors = factors.join(monthly, on=["symbol", "trade_date"], how="inner", validate="1:1")
+        extra_outputs.append(("alpha101_001_factors", monthly))
+        print(f"Computed Alpha101 #1 on {monthly['trade_date'].n_unique()} month ends", flush=True)
     if "momentum_12_1" in config:
         from quant.data.calendar import expected_open_dates
         from quant.research.monthly_momentum_12_1 import build_monthly_momentum_12_1
@@ -950,9 +963,11 @@ def run_baseline(
     conclusion: Literal["RESEARCH_ONLY", "REJECTED", "PAPER_CANDIDATE"] = "RESEARCH_ONLY" if passed else "REJECTED"
     if (config["admission"].get("maximum_conclusion") == "PAPER_CANDIDATE"
         and meets_portfolio_candidate(results, config["admission"])
-        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_zscore", "debt_ebitda", "low_beta", "turnover_change", "return_turnover", "lowvol120", "lowvol60_composition", "momentum_12_1")) or passed)):
+        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_zscore", "debt_ebitda", "low_beta", "turnover_change", "return_turnover", "lowvol120", "lowvol60_composition", "momentum_12_1", "alpha101_001")) or passed)):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
+        "Alpha101 #1 uses monthly long-only holdings, fixed 20/5 windows and explicit oldest-argmax/average-rank ties; historical periods were inspected previously."
+        if "alpha101_001" in config else
         "Fixed 231-return formation and 21-session skip approximate prior 2-12 month momentum; historical periods were inspected previously."
         if "momentum_12_1" in config else
         "Frozen B3 sixty-session low volatility is added to a matched three-factor cohort; historical periods were inspected previously."
