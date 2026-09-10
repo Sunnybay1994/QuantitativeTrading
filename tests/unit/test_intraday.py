@@ -76,6 +76,10 @@ def test_short_response_cannot_mark_capture_complete(monkeypatch, tmp_path: Path
 
     monkeypatch.setattr(intraday, "BaostockConnector", Connector)
     monkeypatch.setattr(intraday.time, "sleep", lambda seconds: None)
+    calendar = tmp_path / "clean/trade_calendar/market=SH/data.parquet"
+    calendar.parent.mkdir(parents=True)
+    pl.DataFrame({"date": [dt.date(2026, 9, 8), dt.date(2026, 9, 9)],
+                  "is_open": [True, True], "is_half_day": [False, False]}).write_parquet(calendar)
     directory = intraday._directory(tmp_path, "baostock", "600000.SH", "5m")
     directory.mkdir(parents=True)
     normalize_baostock(bao(), "600000.SH").head(0).write_parquet(directory / "data.parquet")
@@ -84,6 +88,10 @@ def test_short_response_cannot_mark_capture_complete(monkeypatch, tmp_path: Path
         intraday._stock_job((str(tmp_path), "600000.SH", "2026-09-09",
                             [dt.date(2026, 9, 8), dt.date(2026, 9, 9)]))
     assert json.loads((directory / "coverage.json").read_text())["through"] == "2026-09-07"
+    status = json.loads((directory / "coverage.json").read_text())
+    assert status["missing_traded_dates"] == ["2026-09-09"]
+    assert status["attempted_through"] == "2026-09-09"
+    assert pl.read_parquet(directory / "data.parquet")["trade_date"].to_list() == [dt.date(2026, 9, 8)]
 
 
 def test_hk_half_day_last_hour_available_at_noon(tmp_path):
@@ -132,3 +140,45 @@ def test_year_chunk_survives_later_network_failure(monkeypatch, tmp_path):
     assert intraday._stock_job(args)["changed_rows"] == 1
     assert pl.read_parquet(directory / "data.parquet").height == 2
     assert intraday._stock_job(args)["changed_rows"] == 0
+
+
+def test_missing_old_day_preserves_later_year_without_reporting_completion(monkeypatch, tmp_path):
+    from quant.data.stock_intraday_repository import read_stock_five_minute_pool
+
+    dates = [dt.date(2025, 12, 31), dt.date(2026, 1, 2)]
+    gap, calls = [True], []
+
+    class Connector:
+        def fetch_intraday(self, symbol, start, end):
+            calls.append((start, end))
+            if start.year == 2025 and gap[0]:
+                return bao().head(0)
+            day = dates[start.year - 2025]
+            return bao().with_columns(pl.lit(str(day)).alias("date"),
+                pl.lit(day.strftime("%Y%m%d") + "093500000").alias("time"))
+
+    monkeypatch.setattr(intraday, "BaostockConnector", Connector)
+    calendar = tmp_path / "clean/trade_calendar/market=SH/data.parquet"
+    calendar.parent.mkdir(parents=True)
+    pl.DataFrame({"date": dates, "is_open": [True, True], "is_half_day": [False, False]}).write_parquet(calendar)
+    directory = intraday._directory(tmp_path, "baostock", "600000.SH", "5m")
+    directory.mkdir(parents=True)
+    normalize_baostock(bao(), "600000.SH").head(0).write_parquet(directory / "data.parquet")
+    (directory / "coverage.json").write_text(json.dumps({"through": "2025-12-30"}))
+    args = (str(tmp_path), "600000.SH", "2026-01-02", dates)
+    with pytest.raises(ValueError, match="known traded days"):
+        intraday._stock_job(args)
+    assert pl.read_parquet(directory / "data.parquet")["trade_date"].to_list() == [dates[1]]
+    status = json.loads((directory / "coverage.json").read_text())
+    assert status["through"] == "2025-12-30" and status["attempted_through"] == "2026-01-02"
+    assert status["missing_traded_dates"] == [str(dates[0])]
+    with pytest.raises(ValueError, match="known traded symbol-days"):
+        read_stock_five_minute_pool(tmp_path, symbols=("600000.SH",), start=dates[0], end=dates[1],
+            expected_traded_days=pl.DataFrame({"symbol": ["600000.SH"] * 2, "trade_date": dates}))
+    with pytest.raises(ValueError, match="known traded days"):
+        intraday._stock_job(args)
+    gap[0] = False
+    assert intraday._stock_job(args)["changed_rows"] == 1
+    assert json.loads((directory / "coverage.json").read_text())["missing_traded_dates"] == []
+    count = len(calls)
+    assert intraday._stock_job(args)["changed_rows"] == 0 and len(calls) == count

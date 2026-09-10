@@ -80,6 +80,7 @@ def _stock_job(args: tuple[str, str, str, list[dt.date]]) -> dict[str, Any]:
             start = min(start, cast(dt.date, existing["trade_date"].max()))
     began = time.monotonic()
     changed, returned, raw_paths = 0, 0, []
+    complete_through = prior.get("through", str(start - dt.timedelta(days=1)))
     while start <= end:
         chunk_end = min(end, dt.date(start.year, 12, 31))
         for attempt in range(3):
@@ -90,9 +91,6 @@ def _stock_job(args: tuple[str, str, str, list[dt.date]]) -> dict[str, Any]:
                     parameters={"symbol": symbol, "frequency": "5m", "start": str(start), "end": str(chunk_end)},
                 )
                 frame = normalize_baostock(raw, symbol).filter(pl.col("trade_date").is_between(start, chunk_end))
-                absent = {d for d in expected_dates if start <= d <= chunk_end} - set(frame["trade_date"])
-                if absent:
-                    raise ValueError(f"BaoStock {symbol} missing {len(absent)} known traded days; first {min(absent)}")
                 break
             except Exception:
                 if attempt == 2:
@@ -100,14 +98,22 @@ def _stock_job(args: tuple[str, str, str, list[dt.date]]) -> dict[str, Any]:
                 time.sleep(2 * (attempt + 1))
         frame = add_session_quality(frame, data_root, "5m", symbol)
         changed += merge_bars(directory, frame)
+        missing.difference_update(frame["trade_date"])
+        unresolved = sorted(day for day in missing if day <= chunk_end)
+        if not unresolved:
+            complete_through = str(chunk_end)
         returned += frame.height
         raw_paths.append(str(snapshot.data_path))
-        status = {"through": str(chunk_end), "raw": str(snapshot.data_path),
+        status = {"through": complete_through, "attempted_through": str(chunk_end),
+                  "missing_traded_dates": [str(day) for day in unresolved], "raw": str(snapshot.data_path),
                   "returned_rows": returned, "changed_rows": changed,
                   "incomplete_days": frame.filter(~pl.col("session_complete"))["trade_date"].n_unique(),
                   "seconds": round(time.monotonic() - began, 2)}
         coverage.write_text(json.dumps(status), encoding="utf-8")
         start = chunk_end + dt.timedelta(days=1)
+    if missing:
+        raise ValueError(f"BaoStock {symbol} missing {len(missing)} known traded days; first {min(missing)}; "
+                         f"available bars preserved through {end}")
     return {"symbol": symbol, **status, "raw_paths": raw_paths}
 
 
