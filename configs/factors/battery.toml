@@ -64,6 +64,29 @@ initial_cash = 1000000.0
 cost_multipliers = [0.5, 1.0, 2.0]
 cost_engine = "quant.backtest.daily_account"
 long_short = "diagnostic_D10_minus_D1_not_executable_short_book"
+stock_dividend_withholding = 0.20
+delisted_holding_recovery = 0.0
+gross_commission_includes_exchange_fees = true
+
+# Same execution friction assumptions as B93, extended to the 2010 start.
+# Early Shanghai minimum/retention/par value are conservative model assumptions.
+[costs.a_share]
+commission_rate = 0.00025
+commission_min = 5.0
+stamp_tax_sell = 0.0005
+transfer_fee = 0.00001
+slippage = 0.001
+effective_from = 2010-01-01
+historical_statutory_fees = true
+pre_2015_sh_transfer_multiplier = 2.0
+pre_2015_sh_transfer_min = 1.0
+pre_2015_sh_par_value = 1.0
+
+[costs.etf]
+commission_rate = 0.00025
+commission_min = 5.0
+slippage = 0.001
+effective_from = 2010-01-01
 
 [benchmarks]
 names = ["510300", "csi800_equal_weight", "all_market_equal_weight"]

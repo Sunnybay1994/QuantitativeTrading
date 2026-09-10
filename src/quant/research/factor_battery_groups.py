@@ -91,6 +91,8 @@ def summarize_groups(returns: pl.DataFrame, *, groups: int = 10) -> dict:
         (pl.col("mean_return")-pl.col("low")).alias("spread"))["spread"].drop_nulls().to_numpy()
     deviation = float(np.std(spread, ddof=1)) if len(spread) > 1 else 0.
     sharpe = float(np.mean(spread)/deviation*np.sqrt(12)) if deviation > 1e-12 else None
+    spread_annual = (float(np.prod(1+spread)**(12/len(spread))-1)
+                     if len(spread) and (spread >= -1).all() else None)
     common = returns.group_by("trade_date").agg(
         pl.col("mean_return").count().alias("valid_groups")).filter(pl.col("valid_groups") == groups)
     means = returns.join(common, on="trade_date", how="semi").group_by("group").agg(
@@ -103,6 +105,7 @@ def summarize_groups(returns: pl.DataFrame, *, groups: int = 10) -> dict:
             monotonicity = rho
     return {"groups": summaries, "long_short_months": len(spread),
             "long_short_sharpe": sharpe, "group_mean_rank_monotonicity": monotonicity,
+            "long_short_annualized_return": spread_annual,
             "monotonicity_common_months": common.height}
 
 

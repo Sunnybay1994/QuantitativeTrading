@@ -10,6 +10,30 @@ from quant.research.factor_battery_universe import prepare_battery_universe
 from quant.research.factor_labels import build_next_rebalance_open_labels
 
 
+def read_battery_symbols(data_root: Path, *, start: dt.date, end: dt.date) -> list[str]:
+    """Use all historical panel members, including subsequently delisted stocks."""
+    paths = [data_root / f"factors/forward_returns/year={year}/data.parquet"
+             for year in range(start.year, end.year+1)]
+    return (pl.scan_parquet(paths).filter(pl.col("trade_date").is_between(start,end))
+        .select("ts_code").unique().sort("ts_code").collect()["ts_code"].to_list())
+
+
+def read_battery_factor_year(data_root: Path, *, factor: str, year: int,
+                             known_through: dt.date) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Mask labels beyond the battery cutoff even if the stored panel is newer."""
+    values = pl.read_parquet(data_root / "factors" / factor / f"year={year}/data.parquet").rename(
+        {"ts_code": "symbol"}).filter(pl.col("trade_date") <= known_through)
+    labels = pl.read_parquet(data_root / f"factors/forward_returns/year={year}/data.parquet").rename(
+        {"ts_code": "symbol"}).filter(pl.col("trade_date") <= known_through)
+    sessions = available_sessions(data_root, known_through)
+    expressions = []
+    for horizon in (1,5,10,20,60):
+        cutoff = sessions[-horizon-2] if len(sessions) >= horizon+2 else dt.date.min
+        expressions.append(pl.when(pl.col("trade_date") <= cutoff).then(pl.col(f"label_{horizon}"))
+                           .otherwise(None).alias(f"label_{horizon}"))
+    return values, labels.with_columns(expressions)
+
+
 def read_battery_year(*, data_root: Path, refresh_config: Path, limits_snapshot: str,
                       start: dt.date, end: dt.date, known_through: dt.date,
                       minimum_listing_days: int = 120, amount_window_sessions: int = 20,

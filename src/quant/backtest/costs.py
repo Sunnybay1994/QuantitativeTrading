@@ -290,6 +290,9 @@ class AShareCostModel:
     slippage: float
     effective_from: dt.date
     historical_statutory_fees: bool = False
+    pre_2015_sh_transfer_multiplier: float = 2.0
+    pre_2015_sh_transfer_min: float = 1.0
+    pre_2015_sh_par_value: float = 1.0
 
     def __post_init__(self) -> None:
         _require_finite_nonnegative("commission_rate", self.commission_rate)
@@ -301,6 +304,8 @@ class AShareCostModel:
             raise ValueError("滑点必须小于 1")
         if type(self.historical_statutory_fees) is not bool:
             raise ValueError("Historical statutory fee switch must be boolean")
+        for name in ("pre_2015_sh_transfer_multiplier", "pre_2015_sh_transfer_min", "pre_2015_sh_par_value"):
+            _require_finite_nonnegative(name, getattr(self, name))
 
     def execution_price(self, open_price: float, side: str) -> float:
         if side == "BUY":
@@ -309,7 +314,8 @@ class AShareCostModel:
             return open_price * (1 - self.slippage)
         raise ValueError(f"未知方向: {side}")
 
-    def fee(self, notional: float, date: dt.date, side: str) -> float:
+    def fee(self, notional: float, date: dt.date, side: str, *,
+            market: str | None = None, quantity: int | None = None) -> float:
         if date < self.effective_from:
             raise ValueError("交易日期早于成本配置有效期")
         if side not in {"BUY", "SELL"}:
@@ -317,10 +323,18 @@ class AShareCostModel:
         commission = max(notional * self.commission_rate, self.commission_min)
         transfer_rate, stamp_rate = self.transfer_fee, self.stamp_tax_sell
         if self.historical_statutory_fees:
-            # SH/SZ ad-valorem transfer fees are uniform from 2015-08-01.
-            # Earlier per-share fees require another model, not an extrapolation.
             if date < dt.date(2015, 8, 1):
-                raise ValueError("Historical statutory fees start on 2015-08-01")
+                if date < dt.date(2010, 1, 1) or market not in {"SH", "SZ"} or type(quantity) is not int or quantity <= 0:
+                    raise ValueError("Before 2015-08-01, historical fees require SH/SZ market and quantity from 2010")
+                # Shanghai charged face value; Shenzhen's transfer fee was
+                # included in gross commission. Retail retention/minimum are
+                # explicit research assumptions, documented with the config.
+                rate = (.0005 if date < dt.date(2012, 6, 1) else
+                        .000375 if date < dt.date(2012, 9, 1) else .0003)
+                transfer = (max(self.pre_2015_sh_transfer_min,
+                    quantity*self.pre_2015_sh_par_value*rate*self.pre_2015_sh_transfer_multiplier)
+                    if market == "SH" else 0.)
+                return commission + transfer + (notional*.001 if side == "SELL" else 0.)
             transfer_rate = 0.00002 if date < dt.date(2022, 4, 29) else 0.00001
             stamp_rate = 0.001 if date < dt.date(2023, 8, 28) else 0.0005
         transfer = notional * transfer_rate
@@ -346,4 +360,7 @@ class AShareCostModel:
             slippage=self.slippage * multiplier,
             effective_from=self.effective_from,
             historical_statutory_fees=self.historical_statutory_fees,
+            pre_2015_sh_transfer_multiplier=self.pre_2015_sh_transfer_multiplier,
+            pre_2015_sh_transfer_min=self.pre_2015_sh_transfer_min,
+            pre_2015_sh_par_value=self.pre_2015_sh_par_value,
         )

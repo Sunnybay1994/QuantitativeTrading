@@ -218,6 +218,23 @@ def test_full_day_suspension_without_bar_carries_mark_and_rejects_sale() -> None
     ).row(0) == (STOCK, "SELL", "SUSPENDED", 100, 100, 10.0)
 
 
+@pytest.mark.parametrize(("cash", "quantity", "final_cash"), [(2006.,200,1992.), (2005.9,100,1992.9)])
+def test_early_share_based_fee_affects_affordability_and_realized_cash(cash, quantity, final_cash):
+    from dataclasses import replace
+
+    first, second = dt.date(2014,1,2), dt.date(2014,1,3)
+    targets = pl.concat([_target(weight).with_columns(
+        pl.lit(date-dt.timedelta(days=1)).alias("as_of"), pl.lit(date).alias("execution_date"))
+        for date,weight in ((first,1.),(second,0.))])
+    costs = AShareCostModel(.00025,5.,.0005,.00001,0.,dt.date(2010,1,1),historical_statutory_fees=True)
+    result = simulate_daily_targets(calendar=_calendar(first,second),bars=pl.concat([_bar(first),_bar(second)]),
+        scheduled_targets=targets,instruments=_instruments(),initial_cash=cash,strategy="m2-u1",
+        market_states={(date,STOCK):DailyMarketState() for date in (first,second)},
+        stock_costs=costs,etf_costs=replace(_etf_costs(),effective_from=dt.date(2010,1,1)))
+    assert result.trades["quantity"].to_list() == [quantity,quantity]
+    assert result.nav["cash"][-1] == pytest.approx(final_cash)
+
+
 def test_missing_bar_is_not_inferred_as_suspension() -> None:
     with pytest.raises(ValueError, match="BACKTEST_TRADABLE_BAR_MISSING"):
         _simulate(

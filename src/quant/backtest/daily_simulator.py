@@ -330,6 +330,7 @@ def simulate_daily_targets(
                     continue
                 quantity = _affordable_quantity(
                     date=date,
+                    symbol=symbol,
                     requested=wanted,
                     lot=int(instrument_rows[symbol]["board_lot"]),
                     open_price=references[symbol]["open"],
@@ -678,6 +679,7 @@ def _model_for(
 def _execution_values(
     *,
     date: dt.date,
+    symbol: str,
     side: OrderSide,
     quantity: int,
     open_price: float,
@@ -695,7 +697,7 @@ def _execution_values(
     price = model.execution_price(open_price, side.value)
     notional = price * quantity
     if isinstance(model, AShareCostModel):
-        fee = model.fee(notional, date, side.value)
+        fee = model.fee(notional, date, side.value, market=symbol[-2:], quantity=quantity)
     else:
         fee = model.fee(notional, date)
     return price, notional, fee
@@ -704,6 +706,7 @@ def _execution_values(
 def _affordable_quantity(
     *,
     date: dt.date,
+    symbol: str,
     requested: int,
     lot: int,
     open_price: float,
@@ -720,6 +723,7 @@ def _affordable_quantity(
         quantity = candidate_lots * lot
         _price, notional, fee = _execution_values(
             date=date,
+            symbol=symbol,
             side=OrderSide.BUY,
             quantity=quantity,
             open_price=open_price,
@@ -751,6 +755,7 @@ def _execute(
 ) -> tuple[float, float]:
     price, notional, fee = _execution_values(
         date=date,
+        symbol=symbol,
         side=side,
         quantity=quantity,
         open_price=open_price,

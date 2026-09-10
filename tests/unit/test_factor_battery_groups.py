@@ -52,6 +52,7 @@ def test_group_summary_uses_nonoverlapping_months_and_keeps_coverage():
     assert summary["groups"][1]["months"] == 2
     assert summary["groups"][1]["annualized_return"] == pytest.approx((1.02*1.04)**6-1)
     assert summary["long_short_months"] == 2
+    assert summary["long_short_annualized_return"] == pytest.approx(1.03**12-1)
     # Constant spread has no estimated risk, so its Sharpe is unavailable.
     assert summary["long_short_sharpe"] is None
     assert summary["group_mean_rank_monotonicity"] == pytest.approx(1)
