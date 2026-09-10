@@ -311,13 +311,20 @@ def portfolio_admission_summary(results: list[dict[str, Any]], comparison: str =
 def validate_overnight_comparison(config: dict[str, Any]) -> str:
     settings = config["overnight_decomposition"]
     component = settings.get("component", "overnight")
-    composition = "intraday_reversal_composition" in config
+    buffered = "intraday_reversal_buffer" in config
+    composition = "intraday_reversal_composition" in config or buffered
     expected_names = (["alpha158_std20", "alpha158_roc20", "alpha158_rsv20", "intraday_return_20"]
                       if composition else [f"{component}_return_20"])
-    if composition and (component != "intraday" or config["intraday_reversal_composition"] != {
-        "method": "equal_weight_zscore", "paired_baseline": "three_factor",
-        "eligibility": "complete_four_factor_and_decomposition_pool"}):
-        raise ValueError("Intraday composition requires the fixed complete-cohort three-factor comparison")
+    comparison = "intraday_reversal_unbuffered" if buffered else "three_factor"
+    experiment = {"method": "equal_weight_zscore", "paired_baseline": comparison,
+                  "eligibility": "complete_four_factor_and_decomposition_pool"}
+    if buffered:
+        experiment["retention_rule"] = "prior_targets_top75_then_fill"
+    section = "intraday_reversal_buffer" if buffered else "intraday_reversal_composition"
+    if composition and (component != "intraday" or config[section] != experiment
+        or (buffered and "intraday_reversal_composition" in config)
+        or (buffered and config["admission"].get("require_lower_turnover_every_fold") is not True)):
+        raise ValueError("Intraday composition requires its fixed complete-cohort paired comparison")
     expected = {"window_sessions": 20, "parameter_grid": [20],
         "price_adjustment": "same_date_factor_on_open_and_close",
         "missing_session": "invalidate_component_and_total_return_windows",
@@ -327,9 +334,9 @@ def validate_overnight_comparison(config: dict[str, Any]) -> str:
         or any(settings.get(k) != v for k, v in expected.items())
         or config["factors"]["names"] != expected_names
         or config["factors"]["directions"] != ([-1, 1, -1, -1] if composition else [-1])
-        or config["portfolio"]["top_k"] != 50 or config["portfolio"].get("retention_rank", 50) != 50
+        or config["portfolio"]["top_k"] != 50 or config["portfolio"].get("retention_rank", 50) != (75 if buffered else 50)
         or "execution_months" in config["portfolio"]
-        or config["admission"].get("comparison") != ("three_factor" if composition else "total_reversal")
+        or config["admission"].get("comparison") != (comparison if composition else "total_reversal")
         or any(config["admission"].get(k) is not True for k in (
             "positive_net_return_1x", "positive_net_return_2x", "positive_paired_compound_increment_1x"))):
         raise ValueError("Decomposition comparison requires fixed negative 20-session ranking and a complete paired pool")
@@ -343,6 +350,7 @@ def run_baseline(
     data, universe, portfolio = config["data"], config["universe"], config["portfolio"]
     if "overnight_decomposition" in config:
         validate_overnight_comparison(config)
+    intraday_reversal_buffer = "intraday_reversal_buffer" in config
     cash_roa_buffer = "cash_roa_buffer" in config
     alpha101_041_buffer = "alpha101_041_buffer" in config
     alpha101_012_buffer = "alpha101_012_buffer" in config
@@ -884,7 +892,7 @@ def run_baseline(
     if "overnight_decomposition" in config:
         eligible = eligible.filter(pl.all_horizontal(pl.col(name).is_finite() for name in
             ("overnight_return_20", "intraday_return_20", "total_return_20")))
-        if "intraday_reversal_composition" in config:
+        if "intraday_reversal_composition" in config or intraday_reversal_buffer:
             eligible = eligible.filter(pl.all_horizontal(pl.col(name).is_finite() for name in
                 ("alpha158_std20", "alpha158_roc20", "alpha158_rsv20")))
             extra_outputs.append(("intraday_reversal_composition_pool", eligible))
@@ -990,7 +998,11 @@ def run_baseline(
         if low_volatility_filter:
             paired_components = (("reversal_20", 1),)
             paired_comparison, paired_strategy = "reversal_unfiltered", "b35_paired_unfiltered_reversal"
-        if "intraday_reversal_composition" in config:
+        if intraday_reversal_buffer:
+            paired_components = (("alpha158_std20", -1), ("alpha158_roc20", 1),
+                                 ("alpha158_rsv20", -1), ("intraday_return_20", -1))
+            paired_comparison, paired_strategy = "intraday_reversal_unbuffered", "b90_paired_unbuffered_intraday_reversal"
+        elif "intraday_reversal_composition" in config:
             paired_strategy = "b89_paired_three_factor_intraday_cohort"
         elif "overnight_decomposition" in config:
             paired_components = (("total_return_20", -1),)
@@ -1117,7 +1129,7 @@ def run_baseline(
                   and sum(r["rank_ic_mean"] > 0 for r in primary) >= config["admission"]["minimum_positive_test_folds"]
                   and max(r["median_abs_rank_corr"] for r in redundancy_rows)
                   < config["admission"]["maximum_absolute_rank_correlation"])
-    elif cv20_buffer or cv20_bimonthly or cash_roa_buffer or alpha101_026_buffer or alpha101_055_buffer or alpha101_006_buffer or alpha101_012_buffer or alpha101_041_buffer:
+    elif cv20_buffer or cv20_bimonthly or cash_roa_buffer or alpha101_026_buffer or alpha101_055_buffer or alpha101_006_buffer or alpha101_012_buffer or alpha101_041_buffer or intraday_reversal_buffer:
         from quant.research.monthly_cv20_buffer import summarize_cv20_buffer
 
         portfolio_admission = summarize_cv20_buffer(
@@ -1139,6 +1151,8 @@ def run_baseline(
         and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_zscore", "debt_ebitda", "low_beta", "turnover_change", "return_turnover", "lowvol120", "lowvol60_composition", "momentum_12_1", "alpha101_001", "alpha101_026", "alpha101_046", "alpha101_054", "alpha101_055", "alpha101_006", "alpha101_012", "alpha101_041", "overnight_decomposition")) or passed)):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
+        "Fixed Top75 prior-target retention is compared with the frozen intraday-reversal composite; historical periods were inspected previously."
+        if intraday_reversal_buffer else
         "Fixed Top75 retention of prior four-factor targets is compared with the frozen Alpha101 #41 unbuffered portfolio; historical periods were inspected previously."
         if alpha101_041_buffer else
         "Frozen Alpha101 #41 is added to three equal-zscore factors on the same complete cohort; historical periods were inspected previously."
