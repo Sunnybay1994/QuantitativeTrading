@@ -1,0 +1,5 @@
+id = "alpha158_imxd10"
+expr = "(ts_argmax(adj_high, 10) - ts_argmin(adj_low, 10)) / 10"
+family = "alpha158"
+direction = 1
+source_ref = "https://github.com/microsoft/qlib/blob/main/qlib/contrib/data/loader.py"

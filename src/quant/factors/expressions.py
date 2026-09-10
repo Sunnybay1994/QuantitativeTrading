@@ -10,6 +10,7 @@ import ast
 import operator
 from collections.abc import Callable
 
+import numpy as np
 import polars as pl
 
 
@@ -171,13 +172,16 @@ class ExpressionEngine:
             if name in {"ts_argmax", "ts_argmin"}:
                 # First extremum, one-based index from the oldest observation.
                 maximum = name == "ts_argmax"
-                def position(series: pl.Series) -> float:
-                    index = series.arg_max() if maximum else series.arg_min()
-                    return float(index + 1) if index is not None else float("nan")
-                return x.rolling_map(
-                    position,
-                    n, min_samples=n,
-                ).over("symbol")
+                def positions(series: pl.Series) -> pl.Series:
+                    values = series.cast(pl.Float64).to_numpy()
+                    result = np.full(len(values), np.nan)
+                    if len(values) >= n:
+                        windows = np.lib.stride_tricks.sliding_window_view(values, n)
+                        complete = np.isfinite(windows).all(axis=1)
+                        index = windows.argmax(axis=1) if maximum else windows.argmin(axis=1)
+                        result[n - 1:] = np.where(complete, index + 1, np.nan)
+                    return pl.Series(result, nan_to_null=True)
+                return x.map_batches(positions, return_dtype=pl.Float64).over("symbol")
         if name == "rank":
             count = x.count().over("trade_date")
             return pl.when(count >= 2).then((x.rank("average").over("trade_date") - 1) / (count - 1))

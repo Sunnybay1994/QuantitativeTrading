@@ -1,0 +1,5 @@
+id = "alpha158_imax30"
+expr = "ts_argmax(adj_high, 30) / 30"
+family = "alpha158"
+direction = 1
+source_ref = "https://github.com/microsoft/qlib/blob/main/qlib/contrib/data/loader.py"
