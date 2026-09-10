@@ -1,0 +1,5 @@
+id = "alpha101_077"
+expr = "where(rank(decay_linear(((adj_high + adj_low) / 2) - (amount / volume * adj_factor), 20)) < rank(decay_linear(ts_corr(((adj_high + adj_low) / 2), ts_mean(amount, 40), 3), 5)), rank(decay_linear(((adj_high + adj_low) / 2) - (amount / volume * adj_factor), 20)), rank(decay_linear(ts_corr(((adj_high + adj_low) / 2), ts_mean(amount, 40), 3), 5)))"
+family = "alpha101"
+direction = 1
+source_ref = "https://arxiv.org/pdf/1601.00991"

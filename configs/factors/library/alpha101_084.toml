@@ -1,0 +1,5 @@
+id = "alpha101_084"
+expr = "sign(ts_rank((amount / volume * adj_factor) - ts_max((amount / volume * adj_factor), 15), 20)) * abs(ts_rank((amount / volume * adj_factor) - ts_max((amount / volume * adj_factor), 15), 20)) ** delta(adj_close, 4)"
+family = "alpha101"
+direction = 1
+source_ref = "https://arxiv.org/pdf/1601.00991"

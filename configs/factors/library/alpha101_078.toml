@@ -1,0 +1,5 @@
+id = "alpha101_078"
+expr = "rank(ts_corr(ts_sum(adj_low * 0.352233 + (amount / volume * adj_factor) * (1 - 0.352233), 19), ts_sum(ts_mean(amount, 40), 19), 6)) ** rank(ts_corr(rank((amount / volume * adj_factor)), rank(volume), 5))"
+family = "alpha101"
+direction = 1
+source_ref = "https://arxiv.org/pdf/1601.00991"
