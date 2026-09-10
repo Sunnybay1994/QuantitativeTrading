@@ -53,3 +53,18 @@ def test_fixed_config_preserves_baseline_and_reference_six():
         changed[section][key]=value
         with pytest.raises(ValueError):
             validate_alpha101_012(changed)
+
+
+def test_composition_freezes_cohort_directions_and_paired_admission():
+    config=tomllib.loads(Path('configs/research/b83_alpha101_012_composite_20260910.toml').read_text())
+    prior=tomllib.loads(Path('configs/research/b82_alpha101_012_20260910.toml').read_text())
+    for section in ('data','universe','costs','walk_forward','portfolio','alpha101_012'):
+        assert config[section]==prior[section]
+    validate_alpha101_012(config)
+    for section,key,value in [('alpha101_012_composition','eligibility','separate_pools'),
+        ('alpha101_012_composition','weights','optimized'),('factors','directions',[-1,1,-1,-1]),
+        ('admission','comparison','510300'),('admission','require_positive_paired_1x_compounded_increment',False)]:
+        changed=copy.deepcopy(config)
+        changed[section][key]=value
+        with pytest.raises(ValueError):
+            validate_alpha101_012(changed)
