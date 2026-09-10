@@ -36,7 +36,10 @@ def compute_no_common_equity_issue(
                 for event in period:
                     codes = set(event['change_type_codes'].split(','))
                     issues += bool(codes & ISSUANCE_CODES)
-                    unknown += bool(codes - ISSUANCE_CODES - NON_ISSUANCE_CODES)
+                    notice_date = event.get('notice_available_date')
+                    resolved = (event.get('notice_non_issuance') is True
+                        and isinstance(notice_date, dt.date) and notice_date < as_of)
+                    unknown += bool(codes - ISSUANCE_CODES - NON_ISSUANCE_CODES) and not resolved
                 if issues:
                     value, status = 0.0, 'COMMON_SHARES_ISSUED'
                 elif unknown:

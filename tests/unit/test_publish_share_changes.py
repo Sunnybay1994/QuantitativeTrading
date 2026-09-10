@@ -6,7 +6,8 @@ import polars as pl
 import pytest
 
 from quant.data.publish_share_changes import (
-    normalize_share_changes, publish_share_changes, read_share_change_coverage, read_share_change_history,
+    annotate_repurchase_notices, normalize_share_changes, publish_share_changes,
+    read_share_change_coverage, read_share_change_history,
 )
 
 
@@ -45,3 +46,20 @@ def test_empty_request_is_retained_without_creating_no_issuance_signal(tmp_path:
     assert read_share_change_history(snapshot=output, symbols=('000022.SZ',)).is_empty()
     with pytest.raises(FileExistsError):
         publish_share_changes(request_summary=summary, output=output)
+
+
+def test_notice_retains_provider_code_and_requires_exact_event():
+    event = normalize_share_changes(sample().with_columns(pl.lit('015999').alias('F001V')),
+        symbol='000021.SZ', source_file='raw.parquet')
+    notice = dict(symbol='000021.SZ', event_date='2024-03-31', ann_date='2024-04-03',
+        change_type_codes='015999', classification='repurchase', notice_available_date='2024-04-10',
+        source_url='https://example.org/issuer.pdf', source_title='Issuer repurchase notice')
+    result = annotate_repurchase_notices(event, [notice])
+    assert result['change_type_codes'].item() == '015999'
+    assert result['ann_date'].item() == dt.date(2024, 4, 3)
+    assert result['notice_available_date'].item() == dt.date(2024, 4, 10)
+    assert result['notice_non_issuance'].item() is True
+    with pytest.raises(ValueError, match='does not match'):
+        annotate_repurchase_notices(event, [{**notice, 'event_date': '2024-03-30'}])
+    with pytest.raises(ValueError, match='Duplicate'):
+        annotate_repurchase_notices(event, [notice, notice])

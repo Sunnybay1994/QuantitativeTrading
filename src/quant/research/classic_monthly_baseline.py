@@ -1039,6 +1039,36 @@ def run_baseline(
             retention_rank=75 if cv20_bimonthly or alpha101_055_bimonthly or alpha101_006_bimonthly or intraday_reversal_bimonthly else None,
         ).with_columns(pl.lit(fold.fold).alias("fold")) for fold in folds])
         extra_outputs.append((f"{paired_comparison}_targets", paired_targets))
+    # Direction diagnostics do not select or alter the already frozen component weights.
+    panel = build_next_open_factor_labels(factor_values=primary_scored, bars=bars,
+                                          sessions=all_sessions, horizons=(20,))
+    diagnostic_rows: list[dict[str, Any]] = []
+    daily_diagnostics: list[pl.DataFrame] = []
+    group_diagnostics: list[pl.DataFrame] = []
+    redundancy_rows: list[dict[str, Any]] = []
+    for fold in folds:
+        for label, period_start, period_end in (
+            ("train", fold.train_start, fold.train_end),
+            ("validation", fold.validation_start, fold.validation_end),
+            ("test", fold.test_start, fold.test_end),
+        ):
+            for factor, direction in (directions if "b3" in config else (*directions, ("equal_zscore", 1))):
+                daily, groups, score = evaluate_factor_period(panel, factor=factor, horizon=20,
+                    start_date=period_start, end_date=period_end,
+                    minimum_symbols=config["factors"]["minimum_daily_symbols"], direction=direction)
+                means = groups.group_by("group").agg(pl.col("mean_return").mean()).sort("group")
+                diagnostic_rows.append({"fold": fold.fold, "period": label, "factor": factor,
+                    "direction": direction, "group_mean_returns": means["mean_return"].to_list(),
+                    "group_monotonicity": means.select(pl.corr("group", "mean_return", method="spearman")).item(), **score})
+                for collection, frame in ((daily_diagnostics, daily), (group_diagnostics, groups)):
+                    collection.append(frame.with_columns(pl.lit(fold.fold).alias("fold"),
+                        pl.lit(label).alias("period"), pl.lit(factor).alias("factor")))
+        if "redundancy_references" in config["admission"]:
+            _, redundancy = evaluate_factor_redundancy(scored, factors=tuple(name for name, _ in directions),
+                reference_factors=tuple(config["admission"]["redundancy_references"]),
+                start_date=fold.test_start, end_date=fold.test_end,
+                minimum_symbols=config["factors"]["minimum_daily_symbols"])
+            redundancy_rows.extend(redundancy.with_columns(pl.lit(fold.fold).alias("fold")).to_dicts())
     selected = sorted(set(targets.get_column("symbol")) | (
         set() if paired_targets is None else set(paired_targets.get_column("symbol"))))
     primary_execution_dates = sorted(targets.get_column("execution_date").unique().to_list())
@@ -1102,36 +1132,6 @@ def run_baseline(
                     collection.append(frame.with_columns(pl.lit(fold.fold).alias("fold"), pl.lit(comparison).alias("comparison"),
                                                          pl.lit(multiplier).alias("cost_multiplier")))
                 print(f"Completed fold {fold.fold} {comparison} cost {multiplier}x", flush=True)
-    # Direction diagnostics do not select or alter the already frozen component weights.
-    panel = build_next_open_factor_labels(factor_values=primary_scored, bars=bars,
-                                          sessions=all_sessions, horizons=(20,))
-    diagnostic_rows: list[dict[str, Any]] = []
-    daily_diagnostics: list[pl.DataFrame] = []
-    group_diagnostics: list[pl.DataFrame] = []
-    redundancy_rows: list[dict[str, Any]] = []
-    for fold in folds:
-        for label, period_start, period_end in (
-            ("train", fold.train_start, fold.train_end),
-            ("validation", fold.validation_start, fold.validation_end),
-            ("test", fold.test_start, fold.test_end),
-        ):
-            for factor, direction in (directions if "b3" in config else (*directions, ("equal_zscore", 1))):
-                daily, groups, score = evaluate_factor_period(panel, factor=factor, horizon=20,
-                    start_date=period_start, end_date=period_end,
-                    minimum_symbols=config["factors"]["minimum_daily_symbols"], direction=direction)
-                means = groups.group_by("group").agg(pl.col("mean_return").mean()).sort("group")
-                diagnostic_rows.append({"fold": fold.fold, "period": label, "factor": factor,
-                    "direction": direction, "group_mean_returns": means["mean_return"].to_list(),
-                    "group_monotonicity": means.select(pl.corr("group", "mean_return", method="spearman")).item(), **score})
-                for collection, frame in ((daily_diagnostics, daily), (group_diagnostics, groups)):
-                    collection.append(frame.with_columns(pl.lit(fold.fold).alias("fold"),
-                        pl.lit(label).alias("period"), pl.lit(factor).alias("factor")))
-        if "redundancy_references" in config["admission"]:
-            _, redundancy = evaluate_factor_redundancy(scored, factors=tuple(name for name, _ in directions),
-                reference_factors=tuple(config["admission"]["redundancy_references"]),
-                start_date=fold.test_start, end_date=fold.test_end,
-                minimum_symbols=config["factors"]["minimum_daily_symbols"])
-            redundancy_rows.extend(redundancy.with_columns(pl.lit(fold.fold).alias("fold")).to_dicts())
     def compounded(comparison: str, multiplier: float) -> float:
         return math.prod(1 + row["total_return"] for row in results
                          if row["comparison"] == comparison and row["cost_multiplier"] == multiplier) - 1

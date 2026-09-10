@@ -1,0 +1,41 @@
+{
+  "purpose": "Company-notice classification of three exact CNINFO other events; original provider codes retained.",
+  "notices": [
+    {
+      "symbol": "000338.SZ",
+      "event_date": "2022-05-19",
+      "ann_date": "2022-05-20",
+      "change_type_codes": "015999",
+      "classification": "repurchase",
+      "notice_available_date": "2022-05-20",
+      "source_title": "潍柴动力2022-029：关于回购公司A股股份的方案",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2022-05-20/1213417890.PDF",
+      "finding": "Board approved buying existing A shares on May 19 for later incentives; this event is a repurchase plan, not issuance.",
+      "source_pages": "1-2"
+    },
+    {
+      "symbol": "600028.SH",
+      "event_date": "2022-11-25",
+      "ann_date": "2022-11-26",
+      "change_type_codes": "015999",
+      "classification": "repurchase",
+      "notice_available_date": "2022-12-30",
+      "source_title": "中国石化2022-52：关于注销已回购股份暨股份变动的公告",
+      "source_url": "https://www1.hkexnews.hk/listedco/listconews/sehk/2022/1229/2022122901561_c.pdf",
+      "finding": "The later notice explicitly confirms the November 25 A-share repurchase completion; use this later disclosure date for the classification.",
+      "source_pages": "2"
+    },
+    {
+      "symbol": "601598.SH",
+      "event_date": "2022-12-30",
+      "ann_date": "2023-01-04",
+      "change_type_codes": "015999",
+      "classification": "repurchase",
+      "notice_available_date": "2023-01-04",
+      "source_title": "中国外运临2023-001：关于回购公司A股股份实施结果暨股份变动的公告",
+      "source_url": "https://stockn.xueqiu.com/00598/20230103648632.pdf",
+      "finding": "Issuer notice mirrored as an HKEX overseas regulatory filing: 49,280,000 existing A shares repurchased by December 30, held in the repurchase account.",
+      "source_pages": "2-4"
+    }
+  ]
+}

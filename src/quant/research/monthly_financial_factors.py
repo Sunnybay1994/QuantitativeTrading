@@ -42,7 +42,9 @@ def read_monthly_financial_factors(
                 query=TushareFinancialHistoryQuery(snapshot_id=settings["snapshot_id"], dataset=dataset,
                     start_period=settings["history_start"], end_period=end, symbols=candidates, extra_fields=extra))
         event_root = data_root / "clean/cninfo_share_changes" / snapshot
-        histories["share_change_events"] = read_share_change_history(snapshot=event_root, symbols=candidates)
+        notice_path = settings.get("share_change_notices")
+        histories["share_change_events"] = read_share_change_history(snapshot=event_root, symbols=candidates,
+            notices=Path(notice_path) if notice_path else None)
         histories["share_change_coverage"] = read_share_change_coverage(snapshot=event_root)
         return build_monthly_annual_fscore(income_history=histories["income"], cash_history=histories["cashflow"],
             balance_history=histories["balancesheet"], events=histories["share_change_events"],

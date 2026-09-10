@@ -113,6 +113,16 @@ def test_direction_is_frozen_input_not_inferred_from_test_returns() -> None:
     assert positive["rank_ic_mean"] == pytest.approx(-negative["rank_ic_mean"])
 
 
+@pytest.mark.parametrize('remaining', [0, 7])
+def test_incomplete_cohort_error_names_date_and_actual_count(remaining: int) -> None:
+    panel = _panel().with_columns(pl.when(
+        (pl.col('trade_date') == dt.date(2025, 1, 2)) & (pl.col('factor_a') >= remaining))
+        .then(None).otherwise(pl.col('factor_a')).alias('factor_a'))
+    with pytest.raises(ValueError, match=f'2025-01-02:{remaining}'):
+        evaluate_factor_period(panel, factor='factor_a', horizon=1,
+            start_date=dt.date(2025, 1, 1), end_date=dt.date(2025, 1, 8), minimum_symbols=8)
+
+
 def test_factor_cohort_and_groups_are_frozen_before_pairing_future_labels() -> None:
     baseline_daily, baseline_groups, _ = evaluate_factor_period(
         _panel(),

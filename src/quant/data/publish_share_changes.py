@@ -58,9 +58,37 @@ def publish_share_changes(*, request_summary: Path, output: Path) -> dict:
         announcement_after_event=combined.filter(pl.col('ann_date') > pl.col('event_date')).height)
 
 
-def read_share_change_history(*, snapshot: Path, symbols: tuple[str, ...]) -> pl.DataFrame:
+def annotate_repurchase_notices(events: pl.DataFrame, notices: list[dict]) -> pl.DataFrame:
+    """Resolve exact 'other' events using a separately dated company notice."""
+    keys = ['symbol', 'event_date', 'ann_date', 'change_type_codes']
+    rows = []
+    for notice in notices:
+        if (notice['change_type_codes'] != '015999' or notice['classification'] != 'repurchase'
+            or not notice['source_url'].startswith('https://') or not notice['source_title']):
+            raise ValueError('Unsupported repurchase notice')
+        row = {key: dt.date.fromisoformat(notice[key]) if key.endswith('_date') else notice[key] for key in keys}
+        row.update(notice_non_issuance=True,
+            notice_available_date=dt.date.fromisoformat(notice['notice_available_date']),
+            notice_source_url=notice['source_url'])
+        rows.append(row)
+    if not rows:
+        return events
+    resolved = pl.DataFrame(rows)
+    if resolved.unique(subset=keys).height != resolved.height:
+        raise ValueError('Duplicate repurchase notice')
+    # A partial symbol query may not contain every notice in the capture file.
+    relevant = resolved.filter(pl.col('symbol').is_in(events['symbol'].unique().implode()))
+    if relevant.join(events.select(keys), on=keys, how='anti').height:
+        raise ValueError('Repurchase notice does not match a captured event')
+    return events.join(relevant, on=keys, how='left', validate='m:1')
+
+
+def read_share_change_history(*, snapshot: Path, symbols: tuple[str, ...], notices: Path | None = None) -> pl.DataFrame:
     """Return captured history; the consumer must apply announcement and event cutoffs."""
-    return pl.scan_parquet(snapshot / 'events.parquet').filter(pl.col('symbol').is_in(symbols)).collect()
+    events = pl.scan_parquet(snapshot / 'events.parquet').filter(pl.col('symbol').is_in(symbols)).collect()
+    if notices is not None:
+        return annotate_repurchase_notices(events, json.loads(notices.read_text(encoding='utf-8'))['notices'])
+    return events
 
 
 def read_share_change_coverage(*, snapshot: Path) -> pl.DataFrame:

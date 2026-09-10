@@ -114,7 +114,13 @@ def evaluate_factor_period(
         or cast(int, factor_counts.get_column("factor_count").min())
         < minimum_symbols
     ):
-        raise ValueError("factor period signal cohort is incomplete")
+        counts = dict(factor_counts.iter_rows())
+        deficient = [(date, counts.get(date, 0)) for date in evaluable_dates
+                     if counts.get(date, 0) < minimum_symbols]
+        examples = ', '.join(f'{date}:{count}' for date, count in deficient[:5])
+        raise ValueError(f"factor period signal cohort is incomplete: {factor}, "
+                         f"minimum={minimum_symbols}, deficient_dates={len(deficient)}, "
+                         f"examples=[{examples}]")
     cohort = (
         cohort.join(factor_counts, on="trade_date", how="left", validate="m:1")
         .with_columns(

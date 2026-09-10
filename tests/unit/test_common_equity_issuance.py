@@ -38,3 +38,21 @@ def test_absent_or_partial_request_does_not_mean_no_issuance():
     assert evaluate(['015019'], [day], start=dt.date(2023, 6, 1))['no_common_equity_issue'] is None
     with pytest.raises(ValueError, match='completed annual'):
         evaluate(['015019'], [day], end=dt.date(2023, 6, 30))
+
+
+def test_later_notice_resolves_only_after_publication_and_preserves_other_unknowns():
+    events = pl.DataFrame({'symbol': ['A'], 'event_date': [dt.date(2023, 12, 1)],
+        'ann_date': [dt.date(2023, 12, 2)], 'change_type_codes': ['015999'],
+        'notice_non_issuance': [True], 'notice_available_date': [dt.date(2024, 4, 10)]})
+    coverage = pl.DataFrame({'symbol': ['A'], 'start': [dt.date(2023, 1, 1)],
+        'end': [dt.date(2024, 12, 31)], 'empty_response': [False]})
+    anchors = pl.DataFrame({'symbol': ['A'], 'end_date': [dt.date(2023, 12, 31)]})
+    def score(frame, date):
+        return compute_no_common_equity_issue(frame, coverage, anchors, as_of=date)['no_common_equity_issue'].item()
+    assert score(events, dt.date(2024, 4, 10)) is None
+    assert score(events, dt.date(2024, 4, 11)) == 1
+    unknown = events.with_columns(pl.lit(None, dtype=pl.Boolean).alias('notice_non_issuance'),
+        pl.lit('015025').alias('change_type_codes'))
+    assert score(pl.concat([events, unknown]), dt.date(2024, 4, 11)) is None
+    issued = unknown.with_columns(pl.lit('015004').alias('change_type_codes'))
+    assert score(pl.concat([events, issued]), dt.date(2024, 4, 11)) == 0
