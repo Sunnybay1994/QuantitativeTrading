@@ -64,6 +64,8 @@ CODE_PATHS = (
     "src/quant/research/monthly_cash_yield.py",
     "src/quant/factors/cash_roa.py",
     "src/quant/research/monthly_cash_roa.py",
+    "src/quant/research/monthly_annual_cash_profitability.py",
+    "src/quant/factors/annual_cash_profitability.py",
     "src/quant/factors/gross_profitability.py",
     "src/quant/research/monthly_gross_profitability.py",
     "src/quant/factors/asset_growth.py",
@@ -327,6 +329,16 @@ def run_baseline(
             "comparison": "three_factor", "eligibility": "complete_four_factor", "weights": "equal_zscore"}
             or config["admission"].get("comparison") != "three_factor"):
             raise ValueError("Cash yield composition requires the paired complete-case baseline")
+    if config.get("financials", {}).get("factor_family") == "annual_cash_profitability":
+        expected_annual = {
+            "formula": "(n_income + depr_fa_coga_dpba - change_working_capital - c_pay_acq_const_fiolta) / total_assets",
+            "working_capital": "total_cur_assets - total_cur_liab - money_cap + st_borr + taxes_payable",
+            "report_month": 12, "maximum_age_months": 18, "missing_input": "null",
+            "latest_annual_period": "latest_known_income_period_no_fallback"}
+        if (any(config.get("annual_cash_profitability", {}).get(k) != v for k, v in expected_annual.items())
+            or config["factors"]["names"] != ["pit_annual_cash_profitability"]
+            or config["factors"]["directions"] != [1]):
+            raise ValueError("Unsupported annual cash profitability configuration")
     if config.get("financials", {}).get("factor_family") == "cash_roa":
         expected_cash_roa = {"formula": "OCF_TTM / mean(total_assets_t, total_assets_t-4q)",
                              "window_quarters": 4, "assets_lag_quarters": 4,

@@ -28,6 +28,7 @@ def read_monthly_financial_factors(
         or settings["allowed_report_types"] != ["1"]):
         raise ValueError("Unsupported financial factor configuration")
     histories: dict[str, pl.DataFrame] = {}
+    annual_cash = settings.get("factor_family") == "annual_cash_profitability"
     sue = settings.get("factor_family") == "sue8"
     growth = settings.get("factor_family") == "asset_growth"
     current_ratio = settings.get("factor_family") == "current_ratio"
@@ -53,11 +54,21 @@ def read_monthly_financial_factors(
                 snapshot_id=settings["snapshot_id"], dataset=dataset,
                 start_period=settings["history_start"], end_period=end,
                 symbols=candidates,
-                extra_fields=(("revenue",) if revenue_growth or revenue_acceleration else ("revenue", "oper_cost"))
+                extra_fields=("depr_fa_coga_dpba", "c_pay_acq_const_fiolta") if annual_cash and dataset == "cashflow"
+                else ("total_cur_assets", "total_cur_liab", "money_cap", "st_borr", "taxes_payable")
+                if annual_cash and dataset == "balancesheet" else (("revenue",) if revenue_growth or revenue_acceleration else ("revenue", "oper_cost"))
                 if (gross or margin or revenue_growth or revenue_acceleration) and dataset == "income"
                 else ("total_liab",) if leverage else ("total_cur_assets", "total_cur_liab") if current_ratio else (),
             ),
         )
+    if annual_cash:
+        from quant.research.monthly_annual_cash_profitability import build_monthly_annual_cash_profitability
+
+        return build_monthly_annual_cash_profitability(
+            income_history=histories["income"], cash_history=histories["cashflow"],
+            balance_history=histories["balancesheet"],
+            signal_dates=monthly_signal_sessions(sessions, start=start, end=end), candidate_symbols=candidates,
+        ), histories
     if cash_yield:
         from quant.research.monthly_cash_yield import build_monthly_cash_yield
 
