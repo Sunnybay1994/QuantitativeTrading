@@ -18,6 +18,7 @@ from quant.research.pit_quality_research import (
 def read_monthly_financial_factors(
     *, data_root: Path, settings: dict[str, Any], candidates: tuple[str, ...],
     sessions: tuple[dt.date, ...], start: dt.date, end: dt.date,
+    daily_basic: pl.DataFrame | None = None,
 ) -> tuple[PITQualitySignalResult, dict[str, pl.DataFrame]]:
     """Read revision history through data APIs and compute sparse monthly signals."""
     if (settings["company_type"] != "1"
@@ -31,6 +32,7 @@ def read_monthly_financial_factors(
     growth = settings.get("factor_family") == "asset_growth"
     current_ratio = settings.get("factor_family") == "current_ratio"
     leverage = settings.get("factor_family") == "leverage"
+    cash_yield = settings.get("factor_family") == "cash_yield"
     cash_roa = settings.get("factor_family") == "cash_roa"
     gross = settings.get("factor_family") == "gross_profitability"
     margin = settings.get("factor_family") == "gross_margin"
@@ -39,6 +41,7 @@ def read_monthly_financial_factors(
     revenue_acceleration = settings.get("factor_family") == "revenue_acceleration"
     profit_acceleration = settings.get("factor_family") == "profit_acceleration"
     datasets: tuple[FinancialFactorDataset, ...] = (
+        ("cashflow",) if cash_yield else
         ("income",) if sue or margin or revenue_growth or profit_growth or profit_acceleration or revenue_acceleration
         else ("balancesheet",) if growth or leverage or current_ratio else
         ("cashflow", "balancesheet") if cash_roa else
@@ -55,6 +58,15 @@ def read_monthly_financial_factors(
                 else ("total_liab",) if leverage else ("total_cur_assets", "total_cur_liab") if current_ratio else (),
             ),
         )
+    if cash_yield:
+        from quant.research.monthly_cash_yield import build_monthly_cash_yield
+
+        if daily_basic is None:
+            raise ValueError("Cash yield requires signal-date daily basic")
+        return build_monthly_cash_yield(
+            cash_history=histories["cashflow"], daily_basic=daily_basic,
+            signal_dates=monthly_signal_sessions(sessions, start=start, end=end), candidate_symbols=candidates,
+        ), histories
     if cash_roa:
         from quant.research.monthly_cash_roa import build_monthly_cash_roa
 

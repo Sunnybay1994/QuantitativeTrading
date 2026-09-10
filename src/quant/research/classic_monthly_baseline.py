@@ -60,6 +60,8 @@ CODE_PATHS = (
     "src/quant/research/monthly_profit_growth.py",
     "src/quant/research/monthly_revenue_growth.py",
     "src/quant/research/monthly_gross_margin.py",
+    "src/quant/factors/cash_yield.py",
+    "src/quant/research/monthly_cash_yield.py",
     "src/quant/factors/cash_roa.py",
     "src/quant/research/monthly_cash_roa.py",
     "src/quant/factors/gross_profitability.py",
@@ -282,6 +284,14 @@ def run_baseline(
                            "window_quarters": 4, "valid_values": "positive_ttm_revenue_nonnegative_ttm_cost"}
         if any(config.get("gross_margin", {}).get(k) != v for k, v in expected_margin.items()):
             raise ValueError("Unsupported gross margin configuration")
+    if config.get("financials", {}).get("factor_family") == "cash_yield":
+        expected_yield = {"formula": "OCF_TTM / total_market_value_signal_date",
+                          "window_quarters": 4, "currency_unit": "yuan",
+                          "valid_values": "finite_ocf_positive_finite_market_value"}
+        if (any(config.get("cash_yield", {}).get(k) != v for k, v in expected_yield.items())
+            or config["factors"]["names"] != ["pit_cash_yield_ttm"]
+            or config["factors"]["directions"] != [1]):
+            raise ValueError("Unsupported cash yield configuration")
     if config.get("financials", {}).get("factor_family") == "cash_roa":
         expected_cash_roa = {"formula": "OCF_TTM / mean(total_assets_t, total_assets_t-4q)",
                              "window_quarters": 4, "assets_lag_quarters": 4,
@@ -466,9 +476,14 @@ def run_baseline(
     if "financials" in config:
         from quant.research.monthly_financial_factors import read_monthly_financial_factors
 
+        cash_yield_basic = None
+        if config["financials"].get("factor_family") == "cash_yield":
+            cash_yield_basic = read_stock_data(data_root=data_root, config=refresh_config, table="daily_basic",
+                                              start=data["warmup_start"], end=end, symbols=list(candidates))
+            extra_inputs.append(("daily-basic", cash_yield_basic, ("trade_date", "symbol"), "trade_date"))
         financial, histories = read_monthly_financial_factors(
             data_root=data_root, settings=config["financials"], candidates=candidates,
-            sessions=all_sessions, start=data["research_start"], end=end,
+            sessions=all_sessions, start=data["research_start"], end=end, daily_basic=cash_yield_basic,
         )
         factors = factors.join(financial.factors, on=["symbol", "trade_date"], how="inner", validate="1:1")
         required = config["financials"].get("ranking_requires_factors", [])
