@@ -3,19 +3,20 @@ import pytest
 from quant.research.classic_monthly_baseline import portfolio_admission_summary, validate_turnover_components
 
 
-def test_cash_roa_single_factor_and_composition_are_fixed():
-    from quant.research.classic_monthly_baseline import validate_cash_roa_components
+@pytest.mark.parametrize("factor", ["pit_cash_roa_ttm", "pit_cash_yield_ttm"])
+def test_cash_single_factor_and_composition_are_fixed(factor):
+    from quant.research.classic_monthly_baseline import validate_cash_factor_components
 
-    names = ["alpha158_std20", "alpha158_roc20", "alpha158_rsv20", "pit_cash_roa_ttm"]
-    validate_cash_roa_components(["pit_cash_roa_ttm"], [1], False)
-    validate_cash_roa_components(names, [-1, 1, -1, 1], True)
+    names = ["alpha158_std20", "alpha158_roc20", "alpha158_rsv20", factor]
+    validate_cash_factor_components([factor], [1], False, factor=factor)
+    validate_cash_factor_components(names, [-1, 1, -1, 1], True, factor=factor)
     for invalid_names, directions, composition in (
         (names, [-1, 1, -1, -1], True),
         (names, [-1, 1, -1, 1], False),
-        (["pit_cash_roa_ttm"], [1], True),
+        ([factor], [1], True),
     ):
         with pytest.raises(ValueError, match="fixed"):
-            validate_cash_roa_components(invalid_names, directions, composition)
+            validate_cash_factor_components(invalid_names, directions, composition, factor=factor)
 
 
 def test_exact_b25_and_b27_components_only():

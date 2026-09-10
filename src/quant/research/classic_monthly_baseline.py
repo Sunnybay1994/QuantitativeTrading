@@ -191,12 +191,16 @@ def validate_turnover_components(names: list[str], directions: list[int]) -> Non
         raise ValueError("CV20 direction and component sets are fixed before test evaluation")
 
 
-def validate_cash_roa_components(names: list[str], directions: list[int], composition: bool) -> None:
-    """Keep B49 fixed and permit its preregistered four-factor extension."""
-    expected = (["alpha158_std20", "alpha158_roc20", "alpha158_rsv20", "pit_cash_roa_ttm"],
-                [-1, 1, -1, 1]) if composition else (["pit_cash_roa_ttm"], [1])
+def validate_cash_factor_components(
+    names: list[str], directions: list[int], composition: bool, *, factor: str,
+) -> None:
+    """Validate the two cash factors and their fixed four-factor extensions."""
+    if factor not in {"pit_cash_roa_ttm", "pit_cash_yield_ttm"}:
+        raise ValueError("Unsupported cash factor")
+    expected = (["alpha158_std20", "alpha158_roc20", "alpha158_rsv20", factor],
+                [-1, 1, -1, 1]) if composition else ([factor], [1])
     if (names, directions) != expected:
-        raise ValueError("Cash ROA direction and component sets are fixed")
+        raise ValueError("Cash factor direction and component sets are fixed")
 
 
 def portfolio_admission_summary(results: list[dict[str, Any]], comparison: str = "510300") -> dict[str, Any]:
@@ -296,10 +300,15 @@ def run_baseline(
         expected_yield = {"formula": "OCF_TTM / total_market_value_signal_date",
                           "window_quarters": 4, "currency_unit": "yuan",
                           "valid_values": "finite_ocf_positive_finite_market_value"}
-        if (any(config.get("cash_yield", {}).get(k) != v for k, v in expected_yield.items())
-            or config["factors"]["names"] != ["pit_cash_yield_ttm"]
-            or config["factors"]["directions"] != [1]):
+        if any(config.get("cash_yield", {}).get(k) != v for k, v in expected_yield.items()):
             raise ValueError("Unsupported cash yield configuration")
+        composition = "cash_yield_composition" in config
+        validate_cash_factor_components(config["factors"]["names"], config["factors"]["directions"],
+                                        composition, factor="pit_cash_yield_ttm")
+        if composition and (config["cash_yield_composition"] != {
+            "comparison": "three_factor", "eligibility": "complete_four_factor", "weights": "equal_zscore"}
+            or config["admission"].get("comparison") != "three_factor"):
+            raise ValueError("Cash yield composition requires the paired complete-case baseline")
     if config.get("financials", {}).get("factor_family") == "cash_roa":
         expected_cash_roa = {"formula": "OCF_TTM / mean(total_assets_t, total_assets_t-4q)",
                              "window_quarters": 4, "assets_lag_quarters": 4,
@@ -307,7 +316,8 @@ def run_baseline(
         if any(config.get("cash_roa", {}).get(k) != v for k, v in expected_cash_roa.items()):
             raise ValueError("Unsupported cash ROA configuration")
         composition = "cash_roa_composition" in config
-        validate_cash_roa_components(config["factors"]["names"], config["factors"]["directions"], composition)
+        validate_cash_factor_components(config["factors"]["names"], config["factors"]["directions"],
+                                        composition, factor="pit_cash_roa_ttm")
         if composition and (config["cash_roa_composition"] != {
             "comparison": "three_factor", "eligibility": "complete_four_factor", "weights": "equal_zscore"}
             or config["admission"].get("comparison") != "three_factor"):
@@ -524,10 +534,11 @@ def run_baseline(
         names = read_name_history(data_root, list(candidates), end)
         eligible = exclude_historical_risk_names(eligible, names)
         extra_inputs.append(("name-history", names, ("symbol", "start_date", "name"), "start_date"))
-    if "cash_roa_composition" in config:
-        eligible = eligible.filter(pl.all_horizontal(pl.col(name).is_finite() for name in
-            ("pit_cash_roa_ttm", "alpha158_std20", "alpha158_roc20", "alpha158_rsv20")))
-        extra_outputs.append(("cash_roa_composition_pool", eligible))
+    for family, cash_factor in (("cash_roa", "pit_cash_roa_ttm"), ("cash_yield", "pit_cash_yield_ttm")):
+        if f"{family}_composition" in config:
+            eligible = eligible.filter(pl.all_horizontal(pl.col(name).is_finite() for name in
+                (cash_factor, "alpha158_std20", "alpha158_roc20", "alpha158_rsv20")))
+            extra_outputs.append((f"{family}_composition_pool", eligible))
     if "turnover_variability" in config:
         # Both strategies rank the same complete-case stock cohort.
         eligible = eligible.filter(pl.all_horizontal(pl.col(name).is_finite() for name in
@@ -576,11 +587,14 @@ def run_baseline(
     paired_comparison, paired_strategy = "three_factor", "b25_paired_three_factor_baseline"
     if ("turnover_variability" in config or "information_discreteness" in config
         or low_volatility_filter or "overnight_decomposition" in config or "high52" in config
-        or "small_value_quality" in config or "cash_roa_composition" in config):
+        or "small_value_quality" in config or "cash_roa_composition" in config
+        or "cash_yield_composition" in config):
         paired_components: tuple[tuple[str, int], ...] = (
             ("alpha158_std20", -1), ("alpha158_roc20", 1), ("alpha158_rsv20", -1))
         if "cash_roa_composition" in config:
             paired_strategy = "b51_paired_three_factor_cash_roa_cohort"
+        if "cash_yield_composition" in config:
+            paired_strategy = "b52_paired_three_factor_cash_yield_cohort"
         if "information_discreteness" in config:
             paired_components = (("pret_12m_skip1m", 1),)
             paired_comparison, paired_strategy = "momentum", "b26_paired_momentum_baseline"
@@ -735,7 +749,7 @@ def run_baseline(
     conclusion: Literal["RESEARCH_ONLY", "REJECTED", "PAPER_CANDIDATE"] = "RESEARCH_ONLY" if passed else "REJECTED"
     if (config["admission"].get("maximum_conclusion") == "PAPER_CANDIDATE"
         and meets_portfolio_candidate(results, config["admission"])
-        and ("cash_roa_composition" not in config or passed)):
+        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition")) or passed)):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
         "Daily-return skew is distinct from intraday realized skew; this is a historical replication in previously inspected periods."
