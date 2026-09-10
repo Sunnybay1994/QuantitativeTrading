@@ -32,6 +32,7 @@ from quant.research.run_classic_factors import select_frozen_liquid_universe
 from quant.research.run_s1_walk_forward import metrics
 
 CODE_PATHS = (
+    "src/quant/research/monthly_alpha101_006.py",
     "src/quant/factors/alpha101_055.py",
     "src/quant/research/monthly_alpha101_055.py",
     "src/quant/factors/alpha101_054.py",
@@ -416,6 +417,10 @@ def run_baseline(
         from quant.research.monthly_alpha101_055 import validate_alpha101_055
 
         validate_alpha101_055(config)
+    if "alpha101_006" in config:
+        from quant.research.monthly_alpha101_006 import validate_alpha101_006
+
+        validate_alpha101_006(config)
     if "alpha101_054" in config:
         from quant.research.monthly_alpha101_054 import validate_alpha101_054
 
@@ -637,6 +642,13 @@ def run_baseline(
         factors = factors.join(monthly, on=["symbol", "trade_date"], how="inner", validate="1:1")
         extra_outputs.append(("alpha101_055_factors", monthly))
         print(f"Computed Alpha101 #55 on {monthly['trade_date'].n_unique()} month ends", flush=True)
+    if "alpha101_006" in config:
+        from quant.research.monthly_alpha101_006 import build_monthly_alpha101_006
+
+        monthly = build_monthly_alpha101_006(bars, sessions=all_sessions, start=data["research_start"], end=end)
+        factors = factors.join(monthly, on=["symbol", "trade_date"], how="inner", validate="1:1")
+        extra_outputs.append(("alpha101_006_factors", monthly))
+        print(f"Computed Alpha101 #6 on {monthly['trade_date'].n_unique()} month ends", flush=True)
     if "alpha101_054" in config:
         from quant.research.monthly_alpha101_054 import build_monthly_alpha101_054
 
@@ -1040,9 +1052,11 @@ def run_baseline(
     conclusion: Literal["RESEARCH_ONLY", "REJECTED", "PAPER_CANDIDATE"] = "RESEARCH_ONLY" if passed else "REJECTED"
     if (config["admission"].get("maximum_conclusion") == "PAPER_CANDIDATE"
         and meets_portfolio_candidate(results, config["admission"])
-        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_zscore", "debt_ebitda", "low_beta", "turnover_change", "return_turnover", "lowvol120", "lowvol60_composition", "momentum_12_1", "alpha101_001", "alpha101_026", "alpha101_046", "alpha101_054", "alpha101_055")) or passed)):
+        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_zscore", "debt_ebitda", "low_beta", "turnover_change", "return_turnover", "lowvol120", "lowvol60_composition", "momentum_12_1", "alpha101_001", "alpha101_026", "alpha101_046", "alpha101_054", "alpha101_055", "alpha101_006")) or passed)):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
+        "Alpha101 #6 reuses the strict ten-session adjusted-open/raw-volume correlation in monthly long-only Top50; historical periods were inspected previously."
+        if "alpha101_006" in config else
         "Odd execution months with Top75 retention are compared with the frozen monthly Alpha101 #55 portfolio; historical periods were inspected previously."
         if alpha101_055_bimonthly else
         "Fixed Top75 retention of prior four-factor targets is compared with the frozen Alpha101 #55 unbuffered portfolio; historical periods were inspected previously."
