@@ -33,8 +33,15 @@ def collect_industry(
             return pl.read_parquet(path)
         if requests:
             time.sleep(pause_seconds)
-        frame = client.query_raw(api, **params)
-        requests += 1
+        for attempt in range(3):
+            requests += 1
+            try:
+                frame = client.query_raw(api, **params)
+                break
+            except Exception:
+                if attempt == 2:
+                    raise RuntimeError(f"Industry request failed after 3 attempts: {api} {params}") from None
+                time.sleep(pause_seconds * (attempt + 2))
         with path.open("xb") as stream:
             frame.write_parquet(stream)
         return frame

@@ -2,7 +2,7 @@ import datetime as dt
 
 import polars as pl
 
-from quant.data.industry_history import membership_intervals
+from quant.data.industry_history import attach_industry, membership_intervals
 
 
 def taxonomy():
@@ -40,3 +40,16 @@ def test_conflicting_members_are_omitted_only_during_overlap():
     # Duplicated source rows must not create a conflict with themselves.
     duplicated, _ = membership_intervals(tree, pl.concat([members.head(1)] * 2), as_of=dt.date(2022, 1, 10))
     assert duplicated.height == 1
+
+
+def test_asof_join_preserves_gaps_and_cannot_use_future_membership():
+    members = pl.DataFrame([
+        {"con_code": "000001.SZ", "index_code": "shared", "in_date": "20220103", "out_date": "20220105", "is_new": "N"},
+        {"con_code": "000001.SZ", "index_code": "shared", "in_date": "20220108", "out_date": None, "is_new": "Y"},
+    ])
+    intervals, _ = membership_intervals(taxonomy(), members, as_of=dt.date(2022, 1, 10))
+    panel = pl.DataFrame({"symbol": ["000001.SZ"] * 6,
+                          "trade_date": [dt.date(2022, 1, d) for d in (2, 3, 5, 7, 8, 11)]})
+    joined = attach_industry(panel, intervals)
+    assert joined["industry_l1"].to_list() == [None, "SW2021:new", None, None, "SW2021:new", None]
+    assert joined.height == panel.height

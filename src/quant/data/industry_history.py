@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import argparse
+import json
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
@@ -111,3 +113,44 @@ def read_industry_raw(root: Path) -> tuple[pl.DataFrame, pl.DataFrame]:
                     break
                 offset += frame.height
     return taxonomy, pl.concat(frames, how="vertical_relaxed")
+
+
+def attach_industry(panel: pl.DataFrame, intervals: pl.DataFrame) -> pl.DataFrame:
+    """Join an unambiguous classification at signal time, leaving history gaps null."""
+    joined = panel.sort("symbol", "trade_date").join_asof(
+        intervals.sort("symbol", "valid_from"), left_on="trade_date", right_on="valid_from",
+        by="symbol", strategy="backward", check_sortedness=False,
+    )
+    return joined.with_columns(*[
+        pl.when(pl.col("trade_date") < pl.col("valid_to")).then(pl.col(name)).alias(name)
+        for name in ("industry_l1", "industry_l2", "industry_l3")
+    ]).drop("valid_from", "valid_to")
+
+
+def publish_industry_history(raw_root: Path, clean_root: Path, *, as_of: dt.date) -> dict[str, Any]:
+    taxonomy, members = read_industry_raw(raw_root)
+    intervals, stats = membership_intervals(taxonomy, members, as_of=as_of)
+    if intervals.is_empty():
+        raise ValueError("No dated A-share industry memberships")
+    output = clean_root / dt.datetime.now().strftime("%Y%m%dT%H%M%S%f")
+    output.mkdir(parents=True, exist_ok=False)
+    intervals.write_parquet(output / "intervals.parquet", compression="zstd")
+    summary = {**stats, "as_of": str(as_of), "raw_root": str(raw_root),
+               "output": str(output), "symbols": intervals["symbol"].n_unique(),
+               "versions": {key: str(bounds[0]) for key, bounds in _VERSIONS.items()},
+               "exit_date": "exclusive; unknown and conflicting classifications remain null"}
+    (output / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return summary
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--raw-root", type=Path, required=True)
+    parser.add_argument("--as-of", type=dt.date.fromisoformat, required=True)
+    parser.add_argument("--clean-root", type=Path, default=Path("data/clean/tushare_industry"))
+    args = parser.parse_args()
+    print(json.dumps(publish_industry_history(args.raw_root, args.clean_root, as_of=args.as_of)))
+
+
+if __name__ == "__main__":
+    main()

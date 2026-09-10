@@ -40,3 +40,18 @@ def test_supplier_ignoring_offset_is_not_silent_truncation(tmp_path: Path) -> No
     with pytest.raises(ValueError, match="repeated a full page"):
         collect_industry(tmp_path, connector=FixtureConnector(repeat=True),
                          pause_seconds=0, page_size=2)
+
+
+def test_transient_connection_error_retries_without_replacing_saved_pages(tmp_path: Path) -> None:
+    class FlakyConnector(FixtureConnector):
+        failed = False
+
+        def query_raw(self, api_name: str, **params: str) -> pl.DataFrame:
+            if api_name == "index_member" and not self.failed:
+                self.failed = True
+                raise ConnectionError("temporary disconnection")
+            return super().query_raw(api_name, **params)
+
+    result = collect_industry(tmp_path, connector=FlakyConnector(), pause_seconds=0, page_size=2)
+    assert result["member_rows"] == 3
+    assert result["network_requests"] == 10
