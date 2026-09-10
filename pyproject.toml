@@ -38,6 +38,7 @@ qlib = [
     "pyqlib>=0.9.7",
 ]
 gui = ["streamlit>=1.49,<2"]
+wechat = ["wxauto4==41.1.7; sys_platform == 'win32' and python_version == '3.13'"]
 dev = [
     "pytest>=8.0",
     "ruff>=0.4",
