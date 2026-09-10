@@ -1,0 +1,146 @@
+# B93: preregistered after the user requested full-cycle and extreme-market validation.
+# Frozen B32 formulas, same complete cohort, different pre-research universe.
+# No inspection of newly extended portfolio returns before registration.
+[research]
+hypothesis_id = "b93-fixed-cv20-three-factor-full-cycle-20260910"
+hypothesis = "Fixed CV20 Top50 with Top75 retention earns positive 1x/2x continuous 2020-2026 returns and positive 1x excess over fixed paired STD-/ROC+/RSV- Top50 after full-cycle 2014-2018 training and 2019 validation diagnostics; no refit or parameter search. Both algorithms use the same complete pre-2014 universe."
+strategy_name = "b93_cv20_buffer75_full_cycle"
+strategy_version = "v1"
+random_seed = 20260909
+
+[data]
+refresh_config = "configs/data/refresh.toml"
+warmup_start = 2013-01-01
+research_start = 2014-01-01
+research_end = 2026-09-10
+
+[universe]
+name = "liquid_top800_2013"
+freeze_start = 2013-01-01
+freeze_end = 2013-12-31
+top_n = 800
+minimum_observations = 120
+minimum_average_amount = 20000000.0
+
+[factors]
+names = ["turnover_cv20"]
+directions = [-1]
+minimum_history_rows = 120
+minimum_daily_symbols = 100
+
+[composite]
+method = "equal_weight_zscore_monthly"
+standard_deviation_ddof = 0
+zero_variance_component = "zero"
+missing_component = "exclude_symbol"
+winsorization = "none"
+
+[turnover_variability]
+formula = "std(turnover_rate / 100, last_20_exchange_sessions, ddof=0) / mean(turnover_rate / 100, last_20_exchange_sessions)"
+input_table = "daily_basic"
+input_column = "turnover_rate"
+window_sessions = 20
+parameter_grid = [20]
+minimum_valid_sessions = 20
+missing_session = "null_window_not_previous_20_observations"
+valid_values = "finite_nonnegative_with_positive_mean"
+zero_turnover = "retain_only_if_reported_do_not_impute"
+signal_frequency = "completed_month_end"
+availability = "signal_date_close"
+label = "next_session_open_to_open_20_sessions_later"
+drop_labels_crossing_fold_end = true
+direction_selection = "fixed_negative_no_validation_flip"
+source = "https://doi.org/10.1016/S0304-405X(00)00080-5"
+formula_reference = "https://faculty.ucr.edu/~abarinov/Turnover%20Variability%20(JBF%20R3).pdf"
+adaptation = "US 36-month monthly turnover variability to China 20-session daily turnover variability; turnover_rate uses unrestricted circulating shares, not total outstanding shares."
+
+[portfolio]
+top_k = 50
+retention_rank = 75
+initial_cash = 1000000.0
+cost_multipliers = [0.5, 1.0, 2.0]
+rebalance = "month_end_close_next_session_open"
+benchmark = "510300.SH"
+benchmark_rebalance = "buy_and_hold"
+stock_dividend_withholding = 0.20
+delisted_holding_recovery = 0.0
+initial_signal = "previous_session_close"
+
+[costs.a_share]
+commission_rate = 0.00025
+commission_min = 5.0
+stamp_tax_sell = 0.0005
+transfer_fee = 0.00001
+slippage = 0.001
+effective_from = 2015-08-01
+historical_statutory_fees = true
+
+[costs.etf]
+commission_rate = 0.00025
+commission_min = 5.0
+slippage = 0.001
+effective_from = 2013-01-01
+
+[admission]
+comparison = "three_factor"
+maximum_conclusion = "RESEARCH_ONLY"
+# Fixed algorithms: no refit, no direction change, no parameter search.
+# Require positive 1x and 2x full-test returns and 1x excess over the paired
+# three-factor portfolio to retain this CV20-buffer robustness hypothesis.
+
+[eligibility]
+historical_exchange_name = true
+exclude_st_or_delisting_name = true
+unknown_historical_name = "exclude"
+
+[evaluation]
+rank_ic_horizon_sessions = 20
+rank_ic_sampling = "completed_month_end_only"
+groups = 5
+report = ["rank_ic", "icir", "fold_signs", "group_monotonicity", "top50_cost_returns", "cagr", "sharpe", "max_drawdown", "one_way_turnover", "excess_510300", "redundancy"]
+execution_engine = "quant.backtest.daily_account"
+execution_rules = ["A_share_T_plus_1", "board_lot", "suspension_no_fill", "price_limit_no_fill", "next_session_open"]
+baseline = "same_eligible_universe_STD20_ROC20_RSV20_monthly_and_510300"
+baseline_costs = "same_config_same_engine_same_folds"
+
+[[walk_forward.folds]]
+train_start = 2014-01-01
+train_end = 2018-12-31
+validation_start = 2019-01-01
+validation_end = 2019-12-31
+test_start = 2020-01-01
+test_end = 2026-09-10
+
+[cycle_validation]
+purpose = "Fixed B32 algorithms under a pre-2014 universe; continuous 2020-2026 capital across bull, bear, reversal and shocks. Training includes 2014-2018; validation 2019; no fit or selection is performed in this robustness replay."
+universe_reason = "2019 liquidity membership cannot be used to evaluate 2014-2018; select Top800 using only 2013 and preserve delisted members."
+historical_reuse = "Previously examined dates are retrospective evidence, never a fresh prospective holdout."
+cost_scenarios = [0.5, 1.0, 2.0]
+continuous_nav = true
+reset_at_calendar_year_boundary = false
+report = ["annual_return", "cagr", "sharpe", "max_drawdown", "worst_day", "worst_5_sessions", "expected_shortfall_95", "longest_underwater_sessions", "peak_trough_recovery", "rejected_orders_by_reason", "turnover", "paired_three_factor", "510300"]
+regime_definition = "510300 completed-close above/below trailing 200-session mean and mean above/below its value 20 sessions earlier; otherwise transition. Attribution only, never a trading signal."
+stress_window_rule = "Fixed windows below plus mechanical worst 1/5-session observations across the whole test; keep portfolio holdings and prior NAV at every window boundary."
+
+[[cycle_validation.stress_windows]]
+name = "2020_pandemic_shock_and_rebound"
+start = 2020-01-20
+end = 2020-04-30
+
+[[cycle_validation.stress_windows]]
+name = "2022_full_year_drawdown"
+start = 2022-01-01
+end = 2022-12-31
+
+[[cycle_validation.stress_windows]]
+name = "2024_early_year_selloff"
+start = 2024-01-01
+end = 2024-02-08
+
+[[cycle_validation.stress_windows]]
+name = "2024_september_october_reversal"
+start = 2024-09-18
+end = 2024-10-31
+
+[execution]
+auto_trade = false
