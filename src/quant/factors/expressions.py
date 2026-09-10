@@ -28,7 +28,7 @@ _ROLLING = {
 _UNARY = {"abs", "log", "sign", "sqrt", "rank", "scale"}
 _WINDOW = set(_ROLLING) | {
     "ts_rank", "ts_corr", "ts_cov", "ts_argmax", "ts_argmin", "decay_linear",
-    "delay", "delta", "ts_std0",
+    "delay", "delta", "ts_std0", "ts_slope", "ts_rsquare", "ts_resi", "ts_quantile",
 }
 
 
@@ -106,7 +106,7 @@ class ExpressionEngine:
         return pl.col(name)
 
     def _call(self, name: str, args: list[ast.expr]) -> pl.Expr:
-        arity = 3 if name in {"ts_corr", "ts_cov", "where"} else (
+        arity = 3 if name in {"ts_corr", "ts_cov", "where", "ts_quantile"} else (
             1 if name in _UNARY else 2
         )
         if len(args) != arity:
@@ -118,6 +118,38 @@ class ExpressionEngine:
                 return getattr(x, _ROLLING[name])(window_size=n, min_samples=n).over("symbol")
             if name == "ts_std0":
                 return x.rolling_std(n, min_samples=n, ddof=0).over("symbol")
+            if name == "ts_quantile":
+                probability = args[1]
+                if (not isinstance(probability, ast.Constant)
+                        or isinstance(probability.value, bool)
+                        or not isinstance(probability.value, (int, float))
+                        or not 0 <= probability.value <= 1):
+                    raise ValueError("Quantile must be a constant probability in [0, 1]")
+                return x.rolling_quantile(
+                    float(probability.value), interpolation="linear", window_size=n, min_samples=n,
+                ).over("symbol")
+            if name in {"ts_slope", "ts_rsquare", "ts_resi"}:
+                if n < 2:
+                    raise ValueError("Regression requires at least two sessions")
+                centered_time = [i - (n - 1) / 2 for i in range(n)]
+                time_ss = n * (n * n - 1) / 12
+                complete = x.is_not_null().cast(pl.Int32).rolling_sum(n, min_samples=n).over("symbol") == n
+                # Weighted kernels cannot consume nulls. The separate complete
+                # window mask prevents the zero placeholders from becoming data.
+                slope = x.fill_null(0).rolling_sum(
+                    n, weights=centered_time, min_samples=n,
+                ).over("symbol") / time_ss
+                if name == "ts_slope":
+                    result = slope
+                elif name == "ts_resi":
+                    result = x - x.rolling_mean(n, min_samples=n).over("symbol") - slope * (n - 1) / 2
+                else:
+                    variance = x.rolling_var(n, min_samples=n, ddof=1).over("symbol")
+                    # Match Qlib's undefined-R² guard for near-constant prices.
+                    result = pl.when(variance > 2e-5 ** 2).then(
+                        (slope ** 2 * time_ss / ((n - 1) * variance)).clip(0, 1)
+                    )
+                return pl.when(complete).then(result)
             if name == "delay":
                 return x.shift(n).over("symbol")
             if name == "delta":

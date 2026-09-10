@@ -1,0 +1,5 @@
+id = "alpha158_rsqr20"
+expr = "ts_rsquare(adj_close, 20)"
+family = "alpha158"
+direction = 1
+source_ref = "https://github.com/microsoft/qlib/blob/main/qlib/contrib/data/loader.py"

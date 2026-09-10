@@ -1,0 +1,5 @@
+id = "alpha158_rank10"
+expr = "(ts_rank(adj_close, 10) * 9 + 1) / 10"
+family = "alpha158"
+direction = 1
+source_ref = "https://github.com/microsoft/qlib/blob/main/qlib/contrib/data/loader.py"
