@@ -135,7 +135,10 @@ def build_next_rebalance_open_labels(
         (pl.col("open") * pl.col("adj_factor")).alias("adjusted_open"),
     )
     return (
-        factor_values.join(pl.DataFrame(calendar_rows), on="trade_date", how="left")
+        factor_values.join(pl.DataFrame(calendar_rows, schema={
+            "trade_date": pl.Date, "execution_date_rebalance": pl.Date,
+            "exit_date_rebalance": pl.Date,
+        }), on="trade_date", how="left")
         .join(
             opens.rename(
                 {

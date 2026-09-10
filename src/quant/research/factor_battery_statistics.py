@@ -83,20 +83,7 @@ def monthly_ic_summary(
     y = np.array(list(observed.values()))
     mean = float(np.mean(y))
     standard_deviation = float(np.std(y, ddof=1)) if count > 1 else 0.0
-    statistic = None
-    if count > 1 and standard_deviation > 1e-12:
-        keys = list(observed)
-        if keys[-1] - keys[0] + 1 == count:
-            statistic = newey_west_t_statistic(y.tolist(), lag=min(lag, count-1))
-        else:
-            centered = {index: value - mean for index, value in observed.items()}
-            long_run = sum(value*value for value in centered.values())/count
-            for offset in range(1, lag+1):
-                covariance = sum(value*centered.get(index-offset, 0.0)
-                    for index, value in centered.items())/count
-                long_run += 2*(1-offset/(lag+1))*covariance
-            error = math.sqrt(max(0.0, long_run)/count)
-            statistic = mean/error if error > 0 else None
+    statistic = _indexed_hac_t(observed, lag=lag)
     annual: dict[int, list[float]] = {}
     for date, value in zip(dates, values, strict=True):
         if value is not None and math.isfinite(value):
@@ -109,6 +96,41 @@ def monthly_ic_summary(
         "positive_month_fraction": float(np.mean(y > 0)),
         "yearly_positive_fraction": sum(v > 0 for v in means)/len(means) if means else None,
         "qualified_years": len(means)}
+
+
+def session_ic_summary(dates: list[dt.date], values: list[float | None], *,
+                       sessions: tuple[dt.date, ...], lag: int = 20) -> dict:
+    """Summarize overlapping daily IC without compressing missing trading days."""
+    if (len(dates) != len(values) or lag < 0 or dates != sorted(set(dates))
+            or sessions != tuple(sorted(set(sessions))) or not set(dates) <= set(sessions)):
+        raise ValueError("Invalid daily IC calendar")
+    indices = {date: index for index, date in enumerate(sessions)}
+    observed = {indices[date]: float(value) for date, value in zip(dates, values, strict=True)
+                if value is not None and math.isfinite(value)}
+    y = np.array(list(observed.values()))
+    mean = float(np.mean(y)) if len(y) else None
+    deviation = float(np.std(y, ddof=1)) if len(y) > 1 else 0.
+    return {"sessions": len(y), "mean_ic": mean,
+            "icir": mean/deviation if mean is not None and deviation > 1e-12 else None,
+            "newey_west_t": _indexed_hac_t(observed, lag=lag)}
+
+
+def _indexed_hac_t(observed: dict[int, float], *, lag: int) -> float | None:
+    count = len(observed)
+    y = np.array(list(observed.values()))
+    if count < 2 or np.std(y, ddof=1) <= 1e-12:
+        return None
+    keys = list(observed)
+    if keys[-1]-keys[0]+1 == count:
+        return newey_west_t_statistic(y.tolist(), lag=min(lag, count-1))
+    mean = float(np.mean(y))
+    centered = {index: value-mean for index, value in observed.items()}
+    long_run = sum(value*value for value in centered.values())/count
+    for offset in range(1, lag+1):
+        covariance = sum(value*centered.get(index-offset, 0.) for index, value in centered.items())/count
+        long_run += 2*(1-offset/(lag+1))*covariance
+    error = math.sqrt(max(0., long_run)/count)
+    return mean/error if error > 0 else None
 
 
 def benjamini_hochberg(p_values: list[float | None]) -> list[float | None]:
