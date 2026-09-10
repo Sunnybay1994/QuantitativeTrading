@@ -1,0 +1,5 @@
+id = "alpha101_031"
+expr = "rank(rank(rank(decay_linear(-rank(rank(delta(adj_close, 10))), 10)))) + rank(-delta(adj_close, 3)) + sign(scale(ts_corr(ts_mean(amount, 20), adj_low, 12)))"
+family = "alpha101"
+direction = 1
+source_ref = "https://arxiv.org/pdf/1601.00991"

@@ -1,0 +1,5 @@
+id = "alpha101_017"
+expr = "-rank(ts_rank(adj_close, 10)) * rank(delta(delta(adj_close, 1), 1)) * rank(ts_rank(volume / ts_mean(amount, 20), 5))"
+family = "alpha101"
+direction = 1
+source_ref = "https://arxiv.org/pdf/1601.00991"

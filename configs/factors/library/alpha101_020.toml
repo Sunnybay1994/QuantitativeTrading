@@ -1,0 +1,5 @@
+id = "alpha101_020"
+expr = "-rank(adj_open - delay(adj_high, 1)) * rank(adj_open - delay(adj_close, 1)) * rank(adj_open - delay(adj_low, 1))"
+family = "alpha101"
+direction = 1
+source_ref = "https://arxiv.org/pdf/1601.00991"

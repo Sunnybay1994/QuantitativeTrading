@@ -1,0 +1,5 @@
+id = "alpha101_036"
+expr = "2.21 * rank(ts_corr(adj_close - adj_open, delay(volume, 1), 15)) + 0.7 * rank(adj_open - adj_close) + 0.73 * rank(ts_rank(delay(-(adj_close / delay(adj_close, 1) - 1), 6), 5)) + rank(abs(ts_corr((amount / volume * adj_factor), ts_mean(amount, 20), 6))) + 0.6 * rank((ts_mean(adj_close, 200) - adj_open) * (adj_close - adj_open))"
+family = "alpha101"
+direction = 1
+source_ref = "https://arxiv.org/pdf/1601.00991"

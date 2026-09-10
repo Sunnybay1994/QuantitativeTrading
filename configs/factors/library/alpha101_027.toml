@@ -1,0 +1,5 @@
+id = "alpha101_027"
+expr = "where(rank(ts_mean(ts_corr(rank(volume), rank((amount / volume * adj_factor)), 6), 2)) > 0.5, -1, 1)"
+family = "alpha101"
+direction = 1
+source_ref = "https://arxiv.org/pdf/1601.00991"

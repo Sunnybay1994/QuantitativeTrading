@@ -1,0 +1,5 @@
+id = "alpha101_010"
+expr = "rank(where(ts_min(delta(adj_close, 1), 4) > 0, delta(adj_close, 1), where(ts_max(delta(adj_close, 1), 4) < 0, delta(adj_close, 1), -delta(adj_close, 1))))"
+family = "alpha101"
+direction = 1
+source_ref = "https://arxiv.org/pdf/1601.00991"

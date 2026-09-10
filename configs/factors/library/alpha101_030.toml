@@ -1,0 +1,5 @@
+id = "alpha101_030"
+expr = "(1 - rank(sign(adj_close - delay(adj_close, 1)) + sign(delay(adj_close, 1) - delay(adj_close, 2)) + sign(delay(adj_close, 2) - delay(adj_close, 3)))) * ts_sum(volume, 5) / ts_sum(volume, 20)"
+family = "alpha101"
+direction = 1
+source_ref = "https://arxiv.org/pdf/1601.00991"

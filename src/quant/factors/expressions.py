@@ -163,12 +163,24 @@ class ExpressionEngine:
                     (x.rolling_rank(n, min_samples=n).over("symbol") - 1) / (n - 1)
                 )
             if name in {"ts_corr", "ts_cov"}:
+                if n < 2:
+                    return pl.lit(None, dtype=pl.Float64)
                 fn = pl.rolling_corr if name == "ts_corr" else pl.rolling_cov
                 y = self._node(args[1])
-                return fn(x, y, window_size=n, min_samples=n, ddof=1).over("symbol")
+                x_range = (x.rolling_max(n, min_samples=n) - x.rolling_min(n, min_samples=n)).over("symbol")
+                y_range = (y.rolling_max(n, min_samples=n) - y.rolling_min(n, min_samples=n)).over("symbol")
+                result = fn(x, y, window_size=n, min_samples=n, ddof=1).over("symbol")
+                if name == "ts_corr":
+                    return pl.when((x_range > 0) & (y_range > 0)).then(result.clip(-1, 1))
+                return pl.when(x_range.is_not_null() & y_range.is_not_null()).then(
+                    pl.when((x_range == 0) | (y_range == 0)).then(0.0).otherwise(result)
+                )
             if name == "decay_linear":
                 weights = [float(i) for i in range(1, n + 1)]
-                return x.rolling_sum(n, weights=weights, min_samples=n).over("symbol") / sum(weights)
+                complete = x.is_not_null().cast(pl.Int32).rolling_sum(n, min_samples=n).over("symbol") == n
+                return pl.when(complete).then(
+                    x.fill_null(0).rolling_sum(n, weights=weights, min_samples=n).over("symbol") / sum(weights)
+                )
             if name in {"ts_argmax", "ts_argmin"}:
                 # First extremum, one-based index from the oldest observation.
                 maximum = name == "ts_argmax"
@@ -183,6 +195,8 @@ class ExpressionEngine:
                     return pl.Series(result, nan_to_null=True)
                 return x.map_batches(positions, return_dtype=pl.Float64).over("symbol")
         if name == "rank":
+            # Numerical ties should not depend on summation order in prior kernels.
+            x = x.round_sig_figs(10)
             count = x.count().over("trade_date")
             return pl.when(count >= 2).then((x.rank("average").over("trade_date") - 1) / (count - 1))
         if name == "scale":

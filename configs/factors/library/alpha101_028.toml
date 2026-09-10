@@ -1,0 +1,5 @@
+id = "alpha101_028"
+expr = "scale(ts_corr(ts_mean(amount, 20), adj_low, 5) + (adj_high + adj_low) / 2 - adj_close)"
+family = "alpha101"
+direction = 1
+source_ref = "https://arxiv.org/pdf/1601.00991"

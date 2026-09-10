@@ -1,0 +1,5 @@
+id = "alpha101_001"
+expr = "rank(ts_argmax(where((adj_close / delay(adj_close, 1) - 1) < 0, ts_std((adj_close / delay(adj_close, 1) - 1), 20), adj_close) ** 2, 5)) - 0.5"
+family = "alpha101"
+direction = 1
+source_ref = "https://arxiv.org/pdf/1601.00991"

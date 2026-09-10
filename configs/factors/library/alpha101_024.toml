@@ -1,0 +1,5 @@
+id = "alpha101_024"
+expr = "where(delta(ts_mean(adj_close, 100), 100) / delay(adj_close, 100) <= 0.05, -(adj_close - ts_min(adj_close, 100)), -delta(adj_close, 3))"
+family = "alpha101"
+direction = 1
+source_ref = "https://arxiv.org/pdf/1601.00991"

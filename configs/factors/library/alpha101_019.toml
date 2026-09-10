@@ -1,0 +1,5 @@
+id = "alpha101_019"
+expr = "-sign((adj_close - delay(adj_close, 7)) + delta(adj_close, 7)) * (1 + rank(1 + ts_sum((adj_close / delay(adj_close, 1) - 1), 250)))"
+family = "alpha101"
+direction = 1
+source_ref = "https://arxiv.org/pdf/1601.00991"

@@ -13,7 +13,6 @@ from quant.factors.classic_sixth_batch import (
     SIXTH_BATCH_FACTOR_NAMES, compute_sixth_batch_daily_factors,
 )
 from quant.factors.classic_eighth_batch import compute_eighth_batch_daily_factors
-from quant.factors.classic_eleventh_batch import compute_eleventh_batch_daily_factors
 from quant.factors.classic_fifth_batch import compute_fifth_batch_daily_factors
 from quant.factors.classic_seventh_batch import compute_seventh_batch_daily_factors
 from quant.factors.market_size import compute_market_size
@@ -73,13 +72,16 @@ def test_remaining_migrated_formulas_match_existing_functions():
     sessions = tuple(sorted(bars["trade_date"].unique()))
     for function, name in (
         (compute_eighth_batch_daily_factors, "alpha101_004"),
-        (compute_eleventh_batch_daily_factors, "alpha101_002"),
         (compute_fifth_batch_daily_factors, "max_daily_return_20"),
         (compute_seventh_batch_daily_factors, "alpha101_009"),
     ):
         baseline = function(bars, sessions=sessions).select("symbol", "trade_date", name)
         assert_frame_equal(result.select(baseline.columns).sort("symbol", "trade_date"),
                            baseline.sort("symbol", "trade_date"), rel_tol=1e-8, abs_tol=1e-10)
+    # This fixture has open = close * .99 for every stock/day. Its intraday
+    # return rank is constant, so #2 correlation is mathematically undefined;
+    # the legacy implementation spuriously ranked binary floating-point noise.
+    assert result["alpha101_002"].null_count() == result.height
     for baseline in (
         compute_turnover_variability(panel, sessions=sessions),
         compute_market_size(panel),

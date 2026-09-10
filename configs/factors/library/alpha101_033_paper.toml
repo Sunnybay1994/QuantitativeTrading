@@ -1,0 +1,5 @@
+id = "alpha101_033_paper"
+expr = "rank(-(1 - open / close))"
+family = "alpha101"
+direction = 1
+source_ref = "https://arxiv.org/pdf/1601.00991"
