@@ -1,0 +1,5 @@
+id = "free_float_turnover_abnormal_12m"
+expr = "free_float_turnover_abnormal_12m"
+family = "legacy_monthly_liquidity"
+direction = -1
+source_ref = "src/quant/factors/liquidity.py; configs/research/m2_free_float_turnover.toml"

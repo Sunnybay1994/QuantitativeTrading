@@ -20,6 +20,14 @@ def test_incremental_matches_full_batch_and_second_call_is_noop(tmp_path, monkey
         return prepared(subset), subset
 
     monkeypatch.setattr(compute, "read_factor_inputs", read)
+    from tests.unit.test_daily_value_factors import _daily_basic
+
+    basic_fixture = _daily_basic()
+    basic = bars.select(*[pl.col(name) if name in bars.columns else
+        pl.lit(basic_fixture[name].item(), dtype=dtype).alias(name)
+        for name, dtype in basic_fixture.schema.items()])
+    monkeypatch.setattr(compute, "read_stock_data", lambda **kwargs: basic.filter(
+        pl.col("trade_date").is_between(kwargs["start"], kwargs["end"])))
     config = tmp_path / "refresh.toml"
     config.write_text('financial_snapshot="fixture"\nfinancial_share_changes_snapshot="fixture"\nfactor_benchmark_snapshot="fixture"\n')
     common = {"refresh_config": config, "library": Path("configs/factors/library"),

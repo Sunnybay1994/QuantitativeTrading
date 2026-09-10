@@ -1,0 +1,5 @@
+id = "amihud_illiquidity_monthly"
+expr = "amihud_illiquidity_monthly"
+family = "legacy_monthly_liquidity"
+direction = 1
+source_ref = "src/quant/factors/liquidity.py; configs/research/m2_amihud_illiquidity.toml"

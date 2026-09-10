@@ -44,8 +44,10 @@ def required_history(expression: str) -> int:
     """Return the number of preceding sessions needed, including nested windows."""
     def visit(node: ast.AST) -> int:
         if isinstance(node, ast.Name):
-            # These materialized inputs already contain a sixty-return window.
-            return 60 if node.id in {"market_beta_60_vs_510300", "downside_beta_60_vs_510300"} else 0
+            # Intrinsic windows remain additive when a consumer nests another window.
+            return {"market_beta_60_vs_510300": 60, "downside_beta_60_vs_510300": 60,
+                    "amihud_illiquidity_monthly": 62, "free_float_turnover_level_monthly": 62,
+                    "free_float_turnover_abnormal_12m": 400}.get(node.id, 0)
         if isinstance(node, ast.Constant):
             return 0
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
