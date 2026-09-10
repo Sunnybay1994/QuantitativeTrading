@@ -66,6 +66,8 @@ def membership_intervals(
             excluded += 1
             continue
         for l1, l2, l3, start, end in by_index.get(row["index_code"], []):
+            if row.get("source_version") and not l1.startswith(row["source_version"] + ":"):
+                continue
             left = max(start, entered)
             right = min(end, exited, as_of + dt.timedelta(days=1))
             if left < right:
@@ -95,23 +97,31 @@ def membership_intervals(
     }
 
 
-def read_industry_raw(root: Path) -> tuple[pl.DataFrame, pl.DataFrame]:
+def read_industry_raw(root: Path, *, with_current: bool = False) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Read a completed collector run, requiring terminal pages for each query."""
     taxonomy = pl.concat([
         pl.read_parquet(root / f"index_classify_{level}_{version}.parquet")
         for version in _VERSIONS for level in ("L1", "L2", "L3")
     ], how="vertical_relaxed")
     frames = []
-    for code in taxonomy.filter(pl.col("level") == "L3")["index_code"].unique():
-        for flag in ("Y", "N"):
-            offset = 0
-            while True:
-                frame = pl.read_parquet(root / f"index_member_{code.replace('.', '_')}_{flag}_{offset}.parquet")
-                if not frame.is_empty():
-                    frames.append(frame)
-                if frame.height < 2000:
-                    break
-                offset += frame.height
+    sources = (("index_member", "SW2014"), ("index_member_all", "SW2021")) if with_current else (("index_member", None),)
+    for api, version in sources:
+        categories = taxonomy.filter(pl.col("level") == "L3")
+        if version is not None:
+            categories = categories.filter(pl.col("src") == version)
+        for code in categories["index_code"].unique():
+            for flag in ("Y", "N"):
+                offset = 0
+                while True:
+                    frame = pl.read_parquet(root / f"{api}_{code.replace('.', '_')}_{flag}_{offset}.parquet")
+                    if not frame.is_empty():
+                        if api == "index_member_all":
+                            frame = frame.rename({"l3_code": "index_code", "ts_code": "con_code"})
+                        frames.append(frame.select("index_code", "con_code", "in_date", "out_date", "is_new")
+                                      .with_columns(pl.lit(version, dtype=pl.String).alias("source_version")))
+                    if frame.height < 2000:
+                        break
+                    offset += frame.height
     return taxonomy, pl.concat(frames, how="vertical_relaxed")
 
 
@@ -127,15 +137,17 @@ def attach_industry(panel: pl.DataFrame, intervals: pl.DataFrame) -> pl.DataFram
     ]).drop("valid_from", "valid_to")
 
 
-def publish_industry_history(raw_root: Path, clean_root: Path, *, as_of: dt.date) -> dict[str, Any]:
-    taxonomy, members = read_industry_raw(raw_root)
+def publish_industry_history(
+    raw_root: Path, clean_root: Path, *, as_of: dt.date, with_current: bool = False,
+) -> dict[str, Any]:
+    taxonomy, members = read_industry_raw(raw_root, with_current=with_current)
     intervals, stats = membership_intervals(taxonomy, members, as_of=as_of)
     if intervals.is_empty():
         raise ValueError("No dated A-share industry memberships")
     output = clean_root / dt.datetime.now().strftime("%Y%m%dT%H%M%S%f")
     output.mkdir(parents=True, exist_ok=False)
     intervals.write_parquet(output / "intervals.parquet", compression="zstd")
-    summary = {**stats, "as_of": str(as_of), "raw_root": str(raw_root),
+    summary = {**stats, "as_of": str(as_of), "raw_root": str(raw_root), "with_current": with_current,
                "output": str(output), "symbols": intervals["symbol"].n_unique(),
                "versions": {key: str(bounds[0]) for key, bounds in _VERSIONS.items()},
                "exit_date": "exclusive; unknown and conflicting classifications remain null"}
@@ -148,8 +160,10 @@ def main() -> None:
     parser.add_argument("--raw-root", type=Path, required=True)
     parser.add_argument("--as-of", type=dt.date.fromisoformat, required=True)
     parser.add_argument("--clean-root", type=Path, default=Path("data/clean/tushare_industry"))
+    parser.add_argument("--with-current", action="store_true", help="Use index_member_all for SW2021 memberships")
     args = parser.parse_args()
-    print(json.dumps(publish_industry_history(args.raw_root, args.clean_root, as_of=args.as_of)))
+    print(json.dumps(publish_industry_history(args.raw_root, args.clean_root,
+                                             as_of=args.as_of, with_current=args.with_current)))
 
 
 if __name__ == "__main__":

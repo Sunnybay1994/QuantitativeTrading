@@ -55,3 +55,21 @@ def test_transient_connection_error_retries_without_replacing_saved_pages(tmp_pa
     result = collect_industry(tmp_path, connector=FlakyConnector(), pause_seconds=0, page_size=2)
     assert result["member_rows"] == 3
     assert result["network_requests"] == 10
+
+
+def test_new_api_only_requests_2021_codes_with_l3_parameter(tmp_path: Path) -> None:
+    class VersionConnector(FixtureConnector):
+        def query_raw(self, api_name: str, **params: str) -> pl.DataFrame:
+            frame = super().query_raw(api_name, **params)
+            if api_name == "index_classify" and params["src"] == "SW2014":
+                frame = pl.DataFrame({"index_code": ["old-only.SI"]})
+            return frame
+
+    client = VersionConnector()
+    result = collect_industry(tmp_path, connector=client, pause_seconds=0,
+                              page_size=2, member_api="index_member_all")
+    calls = [(api, p) for api, p in client.calls if api != "index_classify"]
+    assert result["industries"] == 1 and result["member_rows"] == 3
+    assert all(api == "index_member_all" and p["l3_code"] == "851911.SI" for api, p in calls)
+    assert all("index_code" not in p for _, p in calls)
+    assert len(list(tmp_path.glob("index_member_all_*.parquet"))) == 3
