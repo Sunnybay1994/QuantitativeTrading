@@ -1,0 +1,124 @@
+[research]
+hypothesis_id = "b63-return-turnover-corr20-monthly-top50-20260910"
+hypothesis = "Lower synchronous Pearson correlation of daily adjusted simple returns and same-day turnover over twenty complete exchange sessions predicts next-open twenty-session returns. Follow the fixed roadmap definition with negative direction, no lag/window search or direction reversal."
+strategy_name = "b63_return_turnover_corr20_top50"
+strategy_version = "v1"
+random_seed = 20260910
+
+[data]
+refresh_config = "configs/data/refresh.toml"
+warmup_start = 2023-01-01
+research_start = 2023-07-01
+research_end = 2026-09-08
+
+[universe]
+name = "liquid_top800_2019"
+freeze_start = 2019-01-01
+freeze_end = 2019-12-31
+top_n = 800
+minimum_observations = 120
+minimum_average_amount = 20000000.0
+
+[factors]
+names = ["return_turnover_corr20"]
+directions = [-1]
+minimum_history_rows = 120
+minimum_daily_symbols = 100
+
+[composite]
+method = "equal_weight_zscore_monthly"
+standard_deviation_ddof = 0
+zero_variance_component = "zero"
+missing_component = "exclude_symbol"
+winsorization = "none"
+
+[portfolio]
+top_k = 50
+initial_cash = 1000000.0
+cost_multipliers = [0.5, 1.0, 2.0]
+rebalance = "month_end_close_next_session_open"
+benchmark = "510300.SH"
+benchmark_rebalance = "buy_and_hold"
+stock_dividend_withholding = 0.20
+# Unsold holdings are written down fully on the first session after delisting.
+# Added during execution-data debugging, before any fold results were produced.
+delisted_holding_recovery = 0.0
+initial_signal = "previous_session_close"
+
+[costs.a_share]
+commission_rate = 0.00025
+commission_min = 5.0
+stamp_tax_sell = 0.0005
+transfer_fee = 0.00001
+slippage = 0.001
+effective_from = 2023-08-28
+
+[costs.etf]
+commission_rate = 0.00025
+commission_min = 5.0
+slippage = 0.001
+effective_from = 2023-01-01
+
+[admission]
+minimum_mean_test_rank_ic = 0.03
+minimum_positive_test_folds = 2
+maximum_absolute_rank_correlation = 0.8
+redundancy_references = ["alpha158_std20", "alpha158_roc20", "alpha158_rsv20", "alpha158_corr20", "alpha158_cord20"]
+maximum_conclusion = "PAPER_CANDIDATE"
+minimum_annual_excess_1x = 0.03
+maximum_annual_one_way_turnover = 6.0
+maximum_drawdown_ratio_to_benchmark = 1.5
+# Historical factor replication: no new prospective sample is claimed.
+# RESEARCH_ONLY requires IC and redundancy conditions; PAPER additionally requires all portfolio rules.
+# All three cost scenarios and the 510300 comparison are reported even after rejection.
+
+[eligibility]
+historical_exchange_name = true
+exclude_st_or_delisting_name = true
+unknown_historical_name = "exclude"
+
+[[walk_forward.folds]]
+train_start = 2023-07-01
+train_end = 2023-09-30
+validation_start = 2023-10-01
+validation_end = 2023-12-31
+test_start = 2024-01-01
+test_end = 2024-12-31
+
+[[walk_forward.folds]]
+train_start = 2023-07-01
+train_end = 2023-12-31
+validation_start = 2024-01-01
+validation_end = 2024-12-31
+test_start = 2025-01-01
+test_end = 2025-12-31
+
+[[walk_forward.folds]]
+train_start = 2023-07-01
+train_end = 2024-12-31
+validation_start = 2025-01-01
+validation_end = 2025-12-31
+test_start = 2026-01-01
+test_end = 2026-09-08
+
+[return_turnover]
+window_sessions = 20
+return_type = "adjusted_close_simple_return"
+input_column = "turnover_rate"
+lag_sessions = 0
+estimator = "pearson"
+minimum_pair_count = 20
+minimum_population_variance = 0.000000000001
+missing_session = "invalidate_window"
+signal_frequency = "completed_month_end"
+source = "https://finance.sina.com.cn/stock/stockzmt/2022-08-10/doc-imizirav7498837.shtml"
+adaptation = "CICC 2022 synchronous price-volume information-diffusion hypothesis; roadmap fixes return versus same-day turnover level, not turnover change or price level. Local Top800/monthly Top50 and costs."
+# 21 consecutive positive finite close*adj_factor prices form 20 simple returns.
+# Same-day turnover_rate must be finite and nonnegative for all 20 pairs.
+# No lagged or future turnover; no missing-session compression or zero imputation.
+# Both population variances must exceed 1e-12 (turnover unit is percentage points).
+# Reject undefined/near-constant windows. Reported zero turnover is retained.
+# Direction is fixed negative before tests, motivated by synchronous information diffusion.
+
+[execution]
+auto_trade = false
