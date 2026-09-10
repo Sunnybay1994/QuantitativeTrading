@@ -172,7 +172,7 @@ def _compute_details(
     for name, frame in frames.items():
         if (
             not isinstance(frame, pl.DataFrame)
-            or frame.is_empty()
+            or (name == "income" and frame.is_empty())
             or not required[name] <= set(frame.columns)
             or frame.select(pl.struct(_KEY).is_duplicated().any()).item()
         ):

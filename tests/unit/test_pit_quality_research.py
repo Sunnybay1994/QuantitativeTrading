@@ -92,6 +92,37 @@ def test_monthly_signal_dates_are_exchange_sessions_not_calendar_month_ends() ->
     ) == (dt.date(2024, 1, 31), dt.date(2024, 2, 28))
 
 
+@pytest.mark.parametrize("missing", ["cashflow", "balancesheet"])
+def test_missing_statement_does_not_make_quality_depend_on_other_symbols(missing) -> None:
+    from polars.testing import assert_frame_equal
+
+    income, balance, cash = _histories()
+    histories = {"income": income, "balancesheet": balance, "cashflow": cash}
+    isolated = {name: frame.clear() if name == missing else frame
+                for name, frame in histories.items()}
+    combined = {
+        name: pl.concat([isolated[name], frame.with_columns(pl.lit("000002.SZ").alias("symbol"))])
+        for name, frame in histories.items()
+    }
+
+    def compute(frames, symbols):
+        return build_pit_quality_signal_values(
+            income_history=frames["income"], balance_history=frames["balancesheet"],
+            cash_history=frames["cashflow"], signal_dates=(dt.date(2024, 4, 30),),
+            candidate_symbols=symbols, allowed_report_types=("1",),
+        ).factors.filter(pl.col("symbol") == "000001.SZ")
+
+    actual = compute(isolated, ("000001.SZ",))
+    assert_frame_equal(actual, compute(combined, ("000001.SZ", "000002.SZ")))
+    if missing == "cashflow":
+        assert actual["pit_roa_ttm"].item() == pytest.approx(70 / 110)
+        assert actual["pit_roe_ttm"].item() == pytest.approx(56 / 55)
+        assert actual["pit_cash_profit_quality_ttm"].item() is None
+    else:
+        assert actual["pit_cash_profit_quality_ttm"].item() == pytest.approx(68 / 70)
+        assert actual["pit_roa_ttm"].item() is None
+
+
 def test_monthly_signal_dates_exclude_a_truncated_final_month() -> None:
     sessions = (
         dt.date(2025, 1, 31),

@@ -49,7 +49,8 @@ def test_announcements_conflicting_revisions_and_missing_bars_match_daily_resele
     assert_frame_equal(actual, attach_quality_factors(panel, wide))
 
 
-def test_quality_batch_reads_history_and_increment_matches_full(tmp_path, monkeypatch):
+@pytest.mark.parametrize("cash_available", [True, False])
+def test_quality_batch_reads_history_and_increment_matches_full(tmp_path, monkeypatch, cash_available):
     dates = tuple(dt.date(2024, 4, day) for day in (22, 23, 24, 25, 26, 29))
     bars = sample_bars().filter(pl.col("symbol") == "600000.SH").head(len(dates)).with_columns(
         pl.Series("trade_date", dates, dtype=pl.Date), pl.lit("000001.SZ").alias("symbol"))
@@ -68,6 +69,8 @@ def test_quality_batch_reads_history_and_increment_matches_full(tmp_path, monkey
         (library / f"{name}.toml").write_text(
             f'id="{name}"\nexpr="{name}"\nfamily="pit_quality"\ndirection=1\nsource_ref="fixture"\n')
     income, balance, cash = _histories()
+    if not cash_available:
+        cash = cash.clear()
     for mode in ("full", "increment"):
         root = tmp_path / mode / "clean/tushare_financials/fixture"
         root.mkdir(parents=True)
@@ -81,7 +84,10 @@ def test_quality_batch_reads_history_and_increment_matches_full(tmp_path, monkey
     for name in PIT_QUALITY_FACTOR_NAMES:
         path = Path("factors") / name / "year=2024/data.parquet"
         full = pl.read_parquet(tmp_path / "full" / path)
-        assert full["value"].count() > 0
+        if cash_available or name in ("pit_roa_ttm", "pit_roe_ttm"):
+            assert full["value"].count() > 0
+        else:
+            assert full["value"].count() == 0
         assert_frame_equal(full, pl.read_parquet(tmp_path / "increment" / path))
     assert compute.run(**common, data_root=tmp_path / "increment", end=dates[-1])["years"] == []
 

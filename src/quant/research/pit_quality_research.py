@@ -171,7 +171,9 @@ def _build(
                 )
         eligibility = _missing_eligibility(as_of=as_of, candidate_symbols=candidate_symbols)
         latest = _empty_diagnostics()
-        if all(not selection.selected.is_empty() for selection in selections.values()):
+        # Income supplies the quarter grid. Missing balance/cash statements
+        # invalidate only factors that use them, independently of batch size.
+        if not selections["income"].selected.is_empty():
             income = project_selected_financial_factor_frame(
                 selections["income"].selected, dataset="income"
             )

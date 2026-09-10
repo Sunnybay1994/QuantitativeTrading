@@ -17,6 +17,7 @@ minimum_months_per_year = 6
 refresh_config = "configs/data/refresh.toml"
 csi800_snapshot = "csi800_20260911"
 etf_total_return_snapshot = "510300_total_return_20260911"
+limits_snapshot = "limits_20260911"
 
 [preprocessing]
 mad_multiplier = 3.0
