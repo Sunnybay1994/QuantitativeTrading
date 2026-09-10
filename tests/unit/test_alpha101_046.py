@@ -1,6 +1,7 @@
 import copy
 import datetime as dt
 from pathlib import Path
+import statistics
 import tomllib
 
 import polars as pl
@@ -90,3 +91,42 @@ def test_config_is_fixed_and_monthly_output_keeps_control():
     assert monthly['trade_date'].n_unique()==2
     direct=compute_alpha101_046(sample(),sessions=DATES).filter(pl.col('trade_date').is_in(monthly['trade_date'].unique()))
     assert monthly.select(direct.columns).equals(direct)
+
+
+def test_composition_preserves_frozen_factor_and_requires_matched_increment():
+    config=tomllib.loads(Path('configs/research/b72_alpha101_046_composite_20260910.toml').read_text())
+    prior=tomllib.loads(Path('configs/research/b71_alpha101_046_20260910.toml').read_text())
+    for section in ('alpha101_046','data','universe','costs','walk_forward','portfolio'):
+        assert config[section]==prior[section]
+    validate_alpha101_046(config)
+    for section,key,value in [('alpha101_046','upper_threshold',.3),('alpha101_046_composition','weights','optimized'),
+        ('alpha101_046_composition','eligibility','three_factor_only'),('admission','comparison','510300'),
+        ('admission','require_positive_paired_1x_compounded_increment',False),('portfolio','retention_rank',75)]:
+        changed=copy.deepcopy(config)
+        changed[section][key]=value
+        with pytest.raises(ValueError):
+            validate_alpha101_046(changed)
+
+
+def test_both_composites_use_the_same_complete_cohort_and_own_standardization():
+    from quant.research.classic_factor_composite import (
+        build_equal_weight_zscore_composite, build_monthly_zscore_targets,
+    )
+    date=dt.date(2023,1,31)
+    names=['alpha158_std20','alpha158_roc20','alpha158_rsv20','alpha101_046']
+    directions=[-1,1,-1,1]
+    columns=[[1.,2.,3.,999.],[3.,1.,2.,999.],[2.,3.,1.,-999.],[.9,.1,.4,None]]
+    panel=pl.DataFrame({'symbol':['A','B','C','D'],'trade_date':[date]*4,**dict(zip(names,columns,strict=True))})
+    primary=build_equal_weight_zscore_composite(panel,component_directions=tuple(zip(names,directions,strict=True)))
+    paired=build_equal_weight_zscore_composite(primary,component_directions=tuple(zip(names[:3],directions[:3],strict=True)))
+    assert primary['symbol'].to_list()==paired['symbol'].to_list()==['A','B','C']
+    for i in range(3):
+        z=[direction*(values[i]-statistics.mean(values[:3]))/statistics.pstdev(values[:3])
+           for direction,values in zip(directions,columns,strict=True)]
+        assert primary['equal_zscore'][i]==pytest.approx(statistics.mean(z))
+        assert paired['equal_zscore'][i]==pytest.approx(statistics.mean(z[:3]))
+    for scored in (primary,paired):
+        targets=build_monthly_zscore_targets(scored,sessions=(date,dt.date(2023,2,1)),
+            start=dt.date(2023,2,1),end=dt.date(2023,2,1),top_k=2,strategy_name='fixture')
+        assert 'D' not in targets['symbol'].to_list()
+        assert targets['weight'].sum()==1.
