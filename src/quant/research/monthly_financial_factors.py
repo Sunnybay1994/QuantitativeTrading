@@ -29,6 +29,7 @@ def read_monthly_financial_factors(
         raise ValueError("Unsupported financial factor configuration")
     histories: dict[str, pl.DataFrame] = {}
     roe_stability = settings.get("factor_family") == "quarterly_roe_stability"
+    annual_profitability = settings.get("factor_family") == "annual_profitability"
     annual_cash = settings.get("factor_family") == "annual_cash_profitability"
     sue = settings.get("factor_family") == "sue8"
     growth = settings.get("factor_family") == "asset_growth"
@@ -55,10 +56,10 @@ def read_monthly_financial_factors(
                 snapshot_id=settings["snapshot_id"], dataset=dataset,
                 start_period=settings["history_start"], end_period=end,
                 symbols=candidates,
-                extra_fields=("depr_fa_coga_dpba", "c_pay_acq_const_fiolta") if annual_cash and dataset == "cashflow"
+                extra_fields=("depr_fa_coga_dpba", "c_pay_acq_const_fiolta") if (annual_cash or annual_profitability) and dataset == "cashflow"
                 else ("total_cur_assets", "total_cur_liab", "money_cap", "st_borr", "taxes_payable")
-                if annual_cash and dataset == "balancesheet" else (("revenue",) if revenue_growth or revenue_acceleration else ("revenue", "oper_cost"))
-                if (gross or margin or revenue_growth or revenue_acceleration) and dataset == "income"
+                if (annual_cash or annual_profitability) and dataset == "balancesheet" else (("revenue",) if revenue_growth or revenue_acceleration else ("revenue", "oper_cost"))
+                if (gross or margin or revenue_growth or revenue_acceleration or annual_profitability) and dataset == "income"
                 else ("total_liab",) if leverage else ("total_cur_assets", "total_cur_liab") if current_ratio else (),
             ),
         )
@@ -67,6 +68,14 @@ def read_monthly_financial_factors(
 
         return build_monthly_quarterly_roe_stability(
             income_history=histories["income"], balance_history=histories["balancesheet"],
+            signal_dates=monthly_signal_sessions(sessions, start=start, end=end), candidate_symbols=candidates,
+        ), histories
+    if annual_profitability:
+        from quant.research.monthly_annual_profitability import build_monthly_annual_profitability
+
+        return build_monthly_annual_profitability(
+            income_history=histories["income"], cash_history=histories["cashflow"],
+            balance_history=histories["balancesheet"],
             signal_dates=monthly_signal_sessions(sessions, start=start, end=end), candidate_symbols=candidates,
         ), histories
     if annual_cash:

@@ -102,3 +102,21 @@ def test_roe_stability_composition_keeps_fixed_direction_and_paired_pool():
         changed[section][key] = value
         with pytest.raises(ValueError, match='ROE stability'):
             validate_roe_stability_components(changed)
+
+
+def test_annual_profitability_preregistration_is_fixed():
+    import copy
+    import tomllib
+    from pathlib import Path
+
+    from quant.research.classic_monthly_baseline import validate_annual_profitability
+
+    path = Path(__file__).resolve().parents[2] / 'configs/research/b57_annual_profitability_six_20260910.toml'
+    config = tomllib.loads(path.read_text(encoding='utf-8'))
+    validate_annual_profitability(config)
+    for key, value in [('minimum_components', 6), ('maximum_age_months', 12), ('rank_ties', 'dense'),
+                       ('missing_component', 'zero'), ('roe', 'n_income / total_assets')]:
+        changed = copy.deepcopy(config)
+        changed['annual_profitability'][key] = value
+        with pytest.raises(ValueError, match='fixed'):
+            validate_annual_profitability(changed)

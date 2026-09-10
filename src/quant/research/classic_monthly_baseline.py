@@ -66,6 +66,8 @@ CODE_PATHS = (
     "src/quant/research/monthly_cash_roa.py",
     "src/quant/research/monthly_annual_cash_profitability.py",
     "src/quant/factors/annual_cash_profitability.py",
+    "src/quant/factors/annual_profitability.py",
+    "src/quant/research/monthly_annual_profitability.py",
     "src/quant/data/quarterly_parent_income.py",
     "src/quant/factors/quarterly_roe_stability.py",
     "src/quant/research/monthly_quarterly_roe_stability.py",
@@ -227,6 +229,28 @@ def validate_roe_stability_components(config: dict[str, Any]) -> None:
         raise ValueError("ROE stability composition requires the fixed same-pool monthly baseline")
 
 
+
+def validate_annual_profitability(config: dict[str, Any]) -> None:
+    """The six published components use frozen local mappings and rank aggregation."""
+    expected = {
+        "components": ["gpoa", "roe", "roa", "cfoa", "gmar", "low_accruals"],
+        "gpoa": "(revenue - oper_cost) / total_assets", "roe": "n_income_attr_p / total_hldr_eqy_exc_min_int",
+        "roa": "n_income / total_assets",
+        "cfoa": "(n_income + depr_fa_coga_dpba - change_working_capital - c_pay_acq_const_fiolta) / total_assets",
+        "gmar": "(revenue - oper_cost) / revenue",
+        "low_accruals": "(depr_fa_coga_dpba - change_working_capital) / total_assets",
+        "working_capital": "total_cur_assets - total_cur_liab - money_cap + st_borr + taxes_payable",
+        "aggregation": "rank_zscore(mean_available_component_rank_zscores)", "rank_ties": "average",
+        "standard_deviation_ddof": 0, "zero_rank_variance": "zero_for_observed_values",
+        "missing_component": "omit_from_mean", "minimum_components": 1,
+        "ranking_cohort": "fresh_financial_candidates_before_market_filters", "maximum_age_months": 18,
+        "latest_annual_period": "latest_known_income_period_no_fallback"}
+    if (any(config.get("annual_profitability", {}).get(k) != v for k, v in expected.items())
+        or config["factors"]["names"] != ["pit_annual_profitability"]
+        or config["factors"]["directions"] != [1]):
+        raise ValueError("Annual profitability mappings and aggregation are fixed")
+
+
 def validate_cash_roa_buffer(config: dict[str, Any]) -> None:
     """The B53 treatment changes only retention from Top50 to Top100."""
     if (config.get("financials", {}).get("factor_family") != "cash_roa"
@@ -361,6 +385,8 @@ def run_baseline(
         if any(config.get("quarterly_roe_stability", {}).get(k) != v for k, v in expected_roe_stability.items()):
             raise ValueError("Unsupported quarterly ROE stability configuration")
         validate_roe_stability_components(config)
+    if config.get("financials", {}).get("factor_family") == "annual_profitability":
+        validate_annual_profitability(config)
     if config.get("financials", {}).get("factor_family") == "annual_cash_profitability":
         expected_annual = {
             "formula": "(n_income + depr_fa_coga_dpba - change_working_capital - c_pay_acq_const_fiolta) / total_assets",
@@ -818,7 +844,7 @@ def run_baseline(
     conclusion: Literal["RESEARCH_ONLY", "REJECTED", "PAPER_CANDIDATE"] = "RESEARCH_ONLY" if passed else "REJECTED"
     if (config["admission"].get("maximum_conclusion") == "PAPER_CANDIDATE"
         and meets_portfolio_candidate(results, config["admission"])
-        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition")) or passed)):
+        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability")) or passed)):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
         "Daily-return skew is distinct from intraday realized skew; this is a historical replication in previously inspected periods."
