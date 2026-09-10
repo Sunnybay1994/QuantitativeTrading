@@ -120,3 +120,33 @@ def test_annual_profitability_preregistration_is_fixed():
         changed['annual_profitability'][key] = value
         with pytest.raises(ValueError, match='fixed'):
             validate_annual_profitability(changed)
+
+
+def test_low_beta_composition_preserves_same_pool_and_paired_admission():
+    import copy
+    import tomllib
+    from pathlib import Path
+
+    from quant.research.monthly_low_beta import validate_low_beta
+
+    root = Path(__file__).resolve().parents[2]
+    single = tomllib.loads((root / 'configs/research/b60_low_market_beta60_20260910.toml').read_text(encoding='utf-8'))
+    config = tomllib.loads((root / 'configs/research/b61_low_beta_composite_20260910.toml').read_text(encoding='utf-8'))
+    validate_low_beta(single)
+    validate_low_beta(config)
+    for section, key, value in (
+        ('factors', 'directions', [-1, 1, -1, 1]),
+        ('factors', 'names', single['factors']['names']),
+        ('low_beta_composition', 'eligibility', 'three_factor_only'),
+        ('low_beta_composition', 'weights', 'optimized'),
+        ('admission', 'comparison', '510300'),
+        ('admission', 'require_positive_paired_1x_compounded_increment', False),
+        ('admission', 'minimum_mean_test_rank_ic', .03),
+        ('portfolio', 'retention_rank', 100),
+        ('portfolio', 'execution_months', [1, 3, 5, 7, 9, 11]),
+        ('portfolio', 'top_k', 40),
+    ):
+        changed = copy.deepcopy(config)
+        changed[section][key] = value
+        with pytest.raises(ValueError):
+            validate_low_beta(changed)

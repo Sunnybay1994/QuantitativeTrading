@@ -652,7 +652,8 @@ def run_baseline(
         eligible = exclude_historical_risk_names(eligible, names)
         extra_inputs.append(("name-history", names, ("symbol", "start_date", "name"), "start_date"))
     for family, cash_factor in (("cash_roa", "pit_cash_roa_ttm"), ("cash_yield", "pit_cash_yield_ttm"),
-                                ("roe_stability", "pit_quarterly_roe_volatility")):
+                                ("roe_stability", "pit_quarterly_roe_volatility"),
+                                ("low_beta", "market_beta_60_vs_510300")):
         if f"{family}_composition" in config or (family == "cash_roa" and cash_roa_buffer):
             eligible = eligible.filter(pl.all_horizontal(pl.col(name).is_finite() for name in
                 (cash_factor, "alpha158_std20", "alpha158_roc20", "alpha158_rsv20")))
@@ -706,7 +707,8 @@ def run_baseline(
     if ("turnover_variability" in config or "information_discreteness" in config
         or low_volatility_filter or "overnight_decomposition" in config or "high52" in config
         or "small_value_quality" in config or "cash_roa_composition" in config
-        or "cash_yield_composition" in config or "roe_stability_composition" in config or cash_roa_buffer):
+        or "cash_yield_composition" in config or "roe_stability_composition" in config
+        or "low_beta_composition" in config or cash_roa_buffer):
         paired_components: tuple[tuple[str, int], ...] = (
             ("alpha158_std20", -1), ("alpha158_roc20", 1), ("alpha158_rsv20", -1))
         if cash_roa_buffer:
@@ -719,6 +721,8 @@ def run_baseline(
             paired_strategy = "b52_paired_three_factor_cash_yield_cohort"
         if "roe_stability_composition" in config:
             paired_strategy = "b56_paired_three_factor_roe_stability_cohort"
+        if "low_beta_composition" in config:
+            paired_strategy = "b61_paired_three_factor_low_beta_cohort"
         if "information_discreteness" in config:
             paired_components = (("pret_12m_skip1m", 1),)
             paired_comparison, paired_strategy = "momentum", "b26_paired_momentum_baseline"
