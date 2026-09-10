@@ -45,12 +45,32 @@ def resolve_same_day_dividends(frame: pl.DataFrame) -> pl.DataFrame:
         ("600317.SH", dt.date(2014, 6, 16)): ([0.329, 0.529], 0.529, 2.0),
         ("002043.SZ", dt.date(2026, 6, 1)): ([0.132, 0.18], 0.312, 0.0),
         ("000738.SZ", dt.date(2013, 6, 14)): ([0.021, 0.041], 0.062, 0.0),
+        ("600741.SH", dt.date(2010, 6, 18)): ([0.0491, 0.275], 0.3241, 0.0),
+        ("301039.SZ", dt.date(2026, 7, 6)): ([0.14, 0.21], 0.35, 0.0),
+        ("301308.SZ", dt.date(2026, 6, 2)): ([0.3467605, 0.6439837], 0.9907442, 0.0),
     }
     frame = frame.unique()
     duplicates = frame.group_by("symbol", "ex_date").len().filter(pl.col("len") > 1)
     for symbol, ex_date, _ in duplicates.iter_rows():
         match = (pl.col("symbol") == symbol) & (pl.col("ex_date") == ex_date)
         group = frame.filter(match)
+        if (symbol, ex_date) == ("000818.SZ", dt.date(2011, 1, 25)):
+            # The restructuring transfers 60% of new shares to creditors.
+            if (sorted(group["share_ratio"].to_list()) != [.4, 1.]
+                or group["div_cash"].to_list() != [0.,0.]
+                or group.drop("share_ratio").unique().height != 1):
+                raise ValueError(f"Unexpected restructuring distribution: {symbol} {ex_date}")
+            frame = pl.concat([frame.filter(~match), group.filter(pl.col("share_ratio") == .4)])
+            continue
+        if (symbol, ex_date) == ("300325.SZ", dt.date(2016, 6, 16)):
+            # Share issuance changed the implemented cash from .04 to .03937.
+            if (sorted(group["div_cash"].to_list()) != [.03937,.04]
+                or sorted(group["ann_date"].to_list()) != [dt.date(2016,6,7),dt.date(2016,6,8)]
+                or group["share_ratio"].to_list() != [0.,0.]
+                or group.drop("ann_date","div_cash").unique().height != 1):
+                raise ValueError(f"Unexpected dividend implementation details: {symbol} {ex_date}")
+            frame = pl.concat([frame.filter(~match), group.filter(pl.col("div_cash") == .03937)])
+            continue
         if (symbol, ex_date) == ("300014.SZ", dt.date(2020, 6, 9)):
             # Company notice 2020-086 was published on June 2; the vendor
             # repeats the same final distribution under June 3 as well.

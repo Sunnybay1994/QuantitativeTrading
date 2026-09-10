@@ -32,6 +32,9 @@ def test_identical_plan_keeps_latest_notice_without_merging_other_periods_or_ter
     ("600317.SH","2014-06-16",[.329,.529],[0.,2.],.529),
     ("002043.SZ","2026-06-01",[.132,.18],[0.,0.],.312),
     ("000738.SZ","2013-06-14",[.021,.041],[0.,0.],.062),
+    ("600741.SH","2010-06-18",[.0491,.275],[0.,0.],.3241),
+    ("301039.SZ","2026-07-06",[.14,.21],[0.,0.],.35),
+    ("301308.SZ","2026-06-02",[.3467605,.6439837],[0.,0.],.9907442),
 ])
 def test_verified_cash_totals_and_share_listing(symbol,date,amounts,shares,expected):
     ex = dt.date.fromisoformat(date)
@@ -44,3 +47,22 @@ def test_verified_cash_totals_and_share_listing(symbol,date,amounts,shares,expec
     assert result["share_ratio"].item() == sum(shares)
     if sum(shares):
         assert result["share_list_date"].item() == ex+dt.timedelta(days=1)
+
+
+@pytest.mark.parametrize("symbol,date,cash,shares,ann,expected_cash,expected_shares", [
+    ("000818.SZ","2011-01-25",[0.,0.],[.4,1.],["2011-01-20"]*2,0.,.4),
+    ("300325.SZ","2016-06-16",[.03937,.04],[0.,0.],["2016-06-07","2016-06-08"],.03937,0.),
+])
+def test_restructuring_and_revised_distribution_keep_only_ordinary_entitlement(
+    symbol,date,cash,shares,ann,expected_cash,expected_shares,
+):
+    ex=dt.date.fromisoformat(date)
+    frame=pl.DataFrame({"symbol":[symbol]*2,"ex_date":[ex]*2,
+        "ann_date":[dt.date.fromisoformat(a) for a in ann],
+        "record_date":[ex-dt.timedelta(days=1)]*2,"pay_date":[ex]*2,
+        "share_list_date":[ex]*2,"div_cash":cash,"share_ratio":shares})
+    result=resolve_same_day_dividends(frame)
+    assert result.height==1
+    assert result["div_cash"].item()==expected_cash and result["share_ratio"].item()==expected_shares
+    with pytest.raises(ValueError):
+        resolve_same_day_dividends(frame.with_columns((pl.col("share_ratio")+.01).alias("share_ratio")))
