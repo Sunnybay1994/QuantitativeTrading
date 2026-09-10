@@ -1,0 +1,122 @@
+[research]
+hypothesis_id = "b86-alpha101-041-composite-monthly-top50-20260910"
+hypothesis = "Adding fixed B85 Alpha101 #41 to the frozen STD20/ROC20/RSV20 equal-zscore monthly Top50 improves 1x cost-adjusted compounded return on the same complete four-factor cohort, while 1x and 2x compounds remain positive. Freeze directions, equal weights and B85 raw high/low geometric mean minus daily amount/volume VWAP before outcomes."
+strategy_name = "b86_alpha101_041_composite_top50"
+strategy_version = "v1"
+random_seed = 20260910
+
+[data]
+refresh_config = "configs/data/refresh.toml"
+warmup_start = 2023-01-01
+research_start = 2023-07-01
+research_end = 2026-09-08
+
+[universe]
+name = "liquid_top800_2019"
+freeze_start = 2019-01-01
+freeze_end = 2019-12-31
+top_n = 800
+minimum_observations = 120
+minimum_average_amount = 20000000.0
+
+[factors]
+names = ["alpha158_std20", "alpha158_roc20", "alpha158_rsv20", "alpha101_041"]
+directions = [-1, 1, -1, 1]
+minimum_history_rows = 120
+minimum_daily_symbols = 100
+
+[composite]
+method = "equal_weight_zscore_monthly"
+standard_deviation_ddof = 0
+zero_variance_component = "zero"
+missing_component = "exclude_symbol"
+winsorization = "none"
+
+[portfolio]
+top_k = 50
+initial_cash = 1000000.0
+cost_multipliers = [0.5, 1.0, 2.0]
+rebalance = "month_end_close_next_session_open"
+benchmark = "510300.SH"
+benchmark_rebalance = "buy_and_hold"
+stock_dividend_withholding = 0.20
+# Unsold holdings are written down fully on the first session after delisting.
+# Added during execution-data debugging, before any fold results were produced.
+delisted_holding_recovery = 0.0
+initial_signal = "previous_session_close"
+
+[costs.a_share]
+commission_rate = 0.00025
+commission_min = 5.0
+stamp_tax_sell = 0.0005
+transfer_fee = 0.00001
+slippage = 0.001
+effective_from = 2023-08-28
+
+[costs.etf]
+commission_rate = 0.00025
+commission_min = 5.0
+slippage = 0.001
+effective_from = 2023-01-01
+
+[admission]
+comparison = "three_factor"
+maximum_conclusion = "PAPER_CANDIDATE"
+require_positive_1x_compounded_return = true
+require_positive_2x_compounded_return = true
+require_positive_paired_1x_compounded_increment = true
+minimum_annual_excess_1x = 0.03
+maximum_annual_one_way_turnover = 6.0
+maximum_drawdown_ratio_to_benchmark = 1.5
+# RESEARCH_ONLY requires positive 1x/2x compounds and positive paired 1x increment.
+# PAPER_CANDIDATE additionally requires EACH fold: CAGR excess over 510300 >=3pp,
+# positive 2x return, turnover <=6 and drawdown <=1.5x benchmark.
+# The same full four-factor complete-case pool supplies both portfolios.
+
+[alpha101_041_composition]
+comparison = "three_factor"
+eligibility = "complete_four_factor"
+weights = "equal_zscore"
+
+[eligibility]
+historical_exchange_name = true
+exclude_st_or_delisting_name = true
+unknown_historical_name = "exclude"
+
+[[walk_forward.folds]]
+train_start = 2023-07-01
+train_end = 2023-09-30
+validation_start = 2023-10-01
+validation_end = 2023-12-31
+test_start = 2024-01-01
+test_end = 2024-12-31
+
+[[walk_forward.folds]]
+train_start = 2023-07-01
+train_end = 2023-12-31
+validation_start = 2024-01-01
+validation_end = 2024-12-31
+test_start = 2025-01-01
+test_end = 2025-12-31
+
+[[walk_forward.folds]]
+train_start = 2023-07-01
+train_end = 2024-12-31
+validation_start = 2025-01-01
+validation_end = 2025-12-31
+test_start = 2026-01-01
+test_end = 2026-09-08
+
+[alpha101_041]
+price = "raw_high_low"
+vwap = "amount_cny_div_volume_shares"
+adjustment = "none"
+nonpositive_input = "null"
+missing_session = "null_current_day"
+signal_frequency = "completed_month_end"
+source = "https://arxiv.org/pdf/1601.00991"
+formula = "sqrt(high*low) - amount/volume"
+adaptation = "Existing raw-CNY day-local implementation; original positive direction, monthly Top50, no parameter selection."
+
+[execution]
+auto_trade = false
