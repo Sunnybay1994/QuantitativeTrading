@@ -31,6 +31,7 @@ def read_monthly_financial_factors(
     growth = settings.get("factor_family") == "asset_growth"
     current_ratio = settings.get("factor_family") == "current_ratio"
     leverage = settings.get("factor_family") == "leverage"
+    cash_roa = settings.get("factor_family") == "cash_roa"
     gross = settings.get("factor_family") == "gross_profitability"
     margin = settings.get("factor_family") == "gross_margin"
     revenue_growth = settings.get("factor_family") == "revenue_growth"
@@ -40,6 +41,7 @@ def read_monthly_financial_factors(
     datasets: tuple[FinancialFactorDataset, ...] = (
         ("income",) if sue or margin or revenue_growth or profit_growth or profit_acceleration or revenue_acceleration
         else ("balancesheet",) if growth or leverage or current_ratio else
+        ("cashflow", "balancesheet") if cash_roa else
         ("income", "balancesheet") if gross else ("income", "balancesheet", "cashflow")
     )
     for dataset in datasets:
@@ -53,6 +55,13 @@ def read_monthly_financial_factors(
                 else ("total_liab",) if leverage else ("total_cur_assets", "total_cur_liab") if current_ratio else (),
             ),
         )
+    if cash_roa:
+        from quant.research.monthly_cash_roa import build_monthly_cash_roa
+
+        return build_monthly_cash_roa(
+            cash_history=histories["cashflow"], balance_history=histories["balancesheet"],
+            signal_dates=monthly_signal_sessions(sessions, start=start, end=end), candidate_symbols=candidates,
+        ), histories
     if current_ratio:
         from quant.research.monthly_current_ratio import build_monthly_current_ratio
 

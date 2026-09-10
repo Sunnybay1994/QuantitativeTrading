@@ -60,6 +60,8 @@ CODE_PATHS = (
     "src/quant/research/monthly_profit_growth.py",
     "src/quant/research/monthly_revenue_growth.py",
     "src/quant/research/monthly_gross_margin.py",
+    "src/quant/factors/cash_roa.py",
+    "src/quant/research/monthly_cash_roa.py",
     "src/quant/factors/gross_profitability.py",
     "src/quant/research/monthly_gross_profitability.py",
     "src/quant/factors/asset_growth.py",
@@ -280,6 +282,14 @@ def run_baseline(
                            "window_quarters": 4, "valid_values": "positive_ttm_revenue_nonnegative_ttm_cost"}
         if any(config.get("gross_margin", {}).get(k) != v for k, v in expected_margin.items()):
             raise ValueError("Unsupported gross margin configuration")
+    if config.get("financials", {}).get("factor_family") == "cash_roa":
+        expected_cash_roa = {"formula": "OCF_TTM / mean(total_assets_t, total_assets_t-4q)",
+                             "window_quarters": 4, "assets_lag_quarters": 4,
+                             "valid_values": "finite_ocf_both_assets_positive"}
+        if (any(config.get("cash_roa", {}).get(k) != v for k, v in expected_cash_roa.items())
+            or config["factors"]["names"] != ["pit_cash_roa_ttm"]
+            or config["factors"]["directions"] != [1]):
+            raise ValueError("Unsupported cash ROA configuration")
     if config.get("financials", {}).get("factor_family") == "gross_profitability":
         expected_gross = {"formula": "(revenue_ttm - oper_cost_ttm) / total_assets_t",
                           "window_quarters": 4, "assets_period": "same_as_latest_income",
