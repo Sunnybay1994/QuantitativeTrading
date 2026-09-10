@@ -21,6 +21,8 @@ def resolve_same_day_dividends(frame: pl.DataFrame) -> pl.DataFrame:
         ("300760.SZ", dt.date(2025, 5, 29)): ([0.56, 1.41], 1.97, 0.0),
         ("300760.SZ", dt.date(2026, 5, 28)): ([0.31, 1.25], 1.56, 0.0),
         ("600188.SH", dt.date(2023, 7, 17)): ([1.23, 3.07], 4.3, 0.5),
+        ("600188.SH", dt.date(2022, 7, 14)): ([0.4, 2.0], 2.0, 0.0),
+        ("601601.SH", dt.date(2021, 6, 30)): ([0.1, 1.3], 1.3, 0.0),
         ("600600.SH", dt.date(2023, 7, 14)): ([0.5, 1.8], 1.8, 0.0),
         ("600720.SH", dt.date(2024, 6, 13)): ([0.1104, 0.257], 0.3674, 0.0),
         ("600989.SH", dt.date(2024, 7, 24)): ([0.265, 0.3158], 0.3158, 0.0),
@@ -31,6 +33,19 @@ def resolve_same_day_dividends(frame: pl.DataFrame) -> pl.DataFrame:
     for symbol, ex_date, _ in duplicates.iter_rows():
         match = (pl.col("symbol") == symbol) & (pl.col("ex_date") == ex_date)
         group = frame.filter(match)
+        if (symbol, ex_date) == ("300014.SZ", dt.date(2020, 6, 9)):
+            # Company notice 2020-086 was published on June 2; the vendor
+            # repeats the same final distribution under June 3 as well.
+            expected = {
+                "ann_date": [dt.date(2020, 6, 2), dt.date(2020, 6, 3)],
+                "record_date": [dt.date(2020, 6, 8)], "pay_date": [ex_date],
+                "share_list_date": [ex_date], "div_cash": [.170165], "share_ratio": [.9008738],
+            }
+            if group.height != 2 or any(sorted(group[c].unique().to_list()) != values
+                                       for c, values in expected.items()):
+                raise ValueError(f"Unexpected dividend implementation details: {symbol} {ex_date}")
+            frame = pl.concat([frame.filter(~match), group.sort("ann_date").head(1)])
+            continue
         if (symbol, ex_date) == ("003001.SZ", dt.date(2025, 7, 7)):
             # 2025-057 revises the same plan after record date but before ex-date.
             # Vendor backfills final amounts into both implementation-notice rows.
