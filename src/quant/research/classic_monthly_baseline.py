@@ -397,6 +397,10 @@ def run_baseline(
         if any(config.get("quarterly_roe_stability", {}).get(k) != v for k, v in expected_roe_stability.items()):
             raise ValueError("Unsupported quarterly ROE stability configuration")
         validate_roe_stability_components(config)
+    if "lowvol60_composition" in config:
+        from quant.research.monthly_lowvol120 import validate_lowvol60_composition
+
+        validate_lowvol60_composition(config)
     if "lowvol120" in config:
         from quant.research.monthly_lowvol120 import validate_lowvol120
 
@@ -605,12 +609,12 @@ def run_baseline(
         extra_inputs.append(("formation-bars", formation_bars, ("trade_date", "symbol"), "trade_date"))
         extra_outputs.append(("information_monthly_factors", monthly))
         print(f"Computed information discreteness on {monthly['trade_date'].n_unique()} month ends", flush=True)
-    if "lowvol120" in config:
+    if "lowvol120" in config or "lowvol60_composition" in config:
         from quant.research.monthly_lowvol120 import build_monthly_lowvol120
 
         monthly = build_monthly_lowvol120(bars, sessions=all_sessions, start=data["research_start"], end=end)
         factors = factors.join(monthly, on=["symbol", "trade_date"], how="inner", validate="1:1")
-        extra_outputs.append(("lowvol120_factors", monthly))
+        extra_outputs.append(("lowvol_factors" if "lowvol60_composition" in config else "lowvol120_factors", monthly))
         print(f"Computed low volatility on {monthly['trade_date'].n_unique()} month ends", flush=True)
     if "return_turnover" in config:
         from quant.research.monthly_return_turnover import build_monthly_return_turnover
@@ -700,7 +704,8 @@ def run_baseline(
         extra_inputs.append(("name-history", names, ("symbol", "start_date", "name"), "start_date"))
     for family, cash_factor in (("cash_roa", "pit_cash_roa_ttm"), ("cash_yield", "pit_cash_yield_ttm"),
                                 ("roe_stability", "pit_quarterly_roe_volatility"),
-                                ("low_beta", "market_beta_60_vs_510300")):
+                                ("low_beta", "market_beta_60_vs_510300"),
+                                ("lowvol60", "realized_volatility_60")):
         if f"{family}_composition" in config or (family == "cash_roa" and cash_roa_buffer):
             eligible = eligible.filter(pl.all_horizontal(pl.col(name).is_finite() for name in
                 (cash_factor, "alpha158_std20", "alpha158_roc20", "alpha158_rsv20")))
@@ -755,7 +760,7 @@ def run_baseline(
         or low_volatility_filter or "overnight_decomposition" in config or "high52" in config
         or "small_value_quality" in config or "cash_roa_composition" in config
         or "cash_yield_composition" in config or "roe_stability_composition" in config
-        or "low_beta_composition" in config or cash_roa_buffer):
+        or "low_beta_composition" in config or "lowvol60_composition" in config or cash_roa_buffer):
         paired_components: tuple[tuple[str, int], ...] = (
             ("alpha158_std20", -1), ("alpha158_roc20", 1), ("alpha158_rsv20", -1))
         if cash_roa_buffer:
@@ -770,6 +775,8 @@ def run_baseline(
             paired_strategy = "b56_paired_three_factor_roe_stability_cohort"
         if "low_beta_composition" in config:
             paired_strategy = "b61_paired_three_factor_low_beta_cohort"
+        if "lowvol60_composition" in config:
+            paired_strategy = "b65_paired_three_factor_lowvol60_cohort"
         if "information_discreteness" in config:
             paired_components = (("pret_12m_skip1m", 1),)
             paired_comparison, paired_strategy = "momentum", "b26_paired_momentum_baseline"
@@ -924,9 +931,11 @@ def run_baseline(
     conclusion: Literal["RESEARCH_ONLY", "REJECTED", "PAPER_CANDIDATE"] = "RESEARCH_ONLY" if passed else "REJECTED"
     if (config["admission"].get("maximum_conclusion") == "PAPER_CANDIDATE"
         and meets_portfolio_candidate(results, config["admission"])
-        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_zscore", "debt_ebitda", "low_beta", "turnover_change", "return_turnover", "lowvol120")) or passed)):
+        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_zscore", "debt_ebitda", "low_beta", "turnover_change", "return_turnover", "lowvol120", "lowvol60_composition")) or passed)):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
+        "Frozen B3 sixty-session low volatility is added to a matched three-factor cohort; historical periods were inspected previously."
+        if "lowvol60_composition" in config else
         "Fixed 120-session sample return volatility is a local low-risk replication with 60-session redundancy control; historical periods were inspected previously."
         if "lowvol120" in config else
         "Fixed daily return/same-day turnover correlation adapts the synchronous price-volume idea; historical periods were inspected previously."

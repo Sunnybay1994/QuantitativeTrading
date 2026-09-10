@@ -12,7 +12,9 @@ from polars.testing import assert_frame_equal
 import pytest
 
 from quant.factors.reversal_volatility import compute_reversal_volatility_factors, compute_total_volatility_windows
-from quant.research.monthly_lowvol120 import build_monthly_lowvol120, validate_lowvol120
+from quant.research.monthly_lowvol120 import (
+    build_monthly_lowvol120, validate_lowvol120, validate_lowvol60_composition,
+)
 
 
 DATES = tuple(dt.date(2023, 1, 1) + dt.timedelta(days=i) for i in range(240))
@@ -96,3 +98,17 @@ def test_preregistered_fixed_window_and_direction() -> None:
         altered[section][key] = value
         with pytest.raises(ValueError, match="fixed negative"):
             validate_lowvol120(altered)
+
+
+def test_sixty_day_composition_requires_fixed_same_pool_and_positive_increment() -> None:
+    config = tomllib.loads(Path("configs/research/b65_lowvol60_composite_20260910.toml").read_text())
+    validate_lowvol60_composition(config)
+    for section, key, value in (("lowvol60", "window_sessions", 120),
+        ("lowvol60_composition", "weights", "optimized"), ("lowvol60_composition", "eligibility", "three_factor_only"),
+        ("portfolio", "top_k", 40), ("portfolio", "retention_rank", 100),
+        ("admission", "comparison", "510300"), ("admission", "require_positive_paired_1x_compounded_increment", False),
+        ("factors", "directions", [-1,1,-1,1])):
+        altered = copy.deepcopy(config)
+        altered[section][key] = value
+        with pytest.raises(ValueError, match="same-pool"):
+            validate_lowvol60_composition(altered)
