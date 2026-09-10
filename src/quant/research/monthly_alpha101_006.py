@@ -14,16 +14,19 @@ def validate_alpha101_006(config: dict[str, Any]) -> None:
         "constant_correlation": "null", "missing_session": "invalidate_10_bar_window",
         "zero_volume": "invalid_bar", "signal_frequency": "completed_month_end"}
     buffered = "alpha101_006_buffer" in config
+    bimonthly = config["admission"].get("comparison") == "alpha101_006_monthly_buffered"
     composition = "alpha101_006_composition" in config or buffered
     names, directions = (["alpha158_std20", "alpha158_roc20", "alpha158_rsv20", "alpha101_006"],
                          [-1, 1, -1, 1]) if composition else (["alpha101_006"], [1])
     if (any(config.get("alpha101_006", {}).get(k) != v for k, v in expected.items())
         or config["factors"]["names"] != names or config["factors"]["directions"] != directions
         or config["portfolio"]["top_k"] != 50 or config["portfolio"].get("retention_rank", 50) != (75 if buffered else 50)
-        or "execution_months" in config["portfolio"]
+        or (not bimonthly and "execution_months" in config["portfolio"])
+        or (bimonthly and (not buffered or config["portfolio"].get("execution_months") != [1, 3, 5, 7, 9, 11]
+                           or config["admission"].get("maximum_fold_turnover") != 6.0))
         or "alpha101_006" in config["admission"].get("redundancy_references", [])):
         raise ValueError("Alpha101 #6 requires fixed ten-session negative correlation and monthly Top50")
-    comparison = "alpha101_006_unbuffered" if buffered else "three_factor"
+    comparison = "alpha101_006_monthly_buffered" if bimonthly else "alpha101_006_unbuffered" if buffered else "three_factor"
     section = "alpha101_006_buffer" if buffered else "alpha101_006_composition"
     experiment = {"comparison": comparison, "eligibility": "complete_four_factor", "weights": "equal_zscore"}
     if buffered:

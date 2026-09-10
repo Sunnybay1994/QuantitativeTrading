@@ -73,3 +73,19 @@ def test_buffer_changes_only_retention_and_requires_lower_turnover():
     changed['alpha101_006_composition']=prior['alpha101_006_composition']
     with pytest.raises(ValueError):
         validate_alpha101_006(changed)
+
+
+def test_bimonthly_changes_only_execution_months_with_monthly_buffer_control():
+    config=tomllib.loads(Path('configs/research/b81_alpha101_006_bimonthly_20260910.toml').read_text())
+    prior=tomllib.loads(Path('configs/research/b80_alpha101_006_buffer75_20260910.toml').read_text())
+    for section in ('alpha101_006','data','universe','costs','walk_forward','factors','composite'):
+        assert config[section]==prior[section]
+    assert {k:v for k,v in config['portfolio'].items() if k!='execution_months'}==prior['portfolio']
+    validate_alpha101_006(config)
+    for section,key,value in [('portfolio','execution_months',[2,4,6,8,10,12]),
+        ('admission','maximum_fold_turnover',7.),('portfolio','retention_rank',50),
+        ('admission','comparison','alpha101_006_unbuffered')]:
+        changed=copy.deepcopy(config)
+        changed[section][key]=value
+        with pytest.raises(ValueError):
+            validate_alpha101_006(changed)

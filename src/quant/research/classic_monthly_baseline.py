@@ -313,6 +313,7 @@ def run_baseline(
     data, universe, portfolio = config["data"], config["universe"], config["portfolio"]
     cash_roa_buffer = "cash_roa_buffer" in config
     alpha101_006_buffer = "alpha101_006_buffer" in config
+    alpha101_006_bimonthly = config["admission"].get("comparison") == "alpha101_006_monthly_buffered"
     alpha101_055_buffer = "alpha101_055_buffer" in config
     alpha101_055_bimonthly = config["admission"].get("comparison") == "alpha101_055_monthly_buffered"
     alpha101_026_buffer = "alpha101_026_buffer" in config
@@ -857,7 +858,7 @@ def run_baseline(
         primary_scored, sessions=all_sessions, start=fold.test_start, end=fold.test_end, top_k=portfolio["top_k"],
         strategy_name=config["research"]["strategy_name"],
         retention_rank=portfolio.get("retention_rank"),
-        execution_months=(1, 3, 5, 7, 9, 11) if cv20_bimonthly or alpha101_055_bimonthly else None,
+        execution_months=(1, 3, 5, 7, 9, 11) if cv20_bimonthly or alpha101_055_bimonthly or alpha101_006_bimonthly else None,
     ).with_columns(pl.lit(fold.fold).alias("fold")) for fold in folds])
     paired_targets: pl.DataFrame | None = None
     paired_comparison, paired_strategy = "three_factor", "b25_paired_three_factor_baseline"
@@ -896,6 +897,8 @@ def run_baseline(
             paired_components = (("alpha158_std20", -1), ("alpha158_roc20", 1),
                                  ("alpha158_rsv20", -1), ("alpha101_006", 1))
             paired_comparison, paired_strategy = "alpha101_006_unbuffered", "b80_paired_unbuffered_alpha101_006"
+            if alpha101_006_bimonthly:
+                paired_comparison, paired_strategy = "alpha101_006_monthly_buffered", "b81_paired_monthly_alpha101_006"
         if alpha101_055_buffer:
             paired_components = (("alpha158_std20", -1), ("alpha158_roc20", 1),
                                  ("alpha158_rsv20", -1), ("alpha101_055", 1))
@@ -932,7 +935,7 @@ def run_baseline(
         paired_targets = pl.concat([build_monthly_zscore_targets(
             paired_scores, sessions=all_sessions, start=fold.test_start, end=fold.test_end,
             top_k=portfolio["top_k"], strategy_name=paired_strategy,
-            retention_rank=75 if cv20_bimonthly or alpha101_055_bimonthly else None,
+            retention_rank=75 if cv20_bimonthly or alpha101_055_bimonthly or alpha101_006_bimonthly else None,
         ).with_columns(pl.lit(fold.fold).alias("fold")) for fold in folds])
         extra_outputs.append((f"{paired_comparison}_targets", paired_targets))
     selected = sorted(set(targets.get_column("symbol")) | (
@@ -1046,7 +1049,7 @@ def run_baseline(
 
         portfolio_admission = summarize_cv20_buffer(
             results, comparison=paired_comparison,
-            maximum_fold_turnover=6.0 if cv20_bimonthly or alpha101_055_bimonthly else None)
+            maximum_fold_turnover=6.0 if cv20_bimonthly or alpha101_055_bimonthly or alpha101_006_bimonthly else None)
         passed = portfolio_admission["passed"]
     else:
         portfolio_admission = portfolio_admission_summary(results, config["admission"].get("comparison", "510300"))
@@ -1063,6 +1066,8 @@ def run_baseline(
         and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_zscore", "debt_ebitda", "low_beta", "turnover_change", "return_turnover", "lowvol120", "lowvol60_composition", "momentum_12_1", "alpha101_001", "alpha101_026", "alpha101_046", "alpha101_054", "alpha101_055", "alpha101_006")) or passed)):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
+        "Odd execution months with Top75 retention are compared with the frozen monthly Alpha101 #6 portfolio; historical periods were inspected previously."
+        if alpha101_006_bimonthly else
         "Fixed Top75 retention of prior four-factor targets is compared with the frozen Alpha101 #6 unbuffered portfolio; historical periods were inspected previously."
         if alpha101_006_buffer else
         "Frozen Alpha101 #6 is added to three equal-zscore factors on the same complete cohort; historical periods were inspected previously."
