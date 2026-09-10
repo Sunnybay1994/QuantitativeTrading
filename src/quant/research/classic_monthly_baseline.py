@@ -72,6 +72,8 @@ CODE_PATHS = (
     "src/quant/research/monthly_annual_zscore.py",
     "src/quant/factors/debt_ebitda.py",
     "src/quant/research/monthly_debt_ebitda.py",
+    "src/quant/factors/classic_market_risk.py",
+    "src/quant/research/monthly_low_beta.py",
     "src/quant/data/quarterly_parent_income.py",
     "src/quant/factors/quarterly_roe_stability.py",
     "src/quant/research/monthly_quarterly_roe_stability.py",
@@ -389,6 +391,10 @@ def run_baseline(
         if any(config.get("quarterly_roe_stability", {}).get(k) != v for k, v in expected_roe_stability.items()):
             raise ValueError("Unsupported quarterly ROE stability configuration")
         validate_roe_stability_components(config)
+    if "low_beta" in config:
+        from quant.research.monthly_low_beta import validate_low_beta
+
+        validate_low_beta(config)
     if config.get("financials", {}).get("factor_family") == "debt_ebitda":
         from quant.research.monthly_debt_ebitda import validate_debt_ebitda
 
@@ -474,7 +480,7 @@ def run_baseline(
         )
         bars = read_stock_data(data_root=data_root, config=refresh_config, table="bar_1d",
                               start=data["warmup_start"], end=end, symbols=list(candidates))
-    benchmark_bars, _, calendar, benchmark_instruments = read_etf_research_inputs(
+    benchmark_bars, benchmark_prices, calendar, benchmark_instruments = read_etf_research_inputs(
         data_root, [portfolio["benchmark"]], data["warmup_start"], end,
     )
     all_sessions = tuple(sorted(calendar.filter(pl.col("is_open")).get_column("date").unique().to_list()))
@@ -482,6 +488,17 @@ def run_baseline(
     extra_inputs: list[tuple[str, pl.DataFrame, tuple[str, ...], str]] = []
     extra_outputs: list[tuple[str, pl.DataFrame]] = []
     extra_digests: list[ResearchInputDigestV1] = []
+    if "low_beta" in config:
+        from quant.research.monthly_low_beta import build_monthly_low_beta
+        from quant.research.pit_quality_research import monthly_signal_sessions
+
+        monthly_beta = build_monthly_low_beta(bars, benchmark_bars, benchmark_prices,
+            sessions=tuple(d for d in all_sessions if data["warmup_start"] <= d <= end),
+            signal_dates=monthly_signal_sessions(all_sessions, start=data["research_start"], end=end))
+        factors = factors.join(monthly_beta, on=["symbol", "trade_date"], how="inner", validate="1:1")
+        extra_inputs.append(("beta-benchmark-total-return", benchmark_prices, ("trade_date", "symbol"), "trade_date"))
+        extra_outputs.append(("market_beta_factors", monthly_beta))
+        print(f"Computed {monthly_beta['trade_date'].n_unique()} monthly market-beta cross-sections", flush=True)
     if "return_skewness" in config:
         from quant.factors.return_skewness import compute_return_skewness
 
@@ -856,9 +873,11 @@ def run_baseline(
     conclusion: Literal["RESEARCH_ONLY", "REJECTED", "PAPER_CANDIDATE"] = "RESEARCH_ONLY" if passed else "REJECTED"
     if (config["admission"].get("maximum_conclusion") == "PAPER_CANDIDATE"
         and meets_portfolio_candidate(results, config["admission"])
-        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_zscore", "debt_ebitda")) or passed)):
+        and (not any(k in config for k in ("cash_roa_composition", "cash_yield_composition", "cash_roa_buffer", "roe_stability_composition", "annual_profitability", "annual_zscore", "debt_ebitda", "low_beta")) or passed)):
         conclusion = "PAPER_CANDIDATE"
     caveat = (
+        "Sixty-session log-return market beta to total-return 510300 is a local monthly long-only low-beta adaptation; historical periods were inspected previously."
+        if "low_beta" in config else
         "Annual provider interest-bearing debt/EBITDA with positive earnings and industrial income-period anchoring; historical periods were inspected previously."
         if "debt_ebitda" in config else
         "QMJ appendix Z-score with Chinese annual retained-earnings mapping and exact signal-date market value; historical periods were inspected previously."

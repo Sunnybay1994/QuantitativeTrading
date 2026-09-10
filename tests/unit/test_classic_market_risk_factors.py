@@ -158,3 +158,53 @@ def test_benchmark_identity_and_duplicate_symbol_date_are_rejected() -> None:
     )
     with pytest.raises(ValueError, match="one source per symbol-date"):
         compute_classic_market_risk_factors(stocks, duplicate, **request)
+
+
+def test_monthly_beta_uses_total_returns_without_changing_execution_prices() -> None:
+    from quant.research.monthly_low_beta import build_monthly_low_beta
+
+    stocks, benchmark, request = _request()
+    prices = benchmark.select('symbol', 'trade_date', pl.col('close').alias('adjusted_close')).with_columns(
+        pl.lit('TOTAL_RETURN_DIVIDEND').alias('adjustment_method'))
+    ex_date = request['sessions'][30]
+    raw = benchmark.with_columns(pl.when(pl.col('trade_date') >= ex_date)
+        .then(pl.col(c) * .9).otherwise(pl.col(c)).alias(c) for c in ['open', 'high', 'low', 'close'])
+    before = raw.clone()
+    selected = request['sessions'][-2:]
+    result = build_monthly_low_beta(stocks, raw, prices, sessions=request['sessions'], signal_dates=selected)
+    assert result['trade_date'].to_list() == list(selected)
+    assert result[MARKET_BETA_CONTROL_NAME][0] is None
+    assert result[MARKET_BETA_CONTROL_NAME][1] == pytest.approx(2.)
+    assert raw.equals(before)
+
+
+def test_monthly_market_beta_does_not_require_down_days_or_positive_beta() -> None:
+    from quant.research.monthly_low_beta import build_monthly_low_beta
+
+    stocks, benchmark, request = _request(negative_observations=0, stock_slope=-.5)
+    prices = benchmark.select('symbol', 'trade_date', pl.col('close').alias('adjusted_close')).with_columns(
+        pl.lit('TOTAL_RETURN_DIVIDEND').alias('adjustment_method'))
+    result = build_monthly_low_beta(stocks, benchmark, prices, sessions=request['sessions'],
+                                    signal_dates=(request['sessions'][-1],))
+    assert result[MARKET_BETA_CONTROL_NAME].item() == pytest.approx(-.5)
+    with pytest.raises(ValueError, match='Incomplete total-return benchmark'):
+        build_monthly_low_beta(stocks, benchmark, prices.head(60), sessions=request['sessions'],
+                               signal_dates=(request['sessions'][-1],))
+
+
+def test_low_beta_preregistration_is_fixed() -> None:
+    import tomllib
+    from pathlib import Path
+
+    from quant.research.monthly_low_beta import validate_low_beta
+
+    config = tomllib.loads((Path(__file__).resolve().parents[2]
+        / 'configs/research/b60_low_market_beta60_20260910.toml').read_text(encoding='utf-8'))
+    validate_low_beta(config)
+    config['low_beta']['window_sessions'] = 120
+    with pytest.raises(ValueError):
+        validate_low_beta(config)
+    config['low_beta']['window_sessions'] = 60
+    config['factors']['directions'] = [1]
+    with pytest.raises(ValueError):
+        validate_low_beta(config)
