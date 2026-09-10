@@ -135,3 +135,18 @@ def test_composition_preserves_rank_cohort_and_requires_matched_increment():
         changed[section][key]=value
         with pytest.raises(ValueError):
             validate_alpha101_055(changed)
+
+
+def test_bimonthly_changes_only_execution_months_and_keeps_monthly_buffer_control():
+    config=tomllib.loads(Path('configs/research/b77_alpha101_055_bimonthly_20260910.toml').read_text())
+    prior=tomllib.loads(Path('configs/research/b76_alpha101_055_buffer75_20260910.toml').read_text())
+    for section in ('alpha101_055','data','universe','costs','walk_forward','factors','composite'):
+        assert config[section]==prior[section]
+    assert {k:v for k,v in config['portfolio'].items() if k!='execution_months'}==prior['portfolio']
+    validate_alpha101_055(config)
+    for section,key,value in [('portfolio','execution_months',[2,4,6,8,10,12]),('admission','maximum_fold_turnover',7.),
+        ('portfolio','retention_rank',50),('admission','comparison','alpha101_055_unbuffered')]:
+        changed=copy.deepcopy(config)
+        changed[section][key]=value
+        with pytest.raises(ValueError):
+            validate_alpha101_055(changed)

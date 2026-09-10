@@ -18,6 +18,7 @@ def validate_alpha101_055(config: dict[str, Any]) -> None:
         "flat_range": "null", "constant_correlation": "null", "missing_session": "invalidate_17_bar_window",
         "zero_volume": "invalid_bar", "signal_frequency": "completed_month_end"}
     buffered = "alpha101_055_buffer" in config
+    bimonthly = config["admission"].get("comparison") == "alpha101_055_monthly_buffered"
     composition = "alpha101_055_composition" in config or buffered
     names, directions = (["alpha158_std20", "alpha158_roc20", "alpha158_rsv20", "alpha101_055"],
                          [-1, 1, -1, 1]) if composition else (["alpha101_055"], [1])
@@ -26,9 +27,11 @@ def validate_alpha101_055(config: dict[str, Any]) -> None:
         or config["factors"]["directions"] != directions
         or config["portfolio"]["top_k"] != 50
         or config["portfolio"].get("retention_rank", 50) != (75 if buffered else 50)
-        or "execution_months" in config["portfolio"]):
+        or (not bimonthly and "execution_months" in config["portfolio"])
+        or (bimonthly and (not buffered or config["portfolio"].get("execution_months") != [1, 3, 5, 7, 9, 11]
+                           or config["admission"].get("maximum_fold_turnover") != 6.0))):
         raise ValueError("Alpha101 #55 requires fixed 12/6 windows, positive direction and monthly Top50")
-    comparison = "alpha101_055_unbuffered" if buffered else "three_factor"
+    comparison = "alpha101_055_monthly_buffered" if bimonthly else "alpha101_055_unbuffered" if buffered else "three_factor"
     section = "alpha101_055_buffer" if buffered else "alpha101_055_composition"
     experiment = {"comparison": comparison, "eligibility": "complete_four_factor", "weights": "equal_zscore"}
     if buffered:
