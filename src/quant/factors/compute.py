@@ -15,11 +15,13 @@ import polars as pl
 from quant.data.factor_panels import (
     available_sessions, check_definition, panel_complete, read_coverage, read_factor_inputs, read_factor_industry,
     write_panel,
+    read_factor_financial_history,
 )
 from quant.data.refresh import SHANGHAI, completed_date
 from quant.factors.expressions import evaluate_expressions
 from quant.factors.library import load_library
 from quant.research.factor_labels import build_next_open_factor_labels
+from quant.research.factor_financials import attach_quality_factors
 
 
 HORIZONS = (1, 5, 10, 20, 60)
@@ -77,6 +79,8 @@ def run(
         panel, bars = read_factor_inputs(data_root, refresh_config, read_start, read_end, sessions)
         if any("ind_neutralize" in row.expr for row in pending):
             panel = read_factor_industry(data_root, panel)
+        if any(row.family == "pit_quality" for row in pending):
+            panel = attach_quality_factors(panel, read_factor_financial_history(data_root, refresh_config, panel))
         keys = bars.filter(pl.col("trade_date").is_between(low, high)).select("symbol", "trade_date")
         row_counts = {}
         if pending:

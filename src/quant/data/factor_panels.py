@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import tomllib
 from pathlib import Path
 from typing import Any
 
 import polars as pl
 
 from quant.data.industry_history import attach_industry
+from quant.data.financial_repository import TushareFinancialHistoryQuery, read_tushare_financial_history
 from quant.data.refresh_stocks import read_stock_data
 from quant.data.stock_paper_inputs import read_stock_paper_calendar
 
@@ -29,6 +31,23 @@ def read_factor_industry(data_root: Path, panel: pl.DataFrame) -> pl.DataFrame:
             intervals = pl.read_parquet(summary_path.parent / "intervals.parquet")
             return attach_industry(panel, intervals)
     raise ValueError("Publish industry history with --with-current before computing industry factors")
+
+
+def read_factor_financial_history(
+    data_root: Path, config: Path, panel: pl.DataFrame,
+) -> dict[str, pl.DataFrame]:
+    """Read all earlier report periods; daily selection applies announcement dates."""
+    snapshot = tomllib.loads(config.read_text(encoding="utf-8")).get("financial_snapshot")
+    if not isinstance(snapshot, str) or not snapshot:
+        raise ValueError("Set financial_snapshot in the data refresh config before computing PIT factors")
+    symbols = tuple(panel["symbol"].unique().sort().to_list())
+    end = panel["trade_date"].max()
+    if not isinstance(end, dt.date):
+        raise ValueError("Financial factors require dated daily input")
+    return {name: read_tushare_financial_history(data_root=data_root, query=TushareFinancialHistoryQuery(
+        snapshot_id=snapshot, dataset=name, start_period=dt.date(1900, 1, 1),
+        end_period=end, symbols=symbols,
+    )) for name in ("income", "balancesheet", "cashflow")}
 
 
 def read_factor_inputs(
