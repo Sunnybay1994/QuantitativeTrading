@@ -12,7 +12,8 @@ from quant.research.run_multifactor_predictions import run_predictions
 from quant.research.run_multifactor_replay import run_model_replay
 
 
-def run_pipeline(*, config: Path, output: Path, data_root: Path) -> dict:
+def run_pipeline(*, config: Path, output: Path, data_root: Path,
+                 correlations_from: Path | None = None) -> dict:
     model_bytes = config.read_bytes()
     model = tomllib.loads(model_bytes.decode('utf-8'))
     research = model['research']
@@ -26,7 +27,8 @@ def run_pipeline(*, config: Path, output: Path, data_root: Path) -> dict:
         cost_runs=[Path(path) for path in research.get('cost_runs', [])],
         cost_root=Path(research['cost_root']), benchmarks=benchmarks, data_root=data_root)
     print('Selecting factors using historical correlations', flush=True)
-    selection = run_selection(costs=output/'costs', output=output/'selection')
+    selection = run_selection(costs=output/'costs', output=output/'selection',
+                              correlations_from=correlations_from)
     incomplete = [row for row in selection['annual_selection'] if not row['selection_complete']]
     result = {'model_results_ready': False, 'completed_cost_factors': costs['complete_cost_factors'],
               'annual_selection': selection['annual_selection'], 'conclusions': None}
@@ -58,8 +60,10 @@ def main() -> None:
     parser.add_argument('--config', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--data-root', type=Path, default=Path('data'))
+    parser.add_argument('--correlations-from', type=Path, help='Reuse matching annual historical comparisons')
     args = parser.parse_args()
-    print(json.dumps(run_pipeline(config=args.config, output=args.output, data_root=args.data_root)))
+    print(json.dumps(run_pipeline(config=args.config, output=args.output, data_root=args.data_root,
+                                  correlations_from=args.correlations_from)))
 
 
 if __name__ == '__main__':

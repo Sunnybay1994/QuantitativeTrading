@@ -64,7 +64,7 @@ def annual_selection(screen: pl.DataFrame, *, settings: dict, model: dict,
                        'provisional_selected': selected, 'confirmed_selected_prefix': confirmed}
 
 
-def run_selection(*, costs: Path, output: Path) -> dict:
+def run_selection(*, costs: Path, output: Path, correlations_from: Path | None = None) -> dict:
     model = tomllib.loads((costs/'model.toml').read_text(encoding='utf-8'))
     settings = tomllib.loads((costs/'battery.toml').read_text(encoding='utf-8'))
     root = Path(model['research']['statistics_source'])
@@ -73,6 +73,21 @@ def run_selection(*, costs: Path, output: Path) -> dict:
     screens = pl.read_parquet(costs/'annual_cost_screen.parquet')
     all_decisions, summaries, pair_rows = [], [], []
     variant = model['selection']['variant']
+    previous_pairs = {}
+    if correlations_from is not None:
+        previous_model = tomllib.loads((correlations_from/'model.toml').read_text(encoding='utf-8'))
+        if ((correlations_from/'battery.toml').read_bytes() != (costs/'battery.toml').read_bytes()
+                or previous_model['research']['statistics_source'] != model['research']['statistics_source']
+                or previous_model['selection']['variant'] != variant):
+            raise ValueError('Cached correlations require the same statistics, battery settings and variant')
+        path = correlations_from/'annual_correlations.parquet'
+        if path.is_file():
+            for row in pl.read_parquet(path).iter_rows(named=True):
+                pair = tuple(sorted((row['left'], row['right'])))
+                key = (row['test_year'], row['refit_close'], pair)
+                if row['variant'] != variant or key in previous_pairs:
+                    raise ValueError('Invalid cached correlation keys')
+                previous_pairs[key] = row
     for key, table in screens.partition_by('test_year', as_dict=True).items():
         year = key[0]
         cutoffs = table['refit_close'].unique().to_list()
@@ -84,6 +99,13 @@ def run_selection(*, costs: Path, output: Path) -> dict:
         def compare(left: str, right: str) -> dict:
             pair = tuple(sorted((left, right)))
             if pair not in cache:
+                previous = previous_pairs.get((year, cutoff, pair))
+                if previous is not None:
+                    result = {key: value for key, value in previous.items()
+                              if key not in ('test_year', 'refit_close', 'left', 'right', 'variant')}
+                    cache[pair] = result
+                    pair_rows.append(previous)
+                    return result
                 frames = [pl.scan_parquet(root/'factors'/name/'monthly_scores.parquet').filter(
                     pl.col('trade_date') <= cutoff).select('trade_date', 'symbol', variant).collect()
                     for name in pair]
@@ -114,8 +136,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--costs', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--correlations-from', type=Path, help='Previous selection from the same frozen statistics')
     args = parser.parse_args()
-    print(json.dumps(run_selection(costs=args.costs, output=args.output)))
+    print(json.dumps(run_selection(costs=args.costs, output=args.output, correlations_from=args.correlations_from)))
 
 
 if __name__ == '__main__':

@@ -1,6 +1,7 @@
 import datetime as dt
 
 import polars as pl
+import pytest
 
 from quant.research.model_training_selection import annual_selection, run_selection
 
@@ -51,7 +52,7 @@ def test_insufficient_correlation_history_stays_unresolved():
     assert result['confirmed_selected_prefix'] == ['a']
 
 
-def test_future_scores_do_not_change_saved_annual_selection(tmp_path):
+def test_future_scores_do_not_change_saved_annual_selection(tmp_path, monkeypatch):
     root, costs = tmp_path/'statistics', tmp_path/'costs'
     root.mkdir()
     costs.mkdir()
@@ -85,3 +86,21 @@ maximum_absolute_rank_correlation = 0.6
     assert first == second
     assert pl.read_parquet(tmp_path/'first'/'annual_correlations.parquet').equals(
         pl.read_parquet(tmp_path/'second'/'annual_correlations.parquet'))
+    from quant.research import model_training_selection as module
+
+    def calculate(**kwargs):
+        raise RuntimeError('Correlation must be recomputed for a different cutoff')
+
+    monkeypatch.setattr(module, 'monthly_rank_correlation', lambda *args, **kwargs: calculate(**kwargs))
+    cached = run_selection(costs=costs, output=tmp_path/'cached', correlations_from=tmp_path/'first')
+    assert cached == second
+    for filename in ('annual_selection.parquet', 'annual_correlations.parquet'):
+        assert pl.read_parquet(tmp_path/'cached'/filename).equals(pl.read_parquet(tmp_path/'second'/filename))
+    # A cache with a later information boundary cannot drive an earlier refit.
+    path = costs/'annual_cost_screen.parquet'
+    pl.read_parquet(path).with_columns(pl.lit(dt.date(2019, 12, 30)).alias('refit_close')).write_parquet(path)
+    with pytest.raises(RuntimeError, match='different cutoff'):
+        run_selection(costs=costs, output=tmp_path/'earlier', correlations_from=tmp_path/'first')
+    (tmp_path/'first'/'battery.toml').write_text(battery+'\nchanged = true\n')
+    with pytest.raises(ValueError, match='same statistics'):
+        run_selection(costs=costs, output=tmp_path/'changed', correlations_from=tmp_path/'first')
