@@ -72,7 +72,13 @@ def run_refresh(
     universe = tomllib.loads(Path(settings["etf_config"]).read_text(encoding="utf-8"))["universe"]
     symbols = sorted({s for value in universe.values() if isinstance(value, list) for s in value})
     limit_rows = refresh_limits(data_root=data_root, symbols=symbols, end=end)
-    minutes = refresh_intraday(data_root=data_root, end=through) if intraday else {}
+    minute_options: dict[str, Any] = {}
+    minute_days = settings.get('intraday', {}).get('stock_lookback_days')
+    if minute_days is not None:
+        if type(minute_days) is not int or minute_days < 1:
+            raise ValueError('Stock minute lookback must be a positive number of calendar days')
+        minute_options['stock_from'] = through - dt.timedelta(days=minute_days-1)
+    minutes = refresh_intraday(data_root=data_root, end=through, **minute_options) if intraday else {}
     benchmark = (refresh_factor_benchmark(data_root=data_root, config=config, end=end)
                  if settings.get("factor_benchmark_snapshot") else {"new_rows": 0})
     financials = {"message": "disabled", "new_rows": 0}
@@ -86,7 +92,9 @@ def run_refresh(
             factors["message"] = "skipped: intraday input refresh failed"
         else:
             factors = refresh_factors(data_root=data_root, artifact_root=artifact_root,
-                                      config=config, end=end, settings=settings["factors"])
+                                      config=config, end=end, settings=settings["factors"],
+                                      minute_start=(minute_options.get('stock_from', dt.date(2020, 1, 1))
+                                                    if minutes.get('stock_changed_rows', 0) else None))
     quality: dict[str, Any] = {"errors": [], "message": "disabled"}
     if settings.get('quality', {}).get('enabled', False):
         from quant.data.daily_input_quality import run_quality
@@ -117,19 +125,31 @@ def run_refresh(
 
 
 def refresh_factors(*, data_root: Path, artifact_root: Path, config: Path,
-                    end: dt.date, settings: dict[str, Any]) -> dict[str, Any]:
+                    end: dt.date, settings: dict[str, Any],
+                    minute_start: dt.date | None = None) -> dict[str, Any]:
     """Reuse the factor engine's incremental coverage, including unfinished labels."""
     # compute uses the completed-session date helpers in this module.
     from quant.factors.compute import run
+    from quant.factors.library import load_library
+    from quant.research.factor_intraday import minute_input_names
 
     with contextlib.redirect_stdout(io.StringIO()):
         result = run(data_root=data_root, refresh_config=config,
                      library=Path(settings["library"]), selected=settings.get("selected", "all"),
                      start=dt.date.fromisoformat(str(settings["start"])), end=end,
                      artifact_root=artifact_root)
-    return {"message": "updated" if result["years"] else "no-op",
+        minute_rebuild = None
+        if minute_start is not None and minute_start <= end:
+            definitions = load_library(Path(settings['library']), settings.get('selected', 'all'))
+            selected = ','.join(row.id for row in definitions if minute_input_names((row.expr,)))
+            if selected:
+                minute_rebuild = run(data_root=data_root, refresh_config=config,
+                    library=Path(settings['library']), selected=selected, rebuild=True,
+                    start=max(minute_start, dt.date.fromisoformat(str(settings['start']))), end=end,
+                    artifact_root=artifact_root)
+    return {"message": "updated" if result["years"] or minute_rebuild else "no-op",
             "years": result["years"], "factor_count": result["factor_count"],
-            "output": result["output"]}
+            "output": result["output"], "minute_rebuild": minute_rebuild}
 
 
 def main() -> None:

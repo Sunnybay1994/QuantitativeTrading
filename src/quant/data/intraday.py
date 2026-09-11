@@ -62,22 +62,32 @@ def add_session_quality(frame: pl.DataFrame, data_root: Path, frequency: str, sy
     return result.drop("is_half_day")
 
 
-def _stock_job(args: tuple[str, str, str, list[dt.date]]) -> dict[str, Any]:
+def _stock_job(args: tuple[str, str, str, list[dt.date]], *,
+               start_date: dt.date | None = None) -> dict[str, Any]:
     data_root_text, symbol, end_text, expected_dates = args
     data_root, end = Path(data_root_text), dt.date.fromisoformat(end_text)
     directory = _directory(data_root, "baostock", symbol, "5m")
-    coverage = directory / "coverage.json"
+    if start_date is not None and start_date > end:
+        raise ValueError("Stock capture start must not exceed end")
+    if start_date is not None:
+        expected_dates = [day for day in expected_dates if start_date <= day <= end]
+    coverage = directory / ("recent_coverage.json" if start_date is not None else "coverage.json")
     prior = json.loads(coverage.read_text()) if coverage.exists() else {}
+    if start_date is not None and prior.get("from") != str(start_date):
+        prior = {}
     existing_path = directory / "data.parquet"
     existing = pl.read_parquet(existing_path) if existing_path.exists() else None
     missing = set(expected_dates) - (set(existing["trade_date"]) if existing is not None else set())
     if prior.get("through", "") >= end_text and existing is not None and not missing:
         return {"symbol": symbol, "changed_rows": 0}
-    start = dt.date.fromisoformat(prior["through"]) + dt.timedelta(days=1) if prior else dt.date(2020, 1, 1)
+    start = (dt.date.fromisoformat(prior["through"]) + dt.timedelta(days=1) if prior
+             else start_date or dt.date(2020, 1, 1))
     if missing:
         start = min(start, min(missing))
         if existing is not None and not existing.is_empty():
             start = min(start, cast(dt.date, existing["trade_date"].max()))
+    if start_date is not None:
+        start = max(start, start_date)
     began = time.monotonic()
     changed, returned, raw_paths = 0, 0, []
     complete_through = prior.get("through", str(start - dt.timedelta(days=1)))
@@ -109,6 +119,8 @@ def _stock_job(args: tuple[str, str, str, list[dt.date]]) -> dict[str, Any]:
                   "returned_rows": returned, "changed_rows": changed,
                   "incomplete_days": frame.filter(~pl.col("session_complete"))["trade_date"].n_unique(),
                   "seconds": round(time.monotonic() - began, 2)}
+        if start_date is not None:
+            status["from"] = str(start_date)
         coverage.write_text(json.dumps(status), encoding="utf-8")
         start = chunk_end + dt.timedelta(days=1)
     if missing:
@@ -151,9 +163,12 @@ def capture_yahoo(data_root: Path, member: dict[str, Any], frequency: str, end: 
 
 
 def refresh_intraday(*, data_root: Path, end: dt.date, stocks: bool = True,
-                     yahoo: bool = True, workers: int = 1, limit: int | None = None) -> dict[str, Any]:
+                     yahoo: bool = True, workers: int = 1, limit: int | None = None,
+                     stock_from: dt.date | None = None) -> dict[str, Any]:
     if workers != 1 or (limit is not None and limit < 1):
         raise ValueError("BaoStock uses one connection; workers must be 1 and limit positive")
+    if stock_from is not None and (not stocks or stock_from > end):
+        raise ValueError("Stock start requires stocks enabled and a date at or before end")
     results, errors = [], []
     if stocks:
         from quant.data.refresh_stocks import read_stock_data
@@ -161,17 +176,19 @@ def refresh_intraday(*, data_root: Path, end: dt.date, stocks: bool = True,
         config = tomllib.loads(Path("configs/universe/stock_top800_5m.toml").read_text(encoding="utf-8"))
         symbols = config["symbols"][:limit]
         daily = read_stock_data(data_root=data_root, config=Path("configs/data/refresh.toml"),
-                                table="bar_1d", start=dt.date(2020, 1, 1), end=end, symbols=symbols)
+                                table="bar_1d", start=stock_from or dt.date(2020, 1, 1), end=end, symbols=symbols)
         expected = {symbol: group["trade_date"].to_list() for (symbol,), group in
                     daily.filter(pl.col("volume") > 0).group_by("symbol")}
         for index, symbol in enumerate(symbols, 1):
             try:
-                result = _stock_job((str(data_root), symbol, str(end), expected.get(symbol, [])))
+                result = _stock_job((str(data_root), symbol, str(end), expected.get(symbol, [])),
+                                    start_date=stock_from)
                 results.append(result)
                 print(f"BaoStock {index}/{len(symbols)} {symbol}: {result['changed_rows']} rows", flush=True)
             except Exception as exc:
                 errors.append({"symbol": symbol, "error": str(exc)})
                 print(f"BaoStock {index}/{len(symbols)} {symbol}: {exc}", flush=True)
+    stock_changed_rows = sum(result['changed_rows'] for result in results)
     if yahoo:
         members = []
         for name in ("t0_etf_pool_v1", "hk_connect_watch_v1", "daily_etf_execution_watch_v1"):
@@ -186,6 +203,8 @@ def refresh_intraday(*, data_root: Path, end: dt.date, stocks: bool = True,
                     errors.append({"symbol": member["symbol"], "frequency": frequency, "error": str(exc)})
                 time.sleep(0.3)
     summary = {"through": str(end), "completed_requests": len(results),
+               "stock_from": str(stock_from) if stock_from is not None else None,
+               "stock_changed_rows": stock_changed_rows,
                "changed_rows": sum(r["changed_rows"] for r in results), "errors": errors, "results": results}
     output = Path("artifacts/data_quality/intraday")
     output.mkdir(parents=True, exist_ok=True)
@@ -204,10 +223,12 @@ def main() -> None:
     parser.add_argument("--yahoo", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--stock-from", type=dt.date.fromisoformat,
+                        help="Capture only this stock date range; preserve full-history gap tracking")
     args = parser.parse_args()
     end = latest_session(data_root=args.data_root, through=completed_date(args.to, dt.datetime.now(SHANGHAI)))
     result = refresh_intraday(data_root=args.data_root, end=end, stocks=args.stocks,
-                              yahoo=args.yahoo, workers=args.workers, limit=args.limit)
+                              yahoo=args.yahoo, workers=args.workers, limit=args.limit, stock_from=args.stock_from)
     print(json.dumps({k: v for k, v in result.items() if k != "results"}, ensure_ascii=False))
     if result["errors"]:
         raise SystemExit(1)

@@ -182,3 +182,43 @@ def test_missing_old_day_preserves_later_year_without_reporting_completion(monke
     assert json.loads((directory / "coverage.json").read_text())["missing_traded_dates"] == []
     count = len(calls)
     assert intraday._stock_job(args)["changed_rows"] == 0 and len(calls) == count
+
+
+def test_bounded_stock_capture_preserves_historical_gaps(monkeypatch, tmp_path):
+    calls = []
+    day = dt.date(2026, 9, 8)
+    class Connector:
+        def fetch_intraday(self, symbol, start, end):
+            calls.append((start, end))
+            return bao()
+    monkeypatch.setattr(intraday, 'BaostockConnector', Connector)
+    calendar = tmp_path/'clean/trade_calendar/market=SH/data.parquet'
+    calendar.parent.mkdir(parents=True)
+    pl.DataFrame({'date': [day], 'is_open': [True], 'is_half_day': [False]}).write_parquet(calendar)
+    directory = intraday._directory(tmp_path, 'baostock', '600000.SH', '5m')
+    directory.mkdir(parents=True)
+    history = json.dumps({'through': '2020-01-01', 'missing_traded_dates': ['2020-01-02']})
+    (directory/'coverage.json').write_text(history)
+    args = (str(tmp_path), '600000.SH', str(day), [dt.date(2020, 1, 2), day])
+    assert intraday._stock_job(args, start_date=day)['changed_rows'] == 1
+    assert calls == [(day, day)]
+    assert (directory/'coverage.json').read_text() == history
+    recent = json.loads((directory/'recent_coverage.json').read_text())
+    assert recent['from'] == str(day) and recent['through'] == str(day)
+    assert intraday._stock_job(args, start_date=day)['changed_rows'] == 0
+    assert len(calls) == 1
+    # An earlier requested range is not satisfied by the later capture.
+    with pytest.raises(ValueError, match='known traded days'):
+        intraday._stock_job((str(tmp_path), '600000.SH', str(day), [day-dt.timedelta(days=1), day]),
+                           start_date=day-dt.timedelta(days=1))
+    assert calls[-1] == (day-dt.timedelta(days=1), day)
+    assert (directory/'coverage.json').read_text() == history
+
+
+def test_bounded_stock_capture_rejects_invalid_range(tmp_path):
+    with pytest.raises(ValueError, match='start must not exceed'):
+        intraday._stock_job((str(tmp_path), '600000.SH', '2026-09-08', []),
+                           start_date=dt.date(2026, 9, 9))
+    with pytest.raises(ValueError, match='stocks enabled'):
+        intraday.refresh_intraday(data_root=tmp_path, end=dt.date(2026, 9, 8), stocks=False,
+                                  stock_from=dt.date(2026, 9, 8))

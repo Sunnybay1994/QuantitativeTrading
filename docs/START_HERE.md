@@ -70,9 +70,15 @@ D:\Miniforge3\python.exe -m quant.research.follow_multifactor_pipeline --config 
 # 仅分钟数据；BaoStock 单连接串行，首次历史回填时间较长
 D:\Miniforge3\python.exe -m quant.data.intraday --to today
 
+# 有界个股分钟补齐：固定名单前200只，仅查询指定日期，保留历史缺口
+D:\Miniforge3\python.exe -m quant.data.intraday --stock-from 2026-09-11 --to 2026-09-11 --no-yahoo --limit 200
+
 # 只刷新日频（例如分钟历史回填仍在后台运行时）
 D:\Miniforge3\python.exe -m quant.data.refresh --to today --no-intraday
 ```
+
+日常`quant.data.refresh`按配置补最近7个自然日的个股分钟线；历史补缺仍用上面的完整分钟入口。
+个股分钟数据发生变化后，日常入口会重算该日期范围内的分钟因子，随后检查覆盖率。
 
 run 产物在 `artifacts/research/runs/<run_id>/`；`run.json` 有假设、config/code 哈希、结论。
 研究结论一页一个，放 `docs/research/hypotheses/`。

@@ -8,6 +8,10 @@ financial_share_change_notices = "configs/data/share_change_notice_resolutions_2
 etf_config = "configs/research/m2_s2_volatility_target.toml"
 requests_per_minute = 60
 
+[intraday]
+# Daily accumulation is bounded; full historical gap filling remains an explicit intraday command.
+stock_lookback_days = 7
+
 [factors]
 enabled = true
 library = "configs/factors/library"

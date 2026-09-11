@@ -33,9 +33,12 @@ def test_failure_stops_before_etf_refresh(monkeypatch, tmp_path: Path):
                             config=config, now=dt.datetime(2026, 9, 8, 20, tzinfo=refresh.SHANGHAI))
 
 
-def test_refresh_minutes_uses_requested_day_when_mainland_closed(monkeypatch, tmp_path):
+@pytest.mark.parametrize('lookback', [None, 7])
+def test_refresh_minutes_uses_requested_day_when_mainland_closed(monkeypatch, tmp_path, lookback):
     config = tmp_path / "refresh.toml"
     config.write_text('etf_config = "configs/research/m2_s2_volatility_target.toml"')
+    if lookback is not None:
+        config.write_text(config.read_text() + f'\n[intraday]\nstock_lookback_days = {lookback}\n')
     monkeypatch.setattr(refresh, "latest_session", lambda **kw: dt.date(2026, 9, 8))
     monkeypatch.setattr(refresh, "refresh_stocks", lambda **kw: {"new_dates": 0, "new_rows": 0})
     monkeypatch.setattr(refresh, "refresh_etfs", lambda **kw: {"new_rows": 0, "new_bar_rows": 0})
@@ -44,6 +47,7 @@ def test_refresh_minutes_uses_requested_day_when_mainland_closed(monkeypatch, tm
 
     def minutes(**kwargs):
         dates.append(kwargs["end"])
+        assert kwargs.get('stock_from') == (dt.date(2026, 9, 3) if lookback else None)
         return {"changed_rows": 15, "errors": []}
 
     monkeypatch.setattr(refresh, "refresh_intraday", minutes)
@@ -89,7 +93,7 @@ def test_factor_refresh_follows_all_inputs_and_stops_on_minute_error(monkeypatch
     monkeypatch.setattr(refresh, 'refresh_stocks', lambda **kw: {'new_dates': 0, 'new_rows': 0})
     monkeypatch.setattr(refresh, 'refresh_etfs', lambda **kw: {'new_rows': 0, 'new_bar_rows': 0})
     monkeypatch.setattr(refresh, 'refresh_limits', lambda **kw: 0)
-    monkeypatch.setattr(refresh, 'refresh_intraday', lambda **kw: {'errors': minute_errors})
+    monkeypatch.setattr(refresh, 'refresh_intraday', lambda **kw: {'errors': minute_errors, 'stock_changed_rows': 10})
 
     def benchmark(**kwargs):
         calls.append('benchmark')
@@ -97,6 +101,7 @@ def test_factor_refresh_follows_all_inputs_and_stops_on_minute_error(monkeypatch
 
     def factors(**kwargs):
         assert calls == ['benchmark'] and kwargs['end'] == dt.date(2026, 9, 8)
+        assert kwargs['minute_start'] == dt.date(2020, 1, 1)
         calls.append('factors')
         return {'years': [{'year': 2026}], 'message': 'updated'}
 
@@ -182,3 +187,24 @@ def test_input_quality_after_factors_makes_missing_data_visible(monkeypatch, tmp
     result = refresh.run_refresh(to='2026-09-10', data_root=tmp_path, artifact_root=tmp_path,
         config=config, intraday=False)
     assert result['message'] == 'partial' and result['input_quality']['errors']
+
+
+def test_late_stock_minutes_rebuild_only_minute_consumers(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from quant.factors import compute, library
+    from quant.factors.intraday_low_frequency import DAILY_NAMES
+    minute_name = 'minute_' + DAILY_NAMES[0]
+    monkeypatch.setattr(library, 'load_library', lambda *args: [
+        SimpleNamespace(id='daily', expr='adj_close'), SimpleNamespace(id='minute', expr=minute_name)])
+    calls = []
+    def run(**kwargs):
+        calls.append(kwargs)
+        return {'years': [] if len(calls)==1 else [{'year': 2026}], 'factor_count': 2 if len(calls)==1 else 1,
+                'output': 'increment' if len(calls)==1 else 'minute_rebuild'}
+    monkeypatch.setattr(compute, 'run', run)
+    result = refresh.refresh_factors(data_root=tmp_path, artifact_root=tmp_path,
+        config=tmp_path/'refresh.toml', end=dt.date(2026, 9, 11),
+        settings={'library': 'unused', 'start': '2010-01-01'}, minute_start=dt.date(2026, 9, 5))
+    assert len(calls)==2 and calls[1]['selected']=='minute' and calls[1]['rebuild'] is True
+    assert calls[1]['start']==dt.date(2026, 9, 5) and calls[1]['end']==dt.date(2026, 9, 11)
+    assert result['message']=='updated' and result['minute_rebuild']['output']=='minute_rebuild'
