@@ -1,0 +1,36 @@
+[research]
+id = "p6c-calendar-inputs-20260911"
+registered_on = 2026-09-11
+hypothesis = "Replacing only the monthly observation coverage rule with calendar80 restores complete model inputs without changing LightGBM parameters or the other selected factors."
+single_variable = "monthly_observation_coverage_rule"
+source_predictions = "artifacts/models/p4_follow_20260911_01/attempt_0017/predictions"
+source_selection = "artifacts/models/p6c_method_selection_20260911_02"
+historical_evidence = "retrospective_2026_diagnostic_not_unseen_test"
+auto_trade = false
+
+[model]
+test_year = 2026
+method = "lightgbm"
+training_start = 2010-01-01
+training_cutoff = 2025-12-31
+minimum_training_months = 96
+minimum_signal_stocks = 100
+parameters = "unchanged_source_LightGBM"
+factor_selection = "source_2026_fit_with_only_the_registered_replacements"
+
+[replacements]
+amihud_illiquidity_monthly = "amihud_illiquidity_monthly_calendar80_v1"
+free_float_turnover_abnormal_12m = "free_float_turnover_abnormal_12m_calendar80_v1"
+
+[inputs]
+calendar_statistics = ["artifacts/factors/search/p6c_batch01_window02_20260911/training", "artifacts/factors/search/p6c_batch01_window02_20260911/validation"]
+
+[acceptance]
+kind = "input_coverage_repair_only"
+minimum_current_complete_stocks = 100
+conclusion = "RESEARCH_ONLY"
+strategy_admission = "requires_separate_long_term_cost_after_evidence"
+
+[forward]
+start = 2026-09-14
+minimum_observation_months = 12

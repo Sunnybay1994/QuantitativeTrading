@@ -8,16 +8,18 @@ import polars as pl
 
 
 def common_features(*, statistics: Path, factors: list[str], variant: str,
-                    start: dt.date, end: dt.date, minimum_symbols: int) -> pl.DataFrame:
+                    start: dt.date, end: dt.date, minimum_symbols: int,
+                    statistics_sources: dict[str, list[Path]] | None = None) -> pl.DataFrame:
     """Use the battery's already standardized scores, on one shared stock pool."""
     if not factors or len(factors) != len(set(factors)) or minimum_symbols < 1:
         raise ValueError('Require unique model factors and a positive stock minimum')
     frames = []
     keys = ['symbol', 'trade_date']
     for factor in factors:
-        frame = pl.scan_parquet(statistics/'factors'/factor/'monthly_scores.parquet').filter(
+        roots = (statistics_sources or {}).get(factor, [statistics])
+        frame = pl.concat([pl.scan_parquet(root/'factors'/factor/'monthly_scores.parquet').filter(
             pl.col('trade_date').is_between(start, end) & pl.col(variant).is_finite()).select(
-                *keys, pl.col(variant).alias(factor)).collect()
+                *keys, pl.col(variant).alias(factor)).collect() for root in roots])
         if frame.select(keys).is_duplicated().any():
             raise ValueError('Duplicate monthly factor keys')
         frames.append(frame)

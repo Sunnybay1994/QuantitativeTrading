@@ -98,7 +98,8 @@ def run_forecast(*, selection: Path, as_of: dt.date, output: Path, data_root: Pa
         raise ValueError('No signal-date universe is available')
     factors = fit['factors']
     values = read_forward_values(data_root=data_root, factors=factors, as_of=as_of)
-    directions = {factor: json.loads((statistics/'factors'/factor/'statistics.json').read_text(
+    roots = model['research'].get('factor_statistics_sources', {})
+    directions = {factor: json.loads((Path(roots.get(factor, [str(statistics)])[0])/'factors'/factor/'statistics.json').read_text(
         encoding='utf-8'))['definition']['direction'] for factor in factors}
     features, coverage = model_features(universe=universe, values=values, directions=directions,
         settings=settings, factors=factors, variant=model['selection']['variant'], as_of=as_of)

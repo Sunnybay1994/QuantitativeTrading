@@ -14,6 +14,13 @@ def read_forward_values(*, data_root: Path, factors: list[str], as_of: dt.date) 
         .collect() for factor in factors}
 
 
+def read_model_monthly_values(*, data_root: Path, factor: str, dates: list[dt.date]) -> pl.DataFrame:
+    if not dates or len({day.year for day in dates}) != 1:
+        raise ValueError('Require signal dates within one year')
+    return pl.scan_parquet(data_root/'factors'/factor/f'year={dates[0].year}'/'data.parquet').filter(
+        pl.col('trade_date').is_in(dates)).select(pl.col('ts_code').alias('symbol'), 'trade_date', 'value').collect()
+
+
 def read_forward_universe(*, data_root: Path, settings: dict, as_of: dt.date) -> pl.DataFrame:
     sessions = available_sessions(data_root, as_of)
     window = settings['universe']['amount_window_sessions']
