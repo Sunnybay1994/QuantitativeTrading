@@ -1,0 +1,70 @@
+# Full eligible historical pool selected before text scoring; same 120-day horizon and gates.
+# Rubric v2 clarifies current-period attribution and unspecified investment income.
+# Revised after the first ten text-only API samples; no return results used.
+# All evaluation dates, thresholds, scope and signal directions retain v1 values.
+# The functional module implements this contract; existing battery gates remain authoritative.
+version = "p7_text_v2_all"
+provider = "deepseek"
+scope = "configs/data/p7_forecast_scope_all_20260912.json"
+battery = "configs/factors/battery.toml"
+start = 2017-01-01
+end = 2026-08-31
+maximum_age_calendar_days = 120
+availability = "own_publication_date_after_close"
+execution = "next_open_session_or_later"
+same_day_conflicts = "exclude"
+missing_text = "missing_not_zero"
+newer_textless_publication = "invalidate_previous_text"
+report_period_tie_break = "latest_report_period_on_latest_publication_date"
+historical_status_and_liquidity = "existing_battery_universe_on_each_as_of"
+
+[scoring]
+prompt_version = "p7_reason_v2"
+input = "reason_text_only_with_opaque_record_id"
+exclude_prompt_fields = ["symbol", "stock_name", "future_prices", "future_returns", "SUE"]
+evidence = "short_exact_substrings_of_input_for_each_nonzero_score"
+uncertain = "missing_with_reason"
+neutral = "zero_only_when_text_supports_no_relevant_evidence"
+score_values = [0, 1, 2, 3]
+scale = "0 absent; 1 explicit minor; 2 explicit material; 3 explicitly dominant"
+external_model_knowledge = "do_not_use_to_add_facts"
+invalid_json_or_schema = "failed_not_neutral"
+
+[[signals]]
+id = "text_operating_improvement"
+direction = 1
+meaning = "Recurring demand, volume, pricing, product mix, or operating efficiency improvement."
+exclude = "Profit growth numbers alone; nonrecurring gains; unsupported inference."
+
+[[signals]]
+id = "text_nonrecurring_gain_dependency"
+direction = -1
+meaning = "Dependence of positive reported earnings on explicitly nonrecurring gains."
+exclude = "Recurring operations; one-off losses are not positive-gain dependency."
+
+[[signals]]
+id = "text_operating_pressure"
+direction = -1
+meaning = "Explicit recurring demand weakness, cost pressure, pricing pressure, or operational disruption."
+exclude = "Profit decline numbers alone; isolated accounting losses without operating evidence."
+
+[evaluation]
+primary = "existing_battery_raw_and_size_industry_neutral"
+same_support_comparison = true
+numeric_controls = ["forecast_p_change_midpoint", "pit_sue8"]
+numeric_midpoint = "mean_of_finite_p_change_min_and_max_only_if_both_available"
+incremental = "Cross-sectional residual RankIC controlling numeric forecast, SUE, log size and industry."
+control_missing = "Report complete-case coverage; never fill missing SUE or forecasts with zero."
+paired_coverage = "Shared symbol-date intersection for text and numeric comparisons."
+report = ["RankIC", "NW_t", "ICIR", "annual_sign_consistency", "group_monotonicity",
+          "costed_returns_0.5x_1x_2x", "residual_RankIC", "coverage_by_year"]
+minimum_months = 96
+minimum_symbols = 100
+parameter_search = "none"
+text_model_output = "features_only_no_position_or_order_changes"
+
+[time_slices]
+train_end = 2020-12-31
+validation_end = 2023-12-31
+test_end = 2026-08-31
+selection = "Freeze rubric before scoring; no held-out-result revisions."
