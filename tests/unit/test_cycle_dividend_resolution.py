@@ -6,6 +6,19 @@ import pytest
 from quant.data.stock_execution_inputs import ordinary_holder_distributions, resolve_same_day_dividends
 
 
+@pytest.mark.parametrize(('symbol', 'date', 'raw_ratio', 'ordinary_ratio'), [
+    ('600145.SH', dt.date(2016, 3, 18), 2.948, .3),
+    ('000981.SZ', dt.date(2022, 2, 25), 1.482, 1.2291177),
+    ('002323.SZ', dt.date(2022, 1, 6), 1.844, 1.226058),
+])
+def test_partial_restructuring_credits_only_ordinary_allocation(symbol, date, raw_ratio, ordinary_ratio):
+    frame = pl.DataFrame({'symbol': [symbol], 'ex_date': [date],
+                          'div_cash': [0.], 'share_ratio': [raw_ratio]})
+    assert ordinary_holder_distributions(frame)['share_ratio'].item() == ordinary_ratio
+    with pytest.raises(ValueError):
+        ordinary_holder_distributions(frame.with_columns(pl.lit(raw_ratio+.01).alias('share_ratio')))
+
+
 @pytest.mark.parametrize(('symbol', 'date', 'values', 'expected'), [
     ('601601.SH', dt.date(2021, 6, 30), [0.1, 1.3], 1.3),
     ('600188.SH', dt.date(2022, 7, 14), [0.4, 2.0], 2.0),

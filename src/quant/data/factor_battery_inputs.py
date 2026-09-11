@@ -13,13 +13,17 @@ from quant.research.factor_labels import build_next_rebalance_open_labels
 
 
 def read_battery_execution(*, data_root: Path, refresh_config: Path, snapshot: str,
-                           start: dt.date, end: dt.date, symbols: list[str]) -> dict[str, pl.DataFrame]:
+                           start: dt.date, end: dt.date, symbols: list[str],
+                           include_all_dividends: bool = False) -> dict[str, pl.DataFrame]:
     """Read the published execution inputs for one bounded replay."""
     if start > end or not symbols or Path(snapshot).name != snapshot or snapshot in (".", ".."):
         raise ValueError("Invalid battery execution selection")
     folder = data_root / "clean/stock_execution" / snapshot
     result = {name: pl.read_parquet(folder / f"{name}.parquet").filter(pl.col("symbol").is_in(symbols))
-              for name in ("instruments", "dividends", "limits", "suspensions")}
+              for name in ("instruments", "limits", "suspensions")}
+    result["dividends"] = pl.read_parquet(folder / "dividends.parquet")
+    if not include_all_dividends:
+        result["dividends"] = result["dividends"].filter(pl.col("symbol").is_in(symbols))
     if set(result["instruments"]["symbol"]) != set(symbols):
         raise ValueError("Missing battery execution instruments")
     calendar = read_stock_paper_calendar(data_root)

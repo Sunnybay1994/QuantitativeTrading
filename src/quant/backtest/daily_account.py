@@ -23,13 +23,14 @@ def advance(
     cash = float(state["cash"])
     receivables = list(state["receivables"])
     reduction_entitlements = dict(state.get("share_reduction_entitlements", {}))
+    distributions = dict(state.get("share_distribution_entitlements", {}))
     restricted = [r for r in state.get("restricted_shares", []) if r["list_date"] > str(date)]
     for event in dividends.filter(pl.col("ex_date") == date).iter_rows(named=True):
         if event["ann_date"] > date:
             raise ValueError("Dividend announcement is not known on ex-date")
         quantity = holdings.get(event["symbol"], {}).get("quantity", 0)
-        amount = quantity * event["div_cash"]
         ratio = event.get("share_ratio") or 0.0
+        amount = quantity * event["div_cash"]
         if ratio < 0:
             if not -1 < ratio < 0 or amount:
                 raise ValueError("Invalid uncompensated share reduction")
@@ -44,18 +45,31 @@ def advance(
                 # Conservatively round remaining shares down to a whole share.
                 holdings[event["symbol"]]["quantity"] = math.floor(quantity * (1 + ratio) + 1e-9)
             continue
-        if quantity and (amount or ratio):
+        entitled = quantity
+        distribution = distributions.pop(f"{event['symbol']}|{date}", None) if ratio > 0 else None
+        if ratio > 0 and distribution is not None:
+            entitled = distribution["quantity"]
+            amount = entitled * event["div_cash"]
+        if (quantity or entitled) and (amount or ratio):
             previous_session = calendar.filter(
                 pl.col("is_open") & (pl.col("market") == event["symbol"][-2:])
                 & (pl.col("date") < date)
             ).get_column("date").max()
-            if event["record_date"] != previous_session:
-                raise ValueError("Dividend record date requires an earlier holdings snapshot")
+            if event["record_date"] != previous_session and distribution is None:
+                if (ratio > 0 and state.get("started_with_cash") is True
+                        and str(event["record_date"]) < state.get("inception_date", "")):
+                    entitled, amount = 0, 0.0
+                else:
+                    raise ValueError("Dividend record date requires an earlier holdings snapshot")
             if amount:
                 receivables.append({"symbol": event["symbol"], "pay_date": str(event["pay_date"]),
                                     "amount": amount})
             if ratio:
-                added = math.floor(quantity * ratio + 1e-9)
+                added = math.floor(entitled * ratio + 1e-9)
+                if event["symbol"] not in holdings:
+                    if not added:
+                        continue
+                    holdings[event["symbol"]] = {"quantity": 0, "mark_price": distribution["mark_price"]}
                 holdings[event["symbol"]]["quantity"] += added
                 if event.get("adjust_share_price", True):
                     holdings[event["symbol"]]["mark_price"] /= 1 + ratio
@@ -113,9 +127,18 @@ def advance(
                      for r in result.positions.iter_rows(named=True) if r["quantity"] > 0},
         "nav": [*state["nav"], {**nav, "date": str(date)}],
     }
-    # Snapshot only the known delayed reduction use case. Looking up future
-    # settlement dates records quantity; it never changes targets or valuation.
+    for field in ("inception_date", "started_with_cash"):
+        if field in state:
+            next_state[field] = state[field]
+    # Preserve record-date quantities until settlement, even after selling.
+    # Future settlement metadata never changes targets or valuation here.
     if "share_ratio" in dividends.columns:
+        for event in dividends.filter(
+            (pl.col("record_date") == date) & (pl.col("share_ratio") > 0)
+        ).iter_rows(named=True):
+            holding = next_state["holdings"].get(event["symbol"], {})
+            distributions[f"{event['symbol']}|{event['ex_date']}"] = {
+                "quantity": holding.get("quantity", 0), "mark_price": holding.get("mark_price", 0.)}
         for event in dividends.filter(
             (pl.col("record_date") == date) & (pl.col("share_ratio") < 0)
         ).iter_rows(named=True):
@@ -123,6 +146,8 @@ def advance(
             reduction_entitlements[key] = next_state["holdings"].get(event["symbol"], {}).get("quantity", 0)
     if reduction_entitlements:
         next_state["share_reduction_entitlements"] = reduction_entitlements
+    if distributions:
+        next_state["share_distribution_entitlements"] = distributions
     return next_state, result
 
 

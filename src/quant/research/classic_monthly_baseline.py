@@ -150,8 +150,19 @@ def replay(
     *, bars: pl.DataFrame, calendar: pl.DataFrame, instruments: pl.DataFrame,
     targets: pl.DataFrame, dividends: pl.DataFrame, market_states: dict,
     config: dict[str, Any], sessions: list[dt.date], name: str, validate_once: bool = False,
+    account_state: dict[str, Any] | None = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
-    """Use the same cash/receivable/lot account for the strategy and comparator."""
+    """Replay a chunk; update optional account_state only after a successful run.
+
+    Outputs cover this chunk alone. The carried account retains positions,
+    receivables, restricted shares, record-date quantities and cumulative fees.
+    """
+    if not sessions or sessions != sorted(set(sessions)):
+        raise ValueError("Replay requires nonempty ordered sessions")
+    if account_state:
+        previous = calendar.filter(pl.col("is_open") & (pl.col("date") < sessions[0]))["date"].max()
+        if str(previous) != account_state.get("date"):
+            raise ValueError("Replay chunks must continue from the previous exchange session")
     if validate_once:
         bars = Bar1dSchema.validate(bars)
         calendar = TradeCalendarSchema.validate(calendar)
@@ -161,8 +172,11 @@ def replay(
     account_config = {"paper": {"name": name, "auto_trade": False,
                                "initial_cash": config["portfolio"]["initial_cash"]},
                       "costs": config["costs"]}
-    state: dict[str, Any] = {"holdings": {}, "cash": config["portfolio"]["initial_cash"],
-                             "receivables": [], "pending": [], "nav": []}
+    state: dict[str, Any] = copy.deepcopy(account_state) if account_state else {
+        "holdings": {}, "cash": config["portfolio"]["initial_cash"],
+        "receivables": [], "pending": [], "nav": [],
+        "inception_date": str(sessions[0]), "started_with_cash": True}
+    prior_nav_count = len(state["nav"])
     by_date = {key[0]: value for key, value in bars.partition_by("trade_date", as_dict=True).items()}
     target_dates = {key[0]: value for key, value in targets.partition_by("execution_date", as_dict=True).items()}
     empty_bars = bars.head(0)
@@ -221,7 +235,10 @@ def replay(
         BacktestPositionSchema.validate(pl.concat(checked_positions, how="vertical_relaxed"))
         BacktestTradeSchema.validate(pl.concat(trades, how="vertical_relaxed"))
         BacktestRejectionSchema.validate(pl.concat(rejections, how="vertical_relaxed"))
-    return (pl.DataFrame(state["nav"]).with_columns(pl.col("date").str.to_date()),
+    if account_state is not None:
+        account_state.clear()
+        account_state.update(state)
+    return (pl.DataFrame(state["nav"][prior_nav_count:]).with_columns(pl.col("date").str.to_date()),
             pl.concat(trades, how="vertical_relaxed"), pl.concat(rejections, how="vertical_relaxed"))
 
 

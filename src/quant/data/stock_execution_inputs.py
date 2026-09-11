@@ -159,6 +159,18 @@ def resolve_same_day_dividends(frame: pl.DataFrame) -> pl.DataFrame:
 
 def ordinary_holder_distributions(frame: pl.DataFrame) -> pl.DataFrame:
     """Exclude verified restructuring shares that ordinary shareholders do not receive."""
+    for symbol, date, raw_ratio, ordinary_ratio in (
+        ("600145.SH", dt.date(2016, 3, 18), 2.948, .3),
+        ("000981.SZ", dt.date(2022, 2, 25), 1.482, 1.2291177),
+        ("002323.SZ", dt.date(2022, 1, 6), 1.844, 1.226058),
+    ):
+        match = (pl.col("symbol") == symbol) & (pl.col("ex_date") == date)
+        event = frame.filter(match)
+        if event.height and (event.height != 1 or event["share_ratio"].item() != raw_ratio
+                             or event["div_cash"].item() != 0.0):
+            raise ValueError(f"Unexpected ordinary restructuring distribution: {symbol} {date}")
+        frame = frame.with_columns(pl.when(match).then(ordinary_ratio)
+                                   .otherwise(pl.col("share_ratio")).alias("share_ratio"))
     for symbol, date, ratio in (
         ("000035.SZ", dt.date(2012, 12, 3), .2596),
         ("000155.SZ", dt.date(2016, 12, 14), 1.7021276),
