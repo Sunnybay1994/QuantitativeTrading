@@ -18,6 +18,16 @@
 **不要**去读 `docs/archive/` 里的任何东西，除非路线图明确让你去查一个具体数字。那里有约 1,200 份
 2026-07 至 09 期间的任务书/交付/审查/治理文档，它们是这个项目过去两个月停滞的原因，不是知识。
 
+## 订单风险诊断
+
+已有观察账户的持仓与参考订单可以生成只读风险报告：
+
+```powershell
+D:\Miniforge3\python.exe -m quant.execution.order_risk --snapshot artifacts/paper/b32_stock_observation/b32_cv20_buffer75/2026-09-09 --config configs/paper/order_risk_diagnostic_v1_20260911.toml --output artifacts/order_risk/<新目录>
+```
+
+输出`risk.json`与`report.md`，使用信号日已保存的行情、官方限制及历史行业，检查现金、可卖数量、整手、集中度和流动性。执行日市场状态需届时核对；这一步只做诊断，阈值不改变既有观察账户规则。
+
 ## 环境（唯一）
 
 ```powershell
