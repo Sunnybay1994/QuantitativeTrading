@@ -113,9 +113,12 @@ def main() -> None:
     parser.add_argument('--workers', type=int, default=2)
     parser.add_argument('--resume', action='store_true', help='Resume local interrupted factors with annual account checkpoints')
     args = parser.parse_args()
-    print(json.dumps(run_cost_batch(statistics=args.statistics, screen=args.screen, output=args.output,
-                                   data_root=args.data_root, execution_snapshot=args.execution_snapshot,
-                                   existing_runs=args.existing_run, workers=args.workers, resume=args.resume)))
+    result = run_cost_batch(statistics=args.statistics, screen=args.screen, output=args.output,
+                            data_root=args.data_root, execution_snapshot=args.execution_snapshot,
+                            existing_runs=args.existing_run, workers=args.workers, resume=args.resume)
+    print(json.dumps(result))
+    if result['failures'] or result['pending_external_runs']:
+        raise SystemExit(1)
 
 
 if __name__ == '__main__':

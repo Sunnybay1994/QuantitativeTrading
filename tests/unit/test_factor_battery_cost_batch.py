@@ -1,3 +1,5 @@
+import json
+import sys
 import tomllib
 from pathlib import Path
 
@@ -5,6 +7,31 @@ import polars as pl
 import pytest
 
 from quant.research.factor_battery_cost_batch import cost_order, existing_cost_factor, run_cost_batch
+from quant.research import factor_battery_cost_batch as batch_module
+
+
+@pytest.mark.parametrize('state', ['complete', 'failed', 'pending'])
+def test_cli_exit_status_preserves_batch_result_and_resume(monkeypatch, capsys, state):
+    result = {'completed_runs': {'done': 'saved'},
+              'failures': {'failed': 'missing inputs'} if state == 'failed' else {},
+              'pending_external_runs': {'waiting': 'external'} if state == 'pending' else {}}
+
+    def run(**kwargs):
+        assert kwargs['resume'] is True
+        assert kwargs['existing_runs'] == [Path('external')]
+        return result
+
+    monkeypatch.setattr(batch_module, 'run_cost_batch', run)
+    monkeypatch.setattr(sys, 'argv', ['cost_batch', '--statistics', 'statistics', '--screen', 'screen',
+                                    '--output', 'output', '--execution-snapshot', 'snapshot',
+                                    '--existing-run', 'external', '--resume'])
+    if state == 'complete':
+        batch_module.main()
+    else:
+        with pytest.raises(SystemExit) as error:
+            batch_module.main()
+        assert error.value.code == 1
+    assert json.loads(capsys.readouterr().out) == result
 
 
 def test_cost_order_prioritizes_passes_then_primary_icir_and_keeps_rejections():
