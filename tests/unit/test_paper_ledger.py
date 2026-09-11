@@ -183,6 +183,23 @@ def test_slippage_cannot_push_a_fill_outside_the_daily_band():
     assert etf_session_states(bars, kwargs["dividends"], slippage=0.001)[(D2, SYMBOL)].at_upper_limit
 
 
+def test_restructuring_bonus_does_not_adjust_prior_mark():
+    kwargs, state = inputs()
+    kwargs["instruments"] = kwargs["instruments"].with_columns(pl.lit("STOCK").alias("instrument_type"))
+    kwargs["dividends"] = kwargs["dividends"].with_columns(
+        pl.lit(0.0).alias("div_cash"), pl.lit(.05).alias("share_ratio"),
+        pl.lit(D3).alias("share_list_date"), pl.lit(False).alias("adjust_share_price"))
+    kwargs["bars"] = kwargs["bars"].filter(pl.col("trade_date") < D2)
+    kwargs["market_states"] = {(d, SYMBOL): DailyMarketState(suspended=True) for d in (D2, D3)}
+    state, _ = advance(date=D2, state=state, **kwargs)
+    assert state["holdings"][SYMBOL]["quantity"] == 105
+    assert state["holdings"][SYMBOL]["mark_price"] == 10.
+    assert state["nav"][-1]["equity"] == 1150.
+    assert state["restricted_shares"][0]["quantity"] == 5
+    state, _ = advance(date=D3, state=state, **kwargs)
+    assert state["restricted_shares"] == []
+
+
 def test_bonus_shares_cannot_be_sold_before_listing():
     kwargs, state = inputs()
     kwargs["instruments"] = kwargs["instruments"].with_columns(pl.lit("STOCK").alias("instrument_type"))

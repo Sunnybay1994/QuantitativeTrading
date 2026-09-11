@@ -49,3 +49,15 @@ def test_restructuring_does_not_credit_investor_or_creditor_shares(symbol, date,
     assert ordinary_holder_distributions(frame)['share_ratio'].item() == 0.
     with pytest.raises(ValueError):
         ordinary_holder_distributions(frame.with_columns(pl.lit(ratio+.01).alias('share_ratio')))
+
+
+def test_jianrui_ordinary_shares_use_confirmed_completion_bound():
+    frame = pl.DataFrame({'symbol': ['300116.SZ'], 'ex_date': [dt.date(2020, 4, 1)],
+        'record_date': [dt.date(2020, 3, 31)], 'share_list_date': [None],
+        'div_cash': [0.], 'share_ratio': [.85]})
+    row = ordinary_holder_distributions(frame).row(0, named=True)
+    assert row['share_ratio'] == .05
+    assert row['share_list_date'] == dt.date(2020, 6, 8)
+    assert row['adjust_share_price'] is False
+    with pytest.raises(ValueError):
+        ordinary_holder_distributions(frame.with_columns(pl.lit(.86).alias('share_ratio')))

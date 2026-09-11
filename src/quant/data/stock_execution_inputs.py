@@ -177,7 +177,20 @@ def ordinary_holder_distributions(frame: pl.DataFrame) -> pl.DataFrame:
                              or event["div_cash"].item() != 0.0):
             raise ValueError(f"Unexpected restructuring distribution: {symbol} {date}")
         frame = frame.with_columns(pl.when(match).then(0.0).otherwise(pl.col("share_ratio")).alias("share_ratio"))
-    return frame
+    match = (pl.col("symbol") == "300116.SZ") & (pl.col("ex_date") == dt.date(2020, 4, 1))
+    event = frame.filter(match)
+    if event.height:
+        if (event.height != 1 or event["share_ratio"].item() != .85
+                or event["div_cash"].item() != 0.0
+                or event["record_date"].item() != dt.date(2020, 3, 31)):
+            raise ValueError("Unexpected Jianrui restructuring distribution")
+        # Ordinary holders receive 0.5 per 10, not the estate's 8.5 per 10.
+        # June 5 confirms completion; conservatively release next session.
+        frame = frame.with_columns(
+            pl.when(match).then(.05).otherwise(pl.col("share_ratio")).alias("share_ratio"),
+            pl.when(match).then(dt.date(2020, 6, 8)).otherwise(pl.col("share_list_date")).alias("share_list_date"),
+        )
+    return frame.with_columns((~match).alias("adjust_share_price"))
 
 
 def prepare_stock_execution_inputs(

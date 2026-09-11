@@ -57,7 +57,8 @@ def advance(
             if ratio:
                 added = math.floor(quantity * ratio + 1e-9)
                 holdings[event["symbol"]]["quantity"] += added
-                holdings[event["symbol"]]["mark_price"] /= 1 + ratio
+                if event.get("adjust_share_price", True):
+                    holdings[event["symbol"]]["mark_price"] /= 1 + ratio
                 listing = event["share_list_date"]
                 if listing is None or listing < date:
                     raise ValueError("Invalid share distribution listing date")
