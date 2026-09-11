@@ -1,0 +1,15 @@
+# Independent rehearsal; does not change the frozen observation accounts.
+mode = "rehearsal"
+auto_trade = false
+halt = false
+sell_only = false
+cost_config = "configs/paper/b32_stock_observation_20260909.toml"
+refresh_config = "configs/data/refresh.toml"
+liquidity_sessions = 20
+
+[limits]
+cash_buffer = 0.02
+single_stock_weight = 0.10
+industry_weight = 0.30
+participation_rate = 0.05
+maximum_liquidation_days = 5.0

@@ -28,7 +28,7 @@ D:\Miniforge3\python.exe -m quant.execution.order_risk --snapshot artifacts/pape
 
 输出`risk.json`与`report.md`，使用信号日已保存的行情、官方限制及历史行业，检查现金、可卖数量、整手、集中度和流动性。现金不足、超卖或非整手订单会停止资金和持仓预测，报告保留需修正项目。执行日市场状态需届时核对；这一步只做诊断，阈值不改变既有观察账户规则。
 
-手工成交与现金事件可用`quant.execution.manual_fills`导入新账本，去重并与同日持仓核对；`quant.execution.manual_nav`逐日处理公司行动、收盘估值和资金流调整，见[输入格式与演练](research/手工成交导入与对账_20260911.md)。
+手工成交与现金事件可用`quant.execution.manual_fills`导入新账本，去重并与同日持仓核对；`quant.execution.manual_nav`逐日处理公司行动、收盘估值和资金流调整；`quant.execution.manual_orders`把收盘账本与完整目标快照接成下一开市日订单演练，并拦下风险超限清单，见[输入格式与演练](research/手工成交导入与对账_20260911.md)。
 
 ## 环境（唯一）
 
