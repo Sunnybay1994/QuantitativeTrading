@@ -1,5 +1,9 @@
 import datetime as dt
 
+import pytest
+
+from quant.data.connectors.cninfo_announcements import AnnouncementSetChanged
+
 from quant.data.collect_financial_disclosures import report_requests
 from quant.data import collect_financial_disclosures as collector
 
@@ -57,3 +61,44 @@ def test_collector_splits_days_before_pagination_and_reuses_completed_scan(tmp_p
     result = collector.collect(**args)
     assert len(calls) == 3 and result['source_rows'] == 3 and len(result['requests']) == 1
     assert collector.collect(**args) == result and len(calls) == 3
+
+
+def test_changed_day_retries_without_mixing_partial_rows(tmp_path, monkeypatch):
+    attempts = []
+    day = dt.date(2026, 9, 11)
+    def pages(start, end, **kwargs):
+        attempts.append(start)
+        yield {'attempt': len(attempts)}, [{'announcementId': 'old' if len(attempts)==1 else 'new'}]
+        if len(attempts)==1:
+            raise AnnouncementSetChanged('new release arrived')
+    monkeypatch.setattr(collector, 'announcement_pages', pages)
+    monkeypatch.setattr(collector.time, 'sleep', lambda seconds: None)
+    result = collector.collect(start=day, end=day, data_root=tmp_path/'data', output=tmp_path/'run')
+    assert len(attempts)==2 and result['source_rows']==1
+    import polars as pl
+    assert pl.read_parquet(result['raw_paths'][0])['announcementId'].to_list()==['new']
+    assert len(list((tmp_path/'data/raw').rglob('*.parquet')))==2
+
+
+def test_retry_exhaustion_preserves_complete_days_for_restart(tmp_path, monkeypatch):
+    calls = []
+    first, second = dt.date(2026,9,10), dt.date(2026,9,11)
+    fail = True
+    def pages(start, end, **kwargs):
+        calls.append(start)
+        yield {'day': str(start)}, [{'announcementId': str(start)}]
+        if start==second and fail:
+            raise AnnouncementSetChanged('still changing')
+    monkeypatch.setattr(collector, 'announcement_pages', pages)
+    monkeypatch.setattr(collector.time, 'sleep', lambda seconds: None)
+    args=dict(start=first,end=second,data_root=tmp_path/'data',output=tmp_path/'run')
+    with pytest.raises(AnnouncementSetChanged):
+        collector.collect(**args)
+    assert calls==[first,second,second,second]
+    assert not (tmp_path/'run/summary.json').exists()
+    assert (tmp_path/'run/days/2026-09-10.json').exists()
+    assert not (tmp_path/'run/days/2026-09-11.json').exists()
+    fail=False
+    result=collector.collect(**args)
+    assert calls==[first,second,second,second,second]
+    assert result['source_rows']==2

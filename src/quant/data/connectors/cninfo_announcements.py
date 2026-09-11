@@ -8,6 +8,10 @@ from typing import Any, Iterator
 import requests
 
 
+class AnnouncementSetChanged(ValueError):
+    """The publisher changed a result set while it was being paged."""
+
+
 def download_document(relative: str, *, session: Any = None) -> bytes:
     """Fetch one public PDF with a bounded response; callers append it to raw."""
     if not re.fullmatch(r'finalpage/[0-9-]+/[0-9]+\.[pP][dD][fF]', relative):
@@ -69,7 +73,7 @@ def announcement_pages(
         if type(total) is not int or total < 0:
             raise ValueError("missing or invalid announcement count")
         if expected is not None and total != expected:
-            raise ValueError("announcement count changed during pagination; retry window")
+            raise AnnouncementSetChanged("announcement count changed during pagination; retry window")
         expected = total
         rows = body.get("announcements")
         if rows is None and total == 0:
