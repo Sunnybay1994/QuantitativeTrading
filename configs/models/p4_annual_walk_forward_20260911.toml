@@ -5,8 +5,18 @@ registered_on = 2026-09-11
 historical_evidence = "retrospective_annual_walk_forward_not_an_unseen_holdout"
 statistics_source = "artifacts/factors/battery_statistics_20260831_20260911"
 battery_config = "configs/factors/battery.toml"
-cost_root = "artifacts/factors/battery_cost_batch_20260911"
-cost_runs = ["artifacts/factors/battery_costs_alpha101_001_20260911_v2", "artifacts/factors/battery_costs_alpha158_corr10_20260911"]
+cost_root = "artifacts/factors/battery_cost_batch_20260911_02"
+cost_runs = [
+  "artifacts/factors/battery_costs_alpha101_001_20260911_v2",
+  "artifacts/factors/battery_costs_alpha158_corr10_20260911",
+  "artifacts/factors/battery_cost_batch_20260911/alpha101_013",
+  "artifacts/factors/battery_cost_batch_20260911/alpha101_016",
+  "artifacts/factors/battery_cost_batch_20260911/alpha101_040",
+  "artifacts/factors/battery_cost_batch_20260911/alpha101_044",
+  "artifacts/factors/battery_cost_batch_20260911/alpha158_corr5",
+  "artifacts/factors/battery_cost_batch_20260911/ivol_ff3_60",
+  "artifacts/factors/battery_cost_batch_20260911/max_daily_return_20",
+]
 stock_benchmarks = "artifacts/factors/battery_stock_benchmarks_20260911"
 random_seed = 20260911
 
