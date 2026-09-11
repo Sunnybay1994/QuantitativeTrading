@@ -1,0 +1,5 @@
+id = "text_operating_improvement"
+expr = "text_operating_improvement"
+family = "forecast_text"
+direction = 1
+source_ref = "configs/factors/p7_text_evaluation_v1.toml"

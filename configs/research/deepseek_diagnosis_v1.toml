@@ -1,0 +1,11 @@
+# Same official peak-price snapshot as P7; larger bounded output for cited diagnostics.
+model = "deepseek-flash"
+model_epoch = "DeepSeek-V4.1-Flash-docs-20260912"
+pricing_checked = 2026-09-12
+input_usd_per_million = 0.30
+output_usd_per_million = 1.20
+max_tokens = 2048
+max_input_bytes = 60000
+max_attempts = 2
+timeout_seconds = 60.0
+retry_delay_seconds = 2.0

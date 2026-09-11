@@ -1,0 +1,5 @@
+id = "text_nonrecurring_gain_dependency"
+expr = "text_nonrecurring_gain_dependency"
+family = "forecast_text"
+direction = -1
+source_ref = "configs/factors/p7_text_evaluation_v1.toml"

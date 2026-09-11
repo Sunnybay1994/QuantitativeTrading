@@ -85,6 +85,32 @@ def build_corpus(inputs: list[Path], output: Path) -> dict:
     return summary
 
 
+def monthly_coverage(frame: pl.DataFrame, *, start: dt.date, end: dt.date) -> pl.DataFrame:
+    """Describe month-end availability, not trading signals or return performance."""
+    if start > end:
+        raise ValueError('Reversed coverage dates')
+    rows = []
+    month = start.replace(day=1)
+    while month <= end:
+        following = (month.replace(year=month.year + 1, month=1) if month.month == 12
+                     else month.replace(month=month.month + 1))
+        cutoff = min(following - dt.timedelta(days=1), end)
+        known = frame.filter(pl.col('publication_date') <= cutoff)
+        # A newer textless publication invalidates older text for this coverage estimate.
+        latest = known.sort('ts_code', 'publication_date', 'report_period').unique(
+            subset=['ts_code'], keep='last', maintain_order=True,
+        )
+        for days in (30, 90, 120):
+            recent = latest.filter(pl.col('publication_date') > cutoff - dt.timedelta(days=days))
+            usable = recent.filter(pl.col('reason_text').is_not_null()
+                                   & ~pl.col('same_day_conflict'))
+            rows.append({'as_of': cutoff, 'max_age_days': days,
+                         'recent_forecast_symbols': recent.height,
+                         'reason_symbols': usable.height})
+        month = following
+    return pl.DataFrame(rows)
+
+
 def collect(*, symbols: list[str], start: dt.date, end: dt.date, output: Path,
             data_root: Path, interval: float = 1.3,
             apis: tuple[str, ...] = ('forecast', 'express')) -> dict:
@@ -138,9 +164,22 @@ def main() -> None:
     parser.add_argument('--from', dest='start', type=dt.date.fromisoformat)
     parser.add_argument('--to', dest='end', type=dt.date.fromisoformat)
     parser.add_argument('--build-from', nargs='+', type=Path, help='Existing raw forecast files')
+    parser.add_argument('--coverage-from', type=Path, help='Normalized forecast parquet')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--data-root', type=Path, default=Path('data'))
     args = parser.parse_args()
+    if args.coverage_from:
+        if not args.start or not args.end or args.build_from:
+            parser.error('Coverage requires --from and --to, without --build-from')
+        result = monthly_coverage(pl.read_parquet(args.coverage_from),
+                                  start=args.start, end=args.end)
+        args.output.mkdir(parents=True, exist_ok=False)
+        result.write_csv(args.output/'monthly_coverage.csv')
+        print(result.group_by('max_age_days').agg(
+            (pl.col('reason_symbols') >= 100).sum().alias('months_at_least_100'),
+            pl.col('reason_symbols').min().alias('minimum_symbols'),
+        ).sort('max_age_days'))
+        return
     if args.build_from:
         print(json.dumps(build_corpus(args.build_from, args.output)), flush=True)
         return

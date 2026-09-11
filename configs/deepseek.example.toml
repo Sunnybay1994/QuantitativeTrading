@@ -1,0 +1,3 @@
+# Copy to ignored configs/deepseek.local.toml and fill locally; never commit the real key.
+[deepseek]
+api_key = ""

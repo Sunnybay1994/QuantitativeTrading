@@ -3,7 +3,9 @@ import datetime as dt
 import polars as pl
 import pytest
 
-from quant.data.forecast_text_corpus import normalize_forecasts, select_historical_scope
+from quant.data.forecast_text_corpus import (
+    monthly_coverage, normalize_forecasts, select_historical_scope,
+)
 
 
 def sample():
@@ -50,3 +52,17 @@ def test_historical_scope_keeps_delisted_and_excludes_late_listings(tmp_path):
     }).write_parquet(source)
     selected = select_historical_scope([source], tmp_path/'scope.json', count=2)
     assert selected['symbols'] == ['600001.SH', '600002.SH']
+
+
+def test_coverage_never_uses_future_text_or_keeps_superseded_text():
+    source = sample().with_columns(pl.Series('change_reason', ['old reason', None]))
+    result = monthly_coverage(normalize_forecasts(source),
+                              start=dt.date(2024, 12, 1), end=dt.date(2025, 1, 31))
+    assert result.filter(pl.col('as_of') == dt.date(2024, 12, 31))['reason_symbols'].to_list() == [1]*3
+    assert result.filter(pl.col('as_of') == dt.date(2025, 1, 31))['reason_symbols'].to_list() == [0]*3
+
+
+def test_coverage_expires_old_text():
+    result = monthly_coverage(normalize_forecasts(sample().head(1)),
+                              start=dt.date(2025, 5, 1), end=dt.date(2025, 5, 31))
+    assert result['reason_symbols'].to_list() == [0]*3
