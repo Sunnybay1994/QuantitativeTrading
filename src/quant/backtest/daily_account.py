@@ -112,6 +112,7 @@ def advance(
     *, date: dt.date, state: dict[str, Any], bars: pl.DataFrame,
     calendar: pl.DataFrame, instruments: pl.DataFrame, market_states: dict,
     dividends: pl.DataFrame, config: dict[str, Any],
+    scheduled_orders: pl.DataFrame | None = None,
 ) -> tuple[dict[str, Any], Any]:
     """Settle prior holdings, recognize dividends, then execute yesterday's targets."""
     paper = config["paper"]
@@ -123,6 +124,18 @@ def advance(
     reduction_entitlements = prepared["share_reduction_entitlements"]
     distributions = prepared["share_distribution_entitlements"]
     pending = state["pending"] if paper.get("enabled", True) else []
+    if scheduled_orders is not None:
+        if pending:
+            raise ValueError('Use either pending targets or fixed share orders')
+        scheduled_orders = scheduled_orders.with_columns(
+            *[pl.col(column).str.to_date() if scheduled_orders.schema[column] == pl.String
+              else pl.col(column) for column in ('as_of', 'execution_date')])
+        if scheduled_orders.height and scheduled_orders['execution_date'].unique().to_list() != [date]:
+            raise ValueError('Fixed share orders belong to another trading session')
+        if not paper.get('enabled', True):
+            scheduled_orders = scheduled_orders.clear()
+        elif paper.get('sell_only', False):
+            scheduled_orders = scheduled_orders.filter(pl.col('side') == 'SELL')
     targets = pl.DataFrame(schema={"as_of": pl.Date, "strategy": pl.String,
         "strategy_version": pl.String, "symbol": pl.String, "weight": pl.Float64,
         "execution_date": pl.Date})
@@ -151,7 +164,7 @@ def advance(
         instruments=instruments, market_states=market_states, initial_cash=cash,
         etf_costs=EtfCostModel(**config["costs"]["etf"]),
         stock_costs=AShareCostModel(**config["costs"]["a_share"]),
-        strategy=paper["name"], initial_positions=initial,
+        strategy=paper["name"], initial_positions=initial, scheduled_orders=scheduled_orders,
     )
     nav = result.nav.row(-1, named=True)
     nav["receivable"] = sum(r["amount"] for r in receivables)

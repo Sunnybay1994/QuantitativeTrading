@@ -15,6 +15,8 @@ from typing import Annotated
 import pandera.polars as pa
 import polars as pl
 
+from quant.domain.backtest_rejections import BacktestRejectionSchema as BacktestRejectionSchema
+
 from quant.domain.enums import (
     EntitlementLegState,
     EntitlementPostingType,
@@ -2094,59 +2096,6 @@ class BacktestPositionSchema(pa.DataFrameModel):
                 ).all()
                 & _unique_expr(["strategy", "date", "symbol"])
             ).alias("position_valid")
-        )
-
-
-class BacktestRejectionSchema(pa.DataFrameModel):
-    """日频回测的完整执行拒绝证据。"""
-
-    strategy: str  # type: ignore[assignment]
-    date: pl.Date
-    symbol: str = pa.Field(str_matches=SYMBOL_PATTERN)
-    side: str = pa.Field(isin=["BUY", "SELL"])
-    reason: str = pa.Field(
-        isin=[
-            "SUSPENDED",
-            "BUY_AT_UPPER_LIMIT",
-            "SELL_AT_LOWER_LIMIT",
-            "T_PLUS_ONE",
-        ]
-    )
-    requested_quantity: int = pa.Field(gt=0)
-    rejected_quantity: int = pa.Field(gt=0)
-    reference_price: float = pa.Field(gt=0)
-
-    class Config:
-        strict = True
-        coerce = True
-
-    @pa.dataframe_check
-    def rejection_valid(  # type: ignore[misc]
-        cls, data: pa.PolarsData
-    ) -> pl.LazyFrame:
-        side_matches = (
-            (pl.col("reason") == "SUSPENDED")
-            | (
-                (pl.col("reason") == "BUY_AT_UPPER_LIMIT")
-                & (pl.col("side") == "BUY")
-            )
-            | (
-                pl.col("reason").is_in(
-                    ["SELL_AT_LOWER_LIMIT", "T_PLUS_ONE"]
-                )
-                & (pl.col("side") == "SELL")
-            )
-        )
-        return data.lazyframe.select(
-            (
-                (
-                    pl.col("requested_quantity")
-                    == pl.col("rejected_quantity")
-                ).all()
-                & side_matches.all()
-                & pl.col("reference_price").is_finite().all()
-                & _unique_expr(["strategy", "date", "symbol", "side"])
-            ).alias("rejection_valid")
         )
 
 

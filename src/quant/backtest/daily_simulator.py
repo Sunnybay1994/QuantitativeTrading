@@ -73,6 +73,7 @@ def simulate_daily_targets(
     stock_costs: AShareCostModel,
     strategy: str,
     initial_positions: pl.DataFrame | None = None,
+    scheduled_orders: pl.DataFrame | None = None,
 ) -> DailySimulationResult:
     """按权威 session 模拟股票/ETF 目标权重，显式保留拒单证据。"""
     if (
@@ -93,6 +94,9 @@ def simulate_daily_targets(
     )
     clean_instruments = InstrumentSchema.validate(instruments).sort("symbol")
     clean_targets = _validate_targets(scheduled_targets, strategy=strategy)
+    clean_orders = _validate_orders(scheduled_orders)
+    if clean_orders.height and clean_targets.height:
+        raise ValueError("Use either target weights or fixed share orders")
 
     if clean_bars.select("symbol", "trade_date").is_duplicated().any():
         raise ValueError("BACKTEST_TRADABLE_BAR_MISSING")
@@ -111,11 +115,15 @@ def simulate_daily_targets(
             "execution_date", as_dict=True, maintain_order=True
         ).items()
     }
+    orders_by_date = {
+        date: frame for (date,), frame in clean_orders.partition_by(
+            "execution_date", as_dict=True, maintain_order=True).items()
+    }
     positions = _load_initial_positions(
         initial_positions,
         instrument_rows=instrument_rows,
     )
-    target_symbols = set(clean_targets.get_column("symbol").to_list())
+    target_symbols = set(clean_targets.get_column("symbol").to_list()) | set(clean_orders['symbol'])
     _require_instrument_policy(target_symbols, instrument_rows)
     open_pairs = {
         (row["market"], row["date"])
@@ -127,7 +135,7 @@ def simulate_daily_targets(
         (row["market"], row["date"])
         for row in clean_calendar.iter_rows(named=True)
     }
-    for row in clean_targets.iter_rows(named=True):
+    for row in [*clean_targets.iter_rows(named=True), *clean_orders.iter_rows(named=True)]:
         instrument = instrument_rows[row["symbol"]]
         if not _instrument_active(instrument, row["execution_date"]):
             raise ValueError("BACKTEST_INSTRUMENT_POLICY_MISSING")
@@ -199,6 +207,7 @@ def simulate_daily_targets(
             _settle_previous_session(positions)
 
         target_frame = targets_by_date.get(date)
+        order_frame = orders_by_date.get(date)
         batch_weights = (
             dict(target_frame.select("symbol", "weight").iter_rows())
             if target_frame is not None
@@ -211,6 +220,8 @@ def simulate_daily_targets(
         }
         if batch_weights is not None:
             relevant_symbols.update(batch_weights)
+        if order_frame is not None:
+            relevant_symbols.update(order_frame['symbol'])
 
         _require_instrument_policy(relevant_symbols, instrument_rows)
         _require_active_instruments(
@@ -218,7 +229,7 @@ def simulate_daily_targets(
             instrument_rows,
             date=date,
         )
-        if target_frame is not None and any(
+        if (target_frame is not None or order_frame is not None) and any(
             instrument_rows[symbol]["market"] not in open_markets
             for symbol in relevant_symbols
         ):
@@ -233,7 +244,7 @@ def simulate_daily_targets(
             open_markets=open_markets,
         )
 
-        if batch_weights is not None:
+        if batch_weights is not None or order_frame is not None:
             for symbol in relevant_symbols:
                 position = positions.setdefault(
                     symbol,
@@ -243,7 +254,8 @@ def simulate_daily_targets(
                         mark=references[symbol]["open"],
                     ),
                 )
-                position.target_weight = float(batch_weights.get(symbol, 0.0))
+                if batch_weights is not None:
+                    position.target_weight = float(batch_weights.get(symbol, 0.0))
 
             open_equity_decimal = Decimal(str(cash)) + sum(
                 (
@@ -258,13 +270,31 @@ def simulate_daily_targets(
                 raise ValueError("BACKTEST_ACCOUNT_INVARIANT_BROKEN")
             desired = {
                 symbol: _round_lot(
-                    float(batch_weights.get(symbol, 0.0)),
+                    float((batch_weights or {}).get(symbol, 0.0)),
                     open_equity_decimal,
                     references[symbol]["open"],
                     int(instrument_rows[symbol]["board_lot"]),
                 )
                 for symbol in relevant_symbols
             }
+            if order_frame is not None:
+                desired = {symbol: positions[symbol].quantity for symbol in relevant_symbols}
+                for order in order_frame.iter_rows(named=True):
+                    symbol, quantity = order['symbol'], order['quantity']
+                    side = OrderSide(order['side'])
+                    lot = int(instrument_rows[symbol]['board_lot'])
+                    reason = None
+                    if side is OrderSide.SELL and quantity > positions[symbol].quantity:
+                        reason = ExecutionRejectReason.INSUFFICIENT_SELLABLE
+                    elif quantity % lot and not (
+                            side is OrderSide.SELL and quantity == positions[symbol].quantity):
+                        reason = ExecutionRejectReason.LOT_CONSTRAINT
+                    if reason is not None:
+                        _append_rejection(rows=rejection_rows, strategy=strategy, date=date,
+                            symbol=symbol, side=side, reason=reason, quantity=quantity,
+                            reference_price=references[symbol]['open'])
+                    else:
+                        desired[symbol] += quantity if side is OrderSide.BUY else -quantity
 
             for symbol in sorted(relevant_symbols):
                 requested = positions[symbol].quantity - desired[symbol]
@@ -343,6 +373,11 @@ def simulate_daily_targets(
                     etf_costs=etf_costs,
                     stock_costs=stock_costs,
                 )
+                if order_frame is not None and quantity < wanted:
+                    _append_rejection(rows=rejection_rows, strategy=strategy, date=date,
+                        symbol=symbol, side=OrderSide.BUY, reason=ExecutionRejectReason.CASH_CONSTRAINT,
+                        quantity=wanted, reference_price=references[symbol]['open'])
+                    rejection_rows[-1]['rejected_quantity'] = wanted - quantity
                 if quantity <= 0:
                     continue
                 cash, fee = _execute(
@@ -426,6 +461,24 @@ def simulate_daily_targets(
         positions=_validate_or_empty_positions(position_rows),
         rejections=_validate_or_empty_rejections(rejection_rows),
     )
+
+
+def _validate_orders(orders: pl.DataFrame | None) -> pl.DataFrame:
+    schema = {'as_of': pl.Date, 'execution_date': pl.Date, 'symbol': pl.String,
+              'side': pl.String, 'quantity': pl.Int64}
+    if orders is None:
+        return pl.DataFrame(schema=schema)
+    if not set(schema).issubset(orders.columns):
+        raise ValueError('Invalid fixed share order columns')
+    clean = orders.select(list(schema))
+    if clean.schema != schema or clean.null_count().sum_horizontal().item():
+        raise ValueError('Invalid fixed share order types or nulls')
+    if clean.select('execution_date', 'symbol').is_duplicated().any():
+        raise ValueError('Only one fixed share order per symbol and session is supported')
+    if clean.filter((pl.col('quantity') <= 0) | ~pl.col('side').is_in(['BUY', 'SELL'])
+                    | (pl.col('as_of') >= pl.col('execution_date'))).height:
+        raise ValueError('Invalid fixed share order date, side or quantity')
+    return clean.sort('execution_date', 'symbol')
 
 
 def _validate_targets(
