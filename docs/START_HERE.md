@@ -79,6 +79,9 @@ D:\Miniforge3\python.exe -m quant.research.run_factor_search --config configs/fa
 # 多因子模型随既有成本结果自动续跑（五分钟检查一次；最多等待24小时）
 D:\Miniforge3\python.exe -m quant.research.follow_multifactor_pipeline --config configs/models/p4_annual_walk_forward_20260911.toml --output artifacts/models/p4_follow_new --resume-from artifacts/models/p4_pipeline_20260911_04_resumed
 
+# 固定三种模型方法按验证RankIC自动选型；仅研究前向观察
+D:\Miniforge3\python.exe -m quant.research.run_strategy_template_selection --config configs/models/p6c_method_selection_20260911.toml --output artifacts/models/<新选型目录>
+
 # 仅分钟数据；BaoStock 单连接串行，首次历史回填时间较长
 D:\Miniforge3\python.exe -m quant.data.intraday --to today
 
