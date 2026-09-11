@@ -20,6 +20,9 @@ def test_report_writes_three_models_and_requires_full_grid_for_double_cost(tmp_p
     rows = [{**one, 'variant': f'{method}_top{top}', 'cost_multiplier': cost, 'mean_invested_fraction': 1.}
             for method in model['models']['methods'] for top in (50, 100) for cost in (.5, 1., 2.)]
     (run/'summary.json').write_text(json.dumps({'factor': model['research']['id'], 'rows': rows}, default=str))
+    coverage = pl.DataFrame({'test_year': [2024, 2024], 'available_stocks': [100, 0],
+        'signal_available': [True, False], 'reason': ['available', 'insufficient_complete_feature_rows']})
+    coverage.write_parquet(run/'model_signal_coverage.parquet')
     comparisons = [{'variant': row['variant'], 'cost_multiplier': row['cost_multiplier'],
                      'benchmark': name, **compare_nav(nav, baseline)}
                     for row in rows for name, baseline in baselines.items()]
@@ -35,10 +38,12 @@ def test_report_writes_three_models_and_requires_full_grid_for_double_cost(tmp_p
     assert len(result['conclusions']) == 3
     assert pl.read_parquet(output/'cost_metrics.parquet').height == 18
     assert pl.read_parquet(output/'benchmark_comparisons.parquet').height == 54
+    assert pl.read_parquet(output/'model_signal_coverage.parquet').equals(coverage)
     for method in model['models']['methods']:
         report = (output/method/'report.md').read_text(encoding='utf-8')
         assert f'# {method}：PAPER_CANDIDATE' in report
         assert '2024_early_year_selloff' in report
+        assert '|2024|2|1|共同预测截面不足=1|' in report
 
     def missing_cash_start(folder, variant, cost, end):
         if folder == run and variant == 'equal_z_top50' and cost == 2.:

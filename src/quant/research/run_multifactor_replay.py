@@ -12,6 +12,28 @@ from quant.research.factor_battery_costs import run_cost_plans
 from quant.research.model_training_models import buffered_model_targets
 
 
+def model_signal_coverage(scores: pl.DataFrame, *, annual_fits: list[dict], model: dict,
+                          sessions: tuple[dt.date, ...]) -> pl.DataFrame:
+    """Explain missing monthly signals on the actual execution calendar."""
+    counts = dict(scores.group_by('trade_date').agg(pl.col('symbol').n_unique()).iter_rows())
+    fits = {row['test_year']: row for row in annual_fits}
+    walk = model['walk_forward']
+    rows = []
+    for signal, execution in zip(sessions, sessions[1:]):
+        if not walk['test_start'] <= execution <= walk['test_end']:
+            continue
+        if signal >= walk['test_start'] and signal.month == execution.month:
+            continue
+        available = counts.get(signal, 0)
+        ready = available >= model['models']['minimum_signal_stocks']
+        reason = 'available' if ready else fits[execution.year].get(
+            'reason', 'insufficient_complete_feature_rows')
+        rows.append({'test_year': execution.year, 'signal_date': signal,
+                     'execution_date': execution, 'available_stocks': available,
+                     'signal_available': ready, 'reason': reason})
+    return pl.from_dicts(rows)
+
+
 def model_target_plans(scores: pl.DataFrame, *, model: dict, sessions: tuple[dt.date, ...]) -> dict:
     portfolio = model['portfolio']
     return {f'{method}_top{top_k}': (f'p4_{method}_top{top_k}', buffered_model_targets(
@@ -47,6 +69,8 @@ def run_model_replay(*, predictions: Path, benchmarks: Path, output: Path, data_
     output.mkdir(parents=True, exist_ok=False)
     (output/'model.toml').write_bytes(model_bytes)
     (output/'battery.toml').write_bytes(battery_bytes)
+    model_signal_coverage(scores, annual_fits=summary['annual_fits'], model=model,
+                          sessions=sessions).write_parquet(output/'model_signal_coverage.parquet')
     return run_cost_plans(settings=settings, plans=plans, sessions=sessions, output=output,
         data_root=data_root, execution_snapshot=snapshot, factor=model['research']['id'], start=walk['test_start'])
 

@@ -12,7 +12,8 @@ from quant.reporting.multifactor_assessment import assess_model
 from quant.research.factor_battery_cost_report import collect_cost_report, load_cost_history
 
 
-def render_model_report(method: str, *, rows: list[dict], assessment: dict, model: dict) -> str:
+def render_model_report(method: str, *, rows: list[dict], assessment: dict, model: dict,
+                        coverage: list[dict] | None = None) -> str:
     one = assessment['primary']
     rules = ', '.join(name for name, passed in one['checks'].items() if not passed) or '全部通过'
     lines = [f'# {method}：{one["conclusion"]}', '',
@@ -41,6 +42,21 @@ def render_model_report(method: str, *, rows: list[dict], assessment: dict, mode
     for row in one['stress']:
         lines.append(f"|{row['window']}|{row['model_return']:.2%}|{row['benchmark_return']:.2%}|"
             f"{row['model_max_drawdown']:.2%}|{row['benchmark_max_drawdown']:.2%}|{row['not_worse']}|")
+    if coverage is not None:
+        lines += ['', '|执行年份|月度信号数|有足够预测股票|缺失原因与次数|', '|---|---:|---:|---|']
+        for year in sorted({row['test_year'] for row in coverage}):
+            annual = [row for row in coverage if row['test_year'] == year]
+            reasons = {}
+            for row in annual:
+                if not row['signal_available']:
+                    reasons[row['reason']] = reasons.get(row['reason'], 0) + 1
+            labels = {'no_admitted_factors': '历史合格因子不足',
+                      'no_complete_training_history': '共同训练样本不足',
+                      'insufficient_complete_feature_rows': '共同预测截面不足'}
+            details = '、'.join(f'{labels.get(reason, reason)}={count}'
+                              for reason, count in sorted(reasons.items())) or '无'
+            lines.append(f"|{year}|{len(annual)}|{sum(row['signal_available'] for row in annual)}|{details}|")
+        lines += ['', '信号缺失与实际仓位分别报告；按预注册规则处理缺失，不把空仓收益解释成有效预测。']
     lines += ['', f"年度胜率{one['annual_outperformance_fraction']:.1%}；极端窗口通过"
         f"{one['stress_windows_not_worse']}/4。未满足条件：{rules}。", '',
         '下一步：进入模拟盘第二账户并记录前向收益。' if one['conclusion'] == 'PAPER_CANDIDATE' else
@@ -93,16 +109,21 @@ def report_models(*, run: Path, benchmarks: Path, output: Path, data_root: Path)
         assessments[method] = assessment
     result = {'source_run': str(run.resolve()), 'models': assessments,
               'conclusions': {name: value['primary']['conclusion'] for name, value in assessments.items()}}
+    coverage_path = run/'model_signal_coverage.parquet'
+    coverage = pl.read_parquet(coverage_path) if coverage_path.is_file() else None
     output.mkdir(parents=True, exist_ok=False)
     (output/'model.toml').write_bytes(model_bytes)
     (output/'summary.json').write_text(json.dumps(result, indent=2, default=str), encoding='utf-8')
     pl.from_dicts(report['rows'], infer_schema_length=None).write_parquet(output/'cost_metrics.parquet')
     pl.from_dicts(report['benchmark_comparisons'], infer_schema_length=None).write_parquet(output/'benchmark_comparisons.parquet')
+    if coverage is not None:
+        coverage.write_parquet(output/'model_signal_coverage.parquet')
     for method, assessment in assessments.items():
         folder = output/method
         folder.mkdir()
         rows = [row for row in report['rows'] if row['variant'].startswith(f'{method}_top')]
-        (folder/'report.md').write_text(render_model_report(method, rows=rows, assessment=assessment, model=model),
+        (folder/'report.md').write_text(render_model_report(method, rows=rows, assessment=assessment, model=model,
+                                       coverage=coverage.to_dicts() if coverage is not None else None),
                                        encoding='utf-8')
         (folder/'assessment.json').write_text(json.dumps(assessment, indent=2, default=str), encoding='utf-8')
     return result
