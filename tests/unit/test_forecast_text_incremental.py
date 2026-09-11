@@ -12,7 +12,7 @@ from quant.research.forecast_text_incremental import diagnose_sections, residual
 from quant.research.score_forecast_text import load_design
 
 ROOT = Path(__file__).resolve().parents[2]
-DESIGN = ROOT / "configs/factors/p7_text_evaluation_v1.toml"
+DESIGN = ROOT / "configs/factors/p7_text_evaluation_v2.toml"
 SETTINGS = tomllib.loads((ROOT / "configs/factors/battery.toml").read_text())
 
 

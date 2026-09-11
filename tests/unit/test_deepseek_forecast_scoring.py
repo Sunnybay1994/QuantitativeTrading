@@ -13,7 +13,7 @@ from quant.research.score_forecast_text import load_design, load_settings, run_b
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "configs/research/deepseek_p7_v1.toml"
-DESIGN = ROOT / "configs/factors/p7_text_evaluation_v1.toml"
+DESIGN = ROOT / "configs/factors/p7_text_evaluation_v2.toml"
 REASON = "订单显著增加，成本效率改善。"
 
 
@@ -91,6 +91,12 @@ def test_prompt_is_text_only_and_cache_changes_with_epoch():
     assert user_input["reason_text"] == REASON and len(user_input["record_id"]) == 16
     settings = load_settings(CONFIG)
     assert score_key(REASON, settings) != score_key(REASON, {**settings, "model_epoch": "next"})
+
+
+def test_old_rubric_is_not_silently_scored_with_new_prompt():
+    with pytest.raises(ValueError, match='new rubric version'):
+        load_design(ROOT / 'configs/factors/p7_text_evaluation_v1.toml')
+    assert load_design(DESIGN)['scoring']['prompt_version'] == 'p7_reason_v2'
 
 
 def test_success_reused_without_paying_again(tmp_path):

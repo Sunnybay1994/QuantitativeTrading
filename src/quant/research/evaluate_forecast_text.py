@@ -148,7 +148,7 @@ def main() -> None:
     selection.add_argument("--run", type=Path)
     selection.add_argument("--fixture", type=Path)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--design", type=Path, default=Path("configs/factors/p7_text_evaluation_v1.toml"))
+    parser.add_argument("--design", type=Path, default=Path("configs/factors/p7_text_evaluation_v2.toml"))
     parser.add_argument("--data-root", type=Path, default=Path("data"))
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--execution-snapshot")

@@ -1,0 +1,27 @@
+{
+  "source": "data\\clean\\forecast_text_corpus\\p7_512_20260912_01\\forecasts.parquet",
+  "cases": [
+    {
+      "input_id": "0dae8b49629a5b3f73b6fbd6c0cc01ecd2afc5c1d9909537961e9f0b7334523c",
+      "expected_nonrecurring_status": "uncertain",
+      "expected_nonrecurring_score": null
+    },
+    {
+      "input_id": "3f37258a4899d00f43b0cb3ade46a7bc18902adb782a62d9fe8f377acb357953",
+      "expected_nonrecurring_status": "uncertain",
+      "expected_nonrecurring_score": null
+    },
+    {
+      "input_id": "eda6673329fb520f1a9095dddd2e1e8b47b0c6ce0ed638fafe5e2029fceb0650",
+      "expected_nonrecurring_status": "scored",
+      "expected_nonrecurring_score": 0
+    },
+    {
+      "input_id": "db5fd0a9b206f9d2f0442514514f53edc5104b3acb47acb2a29e61b588c5e799",
+      "expected_nonrecurring_status": "scored",
+      "expected_nonrecurring_score": 3
+    }
+  ],
+  "frozen_before_v2_requests": true,
+  "selection": "Known semantic failures plus explicit current-period positive control; no returns used."
+}

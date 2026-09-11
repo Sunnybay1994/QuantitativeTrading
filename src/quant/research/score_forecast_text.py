@@ -259,7 +259,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path)
     parser.add_argument("--config", type=Path, default=Path("configs/research/deepseek_p7_v1.toml"))
-    parser.add_argument("--design", type=Path, default=Path("configs/factors/p7_text_evaluation_v1.toml"))
+    parser.add_argument("--design", type=Path, default=Path("configs/factors/p7_text_evaluation_v2.toml"))
     parser.add_argument("--output", type=Path)
     parser.add_argument("--cache", type=Path, default=Path("artifacts/research/p7_deepseek_cache.sqlite"))
     parser.add_argument("--execute", action="store_true")
