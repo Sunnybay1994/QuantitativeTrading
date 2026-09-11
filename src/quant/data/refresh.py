@@ -20,6 +20,7 @@ from quant.data.mappers import TushareCalendarMapper
 from quant.data.refresh_etf_prices import refresh as refresh_etfs
 from quant.data.refresh_stocks import refresh as refresh_stocks
 from quant.data.storage import CleanCalendarStore, RawStore
+from quant.data.update_disclosed_financials import refresh_daily as refresh_disclosed_financials
 
 SHANGHAI = dt.timezone(dt.timedelta(hours=8))
 
@@ -74,6 +75,11 @@ def run_refresh(
     minutes = refresh_intraday(data_root=data_root, end=through) if intraday else {}
     benchmark = (refresh_factor_benchmark(data_root=data_root, config=config, end=end)
                  if settings.get("factor_benchmark_snapshot") else {"new_rows": 0})
+    financials = {"message": "disabled", "new_rows": 0}
+    if settings.get('financials', {}).get('enabled', False):
+        with contextlib.redirect_stdout(io.StringIO()):
+            financials = refresh_disclosed_financials(end=through, config=config, data_root=data_root,
+                artifact_root=artifact_root, lookback_days=settings['financials']['lookback_days'])
     factors = {"years": [], "message": "disabled"}
     if settings.get("factors", {}).get("enabled", False):
         if minutes.get("errors"):
@@ -82,7 +88,7 @@ def run_refresh(
             factors = refresh_factors(data_root=data_root, artifact_root=artifact_root,
                                       config=config, end=end, settings=settings["factors"])
     changed = (stocks["new_dates"] or etfs["new_rows"] or etfs["new_bar_rows"] or limit_rows
-               or minutes.get("changed_rows", 0) or benchmark["new_rows"] or factors["years"])
+               or minutes.get("changed_rows", 0) or benchmark["new_rows"] or factors["years"] or financials['new_rows'])
     message = "partial" if minutes.get("errors") else "updated" if changed else "no-op"
     return {"latest_session": str(end), "message": message,
             "stock_new_dates": stocks["new_dates"], "stock_new_rows": stocks["new_rows"],
@@ -93,6 +99,7 @@ def run_refresh(
             "factor_benchmark_new_rows": benchmark["new_rows"],
             "factor_benchmark_snapshot": benchmark.get("snapshot"),
             "factors": factors,
+            "financials": financials,
             "stock_artifact": stocks.get("artifact_path"), "etf_artifact": etfs.get("artifact_path")}
 
 

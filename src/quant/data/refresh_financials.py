@@ -92,7 +92,7 @@ def refresh_quarter(
                 print(f"Captured financial quarter {len(captured)}/{len(symbols) * 3}", flush=True)
             time.sleep(pause_seconds)
     summary: dict[str, Any] = {"name": name, "base_version": base_name, "period": str(period),
-        "symbols_requested": len(symbols), "datasets": {},
+        "symbols_requested": len(symbols), "symbols": sorted(symbols), "datasets": {},
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "pit_rule": "new economic rows available no earlier than observation date; strictly before signal session"}
     for table in TABLES:

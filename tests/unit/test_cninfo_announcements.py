@@ -2,6 +2,7 @@ import datetime as dt
 
 import polars as pl
 import pytest
+import requests
 
 from quant.data import collect_financial_corrections as collector
 from quant.data.connectors.cninfo_announcements import correction_pages
@@ -69,3 +70,18 @@ def test_raw_keeps_nonfinancial_rows_and_original_title(tmp_path, monkeypatch):
     raw = pl.read_parquet(result["raw_paths"][0])
     assert raw.height == 2
     assert "<em>" in raw["announcementTitle"][0]
+
+
+def test_transient_announcement_request_retries_same_page(monkeypatch):
+    calls = []
+
+    class RetrySession:
+        def post(self, url, **kwargs):
+            calls.append(kwargs['data']['pageNum'])
+            if len(calls) == 1:
+                raise requests.ConnectionError('temporary')
+            return Response({'totalAnnouncement': 0, 'announcements': []})
+
+    monkeypatch.setattr('quant.data.connectors.cninfo_announcements.time.sleep', lambda seconds: None)
+    assert list(correction_pages(START, END, session=RetrySession()))[0][1] == []
+    assert calls == ['1', '1']

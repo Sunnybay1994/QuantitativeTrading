@@ -55,7 +55,7 @@ D:\Miniforge3\python.exe -m quant.execution.paper_ledger --to today
 D:\Miniforge3\python.exe -m quant.execution.stock_paper --to today
 D:\Miniforge3\python.exe -m quant.reporting.stock_paper_monthly
 
-# 数据补齐（日频 + 分钟 + 基准 + 因子增量；17点前取上一完整日）
+# 数据补齐（日频 + 分钟 + 基准 + 公告驱动财务 + 因子增量；17点前取上一完整日）
 D:\Miniforge3\python.exe -m quant.data.refresh --to today
 
 # 仅分钟数据；BaoStock 单连接串行，首次历史回填时间较长

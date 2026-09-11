@@ -1,13 +1,14 @@
-"""Public correction announcements; titles identify candidates, not numeric revisions."""
+"""Public announcement pages; titles identify candidates, not numeric revisions."""
 
 import datetime as dt
+import time
 from typing import Any, Iterator
 
 import requests
 
 
-def correction_pages(
-    start: dt.date, end: dt.date, *, session: Any = None,
+def announcement_pages(
+    start: dt.date, end: dt.date, *, category: str, session: Any = None,
 ) -> Iterator[tuple[dict[str, str], list[dict[str, Any]]]]:
     """Fetch every page, rejecting incomplete or shifting result sets."""
     if start > end:
@@ -20,16 +21,23 @@ def correction_pages(
         params = {
             "pageNum": str(page), "pageSize": "30", "column": "szse",
             "tabName": "fulltext", "plate": "", "stock": "", "searchkey": "",
-            "secid": "", "category": "category_bcgz_szsh", "trade": "",
+            "secid": "", "category": category, "trade": "",
             "seDate": f"{start.isoformat()}~{end.isoformat()}", "sortName": "",
             "sortType": "", "isHLtitle": "false",
         }
-        response = client.post(
-            "https://www.cninfo.com.cn/new/hisAnnouncement/query", data=params,
-            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.cninfo.com.cn/"},
-            timeout=30,
-        )
-        response.raise_for_status()
+        for attempt in range(3):
+            try:
+                response = client.post(
+                    "https://www.cninfo.com.cn/new/hisAnnouncement/query", data=params,
+                    headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.cninfo.com.cn/"},
+                    timeout=30,
+                )
+                response.raise_for_status()
+                break
+            except requests.RequestException:
+                if attempt == 2:
+                    raise RuntimeError(f'Announcement page {page} unavailable after three attempts') from None
+                time.sleep(attempt + 1)
         body = response.json()
         total = body.get("totalAnnouncement")
         if type(total) is not int or total < 0:
@@ -53,3 +61,9 @@ def correction_pages(
         if len(seen) == total:
             return
         page += 1
+
+
+def correction_pages(start: dt.date, end: dt.date, *, session: Any = None
+                     ) -> Iterator[tuple[dict[str, str], list[dict[str, Any]]]]:
+    """Retain the correction-only collector's existing query scope."""
+    return announcement_pages(start, end, category='category_bcgz_szsh', session=session)

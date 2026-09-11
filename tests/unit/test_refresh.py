@@ -123,3 +123,29 @@ def test_factor_stage_preserves_incremental_engine_arguments(monkeypatch, tmp_pa
         config=tmp_path/'refresh.toml', end=dt.date(2026, 9, 8),
         settings={'library': 'configs/factors/library', 'start': '2010-01-01'})
     assert result['message'] == 'no-op' and result['factor_count'] == 329
+
+
+def test_financial_snapshot_updates_before_factors_and_uses_calendar_date(monkeypatch, tmp_path):
+    config = tmp_path/'refresh.toml'
+    config.write_text('etf_config="configs/research/m2_s2_volatility_target.toml"\n'
+        'financial_snapshot="old"\n[financials]\nenabled=true\nlookback_days=3\n[factors]\nenabled=true\n')
+    monkeypatch.setattr(refresh, 'latest_session', lambda **kw: dt.date(2026, 9, 11))
+    monkeypatch.setattr(refresh, 'refresh_stocks', lambda **kw: {'new_dates': 0, 'new_rows': 0})
+    monkeypatch.setattr(refresh, 'refresh_etfs', lambda **kw: {'new_rows': 0, 'new_bar_rows': 0})
+    monkeypatch.setattr(refresh, 'refresh_limits', lambda **kw: 0)
+
+    def financials(**kwargs):
+        assert kwargs['end'] == dt.date(2026, 9, 12) and kwargs['lookback_days'] == 3
+        config.write_text(config.read_text().replace('"old"', '"new"'))
+        return {'new_rows': 2, 'financial_snapshot': 'new'}
+
+    def factors(**kwargs):
+        assert 'financial_snapshot="new"' in kwargs['config'].read_text()
+        assert kwargs['end'] == dt.date(2026, 9, 11)
+        return {'years': []}
+
+    monkeypatch.setattr(refresh, 'refresh_disclosed_financials', financials)
+    monkeypatch.setattr(refresh, 'refresh_factors', factors)
+    result = refresh.run_refresh(to='2026-09-12', data_root=tmp_path, artifact_root=tmp_path,
+        config=config, now=dt.datetime(2026, 9, 12, 20, tzinfo=refresh.SHANGHAI), intraday=False)
+    assert result['message'] == 'updated' and result['financials']['new_rows'] == 2
