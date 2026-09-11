@@ -1,0 +1,76 @@
+# Same frozen 24-expression grid; second run registered after observing missing pre-2014 industry controls.
+# Window chosen for at least 96 possible neutralized months, without changing candidates or thresholds.
+# All historical periods were previously researched; this is a retrospective coverage correction.
+# No untouched historical test is claimed. Future observations begin on the date below.
+[search]
+id = "p6c_finite_batch01_window02_20260911"
+maximum_candidates = 24
+maximum_depth = 16
+workers = 2
+maximum_hours = 8
+maximum_cost_attempts = 2
+library = "configs/factors/library"
+battery_config = "configs/factors/battery.toml"
+refresh_config = "configs/data/refresh.toml"
+execution_snapshot = "factor_battery_20260911_v2"
+fields = ["adj_close", "adj_high", "adj_low", "volume", "amihud_illiquidity_monthly_calendar80_v1", "free_float_turnover_level_monthly_calendar80_v1", "free_float_turnover_abnormal_12m_calendar80_v1"]
+operators = ["delay", "ts_mean", "ts_std", "ts_corr"]
+unit_rule = "All three templates produce dimensionless ratios or correlations; calendar inputs preserve their source units."
+feedback = "Training 2010-2023 only; validation 2024-2025 is a fixed-grid diagnostic, never a direction or threshold search."
+budget_semantics = "Finite grid; elapsed-time budget checked between stages. A running stage is allowed to finish."
+
+[dates]
+start = 2010-01-01
+training_end = 2023-12-29
+validation_start = 2024-01-01
+validation_end = 2025-12-31
+panel_end = 2026-09-10
+forward_start = 2026-09-14
+
+[[templates]]
+id = "p6c1_return_volume_corr"
+expr = "ts_corr(adj_close / delay(adj_close, 1) - 1, volume / ts_mean(volume, 120), {n})"
+family = "finite_price_volume"
+direction = -1
+source_ref = "configs/factors/library/alpha158_cord20.toml; preregistered dimensionless relative-volume extension"
+[templates.parameters]
+n = [8, 12, 16, 24, 40, 80, 120]
+
+[[templates]]
+id = "p6c1_vol_scaled_reversal"
+expr = "(adj_close / delay(adj_close, {n}) - 1) / ts_std(adj_close / delay(adj_close, 1) - 1, {n})"
+family = "finite_price_volume"
+direction = -1
+source_ref = "src/quant/factors/reversal_volatility.py; preregistered return-to-volatility extension"
+[templates.parameters]
+n = [8, 12, 16, 24, 40, 80, 120]
+
+[[templates]]
+id = "p6c1_close_position"
+expr = "ts_mean((2 * adj_close - adj_high - adj_low) / (adj_high - adj_low), {n})"
+family = "finite_price_volume"
+direction = -1
+source_ref = "configs/factors/library/alpha101_101.toml; preregistered close-location mean-reversion template"
+[templates.parameters]
+n = [8, 12, 16, 24, 40, 80, 120]
+
+[[templates]]
+id = "amihud_illiquidity_monthly_calendar80_v1"
+expr = "amihud_illiquidity_monthly_calendar80_v1"
+family = "calendar_monthly_liquidity"
+direction = 1
+source_ref = "src/quant/factors/calendar_liquidity.py; max(10,ceil(0.8*exchange_sessions)); existing Amihud formula"
+
+[[templates]]
+id = "free_float_turnover_level_monthly_calendar80_v1"
+expr = "free_float_turnover_level_monthly_calendar80_v1"
+family = "calendar_monthly_liquidity"
+direction = -1
+source_ref = "src/quant/factors/calendar_liquidity.py; max(10,ceil(0.8*exchange_sessions)); existing turnover formula"
+
+[[templates]]
+id = "free_float_turnover_abnormal_12m_calendar80_v1"
+expr = "free_float_turnover_abnormal_12m_calendar80_v1"
+family = "calendar_monthly_liquidity"
+direction = -1
+source_ref = "src/quant/factors/calendar_liquidity.py; twelve fully valid prior months; current divided by trailing mean minus one"
