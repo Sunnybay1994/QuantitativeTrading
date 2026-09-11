@@ -1,0 +1,17 @@
+[probe]
+id = "hk-daily-retry-20260911"
+end = "20260910"
+symbols = ["00939.HK", "09988.HK"]
+price_apis = ["hk_daily"]
+price_start = "20150101"
+hold_start = "20170317"
+hold_split = "20210101"
+hold_symbols = []
+flow_years = []
+interval_seconds = 65.0
+maximum_requests = 2
+purpose = "Retry only two rate-limited planned samples with one request per 65 seconds."
+
+[local]
+eligibility = ["sse_20260909_v1", "szse_20260909_v1"]
+watch_pool = "configs/universe/hk_connect_watch_v1.toml"

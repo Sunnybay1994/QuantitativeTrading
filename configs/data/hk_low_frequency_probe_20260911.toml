@@ -1,0 +1,15 @@
+[probe]
+id = "hk-low-frequency-20260911"
+end = "20260910"
+symbols = ["00700.HK", "00939.HK", "09988.HK"]
+price_start = "20150101"
+hold_start = "20170317"
+hold_split = "20210101"
+flow_years = [2015, 2020, 2023, 2026]
+interval_seconds = 2.0
+maximum_requests = 20
+purpose = "Bounded history and schema feasibility; current watch names are samples, not a historical universe."
+
+[local]
+eligibility = ["sse_20260909_v1", "szse_20260909_v1"]
+watch_pool = "configs/universe/hk_connect_watch_v1.toml"
