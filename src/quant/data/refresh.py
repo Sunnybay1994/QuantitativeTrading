@@ -74,9 +74,17 @@ def run_refresh(
     minutes = refresh_intraday(data_root=data_root, end=through) if intraday else {}
     benchmark = (refresh_factor_benchmark(data_root=data_root, config=config, end=end)
                  if settings.get("factor_benchmark_snapshot") else {"new_rows": 0})
+    factors = {"years": [], "message": "disabled"}
+    if settings.get("factors", {}).get("enabled", False):
+        if minutes.get("errors"):
+            factors["message"] = "skipped: intraday input refresh failed"
+        else:
+            factors = refresh_factors(data_root=data_root, artifact_root=artifact_root,
+                                      config=config, end=end, settings=settings["factors"])
     changed = (stocks["new_dates"] or etfs["new_rows"] or etfs["new_bar_rows"] or limit_rows
-               or minutes.get("changed_rows", 0) or benchmark["new_rows"])
-    return {"latest_session": str(end), "message": "updated" if changed else "no-op",
+               or minutes.get("changed_rows", 0) or benchmark["new_rows"] or factors["years"])
+    message = "partial" if minutes.get("errors") else "updated" if changed else "no-op"
+    return {"latest_session": str(end), "message": message,
             "stock_new_dates": stocks["new_dates"], "stock_new_rows": stocks["new_rows"],
             "etf_price_new_rows": etfs["new_rows"], "etf_bar_new_rows": etfs["new_bar_rows"],
             "etf_limit_new_rows": limit_rows,
@@ -84,7 +92,24 @@ def run_refresh(
             "intraday_errors": minutes.get("errors", []),
             "factor_benchmark_new_rows": benchmark["new_rows"],
             "factor_benchmark_snapshot": benchmark.get("snapshot"),
+            "factors": factors,
             "stock_artifact": stocks.get("artifact_path"), "etf_artifact": etfs.get("artifact_path")}
+
+
+def refresh_factors(*, data_root: Path, artifact_root: Path, config: Path,
+                    end: dt.date, settings: dict[str, Any]) -> dict[str, Any]:
+    """Reuse the factor engine's incremental coverage, including unfinished labels."""
+    # compute uses the completed-session date helpers in this module.
+    from quant.factors.compute import run
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        result = run(data_root=data_root, refresh_config=config,
+                     library=Path(settings["library"]), selected=settings.get("selected", "all"),
+                     start=dt.date.fromisoformat(str(settings["start"])), end=end,
+                     artifact_root=artifact_root)
+    return {"message": "updated" if result["years"] else "no-op",
+            "years": result["years"], "factor_count": result["factor_count"],
+            "output": result["output"]}
 
 
 def main() -> None:

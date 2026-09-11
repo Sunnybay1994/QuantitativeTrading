@@ -7,3 +7,9 @@ financial_share_changes_snapshot = "20260910_cycle2013"
 financial_share_change_notices = "configs/data/share_change_notice_resolutions_20260910.json"
 etf_config = "configs/research/m2_s2_volatility_target.toml"
 requests_per_minute = 60
+
+[factors]
+enabled = true
+library = "configs/factors/library"
+selected = "all"
+start = "2010-01-01"

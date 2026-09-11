@@ -77,3 +77,49 @@ def test_refresh_updates_factor_benchmark_after_prices(monkeypatch, tmp_path):
         config=config, now=dt.datetime(2026, 9, 8, 20, tzinfo=refresh.SHANGHAI), intraday=False)
     assert result['message'] == 'updated' and result['factor_benchmark_new_rows'] == 1
     assert result['factor_benchmark_snapshot'] == 'new'
+
+
+@pytest.mark.parametrize('minute_errors', [[], ['missing minute input']])
+def test_factor_refresh_follows_all_inputs_and_stops_on_minute_error(monkeypatch, tmp_path, minute_errors):
+    config = tmp_path / 'refresh.toml'
+    config.write_text('etf_config="configs/research/m2_s2_volatility_target.toml"\n'
+                      'factor_benchmark_snapshot="base"\n[factors]\nenabled=true\n')
+    calls = []
+    monkeypatch.setattr(refresh, 'latest_session', lambda **kw: dt.date(2026, 9, 8))
+    monkeypatch.setattr(refresh, 'refresh_stocks', lambda **kw: {'new_dates': 0, 'new_rows': 0})
+    monkeypatch.setattr(refresh, 'refresh_etfs', lambda **kw: {'new_rows': 0, 'new_bar_rows': 0})
+    monkeypatch.setattr(refresh, 'refresh_limits', lambda **kw: 0)
+    monkeypatch.setattr(refresh, 'refresh_intraday', lambda **kw: {'errors': minute_errors})
+
+    def benchmark(**kwargs):
+        calls.append('benchmark')
+        return {'new_rows': 0}
+
+    def factors(**kwargs):
+        assert calls == ['benchmark'] and kwargs['end'] == dt.date(2026, 9, 8)
+        calls.append('factors')
+        return {'years': [{'year': 2026}], 'message': 'updated'}
+
+    monkeypatch.setattr(refresh, 'refresh_factor_benchmark', benchmark)
+    monkeypatch.setattr(refresh, 'refresh_factors', factors)
+    result = refresh.run_refresh(to='2026-09-08', data_root=tmp_path, artifact_root=tmp_path,
+        config=config, now=dt.datetime(2026, 9, 8, 20, tzinfo=refresh.SHANGHAI))
+    assert calls == (['benchmark'] if minute_errors else ['benchmark', 'factors'])
+    assert result['message'] == ('partial' if minute_errors else 'updated')
+    assert result['intraday_errors'] == minute_errors
+
+
+def test_factor_stage_preserves_incremental_engine_arguments(monkeypatch, tmp_path):
+    from quant.factors import compute
+
+    def run(**kwargs):
+        assert kwargs['end'] == dt.date(2026, 9, 8)
+        assert kwargs['start'] == dt.date(2010, 1, 1)
+        assert kwargs['selected'] == 'all' and 'rebuild' not in kwargs
+        return {'years': [], 'factor_count': 329, 'output': 'result'}
+
+    monkeypatch.setattr(compute, 'run', run)
+    result = refresh.refresh_factors(data_root=tmp_path, artifact_root=tmp_path,
+        config=tmp_path/'refresh.toml', end=dt.date(2026, 9, 8),
+        settings={'library': 'configs/factors/library', 'start': '2010-01-01'})
+    assert result['message'] == 'no-op' and result['factor_count'] == 329
