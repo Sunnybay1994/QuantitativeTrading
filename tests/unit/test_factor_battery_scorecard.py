@@ -50,3 +50,23 @@ def test_highest_primary_factor_has_no_higher_peer_to_wait_for():
     result = assemble_scorecard(screen, cost_reports=reports, correlations=None, settings=settings)
     assert result.filter(pl.col('factor') == 'a')['factor_admitted'].item() is True
     assert result.filter(pl.col('factor') == 'b')['factor_admitted'].item() is None
+
+
+@pytest.mark.parametrize('rank,rho,admitted', [(2, .9, False), (2, None, None), (0, None, True)])
+def test_text_subset_leader_is_not_exempt_from_higher_external_peers(rank, rho, admitted):
+    screen, reports, correlations, settings = fixture()
+    reports[0]['benchmark_comparisons'][0]['net_cagr_excess'] = .01
+    # The evaluated subset contains only a, but its ranking includes the old library.
+    correlations = correlations.head(1).with_columns(
+        pl.lit(rank).alias('comparison_primary_rank'),
+        pl.lit(rho, dtype=pl.Float64).alias('higher_max_absolute_rank_correlation'))
+    result = assemble_scorecard(screen.head(1), cost_reports=reports[:1],
+                                correlations=correlations, settings=settings)
+    assert result['factor_admitted'].item() is admitted
+
+
+def test_missing_comparison_rank_cannot_silently_use_subset_ranking():
+    screen, reports, correlations, settings = fixture()
+    correlations = correlations.with_columns(pl.lit(None, dtype=pl.Int64).alias('comparison_primary_rank'))
+    with pytest.raises(ValueError, match='comparison-pool'):
+        assemble_scorecard(screen, cost_reports=reports, correlations=correlations, settings=settings)

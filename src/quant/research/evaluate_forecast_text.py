@@ -76,10 +76,16 @@ def run_incremental(*, run: Path, statistics: Path, data_root: Path, output: Pat
 
 
 def run_pipeline(*, run: Path, output: Path, data_root: Path, design_path: Path,
-                 workers: int = 1, execution_snapshot: str | None = None) -> dict:
+                 workers: int = 1, execution_snapshot: str | None = None,
+                 peer_library: Path = Path('configs/factors/library'),
+                 peer_statistics: Path | None = None,
+                 existing_cost_runs: list[Path] | None = None) -> dict:
     from quant.research.factor_battery_batch import run_statistics
     from quant.research.factor_battery_screen import run_screen
+    from quant.research.factor_battery_scorecard import run_scorecard
 
+    if workers < 1 or (not execution_snapshot and (peer_statistics or existing_cost_runs)):
+        raise ValueError('Positive workers and an execution snapshot are required for full evaluation inputs')
     design = load_design(design_path)
     output.mkdir(parents=True, exist_ok=False)
     publication = publish_panels(run, data_root=data_root, design=design)
@@ -91,15 +97,36 @@ def run_pipeline(*, run: Path, output: Path, data_root: Path, design_path: Path,
     incremental = run_incremental(run=run, statistics=statistics, data_root=data_root,
                                   output=output / "incremental", design=design)
     costs = None
+    redundancy = benchmarks = None
     if execution_snapshot:
         from quant.research.factor_battery_cost_batch import run_cost_batch
+        from quant.research.factor_battery_benchmarks import run_benchmarks
+        from quant.research.forecast_text_redundancy import run_redundancy
 
+        if peer_statistics is None:
+            peer_statistics = output / 'peer_statistics'
+            run_statistics(data_root=data_root, config=run / 'battery.toml', library=peer_library,
+                           as_of=design['end'], output=peer_statistics, workers=workers)
+        redundancy = output / 'redundancy'
+        run_redundancy(statistics=statistics, peer_statistics=peer_statistics,
+                       peer_library=peer_library, output=redundancy, workers=workers)
+        benchmarks = output / 'benchmarks'
+        run_benchmarks(statistics=statistics, output=benchmarks, data_root=data_root,
+                       execution_snapshot=execution_snapshot)
         costs = run_cost_batch(statistics=statistics, screen=output / "screen", output=output / "costs",
-            data_root=data_root, execution_snapshot=execution_snapshot, existing_runs=[], workers=workers)
+            data_root=data_root, execution_snapshot=execution_snapshot,
+            existing_runs=existing_cost_runs or [], workers=workers)
+    scorecard = run_scorecard(screen=output / 'screen', output=output / 'scorecard',
+        cost_runs=[Path(path) for path in costs['completed_runs'].values()] if costs else [],
+        cost_root=None, benchmarks=benchmarks, redundancy=redundancy, data_root=data_root)
     summary = {"synthetic_fixture": False, "publication": publication, "screen": screen,
         "incremental_series": len(incremental["summary"]), "costs": costs,
+        "mode": "full" if execution_snapshot else "statistics_only",
+        "scorecard": scorecard, "scorecard_path": str(output / 'scorecard/factor_scorecard.parquet'),
+        "peer_statistics": str(peer_statistics) if peer_statistics else None,
         "conclusion": "RESEARCH_ONLY",
-        "next_step": "Use existing full-library redundancy/benchmarks/scorecard; residual IC is diagnostic only"}
+        "next_step": ("Inspect scorecard and unresolved evidence; residual IC remains diagnostic"
+                      if execution_snapshot else "Supply an execution snapshot for full costs, benchmarks and cross-library comparison")}
     (output / "summary.json").write_text(json.dumps(summary, default=str, ensure_ascii=False, indent=2), encoding="utf-8")
     return summary
 
@@ -152,13 +179,21 @@ def main() -> None:
     parser.add_argument("--data-root", type=Path, default=Path("data"))
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--execution-snapshot")
+    parser.add_argument('--peer-library', type=Path, default=Path('configs/factors/library'))
+    parser.add_argument('--peer-statistics', type=Path, help='Existing complete peer statistics with identical P7 settings')
+    parser.add_argument('--existing-cost-run', type=Path, action='append', default=[])
     args = parser.parse_args()
     if args.fixture:
         result = run_fixture(source=args.fixture, output=args.output, design_path=args.design)
     else:
         result = run_pipeline(run=args.run, output=args.output, data_root=args.data_root,
-            design_path=args.design, workers=args.workers, execution_snapshot=args.execution_snapshot)
+            design_path=args.design, workers=args.workers, execution_snapshot=args.execution_snapshot,
+            peer_library=args.peer_library, peer_statistics=args.peer_statistics,
+            existing_cost_runs=args.existing_cost_run)
     print(json.dumps(result, default=str, ensure_ascii=False))
+    costs = result.get('costs')
+    if costs and (costs['failures'] or costs['pending_external_runs']):
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

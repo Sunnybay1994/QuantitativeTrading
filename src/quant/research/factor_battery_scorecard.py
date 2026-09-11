@@ -42,6 +42,13 @@ def assemble_scorecard(screen: pl.DataFrame, *, cost_reports: list[dict],
         correlation_keys = correlations.select('factor', 'variant').rows()
         if len(correlation_keys) != len(keys) or set(correlation_keys) != set(keys):
             raise ValueError('Require the complete correlation maxima table')
+        if 'comparison_primary_rank' in correlations.columns:
+            ranks = correlations.select('factor', 'comparison_primary_rank').unique()
+            values = ranks['comparison_primary_rank'].to_list()
+            if (ranks.height != screen['factor'].n_unique()
+                    or any(type(value) is not int or value < 0 for value in values)
+                    or len(set(values)) != len(values)):
+                raise ValueError('Invalid comparison-pool primary ranks')
         for row in correlations.iter_rows(named=True):
             extras[(row['factor'], row['variant'])].update({k: v for k, v in row.items() if k not in ('factor', 'variant')})
     rows = []
@@ -56,7 +63,9 @@ def assemble_scorecard(screen: pl.DataFrame, *, cost_reports: list[dict],
                            if rho is not None and math.isfinite(rho) else None)
         # The first factor in the complete primary ordering has no higher peer.
         # Its admission need not wait for unrelated all-peer diagnostics.
-        if row['factor'] == primary[0]:
+        comparison_rank = extra.get('comparison_primary_rank')
+        highest = row['factor'] == primary[0] if comparison_rank is None else comparison_rank == 0
+        if highest:
             redundancy_pass = True
         admitted = None
         if not row['statistical_pass'] or cost_pass is False or redundancy_pass is False:
