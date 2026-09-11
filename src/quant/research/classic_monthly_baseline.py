@@ -151,6 +151,8 @@ def replay(
     targets: pl.DataFrame, dividends: pl.DataFrame, market_states: dict,
     config: dict[str, Any], sessions: list[dt.date], name: str, validate_once: bool = False,
     account_state: dict[str, Any] | None = None,
+    target_turnover_budget: float | None = None,
+    target_records: list[dict] | None = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """Replay a chunk; update optional account_state only after a successful run.
 
@@ -168,7 +170,8 @@ def replay(
         calendar = TradeCalendarSchema.validate(calendar)
         instruments = InstrumentSchema.validate(instruments)
         targets = _validate_targets(targets, strategy=name)
-    checked_nav, checked_positions = [], []
+    checked_nav: list[pl.DataFrame] = []
+    checked_positions: list[pl.DataFrame] = []
     account_config = {"paper": {"name": name, "auto_trade": False,
                                "initial_cash": config["portfolio"]["initial_cash"]},
                       "costs": config["costs"]}
@@ -200,6 +203,18 @@ def replay(
             if validate_once:
                 checked_nav.append(checked_nav[0].with_columns(pl.lit(date).alias("date")))
             continue
+        batch = target_dates.get(date)
+        if batch is not None and target_turnover_budget is not None:
+            from quant.portfolio.turnover_budget import budget_targets
+            desired = dict(batch.select('symbol', 'weight').iter_rows())
+            batch = budget_targets(batch, state, budget=target_turnover_budget)
+            if target_records is not None:
+                equity = state['nav'][-1]['equity']
+                for row in batch.to_dicts():
+                    held = state['holdings'].get(row['symbol'], {})
+                    target_records.append({**row, 'desired_weight': desired.get(row['symbol'], 0.),
+                        'current_weight': held.get('quantity', 0)*held.get('mark_price', 0.)/equity,
+                        'signal_equity': equity})
         writeoff = 0.0
         removed = []
         if config["portfolio"].get("delisted_holding_recovery") == 0.0:
@@ -211,7 +226,10 @@ def replay(
                     removed.append(symbol)
             state["restricted_shares"] = [r for r in state.get("restricted_shares", [])
                                            if r["symbol"] not in removed]
-        batch = target_dates.get(date)
+        if batch is not None and removed and target_turnover_budget is not None:
+            # A delisting writeoff is not a trade; never reintroduce a removed
+            # holding retained by the previous-close turnover blend.
+            batch = batch.filter(~pl.col('symbol').is_in(removed))
         state["pending"] = ([] if batch is None else batch.with_columns(
             pl.col("as_of").cast(pl.String), pl.col("execution_date").cast(pl.String),
         ).to_dicts())

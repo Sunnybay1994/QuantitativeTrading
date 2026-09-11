@@ -101,7 +101,8 @@ def run_factor_costs(*, statistics: Path, output: Path, data_root: Path,
 
 def run_cost_plans(*, settings: dict, plans: dict, sessions: tuple[dt.date, ...], output: Path,
                    data_root: Path, execution_snapshot: str, factor: str,
-                   start: dt.date | None = None) -> dict:
+                   start: dt.date | None = None,
+                   turnover_budgets: dict[str, float] | None = None) -> dict:
     """Replay factor and equal-weight benchmark plans through the same account."""
     end = settings['run']['as_of']
     if not plans or (start is None and any(targets.is_empty() for _, targets in plans.values())):
@@ -151,12 +152,17 @@ def run_cost_plans(*, settings: dict, plans: dict, sessions: tuple[dt.date, ...]
                 dates = [date for date in active_sessions if date >= inception]
                 if not dates:
                     continue
+                target_records: list[dict] = []
                 chunk = replay(bars=inputs["bars"], calendar=inputs["calendar"],
                     instruments=inputs["instruments"], targets=annual_targets[variant], dividends=dividends,
                     market_states=states, config=scenario, sessions=dates, name=name, validate_once=True,
-                    account_state=accounts[(variant, multiplier)])
+                    account_state=accounts[(variant, multiplier)],
+                    target_turnover_budget=(turnover_budgets or {}).get(variant),
+                    target_records=target_records)
                 parts = output / variant / f"cost_{multiplier:g}" / str(year)
                 parts.mkdir(parents=True)
+                if target_records:
+                    pl.from_dicts(target_records).write_parquet(parts / 'budget_targets.parquet')
                 for kind, frame in zip(("nav", "trades", "rejections"), chunk):
                     frame.write_parquet(parts / f"{kind}.parquet")
                 pieces[(variant, multiplier)].append(chunk)

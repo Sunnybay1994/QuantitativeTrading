@@ -16,9 +16,10 @@ from quant.research.factor_battery_costs import run_cost_plans
 from quant.research.run_multifactor_replay import model_target_plans
 
 
-def write_report(output: Path, result: dict) -> None:
-    lines = ['# 固定集中度约束回放', '',
-        '2015—2026-08；日历LightGBM Top50固定预测，超限目标缩减后保留现金。', '',
+def write_report(output: Path, result: dict, *, title: str = '固定集中度约束回放',
+                 description: str = '2015—2026-08；日历LightGBM Top50固定预测，超限目标缩减后保留现金。',
+                 caveat: str = '复用已有历史，目标上限不保证实际成交后或月中持仓上限。') -> None:
+    lines = [f'# {title}', '', description, '',
         '|组合|成本|年化|Sharpe|最大回撤|全期单边年换手|平均仓位|',
         '|---|---:|---:|---:|---:|---:|---:|']
     for row in result['rows']:
@@ -39,7 +40,7 @@ def write_report(output: Path, result: dict) -> None:
         lines += [f"|{row['window']}|{row['model_return']:.2%}|{row['model_max_drawdown']:.2%}|"
                   f"{row['benchmark_return']:.2%}|{row['benchmark_max_drawdown']:.2%}|"
                   for row in assessment['stress']]
-    lines += ['', '关键限制：复用已有历史，目标上限不保证实际成交后或月中持仓上限。', '']
+    lines += ['', f'关键限制：{caveat}', '']
     (output/'report.md').write_text('\n'.join(lines), encoding='utf-8')
 
 
