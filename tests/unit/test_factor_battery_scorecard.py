@@ -42,3 +42,11 @@ def test_missing_correlations_and_etf_excess_cannot_substitute_for_admission_inp
     assert result.filter(pl.col('factor') == 'b')['factor_admitted'].item() is None
     with pytest.raises(ValueError, match='complete correlation'):
         assemble_scorecard(screen, cost_reports=reports, correlations=correlations.head(1), settings=settings)
+
+
+def test_highest_primary_factor_has_no_higher_peer_to_wait_for():
+    screen, reports, _, settings = fixture()
+    reports[0]['benchmark_comparisons'][0]['net_cagr_excess'] = .01
+    result = assemble_scorecard(screen, cost_reports=reports, correlations=None, settings=settings)
+    assert result.filter(pl.col('factor') == 'a')['factor_admitted'].item() is True
+    assert result.filter(pl.col('factor') == 'b')['factor_admitted'].item() is None

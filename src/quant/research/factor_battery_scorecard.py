@@ -54,7 +54,9 @@ def assemble_scorecard(screen: pl.DataFrame, *, cost_reports: list[dict],
         rho = extra.get('higher_max_absolute_rank_correlation')
         redundancy_pass = (rho < settings['admission']['maximum_absolute_rank_correlation_with_better']
                            if rho is not None and math.isfinite(rho) else None)
-        if correlations is not None and row['factor'] == primary[0]:
+        # The first factor in the complete primary ordering has no higher peer.
+        # Its admission need not wait for unrelated all-peer diagnostics.
+        if row['factor'] == primary[0]:
             redundancy_pass = True
         admitted = None
         if not row['statistical_pass'] or cost_pass is False or redundancy_pass is False:

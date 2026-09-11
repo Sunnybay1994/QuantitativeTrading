@@ -1,0 +1,83 @@
+[research]
+id = "p4-causal-annual-multifactor-20260911"
+hypothesis = "After causal factor admission and redundancy selection, fixed equal-z, positive-IC weighting or LightGBM improves full-period net returns over the strongest registered benchmark."
+registered_on = 2026-09-11
+historical_evidence = "retrospective_annual_walk_forward_not_an_unseen_holdout"
+statistics_source = "artifacts/factors/battery_statistics_20260831_20260911"
+battery_config = "configs/factors/battery.toml"
+cost_root = "artifacts/factors/battery_cost_batch_20260911"
+stock_benchmarks = "artifacts/factors/battery_stock_benchmarks_20260911"
+random_seed = 20260911
+
+[walk_forward]
+history_start = 2010-01-01
+test_start = 2015-01-01
+test_end = 2026-08-31
+refit = "annual_previous_year_last_exchange_close"
+training = "expanding_history"
+label_available_at = "exit_date_rebalance"
+include_training_row = "exit_date_rebalance_at_or_before_refit_close"
+parameters = "fixed_no_test_based_tuning_or_model_switching"
+insufficient_training_history = "cash"
+report_active_start_separately = true
+
+[selection]
+variant = "size_industry_neutral"
+candidate_library = "all_registered_factors_reassessed_at_each_refit"
+admission = "same_battery_thresholds_recomputed_from_known_training_prefix_only"
+minimum_known_months = 96
+historical_costs = "only_prefix_NAV_and_trades_through_refit_close"
+historical_correlations = "only_signal_scores_through_refit_close"
+order = "descending_training_ICIR_then_factor_id"
+maximum_absolute_rank_correlation = 0.6
+correlation_aggregation = "mean_absolute_monthly_common_stock_spearman"
+maximum_factors = 20
+no_admitted_factors = "cash"
+
+[models]
+methods = ["equal_z", "positive_mean_ic", "lightgbm"]
+equal_z_weights = "equal_across_selected_factors"
+ic_weights = "positive_training_mean_monthly_IC_normalized_to_one"
+missing_features = "common_complete_case_pool_for_all_three_methods"
+minimum_signal_stocks = 100
+
+[models.lightgbm]
+objective = "regression_l1"
+n_estimators = 200
+learning_rate = 0.03
+num_leaves = 15
+min_child_samples = 200
+colsample_bytree = 1.0
+subsample = 1.0
+n_jobs = 4
+random_state = 20260911
+
+[portfolio]
+primary_top_k = 50
+sensitivity_top_k = 100
+sensitivity_role = "report_only_not_a_replacement_for_failed_primary"
+retention_rank_multiplier = 1.5
+weights = "equal_within_selected_stocks"
+rebalance = "month_end_close_signal_next_exchange_open"
+initial_cash = 1000000.0
+cost_multipliers = [0.5, 1.0, 2.0]
+costs = "same_frozen_battery_costs_and_daily_account"
+empty_signal_pool = "cash"
+portfolio_industry_constraints = "none"
+
+[admission]
+primary_variant_only = true
+minimum_net_cagr_excess_strongest_benchmark = 0.03
+minimum_2x_cagr_exclusive = 0.0
+minimum_1x_sharpe = 0.6
+maximum_annualized_one_way_turnover = 6.0
+maximum_drawdown_relative_to_strongest_benchmark = 1.2
+maximum_underwater_calendar_years = 3.0
+minimum_stress_windows_not_worse = 3
+minimum_annual_outperformance_fraction = 0.6
+minimum_active_evidence_calendar_years_exclusive = 3.0
+benchmarks = ["510300_total_return_reference", "csi800_equal_weight", "all_market_equal_weight"]
+stress_windows_config = "configs/research/b93_full_cycle_20260910.toml"
+
+[execution]
+auto_trade = false
