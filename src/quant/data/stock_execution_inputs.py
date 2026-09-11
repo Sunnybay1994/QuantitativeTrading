@@ -193,6 +193,25 @@ def ordinary_holder_distributions(frame: pl.DataFrame) -> pl.DataFrame:
     return frame.with_columns((~match).alias("adjust_share_price"))
 
 
+def restore_historical_instruments(instruments: pl.DataFrame) -> pl.DataFrame:
+    """Restore old trading codes omitted from the vendor's current master."""
+    for old, current, name, changed in (
+        ("000022.SZ", "001872.SZ", "深赤湾A", dt.date(2018, 12, 26)),
+        ("000043.SZ", "001914.SZ", "中航善达", dt.date(2019, 12, 16)),
+        ("300114.SZ", "302132.SZ", "中航电测", dt.date(2025, 2, 17)),
+    ):
+        if old in instruments["symbol"]:
+            continue
+        successor = instruments.filter(pl.col("symbol") == current)
+        if successor.height == 1:
+            historical = successor.with_columns(
+                pl.lit(old).alias("symbol"), pl.lit(name).alias("name"),
+                pl.lit(changed).alias("delist_date"), pl.lit("DELISTED").alias("status"),
+            )
+            instruments = pl.concat([instruments, historical])
+    return instruments
+
+
 def prepare_stock_execution_inputs(
     *, data_root: Path, symbols: list[str], execution_dates: list[dt.date],
     start: dt.date, end: dt.date, output: Path,
@@ -293,7 +312,8 @@ def prepare_stock_execution_inputs(
         .with_columns(pl.lit(status).alias("_request_list_status"))
         for status in ("L", "D", "P")
     ], how="diagonal_relaxed")
-    instruments = pl.concat([TushareInstrumentMapper(m).map(basic) for m in ("SH", "SZ")]).filter(
+    instruments = restore_historical_instruments(pl.concat([
+        TushareInstrumentMapper(m).map(basic) for m in ("SH", "SZ")])).filter(
         pl.col("symbol").is_in(symbols)
     )
     if instruments.height != len(symbols):

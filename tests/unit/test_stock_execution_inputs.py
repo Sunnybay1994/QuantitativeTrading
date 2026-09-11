@@ -6,6 +6,21 @@ import pytest
 from quant.data import stock_execution_inputs as source
 
 
+def test_restore_old_codes_keeps_original_listing_age_and_existing_rows():
+    frame = pl.DataFrame({"symbol": ["001872.SZ", "001914.SZ", "302132.SZ"],
+        "name": ["port", "property", "aircraft"],
+        "list_date": [dt.date(1993, 5, 5), dt.date(1994, 9, 28), dt.date(2010, 8, 27)],
+        "delist_date": [None]*3, "status": ["LISTED"]*3},
+        schema_overrides={"delist_date": pl.Date})
+    result = source.restore_historical_instruments(frame)
+    assert result.height == 6
+    old = result.filter(pl.col("symbol") == "000022.SZ").row(0, named=True)
+    assert old["list_date"] == dt.date(1993, 5, 5)
+    assert old["delist_date"] == dt.date(2018, 12, 26)
+    assert source.restore_historical_instruments(result).equals(result)
+    assert result.head(3).equals(frame)
+
+
 @pytest.mark.parametrize("creditor_ann,invalid", [("20260612", False), ("20260623", True)])
 def test_stock_actions_keep_combined_cash_but_exclude_creditor_shares(monkeypatch, tmp_path, creditor_ann, invalid):
     calls = []
