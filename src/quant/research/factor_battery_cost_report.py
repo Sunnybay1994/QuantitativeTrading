@@ -60,8 +60,8 @@ def load_cost_history(run: Path, variant: str, multiplier: float, end) -> tuple[
     return nav, pl.concat(trades, how='vertical_relaxed')
 
 
-def report_costs(*, run: Path, output: Path, benchmarks: Path | None = None,
-                 etf_reference: bool = False, data_root: Path = Path('data')) -> dict:
+def collect_cost_report(*, run: Path, benchmarks: Path | None = None,
+                        etf_reference: bool = False, data_root: Path = Path('data')) -> dict:
     settings = tomllib.loads((run/'battery.toml').read_text(encoding='utf-8'))
     saved = json.loads((run/'summary.json').read_text(encoding='utf-8'))
     etf = (read_etf_total_return(data_root=data_root, snapshot=settings['data']['etf_total_return_snapshot'],
@@ -95,7 +95,13 @@ def report_costs(*, run: Path, output: Path, benchmarks: Path | None = None,
                                 'benchmark': benchmark['variant'],
                                 'benchmark_cost_treatment': 'same_execution_rules_and_cost_multiplier',
                                 **compare_nav(nav, baseline)})
-    result = {'source_run': str(run), 'rows': rows, 'benchmark_comparisons': comparisons}
+    return {'source_run': str(run), 'rows': rows, 'benchmark_comparisons': comparisons}
+
+
+def report_costs(*, run: Path, output: Path, benchmarks: Path | None = None,
+                 etf_reference: bool = False, data_root: Path = Path('data')) -> dict:
+    result = collect_cost_report(run=run, benchmarks=benchmarks, etf_reference=etf_reference, data_root=data_root)
+    rows, comparisons = result['rows'], result['benchmark_comparisons']
     output.mkdir(parents=True, exist_ok=False)
     pl.from_dicts(rows, infer_schema_length=None).write_parquet(output/'cost_metrics.parquet')
     if comparisons:
