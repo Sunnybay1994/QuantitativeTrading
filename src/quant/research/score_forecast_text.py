@@ -14,7 +14,7 @@ import time
 import tomllib
 from typing import Annotated, Any, Callable
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from quant.data.connectors.deepseek import DeepSeekClient, RequestFailure, load_key
 from quant.data.forecast_text_scores import ScoreCache, publish_panels, read_corpus, write_scores
@@ -78,6 +78,26 @@ def validated_usage(response: dict) -> tuple[str, dict]:
     return model, clean
 
 
+def response_error_code(exc: Exception) -> str:
+    """Keep actionable categories without saving provider text or exception values."""
+    if isinstance(exc, json.JSONDecodeError):
+        return 'invalid_json'
+    if isinstance(exc, ValidationError):
+        return 'invalid_output_schema'
+    if isinstance(exc, (KeyError, TypeError, IndexError)):
+        return 'invalid_completion_envelope'
+    return {
+        'incomplete completion': 'incomplete_completion',
+        'evidence is not an exact input substring': 'evidence_not_verbatim',
+        'numeric-only must apply to all dimensions': 'inconsistent_numeric_only',
+        'duplicate JSON key': 'duplicate_json_key',
+        'non-finite JSON constant': 'nonfinite_json',
+        'JSON object required': 'invalid_json_object',
+        'Unknown or mismatched factual citation': 'invalid_fact_citation',
+        'Numbers belong in exact citations, not generated prose': 'uncited_prose_number',
+    }.get(str(exc), 'invalid_output_semantics')
+
+
 def score_one(reason: str, *, settings: dict, cache: ScoreCache, client: Any,
               max_requests: int, max_usd: float, sleep: Callable[[float], None] = time.sleep,
               request_key: str | None = None, token_bound: int | None = None,
@@ -121,9 +141,9 @@ def score_one(reason: str, *, settings: dict, cache: ScoreCache, client: Any,
                         raise ValueError("incomplete completion")
                     content = choices[0]["message"]["content"]
                     score = parse(content) if parse else parse_score(content, reason).model_dump()
-                except (ValueError, KeyError, TypeError, IndexError):
+                except (ValueError, KeyError, TypeError, IndexError) as exc:
                     cache.finish(attempt, state="retryable", model=model, usage=usage, cost=cost,
-                                 error="invalid_json_schema_or_evidence")
+                                 error=response_error_code(exc))
                 else:
                     cache.finish(attempt, state="success", model=model, usage=usage,
                                  cost=cost, scores=score)

@@ -9,7 +9,7 @@ import pytest
 from quant.data.connectors.deepseek import DeepSeekClient, RequestFailure, load_key
 from quant.data.forecast_text_scores import ScoreCache, asof_panel, publish_panels, read_corpus
 from quant.factors.forecast_text_score import DIMENSIONS, messages, parse_score, score_key
-from quant.research.score_forecast_text import load_design, load_settings, run_batch, score_one
+from quant.research.score_forecast_text import load_design, load_settings, run_batch, score_one, response_error_code
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "configs/research/deepseek_p7_v1.toml"
@@ -97,6 +97,27 @@ def test_old_rubric_is_not_silently_scored_with_new_prompt():
     with pytest.raises(ValueError, match='new rubric version'):
         load_design(ROOT / 'configs/factors/p7_text_evaluation_v1.toml')
     assert load_design(DESIGN)['scoring']['prompt_version'] == 'p7_reason_v2'
+
+
+@pytest.mark.parametrize('text,expected', [
+    ('not json', 'invalid_json'),
+    ('{}', 'invalid_output_schema'),
+    (json.dumps({**content(), DIMENSIONS[0]: {'score': 2, 'status': 'scored',
+                                            'evidence': 'not in the source'}}), 'evidence_not_verbatim'),
+])
+def test_failed_response_cache_distinguishes_format_schema_and_evidence(tmp_path, text, expected):
+    cache = ScoreCache(tmp_path/'cache.sqlite')
+    try:
+        result = score_one(REASON, settings={**load_settings(CONFIG), 'max_attempts': 1},
+                           cache=cache, client=FakeClient([response(text)]), max_requests=1, max_usd=1)
+        assert result['error'] == expected
+        assert result['scores_json'] is None
+    finally:
+        cache.close()
+
+
+def test_unknown_exception_values_never_enter_error_codes():
+    assert response_error_code(ValueError('private untrusted response text')) == 'invalid_output_semantics'
 
 
 def test_success_reused_without_paying_again(tmp_path):
