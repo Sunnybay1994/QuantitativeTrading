@@ -61,6 +61,9 @@ D:\Miniforge3\python.exe -m quant.data.refresh --to today
 # 扫描财务公告使用已有 Poppler 和 Windows 中文 OCR；识别页缓存，重复更新复用。
 # 待解析公告、实际因子覆盖和财务版本见刷新结果中的 input_quality / financials。
 
+# 有限因子搜索：展开固定24项候选 → 历史计算 → 开发/验证 → 成本及评分表；同一目录恢复
+D:\Miniforge3\python.exe -m quant.research.run_factor_search --config configs/factors/search/p6c_finite_batch01_20260911.toml --output artifacts/factors/search/p6c_batch01_20260911
+
 # 多因子模型随既有成本结果自动续跑（五分钟检查一次；最多等待24小时）
 D:\Miniforge3\python.exe -m quant.research.follow_multifactor_pipeline --config configs/models/p4_annual_walk_forward_20260911.toml --output artifacts/models/p4_follow_new --resume-from artifacts/models/p4_pipeline_20260911_04_resumed
 

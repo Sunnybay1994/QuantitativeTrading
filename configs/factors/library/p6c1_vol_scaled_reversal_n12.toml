@@ -1,0 +1,5 @@
+id = "p6c1_vol_scaled_reversal_n12"
+expr = "(adj_close / delay(adj_close, 12) - 1) / ts_std(adj_close / delay(adj_close, 1) - 1, 12)"
+family = "finite_price_volume"
+direction = -1
+source_ref = "src/quant/factors/reversal_volatility.py; preregistered return-to-volatility extension"

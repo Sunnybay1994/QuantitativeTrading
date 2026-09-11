@@ -1,0 +1,5 @@
+id = "p6c1_close_position_n120"
+expr = "ts_mean((2 * adj_close - adj_high - adj_low) / (adj_high - adj_low), 120)"
+family = "finite_price_volume"
+direction = -1
+source_ref = "configs/factors/library/alpha101_101.toml; preregistered close-location mean-reversion template"

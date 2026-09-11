@@ -30,7 +30,8 @@ def existing_cost_factor(run: Path, *, settings: dict, snapshot: str) -> str:
 
 
 def run_cost_batch(*, statistics: Path, screen: Path, output: Path, data_root: Path,
-                   execution_snapshot: str, existing_runs: list[Path], workers: int) -> dict:
+                   execution_snapshot: str, existing_runs: list[Path], workers: int,
+                   only_statistical_pass: bool = False) -> dict:
     settings_bytes = (statistics/'battery.toml').read_bytes()
     settings = tomllib.loads(settings_bytes.decode('utf-8'))
     if workers < 1 or (screen/'battery.toml').read_bytes() != settings_bytes:
@@ -40,6 +41,11 @@ def run_cost_batch(*, statistics: Path, screen: Path, output: Path, data_root: P
     if table.height != expected.height or set(table.select('factor', 'variant').rows()) != set(expected.rows()):
         raise ValueError('Cost batch cannot omit registered statistical rows')
     ordered = cost_order(table, primary=settings['primary_variant'])
+    skipped = []
+    if only_statistical_pass:
+        passing = set(table.filter(pl.col('statistical_pass'))['factor'].to_list())
+        skipped = [factor for factor in ordered if factor not in passing]
+        ordered = [factor for factor in ordered if factor in passing]
     existing = {}
     for run in existing_runs:
         factor = existing_cost_factor(run, settings=settings, snapshot=execution_snapshot)
@@ -81,11 +87,11 @@ def run_cost_batch(*, statistics: Path, screen: Path, output: Path, data_root: P
             print(json.dumps({'factor': factor, 'completed': len(completed), 'failed': len(failures),
                               'error': failures.get(factor)}), flush=True)
     # External runs may have completed while the queued work ran.
-    for factor, folder in list(pending_external.items()):
-        if (Path(folder)/'summary.json').is_file():
+    for factor, external_folder in list(pending_external.items()):
+        if (Path(external_folder)/'summary.json').is_file():
             completed[factor] = pending_external.pop(factor)
     result = {'factors': len(ordered), 'completed_runs': completed, 'failures': failures,
-              'pending_external_runs': pending_external}
+              'pending_external_runs': pending_external, 'statistically_rejected_factors': skipped}
     (output/'batch_summary.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
     return result
 

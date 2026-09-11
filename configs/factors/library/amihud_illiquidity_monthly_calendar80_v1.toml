@@ -1,0 +1,5 @@
+id = "amihud_illiquidity_monthly_calendar80_v1"
+expr = "amihud_illiquidity_monthly_calendar80_v1"
+family = "calendar_monthly_liquidity"
+direction = 1
+source_ref = "src/quant/factors/calendar_liquidity.py; max(10,ceil(0.8*exchange_sessions)); existing Amihud formula"

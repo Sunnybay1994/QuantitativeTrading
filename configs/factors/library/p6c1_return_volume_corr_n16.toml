@@ -1,0 +1,5 @@
+id = "p6c1_return_volume_corr_n16"
+expr = "ts_corr(adj_close / delay(adj_close, 1) - 1, volume / ts_mean(volume, 120), 16)"
+family = "finite_price_volume"
+direction = -1
+source_ref = "configs/factors/library/alpha158_cord20.toml; preregistered dimensionless relative-volume extension"

@@ -1,0 +1,5 @@
+id = "free_float_turnover_abnormal_12m_calendar80_v1"
+expr = "free_float_turnover_abnormal_12m_calendar80_v1"
+family = "calendar_monthly_liquidity"
+direction = -1
+source_ref = "src/quant/factors/calendar_liquidity.py; twelve fully valid prior months; current divided by trailing mean minus one"

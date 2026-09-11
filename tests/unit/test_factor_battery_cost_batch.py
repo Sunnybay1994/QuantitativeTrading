@@ -37,3 +37,21 @@ def test_cost_batch_rejects_a_screen_missing_registered_rows(tmp_path):
     with pytest.raises(ValueError, match='cannot omit'):
         run_cost_batch(statistics=statistics, screen=screen, output=tmp_path/'output', data_root=tmp_path,
                        execution_snapshot='fixture', existing_runs=[], workers=1)
+
+
+def test_statistical_rejection_skips_cost_work_after_full_family_validation(tmp_path):
+    statistics, screen = tmp_path/'statistics', tmp_path/'screen'
+    statistics.mkdir()
+    screen.mkdir()
+    config = Path('configs/factors/battery.toml').read_bytes()
+    (statistics/'battery.toml').write_bytes(config)
+    (screen/'battery.toml').write_bytes(config)
+    table = pl.DataFrame({'factor': ['a', 'a'], 'variant': ['raw', 'size_industry_neutral'],
+                          'statistical_pass': [False, False], 'icir': [.1, .2]})
+    table.select('factor', 'variant').write_parquet(statistics/'statistics.parquet')
+    table.write_parquet(screen/'statistical_screen.parquet')
+    result = run_cost_batch(statistics=statistics, screen=screen, output=tmp_path/'output',
+        data_root=tmp_path, execution_snapshot='fixture', existing_runs=[], workers=1,
+        only_statistical_pass=True)
+    assert result['factors'] == 0 and result['statistically_rejected_factors'] == ['a']
+    assert result['completed_runs'] == result['failures'] == {}

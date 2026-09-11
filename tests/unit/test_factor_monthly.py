@@ -6,6 +6,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
+from quant.factors.calendar_liquidity import CALENDAR_LIQUIDITY_NAMES
 from quant.factors.expressions import required_history
 from quant.factors.liquidity import LIQUIDITY_FACTOR_NAMES
 from quant.research.factor_monthly import attach_monthly_factors
@@ -72,7 +73,8 @@ def test_completed_month_values_and_invalid_month_replace_old_values():
         assert required_history(f"ts_mean({name},20)") == required_history(name) + 19
 
 
-def test_monthly_cross_year_increment_preserves_twelve_month_history(tmp_path, monkeypatch):
+@pytest.mark.parametrize("names", [LIQUIDITY_FACTOR_NAMES, CALENDAR_LIQUIDITY_NAMES])
+def test_monthly_cross_year_increment_preserves_twelve_month_history(tmp_path, monkeypatch, names):
     from quant.factors import compute
 
     bars, basic, calendar = sample()
@@ -86,14 +88,14 @@ def test_monthly_cross_year_increment_preserves_twelve_month_history(tmp_path, m
     monkeypatch.setattr(compute, "read_stock_data", lambda **kwargs: basic.filter(
         pl.col("trade_date").is_between(kwargs["start"], kwargs["end"])))
     args = dict(refresh_config=Path("unused"), library=Path("configs/factors/library"),
-        selected=",".join(LIQUIDITY_FACTOR_NAMES), start=dt.date(2019,1,1), artifact_root=tmp_path / "artifacts")
+        selected=",".join(names), start=dt.date(2019,1,1), artifact_root=tmp_path / "artifacts")
     compute.run(**args, data_root=tmp_path / "increment", end=dt.date(2022,1,14))
     compute.run(**args, data_root=tmp_path / "increment", end=dt.date(2022,2,15))
     compute.run(**args, data_root=tmp_path / "full", end=dt.date(2022,2,15))
     for file in (tmp_path / "full/factors").glob("*/year=*/data.parquet"):
         assert_frame_equal(pl.read_parquet(file), pl.read_parquet(
             tmp_path / "increment" / file.relative_to(tmp_path / "full")))
-    for name in LIQUIDITY_FACTOR_NAMES:
+    for name in names:
         values = pl.read_parquet(tmp_path / "full/factors" / name / "year=2022/data.parquet")["value"]
         assert values.count() == 64
     assert compute.run(**args, data_root=tmp_path / "increment", end=dt.date(2022,2,15))["years"] == []

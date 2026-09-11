@@ -4,6 +4,8 @@ import datetime as dt
 
 import polars as pl
 
+from quant.factors.calendar_liquidity import CALENDAR_LIQUIDITY_NAMES, compute_calendar_liquidity
+
 from quant.factors.liquidity import (
     LIQUIDITY_FACTOR_NAMES, compute_monthly_amihud_illiquidity,
     compute_monthly_free_float_turnover_factors,
@@ -13,7 +15,7 @@ from quant.factors.liquidity import (
 def monthly_input_names(expressions: tuple[str, ...]) -> tuple[str, ...]:
     fields = {node.id for expression in expressions
               for node in ast.walk(ast.parse(expression, mode="eval")) if isinstance(node, ast.Name)}
-    return tuple(name for name in LIQUIDITY_FACTOR_NAMES if name in fields)
+    return tuple(name for name in (*LIQUIDITY_FACTOR_NAMES, *CALENDAR_LIQUIDITY_NAMES) if name in fields)
 
 
 def attach_monthly_factors(
@@ -21,7 +23,7 @@ def attach_monthly_factors(
     calendar: tuple[dt.date, ...], names: tuple[str, ...],
 ) -> pl.DataFrame:
     """Month-end is usable after that close; an invalid new month replaces the old value."""
-    if not set(names) <= set(LIQUIDITY_FACTOR_NAMES):
+    if not set(names) <= set((*LIQUIDITY_FACTOR_NAMES, *CALENDAR_LIQUIDITY_NAMES)):
         raise ValueError("Unknown monthly liquidity input")
     if not calendar or calendar != tuple(sorted(set(calendar))):
         raise ValueError("Monthly factors require an ordered exchange calendar")
@@ -47,7 +49,7 @@ def attach_monthly_factors(
             bars, sessions=calendar, signal_dates=signals, candidate_symbols=symbols)
         monthly = monthly.join(amihud.select("symbol", "trade_date", LIQUIDITY_FACTOR_NAMES[0]),
             on=["symbol", "trade_date"], how="left", validate="1:1")
-    turnover = tuple(name for name in names if name != LIQUIDITY_FACTOR_NAMES[0])
+    turnover = tuple(name for name in names if name in LIQUIDITY_FACTOR_NAMES[1:])
     if turnover:
         basic = basic.filter(pl.col("symbol").is_in(symbols)) if not basic.is_empty() else basic
         if basic.is_empty():
@@ -57,6 +59,11 @@ def attach_monthly_factors(
                 basic, signal_dates=signals, candidate_symbols=symbols)
             monthly = monthly.join(values.select("symbol", "trade_date", *turnover),
                 on=["symbol", "trade_date"], how="left", validate="1:1")
+    calendar_names = tuple(name for name in names if name in CALENDAR_LIQUIDITY_NAMES)
+    if calendar_names:
+        values = compute_calendar_liquidity(bars=bars, basic=basic, sessions=calendar, signals=signals,
+            symbols=symbols, names=calendar_names)
+        monthly = monthly.join(values, on=['symbol', 'trade_date'], how='left', validate='1:1')
     result = panel.sort("symbol", "trade_date").join_asof(
         monthly.sort("symbol", "trade_date"), on="trade_date", by="symbol", strategy="backward",
         check_sortedness=False)
