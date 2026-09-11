@@ -1,4 +1,5 @@
 import datetime as dt
+import itertools
 
 import polars as pl
 import pytest
@@ -50,6 +51,78 @@ def test_insufficient_correlation_history_stays_unresolved():
     assert decisions[1]['factor_admitted'] is None
     assert result['selection_complete'] is False
     assert result['confirmed_selected_prefix'] == ['a']
+
+
+def test_confirmed_redundancy_excludes_missing_cost_without_admitting_it():
+    pairs = {('a', 'b'): .65, ('a', 'c'): .1, ('b', 'c'): .1}
+    def compare(a, b):
+        return {'comparison_qualified': True,
+                'mean_absolute_rank_correlation': pairs[tuple(sorted((a, b)))]}
+    full = annual_selection(screen(), settings=SETTINGS, model=MODEL, correlation=compare)[1]
+    incomplete = screen().with_columns(pl.when(pl.col('factor') == 'b').then(None).otherwise(
+        pl.col('cost_excess_pass')).alias('cost_excess_pass'))
+    decisions, result = annual_selection(incomplete, settings=SETTINGS, model=MODEL, correlation=compare)
+    assert result == full
+    assert result['selection_complete'] and result['confirmed_selected_prefix'] == ['a', 'c']
+    assert decisions[1]['factor_admitted'] is None
+    assert decisions[1]['selection_reason'] == 'greedy_redundancy_with_confirmed'
+    # A failed cost result also leaves the same selected portfolio.
+    rejected = incomplete.with_columns(pl.col('cost_excess_pass').fill_null(False))
+    assert annual_selection(rejected, settings=SETTINGS, model=MODEL, correlation=compare)[1] == result
+
+
+def test_provisional_or_unqualified_peer_cannot_resolve_missing_cost():
+    incomplete = screen().with_columns(pl.when(pl.col('factor').is_in(['a', 'c'])).then(None).otherwise(
+        pl.col('cost_excess_pass')).alias('cost_excess_pass'))
+    def compare(a, b):
+        return {'comparison_qualified': True,
+                'mean_absolute_rank_correlation': .65 if set((a, b)) == {'b', 'c'} else .1}
+    _, result = annual_selection(incomplete, settings=SETTINGS, model=MODEL, correlation=compare)
+    assert not result['selection_complete'] and result['unresolved_factors'] == 2
+    assert result['confirmed_selected_prefix'] == []
+    incomplete = screen().with_columns(pl.when(pl.col('factor') == 'b').then(None).otherwise(
+        pl.col('cost_excess_pass')).alias('cost_excess_pass'))
+    _, result = annual_selection(incomplete, settings=SETTINGS, model=MODEL,
+        correlation=lambda a, b: {'comparison_qualified': False, 'mean_absolute_rank_correlation': .99})
+    assert not result['selection_complete']
+
+
+def test_confirmed_full_quota_does_not_wait_for_lower_costs():
+    model = {'selection': {**MODEL['selection'], 'maximum_factors': 1}}
+    incomplete = screen().with_columns(pl.when(pl.col('factor') != 'a').then(None).otherwise(
+        pl.col('cost_excess_pass')).alias('cost_excess_pass'))
+    _, result = annual_selection(incomplete, settings=SETTINGS, model=model,
+        correlation=lambda a, b: pytest.fail('No comparisons needed after a confirmed full quota'))
+    assert result['selection_complete'] and result['confirmed_selected_prefix'] == ['a']
+    _, complete_costs = annual_selection(screen(), settings=SETTINGS, model=model,
+        correlation=lambda a, b: {'comparison_qualified': False, 'mean_absolute_rank_correlation': .1})
+    assert complete_costs == result
+
+
+def test_partial_cost_selection_matches_every_possible_completion():
+    names = ['a', 'b', 'c']
+    for values in itertools.product((.1, .65, .75), repeat=3):
+        pairs = dict(zip(itertools.combinations(names, 2), values, strict=True))
+
+        def compare(a, b):
+            return {'comparison_qualified': True,
+                    'mean_absolute_rank_correlation': pairs[tuple(sorted((a, b)))]}
+
+        resolved = {}
+        for costs in itertools.product((False, True), repeat=3):
+            table = screen().with_columns(pl.Series('cost_excess_pass', costs))
+            resolved[costs] = annual_selection(table, settings=SETTINGS, model=MODEL,
+                                               correlation=compare)[1]['confirmed_selected_prefix']
+        for partial in itertools.product((False, True, None), repeat=3):
+            table = screen().with_columns(pl.Series('cost_excess_pass', partial, dtype=pl.Boolean))
+            _, result = annual_selection(table, settings=SETTINGS, model=MODEL, correlation=compare)
+            prefix = result['confirmed_selected_prefix']
+            for costs, selected in resolved.items():
+                if any(p is not None and p != c for p, c in zip(partial, costs, strict=True)):
+                    continue
+                assert selected[:len(prefix)] == prefix, (values, partial, costs)
+                if result['selection_complete']:
+                    assert selected == prefix, (values, partial, costs)
 
 
 def test_future_scores_do_not_change_saved_annual_selection(tmp_path, monkeypatch):

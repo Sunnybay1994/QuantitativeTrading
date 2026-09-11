@@ -22,12 +22,25 @@ def annual_selection(screen: pl.DataFrame, *, settings: dict, model: dict,
     for row in ranked.iter_rows(named=True):
         factor = row['factor']
         admitted, chosen, maximum = False, False, None
+        excluded_without_costs = False
         reason = 'statistical_threshold'
         if row['statistical_pass']:
             if row['cost_excess_pass'] is False:
                 reason = 'cost_threshold'
             elif not row['costs_complete'] or row['cost_excess_pass'] is None:
                 admitted, reason = None, 'cost_evidence_missing'
+                if len(confirmed) >= model['selection']['maximum_factors']:
+                    excluded_without_costs, reason = True, 'maximum_factors'
+                else:
+                    # A confirmed earlier pick cannot be displaced by a lower
+                    # ranked factor. A qualified redundancy witness excludes
+                    # this candidate regardless of its still-unknown costs.
+                    for peer in confirmed:
+                        pair = correlation(factor, peer)
+                        if (pair['comparison_qualified'] and pair['mean_absolute_rank_correlation']
+                                >= model['selection']['maximum_absolute_rank_correlation']):
+                            excluded_without_costs, reason = True, 'greedy_redundancy_with_confirmed'
+                            break
             else:
                 comparisons = [correlation(factor, peer) for peer in higher]
                 qualified = [pair['mean_absolute_rank_correlation'] for pair in comparisons
@@ -53,7 +66,9 @@ def annual_selection(screen: pl.DataFrame, *, settings: dict, model: dict,
                     confirmed.append(factor)
         elif admitted is True:
             reason = 'maximum_factors'
-        if admitted is None or chosen is None:
+        if not chosen and len(confirmed) >= model['selection']['maximum_factors']:
+            excluded_without_costs, reason = True, 'maximum_factors'
+        if (admitted is None and not excluded_without_costs) or chosen is None:
             uncertain += 1
         decisions.append({'factor': factor, 'variant': variant, 'training_icir': row['icir'],
             'training_mean_ic': row['mean_ic'], 'factor_admitted': admitted,
