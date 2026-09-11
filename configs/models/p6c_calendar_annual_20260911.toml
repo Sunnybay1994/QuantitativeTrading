@@ -1,0 +1,31 @@
+[research]
+id = "p6c-calendar-annual-20260911"
+registered_on = 2026-09-11
+hypothesis = "Apply the same calendar monthly coverage repair to every causal annual LightGBM fit and evaluate the full source replay period under unchanged portfolio and admission rules."
+single_variable = "monthly_observation_coverage_rule"
+source_predictions = "artifacts/models/p4_follow_20260911_01/attempt_0017/predictions"
+historical_evidence = "retrospective_annual_walk_forward_not_an_unseen_holdout"
+auto_trade = false
+
+[model]
+method = "lightgbm"
+training_start = 2010-01-01
+test_start = 2015-01-01
+test_end = 2026-08-31
+minimum_training_months = 96
+minimum_signal_stocks = 100
+parameters = "unchanged_source_LightGBM"
+factor_selection = "source_each_year_selected_factors_with_only_present_registered_replacements"
+insufficient_history = "cash"
+admission = "unchanged_source_full_period_thresholds"
+
+[replacements]
+amihud_illiquidity_monthly = "amihud_illiquidity_monthly_calendar80_v1"
+free_float_turnover_abnormal_12m = "free_float_turnover_abnormal_12m_calendar80_v1"
+
+[inputs]
+calendar_statistics = ["artifacts/factors/search/p6c_batch01_window02_20260911/training", "artifacts/factors/search/p6c_batch01_window02_20260911/validation", "artifacts/models/p6c_calendar_model_20260911_02/calendar_scores"]
+
+[forward]
+start = 2026-09-14
+minimum_observation_months = 12
