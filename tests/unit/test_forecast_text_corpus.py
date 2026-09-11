@@ -3,7 +3,7 @@ import datetime as dt
 import polars as pl
 import pytest
 
-from quant.data.forecast_text_corpus import normalize_forecasts
+from quant.data.forecast_text_corpus import normalize_forecasts, select_historical_scope
 
 
 def sample():
@@ -39,3 +39,14 @@ def test_blank_text_remains_missing():
 def test_missing_date_rejected():
     with pytest.raises(ValueError, match='Invalid forecast'):
         normalize_forecasts(sample().with_columns(pl.lit(None, dtype=pl.String).alias('ann_date')))
+
+
+def test_historical_scope_keeps_delisted_and_excludes_late_listings(tmp_path):
+    source = tmp_path/'stocks.parquet'
+    pl.DataFrame({
+        'ts_code': ['600001.SH', '600002.SH', '600003.SH', '600004.SH'],
+        'list_date': ['20000101', '20000101', '20180101', '20000101'],
+        'delist_date': [None, '20200101', None, '20090101'],
+    }).write_parquet(source)
+    selected = select_historical_scope([source], tmp_path/'scope.json', count=2)
+    assert selected['symbols'] == ['600001.SH', '600002.SH']

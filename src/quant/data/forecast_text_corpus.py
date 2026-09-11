@@ -3,6 +3,7 @@ import argparse
 import datetime as dt
 import json
 import re
+import random
 import time
 from pathlib import Path
 
@@ -10,6 +11,27 @@ import polars as pl
 
 from quant.data.connectors.tushare import TushareConnector
 from quant.data.tushare_bulk import _classify_probe_exception
+
+
+def select_historical_scope(inputs: list[Path], output: Path, *, count: int = 512,
+                            seed: int = 20260912) -> dict:
+    """Freeze a reproducible sample before querying its forecast text."""
+    frame = pl.concat([pl.read_parquet(path) for path in inputs], how='diagonal_relaxed')
+    eligible = frame.filter(
+        pl.col('ts_code').str.contains(r'^[036][0-9]{5}\.(SH|SZ)$')
+        & (pl.col('list_date') <= '20170101')
+        & (pl.col('delist_date').is_null() | (pl.col('delist_date') == '')
+           | (pl.col('delist_date') >= '20100101'))
+    )['ts_code'].unique().sort().to_list()
+    symbols = sorted(random.Random(seed).sample(eligible, count))
+    result = {'symbols': symbols, 'seed': seed, 'eligible': len(eligible),
+              'source_files': [str(path) for path in inputs],
+              'selection': 'SH/SZ A shares listed by 2017-01-01 and not delisted before '
+                           '2010-01-01; includes subsequently delisted stocks; random sample.'}
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open('x', encoding='utf-8') as handle:
+        json.dump(result, handle, indent=2)
+    return result
 
 
 def normalize_forecasts(frame: pl.DataFrame) -> pl.DataFrame:
@@ -64,14 +86,17 @@ def build_corpus(inputs: list[Path], output: Path) -> dict:
 
 
 def collect(*, symbols: list[str], start: dt.date, end: dt.date, output: Path,
-            data_root: Path, interval: float = 1.3) -> dict:
+            data_root: Path, interval: float = 1.3,
+            apis: tuple[str, ...] = ('forecast', 'express')) -> dict:
     if (start > end or not symbols or len(symbols) != len(set(symbols)) or interval < 0
             or any(not re.fullmatch(r'[0-9]{6}\.(SH|SZ)', symbol) for symbol in symbols)):
         raise ValueError('Invalid text corpus scope')
+    if not apis or len(set(apis)) != len(apis) or set(apis) - {'forecast', 'express'}:
+        raise ValueError('Invalid text corpus APIs')
     output.mkdir(parents=True, exist_ok=False)
     raw = data_root/'raw'/'forecast_text_corpus'/output.name
     raw.mkdir(parents=True, exist_ok=False)
-    config = {'symbols': symbols, 'start': str(start), 'end': str(end), 'apis': ['forecast', 'express']}
+    config = {'symbols': symbols, 'start': str(start), 'end': str(end), 'apis': list(apis)}
     (output/'scope.json').write_text(json.dumps(config, indent=2), encoding='utf-8')
     client = TushareConnector()
     rows = []
@@ -107,6 +132,9 @@ def collect(*, symbols: list[str], start: dt.date, end: dt.date, output: Path,
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--symbols')
+    parser.add_argument('--symbols-file', type=Path, help='JSON file containing a symbols list')
+    parser.add_argument('--apis', nargs='+', choices=['forecast', 'express'],
+                        default=['forecast', 'express'])
     parser.add_argument('--from', dest='start', type=dt.date.fromisoformat)
     parser.add_argument('--to', dest='end', type=dt.date.fromisoformat)
     parser.add_argument('--build-from', nargs='+', type=Path, help='Existing raw forecast files')
@@ -116,9 +144,14 @@ def main() -> None:
     if args.build_from:
         print(json.dumps(build_corpus(args.build_from, args.output)), flush=True)
         return
-    if not args.symbols or not args.start or not args.end:
+    if args.symbols and args.symbols_file:
+        parser.error('Use one symbol source')
+    if not (args.symbols or args.symbols_file) or not args.start or not args.end:
         parser.error('Collection requires --symbols, --from and --to')
-    collect(symbols=args.symbols.split(','), start=args.start, end=args.end, output=args.output, data_root=args.data_root)
+    symbols = (json.loads(args.symbols_file.read_text(encoding='utf-8'))['symbols']
+               if args.symbols_file else args.symbols.split(','))
+    collect(symbols=symbols, start=args.start, end=args.end, output=args.output,
+            data_root=args.data_root, apis=tuple(args.apis))
 
 
 if __name__ == '__main__':
