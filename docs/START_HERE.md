@@ -58,6 +58,9 @@ D:\Miniforge3\python.exe -m quant.reporting.stock_paper_monthly
 # 数据补齐（日频 + 分钟 + 基准 + 公告驱动财务 + 因子增量；17点前取上一完整日）
 D:\Miniforge3\python.exe -m quant.data.refresh --to today
 
+# 多因子模型随既有成本结果自动续跑（五分钟检查一次；最多等待24小时）
+D:\Miniforge3\python.exe -m quant.research.follow_multifactor_pipeline --config configs/models/p4_annual_walk_forward_20260911.toml --output artifacts/models/p4_follow_new --resume-from artifacts/models/p4_pipeline_20260911_04_resumed
+
 # 仅分钟数据；BaoStock 单连接串行，首次历史回填时间较长
 D:\Miniforge3\python.exe -m quant.data.intraday --to today
 
