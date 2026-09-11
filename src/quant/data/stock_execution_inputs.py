@@ -160,6 +160,13 @@ def resolve_same_day_dividends(frame: pl.DataFrame) -> pl.DataFrame:
 def ordinary_holder_distributions(frame: pl.DataFrame) -> pl.DataFrame:
     """Exclude verified restructuring shares that ordinary shareholders do not receive."""
     for symbol, date, ratio in (
+        ("000035.SZ", dt.date(2012, 12, 3), .2596),
+        ("000155.SZ", dt.date(2016, 12, 14), 1.7021276),
+        ("000520.SZ", dt.date(2014, 7, 31), .5),
+        ("000912.SZ", dt.date(2018, 7, 30), 1.6803419),
+        ("000972.SZ", dt.date(2013, 2, 25), .6),
+        ("002260.SZ", dt.date(2020, 9, 25), 1.1),
+        ("300362.SZ", dt.date(2021, 6, 15), 2.5502742),
         ("002219.SZ", dt.date(2022, 6, 23), .75),
         ("002309.SZ", dt.date(2024, 12, 24), 2.45),
         ("000793.SZ", dt.date(2026, 6, 22), 1.2),

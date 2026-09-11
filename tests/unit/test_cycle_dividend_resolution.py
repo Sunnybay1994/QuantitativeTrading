@@ -34,6 +34,13 @@ def test_eve_distribution_has_one_cash_and_share_credit():
 
 
 @pytest.mark.parametrize(('symbol', 'date', 'ratio'), [
+    ('000035.SZ', dt.date(2012, 12, 3), .2596),
+    ('000155.SZ', dt.date(2016, 12, 14), 1.7021276),
+    ('000520.SZ', dt.date(2014, 7, 31), .5),
+    ('000912.SZ', dt.date(2018, 7, 30), 1.6803419),
+    ('000972.SZ', dt.date(2013, 2, 25), .6),
+    ('002260.SZ', dt.date(2020, 9, 25), 1.1),
+    ('300362.SZ', dt.date(2021, 6, 15), 2.5502742),
     ('002219.SZ', dt.date(2022, 6, 23), .75),
     ('002309.SZ', dt.date(2024, 12, 24), 2.45),
 ])
