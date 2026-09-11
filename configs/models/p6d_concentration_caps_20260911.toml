@@ -1,0 +1,21 @@
+[research]
+id = "p6d-concentration-caps-20260911"
+registered_on = 2026-09-11
+hypothesis = "Frozen cash and concentration caps reduce calendar LightGBM Top50 drawdown; keep clipped capital as cash without changing ranks or refitting."
+predictions = "artifacts/models/p6c_calendar_annual_20260911_01/predictions"
+statistics = "artifacts/factors/battery_statistics_20260831_20260911"
+benchmarks = "artifacts/factors/battery_stock_benchmarks_20260911"
+method = "lightgbm"
+top_k = 50
+evidence = "retrospective_existing_history_no_new_holdout"
+decision = "unchanged_source_model_admission_all_conditions_required"
+
+[policy]
+cash_buffer = 0.02
+single_stock_weight = 0.10
+industry_weight = 0.30
+allocation = "clip_stock_then_proportional_industry_then_total_investment"
+unknown_industry = "zero_target_keep_cash"
+rebalance = "source_month_end_close_next_open_shared_weight_engine"
+scope = "signal_target_caps_actual_holdings_can_drift_or_have_unfilled_orders"
+auto_trade = false
