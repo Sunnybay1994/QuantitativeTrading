@@ -85,6 +85,7 @@ def run_scorecard(*, screen: Path, output: Path, cost_runs: list[Path], cost_roo
     statistics = pl.read_parquet(screen/'statistical_screen.parquet')
     runs = [*cost_runs, *(path.parent for path in cost_root.glob('*/summary.json'))] if cost_root else cost_runs
     reports, paths = [], []
+    benchmark_cache: dict[tuple, pl.DataFrame] = {}
     if benchmarks is not None and not (benchmarks/'summary.json').is_file():
         benchmarks = None
     snapshot = None
@@ -96,7 +97,8 @@ def run_scorecard(*, screen: Path, output: Path, cost_runs: list[Path], cost_roo
             raise ValueError('Cost runs use different execution inputs')
         snapshot = saved['execution_snapshot']
         existing_cost_factor(run, settings=settings, snapshot=snapshot)
-        reports.append(collect_cost_report(run=run, benchmarks=benchmarks, etf_reference=True, data_root=data_root))
+        reports.append(collect_cost_report(run=run, benchmarks=benchmarks, etf_reference=True,
+                                          data_root=data_root, benchmark_cache=benchmark_cache))
         paths.append(str(run))
     correlation_table = None
     if redundancy is not None and (redundancy/'correlation_maxima.parquet').is_file():

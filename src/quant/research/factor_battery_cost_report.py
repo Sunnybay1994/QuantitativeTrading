@@ -50,7 +50,7 @@ def load_cost_history(run: Path, variant: str, multiplier: float, end) -> tuple[
     folder = run/variant/f'cost_{multiplier:g}'
     navs, trades = [], []
     for year in sorted(folder.iterdir()):
-        if year.is_dir():
+        if year.is_dir() and year.name.isdigit():
             navs.append(pl.read_parquet(year/'nav.parquet'))
             trades.append(pl.read_parquet(year/'trades.parquet'))
     if not navs:
@@ -62,7 +62,10 @@ def load_cost_history(run: Path, variant: str, multiplier: float, end) -> tuple[
 
 
 def collect_cost_report(*, run: Path, benchmarks: Path | None = None,
-                        etf_reference: bool = False, data_root: Path = Path('data')) -> dict:
+                        etf_reference: bool = False, data_root: Path = Path('data'),
+                        benchmark_cache: dict[tuple, pl.DataFrame] | None = None) -> dict:
+    # Owned by this report or its scorecard call, never shared across runs.
+    cache = benchmark_cache if benchmark_cache is not None else {}
     settings = tomllib.loads((run/'battery.toml').read_text(encoding='utf-8'))
     saved = json.loads((run/'summary.json').read_text(encoding='utf-8'))
     etf = (read_etf_total_return(data_root=data_root, snapshot=settings['data']['etf_total_return_snapshot'],
@@ -91,8 +94,11 @@ def collect_cost_report(*, run: Path, benchmarks: Path | None = None,
             if benchmark['cost_multiplier'] != row['cost_multiplier']:
                 continue
             assert benchmarks is not None
-            baseline, _ = load_cost_history(benchmarks, benchmark['variant'], benchmark['cost_multiplier'],
-                                            settings['run']['as_of'])
+            cache_key = (benchmarks.resolve(), benchmark['variant'], benchmark['cost_multiplier'], settings['run']['as_of'])
+            if cache_key not in cache:
+                cache[cache_key], _ = load_cost_history(benchmarks, benchmark['variant'], benchmark['cost_multiplier'],
+                                                 settings['run']['as_of'])
+            baseline = cache[cache_key]
             comparisons.append({'variant': row['variant'], 'cost_multiplier': row['cost_multiplier'],
                                 'benchmark': benchmark['variant'],
                                 'benchmark_cost_treatment': 'same_execution_rules_and_cost_multiplier',
