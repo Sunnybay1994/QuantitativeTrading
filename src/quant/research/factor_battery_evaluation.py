@@ -19,11 +19,9 @@ class FactorYearStatistics:
     monthly_scores: pl.DataFrame
 
 
-def evaluate_factor_year(*, universe: pl.DataFrame, values: pl.DataFrame, daily_labels: pl.DataFrame,
-                         monthly_labels: pl.DataFrame, direction: int, settings: dict) -> FactorYearStatistics:
-    """Scores use signal-date inputs; future returns are joined only afterwards."""
-    daily_dates = tuple(universe["trade_date"].unique().sort().to_list())
-    monthly_dates = tuple(monthly_labels["trade_date"].unique().sort().to_list())
+def score_factor_sections(*, universe: pl.DataFrame, values: pl.DataFrame,
+                          direction: int, settings: dict) -> pl.DataFrame:
+    """Shared label-free preprocessing for the battery and forward predictions."""
     keys = ["symbol", "trade_date"]
     panel = universe.filter(pl.col("eligible")).select(*keys,"total_market_value","industry_l1").join(
         values.select(*keys, "value"),on=keys,how="left",validate="1:1")
@@ -44,6 +42,17 @@ def evaluate_factor_year(*, universe: pl.DataFrame, values: pl.DataFrame, daily_
         frames.append(section.select(keys).with_columns(scores))
     scored = (pl.concat(frames) if frames else pl.DataFrame(schema={"symbol":pl.String,"trade_date":pl.Date,
         **{variant:pl.Float64 for variant in variants}}))
+    return scored
+
+
+def evaluate_factor_year(*, universe: pl.DataFrame, values: pl.DataFrame, daily_labels: pl.DataFrame,
+                         monthly_labels: pl.DataFrame, direction: int, settings: dict) -> FactorYearStatistics:
+    """Scores use signal-date inputs; future returns are joined only afterwards."""
+    daily_dates = tuple(universe["trade_date"].unique().sort().to_list())
+    monthly_dates = tuple(monthly_labels["trade_date"].unique().sort().to_list())
+    keys = ["symbol", "trade_date"]
+    variants = settings['variants']
+    scored = score_factor_sections(universe=universe, values=values, direction=direction, settings=settings)
     daily = scored.join(daily_labels,on=keys,how="left",validate="1:1")
     monthly = scored.filter(pl.col("trade_date").is_in(monthly_dates)).join(monthly_labels,on=keys,
         how="left",validate="1:1")
