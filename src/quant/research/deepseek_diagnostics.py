@@ -125,7 +125,7 @@ class DiagnosticClient:
 
 def run_diagnosis(*, inputs: list[Path], config: Path, output: Path, cache_path: Path,
                   artifact_root: Path, execute: bool = False, max_requests: int = 0,
-                  max_usd: float = 0, client: Any = None) -> dict:
+                  max_usd: float = 0, client: Any = None, development_test: bool = False) -> dict:
     settings = load_settings(config)
     if (max_requests < 0 or not math.isfinite(max_usd) or max_usd < 0
             or (execute and (max_requests < 1 or max_usd <= 0))):
@@ -153,7 +153,7 @@ def run_diagnosis(*, inputs: list[Path], config: Path, output: Path, cache_path:
             result = score_one("", settings=settings, cache=cache,
                 client=DiagnosticClient(client, prompt_messages), max_requests=max_requests,
                 max_usd=max_usd, request_key=key, token_bound=token_bound,
-                parse=lambda text: parse_diagnosis(text, facts))
+                parse=lambda text: parse_diagnosis(text, facts), development_test=development_test)
             totals = cache.totals()
         finally:
             cache.close()
@@ -163,6 +163,8 @@ def run_diagnosis(*, inputs: list[Path], config: Path, output: Path, cache_path:
     diagnosis = json.loads(result["scores_json"]) if result["state"] == "success" else None
     (output / "diagnosis.json").write_text(json.dumps(diagnosis, ensure_ascii=False, indent=2), encoding="utf-8")
     report = {"run_type": "research-diagnosis", "dry_run": not execute, "result": result["state"],
+              "request_schedule": "development_test" if development_test else "off_peak_only",
+              "deferred_until": result.get('next_allowed_at'),
               "conclusion": "RESEARCH_ONLY", "sources": sources, "fact_count": len(facts),
               "scope": "Bounded input subset: first 20 rows/list entries, 250 scalar facts; drafts only",
               "scoring": settings, "prompt_version": VERSION,
@@ -178,7 +180,8 @@ def run_diagnosis(*, inputs: list[Path], config: Path, output: Path, cache_path:
     code_root = Path(__file__).resolve().parents[1]
     report["code_sha256"] = {name: hashlib.sha256((code_root / name).read_bytes()).hexdigest()
         for name in ("research/deepseek_diagnostics.py", "research/score_forecast_text.py",
-                     "data/connectors/deepseek.py", "data/forecast_text_scores.py")}
+                     "data/connectors/deepseek.py", "data/forecast_text_scores.py",
+                     "research/deepseek_batch_window.py")}
     (output / "run.json").write_text(json.dumps(report, default=str, ensure_ascii=False, indent=2), encoding="utf-8")
     return report
 
@@ -190,13 +193,16 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--cache", type=Path, default=Path("artifacts/research/deepseek_diagnosis_cache.sqlite"))
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--development-test", action="store_true",
+                        help="Allow development requests during peak hours; budget caps still apply")
     parser.add_argument("--max-requests", type=int, default=0)
     parser.add_argument("--max-usd", type=float, default=0)
     args = parser.parse_args()
     try:
         report = run_diagnosis(inputs=args.input, config=args.config, output=args.output,
             cache_path=args.cache, artifact_root=Path("artifacts"), execute=args.execute,
-            max_requests=args.max_requests, max_usd=args.max_usd)
+            max_requests=args.max_requests, max_usd=args.max_usd,
+            development_test=args.development_test)
     except (ValueError, RuntimeError):
         parser.exit(2, "Diagnosis stopped; check config, input facts and local key.\n")
     print(json.dumps({k: report[k] for k in ("result", "fact_count", "usd_bound_including_retries")}))

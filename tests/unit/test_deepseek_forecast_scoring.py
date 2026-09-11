@@ -17,6 +17,12 @@ DESIGN = ROOT / "configs/factors/p7_text_evaluation_v1.toml"
 REASON = "订单显著增加，成本效率改善。"
 
 
+@pytest.fixture(autouse=True)
+def off_peak_clock(monkeypatch):
+    monkeypatch.setattr('quant.research.score_forecast_text.request_window',
+                        lambda: {'allowed': True, 'next_allowed_at': '2026-09-12T00:00:00+00:00'})
+
+
 def content():
     return {name: {"score": 2 if name == DIMENSIONS[0] else 0, "status": "scored",
                    "evidence": "订单显著增加" if name == DIMENSIONS[0] else ""}

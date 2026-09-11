@@ -8,6 +8,12 @@ from quant.research.deepseek_diagnostics import extract_facts, parse_diagnosis, 
 CONFIG = Path(__file__).resolve().parents[2] / "configs/research/deepseek_diagnosis_v1.toml"
 
 
+@pytest.fixture(autouse=True)
+def off_peak_clock(monkeypatch):
+    monkeypatch.setattr('quant.research.score_forecast_text.request_window',
+                        lambda: {'allowed': True, 'next_allowed_at': '2026-09-12T00:00:00+00:00'})
+
+
 def diagnosis(pointer="source0#/effective_months", value=24):
     return {"findings": [{"claim": "有效历史较短", "evidence": [
         {"pointer": pointer, "value": value}]}], "candidates": []}

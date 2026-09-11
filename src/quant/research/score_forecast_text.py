@@ -22,6 +22,7 @@ from quant.factors.forecast_text_score import (
     DIMENSIONS, PROMPT, PROMPT_VERSION, input_token_bound, parse_score, score_key,
 )
 from quant.research.lightweight_run import dataframe_input_digest
+from quant.research.deepseek_batch_window import request_window
 
 
 class Settings(BaseModel):
@@ -80,7 +81,8 @@ def validated_usage(response: dict) -> tuple[str, dict]:
 def score_one(reason: str, *, settings: dict, cache: ScoreCache, client: Any,
               max_requests: int, max_usd: float, sleep: Callable[[float], None] = time.sleep,
               request_key: str | None = None, token_bound: int | None = None,
-              parse: Callable[[str], dict] | None = None) -> dict:
+              parse: Callable[[str], dict] | None = None,
+              development_test: bool = False) -> dict:
     key = request_key or score_key(reason, settings)
     input_bound = token_bound if token_bound is not None else input_token_bound(reason)
     bound = cost_for(input_bound, settings["max_tokens"], settings)
@@ -88,6 +90,10 @@ def score_one(reason: str, *, settings: dict, cache: ScoreCache, client: Any,
         prior = cache.latest(key)
         if prior and prior["state"] != "retryable":
             return prior
+        window = request_window()
+        if not development_test and not window['allowed']:
+            return {'state': 'deferred_off_peak', 'actual_model': None,
+                    'next_allowed_at': window['next_allowed_at']}
         attempt = cache.reserve(key, bound, max_requests=max_requests, max_usd=max_usd,
                                 max_attempts=settings["max_attempts"])
         if attempt is None:
@@ -133,7 +139,8 @@ def score_one(reason: str, *, settings: dict, cache: ScoreCache, client: Any,
 
 def run_batch(*, source: Path, config: Path, design_path: Path, output: Path,
               cache_path: Path, execute: bool = False, max_requests: int = 0,
-              max_usd: float = 0, limit: int | None = None, client: Any = None) -> dict:
+              max_usd: float = 0, limit: int | None = None, client: Any = None,
+              development_test: bool = False) -> dict:
     settings, design = load_settings(config), load_design(design_path)
     if (type(max_requests) is not int or max_requests < 0 or not math.isfinite(max_usd)
             or max_usd < 0 or (execute and (max_requests < 1 or max_usd <= 0))
@@ -178,7 +185,8 @@ def run_batch(*, source: Path, config: Path, design_path: Path, output: Path,
         if cache:
             for key, reason in selected.items():
                 result_by_key[key] = score_one(reason, settings=settings, cache=cache, client=client,
-                                               max_requests=max_requests, max_usd=max_usd)
+                                               max_requests=max_requests, max_usd=max_usd,
+                                               development_test=development_test)
         rows = []
         for record in records:
             reason = record["reason_text"]
@@ -205,6 +213,9 @@ def run_batch(*, source: Path, config: Path, design_path: Path, output: Path,
         # No invented backtest folds or trade performance for a text extraction run.
         report = {"run_type": "forecast-text-scoring", "conclusion": "RESEARCH_ONLY",
                   "dry_run": not execute, "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                  "request_schedule": "development_test" if development_test else "off_peak_only",
+                  "deferred_until": sorted({item['next_allowed_at'] for item in result_by_key.values()
+                                            if item.get('state') == 'deferred_off_peak'}),
                   "source": str(source), "inputs": inputs, "design": design, "scoring": settings,
                   "evidence_scope": "provided_reason_excerpt_not_full_announcement",
                   "prompt_version": PROMPT_VERSION,
@@ -229,7 +240,8 @@ def run_batch(*, source: Path, config: Path, design_path: Path, output: Path,
         code_root = Path(__file__).resolve().parents[1]
         report["code_sha256"] = {name: hashlib.sha256((code_root / name).read_bytes()).hexdigest()
             for name in ("research/score_forecast_text.py", "factors/forecast_text_score.py",
-                         "data/forecast_text_scores.py", "data/connectors/deepseek.py")}
+                         "data/forecast_text_scores.py", "data/connectors/deepseek.py",
+                         "research/deepseek_batch_window.py")}
         report["outputs"] = {name: hashlib.sha256((output / name).read_bytes()).hexdigest()
                              for name in ("scores.parquet", "scoring.toml", "design.toml", "prompt.txt",
                                           "requests.json", "battery.toml")}
@@ -251,6 +263,8 @@ def main() -> None:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--cache", type=Path, default=Path("artifacts/research/p7_deepseek_cache.sqlite"))
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--development-test", action="store_true",
+                        help="Allow development requests during peak hours; budget caps still apply")
     parser.add_argument("--max-requests", type=int, default=0)
     parser.add_argument("--max-usd", type=float, default=0)
     parser.add_argument("--limit", type=int)
@@ -266,11 +280,13 @@ def main() -> None:
         try:
             report = run_batch(source=args.input, config=args.config, design_path=args.design,
                                output=args.output, cache_path=args.cache, execute=args.execute,
-                               max_requests=args.max_requests, max_usd=args.max_usd, limit=args.limit)
+                               max_requests=args.max_requests, max_usd=args.max_usd, limit=args.limit,
+                               development_test=args.development_test)
         except (ValueError, RuntimeError) as exc:
             # Pydantic errors can echo supplied values: keep CLI failures path/key safe.
             parser.exit(2, f"Scoring stopped: {type(exc).__name__}; check config, local key and cache.\n")
         result = {"output": str(args.output), "plan": report["plan"], "summary": report["summary"],
+                  "deferred_until": report['deferred_until'],
                   "requests_this_run": report["requests_this_run"]}
     print(json.dumps(result, ensure_ascii=False))
 
