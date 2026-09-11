@@ -92,6 +92,28 @@ def test_reduction_rejects_changed_holdings_and_preserves_zero_entitlement():
     assert not empty["holdings"] and empty["cash"] == 100.
 
 
+@pytest.mark.parametrize('known_cash,quantity,inception,allowed', [
+    (True, 0, D2, True),
+    (False, 0, D2, False),
+    (True, 100, D2, False),
+    (True, 0, D1, False),
+])
+def test_pre_inception_reduction_only_skips_a_known_empty_cash_account(
+        known_cash, quantity, inception, allowed):
+    kwargs, state = inputs()
+    state['holdings'] = {SYMBOL: {'quantity': quantity, 'mark_price': 10.}} if quantity else {}
+    state.update(started_with_cash=known_cash, inception_date=str(inception))
+    kwargs['dividends'] = kwargs['dividends'].with_columns(
+        pl.lit(D3).alias('ex_date'), pl.lit(0.).alias('div_cash'), pl.lit(-.2).alias('share_ratio'))
+    if allowed:
+        result, _ = advance(date=D3, state=state, **kwargs)
+        assert result['holdings'] == {} and result['cash'] == state['cash']
+        assert not result.get('share_reduction_entitlements')
+    else:
+        with pytest.raises(ValueError, match='record-date holdings snapshot'):
+            advance(date=D3, state=state, **kwargs)
+
+
 def test_weekend_final_dividend_terms_apply_once_on_monday_ex_date():
     kwargs, state = inputs()
     friday, monday, tuesday = dt.date(2025, 7, 4), dt.date(2025, 7, 7), dt.date(2025, 7, 8)

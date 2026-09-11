@@ -29,6 +29,12 @@ def prepare_account_actions(*, date: dt.date, state: dict[str, Any], calendar: p
             if not -1 < ratio < 0 or amount:
                 raise ValueError("Invalid uncompensated share reduction")
             key = f"{event['symbol']}|{date}"
+            if (key not in reduction_entitlements and not quantity
+                    and state.get('started_with_cash') is True
+                    and str(event['record_date']) < state.get('inception_date', '')):
+                # This account did not exist at the record date and has no
+                # affected shares now. Its entitlement is known to be zero.
+                reduction_entitlements[key] = 0
             if key not in reduction_entitlements:
                 raise ValueError("Share reduction requires record-date holdings snapshot")
             entitled = reduction_entitlements.pop(key)
