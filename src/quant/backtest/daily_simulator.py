@@ -152,6 +152,10 @@ def simulate_daily_targets(
             for row in instrument_rows.values()
             if _instrument_policy_supported(row)
         }
+    if not active_markets and not active_symbols:
+        # An all-cash book still accrues a NAV observation on the supplied
+        # exchange calendar, even before its first eligible instrument exists.
+        active_markets = {market for market, _ in open_pairs}
     sessions = sorted(
         {
             date
@@ -159,7 +163,7 @@ def simulate_daily_targets(
             if market in active_markets
         }
     )
-    if active_symbols and not sessions:
+    if not sessions:
         raise ValueError("BACKTEST_CALENDAR_COVERAGE_MISSING")
     if any(
         (market, date) not in calendar_pairs

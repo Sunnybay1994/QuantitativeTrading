@@ -33,6 +33,11 @@ def test_execution_reader_keeps_future_settlement_recorded_in_window(tmp_path, m
     with pytest.raises(ValueError, match="instruments"):
         inputs.read_battery_execution(data_root=tmp_path, refresh_config=tmp_path / "unused",
             snapshot="fixture", start=day, end=day, symbols=["missing"])
+    monkeypatch.setattr(inputs, 'read_stock_data', lambda **kwargs: pytest.fail('Cash needs no stock bars'))
+    empty = inputs.read_battery_execution(data_root=tmp_path, refresh_config=tmp_path/'unused',
+        snapshot='fixture', start=day, end=day, symbols=[])
+    assert empty['calendar'].height == 2
+    assert all(empty[name].is_empty() for name in ('bars', 'instruments', 'limits', 'suspensions', 'dividends'))
 
 
 def test_monthly_labels_cross_year_boundaries_without_future_universe_changes(tmp_path, monkeypatch):

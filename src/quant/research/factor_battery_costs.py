@@ -99,17 +99,21 @@ def run_factor_costs(*, statistics: Path, output: Path, data_root: Path,
 
 
 def run_cost_plans(*, settings: dict, plans: dict, sessions: tuple[dt.date, ...], output: Path,
-                   data_root: Path, execution_snapshot: str, factor: str) -> dict:
+                   data_root: Path, execution_snapshot: str, factor: str,
+                   start: dt.date | None = None) -> dict:
     """Replay factor and equal-weight benchmark plans through the same account."""
     end = settings['run']['as_of']
-    if not plans or any(targets.is_empty() for _, targets in plans.values()):
+    if not plans or (start is None and any(targets.is_empty() for _, targets in plans.values())):
         raise ValueError('Cost replay requires nonempty target plans')
+    if start is not None and (start > end or any(
+            targets.filter(~pl.col('execution_date').is_between(start, end)).height for _, targets in plans.values())):
+        raise ValueError('Invalid explicit cost replay range')
     for variant, (_, targets) in plans.items():
         targets.write_parquet(output / f"targets_{variant}.parquet")
     accounts = {(variant, multiplier): {} for variant in plans
                 for multiplier in settings["portfolio"]["cost_multipliers"]}
     pieces = {key: [] for key in accounts}
-    first = min(targets["execution_date"].min() for _, targets in plans.values())
+    first = start if start is not None else min(targets["execution_date"].min() for _, targets in plans.values())
     began = time.perf_counter()
     for year in range(first.year, end.year+1):
         low, high = max(first, dt.date(year, 1, 1)), min(end, dt.date(year, 12, 31))
@@ -123,7 +127,7 @@ def run_cost_plans(*, settings: dict, plans: dict, sessions: tuple[dt.date, ...]
             symbols.update(row["symbol"] for row in account.get("receivables", []))
             symbols.update(key.split("|", 1)[0] for key, value in
                            account.get("share_distribution_entitlements", {}).items() if value["quantity"])
-        if not symbols:
+        if not symbols and start is None:
             continue
         inputs = read_battery_execution(data_root=data_root,
             refresh_config=Path(settings["data"]["refresh_config"]), snapshot=execution_snapshot,
@@ -141,7 +145,7 @@ def run_cost_plans(*, settings: dict, plans: dict, sessions: tuple[dt.date, ...]
                 suspensions=inputs["suspensions"], sessions=active_sessions, symbols=sorted(symbols),
                 execution_dates=execution_dates, slippage=scenario["costs"]["a_share"]["slippage"])
             for variant, (name, targets) in plans.items():
-                inception = targets["execution_date"].min()
+                inception = start if start is not None else targets["execution_date"].min()
                 dates = [date for date in active_sessions if date >= inception]
                 if not dates:
                     continue
@@ -168,7 +172,7 @@ def run_cost_plans(*, settings: dict, plans: dict, sessions: tuple[dt.date, ...]
                      **cost_metrics(nav, trades, initial_cash=settings["portfolio"]["initial_cash"]),
                      "rejected_orders": rejects.height, "delisting_writeoff": nav["delisting_writeoff"].sum()})
     result = {"factor": factor, "execution_snapshot": execution_snapshot,
-              "empty_top_group": "cash_after_first_valid_group", "rows": rows,
+              "empty_top_group": "cash_on_full_calendar" if start is not None else "cash_after_first_valid_group", "rows": rows,
               "seconds": time.perf_counter()-began}
     (output / "summary.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     return result

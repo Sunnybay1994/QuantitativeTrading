@@ -16,9 +16,19 @@ def read_battery_execution(*, data_root: Path, refresh_config: Path, snapshot: s
                            start: dt.date, end: dt.date, symbols: list[str],
                            include_all_dividends: bool = False) -> dict[str, pl.DataFrame]:
     """Read the published execution inputs for one bounded replay."""
-    if start > end or not symbols or Path(snapshot).name != snapshot or snapshot in (".", ".."):
+    if start > end or Path(snapshot).name != snapshot or snapshot in (".", ".."):
         raise ValueError("Invalid battery execution selection")
     folder = data_root / "clean/stock_execution" / snapshot
+    if not symbols:
+        calendar = read_stock_paper_calendar(data_root)
+        previous = calendar.filter(pl.col('is_open') & (pl.col('date') < start))['date'].max()
+        read_start = previous if isinstance(previous, dt.date) else start
+        return {**{name: pl.scan_parquet(folder/f'{name}.parquet').head(0).collect()
+                   for name in ('instruments', 'limits', 'suspensions', 'dividends')},
+                'calendar': calendar.filter(pl.col('date').is_between(read_start, end)),
+                'bars': pl.DataFrame(schema={'symbol': pl.String, 'trade_date': pl.Date,
+                    **{name: pl.Float64 for name in ('open', 'high', 'low', 'close', 'volume', 'amount', 'adj_factor')},
+                    'source': pl.String})}
     result = {name: pl.read_parquet(folder / f"{name}.parquet").filter(pl.col("symbol").is_in(symbols))
               for name in ("instruments", "limits", "suspensions")}
     result["dividends"] = pl.read_parquet(folder / "dividends.parquet")
