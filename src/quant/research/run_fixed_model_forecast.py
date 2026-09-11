@@ -105,7 +105,8 @@ def run_forecast(*, selection: Path, as_of: dt.date, output: Path, data_root: Pa
         settings=settings, factors=factors, variant=model['selection']['variant'], as_of=as_of)
     predictions = fixed_predict(features=features, fit=fit, method=decision['selected_method'],
         source=source, minimum_symbols=model['models']['minimum_signal_stocks'])
-    result = {'as_of': str(as_of), 'method': decision['selected_method'], 'rehearsal': rehearsal,
+    result = {'as_of': str(as_of),
+        'method': decision['selected_method'], 'rehearsal': rehearsal,
         'conclusion': 'RESEARCH_ONLY', 'auto_trade': False, 'refit_close': fit['refit_close'],
         'eligible_stocks': universe.filter(pl.col('eligible')).height,
         'common_feature_stocks': features.height, 'prediction_stocks': predictions.height,
@@ -114,6 +115,7 @@ def run_forecast(*, selection: Path, as_of: dt.date, output: Path, data_root: Pa
     output.mkdir(parents=True, exist_ok=False)
     features.write_parquet(output/'features.parquet')
     predictions.write_parquet(output/'predictions.parquet')
+    result['recorded_at'] = dt.datetime.now(now.tzinfo).isoformat()
     (output/'summary.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
     lines = ['# 固定模型预测记录', '', f"日期{as_of}；方法{result['method']}；演练={rehearsal}。",
         f"可选股票{result['eligible_stocks']}只，共同完整特征{features.height}只，预测{predictions.height}只。", '',

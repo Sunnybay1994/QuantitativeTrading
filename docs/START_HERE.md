@@ -32,6 +32,8 @@ D:\Miniforge3\python.exe -m quant.execution.order_risk --snapshot artifacts/pape
 
 ## 环境（唯一）
 
+固定模型预测的事后月度评分使用`quant.research.score_model_forecasts --forecast <预测目录> --known-through <已收盘日期> --output <新目录>`；多个日期重复传`--forecast`。历史演练与事前记录分开，见[评分口径与真实核对](research/固定模型预测评分_20260911.md)。
+
 ```powershell
 cd F:\AI_Coding\QuantitativeTrading
 $env:PYTHONPATH = "F:\AI_Coding\QuantitativeTrading\src"
