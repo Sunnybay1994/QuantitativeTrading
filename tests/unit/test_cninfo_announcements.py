@@ -85,3 +85,29 @@ def test_transient_announcement_request_retries_same_page(monkeypatch):
     monkeypatch.setattr('quant.data.connectors.cninfo_announcements.time.sleep', lambda seconds: None)
     assert list(correction_pages(START, END, session=RetrySession()))[0][1] == []
     assert calls == ['1', '1']
+def test_public_pdf_download_requires_bounded_document_path_and_pdf_bytes():
+    from quant.data.connectors.cninfo_announcements import download_document
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, chunk_size):
+            yield b'%PDF-'
+            yield b'fixture'
+
+    class Session:
+        def get(self, url, **kwargs):
+            assert url == 'https://static.cninfo.com.cn/finalpage/2026-09-10/123.PDF'
+            assert kwargs['stream'] and kwargs['timeout'] == 60
+            return Response()
+
+    assert download_document('finalpage/2026-09-10/123.PDF', session=Session()) == b'%PDF-fixture'
+    with pytest.raises(ValueError, match='Unexpected'):
+        download_document('https://elsewhere.example/file.pdf', session=Session())

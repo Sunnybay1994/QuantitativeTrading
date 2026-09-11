@@ -58,6 +58,9 @@ D:\Miniforge3\python.exe -m quant.reporting.stock_paper_monthly
 # 数据补齐（日频 + 分钟 + 基准 + 财务 + 因子增量及实际覆盖检查；17点前取上一完整日）
 D:\Miniforge3\python.exe -m quant.data.refresh --to today
 
+# 扫描财务公告使用已有 Poppler 和 Windows 中文 OCR；识别页缓存，重复更新复用。
+# 待解析公告、实际因子覆盖和财务版本见刷新结果中的 input_quality / financials。
+
 # 多因子模型随既有成本结果自动续跑（五分钟检查一次；最多等待24小时）
 D:\Miniforge3\python.exe -m quant.research.follow_multifactor_pipeline --config configs/models/p4_annual_walk_forward_20260911.toml --output artifacts/models/p4_follow_new --resume-from artifacts/models/p4_pipeline_20260911_04_resumed
 

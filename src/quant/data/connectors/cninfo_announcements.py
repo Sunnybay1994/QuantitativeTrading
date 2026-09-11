@@ -1,10 +1,36 @@
 """Public announcement pages; titles identify candidates, not numeric revisions."""
 
 import datetime as dt
+import re
 import time
 from typing import Any, Iterator
 
 import requests
+
+
+def download_document(relative: str, *, session: Any = None) -> bytes:
+    """Fetch one public PDF with a bounded response; callers append it to raw."""
+    if not re.fullmatch(r'finalpage/[0-9-]+/[0-9]+\.[pP][dD][fF]', relative):
+        raise ValueError('Unexpected public announcement document path')
+    client = session if session is not None else requests
+    for attempt in range(3):
+        try:
+            with client.get('https://static.cninfo.com.cn/'+relative, stream=True, timeout=60,
+                            headers={'User-Agent': 'Mozilla/5.0'}) as response:
+                response.raise_for_status()
+                data = bytearray()
+                for chunk in response.iter_content(1024*1024):
+                    data.extend(chunk)
+                    if len(data) > 128*1024*1024:
+                        raise ValueError('Announcement document exceeds the 128 MiB limit')
+            if not data.startswith(b'%PDF-'):
+                raise ValueError('Expected a public PDF document')
+            return bytes(data)
+        except requests.RequestException:
+            if attempt == 2:
+                raise RuntimeError('Announcement PDF unavailable after three attempts') from None
+            time.sleep(attempt+1)
+    raise RuntimeError('Announcement PDF unavailable')
 
 
 def announcement_pages(

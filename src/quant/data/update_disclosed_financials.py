@@ -8,6 +8,7 @@ from pathlib import Path
 
 from quant.data.refresh_financials import refresh_quarter
 from quant.data.collect_financial_disclosures import collect
+from quant.data.resolve_financial_disclosures import resolve
 
 
 def refresh_daily(*, end: dt.date, config: Path, data_root: Path, artifact_root: Path,
@@ -16,8 +17,15 @@ def refresh_daily(*, end: dt.date, config: Path, data_root: Path, artifact_root:
         raise ValueError('Financial disclosure lookback must be positive')
     disclosures = artifact_root/'data'/f'financial_disclosures_v1_{end:%Y%m%d}'
     collect(start=end-dt.timedelta(days=lookback_days-1), end=end, data_root=data_root, output=disclosures)
+    settings = tomllib.loads(config.read_text(encoding='utf-8'))
+    version = 'v1'
+    if settings.get('financials', {}).get('resolve_documents', False):
+        enriched = artifact_root/'data'/f'financial_disclosures_v2_{end:%Y%m%d}'
+        resolve(disclosures=disclosures, data_root=data_root, output=enriched,
+                document_cache=artifact_root/'data'/'financial_document_ocr_v1')
+        disclosures, version = enriched, 'v2'
     return update(disclosures=disclosures, config=config, data_root=data_root,
-                  output=artifact_root/'data'/f'financial_updates_v1_{end:%Y%m%d}')
+                  output=artifact_root/'data'/f'financial_updates_{version}_{end:%Y%m%d}')
 
 
 def update(*, disclosures: Path, config: Path, data_root: Path, output: Path) -> dict:
@@ -73,6 +81,8 @@ def update(*, disclosures: Path, config: Path, data_root: Path, output: Path) ->
     result = {'message': 'updated' if new_rows else 'no-op', 'new_rows': new_rows,
               'financial_snapshot': base, 'requests': requests, 'versions': versions,
               'unresolved_announcements': source['unresolved'],
+              'recognized_documents': len(source.get('document_resolutions', [])),
+              'excluded_documents': len(source.get('excluded_documents', [])),
               'scope': 'Numeric requests performed; announcement titles do not prove provider revision completeness'}
     if requests:
         config.write_text(re.sub(pattern, lambda m: m[1]+'"'+base+'"', text), encoding='utf-8')

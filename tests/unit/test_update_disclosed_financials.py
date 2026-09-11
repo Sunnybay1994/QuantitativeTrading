@@ -1,3 +1,4 @@
+import datetime as dt
 import json
 
 import pytest
@@ -53,3 +54,35 @@ def test_unmapped_announcements_remain_visible_without_numeric_requests(tmp_path
     result = updater.update(disclosures=source, config=config, data_root=tmp_path, output=tmp_path/'update')
     assert result['message'] == 'no-op' and result['unresolved_announcements']
     assert result['financial_snapshot'] == 'base'
+
+
+@pytest.mark.parametrize('fail', [False, True])
+def test_daily_document_resolution_precedes_numeric_update(tmp_path, monkeypatch, fail):
+    config = tmp_path/'refresh.toml'
+    config.write_text('[financials]\nresolve_documents=true\n')
+    calls = []
+    monkeypatch.setattr(updater, 'collect', lambda **kwargs: calls.append('collect'))
+
+    def resolve(**kwargs):
+        assert calls == ['collect']
+        assert kwargs['disclosures'].name == 'financial_disclosures_v1_20260910'
+        assert kwargs['output'].name == 'financial_disclosures_v2_20260910'
+        calls.append('resolve')
+        if fail:
+            raise RuntimeError('incomplete document capture')
+
+    def update(**kwargs):
+        assert calls == ['collect', 'resolve']
+        assert kwargs['disclosures'].name == 'financial_disclosures_v2_20260910'
+        assert kwargs['output'].name == 'financial_updates_v2_20260910'
+        return {'new_rows': 2}
+
+    monkeypatch.setattr(updater, 'resolve', resolve)
+    monkeypatch.setattr(updater, 'update', update)
+    kwargs = dict(end=dt.date(2026, 9, 10), config=config, data_root=tmp_path,
+                  artifact_root=tmp_path, lookback_days=3)
+    if fail:
+        with pytest.raises(RuntimeError, match='incomplete'):
+            updater.refresh_daily(**kwargs)
+    else:
+        assert updater.refresh_daily(**kwargs)['new_rows'] == 2
