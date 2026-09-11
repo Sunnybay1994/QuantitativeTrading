@@ -81,3 +81,11 @@ stress_windows_config = "configs/research/b93_full_cycle_20260910.toml"
 
 [execution]
 auto_trade = false
+
+[reporting]
+annual_win_denominator = "all_replay_calendar_years_including_partial_last_year"
+annual_and_stress_reference = "strongest_full_period_1x_benchmark_fixed_across_windows"
+stress_not_worse = "window_total_return_at_least_reference_and_max_drawdown_no_worse"
+underwater_clock = "calendar_anniversaries_from_last_peak_or_initial_start_to_recovery_or_end"
+active_evidence_clock = "first_positive_stock_market_value_to_replay_end"
+short_active_evidence_conclusion = "RESEARCH_ONLY"
