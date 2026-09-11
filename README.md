@@ -85,6 +85,8 @@ D:\Miniforge3\python.exe -m quant.research.run_multifactor_pipeline --config con
 股票增量保存在 `data/clean/tushare_incremental/`，可通过 `quant.data.refresh_stocks.read_stock_data`
 与历史快照合并读取。详细配置见 `configs/data/refresh.toml`。
 
+`refresh` 同时补齐因子使用的510300日线与复权因子：核对衔接价格及交易日后发布新版本，自动更新配置中的基准路径；重复运行无新增。因子面板自动计算仍待财务和行业数据更新接入。
+
 ## S0 模拟盘
 
 `D:\Miniforge3\python.exe -m quant.execution.paper_ledger --to today` 生成每日持仓、净值和订单参考；先运行数据刷新命令。前向首日 2026-10-08，详见 [运行说明](docs/research/模拟盘运行.md)。

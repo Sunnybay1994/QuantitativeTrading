@@ -14,6 +14,7 @@ import polars as pl
 from quant.data.calendar import expected_open_dates
 from quant.data.connectors.tushare import TushareConnector
 from quant.data.etf_limits import refresh_limits
+from quant.data.factor_benchmark import refresh_factor_benchmark
 from quant.data.intraday import refresh_intraday
 from quant.data.mappers import TushareCalendarMapper
 from quant.data.refresh_etf_prices import refresh as refresh_etfs
@@ -71,14 +72,18 @@ def run_refresh(
     symbols = sorted({s for value in universe.values() if isinstance(value, list) for s in value})
     limit_rows = refresh_limits(data_root=data_root, symbols=symbols, end=end)
     minutes = refresh_intraday(data_root=data_root, end=through) if intraday else {}
+    benchmark = (refresh_factor_benchmark(data_root=data_root, config=config, end=end)
+                 if settings.get("factor_benchmark_snapshot") else {"new_rows": 0})
     changed = (stocks["new_dates"] or etfs["new_rows"] or etfs["new_bar_rows"] or limit_rows
-               or minutes.get("changed_rows", 0))
+               or minutes.get("changed_rows", 0) or benchmark["new_rows"])
     return {"latest_session": str(end), "message": "updated" if changed else "no-op",
             "stock_new_dates": stocks["new_dates"], "stock_new_rows": stocks["new_rows"],
             "etf_price_new_rows": etfs["new_rows"], "etf_bar_new_rows": etfs["new_bar_rows"],
             "etf_limit_new_rows": limit_rows,
             "intraday_changed_rows": minutes.get("changed_rows", 0),
             "intraday_errors": minutes.get("errors", []),
+            "factor_benchmark_new_rows": benchmark["new_rows"],
+            "factor_benchmark_snapshot": benchmark.get("snapshot"),
             "stock_artifact": stocks.get("artifact_path"), "etf_artifact": etfs.get("artifact_path")}
 
 

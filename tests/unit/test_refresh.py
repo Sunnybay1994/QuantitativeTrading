@@ -51,3 +51,29 @@ def test_refresh_minutes_uses_requested_day_when_mainland_closed(monkeypatch, tm
         config=config, now=dt.datetime(2026, 9, 9, 20, tzinfo=refresh.SHANGHAI))
     assert dates == [dt.date(2026, 9, 9)]
     assert result["message"] == "updated" and result["intraday_changed_rows"] == 15
+
+
+def test_refresh_updates_factor_benchmark_after_prices(monkeypatch, tmp_path):
+    config = tmp_path / 'refresh.toml'
+    config.write_text('etf_config="configs/research/m2_s2_volatility_target.toml"\n'
+                      'factor_benchmark_snapshot="base"\n')
+    calls = []
+    monkeypatch.setattr(refresh, 'latest_session', lambda **kw: dt.date(2026, 9, 8))
+    monkeypatch.setattr(refresh, 'refresh_stocks', lambda **kw: {'new_dates': 0, 'new_rows': 0})
+
+    def prices(**kwargs):
+        calls.append('prices')
+        return {'new_rows': 0, 'new_bar_rows': 0}
+
+    def benchmark(**kwargs):
+        assert calls == ['prices'] and kwargs['end'] == dt.date(2026, 9, 8)
+        calls.append('benchmark')
+        return {'new_rows': 1, 'snapshot': 'new'}
+
+    monkeypatch.setattr(refresh, 'refresh_etfs', prices)
+    monkeypatch.setattr(refresh, 'refresh_limits', lambda **kw: 0)
+    monkeypatch.setattr(refresh, 'refresh_factor_benchmark', benchmark)
+    result = refresh.run_refresh(to='2026-09-08', data_root=tmp_path, artifact_root=tmp_path,
+        config=config, now=dt.datetime(2026, 9, 8, 20, tzinfo=refresh.SHANGHAI), intraday=False)
+    assert result['message'] == 'updated' and result['factor_benchmark_new_rows'] == 1
+    assert result['factor_benchmark_snapshot'] == 'new'
