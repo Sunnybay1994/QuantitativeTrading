@@ -1,4 +1,4 @@
-"""Run the whole registered factor battery and write its final scorecard."""
+"""Run the registered factor evaluation pipeline and write its final scorecard."""
 import argparse
 import datetime as dt
 import json
@@ -45,7 +45,7 @@ def run_pipeline(*, config: Path, library: Path, as_of: dt.date, output: Path,
     (output/'summary.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
     failures = '\n'.join(f'- {factor}: {reason}' for factor, reason in sorted(batch['failures'].items()))
     (output/'report.md').write_text(
-        f"# 因子评估电池：{as_of}\n\n"
+        f"# 因子评估流水线：{as_of}\n\n"
         f"评分表{scorecard['rows']}行，完整成本{scorecard['cost_complete_rows']}行，"
         f"通过准入{scorecard['admitted_rows']}行，待补准入证据{scorecard['admission_unresolved_rows']}行。\n\n"
         f"评分表：`scorecard/factor_scorecard.parquet`。\n\n"
