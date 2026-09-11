@@ -10,15 +10,9 @@ from quant.backtest.costs import AShareCostModel, EtfCostModel
 from quant.backtest.daily_simulator import simulate_daily_targets
 
 
-def advance(
-    *, date: dt.date, state: dict[str, Any], bars: pl.DataFrame,
-    calendar: pl.DataFrame, instruments: pl.DataFrame, market_states: dict,
-    dividends: pl.DataFrame, config: dict[str, Any],
-) -> tuple[dict[str, Any], Any]:
-    """Settle prior holdings, recognize dividends, then execute yesterday's targets."""
-    paper = config["paper"]
-    if paper["auto_trade"] is not False:
-        raise ValueError("This ledger only accepts auto_trade=false")
+def prepare_account_actions(*, date: dt.date, state: dict[str, Any], calendar: pl.DataFrame,
+                            dividends: pl.DataFrame, settle_cash: bool = True) -> dict[str, Any]:
+    """Reuse entitlements; manual books settle cash only when an actual payment arrives."""
     holdings = {s: dict(h) for s, h in state["holdings"].items()}
     cash = float(state["cash"])
     receivables = list(state["receivables"])
@@ -69,6 +63,8 @@ def advance(
                 if event["symbol"] not in holdings:
                     if not added:
                         continue
+                    if distribution is None:
+                        raise ValueError("Missing record-date share distribution entitlement")
                     holdings[event["symbol"]] = {"quantity": 0, "mark_price": distribution["mark_price"]}
                 holdings[event["symbol"]]["quantity"] += added
                 if event.get("adjust_share_price", True):
@@ -79,8 +75,53 @@ def advance(
                 if listing > date and added:
                     restricted.append({"symbol": event["symbol"], "quantity": added,
                                        "list_date": str(listing)})
-    cash += sum(r["amount"] for r in receivables if r["pay_date"] <= str(date))
-    receivables = [r for r in receivables if r["pay_date"] > str(date)]
+    if settle_cash:
+        cash += sum(r["amount"] for r in receivables if r["pay_date"] <= str(date))
+        receivables = [r for r in receivables if r["pay_date"] > str(date)]
+    return {"holdings": holdings, "cash": cash, "receivables": receivables,
+            "restricted_shares": restricted, "share_reduction_entitlements": reduction_entitlements,
+            "share_distribution_entitlements": distributions}
+
+
+def capture_record_date_entitlements(*, date: dt.date, state: dict[str, Any],
+                                     dividends: pl.DataFrame) -> None:
+    """Keep known record-date holdings for later share distributions or reductions."""
+    reduction_entitlements = dict(state.get("share_reduction_entitlements", {}))
+    distributions = dict(state.get("share_distribution_entitlements", {}))
+    # Preserve record-date quantities until settlement, even after selling.
+    # Future settlement metadata never changes targets or valuation here.
+    if "share_ratio" in dividends.columns:
+        for event in dividends.filter(
+            (pl.col("record_date") == date) & (pl.col("share_ratio") > 0)
+        ).iter_rows(named=True):
+            holding = state["holdings"].get(event["symbol"], {})
+            distributions[f"{event['symbol']}|{event['ex_date']}"] = {
+                "quantity": holding.get("quantity", 0), "mark_price": holding.get("mark_price", 0.)}
+        for event in dividends.filter(
+            (pl.col("record_date") == date) & (pl.col("share_ratio") < 0)
+        ).iter_rows(named=True):
+            key = f"{event['symbol']}|{event['ex_date']}"
+            reduction_entitlements[key] = state["holdings"].get(event["symbol"], {}).get("quantity", 0)
+    if reduction_entitlements:
+        state["share_reduction_entitlements"] = reduction_entitlements
+    if distributions:
+        state["share_distribution_entitlements"] = distributions
+
+
+def advance(
+    *, date: dt.date, state: dict[str, Any], bars: pl.DataFrame,
+    calendar: pl.DataFrame, instruments: pl.DataFrame, market_states: dict,
+    dividends: pl.DataFrame, config: dict[str, Any],
+) -> tuple[dict[str, Any], Any]:
+    """Settle prior holdings, recognize dividends, then execute yesterday's targets."""
+    paper = config["paper"]
+    if paper["auto_trade"] is not False:
+        raise ValueError("This ledger only accepts auto_trade=false")
+    prepared = prepare_account_actions(date=date, state=state, calendar=calendar, dividends=dividends)
+    holdings, cash, receivables = prepared["holdings"], prepared["cash"], prepared["receivables"]
+    restricted = prepared["restricted_shares"]
+    reduction_entitlements = prepared["share_reduction_entitlements"]
+    distributions = prepared["share_distribution_entitlements"]
     pending = state["pending"] if paper.get("enabled", True) else []
     targets = pl.DataFrame(schema={"as_of": pl.Date, "strategy": pl.String,
         "strategy_version": pl.String, "symbol": pl.String, "weight": pl.Float64,
@@ -130,24 +171,11 @@ def advance(
     for field in ("inception_date", "started_with_cash"):
         if field in state:
             next_state[field] = state[field]
-    # Preserve record-date quantities until settlement, even after selling.
-    # Future settlement metadata never changes targets or valuation here.
-    if "share_ratio" in dividends.columns:
-        for event in dividends.filter(
-            (pl.col("record_date") == date) & (pl.col("share_ratio") > 0)
-        ).iter_rows(named=True):
-            holding = next_state["holdings"].get(event["symbol"], {})
-            distributions[f"{event['symbol']}|{event['ex_date']}"] = {
-                "quantity": holding.get("quantity", 0), "mark_price": holding.get("mark_price", 0.)}
-        for event in dividends.filter(
-            (pl.col("record_date") == date) & (pl.col("share_ratio") < 0)
-        ).iter_rows(named=True):
-            key = f"{event['symbol']}|{event['ex_date']}"
-            reduction_entitlements[key] = next_state["holdings"].get(event["symbol"], {}).get("quantity", 0)
     if reduction_entitlements:
         next_state["share_reduction_entitlements"] = reduction_entitlements
     if distributions:
         next_state["share_distribution_entitlements"] = distributions
+    capture_record_date_entitlements(date=date, state=next_state, dividends=dividends)
     return next_state, result
 
 
