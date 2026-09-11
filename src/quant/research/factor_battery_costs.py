@@ -14,6 +14,7 @@ from quant.data.factor_panels import available_sessions
 from quant.data.stock_execution_inputs import stock_session_states
 from quant.research.classic_monthly_baseline import replay
 from quant.research.factor_battery_groups import assign_groups
+from quant.research.factor_cost_checkpoint import prepare_resume, read_year, save_year
 from quant.research.run_s1_walk_forward import metrics
 
 
@@ -70,7 +71,7 @@ def top_group_targets(scores: pl.DataFrame, *, variant: str, sessions: tuple[dt.
 
 
 def run_factor_costs(*, statistics: Path, output: Path, data_root: Path,
-                     execution_snapshot: str, factor: str) -> dict:
+                     execution_snapshot: str, factor: str, resume: bool = False) -> dict:
     """Replay both frozen variants and all cost multipliers without annual resets."""
     settings = tomllib.loads((statistics / "battery.toml").read_text(encoding="utf-8"))
     end = settings["run"]["as_of"]
@@ -90,19 +91,24 @@ def run_factor_costs(*, statistics: Path, output: Path, data_root: Path,
             plans[variant] = (name, targets)
     if not plans:
         raise ValueError("Factor has no executable top-group observations")
-    output.mkdir(parents=True, exist_ok=False)
-    (output / "battery.toml").write_bytes((statistics / "battery.toml").read_bytes() + (
+    config_bytes = (statistics / "battery.toml").read_bytes() + (
         f'\n[cost_replay]\nfactor = {json.dumps(factor)}\n'
         f'execution_snapshot = {json.dumps(execution_snapshot)}\n'
-        'empty_top_group = "cash_after_first_valid_group"\n').encode("utf-8"))
+        'empty_top_group = "cash_after_first_valid_group"\n').encode("utf-8")
+    if resume:
+        if (output / "battery.toml").read_bytes() != config_bytes:
+            raise ValueError("Resume cost settings changed")
+    else:
+        output.mkdir(parents=True, exist_ok=False)
+        (output / "battery.toml").write_bytes(config_bytes)
     return run_cost_plans(settings=settings, plans=plans, sessions=sessions, output=output,
-                          data_root=data_root, execution_snapshot=execution_snapshot, factor=factor)
+                          data_root=data_root, execution_snapshot=execution_snapshot, factor=factor, resume=resume)
 
 
 def run_cost_plans(*, settings: dict, plans: dict, sessions: tuple[dt.date, ...], output: Path,
                    data_root: Path, execution_snapshot: str, factor: str,
                    start: dt.date | None = None,
-                   turnover_budgets: dict[str, float] | None = None) -> dict:
+                   turnover_budgets: dict[str, float] | None = None, resume: bool = False) -> dict:
     """Replay factor and equal-weight benchmark plans through the same account."""
     end = settings['run']['as_of']
     if not plans or (start is None and any(targets.is_empty() for _, targets in plans.values())):
@@ -110,16 +116,37 @@ def run_cost_plans(*, settings: dict, plans: dict, sessions: tuple[dt.date, ...]
     if start is not None and (start > end or any(
             targets.filter(~pl.col('execution_date').is_between(start, end)).height for _, targets in plans.values())):
         raise ValueError('Invalid explicit cost replay range')
-    for variant, (_, targets) in plans.items():
-        targets.write_parquet(output / f"targets_{variant}.parquet")
+    prepare_resume(output=output, settings=settings, plans=plans, sessions=sessions,
+        data_root=data_root, snapshot=execution_snapshot, factor=factor, start=start,
+        turnover_budgets=turnover_budgets, resume=resume)
     accounts: dict[tuple[str, float], dict] = {(variant, multiplier): {} for variant in plans
                 for multiplier in settings["portfolio"]["cost_multipliers"]}
     pieces: dict[tuple[str, float], list[tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]]] = {
         key: [] for key in accounts}
     first = start if start is not None else min(targets["execution_date"].min() for _, targets in plans.values())
     began = time.perf_counter()
+    unfinished = set()
     for year in range(first.year, end.year+1):
         low, high = max(first, dt.date(year, 1, 1)), min(end, dt.date(year, 12, 31))
+        active_sessions = [date for date in sessions if low <= date <= high]
+        pending = set()
+        for key in accounts:
+            variant, multiplier = key
+            inception = start if start is not None else plans[variant][1]["execution_date"].min()
+            dates = [date for date in active_sessions if date >= inception]
+            if not dates:
+                continue
+            folder = output / variant / f"cost_{multiplier:g}" / str(year)
+            if resume and folder.exists():
+                if key in unfinished:
+                    raise ValueError("Checkpoint years contain a gap; retain partial output")
+                accounts[key], chunk = read_year(folder, dates=dates, previous=accounts[key])
+                pieces[key].append(chunk)
+            else:
+                unfinished.add(key)
+                pending.add(key)
+        if not pending:
+            continue
         annual_targets = {variant: targets.filter(pl.col("execution_date").is_between(low, high))
                           for variant, (_, targets) in plans.items()}
         symbols = set().union(*(set(frame["symbol"]) for frame in annual_targets.values()),
@@ -130,16 +157,18 @@ def run_cost_plans(*, settings: dict, plans: dict, sessions: tuple[dt.date, ...]
             symbols.update(row["symbol"] for row in account.get("receivables", []))
             symbols.update(key.split("|", 1)[0] for key, value in
                            account.get("share_distribution_entitlements", {}).items() if value["quantity"])
-        if not symbols and start is None:
-            continue
+            symbols.update(key.split("|", 1)[0] for key, value in
+                           account.get("share_reduction_entitlements", {}).items() if value)
+        # A cash-only year still advances the account and its exchange calendar.
         inputs = read_battery_execution(data_root=data_root,
             refresh_config=Path(settings["data"]["refresh_config"]), snapshot=execution_snapshot,
             start=low, end=high, symbols=sorted(symbols), include_all_dividends=True)
         dividends = inputs["dividends"].with_columns((pl.col("div_cash") * (
             1-settings["portfolio"]["stock_dividend_withholding"])).alias("div_cash"))
-        active_sessions = [date for date in sessions if low <= date <= high]
         execution_dates = sorted(set().union(*(set(frame["execution_date"]) for frame in annual_targets.values())))
         for multiplier in settings["portfolio"]["cost_multipliers"]:
+            if not any(key[1] == multiplier for key in pending):
+                continue
             scenario = copy.deepcopy(settings)
             for cost in scenario["costs"].values():
                 for field in ("commission_rate", "commission_min", "slippage"):
@@ -148,6 +177,8 @@ def run_cost_plans(*, settings: dict, plans: dict, sessions: tuple[dt.date, ...]
                 suspensions=inputs["suspensions"], sessions=active_sessions, symbols=sorted(symbols),
                 execution_dates=execution_dates, slippage=scenario["costs"]["a_share"]["slippage"])
             for variant, (name, targets) in plans.items():
+                if (variant, multiplier) not in pending:
+                    continue
                 inception = start if start is not None else targets["execution_date"].min()
                 dates = [date for date in active_sessions if date >= inception]
                 if not dates:
@@ -160,11 +191,8 @@ def run_cost_plans(*, settings: dict, plans: dict, sessions: tuple[dt.date, ...]
                     target_turnover_budget=(turnover_budgets or {}).get(variant),
                     target_records=target_records)
                 parts = output / variant / f"cost_{multiplier:g}" / str(year)
-                parts.mkdir(parents=True)
-                if target_records:
-                    pl.from_dicts(target_records).write_parquet(parts / 'budget_targets.parquet')
-                for kind, frame in zip(("nav", "trades", "rejections"), chunk):
-                    frame.write_parquet(parts / f"{kind}.parquet")
+                save_year(parts, account=accounts[(variant, multiplier)], chunks=chunk,
+                          target_records=target_records)
                 pieces[(variant, multiplier)].append(chunk)
                 print(json.dumps({"factor": factor, "year": year, "variant": variant,
                     "multiplier": multiplier, "sessions": len(dates),
@@ -193,9 +221,11 @@ def main() -> None:
     parser.add_argument("--data-root", type=Path, default=Path("data"))
     parser.add_argument("--execution-snapshot", required=True)
     parser.add_argument("--factor", required=True)
+    parser.add_argument("--resume", action="store_true", help="Resume this interrupted output from complete annual accounts")
     args = parser.parse_args()
     print(json.dumps(run_factor_costs(statistics=args.statistics, output=args.output,
-        data_root=args.data_root, execution_snapshot=args.execution_snapshot, factor=args.factor)), flush=True)
+        data_root=args.data_root, execution_snapshot=args.execution_snapshot, factor=args.factor,
+        resume=args.resume)), flush=True)
 
 
 if __name__ == "__main__":

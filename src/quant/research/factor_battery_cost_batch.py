@@ -31,7 +31,7 @@ def existing_cost_factor(run: Path, *, settings: dict, snapshot: str) -> str:
 
 def run_cost_batch(*, statistics: Path, screen: Path, output: Path, data_root: Path,
                    execution_snapshot: str, existing_runs: list[Path], workers: int,
-                   only_statistical_pass: bool = False) -> dict:
+                   only_statistical_pass: bool = False, resume: bool = False) -> dict:
     settings_bytes = (statistics/'battery.toml').read_bytes()
     settings = tomllib.loads(settings_bytes.decode('utf-8'))
     if workers < 1 or (screen/'battery.toml').read_bytes() != settings_bytes:
@@ -69,13 +69,19 @@ def run_cost_batch(*, statistics: Path, screen: Path, output: Path, data_root: P
         elif factor in existing:
             pending_external[factor] = str(folder)
         elif folder.exists():
-            failures[factor] = 'Partial prior output retained; use a new batch directory for another attempt'
+            if resume and (folder/'replay_config.json').is_file():
+                if existing_cost_factor(folder, settings=settings, snapshot=execution_snapshot) != factor:
+                    raise ValueError('Partial cost run belongs to another factor')
+                todo.append(factor)
+            else:
+                failures[factor] = 'Partial prior output retained; use --resume with complete account checkpoints or a new directory'
         else:
             todo.append(factor)
     os.environ['POLARS_MAX_THREADS'] = '4'
     with ProcessPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(run_factor_costs, statistics=statistics, output=output/factor,
-                               data_root=data_root, execution_snapshot=execution_snapshot, factor=factor): factor
+                               data_root=data_root, execution_snapshot=execution_snapshot, factor=factor,
+                               resume=resume and (output/factor).exists()): factor
                    for factor in todo}
         for future in as_completed(futures):
             factor = futures[future]
@@ -105,10 +111,11 @@ def main() -> None:
     parser.add_argument('--execution-snapshot', required=True)
     parser.add_argument('--existing-run', type=Path, action='append', default=[])
     parser.add_argument('--workers', type=int, default=2)
+    parser.add_argument('--resume', action='store_true', help='Resume local interrupted factors with annual account checkpoints')
     args = parser.parse_args()
     print(json.dumps(run_cost_batch(statistics=args.statistics, screen=args.screen, output=args.output,
                                    data_root=args.data_root, execution_snapshot=args.execution_snapshot,
-                                   existing_runs=args.existing_run, workers=args.workers)))
+                                   existing_runs=args.existing_run, workers=args.workers, resume=args.resume)))
 
 
 if __name__ == '__main__':

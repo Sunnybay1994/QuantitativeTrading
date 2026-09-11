@@ -55,3 +55,48 @@ def test_statistical_rejection_skips_cost_work_after_full_family_validation(tmp_
         only_statistical_pass=True)
     assert result['factors'] == 0 and result['statistically_rejected_factors'] == ['a']
     assert result['completed_runs'] == result['failures'] == {}
+
+
+def test_explicit_batch_resume_only_dispatches_checkpointed_local_partials(tmp_path, monkeypatch):
+    from concurrent.futures import Future
+    from quant.research import factor_battery_cost_batch as module
+
+    statistics, screen, output = (tmp_path / name for name in ('statistics', 'screen', 'output'))
+    config = 'primary_variant = "raw"\n'
+    for folder in (statistics, screen, output):
+        folder.mkdir()
+        (folder / 'battery.toml').write_text(config)
+    table = pl.DataFrame({'factor': ['checkpointed', 'old', 'fresh'], 'variant': ['raw'] * 3,
+                          'statistical_pass': [True] * 3, 'icir': [.3, .2, .1]})
+    table.select('factor', 'variant').write_parquet(statistics / 'statistics.parquet')
+    table.write_parquet(screen / 'statistical_screen.parquet')
+    for factor in ('checkpointed', 'old'):
+        folder = output / factor
+        folder.mkdir()
+        (folder / 'battery.toml').write_text(config +
+            f'[cost_replay]\nfactor = "{factor}"\nexecution_snapshot = "fixture"\n')
+    (output / 'checkpointed/replay_config.json').write_text('{}')
+    calls = []
+
+    class Pool:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def submit(self, fn, **kwargs):
+            calls.append((kwargs['factor'], kwargs['resume']))
+            future = Future()
+            future.set_result({})
+            return future
+
+    monkeypatch.setattr(module, 'ProcessPoolExecutor', Pool)
+    result = run_cost_batch(statistics=statistics, screen=screen, output=output, data_root=tmp_path,
+        execution_snapshot='fixture', existing_runs=[], workers=1, resume=True)
+    assert calls == [('checkpointed', True), ('fresh', False)]
+    assert set(result['failures']) == {'old'}
+    assert (output / 'old/battery.toml').is_file()
