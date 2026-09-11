@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
+from quant.data.factor_benchmarks import read_etf_total_return
 from quant.research.factor_battery_costs import cost_metrics
 
 
@@ -59,9 +60,14 @@ def load_cost_history(run: Path, variant: str, multiplier: float, end) -> tuple[
     return nav, pl.concat(trades, how='vertical_relaxed')
 
 
-def report_costs(*, run: Path, output: Path, benchmarks: Path | None = None) -> dict:
+def report_costs(*, run: Path, output: Path, benchmarks: Path | None = None,
+                 etf_reference: bool = False, data_root: Path = Path('data')) -> dict:
     settings = tomllib.loads((run/'battery.toml').read_text(encoding='utf-8'))
     saved = json.loads((run/'summary.json').read_text(encoding='utf-8'))
+    etf = (read_etf_total_return(data_root=data_root, snapshot=settings['data']['etf_total_return_snapshot'],
+                                 end=settings['run']['as_of']) if etf_reference else None)
+    if etf is not None and etf['date'][-1] != settings['run']['as_of']:
+        raise ValueError('ETF reference has not reached the comparison end date')
     benchmark_rows = []
     if benchmarks is not None:
         benchmark_settings = tomllib.loads((benchmarks/'battery.toml').read_text(encoding='utf-8'))
@@ -75,13 +81,20 @@ def report_costs(*, run: Path, output: Path, benchmarks: Path | None = None) -> 
     for row in saved['rows']:
         nav, trades = load_cost_history(run, row['variant'], row['cost_multiplier'], settings['run']['as_of'])
         rows.append({**row, **cost_metrics(nav, trades, initial_cash=settings['portfolio']['initial_cash'])})
+        if etf is not None:
+            comparisons.append({'variant': row['variant'], 'cost_multiplier': row['cost_multiplier'],
+                                'benchmark': '510300_total_return_reference',
+                                'benchmark_cost_treatment': 'dividend_total_return_without_trading_costs',
+                                **compare_nav(nav, etf)})
         for benchmark in benchmark_rows:
             if benchmark['cost_multiplier'] != row['cost_multiplier']:
                 continue
             baseline, _ = load_cost_history(benchmarks, benchmark['variant'], benchmark['cost_multiplier'],
                                             settings['run']['as_of'])
             comparisons.append({'variant': row['variant'], 'cost_multiplier': row['cost_multiplier'],
-                                'benchmark': benchmark['variant'], **compare_nav(nav, baseline)})
+                                'benchmark': benchmark['variant'],
+                                'benchmark_cost_treatment': 'same_execution_rules_and_cost_multiplier',
+                                **compare_nav(nav, baseline)})
     result = {'source_run': str(run), 'rows': rows, 'benchmark_comparisons': comparisons}
     output.mkdir(parents=True, exist_ok=False)
     pl.from_dicts(rows, infer_schema_length=None).write_parquet(output/'cost_metrics.parquet')
@@ -96,8 +109,11 @@ def main() -> None:
     parser.add_argument('--run', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--benchmarks', type=Path)
+    parser.add_argument('--etf-reference', action='store_true')
+    parser.add_argument('--data-root', type=Path, default=Path('data'))
     args = parser.parse_args()
-    print(json.dumps(report_costs(run=args.run, output=args.output, benchmarks=args.benchmarks)))
+    print(json.dumps(report_costs(run=args.run, output=args.output, benchmarks=args.benchmarks,
+                                 etf_reference=args.etf_reference, data_root=args.data_root)))
 
 
 if __name__ == '__main__':

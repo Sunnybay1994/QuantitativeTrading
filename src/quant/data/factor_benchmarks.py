@@ -21,6 +21,23 @@ def read_csi800_members(*, data_root: Path, snapshot: str) -> pl.DataFrame:
     return frame
 
 
+def read_etf_total_return(*, data_root: Path, snapshot: str, end: dt.date) -> pl.DataFrame:
+    """Read the configured dividend total-return reference, without trading costs."""
+    if not snapshot or Path(snapshot).name != snapshot or snapshot in ('.', '..'):
+        raise ValueError('Invalid ETF total-return snapshot')
+    prices = pl.read_parquet(data_root/'clean/factor_benchmarks'/snapshot/'prices.parquet').filter(
+        pl.col('trade_date') <= end).sort('trade_date')
+    if (prices.height < 2 or set(prices['symbol']) != {'510300.SH'}
+            or prices['trade_date'].n_unique() != prices.height
+            or not prices['adjusted_close'].is_finite().all()
+            or prices['adjusted_close'].null_count()
+            or (prices['adjusted_close'] <= 0).any()):
+        raise ValueError('Incomplete or invalid 510300 total-return reference')
+    # First available close is the anchor, not an invented zero-return day.
+    return prices.select(pl.col('trade_date').alias('date'),
+        (pl.col('adjusted_close')/prices['adjusted_close'][0]).alias('unit_nav')).slice(1)
+
+
 def capture_csi800(*, data_root: Path, name: str, start: dt.date, end: dt.date) -> dict:
     if not name or Path(name).name != name or name in (".", "..") or start > end:
         raise ValueError("Invalid benchmark capture request")
