@@ -68,7 +68,12 @@ D:\Miniforge3\python.exe -m quant.data.refresh --to today
 D:\Miniforge3\python.exe -m quant.research.run_s1_walk_forward --config configs/research/m2_s2_volatility_target.toml
 # 全市场因子评估
 D:\Miniforge3\python.exe -m quant.research.run_classic_factors --config configs/research/m2_classic_daily_factors.toml --threads 8
+
+# 年度多因子流水线：已有电池统计/成本 → 年度筛选 → 三模型 → 回放与报告
+D:\Miniforge3\python.exe -m quant.research.run_multifactor_pipeline --config configs/models/p4_annual_walk_forward_20260911.toml --output artifacts/models/p4_new_run
 ```
+
+多因子运行每次使用新输出目录；成本证据未齐时输出缺项诊断，补齐后重跑会继续到模型报告。输入成本目录写在模型配置中。
 
 数据刷新同时覆盖沪深股票日线、复权因子、daily_basic，以及 11 只 ETF 的成交行情和总回报价格。
 股票增量保存在 `data/clean/tushare_incremental/`，可通过 `quant.data.refresh_stocks.read_stock_data`

@@ -6,6 +6,7 @@ historical_evidence = "retrospective_annual_walk_forward_not_an_unseen_holdout"
 statistics_source = "artifacts/factors/battery_statistics_20260831_20260911"
 battery_config = "configs/factors/battery.toml"
 cost_root = "artifacts/factors/battery_cost_batch_20260911"
+cost_runs = ["artifacts/factors/battery_costs_alpha101_001_20260911_v2", "artifacts/factors/battery_costs_alpha158_corr10_20260911"]
 stock_benchmarks = "artifacts/factors/battery_stock_benchmarks_20260911"
 random_seed = 20260911
 
