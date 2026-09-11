@@ -39,7 +39,9 @@ def assess_reference_orders(*, state: dict[str, Any], orders: pl.DataFrame,
     if any(limits[k] > 1 for k in required - {'maximum_liquidation_days'}):
         raise ValueError('Risk fractions must not exceed one')
     data = {row['symbol']: row for row in market.iter_rows(named=True)}
-    holdings = {symbol: int(row['quantity']) for symbol, row in state['holdings'].items()}
+    holdings = {symbol: row['quantity'] for symbol, row in state['holdings'].items()}
+    if any(type(quantity) is not int or quantity < 0 for quantity in holdings.values()):
+        raise ValueError('Holdings must contain nonnegative integer share quantities')
     symbols = set(holdings) | set(orders['symbol'])
     if symbols - data.keys():
         raise ValueError('Missing risk market inputs')
@@ -103,6 +105,17 @@ def assess_reference_orders(*, state: dict[str, Any], orders: pl.DataFrame,
             cash -= notional + fee
         if cash < -1e-8:
             issues.append({'rule': 'insufficient_cash', 'symbol': symbol})
+    common = {'as_of': str(as_of), 'execution_date': str(next_session), 'auto_trade': False,
+              'mode': 'diagnostic_only', 'initial_equity': initial_equity,
+              'one_way_turnover': gross / (2 * initial_equity),
+              'execution_day_market_status': 'unknown_at_signal_close'}
+    if any(row['rule'] in ('sellable_quantity', 'insufficient_cash', 'board_lot') for row in issues):
+        if cash < 0:
+            issues.append({'rule': 'cash_buffer', 'symbol': None})
+        return {**common, 'projection_valid': False, 'projected_equity': None,
+                'projected_cash': None, 'cash_fraction': None, 'positions': [],
+                'industry_weights': None, 'unknown_industry_weight': None,
+                'issues': issues, 'requires_review': True}
     equity = cash + receivable + sum(q * data[s]['close'] for s, q in holdings.items())
     if equity <= 0:
         raise ValueError('Nonpositive projected equity')
@@ -137,16 +150,11 @@ def assess_reference_orders(*, state: dict[str, Any], orders: pl.DataFrame,
     for industry, weight in industries.items():
         if weight > limits['industry_weight']:
             issues.append({'rule': 'industry_weight', 'industry': industry})
-    projection_valid = not any(row['rule'] in ('sellable_quantity', 'insufficient_cash', 'board_lot')
-                               for row in issues)
-    return {'as_of': str(as_of), 'execution_date': str(next_session), 'auto_trade': False,
-            'projection_valid': projection_valid,
-            'mode': 'diagnostic_only', 'initial_equity': initial_equity,
+    return {**common, 'projection_valid': True,
             'projected_equity': equity, 'projected_cash': cash, 'cash_fraction': cash / equity,
-            'one_way_turnover': gross / (2 * initial_equity), 'positions': positions,
+            'positions': positions,
             'industry_weights': industries, 'unknown_industry_weight': unknown,
-            'issues': issues, 'requires_review': bool(issues),
-            'execution_day_market_status': 'unknown_at_signal_close'}
+            'issues': issues, 'requires_review': bool(issues)}
 
 
 def main() -> None:
@@ -173,9 +181,16 @@ def main() -> None:
     args.output.mkdir(parents=True, exist_ok=False)
     (args.output/'config.toml').write_bytes(args.config.read_bytes())
     (args.output/'risk.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
+    (args.output/'report.md').write_text(render_report(result), encoding='utf-8')
+    print(json.dumps({'output': str(args.output), 'requires_review': result['requires_review'],
+                      'positions': len(result['positions']), 'issues': len(result['issues'])}))
+
+
+def render_report(result: dict[str, Any]) -> str:
+    cash = f"{result['cash_fraction']:.2%}" if result['projection_valid'] else '订单不可行，暂停预测'
     lines = ['# 持仓与订单风险诊断', '',
         f"信号日：{result['as_of']}；参考执行日：{result['execution_date']}。",
-        f"预计现金比例：{result['cash_fraction']:.2%}；单边换手：{result['one_way_turnover']:.2%}。",
+        f"预计现金比例：{cash}；拟议单边换手：{result['one_way_turnover']:.2%}。",
         f"需核对项目：{len(result['issues'])}；数量及现金可行：{'是' if result['projection_valid'] else '否'}。", '',
         '诊断使用信号日价格和市场状态；执行日停牌及涨跌停需届时重新核对。', '',
         '|证券|预计持仓权重|行业|预计变现天数|成交量减半天数|', '|---|---:|---|---:|---:|']
@@ -185,9 +200,7 @@ def main() -> None:
                      + (f"{days:.2f}|{2*days:.2f}|" if days is not None else '未知|未知|'))
     lines += ['', *[f"- {RULE_LABELS[row['rule']]}：{row.get('symbol') or row.get('industry') or '账户'}"
                    for row in result['issues']]]
-    (args.output/'report.md').write_text('\n'.join(lines)+'\n', encoding='utf-8')
-    print(json.dumps({'output': str(args.output), 'requires_review': result['requires_review'],
-                      'positions': len(result['positions']), 'issues': len(result['issues'])}))
+    return '\n'.join(lines)+'\n'
 
 
 if __name__ == '__main__':

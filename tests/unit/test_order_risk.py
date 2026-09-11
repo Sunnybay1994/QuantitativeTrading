@@ -4,7 +4,7 @@ import datetime as dt
 import polars as pl
 import pytest
 
-from quant.execution.order_risk import assess_reference_orders
+from quant.execution.order_risk import assess_reference_orders, render_report
 
 D0, D1 = dt.date(2026, 9, 10), dt.date(2026, 9, 11)
 LIMITS = dict(cash_buffer=0.02, single_stock_weight=0.6, industry_weight=0.7,
@@ -52,6 +52,8 @@ def test_same_day_buys_cannot_supply_later_sell_orders():
     result = assess(state, market, orders)
     assert not result['projection_valid']
     assert any(row['rule'] == 'sellable_quantity' for row in result['issues'])
+    assert result['projected_cash'] is None and result['positions'] == []
+    assert '订单不可行，暂停预测' in render_report(result)
 
 
 def test_restricted_shares_and_cash_are_checked_without_trusting_cash_after():
@@ -62,6 +64,7 @@ def test_restricted_shares_and_cash_are_checked_without_trusting_cash_after():
                                 pl.lit(1000000.0).alias('cash_after'))
     result = assess(state, market, orders)
     assert not result['projection_valid']
+    assert result['projected_equity'] is None and result['industry_weights'] is None
     assert {'sellable_quantity', 'insufficient_cash', 'cash_buffer'} <= {
         row['rule'] for row in result['issues']}
 
@@ -92,7 +95,7 @@ def test_signal_day_limits_are_reported_as_known_not_tomorrow_status():
     assert result['execution_day_market_status'] == 'unknown_at_signal_close'
 
 
-@pytest.mark.parametrize('change', ['date', 'duplicate', 'price', 'future_price'])
+@pytest.mark.parametrize('change', ['date', 'duplicate', 'price', 'future_price', 'fractional_shares'])
 def test_invalid_inputs_fail(change):
     state, market, orders = inputs()
     if change == 'date':
@@ -101,8 +104,10 @@ def test_invalid_inputs_fail(change):
         market = pl.concat([market, market.head(1)])
     elif change == 'price':
         market = market.with_columns(pl.lit(float('nan')).alias('close'))
-    else:
+    elif change == 'future_price':
         market = market.with_columns(pl.lit(D1).alias('price_date'), pl.lit(True).alias('suspended'))
+    else:
+        state['holdings']['A']['quantity'] = 1000.5
     with pytest.raises(ValueError):
         assess(state, market, orders)
 

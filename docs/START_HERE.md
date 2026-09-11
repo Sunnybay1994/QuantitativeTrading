@@ -26,7 +26,7 @@
 D:\Miniforge3\python.exe -m quant.execution.order_risk --snapshot artifacts/paper/b32_stock_observation/b32_cv20_buffer75/2026-09-09 --config configs/paper/order_risk_diagnostic_v1_20260911.toml --output artifacts/order_risk/<新目录>
 ```
 
-输出`risk.json`与`report.md`，使用信号日已保存的行情、官方限制及历史行业，检查现金、可卖数量、整手、集中度和流动性。执行日市场状态需届时核对；这一步只做诊断，阈值不改变既有观察账户规则。
+输出`risk.json`与`report.md`，使用信号日已保存的行情、官方限制及历史行业，检查现金、可卖数量、整手、集中度和流动性。现金不足、超卖或非整手订单会停止资金和持仓预测，报告保留需修正项目。执行日市场状态需届时核对；这一步只做诊断，阈值不改变既有观察账户规则。
 
 ## 环境（唯一）
 
