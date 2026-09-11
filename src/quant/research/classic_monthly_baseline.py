@@ -177,11 +177,29 @@ def replay(
         "receivables": [], "pending": [], "nav": [],
         "inception_date": str(sessions[0]), "started_with_cash": True}
     prior_nav_count = len(state["nav"])
+    cash_only = (bars.is_empty() and instruments.is_empty() and targets.is_empty()
+                 and dividends.is_empty() and not market_states
+                 and not any(state.get(key) for key in (
+                     "holdings", "receivables", "pending", "restricted_shares",
+                     "share_reduction_entitlements", "share_distribution_entitlements")))
+    if cash_only:
+        # With no securities or unsettled events, one normal account advance
+        # validates cash and costs; later sessions change only the date.
+        checked_calendar = TradeCalendarSchema.validate(calendar)
+        open_dates = set(checked_calendar.filter(pl.col("is_open"))["date"])
+        if not set(sessions) <= open_dates:
+            raise ValueError("BACKTEST_CALENDAR_COVERAGE_MISSING")
     by_date = {key[0]: value for key, value in bars.partition_by("trade_date", as_dict=True).items()}
     target_dates = {key[0]: value for key, value in targets.partition_by("execution_date", as_dict=True).items()}
     empty_bars = bars.head(0)
     trades, rejections = [], []
     for date in sessions:
+        if cash_only and date != sessions[0]:
+            state["date"] = str(date)
+            state["nav"].append({**state["nav"][-1], "date": str(date)})
+            if validate_once:
+                checked_nav.append(checked_nav[0].with_columns(pl.lit(date).alias("date")))
+            continue
         writeoff = 0.0
         removed = []
         if config["portfolio"].get("delisted_holding_recovery") == 0.0:

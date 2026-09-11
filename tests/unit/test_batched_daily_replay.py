@@ -1,4 +1,5 @@
 import datetime as dt
+import copy
 
 import polars as pl
 import pytest
@@ -6,6 +7,85 @@ from polars.testing import assert_frame_equal
 
 from quant.research.classic_monthly_baseline import replay
 from tests.unit.test_paper_ledger import D1, D2, D3, SYMBOL, inputs
+
+
+def cash_inputs():
+    kwargs = replay_inputs()
+    for key in ("bars", "instruments", "targets", "dividends"):
+        kwargs[key] = kwargs[key].head(0)
+    kwargs["market_states"] = {}
+    return kwargs
+
+
+@pytest.mark.parametrize("batched", [False, True])
+def test_cash_span_matches_daily_reference_and_continues_account(batched):
+    kwargs = cash_inputs()
+    # An unused market-state entry selects the ordinary daily path.
+    reference, fast = {}, {}
+    expected = replay(**{**kwargs, "market_states": {(D1, SYMBOL): None}},
+                      validate_once=batched, account_state=reference)
+    actual = replay(**kwargs, validate_once=batched, account_state=fast)
+    for left, right in zip(expected, actual):
+        assert_frame_equal(left, right, check_exact=True)
+    assert fast == reference
+    carried = {}
+    pieces = []
+    for dates in ([D1], [D2, D3]):
+        pieces.append(replay(**{**kwargs, "sessions": dates},
+                             validate_once=batched, account_state=carried))
+    assert carried == fast
+    assert_frame_equal(pl.concat([piece[0] for piece in pieces]), actual[0], check_exact=True)
+
+
+def test_cash_span_checks_later_calendar_and_initial_cash():
+    kwargs = cash_inputs()
+    kwargs["calendar"] = kwargs["calendar"].filter(pl.col("date") != D3)
+    with pytest.raises(ValueError, match="CALENDAR_COVERAGE"):
+        replay(**kwargs, validate_once=True)
+    kwargs = cash_inputs()
+    kwargs["config"]["portfolio"]["initial_cash"] = 0.
+    with pytest.raises(ValueError, match="ACCOUNT_INVARIANT"):
+        replay(**kwargs, validate_once=True)
+
+
+def test_cash_chunk_can_continue_into_invested_chunk():
+    cash = cash_inputs()
+    account, reference = {}, {}
+    replay(**{**cash, "sessions": [D1]}, validate_once=True, account_state=account)
+    replay(**{**cash, "sessions": [D1], "market_states": {(D1, SYMBOL): None}},
+           validate_once=True, account_state=reference)
+    invested = replay_inputs()
+    invested["sessions"] = [D2, D3]
+    invested["targets"] = invested["targets"].filter(pl.col("execution_date") == D2).with_columns(
+        pl.lit(1.).alias("weight"))
+    invested["dividends"] = invested["dividends"].head(0)
+    expected = replay(**invested, validate_once=True, account_state=reference)
+    actual = replay(**invested, validate_once=True, account_state=account)
+    for left, right in zip(expected, actual):
+        assert_frame_equal(left, right, check_exact=True)
+    assert account == reference and account["holdings"]
+
+
+def test_cash_receivables_still_settle_on_pay_date(monkeypatch):
+    from quant.research import classic_monthly_baseline as module
+
+    kwargs = cash_inputs()
+    state = {"date": str(D1), "holdings": {}, "cash": 1100., "pending": [], "nav": [],
+             "receivables": [{"symbol": SYMBOL, "pay_date": str(D3), "amount": 100.}]}
+    original = copy.deepcopy(state)
+    calls = []
+    advance = module.advance
+
+    def counted(**kw):
+        calls.append(kw["date"])
+        return advance(**kw)
+
+    monkeypatch.setattr(module, "advance", counted)
+    result = replay(**{**kwargs, "sessions": [D2, D3]}, validate_once=True, account_state=state)
+    assert calls == [D2, D3]
+    assert result[0]["cash"].to_list() == [1100., 1200.]
+    assert result[0]["receivable"].to_list() == [100., 0.]
+    assert original["receivables"] and not state["receivables"]
 
 
 def replay_inputs():
