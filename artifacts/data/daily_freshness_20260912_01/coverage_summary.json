@@ -1,0 +1,287 @@
+{
+  "trade_date": "2026-09-11",
+  "stock_refresh": {
+    "new_dates": 0,
+    "new_rows": {
+      "bar_1d": 0,
+      "adjust_factor": 0,
+      "daily_basic": 0
+    },
+    "latest_date": "2026-09-11",
+    "message": "no-op"
+  },
+  "etf_refresh": {
+    "new_rows": 0,
+    "new_bar_rows": 0,
+    "latest_date": "2026-09-11",
+    "message": "no-op"
+  },
+  "gaps": {
+    "bar_missing_factor": [],
+    "bar_missing_basic": [],
+    "factor_without_bar": [
+      "000016.SZ",
+      "002731.SZ",
+      "002870.SZ",
+      "301139.SZ",
+      "301390.SZ",
+      "600825.SH",
+      "600929.SH",
+      "603159.SH",
+      "605577.SH",
+      "688291.SH",
+      "688432.SH",
+      "688496.SH"
+    ],
+    "etf_missing_bar": [],
+    "etf_missing_total_return": []
+  },
+  "stock_raw_reproduction": {
+    "bar_1d": true,
+    "adjust_factor": true,
+    "daily_basic": true
+  },
+  "suspension_rows": [
+    {
+      "ts_code": "000016.SZ",
+      "trade_date": "20260911",
+      "suspend_timing": null,
+      "suspend_type": "S"
+    },
+    {
+      "ts_code": "002731.SZ",
+      "trade_date": "20260911",
+      "suspend_timing": null,
+      "suspend_type": "S"
+    },
+    {
+      "ts_code": "002870.SZ",
+      "trade_date": "20260911",
+      "suspend_timing": null,
+      "suspend_type": "S"
+    },
+    {
+      "ts_code": "301139.SZ",
+      "trade_date": "20260911",
+      "suspend_timing": null,
+      "suspend_type": "S"
+    },
+    {
+      "ts_code": "301390.SZ",
+      "trade_date": "20260911",
+      "suspend_timing": null,
+      "suspend_type": "S"
+    },
+    {
+      "ts_code": "600825.SH",
+      "trade_date": "20260911",
+      "suspend_timing": null,
+      "suspend_type": "S"
+    },
+    {
+      "ts_code": "600929.SH",
+      "trade_date": "20260911",
+      "suspend_timing": null,
+      "suspend_type": "S"
+    },
+    {
+      "ts_code": "603159.SH",
+      "trade_date": "20260911",
+      "suspend_timing": null,
+      "suspend_type": "S"
+    },
+    {
+      "ts_code": "605577.SH",
+      "trade_date": "20260911",
+      "suspend_timing": null,
+      "suspend_type": "S"
+    },
+    {
+      "ts_code": "688291.SH",
+      "trade_date": "20260911",
+      "suspend_timing": null,
+      "suspend_type": "S"
+    },
+    {
+      "ts_code": "688432.SH",
+      "trade_date": "20260911",
+      "suspend_timing": null,
+      "suspend_type": "S"
+    },
+    {
+      "ts_code": "688496.SH",
+      "trade_date": "20260911",
+      "suspend_timing": null,
+      "suspend_type": "S"
+    }
+  ],
+  "etf_fund_adj_status": "complete_new_slice",
+  "etf_fund_adj_rows": 11,
+  "etf_fund_adj_clean": "data\\clean\\etf_daily_slices\\snapshots\\daily_freshness_20260912_01\\adjust_factor.parquet",
+  "api_calls": [
+    {
+      "api": "suspend_d",
+      "params": {
+        "trade_date": "20260911"
+      },
+      "rows": 13,
+      "raw_path": "data\\raw\\tushare\\suspend_d\\date=2026-09-11\\221448.033792Z-445223730930.parquet",
+      "reused": true
+    },
+    {
+      "api": "fund_adj",
+      "params": {
+        "ts_code": "159919.SZ",
+        "trade_date": "20260911"
+      },
+      "rows": 1,
+      "raw_path": "data\\raw\\tushare\\fund_adj\\date=2026-09-11\\221450.080787Z-c46b17396d22.parquet",
+      "reused": true
+    },
+    {
+      "api": "fund_adj",
+      "params": {
+        "ts_code": "159920.SZ",
+        "trade_date": "20260911"
+      },
+      "rows": 1,
+      "raw_path": "data\\raw\\tushare\\fund_adj\\date=2026-09-11\\221452.125297Z-096bfeaf703b.parquet",
+      "reused": true
+    },
+    {
+      "api": "fund_adj",
+      "params": {
+        "ts_code": "159922.SZ",
+        "trade_date": "20260911"
+      },
+      "rows": 1,
+      "raw_path": "data\\raw\\tushare\\fund_adj\\date=2026-09-11\\221454.163414Z-48e685e4c8db.parquet",
+      "reused": true
+    },
+    {
+      "api": "fund_adj",
+      "params": {
+        "ts_code": "510300.SH",
+        "trade_date": "20260911"
+      },
+      "rows": 1,
+      "raw_path": "data\\raw\\tushare\\fund_adj\\date=2026-09-11\\221456.199931Z-d982aa95e6a8.parquet",
+      "reused": true
+    },
+    {
+      "api": "fund_adj",
+      "params": {
+        "ts_code": "510500.SH",
+        "trade_date": "20260911"
+      },
+      "rows": 1,
+      "raw_path": "data\\raw\\tushare\\fund_adj\\date=2026-09-11\\221458.231930Z-20f1344f65e9.parquet",
+      "reused": true
+    },
+    {
+      "api": "fund_adj",
+      "params": {
+        "ts_code": "512170.SH",
+        "trade_date": "20260911"
+      },
+      "rows": 1,
+      "raw_path": "data\\raw\\tushare\\fund_adj\\date=2026-09-11\\221500.270980Z-a744d1f708f3.parquet",
+      "reused": true
+    },
+    {
+      "api": "fund_adj",
+      "params": {
+        "ts_code": "512880.SH",
+        "trade_date": "20260911"
+      },
+      "rows": 1,
+      "raw_path": "data\\raw\\tushare\\fund_adj\\date=2026-09-11\\221502.312597Z-57bbb24071d1.parquet",
+      "reused": true
+    },
+    {
+      "api": "fund_adj",
+      "params": {
+        "ts_code": "513060.SH",
+        "trade_date": "20260911"
+      },
+      "rows": 1,
+      "raw_path": "data\\raw\\tushare\\fund_adj\\date=2026-09-11\\221849.202522Z-6a7200ace2f8.parquet"
+    },
+    {
+      "api": "fund_adj",
+      "params": {
+        "ts_code": "513180.SH",
+        "trade_date": "20260911"
+      },
+      "rows": 1,
+      "raw_path": "data\\raw\\tushare\\fund_adj\\date=2026-09-11\\221851.276371Z-6b70f32c1d99.parquet"
+    },
+    {
+      "api": "fund_adj",
+      "params": {
+        "ts_code": "513330.SH",
+        "trade_date": "20260911"
+      },
+      "rows": 1,
+      "raw_path": "data\\raw\\tushare\\fund_adj\\date=2026-09-11\\221853.474563Z-e1306f721305.parquet"
+    },
+    {
+      "api": "fund_adj",
+      "params": {
+        "ts_code": "515790.SH",
+        "trade_date": "20260911"
+      },
+      "rows": 1,
+      "raw_path": "data\\raw\\tushare\\fund_adj\\date=2026-09-11\\221855.802167Z-276005c46c89.parquet"
+    }
+  ],
+  "etf_daily_basic": "not_applicable: stock daily_basic is not an ETF fundamentals table",
+  "existing_etf_bar_factor_values": [
+    1.0
+  ],
+  "profiles": {
+    "bar_1d": {
+      "rows": 5207,
+      "symbols": 5207,
+      "duplicate_keys": 0,
+      "latest_date": "2026-09-11"
+    },
+    "adjust_factor": {
+      "rows": 5219,
+      "symbols": 5219,
+      "duplicate_keys": 0,
+      "latest_date": "2026-09-11"
+    },
+    "daily_basic": {
+      "rows": 5207,
+      "symbols": 5207,
+      "duplicate_keys": 0,
+      "latest_date": "2026-09-11"
+    },
+    "etf_bar": {
+      "rows": 11,
+      "symbols": 11,
+      "duplicate_keys": 0,
+      "latest_date": "2026-09-11"
+    },
+    "etf_total_return": {
+      "rows": 11,
+      "symbols": 11,
+      "duplicate_keys": 0,
+      "latest_date": "2026-09-11"
+    }
+  },
+  "calendar_latest_open": {
+    "SH": "2026-09-11",
+    "SZ": "2026-09-11"
+  },
+  "unexplained_stock_missing": [],
+  "new_clean_rows_this_task": {
+    "stock_bar": 0,
+    "stock_adjust_factor": 0,
+    "stock_daily_basic": 0,
+    "etf_bar": 0,
+    "etf_total_return": 0,
+    "etf_fund_adj": 11
+  }
+}

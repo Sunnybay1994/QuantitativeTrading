@@ -1,0 +1,16 @@
+# Dedicated one-session audit. Shared refresh and frozen research settings stay unchanged.
+stock_snapshot = "b79a7b5e66dee0ae439c030078414157ca6c1f3b6ce7fbe5e36ff3910c1089d2"
+daily_basic_snapshot = "e97c0e9c82c445bbc9b389e8e8504f61b0b67d2f789208f75625526c38b4c03c"
+etf_config = "configs/research/m2_s2_volatility_target.toml"
+requests_per_minute = 30
+[audit]
+trade_date = "2026-09-11"
+artifact_root = "artifacts/data/daily_freshness_20260912_01"
+[factors]
+enabled = false
+[financials]
+enabled = false
+[industry]
+enabled = false
+[quality]
+enabled = false
