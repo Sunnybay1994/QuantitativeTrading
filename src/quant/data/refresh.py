@@ -16,6 +16,7 @@ from quant.data.connectors.tushare import TushareConnector
 from quant.data.etf_limits import refresh_limits
 from quant.data.factor_benchmark import refresh_factor_benchmark
 from quant.data.intraday import refresh_intraday
+from quant.data.industry_history import refresh_daily as refresh_industry
 from quant.data.mappers import TushareCalendarMapper
 from quant.data.refresh_etf_prices import refresh as refresh_etfs
 from quant.data.refresh_stocks import refresh as refresh_stocks
@@ -87,6 +88,10 @@ def run_refresh(
             financials = refresh_disclosed_financials(end=through, config=config, data_root=data_root,
                 artifact_root=artifact_root, lookback_days=settings['financials']['lookback_days'])
     factors = {"years": [], "message": "disabled"}
+    industry: dict[str, Any] = {'message': 'disabled', 'new_intervals': 0}
+    if settings.get('industry', {}).get('enabled', False):
+        with contextlib.redirect_stdout(io.StringIO()):
+            industry = refresh_industry(data_root=data_root, end=end)
     if settings.get("factors", {}).get("enabled", False):
         if minutes.get("errors"):
             factors["message"] = "skipped: intraday input refresh failed"
@@ -94,7 +99,9 @@ def run_refresh(
             factors = refresh_factors(data_root=data_root, artifact_root=artifact_root,
                                       config=config, end=end, settings=settings["factors"],
                                       minute_start=(minute_options.get('stock_from', dt.date(2020, 1, 1))
-                                                    if minutes.get('stock_changed_rows', 0) else None))
+                                                    if minutes.get('stock_changed_rows', 0) else None),
+                                      industry_start=(dt.date.fromisoformat(industry['rebuild_from'])
+                                                      if industry['new_intervals'] else None))
     quality: dict[str, Any] = {"errors": [], "message": "disabled"}
     if settings.get('quality', {}).get('enabled', False):
         from quant.data.daily_input_quality import run_quality
@@ -108,7 +115,8 @@ def run_refresh(
             output=artifact_root/'data'/'input_quality'/stamp,
             lookback_sessions=settings['quality'].get('lookback_sessions', 5), minimum_symbols=battery['minimum_symbols'])
     changed = (stocks["new_dates"] or etfs["new_rows"] or etfs["new_bar_rows"] or limit_rows
-               or minutes.get("changed_rows", 0) or benchmark["new_rows"] or factors["years"] or financials['new_rows'])
+               or minutes.get("changed_rows", 0) or benchmark["new_rows"] or factors["years"]
+               or financials['new_rows'] or industry['new_intervals'])
     message = "partial" if minutes.get("errors") or quality['errors'] else "updated" if changed else "no-op"
     return {"latest_session": str(end), "message": message,
             "stock_new_dates": stocks["new_dates"], "stock_new_rows": stocks["new_rows"],
@@ -120,13 +128,15 @@ def run_refresh(
             "factor_benchmark_snapshot": benchmark.get("snapshot"),
             "factors": factors,
             "financials": financials,
+            "industry": industry,
             "input_quality": quality,
             "stock_artifact": stocks.get("artifact_path"), "etf_artifact": etfs.get("artifact_path")}
 
 
 def refresh_factors(*, data_root: Path, artifact_root: Path, config: Path,
                     end: dt.date, settings: dict[str, Any],
-                    minute_start: dt.date | None = None) -> dict[str, Any]:
+                    minute_start: dt.date | None = None,
+                    industry_start: dt.date | None = None) -> dict[str, Any]:
     """Reuse the factor engine's incremental coverage, including unfinished labels."""
     # compute uses the completed-session date helpers in this module.
     from quant.factors.compute import run
@@ -139,6 +149,7 @@ def refresh_factors(*, data_root: Path, artifact_root: Path, config: Path,
                      start=dt.date.fromisoformat(str(settings["start"])), end=end,
                      artifact_root=artifact_root)
         minute_rebuild = None
+        industry_rebuild = None
         if minute_start is not None and minute_start <= end:
             definitions = load_library(Path(settings['library']), settings.get('selected', 'all'))
             selected = ','.join(row.id for row in definitions if minute_input_names((row.expr,)))
@@ -147,9 +158,17 @@ def refresh_factors(*, data_root: Path, artifact_root: Path, config: Path,
                     library=Path(settings['library']), selected=selected, rebuild=True,
                     start=max(minute_start, dt.date.fromisoformat(str(settings['start']))), end=end,
                     artifact_root=artifact_root)
-    return {"message": "updated" if result["years"] or minute_rebuild else "no-op",
+        if industry_start is not None and industry_start <= end:
+            definitions = load_library(Path(settings['library']), settings.get('selected', 'all'))
+            selected = ','.join(row.id for row in definitions if 'ind_neutralize' in row.expr)
+            if selected:
+                industry_rebuild = run(data_root=data_root, refresh_config=config,
+                    library=Path(settings['library']), selected=selected, rebuild=True,
+                    start=max(industry_start, dt.date.fromisoformat(str(settings['start']))), end=end,
+                    artifact_root=artifact_root)
+    return {"message": "updated" if result["years"] or minute_rebuild or industry_rebuild else "no-op",
             "years": result["years"], "factor_count": result["factor_count"],
-            "output": result["output"], "minute_rebuild": minute_rebuild}
+            "output": result["output"], "minute_rebuild": minute_rebuild, "industry_rebuild": industry_rebuild}
 
 
 def main() -> None:

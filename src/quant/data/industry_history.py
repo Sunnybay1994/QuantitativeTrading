@@ -98,7 +98,8 @@ def membership_intervals(
     }
 
 
-def read_industry_raw(root: Path, *, with_current: bool = False) -> tuple[pl.DataFrame, pl.DataFrame]:
+def read_industry_raw(root: Path, *, with_current: bool = False,
+                      historical_raw_root: Path | None = None) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Read a completed collector run, requiring terminal pages for each query."""
     taxonomy = pl.concat([
         pl.read_parquet(root / f"index_classify_{level}_{version}.parquet")
@@ -107,6 +108,7 @@ def read_industry_raw(root: Path, *, with_current: bool = False) -> tuple[pl.Dat
     frames = []
     sources = (("index_member", "SW2014"), ("index_member_all", "SW2021")) if with_current else (("index_member", None),)
     for api, version in sources:
+        member_root = historical_raw_root if api == 'index_member' and historical_raw_root else root
         categories = taxonomy.filter(pl.col("level") == "L3")
         if version is not None:
             categories = categories.filter(pl.col("src") == version)
@@ -114,7 +116,7 @@ def read_industry_raw(root: Path, *, with_current: bool = False) -> tuple[pl.Dat
             for flag in ("Y", "N"):
                 offset = 0
                 while True:
-                    frame = pl.read_parquet(root / f"{api}_{code.replace('.', '_')}_{flag}_{offset}.parquet")
+                    frame = pl.read_parquet(member_root / f"{api}_{code.replace('.', '_')}_{flag}_{offset}.parquet")
                     if not frame.is_empty():
                         if api == "index_member_all":
                             frame = frame.rename({"l3_code": "index_code", "ts_code": "con_code"})
@@ -140,8 +142,10 @@ def attach_industry(panel: pl.DataFrame, intervals: pl.DataFrame) -> pl.DataFram
 
 def publish_industry_history(
     raw_root: Path, clean_root: Path, *, as_of: dt.date, with_current: bool = False,
+    historical_raw_root: Path | None = None,
 ) -> dict[str, Any]:
-    taxonomy, members = read_industry_raw(raw_root, with_current=with_current)
+    taxonomy, members = read_industry_raw(raw_root, with_current=with_current,
+                                         historical_raw_root=historical_raw_root)
     intervals, stats = membership_intervals(taxonomy, members, as_of=as_of)
     if intervals.is_empty():
         raise ValueError("No dated A-share industry memberships")
@@ -149,11 +153,37 @@ def publish_industry_history(
     output.mkdir(parents=True, exist_ok=False)
     intervals.write_parquet(output / "intervals.parquet", compression="zstd")
     summary = {**stats, "as_of": str(as_of), "raw_root": str(raw_root), "with_current": with_current,
+               "historical_raw_root": str(historical_raw_root or raw_root),
                "output": str(output), "symbols": intervals["symbol"].n_unique(),
                "versions": {key: str(bounds[0]) for key, bounds in _VERSIONS.items()},
                "exit_date": "exclusive; unknown and conflicting classifications remain null"}
     (output / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary
+
+
+def refresh_daily(*, data_root: Path, end: dt.date) -> dict[str, Any]:
+    """Refresh current memberships while reusing the closed SW2014 history."""
+    from quant.data.collect_industry import collect_industry
+
+    clean = data_root/'clean/tushare_industry'
+    previous = None
+    for path in sorted(clean.glob('*/summary.json'), reverse=True):
+        saved = json.loads(path.read_text(encoding='utf-8'))
+        if saved.get('with_current'):
+            previous = saved
+            break
+    if previous is None:
+        raise ValueError('Publish both industry source versions before daily refresh')
+    if dt.date.fromisoformat(previous['as_of']) >= end:
+        return {'message': 'no-op', 'new_intervals': 0, 'as_of': previous['as_of'],
+                'output': previous['output']}
+    raw = data_root/'raw/tushare/industry'/f'daily_{end:%Y%m%d}'
+    collected = collect_industry(raw, member_api='index_member_all')
+    result = publish_industry_history(raw, clean, as_of=end, with_current=True,
+        historical_raw_root=Path(previous.get('historical_raw_root', previous['raw_root'])))
+    return {**result, 'message': 'updated', 'new_intervals': result['output_intervals'],
+            'network_requests': collected['network_requests'],
+            'rebuild_from': str(dt.date.fromisoformat(previous['as_of']) + dt.timedelta(days=1))}
 
 
 def main() -> None:

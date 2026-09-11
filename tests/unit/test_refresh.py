@@ -208,3 +208,46 @@ def test_late_stock_minutes_rebuild_only_minute_consumers(monkeypatch, tmp_path)
     assert len(calls)==2 and calls[1]['selected']=='minute' and calls[1]['rebuild'] is True
     assert calls[1]['start']==dt.date(2026, 9, 5) and calls[1]['end']==dt.date(2026, 9, 11)
     assert result['message']=='updated' and result['minute_rebuild']['output']=='minute_rebuild'
+
+
+def test_industry_update_precedes_factors_and_passes_rebuild_date(monkeypatch, tmp_path):
+    config=tmp_path/'refresh.toml'
+    config.write_text('etf_config="configs/research/m2_s2_volatility_target.toml"\n'
+                      '[industry]\nenabled=true\n[factors]\nenabled=true\n')
+    monkeypatch.setattr(refresh,'latest_session',lambda **kw: dt.date(2026,9,11))
+    monkeypatch.setattr(refresh,'refresh_stocks',lambda **kw: {'new_dates':0,'new_rows':0})
+    monkeypatch.setattr(refresh,'refresh_etfs',lambda **kw: {'new_rows':0,'new_bar_rows':0})
+    monkeypatch.setattr(refresh,'refresh_limits',lambda **kw: 0)
+    calls=[]
+    def industry(**kwargs):
+        assert kwargs['end']==dt.date(2026,9,11)
+        calls.append('industry')
+        return {'new_intervals':7,'rebuild_from':'2026-09-11'}
+    def factors(**kwargs):
+        assert calls==['industry'] and kwargs['industry_start']==dt.date(2026,9,11)
+        calls.append('factors')
+        return {'years':[]}
+    monkeypatch.setattr(refresh,'refresh_industry',industry)
+    monkeypatch.setattr(refresh,'refresh_factors',factors)
+    result=refresh.run_refresh(to='2026-09-11',data_root=tmp_path,artifact_root=tmp_path,
+                               config=config,intraday=False)
+    assert calls==['industry','factors'] and result['message']=='updated'
+
+
+def test_expired_industry_rebuilds_only_industry_consumers(monkeypatch,tmp_path):
+    from types import SimpleNamespace
+    from quant.factors import compute,library
+    monkeypatch.setattr(library,'load_library',lambda *args: [
+        SimpleNamespace(id='daily',expr='adj_close'),
+        SimpleNamespace(id='industry',expr='ind_neutralize(adj_close, industry_l1)')])
+    calls=[]
+    def run(**kwargs):
+        calls.append(kwargs)
+        return {'years':[],'factor_count':2,'output':'result'}
+    monkeypatch.setattr(compute,'run',run)
+    result=refresh.refresh_factors(data_root=tmp_path,artifact_root=tmp_path,config=tmp_path/'refresh.toml',
+        end=dt.date(2026,9,11),settings={'library':'unused','start':'2010-01-01'},
+        industry_start=dt.date(2026,9,11))
+    assert len(calls)==2 and calls[1]['selected']=='industry' and calls[1]['rebuild'] is True
+    assert calls[1]['start']==dt.date(2026,9,11)
+    assert result['industry_rebuild'] and result['message']=='updated'

@@ -93,6 +93,17 @@ def test_publish_reads_both_supplier_schemas_and_requires_complete_pages(tmp_pat
     output = pl.read_parquet(Path(result["output"]) / "intervals.parquet")
     assert result["with_current"] and result["symbols"] == 1
     assert output["industry_l1"].to_list() == ["SW2014:old", "SW2021:new"]
+    current = tmp_path/'current_raw'
+    current.mkdir()
+    for path in raw.glob('*.parquet'):
+        if path.name.startswith(('index_classify_', 'index_member_all_')):
+            (current/path.name).write_bytes(path.read_bytes())
+    refreshed = publish_industry_history(current, tmp_path/'clean_next',
+        as_of=dt.date(2022, 1, 2), with_current=True, historical_raw_root=raw)
+    assert refreshed['historical_raw_root']==str(raw)
+    extended = pl.read_parquet(Path(refreshed['output'])/'intervals.parquet')
+    assert extended['industry_l1'].to_list()==['SW2014:old', 'SW2021:new']
+    assert extended['valid_to'].max()==dt.date(2022, 1, 3)
 
 
 def test_factor_reader_uses_complete_source_versions_only(tmp_path: Path):
@@ -117,3 +128,32 @@ def test_supplier_placeholder_is_not_an_a_share():
                             "out_date": [None] * 3, "is_new": ["Y"] * 3})
     out, stats = membership_intervals(taxonomy(), members, as_of=dt.date(2022, 1, 3))
     assert out["symbol"].to_list() == ["000001.SZ"] and stats["excluded_members"] == 2
+
+
+def test_daily_industry_reuses_closed_history_and_skips_fresh_publication(monkeypatch, tmp_path):
+    from quant.data import industry_history, collect_industry
+    root = tmp_path/'clean/tushare_industry/old'
+    root.mkdir(parents=True)
+    previous = {'with_current': True, 'as_of': '2026-09-10', 'raw_root': 'current_raw',
+                'historical_raw_root': 'closed_history', 'output': str(root)}
+    file = root/'summary.json'
+    file.write_text(json.dumps(previous))
+    calls = []
+    def collect(raw, **kwargs):
+        assert kwargs['member_api']=='index_member_all'
+        calls.append('collect')
+        return {'network_requests': 8}
+    def publish(raw, clean, **kwargs):
+        assert kwargs['historical_raw_root']==Path('closed_history') and kwargs['with_current']
+        assert kwargs['as_of']==dt.date(2026,9,11)
+        calls.append('publish')
+        return {'output_intervals': 7, 'as_of': '2026-09-11', 'output': 'new'}
+    monkeypatch.setattr(collect_industry, 'collect_industry', collect)
+    monkeypatch.setattr(industry_history, 'publish_industry_history', publish)
+    result=industry_history.refresh_daily(data_root=tmp_path,end=dt.date(2026,9,11))
+    assert calls==['collect','publish'] and result['rebuild_from']=='2026-09-11'
+    assert result['new_intervals']==7
+    previous['as_of']='2026-09-11'
+    file.write_text(json.dumps(previous))
+    assert industry_history.refresh_daily(data_root=tmp_path,end=dt.date(2026,9,11))['new_intervals']==0
+    assert calls==['collect','publish']

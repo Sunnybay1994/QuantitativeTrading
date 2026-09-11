@@ -12,6 +12,9 @@ requests_per_minute = 60
 # Daily accumulation is bounded; full historical gap filling remains an explicit intraday command.
 stock_lookback_days = 7
 
+[industry]
+enabled = true
+
 [factors]
 enabled = true
 library = "configs/factors/library"

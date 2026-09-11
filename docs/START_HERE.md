@@ -79,6 +79,7 @@ D:\Miniforge3\python.exe -m quant.data.refresh --to today --no-intraday
 
 日常`quant.data.refresh`按配置补最近7个自然日的个股分钟线；历史补缺仍用上面的完整分钟入口。
 个股分钟数据发生变化后，日常入口会重算该日期范围内的分钟因子，随后检查覆盖率。
+行业快照过期时，日常入口更新当前申万成员、复用已结束的SW2014历史，并重算新增日期的行业表达式。
 
 run 产物在 `artifacts/research/runs/<run_id>/`；`run.json` 有假设、config/code 哈希、结论。
 研究结论一页一个，放 `docs/research/hypotheses/`。
