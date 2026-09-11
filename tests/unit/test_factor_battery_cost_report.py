@@ -4,6 +4,7 @@ import polars as pl
 import pytest
 
 from quant.research.factor_battery_cost_report import compare_nav
+from quant.research.factor_battery_costs import cost_metrics
 from quant.data.factor_benchmarks import read_etf_total_return
 
 
@@ -23,6 +24,17 @@ def test_comparison_does_not_silently_drop_missing_sessions():
     strategy = pl.DataFrame({'date': dates, 'unit_nav': [1., 1.1, 1.2]})
     with pytest.raises(ValueError, match='different session grid'):
         compare_nav(strategy, strategy.filter(pl.col('date') != dates[1]))
+
+
+@pytest.mark.parametrize('dates', [[], [dt.date(2020, 1, 3), dt.date(2020, 1, 2)],
+    [dt.date(2020, 1, 2)] * 2, [None, dt.date(2020, 1, 2)]])
+def test_date_checks_reject_empty_unordered_duplicate_and_null_sessions(dates):
+    nav = pl.DataFrame({'date': dates, 'unit_nav': [1.] * len(dates)},
+                       schema={'date': pl.Date, 'unit_nav': pl.Float64})
+    with pytest.raises(ValueError, match='ordered'):
+        compare_nav(nav, nav)
+    with pytest.raises(ValueError, match='ordered'):
+        cost_metrics(nav, pl.DataFrame(), initial_cash=100.)
 
 
 def test_etf_reference_preserves_first_observed_return_and_cuts_future(tmp_path):

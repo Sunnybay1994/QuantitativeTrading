@@ -15,7 +15,8 @@ from quant.research.factor_battery_costs import cost_metrics
 def compare_nav(strategy: pl.DataFrame, benchmark: pl.DataFrame) -> dict:
     """Rebase both series before the first common day, including that day's return."""
     for frame in (strategy, benchmark):
-        if (frame.is_empty() or frame['date'].to_list() != sorted(set(frame['date']))
+        if (frame.is_empty() or frame['date'].null_count() or not frame['date'].is_sorted()
+                or frame['date'].n_unique() != frame.height
                 or not frame['unit_nav'].is_finite().all() or (frame['unit_nav'] <= 0).any()):
             raise ValueError('Comparison requires positive, ordered NAV histories')
     first = max(strategy['date'][0], benchmark['date'][0])
@@ -29,7 +30,7 @@ def compare_nav(strategy: pl.DataFrame, benchmark: pl.DataFrame) -> dict:
         anchor = earlier[-1] if len(earlier) else 1.
         parts.append(part)
         values.append(part['unit_nav'].to_numpy()/anchor)
-    if parts[0]['date'].to_list() != parts[1]['date'].to_list():
+    if not parts[0]['date'].equals(parts[1]['date']):
         raise ValueError('Benchmark has a different session grid')
     size = len(values[0])
     strategy_cagr, benchmark_cagr = [float(v[-1]**(252/size)-1) for v in values]
@@ -89,6 +90,7 @@ def collect_cost_report(*, run: Path, benchmarks: Path | None = None,
         for benchmark in benchmark_rows:
             if benchmark['cost_multiplier'] != row['cost_multiplier']:
                 continue
+            assert benchmarks is not None
             baseline, _ = load_cost_history(benchmarks, benchmark['variant'], benchmark['cost_multiplier'],
                                             settings['run']['as_of'])
             comparisons.append({'variant': row['variant'], 'cost_multiplier': row['cost_multiplier'],

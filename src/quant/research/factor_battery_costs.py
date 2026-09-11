@@ -19,7 +19,8 @@ from quant.research.run_s1_walk_forward import metrics
 
 def cost_metrics(nav: pl.DataFrame, trades: pl.DataFrame, *, initial_cash: float) -> dict:
     """Normalize turnover by prior-session equity and expose invested fractions."""
-    if nav.is_empty() or nav['date'].to_list() != sorted(set(nav['date'])):
+    if (nav.is_empty() or nav['date'].null_count() or not nav['date'].is_sorted()
+            or nav['date'].n_unique() != nav.height):
         raise ValueError('Cost metrics require ordered unique NAV dates')
     denominators = nav.select('date', pl.col('equity').shift(1).fill_null(initial_cash).alias('prior_equity'))
     if not denominators['prior_equity'].is_finite().all() or (denominators['prior_equity'] <= 0).any():
@@ -55,7 +56,7 @@ def top_group_targets(scores: pl.DataFrame, *, variant: str, sessions: tuple[dt.
         return pl.DataFrame(schema=schema)
     members = {key[0]: frame["symbol"].to_list()
                for key, frame in top.partition_by("trade_date", as_dict=True).items()}
-    rows = []
+    rows: list[dict] = []
     for (signal,), frame in scores.sort("trade_date", "symbol").partition_by("trade_date", as_dict=True).items():
         execution = next_session.get(signal)
         if signal < first or execution is None or execution > end:
@@ -110,9 +111,10 @@ def run_cost_plans(*, settings: dict, plans: dict, sessions: tuple[dt.date, ...]
         raise ValueError('Invalid explicit cost replay range')
     for variant, (_, targets) in plans.items():
         targets.write_parquet(output / f"targets_{variant}.parquet")
-    accounts = {(variant, multiplier): {} for variant in plans
+    accounts: dict[tuple[str, float], dict] = {(variant, multiplier): {} for variant in plans
                 for multiplier in settings["portfolio"]["cost_multipliers"]}
-    pieces = {key: [] for key in accounts}
+    pieces: dict[tuple[str, float], list[tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]]] = {
+        key: [] for key in accounts}
     first = start if start is not None else min(targets["execution_date"].min() for _, targets in plans.values())
     began = time.perf_counter()
     for year in range(first.year, end.year+1):
