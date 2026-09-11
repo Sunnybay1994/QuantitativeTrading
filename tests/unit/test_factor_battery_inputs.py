@@ -8,6 +8,33 @@ from quant.data import factor_battery_inputs as inputs
 from tests.unit.test_factor_expressions import sample_bars
 
 
+def test_execution_reader_keeps_future_settlement_recorded_in_window(tmp_path, monkeypatch):
+    day = dt.date(2020, 12, 31)
+    folder = tmp_path / "clean/stock_execution/fixture"
+    folder.mkdir(parents=True)
+    pl.DataFrame({"symbol": ["A", "B"]}).write_parquet(folder / "instruments.parquet")
+    events = pl.DataFrame({"symbol": ["A", "A", "B"],
+        "record_date": [day, dt.date(2021, 1, 5), day],
+        "ex_date": [dt.date(2021, 1, 4), dt.date(2021, 1, 6), dt.date(2021, 1, 4)]})
+    events.write_parquet(folder / "dividends.parquet")
+    daily = pl.DataFrame({"symbol": ["A", "B"], "trade_date": [day, day]})
+    for name in ("limits", "suspensions"):
+        daily.write_parquet(folder / f"{name}.parquet")
+    def read(**kwargs):
+        assert kwargs["start"] == dt.date(2020, 12, 30)
+        return daily
+    monkeypatch.setattr(inputs, "read_stock_data", read)
+    monkeypatch.setattr(inputs, "read_stock_paper_calendar", lambda root: pl.DataFrame(
+        {"date": [dt.date(2020, 12, 30), day], "is_open": [True, True]}))
+    selected = inputs.read_battery_execution(data_root=tmp_path, refresh_config=tmp_path / "unused",
+        snapshot="fixture", start=day, end=day, symbols=["A"])
+    assert selected["bars"]["symbol"].to_list() == ["A"]
+    assert selected["dividends"].equals(events.head(1))
+    with pytest.raises(ValueError, match="instruments"):
+        inputs.read_battery_execution(data_root=tmp_path, refresh_config=tmp_path / "unused",
+            snapshot="fixture", start=day, end=day, symbols=["missing"])
+
+
 def test_monthly_labels_cross_year_boundaries_without_future_universe_changes(tmp_path, monkeypatch):
     # Shift the existing bar fixture so December's return ends at February open.
     bars = sample_bars().with_columns((pl.col("trade_date")-pl.duration(days=31)).alias("trade_date"))

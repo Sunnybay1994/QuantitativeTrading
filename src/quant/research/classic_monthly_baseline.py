@@ -6,12 +6,19 @@ import hashlib
 import io
 import json
 import math
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Literal
 
 import polars as pl
+from pandera.config import config_context
 
 from quant.backtest.daily_account import advance
+from quant.backtest.daily_simulator import _validate_targets
+from quant.domain import (
+    Bar1dSchema, TradeCalendarSchema, InstrumentSchema, BacktestNavSchema,
+    BacktestPositionSchema, BacktestTradeSchema, BacktestRejectionSchema,
+)
 from quant.data.etf_paper_inputs import etf_session_states, read_etf_dividends
 from quant.data.etf_research_inputs import read_etf_research_inputs
 from quant.data.refresh_stocks import read_stock_data
@@ -142,9 +149,15 @@ CODE_PATHS = (
 def replay(
     *, bars: pl.DataFrame, calendar: pl.DataFrame, instruments: pl.DataFrame,
     targets: pl.DataFrame, dividends: pl.DataFrame, market_states: dict,
-    config: dict[str, Any], sessions: list[dt.date], name: str,
+    config: dict[str, Any], sessions: list[dt.date], name: str, validate_once: bool = False,
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """Use the same cash/receivable/lot account for the strategy and comparator."""
+    if validate_once:
+        bars = Bar1dSchema.validate(bars)
+        calendar = TradeCalendarSchema.validate(calendar)
+        instruments = InstrumentSchema.validate(instruments)
+        targets = _validate_targets(targets, strategy=name)
+    checked_nav, checked_positions = [], []
     account_config = {"paper": {"name": name, "auto_trade": False,
                                "initial_cash": config["portfolio"]["initial_cash"]},
                       "costs": config["costs"]}
@@ -178,11 +191,14 @@ def replay(
             prior_marks = prior_marks.sort("trade_date").unique("symbol", keep="last")
             today_bars = pl.concat([today_bars, prior_marks])
         try:
-            state, result = advance(
-                date=date, state=state, bars=today_bars, calendar=calendar,
-                instruments=instruments, market_states=market_states, dividends=dividends,
-                config=account_config,
-            )
+            # Batch only schema checks. All account and trading-rule checks
+            # still run daily; every output row is validated before returning.
+            with config_context(validation_enabled=False) if validate_once else nullcontext():
+                state, result = advance(
+                    date=date, state=state, bars=today_bars, calendar=calendar,
+                    instruments=instruments, market_states=market_states, dividends=dividends,
+                    config=account_config,
+                )
         except ValueError as exc:
             relevant = set(state["holdings"]) | (set(batch["symbol"]) if batch is not None else set())
             inactive = instruments.filter(pl.col("symbol").is_in(relevant) & (
@@ -197,6 +213,14 @@ def replay(
         )
         trades.append(result.trades)
         rejections.append(result.rejections)
+        if validate_once:
+            checked_nav.append(result.nav)
+            checked_positions.append(result.positions)
+    if validate_once:
+        BacktestNavSchema.validate(pl.concat(checked_nav, how="vertical_relaxed"))
+        BacktestPositionSchema.validate(pl.concat(checked_positions, how="vertical_relaxed"))
+        BacktestTradeSchema.validate(pl.concat(trades, how="vertical_relaxed"))
+        BacktestRejectionSchema.validate(pl.concat(rejections, how="vertical_relaxed"))
     return (pl.DataFrame(state["nav"]).with_columns(pl.col("date").str.to_date()),
             pl.concat(trades, how="vertical_relaxed"), pl.concat(rejections, how="vertical_relaxed"))
 

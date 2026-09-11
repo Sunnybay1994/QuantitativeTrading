@@ -6,8 +6,35 @@ from pathlib import Path
 import polars as pl
 
 from quant.data.factor_panels import available_sessions, read_factor_inputs, read_factor_industry
+from quant.data.refresh_stocks import read_stock_data
+from quant.data.stock_paper_inputs import read_stock_paper_calendar
 from quant.research.factor_battery_universe import prepare_battery_universe
 from quant.research.factor_labels import build_next_rebalance_open_labels
+
+
+def read_battery_execution(*, data_root: Path, refresh_config: Path, snapshot: str,
+                           start: dt.date, end: dt.date, symbols: list[str]) -> dict[str, pl.DataFrame]:
+    """Read the published execution inputs for one bounded replay."""
+    if start > end or not symbols or Path(snapshot).name != snapshot or snapshot in (".", ".."):
+        raise ValueError("Invalid battery execution selection")
+    folder = data_root / "clean/stock_execution" / snapshot
+    result = {name: pl.read_parquet(folder / f"{name}.parquet").filter(pl.col("symbol").is_in(symbols))
+              for name in ("instruments", "dividends", "limits", "suspensions")}
+    if set(result["instruments"]["symbol"]) != set(symbols):
+        raise ValueError("Missing battery execution instruments")
+    calendar = read_stock_paper_calendar(data_root)
+    previous = calendar.filter(pl.col("is_open") & (pl.col("date") < start))["date"].max()
+    read_start = previous if isinstance(previous, dt.date) else start
+    result["bars"] = read_stock_data(data_root=data_root, config=refresh_config, table="bar_1d",
+                                    start=read_start, end=end).filter(pl.col("symbol").is_in(symbols))
+    result["calendar"] = calendar.filter(pl.col("date").is_between(read_start, end))
+    for name in ("limits", "suspensions"):
+        result[name] = result[name].filter(pl.col("trade_date").is_between(start, end))
+    # Keep pre-start record dates for delayed corporate actions; the account
+    # requires an actual earlier holdings snapshot rather than inventing one.
+    result["dividends"] = result["dividends"].filter(
+        (pl.col("ex_date") >= start) & (pl.col("record_date") <= end))
+    return result
 
 
 def read_battery_symbols(data_root: Path, *, start: dt.date, end: dt.date) -> list[str]:
