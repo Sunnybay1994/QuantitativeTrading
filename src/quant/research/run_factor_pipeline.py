@@ -13,11 +13,13 @@ from quant.research.factor_battery_screen import run_screen
 
 
 def run_pipeline(*, config: Path, library: Path, as_of: dt.date, output: Path,
-                 data_root: Path, execution_snapshot: str, workers: int) -> dict:
+                 data_root: Path, execution_snapshot: str, workers: int,
+                 existing_runs: list[Path] | None = None) -> dict:
     """Use a new run directory; retain partial outputs if a stage fails.
 
     The factor panels and dated execution inputs must already be published.
     Stages run sequentially, with worker parallelism inside the heavy stages.
+    Existing cost runs are validated by the cost batch against the current inputs.
     """
     if workers < 1:
         raise ValueError('Workers must be positive')
@@ -36,20 +38,24 @@ def run_pipeline(*, config: Path, library: Path, as_of: dt.date, output: Path,
     run_redundancy(statistics=statistics, output=redundancy, library=library, workers=workers)
     print('Replaying all factor portfolios at all cost levels', flush=True)
     batch = run_cost_batch(statistics=statistics, screen=screen, output=costs, data_root=data_root,
-                          execution_snapshot=execution_snapshot, existing_runs=[], workers=workers)
+                          execution_snapshot=execution_snapshot, existing_runs=existing_runs or [], workers=workers)
     print('Writing scorecard and outstanding cost failures', flush=True)
-    scorecard = run_scorecard(screen=screen, output=output/'scorecard', cost_runs=[], cost_root=costs,
+    scorecard = run_scorecard(screen=screen, output=output/'scorecard',
+                             cost_runs=[Path(path) for path in batch['completed_runs'].values()], cost_root=None,
                              benchmarks=benchmarks, redundancy=redundancy, data_root=data_root)
     result = {'as_of': str(as_of), 'scorecard': scorecard, 'cost_failures': batch['failures'],
+              'pending_external_runs': batch['pending_external_runs'],
               'scorecard_path': str(output/'scorecard'/'factor_scorecard.parquet')}
     (output/'summary.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
     failures = '\n'.join(f'- {factor}: {reason}' for factor, reason in sorted(batch['failures'].items()))
+    pending = '\n'.join(f'- {factor}: {path}' for factor, path in sorted(batch['pending_external_runs'].items()))
     (output/'report.md').write_text(
         f"# 因子评估流水线：{as_of}\n\n"
         f"评分表{scorecard['rows']}行，完整成本{scorecard['cost_complete_rows']}行，"
         f"通过准入{scorecard['admitted_rows']}行，待补准入证据{scorecard['admission_unresolved_rows']}行。\n\n"
         f"评分表：`scorecard/factor_scorecard.parquet`。\n\n"
-        + ('成本回放失败明细：\n\n'+failures+'\n' if failures else '成本批处理无失败项。\n'),
+        + ('成本回放失败明细：\n\n'+failures+'\n' if failures else '成本批处理无失败项。\n')
+        + ('\n外部成本回放尚未完成：\n\n'+pending+'\n' if pending else ''),
         encoding='utf-8')
     return result
 
@@ -63,12 +69,15 @@ def main() -> None:
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--data-root', type=Path, default=Path('data'))
     parser.add_argument('--workers', type=int, default=4)
+    parser.add_argument('--existing-run', type=Path, action='append', default=[],
+                        help='Reuse or reserve an existing factor cost run; repeat for multiple factors')
     args = parser.parse_args()
     result = run_pipeline(config=args.config, library=args.library, as_of=args.as_of,
                           output=args.output, data_root=args.data_root,
-                          execution_snapshot=args.execution_snapshot, workers=args.workers)
+                          execution_snapshot=args.execution_snapshot, workers=args.workers,
+                          existing_runs=args.existing_run)
     print(json.dumps(result))
-    if result['cost_failures']:
+    if result['cost_failures'] or result['pending_external_runs']:
         raise SystemExit(1)
 
 
