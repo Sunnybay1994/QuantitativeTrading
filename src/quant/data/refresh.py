@@ -87,9 +87,21 @@ def run_refresh(
         else:
             factors = refresh_factors(data_root=data_root, artifact_root=artifact_root,
                                       config=config, end=end, settings=settings["factors"])
+    quality: dict[str, Any] = {"errors": [], "message": "disabled"}
+    if settings.get('quality', {}).get('enabled', False):
+        from quant.data.daily_input_quality import run_quality
+        from quant.factors.library import load_library
+
+        definitions = load_library(Path(settings['factors']['library']), settings['factors'].get('selected', 'all'))
+        battery = tomllib.loads(Path(settings['quality']['battery_config']).read_text(encoding='utf-8'))
+        stamp = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S%f')
+        quality = run_quality(data_root=data_root, config=config, end=end,
+            factors=[{'id': row.id, 'family': row.family} for row in definitions], financials=financials,
+            output=artifact_root/'data'/'input_quality'/stamp,
+            lookback_sessions=settings['quality'].get('lookback_sessions', 5), minimum_symbols=battery['minimum_symbols'])
     changed = (stocks["new_dates"] or etfs["new_rows"] or etfs["new_bar_rows"] or limit_rows
                or minutes.get("changed_rows", 0) or benchmark["new_rows"] or factors["years"] or financials['new_rows'])
-    message = "partial" if minutes.get("errors") else "updated" if changed else "no-op"
+    message = "partial" if minutes.get("errors") or quality['errors'] else "updated" if changed else "no-op"
     return {"latest_session": str(end), "message": message,
             "stock_new_dates": stocks["new_dates"], "stock_new_rows": stocks["new_rows"],
             "etf_price_new_rows": etfs["new_rows"], "etf_bar_new_rows": etfs["new_bar_rows"],
@@ -100,6 +112,7 @@ def run_refresh(
             "factor_benchmark_snapshot": benchmark.get("snapshot"),
             "factors": factors,
             "financials": financials,
+            "input_quality": quality,
             "stock_artifact": stocks.get("artifact_path"), "etf_artifact": etfs.get("artifact_path")}
 
 
@@ -130,7 +143,7 @@ def main() -> None:
     result = run_refresh(to=args.to, data_root=args.data_root, artifact_root=args.artifact_root,
                          config=args.config, intraday=args.intraday)
     print(json.dumps(result, ensure_ascii=False))
-    if result["intraday_errors"]:
+    if result["intraday_errors"] or result['input_quality']['errors']:
         raise SystemExit(1)
 
 

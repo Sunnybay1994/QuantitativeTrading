@@ -149,3 +149,36 @@ def test_financial_snapshot_updates_before_factors_and_uses_calendar_date(monkey
     result = refresh.run_refresh(to='2026-09-12', data_root=tmp_path, artifact_root=tmp_path,
         config=config, now=dt.datetime(2026, 9, 12, 20, tzinfo=refresh.SHANGHAI), intraday=False)
     assert result['message'] == 'updated' and result['financials']['new_rows'] == 2
+
+
+def test_input_quality_after_factors_makes_missing_data_visible(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from quant.data import daily_input_quality
+    from quant.factors import library
+
+    config = tmp_path/'refresh.toml'
+    config.write_text('etf_config="configs/research/m2_s2_volatility_target.toml"\n'
+        '[factors]\nenabled=true\nlibrary="unused"\n[quality]\nenabled=true\nbattery_config="configs/factors/battery.toml"\n')
+    monkeypatch.setattr(refresh, 'latest_session', lambda **kw: dt.date(2026, 9, 10))
+    monkeypatch.setattr(refresh, 'refresh_stocks', lambda **kw: {'new_dates': 0, 'new_rows': 0})
+    monkeypatch.setattr(refresh, 'refresh_etfs', lambda **kw: {'new_rows': 0, 'new_bar_rows': 0})
+    monkeypatch.setattr(refresh, 'refresh_limits', lambda **kw: 0)
+    monkeypatch.setattr(library, 'load_library', lambda *args: [SimpleNamespace(id='a', family='daily')])
+    calls = []
+
+    def factors(**kwargs):
+        calls.append('factors')
+        return {'years': []}
+
+    def quality(**kwargs):
+        assert calls == ['factors'] and kwargs['end'] == dt.date(2026, 9, 10)
+        assert kwargs['factors'] == [{'id': 'a', 'family': 'daily'}]
+        assert kwargs['minimum_symbols'] == 100
+        return {'errors': ['a: missing keys']}
+
+    monkeypatch.setattr(refresh, 'refresh_factors', factors)
+    monkeypatch.setattr(daily_input_quality, 'run_quality', quality)
+    result = refresh.run_refresh(to='2026-09-10', data_root=tmp_path, artifact_root=tmp_path,
+        config=config, intraday=False)
+    assert result['message'] == 'partial' and result['input_quality']['errors']

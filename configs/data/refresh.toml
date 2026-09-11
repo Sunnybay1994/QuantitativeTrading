@@ -17,3 +17,8 @@ start = "2010-01-01"
 [financials]
 enabled = true
 lookback_days = 3
+
+[quality]
+enabled = true
+lookback_sessions = 5
+battery_config = "configs/factors/battery.toml"

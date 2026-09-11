@@ -55,7 +55,7 @@ D:\Miniforge3\python.exe -m quant.execution.paper_ledger --to today
 D:\Miniforge3\python.exe -m quant.execution.stock_paper --to today
 D:\Miniforge3\python.exe -m quant.reporting.stock_paper_monthly
 
-# 数据补齐（日频 + 分钟 + 基准 + 公告驱动财务 + 因子增量；17点前取上一完整日）
+# 数据补齐（日频 + 分钟 + 基准 + 财务 + 因子增量及实际覆盖检查；17点前取上一完整日）
 D:\Miniforge3\python.exe -m quant.data.refresh --to today
 
 # 多因子模型随既有成本结果自动续跑（五分钟检查一次；最多等待24小时）
