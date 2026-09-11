@@ -1,0 +1,19 @@
+{
+  "samples": 12,
+  "consistent": 12,
+  "inconsistent": 0,
+  "unable_to_check": 0,
+  "scope_of_consistency": "ann_date versus platform disclosure date, forecast period end, substantive reason text; not byte equality or earliest-release proof",
+  "revision_pairs_confirmed": 2,
+  "pdf_files": 14,
+  "signed_date_one_day_earlier": [
+    "S02",
+    "S04"
+  ],
+  "signed_date_unavailable": [
+    "S09"
+  ],
+  "first_ann_date_mutated": false,
+  "corpus_rows": 16045,
+  "corpus_rows_with_reason": 8818
+}
