@@ -1,6 +1,7 @@
 """One command from causal annual factor screens to model reports."""
 import argparse
 import json
+import shutil
 import tomllib
 from pathlib import Path
 
@@ -13,31 +14,69 @@ from quant.research.run_multifactor_replay import run_model_replay
 
 
 def run_pipeline(*, config: Path, output: Path, data_root: Path,
-                 correlations_from: Path | None = None) -> dict:
+                 correlations_from: Path | None = None, resume_from: Path | None = None) -> dict:
     model_bytes = config.read_bytes()
     model = tomllib.loads(model_bytes.decode('utf-8'))
     research = model['research']
     benchmarks = Path(research['stock_benchmarks'])
+    if resume_from is not None and (resume_from/'model.toml').read_bytes() != model_bytes:
+        raise ValueError('Resume requires the same frozen model configuration')
+    if (resume_from is not None and correlations_from is None
+            and (resume_from/'selection'/'annual_correlations.parquet').is_file()):
+        correlations_from = resume_from/'selection'
     output.mkdir(parents=True, exist_ok=False)
     (output/'model.toml').write_bytes(model_bytes)
-    print('Recomputing annual training statistics', flush=True)
-    run_prefixes(config=config, output=output/'statistics')
+
+    def reuse(stage: str, files: tuple[str, ...]) -> dict | None:
+        if resume_from is None:
+            return None
+        previous = resume_from/stage
+        if not all((previous/name).is_file() for name in ('summary.json', *files)):
+            return None
+        if (previous/'model.toml').read_bytes() != model_bytes:
+            raise ValueError(f'Resume {stage} has a different model configuration')
+        result = json.loads((previous/'summary.json').read_text(encoding='utf-8'))
+        shutil.copytree(previous, output/stage)
+        print(f'Reusing completed {stage}', flush=True)
+        return result
+
+    print('Preparing annual training statistics', flush=True)
+    statistics_reused = reuse('statistics', ('annual_statistical_screen.parquet', 'model.toml', 'battery.toml'))
+    if statistics_reused is None:
+        run_prefixes(config=config, output=output/'statistics')
+    prior_complete = False
+    if resume_from is not None and statistics_reused is not None:
+        saved_selection = resume_from/'selection'/'summary.json'
+        if saved_selection.is_file():
+            previous = json.loads(saved_selection.read_text(encoding='utf-8'))
+            prior_complete = bool(previous['annual_selection']) and all(
+                row['selection_complete'] for row in previous['annual_selection'])
     print('Adding completed cost histories', flush=True)
-    costs = run_cost_prefixes(prefix=output/'statistics', output=output/'costs',
-        cost_runs=[Path(path) for path in research.get('cost_runs', [])],
-        cost_root=Path(research['cost_root']), benchmarks=benchmarks, data_root=data_root)
+    costs = reuse('costs', ('annual_cost_screen.parquet', 'model.toml', 'battery.toml')) if prior_complete else None
+    if costs is None:
+        costs = run_cost_prefixes(prefix=output/'statistics', output=output/'costs',
+            cost_runs=[Path(path) for path in research.get('cost_runs', [])],
+            cost_root=Path(research['cost_root']), benchmarks=benchmarks, data_root=data_root)
+        prior_complete = False
     print('Selecting factors using historical correlations', flush=True)
-    selection = run_selection(costs=output/'costs', output=output/'selection',
-                              correlations_from=correlations_from)
+    selection = reuse('selection', ('annual_selection.parquet', 'model.toml', 'battery.toml')) if prior_complete else None
+    if selection is None:
+        selection = run_selection(costs=output/'costs', output=output/'selection',
+                                  correlations_from=correlations_from)
+        prior_complete = False
     incomplete = [row for row in selection['annual_selection'] if not row['selection_complete']]
     result = {'model_results_ready': False, 'completed_cost_factors': costs['complete_cost_factors'],
               'annual_selection': selection['annual_selection'], 'conclusions': None}
     if not incomplete:
         print('Training the three fixed models', flush=True)
-        run_predictions(selection=output/'selection', output=output/'predictions')
+        predictions = reuse('predictions', ('monthly_predictions.parquet', 'model.toml', 'battery.toml')) if prior_complete else None
+        if predictions is None:
+            run_predictions(selection=output/'selection', output=output/'predictions')
         print('Replaying the full account calendar', flush=True)
-        run_model_replay(predictions=output/'predictions', benchmarks=benchmarks,
-                         output=output/'replay', data_root=data_root)
+        replay = reuse('replay', ('model.toml', 'battery.toml')) if predictions is not None else None
+        if replay is None:
+            run_model_replay(predictions=output/'predictions', benchmarks=benchmarks,
+                             output=output/'replay', data_root=data_root)
         print('Writing model reports', flush=True)
         reports = report_models(run=output/'replay', benchmarks=benchmarks,
                                 output=output/'reports', data_root=data_root)
@@ -49,7 +88,7 @@ def run_pipeline(*, config: Path, output: Path, data_root: Path,
         lines.append(f"|{row['test_year']}|{row['selection_complete']}|{row['unresolved_factors']}|"
                      f"{', '.join(row['confirmed_selected_prefix']) or '空'}|")
     lines += ['', ('下一步：依据reports目录中三个模型的结论执行模拟盘决策。' if not incomplete else
-        '下一步：继续既有成本批处理，证据补齐后以新输出目录重跑本命令；本次保留年度筛选，不生成缺失年份的模型收益。'), '']
+        '下一步：继续既有成本批处理，证据补齐后以新输出目录和--resume-from本目录继续；保留年度筛选并复用完成步骤。'), '']
     (output/'summary.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
     (output/'report.md').write_text('\n'.join(lines), encoding='utf-8')
     return result
@@ -61,9 +100,10 @@ def main() -> None:
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--data-root', type=Path, default=Path('data'))
     parser.add_argument('--correlations-from', type=Path, help='Reuse matching annual historical comparisons')
+    parser.add_argument('--resume-from', type=Path, help='Reuse completed stages in a new output directory')
     args = parser.parse_args()
     print(json.dumps(run_pipeline(config=args.config, output=args.output, data_root=args.data_root,
-                                  correlations_from=args.correlations_from)))
+                                  correlations_from=args.correlations_from, resume_from=args.resume_from)))
 
 
 if __name__ == '__main__':
