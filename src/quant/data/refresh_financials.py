@@ -16,19 +16,30 @@ from quant.data.connectors.tushare import TushareConnector
 from quant.data.financial_clean import normalize_financial_publication
 from quant.data.storage import RawStore
 
-TABLES = ("income", "balancesheet", "cashflow")
+TABLES = ("income", "balancesheet", "cashflow", "fina_indicator")
 
 
 def merge_financial_rows(base: pl.DataFrame, incoming: pl.DataFrame) -> tuple[pl.DataFrame, int]:
-    """Keep distinct revisions and discard only complete duplicates across source files."""
-    combined = pl.concat([base, incoming], how="diagonal_relaxed")
-    result = combined.unique(subset=[c for c in combined.columns if c != "source_file"], keep="first")
+    """Retain known values; newly observed values become usable prospectively."""
+    if (incoming.schema.get('source_observed_on') != pl.Date
+            or incoming['source_observed_on'].null_count()):
+        raise ValueError('Every incoming financial row needs an observation date')
+    combined = pl.concat([base.with_columns(pl.lit(False).alias('_incoming')),
+                          incoming.with_columns(pl.lit(True).alias('_incoming'))], how="diagonal_relaxed")
+    old = combined.filter(~pl.col('_incoming')).drop('_incoming')
+    fresh = combined.filter(pl.col('_incoming')).drop('_incoming')
+    keys = [c for c in old.columns if c not in ('source_file', 'source_observed_on', 'available_date')]
+    fresh = fresh.join(old.select(keys).unique(), on=keys, how='anti', nulls_equal=True)
+    fresh = fresh.sort('source_observed_on').unique(subset=keys, keep='first').with_columns(
+        pl.max_horizontal('available_date', 'source_observed_on').alias('available_date'))
+    result = pl.concat([old, fresh])
     return result.sort("symbol", "end_date", "available_date"), combined.height - result.height
 
 
 def refresh_quarter(
     *, data_root: Path, base_name: str, name: str, symbols: list[str], period: dt.date,
     client: Any = None, pause_seconds: float = 1.0,
+    observed_on: dt.date | None = None,
 ) -> dict[str, Any]:
     for value in (base_name, name):
         if not value or Path(value).name != value or value in (".", ".."):
@@ -46,6 +57,8 @@ def refresh_quarter(
     # This small data capture list allows an interrupted network refresh to resume.
     capture_path = output / "captured.parquet"
     captured = pl.read_parquet(capture_path).to_dicts() if capture_path.exists() else []
+    if any(not row.get('observed_on') for row in captured):
+        raise ValueError('Prior partial capture has no observation date; use a new version')
     if any(row["period"] != str(period) or row["base_name"] != base_name
            or row["symbol"] not in symbols or row["dataset"] not in TABLES for row in captured):
         raise ValueError("Financial capture belongs to a different request")
@@ -71,6 +84,8 @@ def refresh_quarter(
                 raise ValueError(f"Financial response scope differs: {table} {symbol}")
             captured.append({"dataset": table, "symbol": symbol, "period": str(period),
                              "base_name": base_name, "rows": raw.height,
+                             "observed_on": str(observed_on or dt.datetime.now(
+                                 dt.timezone(dt.timedelta(hours=8))).date()),
                              "raw_path": str(saved.data_path)})
             pl.DataFrame(captured).write_parquet(capture_path)
             if len(captured) % 60 == 0:
@@ -79,8 +94,8 @@ def refresh_quarter(
     summary: dict[str, Any] = {"name": name, "base_version": base_name, "period": str(period),
         "symbols_requested": len(symbols), "datasets": {},
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "pit_rule": "available_date strictly before the signal session"}
-    for table in (*TABLES, "fina_indicator"):
+        "pit_rule": "new economic rows available no earlier than observation date; strictly before signal session"}
+    for table in TABLES:
         old = pl.read_parquet(base / f"{table}.parquet")
         prior_quarantine = pl.read_parquet(base / f"{table}_quarantine.parquet")
         selected = [row for row in captured if row["dataset"] == table]
@@ -91,6 +106,9 @@ def refresh_quarter(
         if frames:
             incoming, rejected, numeric_nulls = normalize_financial_publication(
                 pl.concat(frames, how="diagonal_relaxed"), dataset=table)
+            observations = pl.DataFrame({'source_file': [row['raw_path'] for row in selected],
+                'source_observed_on': [dt.date.fromisoformat(row['observed_on']) for row in selected]})
+            incoming = incoming.join(observations, on='source_file', how='left', validate='m:1')
             merged, duplicates = merge_financial_rows(old, incoming)
             quarantine = pl.concat([prior_quarantine, rejected], how="diagonal_relaxed")
         else:
