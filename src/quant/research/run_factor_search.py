@@ -119,7 +119,7 @@ def run(*, config: Path, output: Path, data_root: Path = Path('data'), prepare_o
                 costs = run_cost_batch(statistics=output/'training', screen=output/'screen',
                     output=folder, data_root=data_root, execution_snapshot=search['execution_snapshot'],
                     existing_runs=[Path(path) for path in completed_costs.values()], workers=search['workers'],
-                    only_statistical_pass=True)
+                    only_statistical_pass=True, resume=True)
             completed_costs.update(costs['completed_runs'])
             if not costs['failures'] and not costs['pending_external_runs']:
                 break

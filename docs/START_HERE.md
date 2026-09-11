@@ -78,6 +78,7 @@ D:\Miniforge3\python.exe -m quant.data.refresh --to today
 # 待解析公告、实际因子覆盖和财务版本见刷新结果中的 input_quality / financials。
 
 # 有限因子搜索：展开固定24项候选 → 历史计算 → 开发/验证 → 成本及评分表；同一目录恢复
+# 确认原进程已停止后重跑；未写完批次汇总的成本阶段会复用已完成因子，并恢复本批次年度账户断点。
 D:\Miniforge3\python.exe -m quant.research.run_factor_search --config configs/factors/search/p6c_finite_batch01_20260911.toml --output artifacts/factors/search/p6c_batch01_20260911
 
 # 多因子模型随既有成本结果自动续跑（五分钟检查一次；最多等待24小时）

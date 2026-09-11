@@ -93,3 +93,39 @@ def test_overlapping_validation_is_rejected_before_registration(tmp_path, monkey
     monkeypatch.setattr(search, 'prepare', lambda **kwargs: pytest.fail('must reject dates before registration'))
     with pytest.raises(ValueError, match='separation'):
         search.run(config=config, output=tmp_path/'run')
+
+
+def test_interrupted_cost_parent_resumes_same_attempt_and_reuses_completed_factors(tmp_path, monkeypatch):
+    calls = fake_stages(monkeypatch)
+    attempts = []
+
+    def costs(**kwargs):
+        folder = kwargs['output']
+        attempts.append(folder)
+        assert kwargs['resume'] is True
+        if len(attempts) == 1:
+            assert kwargs['existing_runs'] == []
+            (folder/'one').mkdir(parents=True)
+            (folder/'one'/'summary.json').write_text('{}')
+            (folder/'two').mkdir()
+            (folder/'two'/'replay_config.json').write_text('{}')
+            (folder/'two'/'saved_year.txt').write_text('retained checkpoint')
+            raise RuntimeError('parent interrupted before batch summary')
+        assert folder == attempts[0]
+        assert kwargs['existing_runs'] == [folder/'one']
+        assert (folder/'two'/'saved_year.txt').read_text() == 'retained checkpoint'
+        result = {'completed_runs': {'one': str(folder/'one'), 'two': str(folder/'two')},
+                  'failures': {}, 'pending_external_runs': {}}
+        (folder/'batch_summary.json').write_text(json.dumps(result))
+        return result
+
+    monkeypatch.setattr(search, 'run_cost_batch', costs)
+    output = tmp_path/'run'
+    with pytest.raises(RuntimeError, match='parent interrupted'):
+        search.run(config=CONFIG, output=output)
+    assert not (output/'costs/attempt_001/batch_summary.json').exists()
+    before = list(calls)
+    assert search.run(config=CONFIG, output=output)['message'] == 'completed'
+    assert len(attempts) == 2
+    assert not (output/'costs/attempt_002').exists()
+    assert sum(name == 'statistics' for name, _ in calls) == sum(name == 'statistics' for name, _ in before)
