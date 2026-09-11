@@ -1,0 +1,50 @@
+[diagnostic]
+id = "p6cd-stratified-diagnostics-20260911"
+registered_on = 2026-09-11
+purpose = "Explain positive cross-sectional IC versus executable long-only risk; descriptive analysis, no trading or parameter selection."
+statistics = "artifacts/factors/battery_statistics_20260831_20260911"
+end = 2026-08-31
+training_end = 2023-12-29
+validation_start = 2024-01-01
+minimum_training_months = 12
+quantiles = [0.3333333333333333, 0.6666666666666666]
+minimum_symbols = 100
+minimum_paired_coverage = 0.95
+monthly_newey_west_lag = 6
+strata_rule = "Pooled eligible monthly amount20 and total_market_value quantiles from prior calendar years; December signals use following execution year."
+trend_rule = "Existing benchmark_regimes: previous total-return close vs MA200 and 20-session MA slope."
+volatility_rule = "Previous-close 20-session volatility vs median observed in prior calendar years."
+liquidity_state_rule = "Last completed monthly median amount20 vs median of monthly medians from prior calendar years."
+minimum_participation_capacity = 0.05
+volume_stress_fraction = 0.5
+auto_trade = false
+
+[[models]]
+name = "equal_z"
+source = "artifacts/models/p4_follow_20260911_01/attempt_0017"
+method = "equal_z"
+[[models]]
+name = "positive_mean_ic"
+source = "artifacts/models/p4_follow_20260911_01/attempt_0017"
+method = "positive_mean_ic"
+[[models]]
+name = "lightgbm"
+source = "artifacts/models/p4_follow_20260911_01/attempt_0017"
+method = "lightgbm"
+[[models]]
+name = "calendar_lightgbm"
+source = "artifacts/models/p6c_calendar_annual_20260911_01"
+method = "lightgbm"
+
+[[factors]]
+name = "return_volume_corr40"
+factor = "p6c1_return_volume_corr_n40"
+source = "artifacts/factors/search/p6c_batch01_window02_20260911"
+variant = "size_industry_neutral"
+end = 2025-12-31
+[[factors]]
+name = "return_volume_corr80"
+factor = "p6c1_return_volume_corr_n80"
+source = "artifacts/factors/search/p6c_batch01_window02_20260911"
+variant = "size_industry_neutral"
+end = 2025-12-31
