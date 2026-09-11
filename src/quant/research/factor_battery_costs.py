@@ -17,6 +17,26 @@ from quant.research.factor_battery_groups import assign_groups
 from quant.research.run_s1_walk_forward import metrics
 
 
+def cost_metrics(nav: pl.DataFrame, trades: pl.DataFrame, *, initial_cash: float) -> dict:
+    """Normalize turnover by prior-session equity and expose invested fractions."""
+    if nav.is_empty() or nav['date'].to_list() != sorted(set(nav['date'])):
+        raise ValueError('Cost metrics require ordered unique NAV dates')
+    denominators = nav.select('date', pl.col('equity').shift(1).fill_null(initial_cash).alias('prior_equity'))
+    if not denominators['prior_equity'].is_finite().all() or (denominators['prior_equity'] <= 0).any():
+        raise ValueError('Cost metrics require positive prior equity')
+    if trades.filter(~pl.col('date').is_in(nav['date'].implode())).height:
+        raise ValueError('Trade dates are outside NAV history')
+    amounts = trades.group_by('date').agg(pl.col('notional').sum())
+    daily = denominators.join(amounts, on='date', how='left').with_columns(pl.col('notional').fill_null(0.))
+    result = metrics(nav, trades, initial_cash=initial_cash)
+    result['annualized_turnover_on_initial_cash'] = result['annualized_one_way_turnover']
+    result['annualized_one_way_turnover'] = daily.select(
+        (pl.col('notional')/(2*pl.col('prior_equity'))).sum()).item()*252/nav.height
+    result['mean_invested_fraction'] = nav.select((pl.col('market_value')/pl.col('equity')).mean()).item()
+    result['ending_invested_fraction'] = nav['market_value'][-1]/nav['equity'][-1]
+    return result
+
+
 def top_group_targets(scores: pl.DataFrame, *, variant: str, sessions: tuple[dt.date, ...],
                       end: dt.date, settings: dict, name: str) -> pl.DataFrame:
     """Fix membership at signal close and schedule only the next exchange open.
@@ -74,6 +94,16 @@ def run_factor_costs(*, statistics: Path, output: Path, data_root: Path,
         f'\n[cost_replay]\nfactor = {json.dumps(factor)}\n'
         f'execution_snapshot = {json.dumps(execution_snapshot)}\n'
         'empty_top_group = "cash_after_first_valid_group"\n').encode("utf-8"))
+    return run_cost_plans(settings=settings, plans=plans, sessions=sessions, output=output,
+                          data_root=data_root, execution_snapshot=execution_snapshot, factor=factor)
+
+
+def run_cost_plans(*, settings: dict, plans: dict, sessions: tuple[dt.date, ...], output: Path,
+                   data_root: Path, execution_snapshot: str, factor: str) -> dict:
+    """Replay factor and equal-weight benchmark plans through the same account."""
+    end = settings['run']['as_of']
+    if not plans or any(targets.is_empty() for _, targets in plans.values()):
+        raise ValueError('Cost replay requires nonempty target plans')
     for variant, (_, targets) in plans.items():
         targets.write_parquet(output / f"targets_{variant}.parquet")
     accounts = {(variant, multiplier): {} for variant in plans
@@ -135,7 +165,7 @@ def run_factor_costs(*, statistics: Path, output: Path, data_root: Path,
                                 for index in range(3)]
         rows.append({"factor": factor, "variant": variant, "cost_multiplier": multiplier,
                      "first_date": str(nav["date"].min()), "last_date": str(nav["date"].max()),
-                     **metrics(nav, trades, initial_cash=settings["portfolio"]["initial_cash"]),
+                     **cost_metrics(nav, trades, initial_cash=settings["portfolio"]["initial_cash"]),
                      "rejected_orders": rejects.height, "delisting_writeoff": nav["delisting_writeoff"].sum()})
     result = {"factor": factor, "execution_snapshot": execution_snapshot,
               "empty_top_group": "cash_after_first_valid_group", "rows": rows,

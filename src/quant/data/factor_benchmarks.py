@@ -12,6 +12,15 @@ from quant.data.connectors.tushare import TushareConnector
 from quant.data.storage import RawStore
 
 
+def read_csi800_members(*, data_root: Path, snapshot: str) -> pl.DataFrame:
+    if not snapshot or Path(snapshot).name != snapshot or snapshot in ('.', '..'):
+        raise ValueError('Invalid CSI800 snapshot')
+    frame = pl.read_parquet(data_root/'clean/factor_benchmarks'/snapshot/'members.parquet')
+    if frame.select('snapshot_date', 'symbol').is_duplicated().any():
+        raise ValueError('Duplicate CSI800 members')
+    return frame
+
+
 def capture_csi800(*, data_root: Path, name: str, start: dt.date, end: dt.date) -> dict:
     if not name or Path(name).name != name or name in (".", "..") or start > end:
         raise ValueError("Invalid benchmark capture request")

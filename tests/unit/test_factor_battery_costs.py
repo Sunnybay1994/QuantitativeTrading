@@ -2,7 +2,7 @@ import datetime as dt
 
 import polars as pl
 
-from quant.research.factor_battery_costs import top_group_targets
+from quant.research.factor_battery_costs import cost_metrics, top_group_targets
 
 
 def test_top_targets_use_next_open_and_cash_when_scores_disappear():
@@ -23,3 +23,14 @@ def test_constant_factor_has_no_executable_portfolio():
     scores = pl.DataFrame({"trade_date": [day]*4, "symbol": ["A", "B", "C", "D"], "raw": [1.]*4})
     assert top_group_targets(scores, variant="raw", sessions=(day, dt.date(2020, 2, 3)),
         end=dt.date(2020, 2, 3), settings={"groups": 2, "minimum_symbols": 4}, name="fixture").is_empty()
+
+
+def test_turnover_uses_previous_equity_after_account_growth():
+    dates = [dt.date(2020, 1, day) for day in (2, 3, 6)]
+    nav = pl.DataFrame({'date': dates, 'equity': [100., 200., 200.], 'unit_nav': [1., 2., 2.],
+                        'market_value': [50., 100., 100.], 'cumulative_fees': [0., 0., 0.]})
+    trades = pl.DataFrame({'date': [dates[-1]], 'notional': [200.]})
+    result = cost_metrics(nav, trades, initial_cash=100.)
+    assert result['annualized_one_way_turnover'] == 42.
+    assert result['annualized_turnover_on_initial_cash'] == 84.
+    assert result['mean_invested_fraction'] == .5
