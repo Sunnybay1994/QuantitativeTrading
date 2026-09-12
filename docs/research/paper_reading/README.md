@@ -23,6 +23,7 @@
 - [部分成交成本恒等式](../../../artifacts/research/paper_reading_partial_fill_cost_20260912_01/README.md)：四个合成场景调用现有成交偏差函数，独立截止财富核对通过；有利价差40元仍可能伴随完整实施差额565元。
 - [预测比较的原假设](../../../artifacts/research/paper_reading_forecast_null_20260912_01/README.md)：补读Zhu/Timmermann后续讨论，区分平均表现相同与每个已知状态下表现相同；平方损失的结论不能直接套到L1。
 - [累计财报修订与SUE](../../../artifacts/research/paper_reading_sue_revision_20260912_01/README.md)：实际函数合成核对中，全年累计不变、相邻单季变化抵消，仍改变11个已可计算季度的SUE；财报版本影响不仅限于修订当季。
+- [财务字段范围](../../../artifacts/research/paper_reading_financial_scope_20260912_01/README.md)：官方字段与现有公式核对，归母SUE不能直接用合并现金流作严格现金/应计分解；两种已有应计指标也需分别保留口径。
 
 ### 新一轮研读的配套证据
 
