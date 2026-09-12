@@ -12,6 +12,28 @@ from quant.data.daily_value_quality import diagnose_daily_value_inputs
 from quant.data.sue_input_quality import read_sue_report_context
 
 
+def _record_factor_health(*, data_root: Path, config: Path, end: dt.date, output: Path) -> dict:
+    """Optional descriptive logs share the public quality entry point for every caller."""
+    disabled = {'enabled': False, 'status': 'disabled'}
+    if not config.is_file():
+        return disabled
+    try:
+        settings = tomllib.loads(config.read_text(encoding='utf-8'))
+        health_config = settings.get('quality', {}).get('factor_health_config')
+        if health_config is None:
+            return disabled
+        if not isinstance(health_config, str) or not health_config.strip():
+            raise ValueError('factor_health_config must be a nonempty config path')
+        from quant.data.daily_factor_health import run_daily_factor_health
+
+        result = run_daily_factor_health(data_root=data_root, refresh_config=config,
+            health_config=Path(health_config), as_of=end, output=output)
+        return {**result, 'enabled': True, 'status': 'recorded'}
+    except (OSError, ValueError, KeyError, TypeError, pl.exceptions.PolarsError) as exc:
+        return {'enabled': True, 'status': 'unavailable', 'as_of': str(end),
+            'diagnostics_only': True, 'reason': f'{type(exc).__name__}: {exc}', 'output': str(output)}
+
+
 def check_stock_inputs(bars: pl.DataFrame, basic: pl.DataFrame, adjustment: pl.DataFrame,
                        *, sessions: tuple[dt.date, ...]) -> dict:
     keys = ['trade_date', 'symbol']
@@ -121,6 +143,9 @@ def run_quality(*, data_root: Path, config: Path, end: dt.date, factors: list[di
                     if unexpected:
                         errors.append(f"{factor['id']}: {unexpected} finite values lack compatible latest PIT report context")
     unresolved = financials.get('unresolved_announcements', [])
+    output.mkdir(parents=True, exist_ok=False)
+    factor_health = _record_factor_health(data_root=data_root, config=config, end=end,
+        output=output/'factor_health')
     result = {'as_of': str(end), 'stocks': stocks, 'factor_count': len(rows),
               'factors_with_valid_values': sum(row['valid_symbols'] > 0 for row in rows),
               'minimum_symbols': minimum_symbols,
@@ -131,9 +156,9 @@ def run_quality(*, data_root: Path, config: Path, end: dt.date, factors: list[di
               'unresolved_financial_symbols': sorted({row['symbol'] for row in unresolved}),
               'daily_value_input_checks': value_summaries,
               'sue_report_context_checks': sue_summaries,
+              'factor_health': factor_health,
               'errors': errors, 'output': str(output),
               'scope': 'Actual latest-session values; sparse or monthly factors are reported without a universal availability threshold'}
-    output.mkdir(parents=True, exist_ok=False)
     pl.from_dicts(rows, infer_schema_length=None).write_parquet(output/'factor_coverage.parquet')
     if value_checks:
         pl.concat(value_checks).write_parquet(output/'daily_value_input_reasons.parquet')
@@ -157,5 +182,12 @@ def run_quality(*, data_root: Path, config: Path, end: dt.date, factors: list[di
     if sue_summaries:
         lines += ['', 'SUE另核对信号日前最新已披露合并利润表的企业类型；非工业类型沿用旧工业值'
                   '会列为问题。详见sue_report_context.parquet。']
+    if factor_health['status'] == 'recorded':
+        lines += ['', f"原始因子健康日志：{factor_health['measured_factors']}/{factor_health['factor_count']}"
+            f"个年度入选因子当天有有限值，同日 eligible 股票池 {factor_health['current_eligible_symbols']} 只。",
+            '[逐因子诊断](factor_health/health.jsonl)记录分布、真实MAD裁剪、历史漂移和规模/行业暴露；'
+            '当月或未来数据不参与历史参考，诊断数值不改变既有准入。']
+    elif factor_health['status'] == 'unavailable':
+        lines += ['', '原始因子健康日志暂不可用：'+factor_health['reason']]
     (output/'report.md').write_text('\n'.join(lines)+'\n', encoding='utf-8')
     return result

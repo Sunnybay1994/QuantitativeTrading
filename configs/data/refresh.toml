@@ -31,3 +31,4 @@ reviewed_headers = "configs/data/financial_document_headers_20260912.json"
 enabled = true
 lookback_sessions = 5
 battery_config = "configs/factors/battery.toml"
+factor_health_config = "configs/data/factor_health_q1d_20260912.toml"

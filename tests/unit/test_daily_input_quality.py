@@ -113,3 +113,47 @@ def test_sue_context_findings_reach_daily_report_without_changing_values(tmp_pat
     assert any('compatible latest PIT report context' in error for error in result['errors'])
     assert pl.read_parquet(tmp_path/'result'/'sue_report_context.parquet')['factor_value'].item() == 3.
     assert pl.read_parquet(folder/'data.parquet').equals(values)
+
+
+@pytest.mark.parametrize('health_available', [True, False])
+def test_optional_factor_health_runs_once_and_does_not_replace_existing_quality_errors(
+    tmp_path, monkeypatch, health_available,
+):
+    from quant.data import daily_factor_health
+
+    dates, bars, basic, adjustment = stock_frames()
+    monkeypatch.setattr(quality, 'available_sessions', lambda *args: tuple(dates))
+    tables = {'bar_1d': bars, 'daily_basic': basic, 'adjust_factor': adjustment}
+    monkeypatch.setattr(quality, 'read_stock_data', lambda **kwargs: tables[kwargs['table']])
+    config = tmp_path/'refresh.toml'
+    config.write_text('[quality]\nfactor_health_config="frozen_health.toml"\n')
+    calls = []
+
+    def health(**kwargs):
+        calls.append(kwargs)
+        assert kwargs['as_of'] == dates[-1]
+        assert kwargs['health_config'].name == 'frozen_health.toml'
+        if not health_available:
+            raise ValueError('Missing same-day controls')
+        return {'as_of': str(dates[-1]), 'factor_count': 2, 'current_eligible_symbols': 100,
+            'measured_factors': 1, 'no_finite_factors': 1, 'diagnostics_only': True,
+            'output': str(kwargs['output'])}
+
+    monkeypatch.setattr(daily_factor_health, 'run_daily_factor_health', health)
+    result = quality.run_quality(data_root=tmp_path, config=config, end=dates[-1],
+        financials={}, factors=[{'id': 'absent', 'family': 'daily'}], output=tmp_path/'result')
+    assert len(calls) == 1
+    assert result['errors'] == ['absent: missing or inconsistent daily panel keys']
+    assert result['factor_health']['enabled'] is True
+    assert result['factor_health']['status'] == ('recorded' if health_available else 'unavailable')
+    if not health_available:
+        assert 'Missing same-day controls' in result['factor_health']['reason']
+    saved = json.loads((tmp_path/'result'/'summary.json').read_text(encoding='utf-8'))
+    assert saved['factor_health'] == result['factor_health']
+
+
+def test_absent_health_configuration_is_disabled(tmp_path):
+    config = tmp_path/'config.toml'
+    config.write_text('[quality]\nenabled=true\n')
+    assert quality._record_factor_health(data_root=tmp_path, config=config,
+        end=dt.date(2026, 9, 11), output=tmp_path/'output') == {'enabled': False, 'status': 'disabled'}

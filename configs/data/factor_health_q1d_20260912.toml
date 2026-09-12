@@ -3,6 +3,7 @@
 selection = "artifacts/models/q1d_causal48_admission_20260912_01/selection"
 statistics = "artifacts/factors/battery_statistics_20260831_20260911"
 model_config = "configs/models/q1d_causal48_calendar_missing_20260912.toml"
+battery_config = "configs/factors/battery.toml"
 start = 2023-01-01
 end = 2026-08-31
 maximum_factors = 20
