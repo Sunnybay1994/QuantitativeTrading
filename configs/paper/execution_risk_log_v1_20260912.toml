@@ -1,0 +1,6 @@
+mode = "diagnostic_only"
+auto_trade = false
+refresh_config = "configs/data/refresh.toml"
+cost_config = "configs/paper/b32_stock_observation_20260909.toml"
+liquidity_sessions = 20
+maximum_participation_rate = 0.05
