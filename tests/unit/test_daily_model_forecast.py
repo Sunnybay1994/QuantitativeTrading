@@ -77,6 +77,25 @@ def test_saved_input_rehearsal_does_not_refresh(tmp_path,monkeypatch):
     assert result['status']=='recorded' and result['saved_data'] is True
 
 
+def test_annual_export_receives_the_same_quality_result_without_rechecking(tmp_path, monkeypatch):
+    args = arguments(tmp_path, monkeypatch)
+    path = args['selection']/'selection.json'
+    decision = json.loads(path.read_text())
+    path.write_text(json.dumps({**decision, 'requires_local_quality': True}), encoding='utf-8')
+    calls = []
+    def quality(**kwargs):
+        calls.append('quality')
+        return {'as_of': str(kwargs['end']), 'errors': [], 'factor_count': 3}
+    def forecast(**kwargs):
+        assert kwargs['input_quality'] == {'as_of': '2026-09-14', 'errors': [], 'factor_count': 3}
+        calls.append('forecast')
+        return {'prediction_stocks': 1}
+    monkeypatch.setattr(daily, 'run_quality', quality)
+    monkeypatch.setattr(daily, 'run_forecast', forecast)
+    result = daily.run_daily(**args, saved_data=True)
+    assert calls == ['quality', 'forecast'] and result['status'] == 'recorded'
+
+
 def test_saved_input_mode_does_not_fetch_a_missing_calendar(tmp_path,monkeypatch):
     from quant.data import refresh
     monkeypatch.setattr(refresh,'TushareConnector',lambda **kwargs:pytest.fail('no network in saved mode'))

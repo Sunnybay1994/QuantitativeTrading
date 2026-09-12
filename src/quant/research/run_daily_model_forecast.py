@@ -152,8 +152,10 @@ def run_daily(*, to: str, selection: Path, output: Path, data_root: Path,
               'status': 'input_errors' if errors else 'missing_model_inputs'}
     if not errors:
         folder = output/'forecast'
+        quality_args = ({'input_quality': refresh['input_quality']}
+                        if decision.get('requires_local_quality') else {})
         forecast = run_forecast(selection=selection, as_of=end, output=folder,
-                                data_root=data_root, rehearsal=rehearsal)
+                                data_root=data_root, rehearsal=rehearsal, **quality_args)
         result.update(forecast_path=str(folder), prediction_stocks=forecast['prediction_stocks'],
                       status='recorded' if forecast['prediction_stocks'] else 'missing_model_inputs')
     (output/'summary.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')

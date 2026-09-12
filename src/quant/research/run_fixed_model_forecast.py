@@ -87,11 +87,15 @@ def fixed_predict(*, features: pl.DataFrame, fit: dict, method: str, source: Pat
 
 
 def run_forecast(*, selection: Path, as_of: dt.date, output: Path, data_root: Path,
-                 rehearsal: bool = False) -> dict[str, Any]:
+                 rehearsal: bool = False, input_quality: dict | None = None) -> dict[str, Any]:
     decision = json.loads((selection/'selection.json').read_text(encoding='utf-8'))
     config = tomllib.loads((selection/'config.toml').read_text(encoding='utf-8'))
     if decision['selected_method'] is None or decision['conclusion'] != 'RESEARCH_ONLY' or decision['auto_trade'] is not False:
         raise ValueError('Require a selected research-only method')
+    if decision.get('requires_local_quality') and (
+            input_quality is None or input_quality.get('as_of') != str(as_of)
+            or input_quality.get('errors') != []):
+        raise ValueError('Exported annual forecasts require successful same-date daily input quality')
     now = dt.datetime.now(dt.timezone(dt.timedelta(hours=8)))
     if as_of > now.date() or (as_of == now.date() and now.hour < 15):
         raise ValueError('Require a completed close')
@@ -105,6 +109,10 @@ def run_forecast(*, selection: Path, as_of: dt.date, output: Path, data_root: Pa
     if not available:
         raise ValueError('No trained model existed at this signal date')
     fit = max(available, key=lambda row: row['refit_close'])
+    if decision.get('requires_local_quality') and (
+            fit['test_year'] != decision['test_year'] or fit['factors'] != decision['factors']
+            or fit['refit_close'] != decision['refit_close']):
+        raise ValueError('Annual fit differs from the exported frozen feature contract')
     if (as_of.year > fit['test_year'] or fit['last_known_exit'] > fit['refit_close']
             or fit['training_months'] < config['selection']['minimum_training_months']):
         raise ValueError('Require a causal annual model with sufficient history; refresh the annual fit')
@@ -121,8 +129,9 @@ def run_forecast(*, selection: Path, as_of: dt.date, output: Path, data_root: Pa
     factors = fit['factors']
     values = read_forward_values(data_root=data_root, factors=factors, as_of=as_of)
     roots = model['research'].get('factor_statistics_sources', {})
-    directions = {factor: json.loads((Path(roots.get(factor, [str(statistics)])[0])/'factors'/factor/'statistics.json').read_text(
-        encoding='utf-8'))['definition']['direction'] for factor in factors}
+    directions = decision.get('factor_directions') or {
+        factor: json.loads((Path(roots.get(factor, [str(statistics)])[0])/'factors'/factor/'statistics.json').read_text(
+            encoding='utf-8'))['definition']['direction'] for factor in factors}
     features, coverage = model_features(universe=universe, values=values, directions=directions,
         settings=settings, factors=factors, variant=model['selection']['variant'], as_of=as_of,
         missing_policy=model['models'].get('missing_features', 'common_complete_case_pool_for_all_three_methods'),
@@ -136,6 +145,10 @@ def run_forecast(*, selection: Path, as_of: dt.date, output: Path, data_root: Pa
         'common_feature_stocks': features.height, 'prediction_stocks': predictions.height,
         'coverage': coverage, 'source_selection': str(selection),
         'action': 'record_research_forecasts' if predictions.height else 'record_missing_inputs_keep_existing_positions'}
+    if decision.get('requires_local_quality'):
+        result.update(freeze_date=decision['freeze_date'], forward_start=decision['forward_start'],
+            source_run=decision['source_run'], source_conclusion=decision['source_conclusion'],
+            input_quality_as_of=input_quality['as_of'] if input_quality else None)
     output.mkdir(parents=True, exist_ok=False)
     features.write_parquet(output/'features.parquet')
     predictions.write_parquet(output/'predictions.parquet')
@@ -158,8 +171,19 @@ def main() -> None:
     parser.add_argument('--data-root', type=Path, default=Path('data'))
     parser.add_argument('--rehearsal', action='store_true')
     args = parser.parse_args()
-    print(json.dumps(run_forecast(selection=args.selection, as_of=args.as_of, output=args.output,
-        data_root=args.data_root, rehearsal=args.rehearsal)))
+    decision = json.loads((args.selection/'selection.json').read_text(encoding='utf-8'))
+    if decision.get('requires_local_quality'):
+        from quant.research.run_daily_model_forecast import run_daily
+
+        result = run_daily(to=str(args.as_of), selection=args.selection, output=args.output,
+            data_root=args.data_root, refresh_config=Path(decision['refresh_config']),
+            artifact_root=Path('artifacts'), saved_data=True, rehearsal=args.rehearsal)
+        print(json.dumps(result, ensure_ascii=False))
+        if result['status'] != 'recorded':
+            raise SystemExit(1)
+    else:
+        print(json.dumps(run_forecast(selection=args.selection, as_of=args.as_of, output=args.output,
+            data_root=args.data_root, rehearsal=args.rehearsal)))
 
 
 if __name__ == '__main__':
