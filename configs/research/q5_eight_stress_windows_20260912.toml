@@ -1,0 +1,58 @@
+scope = "retrospective_diagnostic_only"
+auto_trade = false
+start = 2015-01-01
+end = 2026-08-31
+benchmark_config = "configs/data/return_benchmarks_q1b_20260912.toml"
+benchmark_selection = "strongest CAGR over each strategy's original 1x holding window, fixed across costs and shocks"
+decision = "Report all eight windows and applicability; original admission decisions unchanged"
+overlap = "Overlapping windows are correlated diagnostics, not independent successes"
+
+[[windows]]
+name = "2015_selloff"
+start = 2015-06-15
+end = 2015-09-30
+[[windows]]
+name = "2016_january"
+start = 2016-01-01
+end = 2016-01-31
+[[windows]]
+name = "2018_full_year"
+start = 2018-01-01
+end = 2018-12-31
+[[windows]]
+name = "2021_february_march"
+start = 2021-02-01
+end = 2021-03-31
+[[windows]]
+name = "2022_april"
+start = 2022-04-01
+end = 2022-04-30
+[[windows]]
+name = "2023_august_2024_february"
+start = 2023-08-01
+end = 2024-02-29
+[[windows]]
+name = "2024_january"
+start = 2024-01-01
+end = 2024-01-31
+[[windows]]
+name = "2024_september_october"
+start = 2024-09-01
+end = 2024-10-31
+
+[[candidates]]
+name = "SUE_v2"
+run = "artifacts/models/share_exchange_replays_20260912_01/q2_sue_context_v2_causal48_20260912_02/replay"
+variant = "lightgbm_top50"
+[[candidates]]
+name = "Q4"
+run = "artifacts/models/q4_hold_missing_controls_valid_controls_96_20260912_01"
+variant = "lightgbm_top50"
+[[candidates]]
+name = "Q10"
+run = "artifacts/models/q10_sue_v2_turnover_budget_05_20260912_01"
+variant = "budgeted"
+[[candidates]]
+name = "Q11"
+run = "artifacts/models/q11_complete_adjustments_20260912_01"
+variant = "budgeted"
