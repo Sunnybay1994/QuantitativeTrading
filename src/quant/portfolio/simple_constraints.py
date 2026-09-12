@@ -1,11 +1,65 @@
 """Deterministic reductions of one signal-close portfolio; no orders or data IO."""
 import math
+import datetime as dt
 from dataclasses import dataclass, replace
 
 import numpy as np
 import polars as pl
 
 from quant.portfolio.concentration_caps import cap_targets
+
+
+def apply_suspended_held_risk_estimates(*, market: pl.DataFrame, current: pl.DataFrame,
+                                      benchmark: pl.DataFrame, estimates: pl.DataFrame,
+                                      as_of: dt.date, maximum_staleness_days: int
+                                      ) -> tuple[pl.DataFrame, list[dict]]:
+    """Use evidenced stale size only for frozen positive holdings outside the benchmark.
+
+    This is a risk input overlay, never a price, share-count or candidate repair.
+    An available signal-day size takes precedence and ends the estimation period.
+    """
+    if type(maximum_staleness_days) is not int or maximum_staleness_days < 1:
+        raise ValueError('Require positive risk estimate staleness limit')
+    required = {'symbol', 'as_of', 'industry_l1', 'total_market_value', 'source_date',
+                'staleness_days', 'risk_estimate', 'suspended', 'capital_events_verified', 'known_at'}
+    if not required <= set(estimates.columns):
+        raise ValueError('Missing held risk estimate evidence columns')
+    if estimates.select('symbol', 'as_of').is_duplicated().any():
+        raise ValueError('Duplicate held risk estimate keys')
+    held = {s for s, w in current.select('symbol', 'weight').iter_rows() if w > 0}
+    members = {s for s, w in benchmark.select('symbol', 'weight').iter_rows() if w > 0}
+    observations = {r['symbol']: r for r in market.iter_rows(named=True)}
+    applied = []
+    for row in estimates.filter(pl.col('as_of') == as_of).iter_rows(named=True):
+        symbol = row['symbol']
+        if symbol not in held:
+            continue
+        existing = observations.get(symbol)
+        mv = existing.get('total_market_value') if existing else None
+        if mv is not None and math.isfinite(mv) and mv > 0:
+            continue
+        if symbol in members:
+            raise ValueError(f'Risk estimate cannot replace full benchmark controls: {symbol}')
+        source = row['source_date']
+        if (type(source) is not dt.date or type(row['known_at']) is not dt.date or
+                not source < as_of or not source <= row['known_at'] <= as_of or
+                type(row['staleness_days']) is not int or
+                row['staleness_days'] != (as_of-source).days or
+                not 0 < row['staleness_days'] <= maximum_staleness_days or
+                any(row[k] is not True for k in ('risk_estimate', 'suspended', 'capital_events_verified')) or
+                not isinstance(row['industry_l1'], str) or not row['industry_l1'].strip() or
+                row['total_market_value'] is None or not math.isfinite(row['total_market_value']) or
+                row['total_market_value'] <= 0):
+            raise ValueError(f"Invalid suspended holding risk estimate evidence: {symbol}; "
+                             f"{row.get('status', '')} {row.get('reason', '')}")
+        if existing and (existing['can_buy'] is True or existing['can_sell'] is True):
+            raise ValueError(f'Suspension estimate contradicts signal-day permissions: {symbol}')
+        observations[symbol] = {'as_of': as_of, 'known_at': row['known_at'], 'symbol': symbol,
+            'industry_l1': row['industry_l1'], 'total_market_value': row['total_market_value'],
+            'adv20': None, 'can_buy': False, 'can_sell': False}
+        applied.append({k: row[k] for k in sorted(required)} | {'holding_weight':
+            current.filter(pl.col('symbol') == symbol)['weight'][0]})
+    return pl.from_dicts(list(observations.values()), schema=market.schema).sort('symbol'), applied
 
 
 @dataclass(frozen=True)

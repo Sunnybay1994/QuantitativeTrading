@@ -295,3 +295,72 @@ def test_account_adapter_restricted_shares_freeze_sales():
     state['date'] = '2026-07-30'
     with pytest.raises(ValueError, match='signal close'):
         constrain_account_targets(targets=t, state=state, market=m, benchmark=b)
+
+def risk_estimate_frames():
+    from quant.portfolio.simple_constraints import apply_suspended_held_risk_estimates
+    _, held, market = frames(current=(.01, 0.))
+    market = market.with_columns(pl.lit(1e9).alias('total_market_value')).filter(pl.col('symbol') != 'A')
+    benchmark = pl.DataFrame({'as_of': [DAY], 'symbol': ['B'], 'weight': [1.]})
+    estimates = pl.DataFrame({'as_of': [DAY], 'symbol': ['A'], 'industry_l1': ['X'],
+        'total_market_value': [1e9], 'source_date': [DAY-dt.timedelta(days=1)],
+        'staleness_days': [1], 'known_at': [DAY], 'risk_estimate': [True],
+        'suspended': [True], 'capital_events_verified': [True]})
+    return apply_suspended_held_risk_estimates, dict(market=market,current=held,
+        benchmark=benchmark,estimates=estimates,as_of=DAY,maximum_staleness_days=7)
+
+
+def test_suspended_old_holding_risk_estimate_is_frozen_and_explicit():
+    apply, kwargs = risk_estimate_frames()
+    result, evidence = apply(**kwargs)
+    row = result.filter(pl.col('symbol') == 'A').row(0,named=True)
+    assert row['total_market_value'] == 1e9
+    assert row['can_buy'] is False and row['can_sell'] is False and row['adv20'] is None
+    assert evidence[0]['risk_estimate'] is True
+    assert evidence[0]['holding_weight'] == .01
+    assert kwargs['market']['symbol'].to_list() == ['B']
+
+
+@pytest.mark.parametrize('field,value', [('suspended',False),('capital_events_verified',False),
+    ('risk_estimate',False),('staleness_days',8),('source_date',DAY+dt.timedelta(days=1)),
+    ('known_at',DAY+dt.timedelta(days=1)),('total_market_value',None),('industry_l1','')])
+def test_estimated_size_requires_all_suspension_and_pit_evidence(field,value):
+    apply, kwargs = risk_estimate_frames()
+    kwargs['estimates'] = kwargs['estimates'].with_columns(pl.lit(value).alias(field))
+    with pytest.raises(ValueError,match='risk estimate evidence'):
+        apply(**kwargs)
+
+
+def test_estimates_cannot_fill_benchmark_or_unheld_candidate():
+    apply, kwargs = risk_estimate_frames()
+    kwargs['current'] = kwargs['current'].with_columns(pl.lit(0.).alias('weight'))
+    result,evidence = apply(**kwargs)
+    assert result.equals(kwargs['market']) and evidence == []
+    apply, kwargs = risk_estimate_frames()
+    kwargs['benchmark'] = kwargs['benchmark'].with_columns(pl.lit('A').alias('symbol'))
+    with pytest.raises(ValueError,match='full benchmark'):
+        apply(**kwargs)
+
+
+def test_same_day_market_value_ends_estimation_without_overwrite():
+    apply, kwargs = risk_estimate_frames()
+    current_row = kwargs['market'].with_columns(pl.lit('A').alias('symbol'),
+        pl.lit(2e9).alias('total_market_value'))
+    kwargs['market'] = pl.concat([kwargs['market'],current_row])
+    result,evidence = apply(**kwargs)
+    assert result.filter(pl.col('symbol')=='A')['total_market_value'][0] == 2e9
+    assert result.filter(pl.col('symbol')=='A')['can_buy'][0] is True
+    assert not evidence
+
+@pytest.mark.parametrize('old_weight,feasible', [(.01, True),(.81,False)])
+def test_risk_estimate_does_not_release_holding_or_relax_stock_cap(old_weight,feasible):
+    from quant.portfolio.simple_constraints import apply_suspended_held_risk_estimates
+    t,h,m,b = relative_inputs()
+    h = pl.concat([h,h.head(1).with_columns(pl.lit('C').alias('symbol'),pl.lit(old_weight).alias('weight'))])
+    _,kw = risk_estimate_frames()
+    evidence = kw['estimates'].with_columns(pl.lit('C').alias('symbol'))
+    repaired,info = apply_suspended_held_risk_estimates(market=m,current=h,benchmark=b,
+        estimates=evidence,as_of=DAY,maximum_staleness_days=7)
+    out,result = relative_run(t,h,repaired,b)
+    assert result['feasible'] is feasible
+    assert out.filter(pl.col('symbol')=='C')['weight'][0] == pytest.approx(old_weight)
+    assert info[0]['risk_estimate'] is True
