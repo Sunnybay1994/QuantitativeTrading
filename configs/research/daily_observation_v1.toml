@@ -1,0 +1,16 @@
+auto_trade = false
+data_root = "data"
+artifact_root = "artifacts"
+refresh_config = "configs/data/refresh.toml"
+intraday = true
+
+[model]
+selection = "artifacts/models/p6c_calendar_model_20260911_02/selection"
+
+[b20]
+config = "configs/research/b20_three_asset_forward_20260909.toml"
+output = "artifacts/forward/b20"
+
+[b32]
+config = "configs/paper/b32_stock_observation_20260909.toml"
+output = "artifacts/paper/b32_stock_observation"
