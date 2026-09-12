@@ -79,16 +79,29 @@ def assemble_scorecard(screen: pl.DataFrame, *, cost_reports: list[dict],
 
 
 def run_scorecard(*, screen: Path, output: Path, cost_runs: list[Path], cost_root: Path | None,
-                  benchmarks: Path | None, redundancy: Path | None, data_root: Path) -> dict:
+                  benchmarks: Path | None, redundancy: Path | None, data_root: Path,
+                  previous_scorecard: Path | None = None) -> dict:
     config = (screen/'battery.toml').read_bytes()
     settings = tomllib.loads(config.decode('utf-8'))
     statistics = pl.read_parquet(screen/'statistical_screen.parquet')
-    runs = [*cost_runs, *(path.parent for path in cost_root.glob('*/summary.json'))] if cost_root else cost_runs
+    runs = list(cost_runs)
+    if previous_scorecard is not None:
+        if (previous_scorecard/'battery.toml').read_bytes() != config:
+            raise ValueError('Previous scorecard settings differ from the screen')
+        previous = json.loads((previous_scorecard/'summary.json').read_text(encoding='utf-8'))
+        prior_runs = [Path(path) for path in previous['cost_runs']]
+        if any(not (path/'summary.json').is_file() for path in prior_runs):
+            raise ValueError('A previous completed cost run is missing')
+        runs.extend(prior_runs)
+    if cost_root:
+        runs.extend(path.parent for path in sorted(cost_root.glob('*/summary.json')))
+    runs = list({path.resolve(): path for path in runs}.values())
     reports, paths = [], []
     benchmark_cache: dict[tuple, pl.DataFrame] = {}
     if benchmarks is not None and not (benchmarks/'summary.json').is_file():
         benchmarks = None
     snapshot = None
+    factors_seen: set[str] = set()
     for run in runs:
         if not (run/'summary.json').is_file():
             continue
@@ -96,7 +109,10 @@ def run_scorecard(*, screen: Path, output: Path, cost_runs: list[Path], cost_roo
         if snapshot is not None and saved['execution_snapshot'] != snapshot:
             raise ValueError('Cost runs use different execution inputs')
         snapshot = saved['execution_snapshot']
-        existing_cost_factor(run, settings=settings, snapshot=snapshot)
+        factor = existing_cost_factor(run, settings=settings, snapshot=snapshot)
+        if factor in factors_seen:
+            raise ValueError(f'Different completed cost runs for the same factor: {factor}')
+        factors_seen.add(factor)
         reports.append(collect_cost_report(run=run, benchmarks=benchmarks, etf_reference=True,
                                           data_root=data_root, benchmark_cache=benchmark_cache))
         paths.append(str(run))
@@ -136,13 +152,16 @@ def main() -> None:
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--cost-run', type=Path, action='append', default=[])
     parser.add_argument('--cost-root', type=Path)
+    parser.add_argument('--previous-scorecard', type=Path,
+                        help='Retain completed cost runs from a prior scorecard when collecting new results')
     parser.add_argument('--benchmarks', type=Path)
     parser.add_argument('--redundancy', type=Path)
     parser.add_argument('--data-root', type=Path, default=Path('data'))
     args = parser.parse_args()
     print(json.dumps(run_scorecard(screen=args.screen, output=args.output, cost_runs=args.cost_run,
                                   cost_root=args.cost_root, benchmarks=args.benchmarks,
-                                  redundancy=args.redundancy, data_root=args.data_root)))
+                                  redundancy=args.redundancy, data_root=args.data_root,
+                                  previous_scorecard=args.previous_scorecard)))
 
 
 if __name__ == '__main__':

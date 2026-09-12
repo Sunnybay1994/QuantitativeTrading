@@ -1,5 +1,6 @@
 import polars as pl
 import pytest
+import json
 
 from quant.research.factor_battery_scorecard import assemble_scorecard
 
@@ -70,3 +71,53 @@ def test_missing_comparison_rank_cannot_silently_use_subset_ranking():
     correlations = correlations.with_columns(pl.lit(None, dtype=pl.Int64).alias('comparison_primary_rank'))
     with pytest.raises(ValueError, match='comparison-pool'):
         assemble_scorecard(screen, cost_reports=reports, correlations=correlations, settings=settings)
+
+
+@pytest.mark.parametrize('problem', [None, 'settings', 'missing', 'duplicate_factor'])
+def test_refresh_retains_previous_runs_and_deduplicates_overlapping_paths(tmp_path, monkeypatch, problem):
+    from quant.research import factor_battery_scorecard as module
+
+    screen, reports, _, _ = fixture()
+    folder, previous, costs = tmp_path/'screen', tmp_path/'previous', tmp_path/'costs'
+    folder.mkdir()
+    previous.mkdir()
+    config = '''primary_variant = "raw"
+[run]
+as_of = "2026-08-31"
+[portfolio]
+cost_multipliers = [0.5, 1.0, 2.0]
+[admission]
+minimum_top_net_excess_all_market_ew = 0.0
+maximum_absolute_rank_correlation_with_better = 0.7
+'''
+    (folder/'battery.toml').write_text(config)
+    (previous/'battery.toml').write_text(config + ('\n# changed' if problem == 'settings' else ''))
+    screen.write_parquet(folder/'statistical_screen.parquet')
+    for factor in ['a', 'b']:
+        path = costs/factor
+        path.mkdir(parents=True)
+        (path/'summary.json').write_text(json.dumps({'execution_snapshot': 'frozen'}))
+    (previous/'summary.json').write_text(json.dumps({'cost_runs': [str(costs/'a')]}))
+    if problem == 'missing':
+        (costs/'a'/'summary.json').unlink()
+    monkeypatch.setattr(module, 'existing_cost_factor',
+                        lambda path, **kwargs: 'a' if problem == 'duplicate_factor' else path.name)
+    calls = []
+
+    def collect(*, run, **kwargs):
+        calls.append(run.name)
+        return reports[0 if run.name == 'a' else 1]
+
+    monkeypatch.setattr(module, 'collect_cost_report', collect)
+    args = dict(screen=folder, output=tmp_path/'new', cost_runs=[costs/'a'], cost_root=costs,
+                benchmarks=None, redundancy=None, data_root=tmp_path, previous_scorecard=previous)
+    if problem:
+        with pytest.raises(ValueError):
+            module.run_scorecard(**args)
+        assert not (tmp_path/'new').exists()
+    else:
+        result = module.run_scorecard(**args)
+        assert calls == ['a', 'b']
+        assert result['cost_complete_rows'] == 2
+        assert len(result['cost_runs']) == 2
+        assert len(json.loads((previous/'summary.json').read_text())['cost_runs']) == 1
