@@ -1,0 +1,13 @@
+id = "q4-simple-constraints-20260912"
+mode = "research_only"
+auto_trade = false
+enabled = true
+sell_only = false
+hypothesis = "Apply one fixed absolute concentration and ADV policy to frozen Top50 targets; retain residual cash. This initial constraint slice is not the benchmark-relative industry/size experiment."
+comparison = "Same signal dates and account replay with 0.5x/1x/2x costs; never change frozen observation accounts."
+
+[limits]
+cash_buffer = 0.02
+single_stock_weight = 0.03
+industry_weight = 0.20
+adv_participation = 0.05
