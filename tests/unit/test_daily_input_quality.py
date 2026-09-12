@@ -2,6 +2,7 @@ import datetime as dt
 import json
 
 import polars as pl
+import pytest
 
 from quant.data import daily_input_quality as quality
 
@@ -84,14 +85,15 @@ def test_daily_value_nulls_are_reported_and_wrong_finite_values_are_errors(tmp_p
     assert any('unexpected finite values' in error for error in result['errors'])
 
 
-def test_sue_context_findings_reach_daily_report_without_changing_values(tmp_path, monkeypatch):
+@pytest.mark.parametrize('factor_id', ['pit_sue8', 'pit_sue8_context_v2'])
+def test_sue_context_findings_reach_daily_report_without_changing_values(tmp_path, monkeypatch, factor_id):
     date = dt.date(2026, 2, 24)
     bars = pl.DataFrame({'trade_date': [date], 'symbol': ['a'], 'close': [10.]})
     adjustment = bars.select(pl.col('trade_date').alias('effective_date'), 'symbol', pl.lit(1.).alias('adj_factor'))
     tables = {'bar_1d': bars, 'daily_basic': bars, 'adjust_factor': adjustment}
     monkeypatch.setattr(quality, 'available_sessions', lambda *args: (date,))
     monkeypatch.setattr(quality, 'read_stock_data', lambda **kwargs: tables[kwargs['table']])
-    folder = tmp_path/'factors'/'pit_sue8'/'year=2026'
+    folder = tmp_path/'factors'/factor_id/'year=2026'
     folder.mkdir(parents=True)
     values = pl.DataFrame({'trade_date': [date], 'ts_code': ['a'], 'value': [3.]})
     values.write_parquet(folder/'data.parquet')
@@ -104,9 +106,10 @@ def test_sue_context_findings_reach_daily_report_without_changing_values(tmp_pat
 
     monkeypatch.setattr(quality, 'read_sue_report_context', context)
     result = quality.run_quality(data_root=tmp_path, config=tmp_path/'config', end=date,
-        financials={'financial_snapshot': 'frozen'}, factors=[{'id': 'pit_sue8', 'family': 'pit'}],
+        financials={'financial_snapshot': 'frozen'}, factors=[{'id': factor_id, 'family': 'pit'}],
         output=tmp_path/'result')
     assert result['sue_report_context_checks'][0]['unexpected_factor_values'] == 1
+    assert result['sue_report_context_checks'][0]['factor'] == factor_id
     assert any('compatible latest PIT report context' in error for error in result['errors'])
     assert pl.read_parquet(tmp_path/'result'/'sue_report_context.parquet')['factor_value'].item() == 3.
     assert pl.read_parquet(folder/'data.parquet').equals(values)

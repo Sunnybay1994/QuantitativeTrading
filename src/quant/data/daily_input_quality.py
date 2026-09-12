@@ -100,26 +100,26 @@ def run_quality(*, data_root: Path, config: Path, end: dt.date, factors: list[di
                 if defects or unexpected:
                     errors.append(f"{factor['id']}: {defects} invalid/missing transformations; "
                                   f"{unexpected} unexpected finite values")
-        if factor['id'] == 'pit_sue8':
+        if factor['id'] in {'pit_sue8', 'pit_sue8_context_v2'}:
             if not financial_snapshot:
                 financial_snapshot = tomllib.loads(config.read_text(encoding='utf-8')).get('financial_snapshot')
             if not financial_snapshot:
-                errors.append('pit_sue8: missing financial snapshot for PIT context check')
+                errors.append(f"{factor['id']}: missing financial snapshot for PIT context check")
             else:
                 try:
                     checked = read_sue_report_context(data_root=data_root, snapshot=financial_snapshot,
                         pool=tables['bar_1d'].filter(pl.col('trade_date') == end).select('symbol', 'trade_date'),
                         factor_values=frame.with_columns(pl.lit(end).alias('trade_date')), as_of=end)
                 except ValueError as exc:
-                    errors.append(f'pit_sue8: report-context diagnosis failed: {exc}')
+                    errors.append(f"{factor['id']}: report-context diagnosis failed: {exc}")
                 else:
-                    sue_checks.append(checked)
+                    sue_checks.append(checked.with_columns(pl.lit(factor['id']).alias('factor')))
                     unexpected = checked['unexpected_factor_value'].sum()
-                    sue_summaries.append({'factor': 'pit_sue8', 'symbols': checked.height,
+                    sue_summaries.append({'factor': factor['id'], 'symbols': checked.height,
                         'report_contexts': dict(checked.group_by('report_context').len().iter_rows()),
                         'unexpected_factor_values': unexpected})
                     if unexpected:
-                        errors.append(f'pit_sue8: {unexpected} finite values lack compatible latest PIT report context')
+                        errors.append(f"{factor['id']}: {unexpected} finite values lack compatible latest PIT report context")
     unresolved = financials.get('unresolved_announcements', [])
     result = {'as_of': str(end), 'stocks': stocks, 'factor_count': len(rows),
               'factors_with_valid_values': sum(row['valid_symbols'] > 0 for row in rows),
