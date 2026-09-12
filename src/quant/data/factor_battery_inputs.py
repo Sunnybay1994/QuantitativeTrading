@@ -76,12 +76,14 @@ def read_battery_factor_year(data_root: Path, *, factor: str, year: int,
 
 
 def read_frozen_battery_universe(*, statistics: Path,
-                                as_of_dates: list[dt.date]) -> pl.DataFrame:
+                                as_of_dates: list[dt.date], include_tradeability: bool = False) -> pl.DataFrame:
     """Read requested saved universe dates, keeping ineligible rows and null controls."""
     if (not as_of_dates or any(type(day) is not dt.date for day in as_of_dates)
             or len(set(as_of_dates)) != len(as_of_dates)):
         raise ValueError('Universe as_of_dates must be nonempty unique dates')
     columns = ['symbol', 'trade_date', 'eligible', 'industry_l1', 'total_market_value', 'amount20']
+    if include_tradeability:
+        columns += ['traded', 'limits_known', 'away_from_limits']
     frames = []
     for year in sorted({day.year for day in as_of_dates}):
         dates = [day for day in as_of_dates if day.year == year]

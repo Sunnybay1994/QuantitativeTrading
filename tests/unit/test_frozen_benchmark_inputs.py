@@ -143,3 +143,16 @@ def test_duplicate_frozen_universe_keys_raise(tmp_path: Path) -> None:
     _write_universe(tmp_path, pl.concat([_universe(), _universe().head(1)]))
     with pytest.raises(ValueError, match='Duplicate frozen universe'):
         read_frozen_battery_universe(statistics=tmp_path, as_of_dates=_DATES)
+
+
+def test_optional_tradeability_is_saved_signal_day_evidence_not_eligibility(tmp_path: Path) -> None:
+    original = _universe().with_columns(pl.lit(True).alias('traded'),
+        pl.lit(True).alias('limits_known'), pl.Series('away_from_limits', [True, True, False, None]))
+    _write_universe(tmp_path, original)
+    result = read_frozen_battery_universe(statistics=tmp_path, as_of_dates=_DATES,
+                                         include_tradeability=True)
+    assert result['eligible'].to_list() == [True, False, True, False]
+    assert result['traded'].to_list() == [True]*4
+    assert result['away_from_limits'].to_list() == [True, True, False, None]
+    default = read_frozen_battery_universe(statistics=tmp_path, as_of_dates=_DATES)
+    assert 'traded' not in default.columns
