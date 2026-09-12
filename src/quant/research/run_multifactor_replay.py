@@ -142,8 +142,9 @@ def prepare_constraints(*, config: Path, plans: dict, data_root: Path, output: P
             (signal_sell_permission() if directional else
              pl.col('traded') & pl.col('limits_known') & pl.col('away_from_limits')).alias('can_sell'))
         nominee_info = None
-        risk_info = []
+        risk_info: list[dict] = []
         if risk_estimates is not None:
+            assert risk_settings is not None
             from quant.portfolio.simple_constraints import apply_suspended_held_risk_estimates
             equity = state['nav'][-1]['equity']
             held_weights = pl.from_dicts([{'as_of': signal, 'symbol': symbol,
