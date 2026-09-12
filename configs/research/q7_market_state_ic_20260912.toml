@@ -1,0 +1,10 @@
+source = "artifacts/research/q7_sue_v2_incremental_ic_20260912_01"
+benchmark_snapshot = "p8_510300_total_return_20260912"
+end = 2026-09-11
+newey_west_lag = 6
+minimum_months_per_year = 6
+auto_trade = false
+diagnostic = "Retrospective current-model partial IC by existing past-only market_states definitions; no parameter search or selection changes."
+trend = "Existing 200-session mean and 20-session slope: bull/bear/transition, using signal close only."
+volatility = "Existing 20-session daily volatility against completed-prior-years median."
+comparison = "Report all factors and both raw/partial metrics in each state; preserve calendar gaps and unknown states. No statistical difference claims or admission decisions."

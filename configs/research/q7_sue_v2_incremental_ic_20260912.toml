@@ -1,0 +1,7 @@
+source = "artifacts/models/q2_sue_context_v2_causal48_20260912_02"
+start_year = 2019
+end_year = 2026
+auto_trade = false
+minimum_symbols = 100
+diagnostic = "Recompute unchanged Q7 raw and partial rank IC using current SUE v2 frozen annual model and its exact registered score sources."
+admission = "Descriptive only; unchanged 96-month requirement and annual selections."

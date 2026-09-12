@@ -10,6 +10,7 @@ import polars as pl
 
 from quant.research.factor_battery_statistics import monthly_ic_summary
 from quant.research.model_training_models import common_features, validate_active_features
+from quant.research.run_calendar_annual_model import replacement_statistics_sources
 
 
 def incremental_ic(panel: pl.DataFrame, *, factors: list[str], minimum_symbols: int) -> list[dict]:
@@ -84,8 +85,7 @@ def run(*, config: Path, output: Path) -> dict:
     fits = json.loads((source/'predictions/summary.json').read_text(encoding='utf-8'))['annual_fits']
     predictions = pl.read_parquet(source/'predictions/monthly_predictions.parquet')
     statistics = Path(model['research']['statistics_source'])
-    roots = [Path(p) for p in saved['inputs']['calendar_statistics']]
-    sources = {factor: roots for factor in saved['replacements'].values()}
+    sources = replacement_statistics_sources(saved)
     known_through = saved['model']['test_end']
     labels = pl.concat([pl.read_parquet(p).select('symbol', 'trade_date', 'label_rebalance', 'exit_date_rebalance')
         for p in sorted((statistics/'inputs').glob('*/monthly_labels.parquet'))], how='vertical_relaxed')
