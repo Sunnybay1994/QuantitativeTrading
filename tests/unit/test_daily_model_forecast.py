@@ -1,6 +1,7 @@
 import datetime as dt
 import json
 
+import polars as pl
 import pytest
 
 from quant.research import run_daily_model_forecast as daily
@@ -11,7 +12,25 @@ def arguments(tmp_path, monkeypatch):
     selection.mkdir()
     (selection/'selection.json').write_text(json.dumps({'forward_start':'2026-09-14',
         'conclusion':'RESEARCH_ONLY','auto_trade':False}))
+    source = tmp_path/'predictions'
+    source.mkdir()
+    (source/'summary.json').write_text(json.dumps({'annual_fits': [{
+        'refit_close': '2025-12-31', 'test_year': 2026, 'last_known_exit': '2025-11-28',
+        'training_months': 24, 'factors': ['pit_sue8', 'other_factor']}]}))
+    (selection/'config.toml').write_text(f'[research]\npredictions = "{source.as_posix()}"\n'
+        '[selection]\nminimum_training_months = 24\n', encoding='utf-8')
+    library = tmp_path/'library'
+    library.mkdir()
+    for name in ('pit_sue8', 'pit_sue8_context_v2', 'other_factor'):
+        (library/f'{name}.toml').write_text(f'id = "{name}"\nexpr = "close"\nfamily = "fixture"\n'
+            'direction = 1\nsource_ref = "fixture"\n', encoding='utf-8')
+    (tmp_path/'refresh.toml').write_text(f'[factors]\nlibrary = "{library.as_posix()}"\n'
+        'selected = "all"\n', encoding='utf-8')
     monkeypatch.setattr(daily,'latest_session',lambda **kwargs: dt.date(2026,9,14))
+    monkeypatch.setattr(daily, 'panel_complete', lambda *args: True)
+    monkeypatch.setattr(daily, 'read_coverage', lambda *args: {'start': '2026-01-01', 'end': '2026-09-14'})
+    monkeypatch.setattr(daily, 'read_forward_values', lambda *, data_root, factors, as_of:
+        {name: pl.DataFrame({'symbol': ['000001.SZ'], 'trade_date': [as_of], 'value': [1.0]}) for name in factors})
     return dict(to='today',selection=selection,output=tmp_path/'record',data_root=tmp_path,
         refresh_config=tmp_path/'refresh.toml',artifact_root=tmp_path,
         now=dt.datetime(2026,9,14,18,tzinfo=daily.SHANGHAI))
@@ -58,3 +77,121 @@ def test_saved_input_mode_does_not_fetch_a_missing_calendar(tmp_path,monkeypatch
     monkeypatch.setattr(refresh,'TushareConnector',lambda **kwargs:pytest.fail('no network in saved mode'))
     with pytest.raises(ValueError,match='Saved calendar'):
         refresh.latest_session(data_root=tmp_path,through=dt.date(2026,9,11),refresh_calendar=False)
+
+
+def test_requirements_use_latest_known_fit_and_preserve_required_factor_order(tmp_path, monkeypatch):
+    args = arguments(tmp_path, monkeypatch)
+    source = tmp_path/'predictions'/'summary.json'
+    base = json.loads(source.read_text())['annual_fits'][0]
+    source.write_text(json.dumps({'annual_fits': [
+        {**base, 'refit_close': '2024-12-31', 'factors': ['old_factor']},
+        {**base, 'refit_close': '2026-09-15', 'factors': ['future_factor']},
+        {**base, 'factors': ['other_factor', 'pit_sue8']},
+        {'refit_close': None, 'factors': ['untrained_factor']}]}))
+    result = daily.model_factor_requirements(selection=args['selection'], refresh_config=args['refresh_config'],
+                                            as_of=dt.date(2026, 9, 14))
+    assert result['required_factors'] == ['other_factor', 'pit_sue8']
+    assert result['refit_close'] == '2025-12-31'
+    assert result['required_outside_refresh_selection'] == []
+
+
+@pytest.mark.parametrize('saved', [False, True])
+def test_explicit_exclusion_of_frozen_required_factor_stops_refresh_and_prediction(tmp_path, monkeypatch, saved):
+    args = arguments(tmp_path, monkeypatch)
+    with args['refresh_config'].open('a', encoding='utf-8') as stream:
+        stream.write('excluded_factors = ["pit_sue8"]\n')
+    monkeypatch.setattr(daily, 'run_refresh', lambda **_: pytest.fail('known incompatible refresh'))
+    monkeypatch.setattr(daily, 'run_forecast', lambda **_: pytest.fail('excluded frozen factor'))
+    monkeypatch.setattr(daily, 'read_forward_values', lambda **_: pytest.fail('do not read excluded old cache'))
+    result = daily.run_daily(**args, saved_data=saved)
+    assert result['status'] == 'input_errors' and result['forecast_path'] is None
+    assert result['model_factor_requirements']['required_excluded'] == ['pit_sue8']
+    assert any('explicitly excluded' in error for error in result['input_errors'])
+    assert json.loads((args['output']/'summary.json').read_text())['status'] == 'input_errors'
+
+
+def test_selected_subset_missing_required_factor_is_reported(tmp_path, monkeypatch):
+    args = arguments(tmp_path, monkeypatch)
+    config = args['refresh_config']
+    config.write_text(config.read_text().replace('selected = "all"', 'selected = "other_factor"'))
+    monkeypatch.setattr(daily, 'run_forecast', lambda **_: pytest.fail('out of selected scope'))
+    result = daily.run_daily(**args, saved_data=True)
+    assert result['model_factor_requirements']['required_outside_refresh_selection'] == ['pit_sue8']
+    assert result['status'] == 'input_errors'
+
+
+def test_excluding_nonrequired_new_id_keeps_frozen_old_default_prediction(tmp_path, monkeypatch):
+    args = arguments(tmp_path, monkeypatch)
+    with args['refresh_config'].open('a', encoding='utf-8') as stream:
+        stream.write('excluded_factors = ["pit_sue8_context_v2"]\n')
+    monkeypatch.setattr(daily, 'run_forecast', lambda **_: {'prediction_stocks': 1})
+    result = daily.run_daily(**args, saved_data=True)
+    assert result['status'] == 'recorded'
+    assert result['model_factor_requirements']['required_factors'] == ['pit_sue8', 'other_factor']
+    assert result['model_factor_requirements']['required_excluded'] == []
+
+
+@pytest.mark.parametrize('missing', ['coverage', 'actual_rows', 'file', 'wrong_day'])
+def test_freshness_needs_same_date_rows_as_well_as_coverage(tmp_path, monkeypatch, missing):
+    args = arguments(tmp_path, monkeypatch)
+    calls = []
+    def values(*, data_root, factors, as_of):
+        calls.append((factors, as_of))
+        if missing == 'file':
+            raise FileNotFoundError('factor parquet missing')
+        frame = pl.DataFrame({'symbol': ['000001.SZ'], 'trade_date': [as_of], 'value': [None]},
+                             schema_overrides={'value': pl.Float64})
+        if missing == 'actual_rows':
+            frame = frame.clear()
+        if missing == 'wrong_day':
+            frame = frame.with_columns(pl.lit(as_of - dt.timedelta(days=1)).alias('trade_date'))
+        return {factors[0]: frame}
+    monkeypatch.setattr(daily, 'read_forward_values', values)
+    if missing == 'coverage':
+        monkeypatch.setattr(daily, 'panel_complete', lambda *_: False)
+    monkeypatch.setattr(daily, 'run_forecast', lambda **_: pytest.fail('incomplete same-date inputs'))
+    result = daily.run_daily(**args, saved_data=True)
+    assert result['status'] == 'input_errors' and result['prediction_stocks'] == 0
+    assert len(result['input_errors']) == 2
+    assert calls == ([] if missing == 'coverage' else [(['pit_sue8'], dt.date(2026,9,14)), (['other_factor'], dt.date(2026,9,14))])
+
+
+def test_actual_computed_nulls_are_reported_and_left_to_model_missing_policy(tmp_path, monkeypatch):
+    args = arguments(tmp_path, monkeypatch)
+    monkeypatch.setattr(daily, 'read_forward_values', lambda *, data_root, factors, as_of: {
+        factors[0]: pl.DataFrame({'symbol': ['000001.SZ'], 'trade_date': [as_of], 'value': [None]})})
+    monkeypatch.setattr(daily, 'run_forecast', lambda **_: {'prediction_stocks': 0})
+    result = daily.run_daily(**args, saved_data=True)
+    assert result['status'] == 'missing_model_inputs' and result['input_errors'] == []
+    assert all(row['status'] == 'computed_without_finite_values' for row in result['model_factor_inputs'])
+    assert all(row['actual_rows'] == row['null_rows'] == 1 for row in result['model_factor_inputs'])
+
+
+@pytest.mark.parametrize('invalid', ['missing_config', 'missing_summary', 'no_known_fit', 'stale_fit',
+                                    'future_label', 'short_training', 'duplicate_factors'])
+def test_invalid_model_metadata_is_saved_as_input_errors(tmp_path, monkeypatch, invalid):
+    args = arguments(tmp_path, monkeypatch)
+    summary = tmp_path/'predictions'/'summary.json'
+    data = json.loads(summary.read_text())
+    fit = data['annual_fits'][0]
+    if invalid == 'missing_config':
+        (args['selection']/'config.toml').unlink()
+    elif invalid == 'missing_summary':
+        summary.unlink()
+    elif invalid == 'no_known_fit':
+        fit['refit_close'] = '2026-12-31'
+    elif invalid == 'stale_fit':
+        fit['test_year'] = 2025
+    elif invalid == 'future_label':
+        fit['last_known_exit'] = '2026-01-01'
+    elif invalid == 'short_training':
+        fit['training_months'] = 23
+    else:
+        fit['factors'] = ['pit_sue8', 'pit_sue8']
+    if invalid not in ('missing_config', 'missing_summary'):
+        summary.write_text(json.dumps(data))
+    monkeypatch.setattr(daily, 'run_forecast', lambda **_: pytest.fail('invalid frozen fit metadata'))
+    result = daily.run_daily(**args, saved_data=True)
+    assert result['status'] == 'input_errors'
+    assert 'Cannot resolve frozen model factor requirements' in result['input_errors'][0]
+    assert (args['output']/'summary.json').is_file()

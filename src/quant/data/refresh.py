@@ -109,7 +109,7 @@ def run_refresh(
         from quant.data.daily_input_quality import run_quality
         from quant.factors.library import load_library
 
-        definitions = load_library(Path(settings['factors']['library']), settings['factors'].get('selected', 'all'))
+        definitions = load_library(Path(settings['factors']['library']), refresh_factor_selection(settings['factors']))
         battery = tomllib.loads(Path(settings['quality']['battery_config']).read_text(encoding='utf-8'))
         stamp = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S%f')
         quality = run_quality(data_root=data_root, config=config, end=end,
@@ -135,6 +135,26 @@ def run_refresh(
             "stock_artifact": stocks.get("artifact_path"), "etf_artifact": etfs.get("artifact_path")}
 
 
+def refresh_factor_selection(settings: dict[str, Any]) -> str:
+    """Use the same explicit factor exclusions for production and quality checks."""
+    selected = settings.get('selected', 'all')
+    excluded = settings.get('excluded_factors', [])
+    if (not isinstance(excluded, list) or any(not isinstance(name, str) or not name for name in excluded)
+            or len(excluded) != len(set(excluded))):
+        raise ValueError('excluded_factors must contain distinct factor IDs')
+    if not excluded:
+        return str(selected)
+    from quant.factors.library import load_library
+
+    definitions = load_library(Path(settings['library']), selected)
+    if set(excluded) - {row.id for row in definitions}:
+        raise ValueError('Excluded factors must belong to the explicitly selected library')
+    retained = [row.id for row in definitions if row.id not in excluded]
+    if not retained:
+        raise ValueError('Factor exclusions cannot remove the entire refresh selection')
+    return ','.join(retained)
+
+
 def refresh_factors(*, data_root: Path, artifact_root: Path, config: Path,
                     end: dt.date, settings: dict[str, Any],
                     minute_start: dt.date | None = None,
@@ -145,31 +165,33 @@ def refresh_factors(*, data_root: Path, artifact_root: Path, config: Path,
     from quant.factors.library import load_library
     from quant.research.factor_intraday import minute_input_names
 
+    selected = refresh_factor_selection(settings)
     with contextlib.redirect_stdout(io.StringIO()):
         result = run(data_root=data_root, refresh_config=config,
-                     library=Path(settings["library"]), selected=settings.get("selected", "all"),
+                     library=Path(settings["library"]), selected=selected,
                      start=dt.date.fromisoformat(str(settings["start"])), end=end,
                      artifact_root=artifact_root)
         minute_rebuild = None
         industry_rebuild = None
         if minute_start is not None and minute_start <= end:
-            definitions = load_library(Path(settings['library']), settings.get('selected', 'all'))
-            selected = ','.join(row.id for row in definitions if minute_input_names((row.expr,)))
-            if selected:
+            definitions = load_library(Path(settings['library']), selected)
+            minute_selected = ','.join(row.id for row in definitions if minute_input_names((row.expr,)))
+            if minute_selected:
                 minute_rebuild = run(data_root=data_root, refresh_config=config,
-                    library=Path(settings['library']), selected=selected, rebuild=True,
+                    library=Path(settings['library']), selected=minute_selected, rebuild=True,
                     start=max(minute_start, dt.date.fromisoformat(str(settings['start']))), end=end,
                     artifact_root=artifact_root)
         if industry_start is not None and industry_start <= end:
-            definitions = load_library(Path(settings['library']), settings.get('selected', 'all'))
-            selected = ','.join(row.id for row in definitions if 'ind_neutralize' in row.expr)
-            if selected:
+            definitions = load_library(Path(settings['library']), selected)
+            industry_selected = ','.join(row.id for row in definitions if 'ind_neutralize' in row.expr)
+            if industry_selected:
                 industry_rebuild = run(data_root=data_root, refresh_config=config,
-                    library=Path(settings['library']), selected=selected, rebuild=True,
+                    library=Path(settings['library']), selected=industry_selected, rebuild=True,
                     start=max(industry_start, dt.date.fromisoformat(str(settings['start']))), end=end,
                     artifact_root=artifact_root)
     return {"message": "updated" if result["years"] or minute_rebuild or industry_rebuild else "no-op",
             "years": result["years"], "factor_count": result["factor_count"],
+            "selected": selected, "excluded_factors": settings.get('excluded_factors', []),
             "output": result["output"], "minute_rebuild": minute_rebuild, "industry_rebuild": industry_rebuild}
 
 

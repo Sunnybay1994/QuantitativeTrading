@@ -19,6 +19,7 @@ from quant.research.monthly_quarterly_roe_stability import build_monthly_quarter
 from quant.research.monthly_revenue_acceleration import build_monthly_revenue_acceleration
 from quant.research.monthly_revenue_growth import build_monthly_revenue_growth
 from quant.research.monthly_sue import build_monthly_sue
+from quant.research.monthly_sue_context_v2 import build_monthly_sue_context_v2
 from quant.research.pit_quality_research import PITQualitySignalResult
 
 
@@ -46,6 +47,7 @@ DIRECT: dict[str, tuple[Callable[..., PITQualitySignalResult], dict[str, tuple[s
     "pit_revenue_growth_ttm": (build_monthly_revenue_growth, {"income": ("revenue",)}, None),
     "pit_revenue_acceleration": (build_monthly_revenue_acceleration, {"income": ("revenue",)}, None),
     "pit_sue8": (build_monthly_sue, {"income": ()}, None),
+    "pit_sue8_context_v2": (build_monthly_sue_context_v2, {"income": ()}, None),
     "pit_annual_cash_profitability": (build_monthly_annual_cash_profitability, ANNUAL_CASH_FIELDS, 18),
     "pit_quarterly_roe_volatility": (build_monthly_quarterly_roe_stability,
                                      {"income": (), "balancesheet": ()}, 6),

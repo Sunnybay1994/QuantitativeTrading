@@ -1,0 +1,5 @@
+id = "pit_sue8_context_v2"
+expr = "pit_sue8_context_v2"
+family = "pit_financial"
+direction = 1
+source_ref = "src/quant/research/monthly_sue_context_v2.py"
