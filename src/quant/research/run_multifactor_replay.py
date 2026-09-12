@@ -223,7 +223,8 @@ def prepare_constraints(*, config: Path, plans: dict, data_root: Path, output: P
 
 
 def run_model_replay(*, predictions: Path, benchmarks: Path, output: Path, data_root: Path,
-                     constraints_config: Path | None = None, resume: bool = False) -> dict:
+                     constraints_config: Path | None = None, resume: bool = False,
+                     share_exchanges_config: Path | None = Path('configs/data/share_exchanges_20260912.toml')) -> dict:
     model_bytes = (predictions/'model.toml').read_bytes()
     model = tomllib.loads(model_bytes.decode('utf-8'))
     battery_bytes = (predictions/'battery.toml').read_bytes()
@@ -253,6 +254,18 @@ def run_model_replay(*, predictions: Path, benchmarks: Path, output: Path, data_
         (output/'model.toml').write_bytes(model_bytes)
         (output/'battery.toml').write_bytes(battery_bytes)
     transform = None
+    if share_exchanges_config is not None:
+        from quant.backtest.share_exchanges import validate_exchanges
+        content = share_exchanges_config.read_text(encoding='utf-8')
+        settings['share_exchanges'] = validate_exchanges(tomllib.loads(content)['share_exchanges'])
+        saved = output/'share_exchanges.toml'
+        if resume:
+            if not saved.is_file() or saved.read_text(encoding='utf-8') != content:
+                raise ValueError('Resume share exchange configuration changed')
+        else:
+            saved.write_text(content, encoding='utf-8')
+    elif resume and (output/'share_exchanges.toml').exists():
+        raise ValueError('Resume cannot omit share exchanges')
     if constraints_config is not None:
         transform, content = prepare_constraints(config=constraints_config, plans=plans,
             data_root=data_root, output=output, resume=resume, model_scores=scores)
@@ -279,11 +292,13 @@ def main() -> None:
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--data-root', type=Path, default=Path('data'))
     parser.add_argument('--constraints-config', type=Path)
+    parser.add_argument('--share-exchanges-config', type=Path, default=Path('configs/data/share_exchanges_20260912.toml'))
     parser.add_argument('--resume', action='store_true')
     args = parser.parse_args()
     print(json.dumps(run_model_replay(predictions=args.predictions, benchmarks=args.benchmarks,
                                      output=args.output, data_root=args.data_root,
-                                     constraints_config=args.constraints_config, resume=args.resume)))
+                                     constraints_config=args.constraints_config, resume=args.resume,
+                                     share_exchanges_config=args.share_exchanges_config)))
 
 
 if __name__ == '__main__':

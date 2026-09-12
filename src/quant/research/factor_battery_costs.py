@@ -163,6 +163,9 @@ def run_cost_plans(*, settings: dict, plans: dict, sessions: tuple[dt.date, ...]
         if constraint_execution_symbols is not None:
             symbols.update(constraint_execution_symbols.filter(
                 pl.col('execution_date').is_between(low, high))['symbol'])
+        for event in settings.get('share_exchanges', []):
+            if low <= event['effective_date'] <= high and event['from_symbol'] in symbols:
+                symbols.add(event['to_symbol'])
         # Preserve receivable-only names and record-date events for holdings
         # even when a later year's factor never selects them again.
         for account in accounts.values():

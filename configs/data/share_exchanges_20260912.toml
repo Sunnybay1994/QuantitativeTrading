@@ -1,0 +1,13 @@
+# Ordinary public A-share account; no cash-option exercise or restricted insider shares.
+# Actual fractional allocation depends on all holders; floor is the conservative scenario.
+[[share_exchanges]]
+from_symbol = "000418.SZ"
+to_symbol = "000333.SZ"
+announcement_date = 2019-06-19
+record_date = 2019-06-20
+effective_date = 2019-06-21
+tradable_date = 2019-06-21
+ratio = "1.15144821"
+fractional_allocation = "floor"
+source = "https://static.cninfo.com.cn/finalpage/2019-06-19/1206364891.PDF"
+fractional_source = "https://static.cninfo.com.cn/finalpage/2019-05-23/1206296152.PDF"

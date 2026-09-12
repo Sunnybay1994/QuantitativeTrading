@@ -10,6 +10,7 @@ from pathlib import Path
 import polars as pl
 
 from quant.backtest.daily_account import capture_record_date_entitlements, prepare_account_actions
+from quant.backtest.share_exchanges import apply_share_exchanges, capture_exchange_holdings, validate_exchanges
 from quant.data.factor_battery_inputs import read_battery_execution
 from quant.data.factor_benchmarks import read_etf_total_return
 from quant.reporting.model_stratification import read_parts
@@ -17,7 +18,8 @@ from quant.reporting.stratified_signals import assign_strata, market_states
 
 
 def reconstruct(*, nav: pl.DataFrame, trades: pl.DataFrame, bars: pl.DataFrame,
-                dividends: pl.DataFrame, calendar: pl.DataFrame, initial: dict) -> tuple[pl.DataFrame, pl.DataFrame]:
+                dividends: pl.DataFrame, calendar: pl.DataFrame, initial: dict,
+                share_exchanges: list[dict] | None = None) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Reconstruct positions from fills, reusing account entitlement handling.
 
     Security P&L is value change plus sale proceeds minus purchase cash plus
@@ -27,6 +29,7 @@ def reconstruct(*, nav: pl.DataFrame, trades: pl.DataFrame, bars: pl.DataFrame,
     if nav['date'].is_duplicated().any() or bars.select('trade_date', 'symbol').is_duplicated().any():
         raise ValueError('Duplicate NAV or price keys')
     state = copy.deepcopy(initial)
+    exchanges = validate_exchanges(share_exchanges or [])
     state.pop('nav', None)
     previous_equity = state['cash'] + sum(h['quantity']*h['mark_price'] for h in state['holdings'].values()) + sum(r['amount'] for r in state['receivables'])
     prices = {(r['trade_date'], r['symbol']): r['close'] for r in bars.iter_rows(named=True)}
@@ -38,6 +41,7 @@ def reconstruct(*, nav: pl.DataFrame, trades: pl.DataFrame, bars: pl.DataFrame,
         prior_receivables: dict[str, float] = {}
         for r in state['receivables']:
             prior_receivables[r['symbol']] = prior_receivables.get(r['symbol'], 0.) + r['amount']
+        converted = apply_share_exchanges(date=day, state=state, events=exchanges, dividends=dividends)
         prepared = prepare_account_actions(date=day, state=state, calendar=calendar, dividends=dividends, settle_cash=False)
         income = {s: -v for s, v in prior_receivables.items()}
         for r in prepared['receivables']:
@@ -45,6 +49,11 @@ def reconstruct(*, nav: pl.DataFrame, trades: pl.DataFrame, bars: pl.DataFrame,
         prepared['cash'] += sum(r['amount'] for r in prepared['receivables'] if r['pay_date'] <= str(day))
         prepared['receivables'] = [r for r in prepared['receivables'] if r['pay_date'] > str(day)]
         flow: dict[str, float] = {}
+        # A book-value transfer is not a sale or income. Subsequent mark P&L
+        # belongs to the successor; prior-close exposure stays with predecessor.
+        for event in converted:
+            for symbol, sign in ((event['from_symbol'], 1), (event['to_symbol'], -1)):
+                flow[symbol] = flow.get(symbol, 0.) + sign*event['predecessor_book_value']
         for f in fills.get((day,), trades.clear()).iter_rows(named=True):
             s = f['symbol']
             if f['side'] not in ('BUY', 'SELL'):
@@ -81,6 +90,7 @@ def reconstruct(*, nav: pl.DataFrame, trades: pl.DataFrame, bars: pl.DataFrame,
         state = {**state, **prepared, 'cash': n['cash'], 'date': str(day)}
         state['holdings'] = {s: h for s, h in state['holdings'].items() if h['quantity']}
         capture_record_date_entitlements(date=day, state=state, dividends=dividends)
+        capture_exchange_holdings(date=day, state=state, events=exchanges)
         previous_equity = n['equity']
     return pl.from_dicts(rows), pl.from_dicts(checks)
 
@@ -126,11 +136,15 @@ def run(*, config: Path, output: Path, data_root: Path) -> dict:
     if initial['holdings'] or dt.date.fromisoformat(initial['date']) >= start:
         raise ValueError('Require saved cash-only prior-year account')
     trades = read_parts(folder, 'trades', ['date', 'symbol', 'side', 'quantity', 'price', 'notional', 'fee']).filter(pl.col('date') >= start)
+    exchanges = replay['settings'].get('share_exchanges', [])
+    exchanges = [{**e, **{k: dt.date.fromisoformat(e[k]) for k in
+        ('announcement_date', 'record_date', 'effective_date', 'tradable_date')}} for e in exchanges]
+    symbols = sorted(set(trades['symbol'].to_list()) | {e['to_symbol'] for e in exchanges})
     inputs = read_battery_execution(data_root=data_root, refresh_config=Path(replay['settings']['data']['refresh_config']),
-        snapshot=replay['snapshot'], start=start, end=end, symbols=trades['symbol'].unique().to_list(), include_all_dividends=True)
+        snapshot=replay['snapshot'], start=start, end=end, symbols=symbols, include_all_dividends=True)
     dividends = inputs['dividends'].with_columns((pl.col('div_cash')*(1-replay['settings']['portfolio']['stock_dividend_withholding'])).alias('div_cash'))
     detail, daily = reconstruct(nav=nav, trades=trades, bars=inputs['bars'], dividends=dividends,
-                                calendar=inputs['calendar'], initial=initial)
+                                calendar=inputs['calendar'], initial=initial, share_exchanges=exchanges)
     signal_dates = pl.concat([pl.read_parquet(p).select('trade_date').unique()
         for p in sorted(Path(spec['statistics']).glob('inputs/*/monthly_labels.parquet'))])['trade_date'].unique().to_list()
     raw = pl.concat([pl.read_parquet(p).filter(pl.col('trade_date').is_in(signal_dates)).select('symbol', 'trade_date', 'eligible', 'amount20', 'total_market_value', 'industry_l1')

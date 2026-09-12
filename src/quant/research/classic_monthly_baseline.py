@@ -183,6 +183,8 @@ def replay(
         "receivables": [], "pending": [], "nav": [],
         "inception_date": str(sessions[0]), "started_with_cash": True}
     prior_nav_count = len(state["nav"])
+    from quant.backtest.share_exchanges import validate_exchanges, apply_share_exchanges, capture_exchange_holdings
+    exchanges = validate_exchanges(config.get('share_exchanges', []))
     cash_only = (bars.is_empty() and instruments.is_empty() and targets.is_empty()
                  and dividends.is_empty() and not market_states
                  and not any(state.get(key) for key in (
@@ -255,6 +257,12 @@ def replay(
             execution_permissions = constraint_info.get('execution_direction_permissions')
         writeoff = 0.0
         removed = []
+        exchange_rows = apply_share_exchanges(date=date, state=state, events=exchanges, dividends=dividends) if exchanges else []
+        if exchange_rows and batch is not None and (
+                target_constraints is not None or target_turnover_budget is not None
+                or set(batch['symbol']) & {e['from_symbol'] for e in exchange_rows}):
+            raise ValueError('Exchange-day transformed or predecessor targets require explicit successor mapping')
+        exchange_state: dict[str, Any] = {k: state[k] for k in ('share_exchange_entitlements', 'share_exchange_history') if k in state}
         if config["portfolio"].get("delisted_holding_recovery") == 0.0:
             delisted = instruments.filter(pl.col("delist_date") < date)["symbol"].to_list()
             for symbol in delisted:
@@ -291,6 +299,7 @@ def replay(
                 )
                 if prior_nominees is not None:
                     state['constraint_nominees'] = prior_nominees
+                state.update(exchange_state)
         except ValueError as exc:
             relevant = set(state["holdings"]) | (set(batch["symbol"]) if batch is not None else set())
             inactive = instruments.filter(pl.col("symbol").is_in(relevant) & (
@@ -299,6 +308,9 @@ def replay(
         state["nav"][-1]["position_count"] = len(state["holdings"])
         state["nav"][-1]["delisting_writeoff"] = writeoff
         state["nav"][-1]["delisted_symbols"] = ",".join(sorted(removed))
+        if exchanges:
+            state['nav'][-1]['share_exchange_count'] = len(exchange_rows)
+            capture_exchange_holdings(date=date, state=state, events=exchanges)
         state["nav"][-1]["missing_target_positions"] = (
             len(set(batch.filter(pl.col("weight") > 0).get_column("symbol")) - set(state["holdings"]))
             if batch is not None else None
