@@ -121,9 +121,23 @@ def messages(reason: str, *, format_version: str = 'original') -> list[dict[str,
                 "reason_text": reason}, ensure_ascii=False)}]
 
 
+def thinking_controls(settings: dict) -> dict:
+    """Return only effective optional controls, shared by transport and caching."""
+    mode = settings.get('thinking_mode', 'disabled')
+    effort = settings.get('reasoning_effort', 'high')
+    if mode not in ('disabled', 'enabled') or effort not in ('low', 'high', 'max'):
+        raise ValueError('Unknown DeepSeek thinking configuration')
+    return {'thinking_mode': mode, 'reasoning_effort': effort} if mode == 'enabled' else {}
+
+
+def request_key_settings(settings: dict) -> dict:
+    """Include effective reasoning controls without changing old disabled keys."""
+    return {**{k: settings[k] for k in ('model', 'model_epoch', 'max_tokens')}, **thinking_controls(settings)}
+
+
 def score_key(reason: str, settings: dict) -> str:
     payload = {"messages": messages(reason, format_version=settings.get('format_version', 'original')), "version": PROMPT_VERSION,
-               **{k: settings[k] for k in ("model", "model_epoch", "max_tokens")}}
+               **request_key_settings(settings)}
     return hashlib.sha256(json.dumps(payload, sort_keys=True,
                                      ensure_ascii=False).encode("utf-8")).hexdigest()
 

@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from quant.data.connectors.deepseek import DeepSeekClient, load_key
 from quant.data.forecast_text_scores import ScoreCache
-from quant.factors.forecast_text_score import strict_json
+from quant.factors.forecast_text_score import request_key_settings, strict_json
 from quant.factors.library import load_library
 from quant.factors.search import canonical, expand, prepare
 from quant.research.deepseek_diagnostics import DiagnosticClient, parse_diagnosis
@@ -146,7 +146,7 @@ def run(*, diagnosis: Path, design: Path, scope: str, fields: list[str], operato
     if len(encoded) > settings["max_input_bytes"]:
         raise ValueError("Candidate request exceeds configured input size")
     token_bound = len(encoded) + 1024
-    key = hashlib.sha256(encoded + json.dumps({k: settings[k] for k in ("model", "model_epoch", "max_tokens")}, sort_keys=True).encode()).hexdigest()
+    key = hashlib.sha256(encoded + json.dumps(request_key_settings(settings), sort_keys=True).encode()).hexdigest()
     output.mkdir(parents=True, exist_ok=False)
     (output / "design_source.toml").write_bytes(design.read_bytes())
     (output / "scoring.toml").write_bytes(config.read_bytes())

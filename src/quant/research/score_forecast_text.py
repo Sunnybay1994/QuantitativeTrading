@@ -38,6 +38,8 @@ class Settings(BaseModel):
     timeout_seconds: Annotated[float, Field(gt=0, le=120)] = 60.0
     retry_delay_seconds: Annotated[float, Field(ge=0, le=30)] = 2.0
     format_version: Literal['original', 'compact_evidence_v1'] = 'original'
+    thinking_mode: Literal['disabled', 'enabled'] = 'disabled'
+    reasoning_effort: Literal['low', 'high', 'max'] = 'high'
 
 
 def load_settings(path: Path) -> dict:

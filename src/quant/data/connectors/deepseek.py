@@ -7,7 +7,7 @@ import tomllib
 
 import httpx
 
-from quant.factors.forecast_text_score import messages, strict_json
+from quant.factors.forecast_text_score import messages, strict_json, thinking_controls
 
 ENDPOINT = "https://api.deepseek.com/chat/completions"
 
@@ -51,13 +51,17 @@ class DeepSeekClient:
         return self.complete_messages(messages(reason, format_version=settings.get('format_version', 'original')), settings)
 
     def complete_messages(self, prompt_messages: list[dict[str, str]], settings: dict) -> dict:
+        effective = thinking_controls(settings)
+        mode = effective.get('thinking_mode', 'disabled')
+        body = {"model": settings["model"], "messages": prompt_messages,
+            "thinking": {"type": mode}, "response_format": {"type": "json_object"},
+            "max_tokens": settings["max_tokens"], "stream": False}
+        if mode == 'enabled':
+            body['reasoning_effort'] = effective['reasoning_effort']
+        else:
+            body['temperature'] = 0
         try:
-            response = self.client.post(ENDPOINT, json={
-                "model": settings["model"], "messages": prompt_messages,
-                "thinking": {"type": "disabled"}, "temperature": 0,
-                "response_format": {"type": "json_object"},
-                "max_tokens": settings["max_tokens"], "stream": False,
-            })
+            response = self.client.post(ENDPOINT, json=body)
         except (httpx.ConnectError, httpx.ConnectTimeout):
             raise RequestFailure("connect_failed", retryable=True) from None
         except httpx.HTTPError:

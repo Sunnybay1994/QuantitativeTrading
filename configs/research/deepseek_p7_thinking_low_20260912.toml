@@ -1,0 +1,18 @@
+# Paired calibration: same frozen rubric and compact evidence prompt, bounded reasoning enabled.
+# Official docs verified 2026-09-12:
+# https://api-docs.deepseek.com/guides/thinking_mode/
+# https://api-docs.deepseek.com/quick_start/pricing/
+# Peak rates conservatively account for the whole reported output budget.
+model = "deepseek-flash"
+model_epoch = "DeepSeek-V4.1-Flash-docs-20260912"
+pricing_checked = 2026-09-12
+input_usd_per_million = 0.30
+output_usd_per_million = 1.20
+max_tokens = 4096
+max_input_bytes = 24000
+max_attempts = 1
+timeout_seconds = 120.0
+retry_delay_seconds = 2.0
+format_version = "compact_evidence_v1"
+thinking_mode = "enabled"
+reasoning_effort = "low"

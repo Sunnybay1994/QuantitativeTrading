@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from quant.data.connectors.deepseek import DeepSeekClient, load_key
 from quant.data.forecast_text_scores import ScoreCache
-from quant.factors.forecast_text_score import strict_json
+from quant.factors.forecast_text_score import request_key_settings, strict_json
 from quant.research.score_forecast_text import cost_for, load_settings, score_one
 
 VERSION = "research_diagnosis_v3"
@@ -169,7 +169,7 @@ def run_diagnosis(*, inputs: list[Path], config: Path, output: Path, cache_path:
         raise ValueError("Select fewer/smaller diagnostic inputs")
     token_bound = len(encoded) + 1024
     key = hashlib.sha256(encoded + json.dumps({"version": VERSION,
-        **{k: settings[k] for k in ("model", "model_epoch", "max_tokens")}}, sort_keys=True).encode()).hexdigest()
+        **request_key_settings(settings)}, sort_keys=True).encode()).hexdigest()
     output.mkdir(parents=True, exist_ok=False)
     result: dict = {"state": "dry_run"}
     totals = {"requests": 0, "charged_or_reserved_usd": 0.0}
