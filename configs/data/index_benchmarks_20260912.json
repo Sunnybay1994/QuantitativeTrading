@@ -1,0 +1,97 @@
+{
+  "start": "2015-01-01",
+  "end": "2026-09-11",
+  "version": "csi_price_total_return_20260912",
+  "series": [
+    {
+      "index_code": "000300.SH",
+      "family": "000300",
+      "name": "沪深300",
+      "return_type": "price",
+      "currency": "CNY",
+      "level_unit": "index_points",
+      "definition_source": "https://oss-ch.csindex.com.cn/static/html/csindex/public/uploads/indices/detail/files/zh_CN/000300factsheet.pdf"
+    },
+    {
+      "index_code": "000905.SH",
+      "family": "000905",
+      "name": "中证500",
+      "return_type": "price",
+      "currency": "CNY",
+      "level_unit": "index_points",
+      "definition_source": "https://oss-ch.csindex.com.cn/static/html/csindex/public/uploads/indices/detail/files/zh_CN/000905factsheet.pdf"
+    },
+    {
+      "index_code": "000852.SH",
+      "family": "000852",
+      "name": "中证1000",
+      "return_type": "price",
+      "currency": "CNY",
+      "level_unit": "index_points",
+      "definition_source": "https://oss-ch.csindex.com.cn/static/html/csindex/public/uploads/indices/detail/files/zh_CN/000852factsheet.pdf"
+    },
+    {
+      "index_code": "000906.SH",
+      "family": "000906",
+      "name": "中证800",
+      "return_type": "price",
+      "currency": "CNY",
+      "level_unit": "index_points",
+      "definition_source": "https://oss-ch.csindex.com.cn/static/html/csindex/public/uploads/indices/detail/files/zh_CN/000906factsheet.pdf"
+    },
+    {
+      "index_code": "000985.CSI",
+      "family": "000985",
+      "name": "中证全指",
+      "return_type": "price",
+      "currency": "CNY",
+      "level_unit": "index_points",
+      "definition_source": "https://oss-ch.csindex.com.cn/static/html/csindex/public/uploads/indices/detail/files/zh_CN/000985factsheet.pdf"
+    },
+    {
+      "index_code": "H00300.CSI",
+      "family": "000300",
+      "name": "300收益",
+      "return_type": "total_return",
+      "currency": "CNY",
+      "level_unit": "index_points",
+      "definition_source": "https://oss-ch.csindex.com.cn/static/html/csindex/public/uploads/indices/detail/files/zh_CN/000300factsheet.pdf"
+    },
+    {
+      "index_code": "H00905.CSI",
+      "family": "000905",
+      "name": "500收益",
+      "return_type": "total_return",
+      "currency": "CNY",
+      "level_unit": "index_points",
+      "definition_source": "https://oss-ch.csindex.com.cn/static/html/csindex/public/uploads/indices/detail/files/zh_CN/000905factsheet.pdf"
+    },
+    {
+      "index_code": "H00852.CSI",
+      "family": "000852",
+      "name": "中证1000全收益",
+      "return_type": "total_return",
+      "currency": "CNY",
+      "level_unit": "index_points",
+      "definition_source": "https://oss-ch.csindex.com.cn/static/html/csindex/public/uploads/indices/detail/files/zh_CN/000852factsheet.pdf"
+    },
+    {
+      "index_code": "H00906.CSI",
+      "family": "000906",
+      "name": "800收益",
+      "return_type": "total_return",
+      "currency": "CNY",
+      "level_unit": "index_points",
+      "definition_source": "https://oss-ch.csindex.com.cn/static/html/csindex/public/uploads/indices/detail/files/zh_CN/000906factsheet.pdf"
+    },
+    {
+      "index_code": "H00985.CSI",
+      "family": "000985",
+      "name": "中证全指全收益",
+      "return_type": "total_return",
+      "currency": "CNY",
+      "level_unit": "index_points",
+      "definition_source": "https://oss-ch.csindex.com.cn/static/html/csindex/public/uploads/indices/detail/files/zh_CN/000985factsheet.pdf"
+    }
+  ]
+}
