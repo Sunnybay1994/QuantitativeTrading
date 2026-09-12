@@ -23,6 +23,15 @@ def monthly_selection(panel: pl.DataFrame, *, count: int, seed: str) -> pl.DataF
         'trade_date',maintain_order=True).head(count)
 
 
+def select_text_batch(texts: list[str], *, seed: str, offset: int, count: int) -> list[str]:
+    if type(offset) is not int or type(count) is not int or offset < 0 or count < 1:
+        raise ValueError('Require nonnegative batch offset and positive count')
+    ordered = sorted(set(texts),key=lambda t:hashlib.sha256((seed+':'+t).encode()).hexdigest())
+    if offset >= len(ordered):
+        raise ValueError('Batch starts beyond the frozen text population')
+    return ordered[offset:offset+count]
+
+
 def run(*, config: Path, output: Path, data_root: Path) -> dict:
     spec = tomllib.loads(config.read_text(encoding='utf-8'))
     if spec['auto_trade'] is not False:
@@ -64,15 +73,16 @@ def run(*, config: Path, output: Path, data_root: Path) -> dict:
         frontier.append({'monthly_size':size,'stock_months':selected.height,'unique_texts':len(texts),
             'months_at_least_100':counts.filter(pl.col('len') >= 100).height,'one_attempt_upper_usd':bound})
     selected = pl.read_parquet(output/f"monthly_{spec['primary_monthly_size']}.parquet")
-    texts = sorted(set(selected['reason_text']),key=lambda t:hashlib.sha256((spec['seed']+':'+t).encode()).hexdigest())
-    chosen = texts[:spec['first_batch_unique_texts']]
+    offset = spec.get('batch_offset',0)
+    chosen = select_text_batch(selected['reason_text'].to_list(),seed=spec['seed'],
+        offset=offset,count=spec['first_batch_unique_texts'])
     batch_members = selected.filter(pl.col('reason_text').is_in(chosen))
     batch_months = batch_members.group_by('trade_date').len()
     # This is only a scoring request batch, not a substitute publication corpus.
     batch = corpus.filter(pl.col('reason_text').is_in(chosen) & ~pl.col('same_day_conflict'))
     batch.write_parquet(output/'scoring_batch.parquet')
     selected.with_columns(pl.col('reason_text').is_in(chosen).alias('first_batch_selected')).drop('reason_text').write_parquet(output/'selected_members.parquet')
-    summary = {'frontier':frontier,'first_batch_unique_texts':len(chosen),'first_batch_rows':batch.height,
+    summary = {'frontier':frontier,'batch_offset':offset,'first_batch_unique_texts':len(chosen),'first_batch_rows':batch.height,
         'first_batch_stock_months':batch_members.height,
         'first_batch_max_monthly_members':batch_months['len'].max(),
         'first_batch_months_at_least_100':batch_months.filter(pl.col('len') >= 100).height,

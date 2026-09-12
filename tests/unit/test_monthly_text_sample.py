@@ -7,6 +7,7 @@ from quant.data.forecast_text_scores import ScoreCache
 from quant.factors.forecast_text_score import DIMENSIONS, score_key
 from quant.research.score_forecast_text import load_settings
 from pathlib import Path
+import json
 
 
 def test_new_unscored_publication_invalidates_old_score_and_membership_is_exact():
@@ -41,3 +42,19 @@ def test_snapshot_reads_only_allowed_successes_and_does_not_mutate_cache(tmp_pat
     assert status['selected_successes'] == 1 and status['api_calls'] == 0
     assert db.totals() == before
     db.close()
+
+
+def test_combined_batches_require_identical_members_and_design(tmp_path):
+    from quant.research.evaluate_monthly_text_sample import combined_request_keys
+    config=Path('configs/research/p7_monthly_sampling_20260912.toml').read_text(encoding='utf-8')
+    members=pl.DataFrame({'symbol':['000001.SZ'],'trade_date':[dt.date(2020,1,31)],'input_id':['frozen']})
+    first,second=tmp_path/'first',tmp_path/'second'
+    for path,key in [(first,'a'),(second,'b')]:
+        path.mkdir()
+        (path/'config.toml').write_text(config,encoding='utf-8')
+        (path/'summary.json').write_text(json.dumps({'selected_request_keys':[key]}))
+        members.write_parquet(path/'selected_members.parquet')
+    assert combined_request_keys(first,[second])=={'a','b'}
+    members.with_columns(pl.lit('changed').alias('input_id')).write_parquet(second/'selected_members.parquet')
+    with pytest.raises(ValueError,match='membership'):
+        combined_request_keys(first,[second])
