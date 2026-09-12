@@ -2,7 +2,7 @@ import datetime as dt
 import polars as pl
 import pytest
 
-from quant.data.monthly_text_sample import membership_panel, cache_snapshot
+from quant.data.monthly_text_sample import membership_panel, cache_snapshot, coverage_reasons
 from quant.data.forecast_text_scores import ScoreCache
 from quant.factors.forecast_text_score import DIMENSIONS, score_key
 from quant.research.score_forecast_text import load_settings
@@ -58,3 +58,24 @@ def test_combined_batches_require_identical_members_and_design(tmp_path):
     members.with_columns(pl.lit('changed').alias('input_id')).write_parquet(second/'selected_members.parquet')
     with pytest.raises(ValueError,match='membership'):
         combined_request_keys(first,[second])
+
+
+def test_coverage_reasons_account_for_all_members_and_keep_zero_scores():
+    count = 8
+    frame = pl.DataFrame({'input_id':[str(i) for i in range(count)],
+        'publication_date':[dt.date(2020,1,1)]*6+[dt.date(2018,1,1),dt.date(2020,1,1)],
+        'same_day_conflict':[False]*7+[True],
+        'cache_state':['unscored','unknown','retryable']+['success']*5,
+        **{f'text_{d}':[None]*5+[0.,3.,None] for d in DIMENSIONS},
+        **{f'text_{d}_status':[None]*3+['uncertain','numeric_only','scored','scored',None]
+           for d in DIMENSIONS}})
+    members = pl.DataFrame({'symbol':[str(i) for i in range(count)],
+        'trade_date':[dt.date(2020,1,31)]*count,'input_id':[str(i) for i in range(count)]})
+    result = coverage_reasons(frame,members,max_age_days=120)
+    assert result.group_by('factor').agg(pl.col('len').sum())['len'].to_list()==[count]*3
+    expected={'api_unscored','api_unknown','api_retryable','uncertain','numeric_only',
+              'available','outside_availability_window','conflicting_event'}
+    assert set(result['reason'])==expected
+    assert result.filter(pl.col('reason')=='available')['len'].to_list()==[1]*3
+    with pytest.raises(ValueError,match='no source event'):
+        coverage_reasons(frame,members.with_columns(pl.lit('missing').alias('input_id')),max_age_days=120)

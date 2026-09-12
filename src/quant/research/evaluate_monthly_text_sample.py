@@ -6,7 +6,7 @@ import tomllib
 
 import polars as pl
 
-from quant.data.monthly_text_sample import cache_snapshot, membership_panel
+from quant.data.monthly_text_sample import cache_snapshot, membership_panel, coverage_reasons
 from quant.data.forecast_text_evaluation import read_forecast_controls, attach_forecast_controls, read_sue_control
 from quant.research.score_forecast_text import load_design, load_settings
 from quant.research.forecast_text_incremental import diagnose_sections
@@ -43,6 +43,8 @@ def run(*, plan: Path, cache: Path, output: Path, data_root: Path,
     (output/'sampling.toml').write_bytes((plan/'config.toml').read_bytes())
     scores.write_parquet(output/'full_event_scores.parquet')
     text.write_parquet(output/'monthly_text_panel.parquet')
+    coverage_reasons(scores,members,max_age_days=design['maximum_age_calendar_days']).write_csv(
+        output/'coverage_reasons.csv')
     points,supports,monthly_panels = [],[],[]
     for year in range(design['start'].year,design['end'].year+1):
         folder = Path(spec['statistics'])/f'inputs/{year}'
