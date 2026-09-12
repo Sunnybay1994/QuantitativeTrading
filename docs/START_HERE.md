@@ -87,8 +87,9 @@ D:\Miniforge3\python.exe -m quant.research.follow_multifactor_pipeline --config 
 # 固定三种模型方法按验证RankIC自动选型；仅研究前向观察
 D:\Miniforge3\python.exe -m quant.research.run_strategy_template_selection --config configs/models/p6c_method_selection_20260911.toml --output artifacts/models/<新选型目录>
 
-# 固定选定方法生成研究预测；历史核对显式使用--rehearsal，缺因子则只记录诊断
-D:\Miniforge3\python.exe -m quant.research.run_fixed_model_forecast --selection artifacts/models/p6c_method_selection_20260911_02 --as-of YYYY-MM-DD --output artifacts/models/<新预测目录>
+# 固定日历口径修正版生成研究预测，继承原冻结方法；9月14日前核对须显式使用--rehearsal
+# 原版selection因旧月度换手因子缺失，9月11日无完整特征；修正版当天演练生成2393条，仍为RESEARCH_ONLY。
+D:\Miniforge3\python.exe -m quant.research.run_fixed_model_forecast --selection artifacts/models/p6c_calendar_model_20260911_02/selection --as-of YYYY-MM-DD --output artifacts/models/<新预测目录>
 
 # 仅分钟数据；BaoStock 单连接串行，首次历史回填时间较长
 D:\Miniforge3\python.exe -m quant.data.intraday --to today
