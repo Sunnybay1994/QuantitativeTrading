@@ -110,8 +110,11 @@ def run_cost_plans(*, settings: dict, plans: dict, sessions: tuple[dt.date, ...]
                    data_root: Path, execution_snapshot: str, factor: str,
                    start: dt.date | None = None,
                    turnover_budgets: dict[str, float] | None = None, resume: bool = False,
-                   target_constraints: Callable[[pl.DataFrame, dict], tuple[pl.DataFrame, dict]] | None = None) -> dict:
+                   target_constraints: Callable[[pl.DataFrame, dict], tuple[pl.DataFrame, dict]] | None = None,
+                   constraint_execution_symbols: pl.DataFrame | None = None) -> dict:
     """Replay factor and equal-weight benchmark plans through the same account."""
+    if constraint_execution_symbols is not None and target_constraints is None:
+        raise ValueError('Candidate execution symbols require an active constraint hook')
     if (target_constraints is not None) != ('target_constraints_config' in settings):
         raise ValueError('Constraint hook requires its explicit replay configuration')
     end = settings['run']['as_of']
@@ -157,6 +160,9 @@ def run_cost_plans(*, settings: dict, plans: dict, sessions: tuple[dt.date, ...]
                           for variant, (_, targets) in plans.items()}
         symbols = set().union(*(set(frame["symbol"]) for frame in annual_targets.values()),
                               *(set(account.get("holdings", {})) for account in accounts.values()))
+        if constraint_execution_symbols is not None:
+            symbols.update(constraint_execution_symbols.filter(
+                pl.col('execution_date').is_between(low, high))['symbol'])
         # Preserve receivable-only names and record-date events for holdings
         # even when a later year's factor never selects them again.
         for account in accounts.values():

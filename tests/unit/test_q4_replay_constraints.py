@@ -87,3 +87,21 @@ def test_constraint_cannot_reintroduce_delisted_written_off_holding():
     assert result[0]['delisting_writeoff'].sum() > 0
     assert not account['holdings']
     assert not result[1].filter(pl.col('date') == DAYS[2]).height
+
+
+
+def test_nominee_buffer_survives_daily_advance_and_account_checkpoint(tmp_path, monkeypatch):
+    source, _, kwargs = setup_run(monkeypatch, tmp_path/'nominee_run')
+    kwargs['settings'] = {**kwargs['settings'], 'target_constraints_config': 'nominee_fixture'}
+    observed = []
+    def nominate(batch, state):
+        observed.append(state.get('constraint_nominees'))
+        return batch, {'as_of':str(batch['as_of'][0]),'feasible':True,'applied':False,
+            'nominee_symbols': ['persisted_nominee']}
+    costs.run_cost_plans(**kwargs,target_constraints=nominate)
+    assert observed[0] is None
+    assert observed[1] == ['persisted_nominee']
+    assert observed[2] is None  # The next cost scenario owns a separate account.
+    checkpoint = json.loads((kwargs['output']/'raw/cost_1/2021/account.json').read_text())
+    assert checkpoint['account']['constraint_nominees'] == ['persisted_nominee']
+    costs.run_cost_plans(**kwargs,target_constraints=nominate,resume=True)

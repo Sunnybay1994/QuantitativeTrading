@@ -234,6 +234,8 @@ def replay(
             if not constraint_info['feasible']:
                 raise ValueError(f"Portfolio constraints failed at {constraint_info['as_of']}: "
                                  f"{constraint_info.get('failure_reason')}")
+            if constraint_info.get('nominee_symbols') is not None:
+                state['constraint_nominees'] = constraint_info['nominee_symbols']
         writeoff = 0.0
         removed = []
         if config["portfolio"].get("delisted_holding_recovery") == 0.0:
@@ -263,11 +265,14 @@ def replay(
             # Batch only schema checks. All account and trading-rule checks
             # still run daily; every output row is validated before returning.
             with config_context(validation_enabled=False) if validate_once else nullcontext():
+                prior_nominees = state.get('constraint_nominees')
                 state, result = advance(
                     date=date, state=state, bars=today_bars, calendar=calendar,
                     instruments=instruments, market_states=market_states, dividends=dividends,
                     config=account_config,
                 )
+                if prior_nominees is not None:
+                    state['constraint_nominees'] = prior_nominees
         except ValueError as exc:
             relevant = set(state["holdings"]) | (set(batch["symbol"]) if batch is not None else set())
             inactive = instruments.filter(pl.col("symbol").is_in(relevant) & (

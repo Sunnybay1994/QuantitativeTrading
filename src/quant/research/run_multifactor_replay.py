@@ -47,7 +47,7 @@ def model_target_plans(scores: pl.DataFrame, *, model: dict, sessions: tuple[dt.
 
 
 def prepare_constraints(*, config: Path, plans: dict, data_root: Path, output: Path,
-                        resume: bool) -> tuple[Callable[[pl.DataFrame, dict], tuple[pl.DataFrame, dict]], str]:
+                        resume: bool, model_scores: pl.DataFrame | None = None) -> tuple[Callable[[pl.DataFrame, dict], tuple[pl.DataFrame, dict]], str]:
     """Freeze existing PIT controls and benchmark weights for this explicit experiment."""
     from quant.data.equal_weight_index import read_equal_weight_targets
     from quant.data.factor_battery_inputs import read_frozen_battery_universe
@@ -75,6 +75,21 @@ def prepare_constraints(*, config: Path, plans: dict, data_root: Path, output: P
         index_name=settings['benchmark'], as_of_dates=dates)
     config_path = output/'constraints_config.toml'
     frames = {'constraints_universe.parquet': universe, 'constraints_benchmark.parquet': benchmark}
+    nominee_settings = settings.get('candidate_selection')
+    nominee_scores = None
+    if nominee_settings:
+        if model_scores is None:
+            raise ValueError('Candidate selection requires the actual model score table')
+        columns = ['trade_date', 'symbol', nominee_settings['score_column']]
+        nominee_scores = pl.read_parquet(nominee_settings['scores']).select(columns).sort('trade_date', 'symbol')
+        if not nominee_scores.equals(model_scores.select(columns).sort('trade_date', 'symbol')):
+            raise ValueError('Candidate scores differ from the actual model predictions')
+        frames['constraints_scores.parquet'] = nominee_scores
+        executions = pl.concat([t.select('as_of', 'execution_date') for name, t in plans.values()
+            if name in names]).unique()
+        frames['constraints_execution_symbols.parquet'] = nominee_scores.select(
+            pl.col('trade_date').alias('as_of'), 'symbol').join(executions, on='as_of', how='inner').select(
+                'execution_date', 'symbol').unique().sort('execution_date', 'symbol')
     if resume:
         if not config_path.is_file() or config_path.read_text(encoding='utf-8') != content:
             raise ValueError('Resume constraints configuration changed')
@@ -97,12 +112,48 @@ def prepare_constraints(*, config: Path, plans: dict, data_root: Path, output: P
             'symbol', 'industry_l1', 'total_market_value', pl.col('amount20').alias('adv20'),
             pl.col('eligible').alias('can_buy'),
             (pl.col('traded') & pl.col('limits_known') & pl.col('away_from_limits')).alias('can_sell'))
+        nominee_info = None
+        if nominee_settings:
+            from quant.portfolio.industry_candidate_selection import select_industry_candidates
+            assert nominee_scores is not None
+            if state.get('date') != str(signal) or not state.get('nav'):
+                raise ValueError('Candidate selection requires the actual signal-close account')
+            equity = state['nav'][-1]['equity']
+            current = pl.from_dicts([{'as_of': signal, 'symbol': symbol,
+                'weight': h['quantity']*h['mark_price']/equity}
+                for symbol, h in sorted(state['holdings'].items()) if h['quantity'] > 0],
+                schema={'as_of': batch.schema['as_of'], 'symbol': pl.String, 'weight': pl.Float64})
+            restricted = [r['symbol'] for r in state.get('restricted_shares', [])
+                          if str(r['list_date']) > str(signal) and r['quantity'] > 0]
+            market = market.with_columns((pl.col('can_sell') &
+                ~pl.col('symbol').is_in(restricted)).alias('can_sell'))
+            day_scores = nominee_scores.filter(pl.col('trade_date') == signal).select(
+                pl.col('trade_date').alias('as_of'), 'symbol',
+                pl.col(nominee_settings['score_column']).alias('score'))
+            nominees, nominee_info = select_industry_candidates(scores=day_scores, market=market,
+                benchmark=benchmark.filter(pl.col('as_of') == signal), current=current,
+                previous=state.get('constraint_nominees', sorted(state['holdings'])),
+                top_k=nominee_settings['top_k'], retention_multiplier=nominee_settings['retention_multiplier'],
+                minimum_signal_stocks=nominee_settings['minimum_signal_stocks'],
+                single_stock_weight=settings['limits']['single_stock_weight'],
+                industry_active_band=settings['limits']['industry_active_band'])
+            if not nominee_info['feasible']:
+                return batch, {'as_of': str(signal), 'applied': True, 'feasible': False,
+                    'failure_reason': 'candidate_selection_failed', 'candidate_selection': nominee_info}
+            selected = set(nominees['symbol'])
+            template = batch.row(0, named=True)
+            batch = pl.from_dicts([{**template, 'symbol': symbol,
+                'weight': 1/nominee_settings['top_k'] if symbol in selected else 0.}
+                for symbol in sorted(selected | set(state['holdings']) | set(batch['symbol']))], schema=batch.schema)
         result, info = constrain_account_targets(targets=batch, state=state, market=market,
             benchmark=benchmark.filter(pl.col('as_of') == signal),
             limits=RelativeConstraintLimits(**settings['limits']), enabled=settings['enabled'],
             sell_only=settings['sell_only'], unknown_industry_policy=settings['unknown_industry_policy'],
             diagnostic_only=True)
         info['applied'] = True
+        if nominee_info is not None:
+            info['candidate_selection'] = nominee_info
+            info['nominee_symbols'] = sorted(nominees['symbol'])
         return result, info
 
     return transform, content
@@ -141,7 +192,7 @@ def run_model_replay(*, predictions: Path, benchmarks: Path, output: Path, data_
     transform = None
     if constraints_config is not None:
         transform, content = prepare_constraints(config=constraints_config, plans=plans,
-            data_root=data_root, output=output, resume=resume)
+            data_root=data_root, output=output, resume=resume, model_scores=scores)
         settings['target_constraints_config'] = content
     elif resume and (output/'constraints_config.toml').exists():
         raise ValueError('Resume cannot omit the original constraints configuration')
@@ -153,7 +204,9 @@ def run_model_replay(*, predictions: Path, benchmarks: Path, output: Path, data_
         coverage.write_parquet(output/'model_signal_coverage.parquet')
     return run_cost_plans(settings=settings, plans=plans, sessions=sessions, output=output,
         data_root=data_root, execution_snapshot=snapshot, factor=model['research']['id'], start=walk['test_start'],
-        target_constraints=transform, resume=resume)
+        target_constraints=transform, resume=resume,
+        constraint_execution_symbols=(pl.read_parquet(output/'constraints_execution_symbols.parquet')
+            if constraints_config is not None and (output/'constraints_execution_symbols.parquet').exists() else None))
 
 
 def main() -> None:
