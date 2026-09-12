@@ -66,11 +66,16 @@ def run(*, config: Path, output: Path, data_root: Path) -> dict:
     selected = pl.read_parquet(output/f"monthly_{spec['primary_monthly_size']}.parquet")
     texts = sorted(set(selected['reason_text']),key=lambda t:hashlib.sha256((spec['seed']+':'+t).encode()).hexdigest())
     chosen = texts[:spec['first_batch_unique_texts']]
+    batch_members = selected.filter(pl.col('reason_text').is_in(chosen))
+    batch_months = batch_members.group_by('trade_date').len()
     # This is only a scoring request batch, not a substitute publication corpus.
     batch = corpus.filter(pl.col('reason_text').is_in(chosen) & ~pl.col('same_day_conflict'))
     batch.write_parquet(output/'scoring_batch.parquet')
     selected.with_columns(pl.col('reason_text').is_in(chosen).alias('first_batch_selected')).drop('reason_text').write_parquet(output/'selected_members.parquet')
     summary = {'frontier':frontier,'first_batch_unique_texts':len(chosen),'first_batch_rows':batch.height,
+        'first_batch_stock_months':batch_members.height,
+        'first_batch_max_monthly_members':batch_months['len'].max(),
+        'first_batch_months_at_least_100':batch_months.filter(pl.col('len') >= 100).height,
         'first_batch_upper_usd':sum(cost_for(input_token_bound(t,format_version=settings['format_version']),settings['max_tokens'],settings) for t in chosen),
         'selected_request_keys':[score_key(t,settings) for t in chosen],
         'scope':'Potential support only; score failures, uncertainty and unavailable labels reduce usable coverage',
