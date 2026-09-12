@@ -8,6 +8,7 @@ from typing import Any
 
 import polars as pl
 
+from quant.data.daily_input_quality import run_quality
 from quant.data.factor_panels import panel_complete, read_coverage
 from quant.data.model_forward_inputs import read_forward_values
 from quant.data.refresh import SHANGHAI, completed_date, latest_session, refresh_factor_selection, run_refresh
@@ -79,6 +80,26 @@ def check_model_factor_date(*, data_root: Path, factors: list[str], as_of: dt.da
     return evidence, errors
 
 
+def check_saved_input_quality(*, data_root: Path, config: Path, end: dt.date, output: Path) -> dict:
+    """Run the refresh quality checks on local inputs with the same scope and thresholds."""
+    try:
+        settings = tomllib.loads(config.read_text(encoding='utf-8'))
+        quality = settings.get('quality', {})
+        if not quality.get('enabled', False):
+            raise ValueError('Saved-data prediction requires enabled local input quality checks')
+        definitions = load_library(Path(settings['factors']['library']),
+                                   refresh_factor_selection(settings['factors']))
+        battery = tomllib.loads(Path(quality['battery_config']).read_text(encoding='utf-8'))
+        return run_quality(data_root=data_root, config=config, end=end,
+            factors=[{'id': row.id, 'family': row.family} for row in definitions], financials={},
+            output=output, lookback_sessions=quality.get('lookback_sessions', 5),
+            minimum_symbols=battery['minimum_symbols'])
+    except (OSError, ValueError, TypeError, KeyError, pl.exceptions.PolarsError) as exc:
+        return {'as_of': str(end), 'errors': [
+            f'Cannot complete saved-data input quality checks: {type(exc).__name__}: {exc}'],
+            'message': 'local_input_quality_failed'}
+
+
 def run_daily(*, to: str, selection: Path, output: Path, data_root: Path,
               refresh_config: Path, artifact_root: Path, saved_data: bool = False,
               intraday: bool = True, rehearsal: bool = False, now: dt.datetime | None = None) -> dict:
@@ -104,11 +125,16 @@ def run_daily(*, to: str, selection: Path, output: Path, data_root: Path,
                 + ', '.join(requirements['required_excluded']))
     except (OSError, ValueError, TypeError, KeyError) as exc:
         requirement_errors.append(f'Cannot resolve frozen model factor requirements: {type(exc).__name__}: {exc}')
-    refresh: dict = ({'latest_session': str(end), 'message': 'model_factor_requirements_failed' if requirement_errors else 'saved_data',
-                'intraday_errors': [], 'input_quality': {'errors': [],
-                'scope': 'required model factors and exact signal-date computation checked separately'}}
-               if saved_data or requirement_errors else run_refresh(to=to, data_root=data_root, artifact_root=artifact_root,
-                    config=refresh_config, now=clock, intraday=intraday))
+    if requirement_errors:
+        refresh: dict = {'latest_session': str(end), 'message': 'model_factor_requirements_failed',
+            'intraday_errors': [], 'input_quality': {'errors': [], 'message': 'skipped: model requirements failed'}}
+    elif saved_data:
+        refresh = {'latest_session': str(end), 'message': 'saved_data', 'intraday_errors': [],
+            'input_quality': check_saved_input_quality(data_root=data_root, config=refresh_config,
+                end=end, output=output/'input_quality')}
+    else:
+        refresh = run_refresh(to=to, data_root=data_root, artifact_root=artifact_root,
+            config=refresh_config, now=clock, intraday=intraday)
     (output/'refresh.json').write_text(json.dumps(refresh, ensure_ascii=False, indent=2), encoding='utf-8')
     if refresh['latest_session'] != str(end):
         raise ValueError('Refresh and forecast must use the same completed session')

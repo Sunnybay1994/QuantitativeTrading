@@ -24,8 +24,13 @@ def arguments(tmp_path, monkeypatch):
     for name in ('pit_sue8', 'pit_sue8_context_v2', 'other_factor'):
         (library/f'{name}.toml').write_text(f'id = "{name}"\nexpr = "close"\nfamily = "fixture"\n'
             'direction = 1\nsource_ref = "fixture"\n', encoding='utf-8')
-    (tmp_path/'refresh.toml').write_text(f'[factors]\nlibrary = "{library.as_posix()}"\n'
+    battery = tmp_path/'battery.toml'
+    battery.write_text('minimum_symbols = 137\n', encoding='utf-8')
+    (tmp_path/'refresh.toml').write_text('financial_snapshot = "fixture_financials"\n'
+        f'[quality]\nenabled = true\nbattery_config = "{battery.as_posix()}"\nlookback_sessions = 7\n'
+        f'[factors]\nlibrary = "{library.as_posix()}"\n'
         'selected = "all"\n', encoding='utf-8')
+    monkeypatch.setattr(daily, 'run_quality', lambda **kwargs: {'errors': [], 'as_of': str(kwargs['end'])})
     monkeypatch.setattr(daily,'latest_session',lambda **kwargs: dt.date(2026,9,14))
     monkeypatch.setattr(daily, 'panel_complete', lambda *args: True)
     monkeypatch.setattr(daily, 'read_coverage', lambda *args: {'start': '2026-01-01', 'end': '2026-09-14'})
@@ -129,6 +134,79 @@ def test_excluding_nonrequired_new_id_keeps_frozen_old_default_prediction(tmp_pa
     assert result['status'] == 'recorded'
     assert result['model_factor_requirements']['required_factors'] == ['pit_sue8', 'other_factor']
     assert result['model_factor_requirements']['required_excluded'] == []
+
+
+def test_saved_quality_uses_full_refresh_scope_and_configured_thresholds(tmp_path, monkeypatch):
+    args = arguments(tmp_path, monkeypatch)
+    source = tmp_path/'predictions'/'summary.json'
+    metadata = json.loads(source.read_text())
+    metadata['annual_fits'][0]['factors'] = ['other_factor']
+    source.write_text(json.dumps(metadata))
+    calls = []
+    error = 'pit_sue8: 2 finite values lack compatible latest PIT report context'
+    def quality(**kwargs):
+        calls.append(kwargs)
+        assert kwargs['end'] == dt.date(2026, 9, 14)
+        assert kwargs['data_root'] == args['data_root'] and kwargs['config'] == args['refresh_config']
+        assert kwargs['lookback_sessions'] == 7 and kwargs['minimum_symbols'] == 137
+        assert kwargs['financials'] == {}  # Public checker resolves the configured financial snapshot.
+        assert kwargs['output'] == args['output']/'input_quality'
+        assert {row['id'] for row in kwargs['factors']} == {'pit_sue8', 'pit_sue8_context_v2', 'other_factor'}
+        assert all(row['family'] == 'fixture' for row in kwargs['factors'])
+        return {'errors': [error], 'sue_report_context_checks': [
+            {'factor': 'pit_sue8', 'unexpected_factor_values': 2}]}
+    monkeypatch.setattr(daily, 'run_quality', quality)
+    monkeypatch.setattr(daily, 'run_refresh', lambda **_: pytest.fail('saved mode is local only'))
+    monkeypatch.setattr(daily, 'run_forecast', lambda **_: pytest.fail('quality error blocks prediction'))
+    result = daily.run_daily(**args, saved_data=True)
+    assert len(calls) == 1 and result['input_errors'] == [error]
+    assert result['status'] == 'input_errors' and result['prediction_stocks'] == 0
+    assert result['forecast_path'] is None and not (args['output']/'forecast').exists()
+    assert json.loads((args['output']/'summary.json').read_text())['input_errors'] == [error]
+    assert json.loads((args['output']/'refresh.json').read_text())['input_quality']['errors'] == [error]
+
+
+def test_saved_quality_honors_nonrequired_exclusion_and_runs_before_forecast(tmp_path, monkeypatch):
+    args = arguments(tmp_path, monkeypatch)
+    with args['refresh_config'].open('a', encoding='utf-8') as stream:
+        stream.write('excluded_factors = ["pit_sue8_context_v2"]\n')
+    calls = []
+    def quality(**kwargs):
+        calls.append('quality')
+        assert {row['id'] for row in kwargs['factors']} == {'pit_sue8', 'other_factor'}
+        return {'errors': []}
+    def forecast(**kwargs):
+        assert calls == ['quality']
+        calls.append('forecast')
+        return {'prediction_stocks': 1}
+    monkeypatch.setattr(daily, 'run_quality', quality)
+    monkeypatch.setattr(daily, 'run_forecast', forecast)
+    result = daily.run_daily(**args, saved_data=True)
+    assert calls == ['quality', 'forecast'] and result['status'] == 'recorded'
+
+
+@pytest.mark.parametrize('failure', ['disabled', 'missing_settings', 'missing_battery', 'missing_input', 'invalid_input'])
+def test_saved_quality_cannot_be_disabled_or_silently_skipped(tmp_path, monkeypatch, failure):
+    args = arguments(tmp_path, monkeypatch)
+    config = args['refresh_config']
+    if failure == 'disabled':
+        config.write_text(config.read_text().replace('enabled = true', 'enabled = false'))
+    elif failure == 'missing_settings':
+        config.write_text(config.read_text().replace('[quality]', '[unused_quality]'))
+    elif failure == 'missing_battery':
+        (tmp_path/'battery.toml').unlink()
+    else:
+        def quality(**kwargs):
+            if failure == 'missing_input':
+                raise FileNotFoundError('local input parquet missing')
+            raise pl.exceptions.ComputeError('invalid local input parquet')
+        monkeypatch.setattr(daily, 'run_quality', quality)
+    monkeypatch.setattr(daily, 'run_forecast', lambda **_: pytest.fail('quality was not completed'))
+    result = daily.run_daily(**args, saved_data=True)
+    assert result['status'] == 'input_errors' and result['prediction_stocks'] == 0
+    assert 'Cannot complete saved-data input quality checks' in result['input_errors'][0]
+    assert result['forecast_path'] is None and not (args['output']/'forecast').exists()
+    assert json.loads((args['output']/'summary.json').read_text())['status'] == 'input_errors'
 
 
 @pytest.mark.parametrize('missing', ['coverage', 'actual_rows', 'file', 'wrong_day'])
