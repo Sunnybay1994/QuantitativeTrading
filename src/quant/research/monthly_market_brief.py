@@ -1,4 +1,4 @@
-"""Artifact-only monthly probability briefs and dated total-return Brier scoring."""
+"""Dated monthly probability briefs and total-return Brier scoring."""
 import argparse
 import datetime as dt
 import hashlib
@@ -282,23 +282,59 @@ def summarize(*, scores: list[Path], output: Path) -> dict:
     return result
 
 
+def run_issue(*, benchmark_config: Path, as_of: dt.date, target_date: dt.date,
+              output: Path, **generation: Any) -> dict:
+    """Prepare real dated facts through quant.data, then use the existing generator."""
+    from quant.data.monthly_brief_inputs import prepare
+    if output.exists():
+        raise FileExistsError('Choose a new issue directory')
+    prepare(config=benchmark_config, as_of=as_of, target_date=target_date, output=output/'inputs')
+    return generate(facts_path=output/'inputs/facts.json', output=output/'brief', **generation)
+
+
+def score_issue(*, issue: Path, output: Path, known_through: dt.date,
+                benchmark_config: Path | None = None) -> dict:
+    """Read matured outcomes only when a saved forecast is eligible for scoring."""
+    from quant.data.monthly_brief_inputs import realized
+    if output.exists():
+        raise FileExistsError('Choose a new scoring directory')
+    record = strict_json((issue/'brief/brief.json').read_text(encoding='utf-8'))
+    target = dt.date.fromisoformat(record['target_date'])
+    outcomes = None
+    if known_through >= target and record['status'] == 'success' and not record['dry_run']:
+        realized(inputs=issue/'inputs', output=output/'outcomes', known_through=known_through,
+                 config=benchmark_config)
+        outcomes = output/'outcomes/realized.json'
+    return score(brief=issue/'brief', output=output/'score', known_through=known_through, outcomes=outcomes)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
     gen = sub.add_parser('generate')
     gen.add_argument('--facts', type=Path, required=True, dest='facts_path')
-    gen.add_argument('--output', type=Path, required=True)
-    gen.add_argument('--artifact-root', type=Path, default=Path('artifacts'))
-    gen.add_argument('--config', type=Path, default=Path('configs/research/deepseek_diagnosis_v1.toml'))
-    gen.add_argument('--cache-path', type=Path, default=Path('artifacts/research/p7_deepseek_cache.sqlite'))
-    gen.add_argument('--execute', action='store_true')
-    gen.add_argument('--max-requests', type=int, default=0)
-    gen.add_argument('--max-usd', type=float, default=0)
+    issue = sub.add_parser('run')
+    issue.add_argument('--benchmark-config', type=Path, required=True)
+    issue.add_argument('--as-of', type=dt.date.fromisoformat, required=True)
+    issue.add_argument('--target-date', type=dt.date.fromisoformat, required=True)
+    for command_parser in (gen, issue):
+        command_parser.add_argument('--output', type=Path, required=True)
+        command_parser.add_argument('--artifact-root', type=Path, default=Path('artifacts'))
+        command_parser.add_argument('--config', type=Path, default=Path('configs/research/deepseek_diagnosis_v1.toml'))
+        command_parser.add_argument('--cache-path', type=Path, default=Path('artifacts/research/p7_deepseek_cache.sqlite'))
+        command_parser.add_argument('--execute', action='store_true')
+        command_parser.add_argument('--max-requests', type=int, default=0)
+        command_parser.add_argument('--max-usd', type=float, default=0)
     grading = sub.add_parser('score')
     grading.add_argument('--brief', type=Path, required=True)
     grading.add_argument('--output', type=Path, required=True)
     grading.add_argument('--known-through', type=dt.date.fromisoformat, required=True)
     grading.add_argument('--outcomes', type=Path)
+    issue_score = sub.add_parser('score-run')
+    issue_score.add_argument('--issue', type=Path, required=True)
+    issue_score.add_argument('--output', type=Path, required=True)
+    issue_score.add_argument('--known-through', type=dt.date.fromisoformat, required=True)
+    issue_score.add_argument('--benchmark-config', type=Path)
     aggregate = sub.add_parser('summarize')
     aggregate.add_argument('--score', dest='scores', type=Path, action='append', required=True)
     aggregate.add_argument('--output', type=Path, required=True)
@@ -308,6 +344,10 @@ def main() -> None:
         result = generate(**args)
     elif command == 'score':
         result = score(**args)
+    elif command == 'run':
+        result = run_issue(**args)
+    elif command == 'score-run':
+        result = score_issue(**args)
     else:
         result = summarize(**args)
     print(json.dumps({'status': result['status'], 'mode': result['mode']}))
