@@ -308,3 +308,40 @@ def test_publish_uses_battery_layout_and_rejects_dry_run(tmp_path, monkeypatch):
     panel = pl.read_parquet(tmp_path / "data/factors/text_operating_improvement/year=2020/data.parquet")
     assert panel.columns == ["trade_date", "ts_code", "value"]
     assert panel["value"].to_list() == [2.]
+
+
+def test_schema_diagnostics_keep_field_types_without_provider_values(tmp_path):
+    from quant.research.score_forecast_text import response_error_details
+
+    payload = content()
+    payload[DIMENSIONS[0]]['score'] = 'PRIVATE_PROVIDER_VALUE'
+    payload['SECRET_UNKNOWN_KEY'] = 'PRIVATE_EXTRA_VALUE'
+    with pytest.raises(ValueError) as caught:
+        parse_score(json.dumps(payload), REASON)
+    details = response_error_details(caught.value)
+    encoded = json.dumps(details)
+    assert 'PRIVATE' not in encoded and 'SECRET' not in encoded
+    assert details['schema_errors'] == [
+        {'path': 'operating_improvement.score', 'type': 'int_type'},
+        {'path': '<unexpected_field>', 'type': 'extra_forbidden'}]
+    cache = ScoreCache(tmp_path/'cache.sqlite')
+    settings = {**load_settings(CONFIG), 'max_attempts': 1}
+    row = score_one(REASON, settings=settings, cache=cache,
+        client=FakeClient([response(json.dumps(payload))]), max_requests=1, max_usd=.1)
+    assert json.loads(row['error_details_json']) == details
+    assert cache.totals()['requests'] == 1
+    cache.close()
+
+
+def test_old_cache_diagnostic_upgrade_preserves_unknown_budget(tmp_path):
+    import sqlite3
+
+    path = tmp_path/'old.sqlite'
+    with sqlite3.connect(path) as db:
+        db.execute('CREATE TABLE attempts(id INTEGER PRIMARY KEY,cache_key TEXT,state TEXT,reserved_usd REAL,charged_usd REAL,actual_model TEXT,usage_json TEXT,scores_json TEXT,error TEXT,created_at TEXT)')
+        db.execute("INSERT INTO attempts(id,cache_key,state,reserved_usd,charged_usd,created_at) VALUES(1,'old','unknown',.02,.02,'2026-09-12')")
+    cache = ScoreCache(path)
+    assert cache.latest('old')['error_details_json'] is None
+    assert cache.reserve('old',.01,max_requests=3,max_usd=.1,max_attempts=2) is None
+    assert cache.totals() == {'requests': 1, 'charged_or_reserved_usd': .02}
+    cache.close()

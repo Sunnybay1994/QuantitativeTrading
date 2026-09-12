@@ -98,6 +98,25 @@ def response_error_code(exc: Exception) -> str:
     }.get(str(exc), 'invalid_output_semantics')
 
 
+def response_error_details(exc: Exception) -> dict:
+    """Save bounded schema diagnostics without response text, unknown keys or values."""
+    result: dict[str, Any] = {'code': response_error_code(exc)}
+    if isinstance(exc, ValidationError):
+        names = {*DIMENSIONS, 'score', 'status', 'evidence'}
+        known_types = {'missing', 'extra_forbidden', 'int_type', 'int_parsing', 'literal_error',
+            'string_type', 'string_too_long', 'greater_than_equal', 'less_than_equal',
+            'model_type', 'dict_type', 'value_error'}
+        rows = []
+        errors = exc.errors(include_url=False, include_context=False, include_input=False)
+        for row in errors[:16]:
+            path = '.'.join(str(part) if part in names else '<unexpected_field>' for part in row['loc'][:4])
+            rows.append({'path': path, 'type': row['type'] if row['type'] in known_types else 'schema_violation'})
+        result.update(schema_errors=rows, error_count=len(errors))
+    elif isinstance(exc, json.JSONDecodeError):
+        result.update(line=exc.lineno, column=exc.colno)
+    return result
+
+
 def score_one(reason: str, *, settings: dict, cache: ScoreCache, client: Any,
               max_requests: int, max_usd: float, sleep: Callable[[float], None] = time.sleep,
               request_key: str | None = None, token_bound: int | None = None,
@@ -143,7 +162,7 @@ def score_one(reason: str, *, settings: dict, cache: ScoreCache, client: Any,
                     score = parse(content) if parse else parse_score(content, reason).model_dump()
                 except (ValueError, KeyError, TypeError, IndexError) as exc:
                     cache.finish(attempt, state="retryable", model=model, usage=usage, cost=cost,
-                                 error=response_error_code(exc))
+                                 error=response_error_code(exc), error_details=response_error_details(exc))
                 else:
                     cache.finish(attempt, state="success", model=model, usage=usage,
                                  cost=cost, scores=score)

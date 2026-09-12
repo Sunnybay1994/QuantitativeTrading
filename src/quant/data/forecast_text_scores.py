@@ -61,6 +61,9 @@ class ScoreCache:
             reserved_usd REAL NOT NULL, charged_usd REAL NOT NULL,
             actual_model TEXT, usage_json TEXT, scores_json TEXT, error TEXT,
             created_at TEXT NOT NULL)""")
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(attempts)")}
+        if 'error_details_json' not in columns:
+            self.db.execute("ALTER TABLE attempts ADD COLUMN error_details_json TEXT")
         self.db.execute("CREATE INDEX IF NOT EXISTS by_key ON attempts(cache_key)")
         self.db.commit()
 
@@ -108,13 +111,14 @@ class ScoreCache:
 
     def finish(self, attempt: int, *, state: str, model: str | None = None,
                usage: dict | None = None, scores: dict | None = None,
-               cost: float | None = None, error: str | None = None) -> None:
+               cost: float | None = None, error: str | None = None,
+               error_details: dict | None = None) -> None:
         self.db.execute(
-            "UPDATE attempts SET state=?,actual_model=?,usage_json=?,scores_json=?,error=?,"
+            "UPDATE attempts SET state=?,actual_model=?,usage_json=?,scores_json=?,error=?,error_details_json=?,"
             "charged_usd=COALESCE(?,charged_usd) WHERE id=? AND state='unknown'",
             (state, model, json.dumps(usage) if usage is not None else None,
              json.dumps(scores, ensure_ascii=False) if scores is not None else None,
-             error, cost, attempt),
+             error, json.dumps(error_details) if error_details is not None else None, cost, attempt),
         )
         self.db.commit()
 
