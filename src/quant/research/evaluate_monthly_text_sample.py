@@ -67,10 +67,14 @@ def run(*, plan: Path, cache: Path, output: Path, data_root: Path,
     from quant.research.monthly_text_statistics import run as monthly_statistics
     monthly = monthly_statistics(pl.concat(monthly_panels,how='vertical_relaxed'),
         settings=battery,output=output/'monthly_statistics')
+    from quant.research.monthly_text_cost_inputs import export
+    cost_inputs = export(statistics=output/'monthly_statistics',
+        battery=Path(spec['statistics'])/'battery.toml',output=output/'cost_inputs')
     result = {**status,'sample_rows':text.height,'coverage':counts.to_dicts(),
         'monthly_statistics':{'variants':len(monthly['summary']),
             'coverage_sufficient_variants':sum(r['coverage_sufficient'] for r in monthly['summary']),
             'path':str(output/'monthly_statistics/summary.json')},
+        'cost_inputs': cost_inputs,
         'plans':[str(plan),*[str(p) for p in additional_plans or []]],
         'conclusion':'RESEARCH_ONLY','scope':'Partial monthly diagnostic; full timeline retained; frozen membership; no factor publication or trading changes'}
     (output/'summary.json').write_text(json.dumps(result,indent=2),encoding='utf-8')

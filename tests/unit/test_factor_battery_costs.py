@@ -1,8 +1,42 @@
 import datetime as dt
+from pathlib import Path
+import pytest
 
 import polars as pl
 
 from quant.research.factor_battery_costs import cost_metrics, top_group_targets
+
+
+def test_factor_costs_preserve_exchange_book_and_reject_changed_resume(tmp_path, monkeypatch):
+    from quant.research import factor_battery_costs as module
+    statistics = tmp_path/'statistics'
+    folder = statistics/'factors'/'example'
+    folder.mkdir(parents=True)
+    (statistics/'battery.toml').write_text('variants=["raw"]\n[run]\nas_of=2020-02-03\n')
+    (folder/'statistics.json').write_text('{}')
+    pl.DataFrame({'symbol':['000418.SZ']}).write_parquet(folder/'monthly_scores.parquet')
+    targets = pl.DataFrame({'as_of':[dt.date(2020,1,31)],
+        'execution_date':[dt.date(2020,2,3)],'symbol':['000418.SZ'],'weight':[1.]})
+    monkeypatch.setattr(module,'available_sessions',lambda *args:(dt.date(2020,1,31),dt.date(2020,2,3)))
+    monkeypatch.setattr(module,'top_group_targets',lambda *args,**kwargs:targets)
+    captured=[]
+    def replay(**kwargs):
+        captured.append(kwargs['settings']['share_exchanges'])
+        return {'fixture':True}
+    monkeypatch.setattr(module,'run_cost_plans',replay)
+    output=tmp_path/'output'
+    module.run_factor_costs(statistics=statistics,output=output,data_root=tmp_path,
+                           execution_snapshot='fixture',factor='example')
+    assert captured[0][0]['from_symbol']=='000418.SZ'
+    assert captured[0][0]['to_symbol']=='000333.SZ'
+    assert (output/'share_exchanges.toml').read_text()==Path(
+        'configs/data/share_exchanges_20260912.toml').read_text()
+    changed=tmp_path/'changed.toml'
+    changed.write_text((output/'share_exchanges.toml').read_text().replace('1.15144821','1.2'))
+    with pytest.raises(ValueError,match='Resume share exchanges'):
+        module.run_factor_costs(statistics=statistics,output=output,data_root=tmp_path,
+            execution_snapshot='fixture',factor='example',resume=True,share_exchanges_config=changed)
+    assert len(captured)==1
 
 
 def test_top_targets_use_next_open_and_cash_when_scores_disappear():

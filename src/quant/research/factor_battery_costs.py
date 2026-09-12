@@ -72,9 +72,16 @@ def top_group_targets(scores: pl.DataFrame, *, variant: str, sessions: tuple[dt.
 
 
 def run_factor_costs(*, statistics: Path, output: Path, data_root: Path,
-                     execution_snapshot: str, factor: str, resume: bool = False) -> dict:
+                     execution_snapshot: str, factor: str, resume: bool = False,
+                     share_exchanges_config: Path = Path('configs/data/share_exchanges_20260912.toml')) -> dict:
     """Replay both frozen variants and all cost multipliers without annual resets."""
     settings = tomllib.loads((statistics / "battery.toml").read_text(encoding="utf-8"))
+    from quant.backtest.share_exchanges import validate_exchanges
+    event_content = share_exchanges_config.read_text(encoding='utf-8')
+    events = validate_exchanges(tomllib.loads(event_content)['share_exchanges'])
+    if 'share_exchanges' in settings and settings['share_exchanges'] != events:
+        raise ValueError('Configured share exchanges differ from the cost event book')
+    settings['share_exchanges'] = events
     end = settings["run"]["as_of"]
     if not isinstance(end, dt.date) or Path(factor).name != factor or factor in (".", ".."):
         raise ValueError("Invalid cost replay selection")
@@ -99,9 +106,13 @@ def run_factor_costs(*, statistics: Path, output: Path, data_root: Path,
     if resume:
         if (output / "battery.toml").read_bytes() != config_bytes:
             raise ValueError("Resume cost settings changed")
+        if not (output/'share_exchanges.toml').is_file() or (
+                output/'share_exchanges.toml').read_text(encoding='utf-8') != event_content:
+            raise ValueError('Resume share exchanges changed; retain the old run')
     else:
         output.mkdir(parents=True, exist_ok=False)
         (output / "battery.toml").write_bytes(config_bytes)
+        (output/'share_exchanges.toml').write_text(event_content,encoding='utf-8')
     return run_cost_plans(settings=settings, plans=plans, sessions=sessions, output=output,
                           data_root=data_root, execution_snapshot=execution_snapshot, factor=factor, resume=resume)
 
@@ -272,10 +283,12 @@ def main() -> None:
     parser.add_argument("--execution-snapshot", required=True)
     parser.add_argument("--factor", required=True)
     parser.add_argument("--resume", action="store_true", help="Resume this interrupted output from complete annual accounts")
+    parser.add_argument('--share-exchanges-config',type=Path,
+                        default=Path('configs/data/share_exchanges_20260912.toml'))
     args = parser.parse_args()
     print(json.dumps(run_factor_costs(statistics=args.statistics, output=args.output,
         data_root=args.data_root, execution_snapshot=args.execution_snapshot, factor=args.factor,
-        resume=args.resume)), flush=True)
+        resume=args.resume,share_exchanges_config=args.share_exchanges_config)), flush=True)
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ def assemble_scorecard(screen: pl.DataFrame, *, cost_reports: list[dict],
     if len(keys) != len(set(keys)):
         raise ValueError('Duplicate scorecard factor/variant rows')
     extras: dict[tuple, dict] = {key: {} for key in keys}
-    primary = screen.filter(pl.col('variant') == settings['primary_variant']).with_columns(pl.col('icir').fill_nan(None)).sort(
+    primary = screen.filter(pl.col('variant') == settings['primary_variant']).with_columns(pl.col('icir').cast(pl.Float64).fill_nan(None)).sort(
         ['icir', 'factor'], descending=[True, False], nulls_last=True)['factor'].to_list()
     seen = set()
     for report in cost_reports:

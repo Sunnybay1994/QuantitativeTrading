@@ -15,7 +15,7 @@ def cost_order(screen: pl.DataFrame, *, primary: str) -> list[str]:
     table = screen.filter(pl.col('variant') == primary)
     if not table.height or table['factor'].n_unique() != table.height:
         raise ValueError('Cost ordering requires unique primary factor rows')
-    return table.with_columns(pl.col('icir').fill_nan(None)).sort(
+    return table.with_columns(pl.col('icir').cast(pl.Float64).fill_nan(None)).sort(
         ['statistical_pass', 'icir', 'factor'], descending=[True, True, False],
         nulls_last=True)['factor'].to_list()
 

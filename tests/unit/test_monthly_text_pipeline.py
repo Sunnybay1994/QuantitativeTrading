@@ -77,3 +77,38 @@ def test_failed_text_is_reported_and_evaluated_without_resubmission(
     assert result['requests_this_run'] == int(execute)
     assert result['conclusion'] == 'RESEARCH_ONLY'
     assert (tmp_path / 'output/report.md').is_file()
+
+
+def test_cost_stage_requires_global_peer_comparison_and_return_benchmarks(plan, tmp_path, monkeypatch):
+    cache = tmp_path/'cache.sqlite'
+    cache.touch()
+    benchmark = tmp_path/'benchmark.toml'
+    benchmark.write_text('# fixture')
+    calls = []
+    monkeypatch.setattr(pipeline, 'run_batch', lambda **kw: pytest.fail('Offline run made API calls'))
+    monkeypatch.setattr(pipeline, 'report_quality', lambda **kw: {
+        'successful_texts':1,'selected_unique_texts':1,'shared_charged_or_reserved_usd':.01})
+    monkeypatch.setattr(pipeline, 'evaluate', lambda **kw: {
+        'sample_rows':1,'coverage':[], 'cost_inputs':{'primary_statistical_pass':['text_operating_improvement']}})
+    completed = tmp_path/'completed'
+    def costs(**kw):
+        calls.append('costs')
+        assert kw['only_statistical_pass'] is True
+        return {'completed_runs':{'text_operating_improvement':str(completed)},
+                'failures':{},'pending_external_runs':{}}
+    def redundancy(**kw):
+        calls.append('redundancy')
+        assert kw['peer_library'] == Path('configs/factors/library')
+        return {}
+    def scorecard(**kw):
+        calls.append('scorecard')
+        assert kw['redundancy'] == tmp_path/'output/redundancy'
+        assert kw['return_benchmark_config'] == benchmark and kw['cost_runs'] == [completed]
+        return {'admitted_rows':0}
+    monkeypatch.setattr('quant.research.factor_battery_cost_batch.run_cost_batch', costs)
+    monkeypatch.setattr('quant.research.forecast_text_redundancy.run_redundancy', redundancy)
+    monkeypatch.setattr('quant.research.factor_battery_scorecard.run_scorecard', scorecard)
+    result = pipeline.run(plan=plan,prior_plans=[],cache=cache,output=tmp_path/'output',
+        data_root=tmp_path,execution_snapshot='fixture',return_benchmark_config=benchmark)
+    assert calls == ['costs','redundancy','scorecard']
+    assert result['requests_this_run'] == 0 and result['scorecard']['admitted_rows'] == 0

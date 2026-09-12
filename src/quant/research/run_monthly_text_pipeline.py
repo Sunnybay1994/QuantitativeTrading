@@ -30,9 +30,12 @@ def validate_batch(plan: Path, prior_plans: list[Path]) -> dict:
 
 def run(*, plan: Path, prior_plans: list[Path], cache: Path, output: Path,
         data_root: Path, execute: bool = False, max_requests: int = 0,
-        max_usd: float = 0., workers: int = 1) -> dict:
+        max_usd: float = 0., workers: int = 1, execution_snapshot: str | None = None,
+        return_benchmark_config: Path | None = None) -> dict:
     """Offline mode reads the cache only; live mode retains all missing/failed events."""
     spec = validate_batch(plan, prior_plans)
+    if execution_snapshot and (return_benchmark_config is None or not return_benchmark_config.is_file()):
+        raise ValueError('Cost evaluation requires a saved return benchmark configuration')
     if execute and (max_requests <= 0 or not 0 < max_usd <= 30):
         raise ValueError('Provide positive cumulative request and USD caps, with USD at most 30')
     if workers not in range(1, 5):
@@ -50,13 +53,31 @@ def run(*, plan: Path, prior_plans: list[Path], cache: Path, output: Path,
     quality = report_quality(plan=plan, cache=cache, output=output / 'quality')
     evaluation = evaluate(plan=plan, additional_plans=prior_plans, cache=cache,
                           output=output / 'evaluation', data_root=data_root)
+    costs = scorecard = None
+    if execution_snapshot:
+        from quant.research.factor_battery_cost_batch import run_cost_batch
+        from quant.research.factor_battery_scorecard import run_scorecard
+        from quant.research.forecast_text_redundancy import run_redundancy
+        cost_inputs = output / 'evaluation' / 'cost_inputs'
+        costs = run_cost_batch(statistics=cost_inputs, screen=cost_inputs / 'screen',
+            output=output / 'costs', data_root=data_root, execution_snapshot=execution_snapshot,
+            existing_runs=[], workers=workers, only_statistical_pass=True)
+        redundancy = None
+        if evaluation['cost_inputs']['primary_statistical_pass']:
+            redundancy = output / 'redundancy'
+            run_redundancy(statistics=cost_inputs, peer_statistics=Path(spec['statistics']),
+                peer_library=Path('configs/factors/library'), output=redundancy, workers=workers)
+        scorecard = run_scorecard(screen=cost_inputs / 'screen', output=output / 'scorecard',
+            cost_runs=[Path(p) for p in costs['completed_runs'].values()], cost_root=None,
+            benchmarks=None, redundancy=redundancy, data_root=data_root,
+            return_benchmark_config=return_benchmark_config)
     result = {'conclusion': 'RESEARCH_ONLY', 'execute': execute,
         'requests_this_run': scoring['requests_this_run'] if scoring else 0,
         'elapsed_seconds': time.monotonic() - started,
         'request_plan': str(plan), 'prior_plans': [str(p) for p in prior_plans],
         'max_requests': max_requests if execute else None,
         'max_usd': max_usd if execute else None, 'workers': workers if execute else 0,
-        'quality': quality, 'evaluation': evaluation}
+        'quality': quality, 'evaluation': evaluation, 'costs': costs, 'scorecard': scorecard}
     (output / 'summary.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
     coverage = '\n'.join(f"|{r['factor']}|{r['max_common_symbols']}|{r['usable_months']}|"
                          for r in evaluation['coverage'])
@@ -88,9 +109,13 @@ def main() -> None:
     parser.add_argument('--max-requests', type=int, default=0)
     parser.add_argument('--max-usd', type=float, default=0.)
     parser.add_argument('--workers', type=int, default=1)
+    parser.add_argument('--execution-snapshot')
+    parser.add_argument('--return-benchmark-config', type=Path)
     result = run(**vars(parser.parse_args()))
     print(json.dumps({key: result[key] for key in ('conclusion', 'requests_this_run',
                                                  'elapsed_seconds')}))
+    if result['costs'] and (result['costs']['failures'] or result['costs']['pending_external_runs']):
+        raise SystemExit(1)
 
 
 if __name__ == '__main__':
