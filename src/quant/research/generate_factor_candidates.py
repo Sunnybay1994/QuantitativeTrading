@@ -233,8 +233,11 @@ def main() -> None:
     parser.add_argument("--development-test", action="store_true")
     parser.add_argument("--max-requests", type=int, default=0)
     parser.add_argument("--max-usd", type=float, default=0)
-    result = run(**vars(parser.parse_args()))
+    args = parser.parse_args()
+    result = run(**vars(args))
     print(json.dumps({key: result[key] for key in ("result", "synthetic_fixture", "accepted_count", "usd_bound_including_retries")}))
+    if args.execute and (result['result'] != 'success' or not result['accepted_count']):
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

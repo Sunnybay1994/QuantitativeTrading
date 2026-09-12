@@ -149,3 +149,27 @@ def test_nested_history_and_zero_direction_cannot_enter_preparation(inputs):
     assert "history" in result["trials"][0]["reason"]
     assert "direction" in result["trials"][1]["reason"]
     assert not (inputs["output"] / "batch.toml").exists()
+
+
+@pytest.mark.parametrize('state,count,execute,exit_code', [
+    ('dry_run', 0, False, 0), ('success', 1, True, 0),
+    ('success', 0, True, 1), ('budget_exhausted', 0, True, 1),
+    ('deferred_off_peak', 0, True, 1), ('failed', 0, True, 1),
+])
+def test_live_cli_only_succeeds_when_a_usable_batch_exists(monkeypatch, capsys, state, count, execute, exit_code):
+    import sys
+
+    argv = ['generate_factor_candidates', '--diagnosis', 'diagnosis', '--design', 'design',
+            '--scope', 'scope', '--fields', 'adj_close', '--maximum-candidates', '2',
+            '--maximum-history', '60', '--output', 'new'] + (['--execute'] if execute else [])
+    monkeypatch.setattr(sys, 'argv', argv)
+    monkeypatch.setattr(module, 'run', lambda **kwargs: {
+        'result': state, 'synthetic_fixture': False, 'accepted_count': count,
+        'usd_bound_including_retries': .01})
+    if exit_code:
+        with pytest.raises(SystemExit) as error:
+            module.main()
+        assert error.value.code == exit_code
+    else:
+        module.main()
+    assert json.loads(capsys.readouterr().out)['result'] == state
