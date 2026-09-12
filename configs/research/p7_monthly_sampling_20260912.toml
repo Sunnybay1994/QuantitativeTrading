@@ -1,0 +1,12 @@
+source = "data/clean/forecast_text_corpus/p7_all_20260912_01/forecasts.parquet"
+statistics = "artifacts/factors/p7_peer_statistics_20260831_20260912_01"
+design = "configs/factors/p7_text_evaluation_v2_sue_context_20260912.toml"
+scoring = "configs/research/deepseek_p7_thinking_8192_20260912.toml"
+seed = "2026091205"
+monthly_sizes = [100, 125, 150]
+primary_monthly_size = 150
+first_batch_unique_texts = 256
+selection = "Within each monthly eligible numerical-control-complete pool, take fixed symbol-hash order. Never read return values or label availability for selection."
+batch_order = "Fixed hash of normalized text; no outcome or model-score selection"
+publication = "Keep full original corpus and join scores by text cache key; do not publish filtered-event corpus which could revive superseded text."
+auto_trade = false
