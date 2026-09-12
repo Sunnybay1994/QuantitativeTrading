@@ -64,6 +64,8 @@ def document_periods(*, title: str, issuer_name: str, published: dt.date, pages:
             found.add(dt.date(int(year), m, 31 if m in (3, 12) else 30))
         for year in re.findall(r'(20\d{2})年度', scope):
             found.add(dt.date(int(year), 12, 31))
+        for year in re.findall(r'(20\d{2})年半年度', scope):
+            found.add(dt.date(int(year), 6, 30))
         for period in sorted(day for day in found if day <= published):
             evidence.append({'page': page['page'], 'period': str(period), 'text': scope,
                              'issuer_basis': basis, 'issuer_context_pages': issuer_pages,

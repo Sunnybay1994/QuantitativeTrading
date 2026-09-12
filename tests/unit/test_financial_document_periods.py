@@ -84,3 +84,15 @@ def test_single_ocr_year_cannot_add_an_uncorroborated_period():
                               published=dt.date(2026, 9, 10), pages=pages)
     assert result['periods'] == ['2024-12-31']
     assert result['unconfirmed_evidence'][0]['period'] == '2021-12-31'
+
+
+def test_half_year_heading_needs_issuer_and_two_pages_and_respects_publication():
+    text = '母公司现金流量表\n2026年半年度\n编制单位：昇兴集团股份有限公司'
+    assert parse(text, issuer='昇兴集团')['periods'] == ['2026-06-30']
+    assert parse(text, issuer='其他公司')['periods'] == []
+    assert parse(text.replace('2026', '2027'), issuer='昇兴集团')['periods'] == []
+    assert parse('财务报表附注\n昇兴集团2026年半年度', issuer='昇兴集团')['periods'] == []
+    single = document_periods(title='最近一期财务报告', issuer_name='昇兴集团',
+                             published=dt.date(2026, 9, 11), pages=[{'page': 138, 'text': text}])
+    assert single['periods'] == []
+    assert single['unconfirmed_evidence'][0]['period'] == '2026-06-30'
