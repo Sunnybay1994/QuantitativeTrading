@@ -1,0 +1,15 @@
+source = "artifacts/models/q1b_return_benchmark_96_follow_20260912_02/attempt_0001/replay"
+account = "lightgbm_top50/cost_1/2023/account.json"
+as_of = 2023-12-29
+execution_date = 2024-01-02
+refresh_config = "configs/data/refresh.toml"
+auto_trade = false
+sell_only = false
+lot_size = 100
+hypothesis = "Frozen equal_z, positive_mean_ic and lightgbm are three model signals, not independent alpha families. Equal-budget virtual sleeves may offset opposite trading needs in one existing account."
+initial_allocation = "each_virtual_sleeve_gets_budget_fraction_of_same_holdings_cash_and_receivables"
+acceptance = "exact_netting_identity_and_weight_conservation_only_no_performance_admission"
+[budgets]
+equal_z = 0.3333333333333333
+positive_mean_ic = 0.3333333333333333
+lightgbm = 0.3333333333333333
