@@ -15,6 +15,12 @@ def env(tmp_path, monkeypatch):
     config.write_text(text, encoding='utf-8')
     monkeypatch.setattr(daily, 'latest_session', Mock(return_value=dt.date(2026, 9, 11)))
     model = Mock(return_value={'as_of': '2026-09-11', 'status': 'recorded'})
+    def saved_model(**kwargs):
+        kwargs['output'].mkdir()
+        (kwargs['output']/'refresh.json').write_text(json.dumps({
+            'latest_session': '2026-09-11', 'intraday_errors': [], 'input_quality': {'errors': []}}))
+        return model.return_value
+    model.side_effect = saved_model
     b20 = Mock(return_value={'as_of': '2026-09-11', 'accounts': [
         {'output': f'/account/{i}/2026-09-11'} for i in range(6)]})
     b32 = Mock(return_value={'accounts': [
@@ -176,3 +182,21 @@ def test_monitor_insufficient_is_visible_and_failure_is_incomplete(env, monkeypa
     monitor.side_effect = ValueError('missing labels')
     result = daily.run(**args)
     assert result['status'] == 'incomplete' and result['requires_review']
+
+
+def test_saved_quality_failure_propagates_and_accounts_validate_independently(env):
+    args, model, b20, b32, monthly = env
+    errors = ['pit_sue8: incompatible PIT report context', 'other saved value mismatch']
+    def failed_quality(**kwargs):
+        kwargs['output'].mkdir()
+        (kwargs['output']/'refresh.json').write_text(json.dumps({
+            'latest_session': '2026-09-11', 'intraday_errors': [], 'input_quality': {'errors': errors}}))
+        return {'as_of': '2026-09-11', 'status': 'input_errors', 'input_errors': errors}
+    model.side_effect = failed_quality
+    result = daily.run(**args)
+    assert result['status'] == 'incomplete'
+    assert result['stages']['model']['status'] == 'incomplete'
+    assert result['stages']['refresh']['status'] == 'failed'
+    assert result['stages']['refresh']['input_errors'] == errors
+    assert b20.called and b32.called and monthly.called
+    assert result['signal_monitor_status'] == 'insufficient'

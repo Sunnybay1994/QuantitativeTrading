@@ -90,23 +90,25 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
             artifact_root=artifact_root, saved_data=saved_data,
             intraday=settings.get('intraday', True), rehearsal=rehearsal, now=clock),
             lambda value: value.get('as_of') == date and value.get('status') == 'recorded')
-        refresh_ok = saved_data
-        if not saved_data:
-            try:
-                refresh = json.loads((output/'model/refresh.json').read_text(encoding='utf-8'))
-                refresh_ok = (refresh['latest_session'] == date and not refresh['intraday_errors']
-                              and not refresh['input_quality']['errors'])
-            except (OSError, ValueError, KeyError):
-                refresh_ok = False
+        try:
+            refresh = json.loads((output/'model/refresh.json').read_text(encoding='utf-8'))
+            refresh_errors = [*refresh['intraday_errors'], *refresh['input_quality']['errors']]
+            if refresh['latest_session'] != date:
+                refresh_errors.append('Refresh snapshot does not match requested session')
+        except (OSError, ValueError, KeyError) as exc:
+            refresh_errors = [f'Unavailable input-quality result: {type(exc).__name__}: {exc}']
+        refresh_ok = not refresh_errors
         stages['refresh'] = {'status': 'complete' if refresh_ok else 'failed',
                              'mode': 'saved_data' if saved_data else 'refresh',
+                             'input_errors': refresh_errors,
                              'path': str(output/'model/refresh.json')}
         stage('b20', lambda: run_b20(config_path=Path(settings['b20']['config']),
               data_root=data_root, output=accounts[0], end=end, refresh_data=not saved_data),
               lambda value: value.get('as_of') == date and len(value.get('accounts', [])) == 6
               and all(Path(a['output']).name == date for a in value['accounts']))
         stock_ok = False
-        if refresh_ok:
+        # Saved observation accounts retain their independent, snapshot-specific validation.
+        if refresh_ok or saved_data:
             stock_ok = stage('b32', lambda: run_b32(
                 config_path=Path(settings['b32']['config']), data_root=data_root,
                 output=accounts[1], end=end), lambda value:
