@@ -1,0 +1,381 @@
+# Q1b control: only return-benchmark admission and repaired cost inputs change.
+# Report measurement: configs/data/return_benchmarks_q1b_20260912.toml
+# Pending cost repairs are read from cost_root; no calendar, missing or 48-month changes.
+[research]
+id = "q1b-return-benchmark-96-annual-multifactor-20260912"
+hypothesis = "Reassess the frozen 96-month annual model using holding-window factor costs and monthly equal-weight return indexes, then retrain the same three methods."
+registered_on = 2026-09-12
+historical_evidence = "retrospective_annual_walk_forward_not_an_unseen_holdout"
+statistics_source = "artifacts/factors/battery_statistics_20260831_20260911"
+battery_config = "configs/factors/battery.toml"
+cost_root = "artifacts/factors/receivable_cost_rebuild_20260912_01"
+cost_runs = [
+  "artifacts/factors/battery_costs_alpha101_001_20260911_v2",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_002",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_003",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_005",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_006",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_007_cny_amount_gate",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_008",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_009",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_010",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_011",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_012",
+  "artifacts/factors/battery_cost_batch_20260911/alpha101_013",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_014",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_015",
+  "artifacts/factors/battery_cost_batch_20260911/alpha101_016",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_017",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_018",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_019",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_021",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_022",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_023",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_024",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_025",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_026",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_027",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_028",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_029",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_030",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_031",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_032",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha101_033",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_033_paper",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_034",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_035",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_036",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_037",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_038",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_039",
+  "artifacts/factors/battery_cost_batch_20260911/alpha101_040",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_041",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_042",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_043",
+  "artifacts/factors/battery_cost_batch_20260911/alpha101_044",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_045",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_046",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_047",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_048",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_049",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_050",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_051",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_052",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_053",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_054",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_055",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_056",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_057",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_058",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_059",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_060",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_061",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_062",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_063",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_064",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_065",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_066",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_067",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_068",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_069",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_070",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_071",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_072",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_073",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_074",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_075",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_076",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_077",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_078",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_079",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_080",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_081",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_082",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_083",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_085",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_086",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_087",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_088",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_089",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_090",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_091",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_092",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_093",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_094",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_095",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha101_098",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_099",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha101_100",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha101_101",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_beta10",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_beta30",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_beta5",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_beta60",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_cntd10",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_cntd20",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_cntd30",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_cntd5",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_cntd60",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_cntn10",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_cntn20",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_cntn30",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_cntn5",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_cntn60",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_cntp10",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_cntp20",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_cntp30",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_cntp5",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_cntp60",
+  "artifacts/factors/battery_costs_alpha158_corr10_20260911",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_corr20",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_corr30",
+  "artifacts/factors/battery_cost_batch_20260911/alpha158_corr5",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_corr60",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_high0",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_imax30",
+  "artifacts/factors/battery_cost_repairs_20260912_01/alpha158_imax5",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_imax60",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_imin10",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_imin5",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_imxd30",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_imxd5",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_imxd60",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_klow2",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_kmid",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_kmid2",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_ksft",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_ksft2",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_kup2",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_low0",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_ma10",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_ma20",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_ma30",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_ma5",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_max10",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_max20",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_max5",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_min10",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_min20",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_min30",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_min5",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_min60",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_open0",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_qtld10",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_qtld20",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_qtld30",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_qtld5",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_qtlu10",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_qtlu20",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_qtlu5",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_rank10",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_rank5",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_rank60",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_resi10",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_resi20",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_resi30",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_resi5",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_roc10",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_roc20",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_roc60",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_rsqr10",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_rsqr20",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_rsqr30",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_rsqr5",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_rsqr60",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_rsv10",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_rsv20",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_rsv5",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_rsv60",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_std10",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_std20",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_std30",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_std5",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_std60",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_sumd10",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_sumd20",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_sumd30",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_sumd5",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_sumd60",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_sumn10",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_sumn20",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_sumn5",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_sumn60",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_sump10",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_sump20",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_sump30",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_sump5",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_sump60",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_vma10",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_vma20",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_vma30",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_vma5",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_vma60",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_vstd10",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_vstd20",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_vstd30",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_vstd5",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_vsumd10",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_vsumd5",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_vsumn10",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_vsumn20",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_vsumn30",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_vsumn5",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_vsumn60",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_vsump10",
+  "artifacts/factors/battery_cost_batch_20260912_04/alpha158_vsump5",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_vwap0",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_wvma10",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_wvma20",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_wvma30",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_wvma5",
+  "artifacts/factors/battery_cost_batch_20260911_02/alpha158_wvma60",
+  "artifacts/factors/battery_cost_batch_20260911_02/amihud_illiquidity_monthly",
+  "artifacts/factors/battery_cost_batch_20260911_02/annualized_realized_volatility_60",
+  "artifacts/factors/battery_cost_batch_20260911_02/book_to_price",
+  "artifacts/factors/battery_cost_batch_20260911_02/daily_dividend_yield_ttm",
+  "artifacts/factors/battery_cost_batch_20260911_02/daily_ep_ttm_positive",
+  "artifacts/factors/battery_cost_batch_20260911_02/daily_sp_ttm_positive",
+  "artifacts/factors/battery_cost_retry_preinception_20260912_01/downside_beta_60_vs_510300",
+  "artifacts/factors/battery_cost_batch_20260911_02/free_float_turnover_abnormal_12m",
+  "artifacts/factors/battery_cost_batch_20260911_02/free_float_turnover_level_monthly",
+  "artifacts/factors/battery_cost_batch_20260911_02/high52_proximity",
+  "artifacts/factors/battery_cost_batch_20260912_04/information_discreteness",
+  "artifacts/factors/battery_cost_batch_20260911_02/intraday_kurtosis20",
+  "artifacts/factors/battery_cost_batch_20260911_02/intraday_open_amount20",
+  "artifacts/factors/battery_cost_batch_20260911_02/intraday_open_return20",
+  "artifacts/factors/battery_cost_batch_20260911_02/intraday_realized_vol20",
+  "artifacts/factors/battery_cost_batch_20260911_02/intraday_return_20",
+  "artifacts/factors/battery_cost_batch_20260911_02/intraday_return_autocorr20",
+  "artifacts/factors/battery_cost_batch_20260911_02/intraday_skew20",
+  "artifacts/factors/battery_cost_batch_20260911_02/intraday_smart_vwap20",
+  "artifacts/factors/battery_cost_batch_20260911_02/intraday_tail_amount20",
+  "artifacts/factors/battery_cost_batch_20260911_02/intraday_volume_return_corr20",
+  "artifacts/factors/battery_cost_batch_20260911/ivol_ff3_60",
+  "artifacts/factors/battery_cost_batch_20260912_04/log_circulating_market_value",
+  "artifacts/factors/battery_cost_batch_20260911_02/log_total_market_value",
+  "artifacts/factors/battery_cost_retry_preinception_20260912_01/market_beta_60_vs_510300",
+  "artifacts/factors/battery_cost_batch_20260911/max_daily_return_20",
+  "artifacts/factors/battery_cost_batch_20260911_02/max_daily_return_20_size_turnover_residual",
+  "artifacts/factors/battery_cost_batch_20260912_04/momentum_126",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_annual_cash_profitability",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_annual_debt_ebitda",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_annual_fscore",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_annual_gmar",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_annual_gpoa",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_annual_low_accruals",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_annual_profitability",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_annual_roa",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_annual_roe",
+  "artifacts/factors/battery_cost_batch_20260912_04/pit_annual_zscore",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_asset_growth_yoy",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_asset_turnover_ttm",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_cash_profit_quality_ttm",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_cash_roa_ttm",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_cash_to_liabilities_ttm",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_cash_yield_ttm",
+  "artifacts/factors/battery_cost_batch_20260912_04/pit_current_ratio",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_gross_margin_ttm",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_gross_profitability_ttm",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_liabilities_to_assets",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_net_margin_ttm",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_profit_acceleration",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_profit_growth_ttm",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_quarterly_roe_volatility",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_revenue_acceleration",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_revenue_growth_ttm",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_roa_ttm",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_roe_ttm",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_sue8",
+  "artifacts/factors/battery_cost_batch_20260911_02/pit_total_accruals_ttm",
+  "artifacts/factors/battery_cost_batch_20260912_04/pret_12m_skip1m",
+  "artifacts/factors/battery_cost_batch_20260911_02/realized_volatility_120",
+  "artifacts/factors/battery_cost_batch_20260911_02/realized_volatility_60",
+  "artifacts/factors/battery_cost_batch_20260911_02/return_skew20",
+  "artifacts/factors/battery_cost_batch_20260911_02/return_turnover_corr20",
+  "artifacts/factors/battery_cost_batch_20260911_02/reversal_20",
+  "artifacts/factors/battery_cost_batch_20260911_02/turnover_cv20",
+  "artifacts/factors/battery_cost_batch_20260911_02/turnover_ratio20_120",
+]
+stock_benchmarks = "artifacts/factors/battery_stock_benchmarks_20260911"
+random_seed = 20260911
+
+[walk_forward]
+history_start = 2010-01-01
+test_start = 2015-01-01
+test_end = 2026-08-31
+refit = "annual_previous_year_last_exchange_close"
+training = "expanding_history"
+label_available_at = "exit_date_rebalance"
+include_training_row = "exit_date_rebalance_at_or_before_refit_close"
+parameters = "fixed_no_test_based_tuning_or_model_switching"
+insufficient_training_history = "cash"
+report_active_start_separately = true
+
+[selection]
+variant = "size_industry_neutral"
+candidate_library = "all_registered_factors_reassessed_at_each_refit"
+admission = "same_battery_thresholds_recomputed_from_known_training_prefix_only"
+minimum_known_months = 48
+historical_costs = "only_prefix_NAV_and_trades_through_refit_close"
+historical_correlations = "only_signal_scores_through_refit_close"
+order = "descending_training_ICIR_then_factor_id"
+maximum_absolute_rank_correlation = 0.6
+correlation_aggregation = "mean_absolute_monthly_common_stock_spearman"
+maximum_factors = 20
+no_admitted_factors = "cash"
+
+[models]
+methods = ["equal_z", "positive_mean_ic", "lightgbm"]
+equal_z_weights = "equal_across_selected_factors"
+ic_weights = "positive_training_mean_monthly_IC_normalized_to_one"
+missing_features = "common_complete_case_pool_for_all_three_methods"
+minimum_signal_stocks = 100
+
+[models.lightgbm]
+objective = "regression_l1"
+n_estimators = 200
+learning_rate = 0.03
+num_leaves = 15
+min_child_samples = 200
+colsample_bytree = 1.0
+subsample = 1.0
+n_jobs = 4
+random_state = 20260911
+
+[portfolio]
+primary_top_k = 50
+sensitivity_top_k = 100
+sensitivity_role = "report_only_not_a_replacement_for_failed_primary"
+retention_rank_multiplier = 1.5
+weights = "equal_within_selected_stocks"
+rebalance = "month_end_close_signal_next_exchange_open"
+initial_cash = 1000000.0
+cost_multipliers = [0.5, 1.0, 2.0]
+costs = "same_frozen_battery_costs_and_daily_account"
+empty_signal_pool = "cash"
+portfolio_industry_constraints = "none"
+
+[admission]
+primary_variant_only = true
+minimum_net_cagr_excess_strongest_benchmark = 0.03
+minimum_2x_cagr_exclusive = 0.0
+minimum_1x_sharpe = 0.6
+maximum_annualized_one_way_turnover = 6.0
+maximum_drawdown_relative_to_strongest_benchmark = 1.2
+maximum_underwater_calendar_years = 3.0
+minimum_stress_windows_not_worse = 3
+minimum_annual_outperformance_fraction = 0.6
+minimum_active_evidence_calendar_years_exclusive = 3.0
+benchmarks = ["510300_total_return_reference", "csi800_equal_weight", "all_market_equal_weight"]
+stress_windows_config = "configs/research/b93_full_cycle_20260910.toml"
+
+[execution]
+auto_trade = false
+
+[reporting]
+annual_win_denominator = "all_replay_calendar_years_including_partial_last_year"
+annual_and_stress_reference = "strongest_full_period_1x_benchmark_fixed_across_windows"
+stress_not_worse = "window_total_return_at_least_reference_and_max_drawdown_no_worse"
+underwater_clock = "calendar_anniversaries_from_last_peak_or_initial_start_to_recovery_or_end"
+active_evidence_clock = "first_positive_stock_market_value_to_replay_end"
+short_active_evidence_conclusion = "RESEARCH_ONLY"

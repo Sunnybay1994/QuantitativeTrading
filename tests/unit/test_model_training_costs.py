@@ -174,7 +174,25 @@ as_of = 2020-01-06
                        pl.read_parquet(tmp_path/'late_reused'/'annual_cost_screen.parquet'))
     monkeypatch.setattr(module, 'load_cost_history', original_loader)
     (prefix/'model.toml').write_text('[selection]\nminimum_known_months = 48\n')
-    changed = module.run_cost_prefixes(**{**args, 'output': tmp_path/'training48'})
+    # Costs can cross 96/48 only when all measurement inputs still match.
+    screen = pl.read_parquet(prefix/'annual_statistical_screen.parquet')
+    screen.with_columns(pl.lit(False).alias('statistical_pass')).write_parquet(prefix/'annual_statistical_screen.parquet')
+    monkeypatch.setattr(module, 'load_cost_history', lambda *args: pytest.fail('Training threshold must not replay measured costs'))
+    changed = module.run_cost_prefixes(**{**args, 'output': tmp_path/'training48', 'previous_costs': args['output']})
+    assert changed['reused_cost_factors'] == ['a']
+    recalculated = pl.read_parquet(tmp_path/'training48/annual_cost_screen.parquet')
+    assert recalculated['statistics_and_cost_pass'].to_list() == [False, False]
+    assert_frame_equal(table, pl.read_parquet(tmp_path/'training48/annual_cost_metrics.parquet'))
+    (prefix/'model.toml').write_text('[selection]\nminimum_known_months = 48\nmaximum_factors = 25\n')
+    with pytest.raises(ValueError, match='except training history length'):
+        module.run_cost_prefixes(**{**args, 'output': tmp_path/'different_model', 'previous_costs': args['output']})
+    (prefix/'model.toml').write_text('[selection]\nminimum_known_months = 48\n')
+    corrupt = tmp_path/'corrupt_comparisons'
+    shutil.copytree(args['output'], corrupt)
+    comp = pl.read_parquet(corrupt/'annual_benchmark_comparisons.parquet')
+    comp.with_columns(pl.lit('2019-01-01').alias('first_date')).write_parquet(corrupt/'annual_benchmark_comparisons.parquet')
+    with pytest.raises(ValueError, match='holding window'):
+        module.run_cost_prefixes(**{**args, 'output': tmp_path/'corrupt_reuse', 'previous_costs': corrupt})
     assert changed['training_minimum_months'] == 48 and changed['final_battery_minimum_months'] == 96
     (prefix/'summary.json').write_text(json.dumps({'training_minimum_months': 96}))
     with pytest.raises(ValueError, match='prefix threshold'):

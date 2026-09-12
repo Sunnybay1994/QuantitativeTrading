@@ -1,5 +1,6 @@
 """Annual training cost screens from completed, causally truncated replay histories."""
 import argparse
+import copy
 import datetime as dt
 import json
 import tomllib
@@ -10,7 +11,7 @@ import polars as pl
 
 from quant.research.factor_battery_cost_batch import existing_cost_factor
 from quant.research.factor_battery_cost_report import (
-    MEASUREMENT, holding_cost_metrics, index_comparisons,
+    MEASUREMENT, REQUIRED_BENCHMARKS, holding_cost_metrics, index_comparisons,
     load_cost_history, return_indexes,
 )
 from quant.research.factor_battery_scorecard import assemble_scorecard
@@ -64,14 +65,24 @@ def run_cost_prefixes(*, prefix: Path, output: Path, cost_runs: list[Path],
     benchmark_cache: dict[tuple, pl.DataFrame] = {}
     screens = pl.read_parquet(prefix/'annual_statistical_screen.parquet')
     annual = {key[0]: frame for key, frame in screens.partition_by('test_year', as_dict=True).items()}
+    if any(table['refit_close'].n_unique() != 1 for table in annual.values()):
+        raise ValueError('One refit close required per annual screen')
     reports: dict[int, list] = {year: [] for year in annual}
     prior_sources: dict[str, str] = {}
     prior_metrics = prior_comparisons = None
     if previous_costs is not None:
-        for name, current in (('model.toml', prefix/'model.toml'), ('battery.toml', prefix/'battery.toml'),
+        for name, current in (('battery.toml', prefix/'battery.toml'),
                               ('return_benchmarks.toml', return_benchmark_config)):
             if (previous_costs/name).read_bytes() != current.read_bytes():
                 raise ValueError('Previous annual costs require unchanged model and benchmark settings')
+        old_model = tomllib.loads((previous_costs/'model.toml').read_text(encoding='utf-8'))
+        # Statistical history length does not change already measured NAV, trades or indexes.
+        training_prefix_settings(settings, old_model)
+        old_measurement, new_measurement = copy.deepcopy(old_model), copy.deepcopy(model)
+        for candidate in (old_measurement, new_measurement):
+            candidate['selection'].pop('minimum_known_months', None)
+        if old_measurement != new_measurement:
+            raise ValueError('Previous annual costs require unchanged model and benchmark settings except training history length')
         prior = json.loads((previous_costs/'summary.json').read_text(encoding='utf-8'))
         if prior.get('measurement') != MEASUREMENT:
             raise ValueError('Previous annual costs use obsolete measurement')
@@ -106,6 +117,20 @@ def run_cost_prefixes(*, prefix: Path, output: Path, cost_runs: list[Path],
                 for row in year_rows.drop('test_year').iter_rows(named=True):
                     scenario_comparisons = cached_comparisons.filter((pl.col('test_year') == year)
                         & (pl.col('variant') == row['variant']) & (pl.col('cost_multiplier') == row['cost_multiplier']))
+                    if row['holding_evidence']:
+                        if (scenario_comparisons.height != len(REQUIRED_BENCHMARKS)
+                                or set(scenario_comparisons['benchmark']) != REQUIRED_BENCHMARKS
+                                or set(scenario_comparisons['last_date']) != {str(table['refit_close'][0])}
+                                or set(scenario_comparisons['first_date']) != {str(row['active_start'])}):
+                            raise ValueError('Cached return comparisons differ from the measured holding window')
+                        for comparison in scenario_comparisons.iter_rows(named=True):
+                            if comparison['comparison_status'] == 'complete':
+                                if comparison['sessions'] != row['sessions'] or comparison['net_cagr_excess'] is None:
+                                    raise ValueError('Cached index comparison has incomplete sessions or excess')
+                            elif comparison['comparison_status'] != 'unavailable' or comparison['net_cagr_excess'] is not None:
+                                raise ValueError('Invalid cached index availability')
+                    elif scenario_comparisons.height:
+                        raise ValueError('No-holding scenarios cannot carry index comparisons')
                     reports[year].append({'rows': [row],
                         'benchmark_comparisons': scenario_comparisons.drop('test_year').to_dicts(), 'measurement': MEASUREMENT})
             reused_factors.append(factor)
@@ -146,6 +171,8 @@ def run_cost_prefixes(*, prefix: Path, output: Path, cost_runs: list[Path],
             comparisons.extend({**row, 'test_year': year} for row in report['benchmark_comparisons'])
     summary = {'complete_cost_factors': len(sources), 'annual_screens': counts, 'source_runs': sources,
                'reused_cost_factors': reused_factors,
+               'previous_costs': str(previous_costs) if previous_costs else None,
+               'statistical_screen_source': str(prefix),
                'measurement': MEASUREMENT, 'final_battery_minimum_months': settings['admission']['minimum_months'],
                'training_minimum_months': training_settings['admission']['minimum_months'],
                'scope': 'refit-close holding-window statistics and return-index cost comparisons; annual correlations still required'}
