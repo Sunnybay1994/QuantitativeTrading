@@ -185,6 +185,9 @@ def replay(
     prior_nav_count = len(state["nav"])
     from quant.backtest.share_exchanges import validate_exchanges, apply_share_exchanges, capture_exchange_holdings
     exchanges = validate_exchanges(config.get('share_exchanges', []))
+    retry_exits = config.get('execution', {}).get('retry_zero_target_exits', False)
+    if retry_exits and (target_constraints is not None or target_turnover_budget is not None):
+        raise ValueError('Daily exit experiment requires unchanged monthly targets')
     cash_only = (bars.is_empty() and instruments.is_empty() and targets.is_empty()
                  and dividends.is_empty() and not market_states
                  and not any(state.get(key) for key in (
@@ -279,6 +282,13 @@ def replay(
         state["pending"] = ([] if batch is None else batch.with_columns(
             pl.col("as_of").cast(pl.String), pl.col("execution_date").cast(pl.String),
         ).to_dicts())
+        scheduled_exits = None
+        if retry_exits:
+            from quant.backtest.zero_target_exits import update_exit_targets, exit_orders, exit_exposure
+            monthly_weights = update_exit_targets(state=state, targets=batch, exchanges=exchange_rows)
+            if batch is None and monthly_weights:
+                scheduled_exits = exit_orders(date=date, state=state, weights=monthly_weights,
+                    calendar=calendar, dividends=dividends)
         today_bars = by_date.get(date, empty_bars)
         missing = (set() if batch is None else set(batch.get_column("symbol"))) - set(
             today_bars.get_column("symbol")) - set(state["holdings"])
@@ -296,6 +306,7 @@ def replay(
                     instruments=instruments, market_states=market_states, dividends=dividends,
                     config=account_config,
                     target_permissions=execution_permissions,
+                    scheduled_orders=scheduled_exits,
                 )
                 if prior_nominees is not None:
                     state['constraint_nominees'] = prior_nominees
@@ -306,6 +317,10 @@ def replay(
                 (pl.col("list_date") > date) | (pl.col("delist_date") < date)))
             raise ValueError(f"{exc}; session={date}; inactive={inactive.select('symbol', 'delist_date').to_dicts()}") from exc
         state["nav"][-1]["position_count"] = len(state["holdings"])
+        if retry_exits:
+            state['latest_monthly_weights'] = monthly_weights
+            state['nav'][-1]['zero_target_weight'] = exit_exposure(state, monthly_weights)
+            state['nav'][-1]['retry_exit_orders'] = scheduled_exits.height if scheduled_exits is not None else 0
         state["nav"][-1]["delisting_writeoff"] = writeoff
         state["nav"][-1]["delisted_symbols"] = ",".join(sorted(removed))
         if exchanges:

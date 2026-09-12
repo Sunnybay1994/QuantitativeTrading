@@ -80,6 +80,7 @@ def reconstruct(*, nav: pl.DataFrame, trades: pl.DataFrame, bars: pl.DataFrame,
             pnl = after.get(s, 0.)-before.get(s, 0.)+flow.get(s, 0.)+income.get(s, 0.)
             total += pnl
             rows.append({'date': day, 'symbol': s, 'prior_value': before.get(s, 0.),
+                         'close_value': after.get(s, 0.),
                          'prior_weight': before.get(s, 0.)/previous_equity, 'pnl': pnl,
                          'contribution': pnl/previous_equity, 'close_quote_missing': (day, s) not in prices})
         residual = n['equity']-previous_equity-total

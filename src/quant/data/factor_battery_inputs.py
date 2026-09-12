@@ -51,6 +51,20 @@ def read_battery_execution(*, data_root: Path, refresh_config: Path, snapshot: s
     return result
 
 
+def read_daily_replay_limits(*, data_root: Path, snapshot: str, start: dt.date,
+                             end: dt.date, symbols: list[str]) -> pl.DataFrame:
+    """Read frozen daily official bands for the daily-exit experiment."""
+    if Path(snapshot).name != snapshot or snapshot in ('.', '..'):
+        raise ValueError('Invalid daily limits snapshot')
+    paths = [data_root / f'clean/factor_execution/{snapshot}/year={year}/limits.parquet'
+             for year in range(start.year, end.year+1)]
+    frame = pl.scan_parquet(paths).filter(pl.col('trade_date').is_between(start, end)
+        & pl.col('symbol').is_in(symbols)).collect()
+    if frame.select('symbol', 'trade_date').is_duplicated().any():
+        raise ValueError('Duplicate daily price bands')
+    return frame
+
+
 def read_battery_symbols(data_root: Path, *, start: dt.date, end: dt.date) -> list[str]:
     """Use all historical panel members, including subsequently delisted stocks."""
     paths = [data_root / f"factors/forward_returns/year={year}/data.parquet"

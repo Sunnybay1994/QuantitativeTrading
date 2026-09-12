@@ -224,7 +224,8 @@ def prepare_constraints(*, config: Path, plans: dict, data_root: Path, output: P
 
 def run_model_replay(*, predictions: Path, benchmarks: Path, output: Path, data_root: Path,
                      constraints_config: Path | None = None, resume: bool = False,
-                     share_exchanges_config: Path | None = Path('configs/data/share_exchanges_20260912.toml')) -> dict:
+                     share_exchanges_config: Path | None = Path('configs/data/share_exchanges_20260912.toml'),
+                     execution_config: Path | None = None) -> dict:
     model_bytes = (predictions/'model.toml').read_bytes()
     model = tomllib.loads(model_bytes.decode('utf-8'))
     battery_bytes = (predictions/'battery.toml').read_bytes()
@@ -254,6 +255,20 @@ def run_model_replay(*, predictions: Path, benchmarks: Path, output: Path, data_
         (output/'model.toml').write_bytes(model_bytes)
         (output/'battery.toml').write_bytes(battery_bytes)
     transform = None
+    if execution_config is not None:
+        content = execution_config.read_text(encoding='utf-8')
+        experiment = tomllib.loads(content)
+        if experiment['research']['auto_trade'] is not False or experiment['execution']['retry_zero_target_exits'] is not True:
+            raise ValueError('Expected registered research-only daily zero-exit experiment')
+        settings['execution'] = experiment['execution']
+        saved = output/'execution_config.toml'
+        if resume:
+            if not saved.is_file() or saved.read_text(encoding='utf-8') != content:
+                raise ValueError('Resume execution experiment changed')
+        else:
+            saved.write_text(content, encoding='utf-8')
+    elif resume and (output/'execution_config.toml').exists():
+        raise ValueError('Resume cannot omit execution experiment')
     if share_exchanges_config is not None:
         from quant.backtest.share_exchanges import validate_exchanges
         content = share_exchanges_config.read_text(encoding='utf-8')
@@ -294,11 +309,13 @@ def main() -> None:
     parser.add_argument('--constraints-config', type=Path)
     parser.add_argument('--share-exchanges-config', type=Path, default=Path('configs/data/share_exchanges_20260912.toml'))
     parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--execution-config', type=Path)
     args = parser.parse_args()
     print(json.dumps(run_model_replay(predictions=args.predictions, benchmarks=args.benchmarks,
                                      output=args.output, data_root=args.data_root,
                                      constraints_config=args.constraints_config, resume=args.resume,
-                                     share_exchanges_config=args.share_exchanges_config)))
+                                     share_exchanges_config=args.share_exchanges_config,
+                                     execution_config=args.execution_config)))
 
 
 if __name__ == '__main__':

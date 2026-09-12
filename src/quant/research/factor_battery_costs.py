@@ -181,6 +181,15 @@ def run_cost_plans(*, settings: dict, plans: dict, sessions: tuple[dt.date, ...]
         dividends = inputs["dividends"].with_columns((pl.col("div_cash") * (
             1-settings["portfolio"]["stock_dividend_withholding"])).alias("div_cash"))
         execution_dates = sorted(set().union(*(set(frame["execution_date"]) for frame in annual_targets.values())))
+        if settings.get('execution', {}).get('retry_zero_target_exits', False):
+            from quant.data.factor_battery_inputs import read_daily_replay_limits
+            daily_limits = read_daily_replay_limits(data_root=data_root,
+                snapshot=settings['execution']['daily_limits_snapshot'], start=low, end=high, symbols=sorted(symbols))
+            # Existing monthly bands take precedence so baseline trading remains identical.
+            inputs['limits'] = pl.concat([inputs['limits'].select('symbol', 'trade_date', 'up_limit', 'down_limit'),
+                daily_limits.select('symbol', 'trade_date', 'up_limit', 'down_limit')], how='vertical_relaxed').unique(
+                    subset=['symbol', 'trade_date'], keep='first', maintain_order=True)
+            execution_dates = active_sessions
         for multiplier in settings["portfolio"]["cost_multipliers"]:
             if not any(key[1] == multiplier for key in pending):
                 continue

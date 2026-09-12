@@ -1,0 +1,29 @@
+[research]
+id = "q9-daily-zero-exit-20260912"
+registered_on = 2026-09-12
+auto_trade = false
+hypothesis = "Retry failed complete exits daily, reducing exposure to securities whose latest monthly target is zero. Economic performance is not presumed to improve."
+single_variable = "persistent_zero_target_exit"
+source = "artifacts/models/share_exchange_replays_20260912_01/q2_sue_context_v2_causal48_20260912_02"
+historical_evidence = "Previously studied history; includes known February 2020 rebound counterexample; no fresh holdout claim"
+
+[execution]
+retry_zero_target_exits = true
+daily_limits_snapshot = "limits_20260911"
+monthly_days = "original complete target batch; replace intent with latest zero targets"
+other_days = "fixed sell orders only for remaining exit holdings; after corporate actions; no replacement buys"
+new_positive_target = "cancel prior exit intention"
+exchange = "transfer intent to successor only when successor lacks a current positive target"
+missing_price_band = "stop; do not assume executable"
+cost_multipliers = [0.5, 1.0, 2.0]
+
+[evaluation]
+start = 2019-01-02
+end = 2026-08-31
+primary_top_k = 50
+sensitivity_top_k = 100
+execution_pass = "strictly reduce sum of daily close zero-target holding weights versus corrected monthly baseline; no unintended trades"
+economic_pass = "unchanged model admission thresholds; all three cost CAGR changes nonnegative; 1x maximum drawdown no worse"
+conclusion = "PAPER_CANDIDATE only if execution and economic criteria pass, otherwise RESEARCH_ONLY if execution passes, REJECTED otherwise"
+report = "target-deviation weight-days, retry trades/rejections, cash exposure, CAGR/Sharpe/drawdown/turnover, shared holding window and return-index benchmarks"
+stress = ["2020-02-03 to 2020-03-02", "2024-05-06 to 2024-06-17"]
