@@ -1,4 +1,5 @@
 import sys
+import json
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,9 @@ from quant.research import evaluate_forecast_text as pipeline
 
 @pytest.mark.parametrize('full,reuse', [(False, False), (True, False), (True, True)])
 def test_pipeline_connects_same_window_peers_benchmarks_and_complete_costs(tmp_path, monkeypatch, full, reuse):
+    (tmp_path/'scoring').mkdir()
+    (tmp_path/'scoring/run.json').write_text('{}')
+    (tmp_path/'scoring/battery.toml').write_text('start = 2017-01-01')
     calls = []
     def stage(name, result):
         def run(*args, **kwargs):
@@ -68,3 +72,69 @@ def test_cli_reports_failed_or_pending_costs(tmp_path, monkeypatch, pending):
     with pytest.raises(SystemExit) as exc:
         pipeline.main()
     assert exc.value.code == 1
+
+
+@pytest.mark.parametrize('broken_stage', ['incremental', 'redundancy', 'benchmarks', 'costs'])
+def test_resume_reuses_completed_stages_preserves_partial_and_retries_costs(tmp_path, monkeypatch, broken_stage):
+    run, output = tmp_path/'scoring', tmp_path/'evaluation'
+    run.mkdir()
+    (run/'run.json').write_text('{}')
+    (run/'battery.toml').write_text('start = 2017-01-01')
+    calls = []
+    broken = [False]
+    cost_calls = []
+
+    def stage(name, result):
+        def execute(**kwargs):
+            calls.append(name)
+            folder = kwargs['output']
+            folder.mkdir(parents=True, exist_ok=True)
+            if name == broken_stage and not broken[0]:
+                broken[0] = True
+                (folder/'partial.txt').write_text('preserve')
+                raise RuntimeError('interrupted')
+            if name == 'costs':
+                cost_calls.append(kwargs['resume'])
+                value = {'completed_runs': {}, 'failures': {'x': 'temporary'} if len(cost_calls) == 1 else {},
+                         'pending_external_runs': {}}
+            else:
+                value = result
+            (folder/'summary.json').write_text(json.dumps(value))
+            return value
+        return execute
+
+    def publish(*args, **kwargs):
+        calls.append('publish')
+        return {'factor_rows': 10}
+
+    monkeypatch.setattr(pipeline, 'publish_panels', publish)
+    monkeypatch.setattr(pipeline, 'run_incremental', stage('incremental', {'summary': []}))
+    monkeypatch.setattr('quant.research.factor_battery_batch.run_statistics', stage('statistics', {}))
+    monkeypatch.setattr('quant.research.factor_battery_screen.run_screen', stage('screen', {}))
+    monkeypatch.setattr('quant.research.forecast_text_redundancy.run_redundancy', stage('redundancy', {}))
+    monkeypatch.setattr('quant.research.factor_battery_benchmarks.run_benchmarks', stage('benchmarks', {}))
+    monkeypatch.setattr('quant.research.factor_battery_cost_batch.run_cost_batch', stage('costs', {}))
+    monkeypatch.setattr('quant.research.factor_battery_scorecard.run_scorecard', stage('scorecard', {}))
+    args = dict(run=run, output=output, data_root=tmp_path,
+                design_path=Path('configs/factors/p7_text_evaluation_v2.toml'), execution_snapshot='frozen')
+    with pytest.raises(RuntimeError, match='interrupted'):
+        pipeline.run_pipeline(**args)
+    first = pipeline.run_pipeline(**args, resume=True)
+    assert first['costs']['failures']
+    second = pipeline.run_pipeline(**args, resume=True, workers=2)
+    assert not second['costs']['failures']
+    assert Path(second['scorecard_path']).parent.name == 'scorecard_002'
+    assert (output/'scorecard/summary.json').is_file()
+    assert calls.count('publish') == calls.count('screen') == 1
+    assert calls.count('statistics') == 2  # text and same-window peers, each only once
+    assert cost_calls == [True, True]
+    if broken_stage != 'costs':
+        partial = list(output.glob(f'{broken_stage}_partial_*/partial.txt'))
+        assert len(partial) == 1 and partial[0].read_text() == 'preserve'
+    before = list(calls)
+    assert pipeline.run_pipeline(**args, resume=True) == second
+    assert calls == before
+    (run/'run.json').write_text('{"changed":true}')
+    with pytest.raises(ValueError, match='same scoring run'):
+        pipeline.run_pipeline(**args, resume=True)
+    assert calls == before

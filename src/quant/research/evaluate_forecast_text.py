@@ -6,6 +6,7 @@ import datetime as dt
 import json
 from pathlib import Path
 import tomllib
+import uuid
 
 import polars as pl
 
@@ -79,7 +80,7 @@ def run_pipeline(*, run: Path, output: Path, data_root: Path, design_path: Path,
                  workers: int = 1, execution_snapshot: str | None = None,
                  peer_library: Path = Path('configs/factors/library'),
                  peer_statistics: Path | None = None,
-                 existing_cost_runs: list[Path] | None = None) -> dict:
+                 existing_cost_runs: list[Path] | None = None, resume: bool = False) -> dict:
     from quant.research.factor_battery_batch import run_statistics
     from quant.research.factor_battery_screen import run_screen
     from quant.research.factor_battery_scorecard import run_scorecard
@@ -87,15 +88,53 @@ def run_pipeline(*, run: Path, output: Path, data_root: Path, design_path: Path,
     if workers < 1 or (not execution_snapshot and (peer_statistics or existing_cost_runs)):
         raise ValueError('Positive workers and an execution snapshot are required for full evaluation inputs')
     design = load_design(design_path)
-    output.mkdir(parents=True, exist_ok=False)
-    publication = publish_panels(run, data_root=data_root, design=design)
     library = Path("configs/factors/p7_text_library")
+    battery_text = (run/'battery.toml').read_text(encoding='utf-8')
+    refresh = tomllib.loads(battery_text).get('data', {}).get('refresh_config')
+    configuration = {'run': str(run.resolve()), 'scoring': (run/'run.json').read_text(encoding='utf-8'),
+        'battery': battery_text, 'refresh_config': Path(refresh).read_text(encoding='utf-8') if refresh else None,
+        'design': design_path.read_text(encoding='utf-8'), 'data_root': str(data_root.resolve()),
+        'execution_snapshot': execution_snapshot,
+        'text_library': {p.name: p.read_text(encoding='utf-8') for p in sorted(library.glob('*.toml'))},
+        'peer_library': {p.name: p.read_text(encoding='utf-8') for p in sorted(peer_library.glob('*.toml'))}
+                        if execution_snapshot else {},
+        'peer_statistics': str(peer_statistics.resolve()) if peer_statistics else None,
+        'existing_cost_runs': sorted(str(p.resolve()) for p in existing_cost_runs or [])}
+    saved_config = output/'pipeline_config.json'
+    if resume:
+        if not saved_config.is_file() or json.loads(saved_config.read_text(encoding='utf-8')) != configuration:
+            raise ValueError('Resume requires the same scoring run, design and evaluation inputs')
+        if (output/'summary.json').is_file():
+            previous = json.loads((output/'summary.json').read_text(encoding='utf-8'))
+            prior_costs = previous['costs']
+            if not prior_costs or not (prior_costs['failures'] or prior_costs['pending_external_runs']):
+                return previous
+    else:
+        output.mkdir(parents=True, exist_ok=False)
+        saved_config.write_text(json.dumps(configuration, indent=2), encoding='utf-8')
+
+    def stage(folder: Path, action, *, resumable: bool = False):
+        if resume and (folder/'summary.json').is_file():
+            return json.loads((folder/'summary.json').read_text(encoding='utf-8'))
+        if folder.exists() and not resumable:
+            preserved = folder.with_name(f'{folder.name}_partial_{uuid.uuid4().hex[:8]}')
+            if not folder.resolve().is_relative_to(output.resolve()) or not preserved.resolve().is_relative_to(output.resolve()):
+                raise ValueError('Partial output must stay inside the evaluation directory')
+            folder.rename(preserved)
+        return action()
+
+    publication_path = output/'publication.json'
+    if resume and publication_path.is_file():
+        publication = json.loads(publication_path.read_text(encoding='utf-8'))
+    else:
+        publication = publish_panels(run, data_root=data_root, design=design)
+        publication_path.write_text(json.dumps(publication, indent=2), encoding='utf-8')
     statistics = output / "statistics"
-    run_statistics(data_root=data_root, config=run / "battery.toml", library=library,
-                   as_of=design["end"], output=statistics, workers=workers)
-    screen = run_screen(statistics=statistics, output=output / "screen", library=library)
-    incremental = run_incremental(run=run, statistics=statistics, data_root=data_root,
-                                  output=output / "incremental", design=design)
+    stage(statistics, lambda: run_statistics(data_root=data_root, config=run / "battery.toml", library=library,
+                   as_of=design["end"], output=statistics, workers=workers), resumable=True)
+    screen = stage(output/'screen', lambda: run_screen(statistics=statistics, output=output / "screen", library=library))
+    incremental = stage(output/'incremental', lambda: run_incremental(run=run, statistics=statistics, data_root=data_root,
+                                  output=output / "incremental", design=design))
     costs = None
     redundancy = benchmarks = None
     if execution_snapshot:
@@ -105,24 +144,29 @@ def run_pipeline(*, run: Path, output: Path, data_root: Path, design_path: Path,
 
         if peer_statistics is None:
             peer_statistics = output / 'peer_statistics'
-            run_statistics(data_root=data_root, config=run / 'battery.toml', library=peer_library,
-                           as_of=design['end'], output=peer_statistics, workers=workers)
+            stage(peer_statistics, lambda: run_statistics(data_root=data_root, config=run / 'battery.toml', library=peer_library,
+                           as_of=design['end'], output=peer_statistics, workers=workers), resumable=True)
         redundancy = output / 'redundancy'
-        run_redundancy(statistics=statistics, peer_statistics=peer_statistics,
-                       peer_library=peer_library, output=redundancy, workers=workers)
+        stage(redundancy, lambda: run_redundancy(statistics=statistics, peer_statistics=peer_statistics,
+                       peer_library=peer_library, output=redundancy, workers=workers))
         benchmarks = output / 'benchmarks'
-        run_benchmarks(statistics=statistics, output=benchmarks, data_root=data_root,
-                       execution_snapshot=execution_snapshot)
+        stage(benchmarks, lambda: run_benchmarks(statistics=statistics, output=benchmarks, data_root=data_root,
+                       execution_snapshot=execution_snapshot))
         costs = run_cost_batch(statistics=statistics, screen=output / "screen", output=output / "costs",
             data_root=data_root, execution_snapshot=execution_snapshot,
-            existing_runs=existing_cost_runs or [], workers=workers)
-    scorecard = run_scorecard(screen=output / 'screen', output=output / 'scorecard',
+            existing_runs=existing_cost_runs or [], workers=workers, resume=resume)
+    scorecard_output = output/'scorecard'
+    number = 2
+    while scorecard_output.exists():
+        scorecard_output = output/f'scorecard_{number:03d}'
+        number += 1
+    scorecard = run_scorecard(screen=output / 'screen', output=scorecard_output,
         cost_runs=[Path(path) for path in costs['completed_runs'].values()] if costs else [],
         cost_root=None, benchmarks=benchmarks, redundancy=redundancy, data_root=data_root)
     summary = {"synthetic_fixture": False, "publication": publication, "screen": screen,
         "incremental_series": len(incremental["summary"]), "costs": costs,
         "mode": "full" if execution_snapshot else "statistics_only",
-        "scorecard": scorecard, "scorecard_path": str(output / 'scorecard/factor_scorecard.parquet'),
+        "scorecard": scorecard, "scorecard_path": str(scorecard_output/'factor_scorecard.parquet'),
         "peer_statistics": str(peer_statistics) if peer_statistics else None,
         "conclusion": "RESEARCH_ONLY",
         "next_step": ("Inspect scorecard and unresolved evidence; residual IC remains diagnostic"
@@ -182,14 +226,17 @@ def main() -> None:
     parser.add_argument('--peer-library', type=Path, default=Path('configs/factors/library'))
     parser.add_argument('--peer-statistics', type=Path, help='Existing complete peer statistics with identical P7 settings')
     parser.add_argument('--existing-cost-run', type=Path, action='append', default=[])
+    parser.add_argument('--resume', action='store_true', help='Continue the same evaluation after its previous process stops')
     args = parser.parse_args()
     if args.fixture:
+        if args.resume:
+            parser.error('--resume applies to real scoring runs, not synthetic fixtures')
         result = run_fixture(source=args.fixture, output=args.output, design_path=args.design)
     else:
         result = run_pipeline(run=args.run, output=args.output, data_root=args.data_root,
             design_path=args.design, workers=args.workers, execution_snapshot=args.execution_snapshot,
             peer_library=args.peer_library, peer_statistics=args.peer_statistics,
-            existing_cost_runs=args.existing_cost_run)
+            existing_cost_runs=args.existing_cost_run, resume=args.resume)
     print(json.dumps(result, default=str, ensure_ascii=False))
     costs = result.get('costs')
     if costs and (costs['failures'] or costs['pending_external_runs']):
