@@ -38,16 +38,20 @@ def run(*, config: Path, output: Path) -> dict:
         if ('turnover' in original['failed']) != (assessment['checks']['turnover'] is False):
             raise ValueError('Saved turnover check differs from the original limit')
         rows.append({'name': candidate['name'], 'assessment': candidate['assessment'],
+            'current_sue_v2': candidate.get('current_sue_v2', False),
             'original_conclusion': assessment['conclusion'], 'turnover': turnover,
             'original_failed': original['failed'], 'only_turnover_failed': original['failed'] == ['turnover'],
             'cagr_by_cost': {str(r['cost_multiplier']): r['cagr'] for r in selected},
             'sensitivity': [threshold_checks(assessment['checks'], turnover=turnover, limit=limit)
                             for limit in spec['limits']]})
     rejected = [r for r in rows if r['original_conclusion'] == 'REJECTED']
+    current = [r for r in rejected if r['current_sue_v2']]
     result = {'scope': spec['scope'], 'original_limit': spec['original_limit'],
         'candidates': len(rows), 'rejected': len(rejected),
         'rejected_with_turnover': sum('turnover' in r['original_failed'] for r in rejected),
         'rejected_only_turnover': sum(r['only_turnover_failed'] for r in rejected),
+        'current_sue_v2_candidates': len(current),
+        'current_sue_v2_only_turnover': sum(r['only_turnover_failed'] for r in current),
         'rows': rows, 'original_decisions_changed': False}
     output.mkdir(parents=True, exist_ok=False)
     (output / 'config.toml').write_bytes(config.read_bytes())
@@ -55,7 +59,9 @@ def run(*, config: Path, output: Path) -> dict:
     lines = ['# 换手阈值敏感性', '',
         f"最近主线{len(rows)}个去重主方案，{len(rejected)}个被拒；"
         f"其中{result['rejected_with_turnover']}个换手未通过，{result['rejected_only_turnover']}个仅换手未通过。",
-        '范围为配置明确列出的主方案，不计重复对照、Top100敏感性组合或旧口径报告。', '',
+        '范围为配置明确列出的主方案，不重复计算对照组、Top100敏感性组合或被新报告替代的旧结果。', '',
+        f"其中当前SUE v2主线{len(current)}个，只有{result['current_sue_v2_only_turnover']}个仅被换手挡住。"
+        '旧SUE两方案保留作历史对照，其公司类型适用性问题已由v2修正，不能因放宽阈值而恢复使用旧输入。', '',
         '单边年换手 = Σ[(当日买入金额+卖出金额)/(2×前一日净资产)] × 252/持股期交易日数。',
         '从首次持股计到报告截止日，首日建仓和之后现金期均计入；6倍是研究筛选线，不是交易规则。', '',
         '|方案|实际年换手|0.5×年化|1×年化|2×年化|原未通过项|', '|---|---:|---:|---:|---:|---|']
@@ -63,12 +69,13 @@ def run(*, config: Path, output: Path) -> dict:
         costs = row['cagr_by_cost']
         lines.append(f"|{row['name']}|{row['turnover']:.4f}|{costs['0.5']:.2%}|"
             f"{costs['1.0']:.2%}|{costs['2.0']:.2%}|{', '.join(row['original_failed'])}|")
-    lines += ['', '|阈值|换手这一项通过的方案数|全部既有检查通过的方案数|', '|---|---:|---:|']
+    lines += ['', '|阈值|换手这一项通过|全部既有检查通过（含历史对照）|其中当前SUE v2|', '|---|---:|---:|---:|']
     for index, limit in enumerate(spec['limits']):
         lines.append(f"|{limit:g}|{sum(r['turnover'] <= limit for r in rows)}|"
-            f"{sum(r['sensitivity'][index]['all_checks_pass'] for r in rows)}|")
+            f"{sum(r['sensitivity'][index]['all_checks_pass'] for r in rows)}|"
+            f"{sum(r['sensitivity'][index]['all_checks_pass'] for r in current)}|")
     lines += ['', '阈值敏感性是已研究历史的回顾性分析，原结论保持。',
-        '下一步：将6.5倍作为放宽情景审视两项约6.30倍方案；同时核对实际持仓数、碎单与手工执行量，继续原三档成本压力和前向记录。', '']
+        '下一步：将6.5倍作为放宽情景重点审视Q10；同时核对实际持仓数、碎单与手工执行量，继续原三档成本压力和前向记录。', '']
     (output / 'report.md').write_text('\n'.join(lines), encoding='utf-8')
     return result
 

@@ -12,6 +12,7 @@ variant = "lightgbm_top50"
 
 [[candidates]]
 name = "SUE v2修复版"
+current_sue_v2 = true
 assessment = "artifacts/models/share_exchange_replays_20260912_01/q2_sue_context_v2_causal48_20260912_02/reports/lightgbm/assessment.json"
 assessment_key = "primary"
 metrics = "artifacts/models/share_exchange_replays_20260912_01/q2_sue_context_v2_causal48_20260912_02/reports/cost_metrics.parquet"
@@ -26,6 +27,7 @@ variant = "lightgbm_top50"
 
 [[candidates]]
 name = "Q9逐日退出"
+current_sue_v2 = true
 assessment = "artifacts/models/q9_daily_zero_exit_20260912_01/reports_02/model/lightgbm/assessment.json"
 assessment_key = "primary"
 metrics = "artifacts/models/q9_daily_zero_exit_20260912_01/reports_02/model/cost_metrics.parquet"
@@ -40,6 +42,7 @@ variant = "budgeted"
 
 [[candidates]]
 name = "Q10 SUE v2固定预算"
+current_sue_v2 = true
 assessment = "artifacts/models/q10_sue_v2_turnover_budget_05_20260912_01/assessment.json"
 assessment_key = "assessments.budgeted"
 metrics = "artifacts/models/q10_sue_v2_turnover_budget_05_20260912_01/assessment.json"
