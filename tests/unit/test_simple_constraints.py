@@ -210,3 +210,40 @@ def test_targets_cannot_shadow_point_in_time_industry():
     t, h, m = frames()
     with pytest.raises(ValueError, match='shadow PIT industry'):
         run(t.with_columns(pl.lit('STALE').alias('industry_l1')), h, m)
+
+
+
+def test_explicit_unknown_bucket_keeps_benchmark_weight_and_forbids_new_holdings():
+    t, h, m, b = relative_inputs()
+    t = t.with_columns(pl.Series('weight', [.5, .5]))
+    m = pl.concat([m, m.head(1).with_columns(pl.lit('U').alias('symbol'),
+        pl.lit(None, dtype=pl.String).alias('industry_l1'), pl.lit(1e10).alias('total_market_value'))])
+    b = pl.concat([b.with_columns(pl.lit(.48).alias('weight')),
+        b.head(1).with_columns(pl.lit('U').alias('symbol'), pl.lit(.04).alias('weight'))])
+    out, info = relative_run(t, h, m, b, unknown_industry_policy='explicit_unknown_bucket')
+    assert info['feasible']
+    assert info['unknown_benchmark_weight'] == .04
+    assert info['unknown_target_weight'] == 0
+    assert info['residuals']['industry_active_weights']['UNKNOWN'] == -.04
+    assert out['weight'].sum() <= .98+1e-8
+    t = pl.concat([t.with_columns(pl.lit(.49).alias('weight')),
+        t.head(1).with_columns(pl.lit('U').alias('symbol'), pl.lit(.02).alias('weight'))])
+    out, _ = relative_run(t, h, m, b, unknown_industry_policy='explicit_unknown_bucket')
+    assert out.filter(pl.col('symbol') == 'U')['weight'][0] == 0
+
+
+def test_large_unknown_benchmark_bucket_is_infeasible_not_dropped():
+    t, h, m, b = relative_inputs()
+    m = m.with_columns(pl.Series('industry_l1', ['X', None]))
+    _, info = relative_run(t, h, m, b, unknown_industry_policy='explicit_unknown_bucket')
+    assert not info['feasible']
+    assert info['unknown_benchmark_weight'] == .5
+    assert info['unknown_target_weight'] == 0
+    assert 'UNKNOWN' in info['absent_required_industries']
+
+
+def test_unknown_bucket_never_imputes_missing_market_cap():
+    t, h, m, b = relative_inputs()
+    m = m.with_columns(pl.lit(None, dtype=pl.Float64).alias('total_market_value'))
+    with pytest.raises(ValueError, match='Missing PIT industry/size'):
+        relative_run(t, h, m, b, unknown_industry_policy='explicit_unknown_bucket')

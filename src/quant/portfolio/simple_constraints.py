@@ -158,7 +158,8 @@ def constrain_relative_targets(*, targets: pl.DataFrame, current: pl.DataFrame,
                                market: pl.DataFrame, benchmark: pl.DataFrame,
                                equity: float,
                                limits: RelativeConstraintLimits = RelativeConstraintLimits(),
-                               enabled: bool = True, sell_only: bool = False
+                               enabled: bool = True, sell_only: bool = False,
+                               unknown_industry_policy: str = 'reject'
                                ) -> tuple[pl.DataFrame, dict]:
     """Project fixed selected names onto PIT industry/size bands, without an optimizer.
 
@@ -174,6 +175,15 @@ def constrain_relative_targets(*, targets: pl.DataFrame, current: pl.DataFrame,
             or limits.size_active_band < 0 or type(limits.maximum_iterations) is not int
             or limits.maximum_iterations < 1 or not 0 < limits.tolerance <= 1e-4):
         raise ValueError('Invalid relative constraint limits')
+    if unknown_industry_policy not in {'reject', 'explicit_unknown_bucket'}:
+        raise ValueError('Unknown industry policy')
+    missing_industry = (pl.col('industry_l1').is_null()
+        | (pl.col('industry_l1').str.strip_chars() == '') | (pl.col('industry_l1') == 'UNKNOWN'))
+    unknown_symbols = set(market.filter(missing_industry)['symbol'])
+    if unknown_industry_policy == 'explicit_unknown_bucket':
+        market = market.with_columns(
+            pl.when(missing_industry).then(pl.lit('UNKNOWN')).otherwise(pl.col('industry_l1')).alias('industry_l1'),
+            (pl.col('can_buy') & ~missing_industry).alias('can_buy'))
     conservative, ordinary = constrain_targets(targets=targets, current=current, market=market,
         equity=equity, limits=ConstraintLimits(limits.cash_buffer, limits.single_stock_weight,
                                              1., limits.adv_participation),
@@ -189,11 +199,12 @@ def constrain_relative_targets(*, targets: pl.DataFrame, current: pl.DataFrame,
     desired = dict(targets.select('symbol', 'weight').iter_rows())
     held = dict(current.select('symbol', 'weight').iter_rows())
     symbols = [s for s in conservative['symbol'] if desired.get(s, 0.) > 0 or held.get(s, 0.) > 0]
-    benchmark_weights = dict(benchmark.select('symbol', 'weight').iter_rows())
+    benchmark_weights = dict(sorted(benchmark.select('symbol', 'weight').iter_rows()))
     names = set(symbols) | set(benchmark_weights)
-    for symbol in names:
+    for symbol in sorted(names):
         row = observations.get(symbol)
-        if (row is None or not isinstance(row['industry_l1'], str) or not row['industry_l1'].strip()
+        if (row is None or (symbol in unknown_symbols and unknown_industry_policy == 'reject')
+                or not isinstance(row['industry_l1'], str) or not row['industry_l1'].strip()
                 or row['total_market_value'] is None or not math.isfinite(row['total_market_value'])
                 or row['total_market_value'] <= 0):
             raise ValueError(f'Missing PIT industry/size for {symbol}')
@@ -290,6 +301,11 @@ def constrain_relative_targets(*, targets: pl.DataFrame, current: pl.DataFrame,
         'iterations': iterations, 'maximum_iterations': limits.maximum_iterations,
         'tolerance': limits.tolerance, 'cash_weight': max(0., 1-output['weight'].sum()),
         'active_weight_basis': 'total_account_equity_including_cash',
+        'unknown_industry_policy': unknown_industry_policy,
+        'unknown_benchmark_weight': sum(w for s, w in benchmark_weights.items() if s in unknown_symbols),
+        'unknown_target_weight': sum(w for s, w in final_weights.items() if s in unknown_symbols),
+        'absolute_stock_weight_change_from_requested': sum(
+            abs(w-desired.get(s, 0.)) for s, w in final_weights.items()),
         'benchmark_log_size_mean': mean, 'benchmark_log_size_std': std,
         'residuals': final, 'projection_residuals': projected_residuals,
         'impossible_trading_box': impossible_box,
