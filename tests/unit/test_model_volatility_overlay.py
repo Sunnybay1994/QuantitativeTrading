@@ -4,7 +4,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from quant.research.run_model_volatility_overlay import scale_targets
+from quant.research.run_model_volatility_overlay import scale_targets, threshold_scale
 
 
 def test_scale_reuses_trailing_sample_volatility_without_future_prices():
@@ -38,3 +38,18 @@ def test_missing_history_zero_and_no_leverage():
     assert scaled['weight'][0] == 0
     scaled, _ = scale_targets(targets, prices, {**policy, 'lookback_observations': 2})
     assert scaled['weight'][0] == .8
+
+
+@pytest.mark.parametrize('kind', ['moving_average', 'drawdown'])
+def test_threshold_signals_ignore_future_and_restore_weight(kind):
+    dates = [dt.date(2020, 1, day) for day in range(1, 7)]
+    frame = pl.DataFrame({'date': dates, 'unit_nav': [1., 1., 1., .9, 1., 100.]})
+    policy = {'kind': kind, 'lookback_observations': 3, 'reduced_weight': .5,
+              'drawdown_threshold': .1}
+    assert threshold_scale(frame, as_of=dates[3], policy=policy) == .5
+    assert threshold_scale(frame, as_of=dates[4], policy=policy) == 1.
+    assert threshold_scale(frame.head(4), as_of=dates[3], policy=policy) == .5
+    assert threshold_scale(frame, as_of=dates[1], policy=policy) == 0.
+    assert threshold_scale(frame.head(4), as_of=dates[4], policy=policy) == 0.
+    with pytest.raises(ValueError, match='ordered'):
+        threshold_scale(pl.concat([frame, frame.tail(1)]), as_of=dates[3], policy=policy)

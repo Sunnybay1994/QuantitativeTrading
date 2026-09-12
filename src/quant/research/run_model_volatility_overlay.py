@@ -1,4 +1,4 @@
-"""Paired frozen-model benchmark volatility experiment using existing scaler."""
+"""Paired frozen-model monthly benchmark risk experiments."""
 import argparse
 import copy
 import datetime as dt
@@ -18,28 +18,57 @@ from quant.research.factor_battery_costs import run_cost_plans
 from quant.research.run_multifactor_replay import model_target_plans
 
 
+def threshold_scale(benchmark: pl.DataFrame, *, as_of: dt.date, policy: dict) -> float:
+    kind = policy['kind']
+    lookback, reduced = policy['lookback_observations'], policy['reduced_weight']
+    if (kind not in ('moving_average', 'drawdown') or type(lookback) is not int or lookback < 2
+            or type(reduced) not in (float, int) or not 0 < reduced < 1):
+        raise ValueError('Invalid fixed threshold policy')
+    if kind == 'drawdown' and not 0 < policy['drawdown_threshold'] < 1:
+        raise ValueError('Invalid drawdown threshold')
+    if (not benchmark['date'].is_sorted() or benchmark['date'].n_unique() != benchmark.height
+            or benchmark['unit_nav'].null_count() or not benchmark['unit_nav'].is_finite().all()
+            or (benchmark['unit_nav'] <= 0).any()):
+        raise ValueError('Require ordered unique finite reference prices')
+    known = benchmark.filter(pl.col('date') <= as_of).tail(lookback)
+    if known.height < lookback or known['date'][-1] != as_of:
+        return 0.
+    values = known['unit_nav']
+    triggered = (values[-1] < values.mean() if kind == 'moving_average' else
+                 values[-1] <= values.max() * (1 - policy['drawdown_threshold']))
+    return float(reduced if triggered else 1.)
+
+
 def scale_targets(targets: pl.DataFrame, benchmark: pl.DataFrame, policy: dict) -> tuple[pl.DataFrame, pl.DataFrame]:
+    kind = policy.get('kind', 'volatility')
+    if kind not in ('volatility', 'moving_average', 'drawdown'):
+        raise ValueError('Unknown benchmark risk policy')
     prices = benchmark.select(pl.lit('510300.SH').alias('symbol'),
         pl.col('date').alias('trade_date'), pl.col('unit_nav').alias('adjusted_close'),
         pl.lit('CUMULATIVE_FACTOR').alias('adjustment_method'), pl.lit('saved_total_return_index').alias('source'))
     rows, scales = [], []
     for part in targets.sort('as_of', 'symbol').partition_by('as_of'):
         day = part['as_of'][0]
-        risk = pl.DataFrame({'as_of': [day], 'strategy': ['benchmark_risk'],
-            'strategy_version': ['v1'], 'symbol': ['510300.SH'], 'weight': [1.]})
-        scaled = scale_target_weights_to_volatility(targets=risk, prices=prices,
-            lookback_observations=policy['lookback_observations'],
-            annualized_target_volatility=policy['annualized_target_volatility'],
-            annualization_sessions=policy['annualization_sessions'])
-        multiplier = scaled['weight'][0]
+        if kind == 'volatility':
+            risk = pl.DataFrame({'as_of': [day], 'strategy': ['benchmark_risk'],
+                'strategy_version': ['v1'], 'symbol': ['510300.SH'], 'weight': [1.]})
+            scaled = scale_target_weights_to_volatility(targets=risk, prices=prices,
+                lookback_observations=policy['lookback_observations'],
+                annualized_target_volatility=policy['annualized_target_volatility'],
+                annualization_sessions=policy['annualization_sessions'])
+            multiplier = scaled['weight'][0]
+        else:
+            multiplier = threshold_scale(benchmark, as_of=day, policy=policy)
         rows.append(part.with_columns((pl.col('weight') * multiplier).alias('weight')))
         scales.append({'as_of': day, 'scale': multiplier})
     return pl.concat(rows), pl.from_dicts(scales)
 
 
 def write_report(output: Path, result: dict) -> None:
-    lines = ['# SUE v2 基准波动率仓位控制', '',
-        '冻结选股与月度信号，60日回看、12%目标波动率、不加杠杆；实际持仓期计量。', '',
+    policy = tomllib.loads((output/'config.toml').read_text(encoding='utf-8'))['policy']
+    lines = ['# SUE v2 基准风险仓位控制', '',
+        f"冻结选股与月度信号，规则为{policy.get('kind', 'volatility')}，"
+        f"回看{policy['lookback_observations']}日；完整参数见config.toml，实际持仓期计量。", '',
         '|方案|成本|年化收益|Sharpe|最大回撤|单边年换手|',
         '|---|---:|---:|---:|---:|---:|']
     for row in result['rows']:
