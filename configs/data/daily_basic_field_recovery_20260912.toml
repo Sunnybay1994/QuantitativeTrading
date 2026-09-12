@@ -1,0 +1,5 @@
+version = "share_relation_fields_20260912_01"
+keys_file = "artifacts/research/q4_benchmark_control_recovery_20260912_01/size/recovered_size.parquet"
+expected_rows = 21
+# Existing raw only. Same-day three-table validation and 1ppm market-value check.
+# Conflicting share fields remain null. Existing raw and clean versions are preserved.
