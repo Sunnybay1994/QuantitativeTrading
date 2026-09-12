@@ -149,6 +149,16 @@ def run_scorecard(*, screen: Path, output: Path, cost_runs: list[Path], cost_roo
         (output/'return_benchmarks.toml').write_bytes(return_benchmark_config.read_bytes())
     result.write_parquet(output/'factor_scorecard.parquet')
     (output/'summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
+    if not summary['rows']:
+        next_step = '本次没有可评估版本；检查统计输入范围。'
+    elif not summary['statistical_pass_rows']:
+        next_step = '本批全部未通过统计门槛；保留拒绝原因，停止本批成本追加，依据诊断选择下一批研究输入。'
+    elif summary['admission_unresolved_rows']:
+        next_step = '为尚缺证据的统计候选补齐成本、同期基准及相关性，再生成新版本评分表。'
+    elif summary['admitted_rows']:
+        next_step = '证据已齐全；通过的因子进入预注册组合级验证，其余保留拒绝结论。'
+    else:
+        next_step = '本批准入证据已齐全且全部拒绝；分析成本、基准与相关性原因后选择下一批研究输入。'
     diagnostic = (
         f"# 因子评分表：{settings['run']['as_of']}\n\n"
         f"共{result.height}个版本结果，{summary['statistical_pass_rows']}个通过统计门槛；"
@@ -156,7 +166,7 @@ def run_scorecard(*, screen: Path, output: Path, cost_runs: list[Path], cost_roo
         f"尚有{summary['admission_unresolved_rows']}个统计候选版本缺少准入证据。"
         f"股票等权基准完成：{summary['stock_benchmarks_complete']}；"
         f"全库相关性完成：{summary['correlations_complete']}。\n\n"
-        "下一步继续成本批处理、同区间基准比较和相关性计算，再生成新版本评分表。"
+        f"{next_step}"
         "factor_admitted为空表示证据尚不完整；RESEARCH_ONLY因子仍须通过组合级验证。\n")
     (output/f"诊断_{settings['run']['as_of']}.md").write_text(diagnostic, encoding='utf-8')
     return summary
