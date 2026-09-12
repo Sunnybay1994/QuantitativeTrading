@@ -62,6 +62,12 @@ def add_session_quality(frame: pl.DataFrame, data_root: Path, frequency: str, sy
     return result.drop("is_half_day")
 
 
+def _complete_stock_dates(frame: pl.DataFrame) -> set[dt.date]:
+    """A known traded A-share day needs all 48 distinct five-minute bars."""
+    counts = frame.group_by('trade_date').agg(pl.col('bar_start').n_unique().alias('bars'))
+    return set(counts.filter(pl.col('bars') == 48)['trade_date'])
+
+
 def _stock_job(args: tuple[str, str, str, list[dt.date]], *,
                start_date: dt.date | None = None) -> dict[str, Any]:
     data_root_text, symbol, end_text, expected_dates = args
@@ -77,7 +83,7 @@ def _stock_job(args: tuple[str, str, str, list[dt.date]], *,
         prior = {}
     existing_path = directory / "data.parquet"
     existing = pl.read_parquet(existing_path) if existing_path.exists() else None
-    missing = set(expected_dates) - (set(existing["trade_date"]) if existing is not None else set())
+    missing = set(expected_dates) - (_complete_stock_dates(existing) if existing is not None else set())
     if prior.get("through", "") >= end_text and existing is not None and not missing:
         return {"symbol": symbol, "changed_rows": 0}
     start = (dt.date.fromisoformat(prior["through"]) + dt.timedelta(days=1) if prior
@@ -91,6 +97,8 @@ def _stock_job(args: tuple[str, str, str, list[dt.date]], *,
     began = time.monotonic()
     changed, returned, raw_paths = 0, 0, []
     complete_through = prior.get("through", str(start - dt.timedelta(days=1)))
+    if missing:
+        complete_through = min(complete_through, str(min(missing) - dt.timedelta(days=1)))
     while start <= end:
         chunk_end = min(end, dt.date(start.year, 12, 31))
         for attempt in range(3):
@@ -108,7 +116,7 @@ def _stock_job(args: tuple[str, str, str, list[dt.date]], *,
                 time.sleep(2 * (attempt + 1))
         frame = add_session_quality(frame, data_root, "5m", symbol)
         changed += merge_bars(directory, frame)
-        missing.difference_update(frame["trade_date"])
+        missing.difference_update(_complete_stock_dates(frame))
         unresolved = sorted(day for day in missing if day <= chunk_end)
         if not unresolved:
             complete_through = str(chunk_end)
@@ -124,7 +132,7 @@ def _stock_job(args: tuple[str, str, str, list[dt.date]], *,
         coverage.write_text(json.dumps(status), encoding="utf-8")
         start = chunk_end + dt.timedelta(days=1)
     if missing:
-        raise ValueError(f"BaoStock {symbol} missing {len(missing)} known traded days; first {min(missing)}; "
+        raise ValueError(f"BaoStock {symbol} missing complete bars for {len(missing)} known traded days; first {min(missing)}; "
                          f"available bars preserved through {end}")
     return {"symbol": symbol, **status, "raw_paths": raw_paths}
 
