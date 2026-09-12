@@ -1,5 +1,7 @@
 """Explicit no-trade continuation when actual holdings lack risk controls."""
 import math
+import copy
+from typing import Callable
 
 import polars as pl
 
@@ -87,3 +89,62 @@ def validate_quantity_hold(*, targets: pl.DataFrame, state: dict, info: dict) ->
         if not math.isclose(row['weight'], holding['quantity']*holding['mark_price']/equity,
                             rel_tol=0, abs_tol=1e-10):
             raise ValueError('Unverified continuation must preserve signal-close holding weights')
+
+
+def isolate_missing_controls(*, targets: pl.DataFrame, state: dict,
+        continuation: tuple[pl.DataFrame, dict], cash_buffer: float,
+        project: Callable[[pl.DataFrame, dict, list[str], float], tuple[pl.DataFrame, dict]]
+        ) -> tuple[pl.DataFrame, dict]:
+    """Project only modeled capital; unknown full-book risk remains unverified."""
+    held_targets, fallback = continuation
+    frozen = [row['symbol'] for row in fallback['missing_held_controls']]
+    fraction = 1-fallback['unmodeled_held_weight']
+    liquid = copy.deepcopy(state)
+    liquid['holdings'] = {s: h for s, h in liquid['holdings'].items() if s not in frozen}
+    liquid['restricted_shares'] = [r for r in liquid.get('restricted_shares', [])
+                                    if r['symbol'] not in frozen]
+    liquid['constraint_nominees'] = [s for s in state.get('constraint_nominees', sorted(state['holdings']))
+                                     if s not in frozen]
+    liquid['nav'][-1]['equity'] = state['nav'][-1]['equity']*fraction
+    remaining = targets.filter(~pl.col('symbol').is_in(frozen))
+    try:
+        if fraction <= cash_buffer or remaining.is_empty():
+            raise ValueError('No deployable liquid capital or target universe')
+        result, info = project(remaining, liquid, frozen, cash_buffer/fraction)
+        if info.get('feasible') is not True:
+            raise ValueError(f"Liquid projection infeasible: {info.get('failure_reason')}")
+        if set(result['symbol']) & set(frozen):
+            raise ValueError('Liquid projection reintroduced frozen holdings')
+        result = pl.concat([result.with_columns(pl.col('weight')*fraction),
+                            held_targets.filter(pl.col('symbol').is_in(frozen))]).sort('symbol')
+        merged = {**fallback, 'action': 'isolate_actual_quantities',
+            'liquid_constraints_verified': True, 'liquid_equity_fraction': fraction,
+            'full_book_size_bound': None, 'liquid_constraint_diagnostics': info,
+            'nominee_symbols': info.get('nominee_symbols', liquid['constraint_nominees']),
+            'execution_direction_permissions': {
+                **info.get('execution_direction_permissions', {}),
+                **{s: (False, False) for s in frozen}},
+            'cash_weight': 1-result['weight'].sum()}
+        validate_quantity_isolation(targets=result, state=state, info=merged)
+        return result, merged
+    except ValueError as error:
+        return held_targets, {**fallback, 'isolation_failure': str(error),
+                              'full_book_size_bound': None}
+
+
+def validate_quantity_isolation(*, targets: pl.DataFrame, state: dict, info: dict) -> None:
+    """Permit liquid trading only after projection, with frozen quantities locked."""
+    if (info.get('feasible') is not False or info.get('constraints_verified') is not False
+            or info.get('liquid_constraints_verified') is not True
+            or not info.get('missing_held_controls') or targets['symbol'].is_duplicated().any()
+            or targets['weight'].null_count() or not targets['weight'].is_finite().all()
+            or (targets['weight'] < 0).any() or targets['weight'].sum() > 1+1e-10):
+        raise ValueError('Invalid unverified isolated continuation')
+    weights = dict(targets.select('symbol', 'weight').iter_rows())
+    for row in info['missing_held_controls']:
+        symbol = row['symbol']
+        holding = state['holdings'][symbol]
+        expected = holding['quantity']*holding['mark_price']/state['nav'][-1]['equity']
+        if (tuple(info['execution_direction_permissions'].get(symbol, ())) != (False, False)
+                or not math.isclose(weights.get(symbol, -1), expected, rel_tol=0, abs_tol=1e-10)):
+            raise ValueError('Isolated holding must retain actual quantity and direction lock')

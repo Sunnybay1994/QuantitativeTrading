@@ -68,9 +68,9 @@ def prepare_constraints(*, config: Path, plans: dict, data_root: Path, output: P
     if settings.get('auto_trade') is not False or settings.get('mode') != 'research_only':
         raise ValueError('Constraints require research_only and auto_trade=false')
     missing_policy = settings.get('missing_held_controls_policy', 'reject')
-    if missing_policy not in ('reject', 'hold_actual_quantities'):
+    if missing_policy not in ('reject', 'hold_actual_quantities', 'isolate_actual_quantities'):
         raise ValueError('Unknown missing held-controls policy')
-    if missing_policy == 'hold_actual_quantities' and settings.get('signal_direction_quantity_lock') is not True:
+    if missing_policy != 'reject' and settings.get('signal_direction_quantity_lock') is not True:
         raise ValueError('Missing-control continuation requires signal direction quantity locks')
     names = settings['strategy_names']
     if not names or len(names) != len(set(names)) or not set(names) <= {n for n, _ in plans.values()}:
@@ -134,7 +134,8 @@ def prepare_constraints(*, config: Path, plans: dict, data_root: Path, output: P
         for filename, frame in frames.items():
             frame.write_parquet(output/filename)
 
-    def transform(batch: pl.DataFrame, state: dict) -> tuple[pl.DataFrame, dict]:
+    def transform(batch: pl.DataFrame, state: dict, frozen: list[str] | None = None,
+                  liquid_cash_buffer: float | None = None) -> tuple[pl.DataFrame, dict]:
         signal = batch['as_of'][0]
         if batch['strategy'].n_unique() != 1:
             raise ValueError('Mixed strategy constraint batch')
@@ -160,7 +161,9 @@ def prepare_constraints(*, config: Path, plans: dict, data_root: Path, output: P
                 current=held_weights, benchmark=benchmark.filter(pl.col('as_of') == signal),
                 estimates=risk_estimates, as_of=signal,
                 maximum_staleness_days=risk_settings['maximum_staleness_days'])
-        if missing_policy == 'hold_actual_quantities':
+        if frozen:
+            market = market.with_columns((pl.col('can_buy') & ~pl.col('symbol').is_in(frozen)).alias('can_buy'))
+        if missing_policy != 'reject' and frozen is None:
             from quant.portfolio.missing_control_hold import hold_missing_controls
             continuation = hold_missing_controls(targets=batch, state=state, market=market,
                 benchmark=benchmark.filter(pl.col('as_of') == signal),
@@ -168,6 +171,11 @@ def prepare_constraints(*, config: Path, plans: dict, data_root: Path, output: P
             if continuation is not None:
                 held_targets, held_info = continuation
                 held_info['held_risk_estimates'] = risk_info
+                if missing_policy == 'isolate_actual_quantities':
+                    from quant.portfolio.missing_control_hold import isolate_missing_controls
+                    return isolate_missing_controls(targets=batch, state=state,
+                        continuation=(held_targets, held_info), cash_buffer=settings['limits']['cash_buffer'],
+                        project=transform)
                 return held_targets, held_info
         if nominee_settings:
             from quant.portfolio.industry_candidate_selection import select_industry_candidates
@@ -185,7 +193,7 @@ def prepare_constraints(*, config: Path, plans: dict, data_root: Path, output: P
                 ~pl.col('symbol').is_in(restricted)).alias('can_sell'))
             day_scores = nominee_scores.filter(pl.col('trade_date') == signal).select(
                 pl.col('trade_date').alias('as_of'), 'symbol',
-                pl.col(nominee_settings['score_column']).alias('score'))
+                pl.col(nominee_settings['score_column']).alias('score')).filter(~pl.col('symbol').is_in(frozen or []))
             nominees, nominee_info = select_industry_candidates(scores=day_scores, market=market,
                 benchmark=benchmark.filter(pl.col('as_of') == signal), current=current,
                 previous=state.get('constraint_nominees', sorted(state['holdings'])),
@@ -202,9 +210,12 @@ def prepare_constraints(*, config: Path, plans: dict, data_root: Path, output: P
             batch = pl.from_dicts([{**template, 'symbol': symbol,
                 'weight': 1/nominee_settings['top_k'] if symbol in selected else 0.}
                 for symbol in sorted(selected | set(state['holdings']) | set(batch['symbol']))], schema=batch.schema)
+        limits = dict(settings['limits'])
+        if liquid_cash_buffer is not None:
+            limits['cash_buffer'] = liquid_cash_buffer
         result, info = constrain_account_targets(targets=batch, state=state, market=market,
             benchmark=benchmark.filter(pl.col('as_of') == signal),
-            limits=RelativeConstraintLimits(**settings['limits']), enabled=settings['enabled'],
+            limits=RelativeConstraintLimits(**limits), enabled=settings['enabled'],
             sell_only=settings['sell_only'], unknown_industry_policy=settings['unknown_industry_policy'],
             diagnostic_only=True)
         info['applied'] = True

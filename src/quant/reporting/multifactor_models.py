@@ -35,13 +35,15 @@ def apply_constraint_coverage(assessment: dict, *, run: Path, variant: str,
             events.extend(event for event in json.loads(path.read_text(encoding='utf-8'))
                           if event.get('applied', True))
         unverified = [event for event in events if event.get('feasible') is not True]
-        if any(event.get('action') != 'hold_actual_quantities'
+        if any(event.get('action') not in ('hold_actual_quantities', 'isolate_actual_quantities')
                or event.get('constraints_verified') is not False for event in unverified):
             raise ValueError('Completed constrained replay contains an unsupported failure')
         scenarios.append({'cost_multiplier': cost, 'signal_count': len(events),
             'verified_count': len(events)-len(unverified),
             'unverified_count': len(unverified),
             'hold_dates': [event['as_of'] for event in unverified],
+            'isolated_dates': [e['as_of'] for e in unverified if e['action'] == 'isolate_actual_quantities'],
+            'isolation_fallback_count': sum('isolation_failure' in e for e in unverified),
             'maximum_unmodeled_held_weight': max(
                 (event['unmodeled_held_weight'] for event in unverified), default=0.)})
     verified = all(row['unverified_count'] == 0 for row in scenarios)
@@ -90,10 +92,11 @@ def render_model_report(method: str, *, rows: list[dict], assessment: dict, mode
             f"{_format(row.get('model_max_drawdown'))}|{_format(row.get('benchmark_max_drawdown'))}|{verdict}|")
     if one.get('constraint_coverage'):
         lines += ['', '风险字段缺失时保留实际股数，估值与公司行动继续；该次约束未验证，不能计为通过。', '',
-            '|成本|调仓信号|约束已验证|保留股数次数|缺风险字段持仓最大权重|', '|---|---:|---:|---:|---:|']
+            '|成本|调仓信号|约束已验证|未验证次数|其中隔离调仓|隔离失败回退|缺风险字段持仓最大权重|', '|---|---:|---:|---:|---:|---:|---:|']
         for row in one['constraint_coverage']['scenarios']:
             lines.append(f"|{row['cost_multiplier']:g}×|{row['signal_count']}|{row['verified_count']}|"
-                         f"{row['unverified_count']}|{row['maximum_unmodeled_held_weight']:.3%}|")
+                         f"{row['unverified_count']}|{len(row['isolated_dates'])}|{row['isolation_fallback_count']}|"
+                         f"{row['maximum_unmodeled_held_weight']:.3%}|")
     if coverage is not None:
         lines += ['', '|执行年份|月度信号数|有足够预测股票|缺失原因与次数|', '|---|---:|---:|---|']
         for year in sorted({row['test_year'] for row in coverage}):
@@ -222,7 +225,7 @@ def report_models(*, run: Path, output: Path, data_root: Path,
             measured = assess_model(
                 nav=navs[variant, 1.], one=rows[1.], two=rows[2.], benchmarks=baselines,
                 model=measured_model, windows=windows)
-            if (constraint_settings.get('missing_held_controls_policy') == 'hold_actual_quantities'
+            if (constraint_settings.get('missing_held_controls_policy') in ('hold_actual_quantities', 'isolate_actual_quantities')
                     and f'p4_{variant}' in constraint_settings.get('strategy_names', [])):
                 apply_constraint_coverage(measured, run=run, variant=variant,
                     costs=model['portfolio']['cost_multipliers'])

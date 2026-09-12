@@ -254,6 +254,9 @@ def replay(
                 if constraint_info.get('action') == 'hold_actual_quantities':
                     from quant.portfolio.missing_control_hold import validate_quantity_hold
                     validate_quantity_hold(targets=batch, state=state, info=constraint_info)
+                elif constraint_info.get('action') == 'isolate_actual_quantities':
+                    from quant.portfolio.missing_control_hold import validate_quantity_isolation
+                    validate_quantity_isolation(targets=batch, state=state, info=constraint_info)
                 else:
                     raise ValueError(f"Portfolio constraints failed at {constraint_info['as_of']}: "
                                      f"{constraint_info.get('failure_reason')}")
