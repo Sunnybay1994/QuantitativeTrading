@@ -74,8 +74,16 @@ def simulate_daily_targets(
     strategy: str,
     initial_positions: pl.DataFrame | None = None,
     scheduled_orders: pl.DataFrame | None = None,
+    target_permissions: Mapping[str, tuple[bool, bool]] | None = None,
 ) -> DailySimulationResult:
     """按权威 session 模拟股票/ETF 目标权重，显式保留拒单证据。"""
+    if target_permissions is not None:
+        if scheduled_orders is not None or any(
+            not isinstance(symbol, str) or not symbol or len(permissions) != 2
+            or any(type(value) is not bool for value in permissions)
+            for symbol, permissions in target_permissions.items()
+        ):
+            raise ValueError('Invalid target direction permissions')
     if (
         not isinstance(initial_cash, (int, float))
         or isinstance(initial_cash, bool)
@@ -277,6 +285,16 @@ def simulate_daily_targets(
                 )
                 for symbol in relevant_symbols
             }
+            if target_permissions is not None:
+                for symbol, (can_buy, can_sell) in target_permissions.items():
+                    if symbol not in desired:
+                        continue
+                    # Positions already include corporate actions and are the
+                    # actual quantity boundary, independent of overnight prices.
+                    if not can_buy:
+                        desired[symbol] = min(desired[symbol], positions[symbol].quantity)
+                    if not can_sell:
+                        desired[symbol] = max(desired[symbol], positions[symbol].quantity)
             if order_frame is not None:
                 desired = {symbol: positions[symbol].quantity for symbol in relevant_symbols}
                 for order in order_frame.iter_rows(named=True):

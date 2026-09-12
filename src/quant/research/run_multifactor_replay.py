@@ -194,6 +194,10 @@ def prepare_constraints(*, config: Path, plans: dict, data_root: Path, output: P
             sell_only=settings['sell_only'], unknown_industry_policy=settings['unknown_industry_policy'],
             diagnostic_only=True)
         info['applied'] = True
+        if settings.get('signal_direction_quantity_lock', False):
+            permissions = {r['symbol']: (r['can_buy'], r['can_sell']) for r in market.iter_rows(named=True)}
+            info['execution_direction_permissions'] = {symbol: permissions.get(symbol, (False, False))
+                for symbol in result['symbol'] if permissions.get(symbol, (False, False)) != (True, True)}
         if risk_info:
             info['held_risk_estimates'] = risk_info
         if nominee_info is not None:

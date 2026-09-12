@@ -218,6 +218,7 @@ def replay(
                     target_records.append({**row, 'desired_weight': desired.get(row['symbol'], 0.),
                         'current_weight': held.get('quantity', 0)*held.get('mark_price', 0.)/equity,
                         'signal_equity': equity})
+        execution_permissions = None
         if batch is not None and target_constraints is not None:
             desired = dict(batch.select('symbol', 'weight').iter_rows())
             try:
@@ -247,6 +248,7 @@ def replay(
                                  f"{constraint_info.get('failure_reason')}")
             if constraint_info.get('nominee_symbols') is not None:
                 state['constraint_nominees'] = constraint_info['nominee_symbols']
+            execution_permissions = constraint_info.get('execution_direction_permissions')
         writeoff = 0.0
         removed = []
         if config["portfolio"].get("delisted_holding_recovery") == 0.0:
@@ -281,6 +283,7 @@ def replay(
                     date=date, state=state, bars=today_bars, calendar=calendar,
                     instruments=instruments, market_states=market_states, dividends=dividends,
                     config=account_config,
+                    target_permissions=execution_permissions,
                 )
                 if prior_nominees is not None:
                     state['constraint_nominees'] = prior_nominees
