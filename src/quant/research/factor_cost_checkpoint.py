@@ -6,6 +6,7 @@ import datetime as dt
 import json
 from pathlib import Path
 import uuid
+import time
 
 import polars as pl
 
@@ -95,4 +96,13 @@ def save_year(folder: Path, *, account: dict, chunks: tuple,
         pl.from_dicts(target_records).write_parquet(stage / "budget_targets.parquet")
     (stage / "account.json").write_text(json.dumps({"version": 1, "account": state},
         allow_nan=False, ensure_ascii=False), encoding="utf-8")
-    stage.rename(folder)
+    for attempt in range(4):
+        try:
+            stage.rename(folder)
+            break
+        except PermissionError:
+            # Windows can briefly deny a just-written directory rename. Retry
+            # only publication; never rerun the account or replace a target.
+            if attempt == 3 or folder.exists() or not stage.is_dir():
+                raise
+            time.sleep((0.1, 0.3, 1.0)[attempt])

@@ -1,6 +1,7 @@
 import copy
 import datetime as dt
 import json
+from pathlib import Path
 
 import polars as pl
 from polars.testing import assert_frame_equal
@@ -13,6 +14,39 @@ from quant.research.classic_monthly_baseline import replay
 from tests.unit.test_paper_ledger import SYMBOL, inputs
 
 DAYS = [dt.date(2020, 12, day) for day in (29, 30, 31)] + [dt.date(2021, 1, day) for day in (4, 5)]
+
+
+@pytest.mark.parametrize('failure', ['transient', 'persistent', 'target_appears'])
+def test_annual_publication_retries_permission_only_and_keeps_failed_stage(tmp_path, monkeypatch, failure):
+    _, _, kwargs = setup_run(monkeypatch, tmp_path/'replay')
+    rename = Path.rename
+    calls, sleeps = [], []
+
+    def blocked(source, target):
+        calls.append((source, target))
+        if failure != 'transient' or len(calls) <= 2:
+            if failure == 'target_appears':
+                target.mkdir()
+                (target/'sentinel').write_text('another output')
+            raise PermissionError('fixture directory busy')
+        return rename(source, target)
+
+    monkeypatch.setattr(Path, 'rename', blocked)
+    monkeypatch.setattr(checkpoints.time, 'sleep', sleeps.append)
+    if failure == 'transient':
+        costs.run_cost_plans(**kwargs)
+        assert sleeps == [.1, .3]
+        assert calls[0][0] == calls[1][0] == calls[2][0]
+        assert (calls[0][1]/'account.json').is_file()
+    else:
+        with pytest.raises(PermissionError):
+            costs.run_cost_plans(**kwargs)
+        assert len(calls) == (4 if failure == 'persistent' else 1)
+        assert (calls[0][0]/'account.json').is_file()
+        if failure == 'persistent':
+            assert not calls[0][1].exists()
+        else:
+            assert (calls[0][1]/'sentinel').read_text() == 'another output'
 
 
 def scenario(kind="deferred"):
