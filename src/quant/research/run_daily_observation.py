@@ -220,7 +220,7 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--config', type=Path, default=Path('configs/research/daily_observation_v1.toml'))
+    parser.add_argument('--config', type=Path, default=Path('configs/research/daily_observation_q2_sue_v2_20260912.toml'))
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--to', default='today')
     parser.add_argument('--saved-data', action='store_true')
