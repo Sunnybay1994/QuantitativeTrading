@@ -17,6 +17,21 @@ import polars as pl
 from quant.research.run_multifactor_replay import model_target_plans
 
 
+def residual_target_summary(targets: pl.DataFrame) -> dict:
+    """Describe retained planned positions outside the original monthly selection."""
+    residual = (pl.col('desired_weight') == 0) & (pl.col('weight') > 0)
+    monthly = targets.group_by('as_of').agg(
+        residual.sum().alias('residual_names'),
+        pl.when(residual).then(pl.col('weight')).otherwise(0.).sum().alias('residual_weight'),
+        (residual & (pl.col('weight') < .001)).sum().alias('residual_names_below_10bp'))
+    return {'signals':monthly.height,'mean_residual_names':monthly['residual_names'].mean(),
+        'maximum_residual_names':monthly['residual_names'].max(),
+        'mean_residual_weight':monthly['residual_weight'].mean(),
+        'maximum_residual_weight':monthly['residual_weight'].max(),
+        'mean_residual_names_below_10bp':monthly['residual_names_below_10bp'].mean(),
+        'basis':'Budget-adjusted target weights; not realized close holdings'}
+
+
 def summarize_budget_history(output: Path, *, end: dt.date, budget: float) -> dict:
     rows, adjustments = [], []
     initial = tomllib.loads((output/'battery.toml').read_text(encoding='utf-8'))['portfolio']['initial_cash']
@@ -29,6 +44,7 @@ def summarize_budget_history(output: Path, *, end: dt.date, budget: float) -> di
         if monthly.filter(pl.col('planned_turnover') > budget+1e-9).height:
             raise ValueError('Monthly target turnover exceeds registered budget')
         adjustments.append({'cost_multiplier': multiplier, 'signals': monthly.height,
+            'residual_targets': residual_target_summary(targets),
             'binding_signals': monthly.filter(pl.col('desired_turnover') > budget+1e-9).height,
             'maximum_planned_turnover': monthly['planned_turnover'].max(),
             'mean_planned_turnover': monthly['planned_turnover'].mean()})
@@ -88,7 +104,8 @@ def write_budget_report(output: Path, result: dict) -> None:
     (output/'report.md').write_text('\n'.join(lines)+'\n', encoding='utf-8')
 
 
-def run(*, config: Path, output: Path, data_root: Path, resume: bool = False) -> dict:
+def run(*, config: Path, output: Path, data_root: Path, resume: bool = False,
+        share_exchanges_config: Path = Path('configs/data/share_exchanges_20260912.toml')) -> dict:
     spec = tomllib.loads(config.read_text(encoding='utf-8'))
     research, policy = spec['research'], spec['policy']
     if policy['auto_trade'] is not False:
@@ -125,6 +142,15 @@ def run(*, config: Path, output: Path, data_root: Path, resume: bool = False) ->
     for filename in ('battery.toml', 'model.toml'):
         (output/filename).write_bytes((source/filename).read_bytes())
     snapshot = json.loads((benchmarks/'summary.json').read_text())['execution_snapshot']
+    from quant.backtest.share_exchanges import validate_exchanges
+    event_content = share_exchanges_config.read_text(encoding='utf-8')
+    settings['share_exchanges'] = validate_exchanges(tomllib.loads(event_content)['share_exchanges'])
+    saved_events = output/'share_exchanges.toml'
+    if resume:
+        if not saved_events.is_file() or saved_events.read_text(encoding='utf-8') != event_content:
+            raise ValueError('Resume requires unchanged share exchanges')
+    else:
+        saved_events.write_text(event_content,encoding='utf-8')
     run_cost_plans(settings=settings, plans={'control': (name, targets), 'budgeted': (name, targets)},
         sessions=sessions, output=output, data_root=data_root, execution_snapshot=snapshot,
         factor=research['id'], start=walk['test_start'],
@@ -146,7 +172,7 @@ def run(*, config: Path, output: Path, data_root: Path, resume: bool = False) ->
         model=model, windows=windows)
     result = {'rows': report['rows'], 'assessments': assessments, 'measurement': report['measurement'],
               'benchmark_comparisons': report['benchmark_comparisons']}
-    original_replay = source.parent/'replay'
+    original_replay = Path(research.get('control_replay', str(source.parent/'replay')))
     comparisons = []
     for multiplier in (.5, 1., 2.):
         original, _ = load_cost_history(original_replay, f"{research['method']}_top{research['top_k']}", multiplier, walk['test_end'])
@@ -168,8 +194,10 @@ def main() -> None:
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--data-root', type=Path, default=Path('data'))
     parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--share-exchanges-config',type=Path,default=Path('configs/data/share_exchanges_20260912.toml'))
     args = parser.parse_args()
-    run(config=args.config, output=args.output, data_root=args.data_root, resume=args.resume)
+    run(config=args.config, output=args.output, data_root=args.data_root, resume=args.resume,
+        share_exchanges_config=args.share_exchanges_config)
 
 
 if __name__ == '__main__':

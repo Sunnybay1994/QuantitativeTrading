@@ -1,0 +1,23 @@
+[research]
+control_replay = "artifacts/models/share_exchange_replays_20260912_01/q1d_causal48_calendar_missing_20260912_01/replay"
+id = "q1d-turnover-budget-05-exchange-20260912"
+registered_on = 2026-09-12
+hypothesis = "Limit monthly target adjustment to half of NAV in one-way turnover using prior-close actual holdings, reducing costs without refitting calendar LightGBM."
+predictions = "artifacts/models/q1d_causal48_calendar_missing_20260912_01/predictions"
+benchmarks = "artifacts/factors/battery_stock_benchmarks_20260911"
+return_benchmark_config = "configs/data/return_benchmarks_q1b_20260912.toml"
+method = "lightgbm"
+top_k = 50
+evidence = "retrospective_existing_history_no_new_holdout"
+decision = "unchanged_source_model_admission_all_conditions_required"
+
+[policy]
+monthly_one_way_budget = 0.5
+budget_basis = "half_sum_absolute_target_minus_actual_signal_close_weights"
+allocation = "linear_blend_current_holdings_toward_original_targets"
+budget_derivation = "existing_annual_one_way_limit_6_divided_by_12"
+unused_budget = "expires_no_carry_forward"
+scope = "signal_target_turnover_actual_fills_and_price_gaps_reported_separately"
+baseline = "corrected_causal48_calendar_missing_model_without_concentration_caps"
+auto_trade = false
+
