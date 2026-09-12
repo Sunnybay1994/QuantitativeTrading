@@ -226,3 +226,20 @@ def test_health_summary_survives_blocked_model_and_independent_accounts(env, hea
     assert '历史演练' in report and '本次模型预测：0只股票' in report
     assert error in report and '|B20六账户|完成|' in report and '|B32双账户|完成|' in report
     assert '因子健康日志' in report
+
+
+@pytest.mark.parametrize('status', ['pending', 'no_forecasts', 'failed'])
+def test_configured_forecast_scoring_continuation(env, monkeypatch, status):
+    from quant.reporting import daily_forecast_monitor
+    import tomllib
+    args, _, b20, b32, _ = env
+    content = args['config'].read_text(encoding='utf-8')
+    selection = tomllib.loads(content)['model']['selection']
+    args['config'].write_text(content+'\n[forecast_monitor]\nselection='+json.dumps(selection)+'\n')
+    operation = Mock(return_value={'status': status, 'requires_review': status == 'failed'})
+    monkeypatch.setattr(daily_forecast_monitor, 'run', operation)
+    result = daily.run(**args)
+    assert operation.call_args.kwargs['current'] == args['output']/'model/forecast'
+    assert result['signal_monitor_status'] == status
+    assert result['stages']['signal_monitor']['status'] == ('complete' if status == 'pending' else 'incomplete')
+    assert b20.called and b32.called

@@ -52,8 +52,11 @@ def write_daily_report(record: dict[str, Any], output: Path) -> None:
                 names.get(name, '模型输入质量' if name == 'model_input_quality' else name)
                 for name in risk['source_errors'])+'。']
     monitor = record['stages'].get('signal_monitor', {}).get('result', {})
-    if monitor.get('status') == 'insufficient':
-        lines += ['', '滚动信号监控：前向样本不足，尚未形成足够长度的监控窗口。']
+    if monitor:
+        lines += ['', f"滚动信号监控：{monitor.get('status')}；{monitor.get('reason', '详见评分记录')}。",
+            '[预测评分与监控详情](signal_monitor/summary.json)']
+        if monitor.get('status') == 'insufficient':
+            lines += ['前向样本不足，尚未形成足够长度的监控窗口。']
     health = record.get('factor_health')
     if health:
         lines += ['', '## 因子健康日志', '']
@@ -81,6 +84,8 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
     settings = tomllib.loads(config.read_text(encoding='utf-8'))
     if settings['auto_trade'] is not False:
         raise ValueError('Observation requires auto_trade=false')
+    if settings.get('forecast_monitor') and Path(settings['forecast_monitor']['selection']).resolve() != Path(settings['model']['selection']).resolve():
+        raise ValueError('Forecast monitor must use daily model frozen selection')
     defaults = [Path(settings[k]['output']).resolve() for k in ('b20', 'b32')]
     root = account_root.resolve() if account_root else None
     if rehearsal and root is None:
@@ -193,9 +198,15 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
         config=Path(settings.get('risk_config', DEFAULT_CONFIG))),
         lambda value: value.get('status') == 'complete')
     if result['as_of'] is not None:
-        stage('signal_monitor', lambda: run_monitor(known_through=dt.date.fromisoformat(result['as_of']),
-            output=output/'signal_monitor', config=Path(settings.get('monitor_config', MONITOR_CONFIG))),
-            lambda value: value.get('status') in ('insufficient', 'warning', 'observed'))
+        def monitor() -> dict:
+            if settings.get('forecast_monitor'):
+                from quant.reporting.daily_forecast_monitor import run as continue_forecasts
+                return continue_forecasts(config=config, known_through=end, output=output/'signal_monitor',
+                    data_root=data_root, current=output/'model/forecast')
+            return run_monitor(known_through=end, output=output/'signal_monitor',
+                config=Path(settings.get('monitor_config', MONITOR_CONFIG)))
+        stage('signal_monitor', monitor,
+            lambda value: value.get('status') in ('insufficient', 'warning', 'observed', 'pending'))
     else:
         stages['signal_monitor'] = {'status': 'skipped', 'reason': 'No known session cutoff'}
     result['signal_monitor_status'] = stages['signal_monitor'].get('result', {}).get('status', 'unavailable')
