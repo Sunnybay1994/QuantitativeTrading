@@ -56,6 +56,35 @@ def test_invalid_concurrency_rejected_before_resources(tmp_path):
     assert not (tmp_path/'absent.sqlite').exists()
 
 
+def test_unexpected_failure_stops_new_work_and_preserves_unknown_reservation(tmp_path):
+    settings=load_settings(CONFIG)
+    reasons=[REASON+str(i) for i in range(12)]
+    selected={score_key(r,settings):r for r in reasons}
+    path=tmp_path/'cache.sqlite'
+    cache=ScoreCache(path)
+    cache.close()
+    barrier=threading.Barrier(4)
+    calls=[]
+    class Client:
+        def complete(self,reason,settings):
+            calls.append(reason)
+            barrier.wait(timeout=5)
+            if reason==reasons[0]:
+                raise RuntimeError('synthetic fatal failure')
+            time.sleep(.1)
+            return response()
+        def close(self):
+            pass
+    with pytest.raises(RuntimeError,match='synthetic fatal'):
+        score_parallel(selected,settings=settings,cache_path=path,max_requests=20,
+            max_usd=1.,workers=4,client_factory=Client,development_test=True)
+    assert len(calls)==4
+    cache=ScoreCache(path)
+    assert cache.latest(score_key(reasons[0],settings))['state']=='unknown'
+    assert cache.totals()['requests']==4
+    cache.close()
+
+
 def test_live_batch_wiring_and_dollar_reservation_stop_before_requests(tmp_path,monkeypatch):
     from quant.research import score_forecast_text as module
     from tests.unit.test_deepseek_forecast_scoring import DESIGN, FakeClient
