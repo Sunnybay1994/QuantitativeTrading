@@ -10,6 +10,7 @@ from typing import Any
 import polars as pl
 
 from quant.data.order_risk_inputs import read_order_risk_inputs
+from quant.execution.execution_risk_log import summarize_execution_risk
 from quant.execution.order_risk import assess_reference_orders, render_report
 
 DEFAULT_CONFIG = Path('configs/paper/order_risk_diagnostic_v1_20260911.toml')
@@ -95,8 +96,18 @@ def run(*, record: dict[str, Any], output: Path, data_root: Path,
                     (folder/'risk.json').write_text(json.dumps(risk, ensure_ascii=False, indent=2),
                                                    encoding='utf-8')
                     (folder/'report.md').write_text(render_report(risk), encoding='utf-8')
+                    execution = summarize_execution_risk(orders=orders, market=market, risk=risk,
+                        liquidity_sessions=settings['liquidity_sessions'],
+                        maximum_participation_rate=settings['limits']['participation_rate'])
+                    (folder/'execution_risk.json').write_text(
+                        json.dumps(execution, ensure_ascii=False, indent=2, allow_nan=False),
+                        encoding='utf-8')
                     item.update(scope='stock_reference_order_risk',
-                        requires_review=risk['requires_review'], issue_count=len(risk['issues']),
+                        execution_requires_review=execution['requires_review'],
+                        participation_exceeded_symbols=execution['participation_exceeded_symbols'],
+                        execution_observed_through=execution['observed_through'],
+                        requires_review=risk['requires_review'] or execution['requires_review'],
+                        issue_count=len(risk['issues']),
                         projection_valid=risk['projection_valid'])
                 else:
                     # Stock industry/concentration limits do not describe cross-asset ETF accounts.
@@ -121,6 +132,7 @@ def run(*, record: dict[str, Any], output: Path, data_root: Path,
     lines = ['# 日更观察风险摘要', '', f"日期：{date}；运行状态：{summary['status']}。", '',
         '|账户|检查范围|状态|需核对|', '|---|---|---|---|']
     lines += [f"|{r['account']}|{r.get('scope', '输入不可用')}|{r['status']}|"
+              f"{'是' if r.get('requires_review', True) else '否'}；"
               f"{r.get('issue_count', r.get('error', '未知'))}|" for r in results]
     lines += ['', 'ETF检查仅含已保存余额与日期；股票账户包含现有持仓与参考订单风险规则。',
               f"上游异常：{', '.join(source_errors) or '无'}。预警不改变持仓，不发送消息。"]

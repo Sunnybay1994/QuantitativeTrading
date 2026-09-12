@@ -30,6 +30,8 @@ def source(tmp_path, monkeypatch):
     monkeypatch.setattr(risk, 'read_order_risk_inputs', Mock(return_value=(None, None)))
     monkeypatch.setattr(risk, 'assess_reference_orders', Mock(return_value={
         'requires_review': False, 'issues': [], 'projection_valid': True}))
+    monkeypatch.setattr(risk, 'summarize_execution_risk', Mock(return_value={
+        'requires_review': False, 'participation_exceeded_symbols': [], 'observed_through': None}))
     monkeypatch.setattr(risk, 'render_report', Mock(return_value='risk'))
     return record
 
@@ -71,3 +73,16 @@ def test_advisory_does_not_turn_success_into_missing_input(source, tmp_path, mon
     result = risk.run(record=source, output=tmp_path/'risk', data_root=Path('data'))
     assert result['status'] == 'complete' and result['requires_review']
     assert result['accounts'][-1]['issue_count'] == 1
+
+
+def test_execution_risk_wired_without_future_fills(source, tmp_path, monkeypatch):
+    execution = Mock(return_value={'requires_review': True,
+        'participation_exceeded_symbols': ['ABC'], 'observed_through': None})
+    monkeypatch.setattr(risk, 'summarize_execution_risk', execution)
+    result = risk.run(record=source, output=tmp_path/'risk', data_root=Path('data'))
+    assert execution.call_count == 2 and result['requires_review']
+    assert result['accounts'][-1]['participation_exceeded_symbols'] == ['ABC']
+    assert 'fills' not in execution.call_args.kwargs
+    assert 'observed_through' not in execution.call_args.kwargs
+    saved = json.loads((tmp_path/'risk/b32_0/execution_risk.json').read_text())
+    assert saved['observed_through'] is None
