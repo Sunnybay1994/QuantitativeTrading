@@ -16,6 +16,33 @@ from quant.data.connectors.tushare import TushareConnector
 from quant.data.storage import RawStore
 
 
+def apply_reviewed_headers(*, disclosures: Path, headers: Path, output: Path) -> dict:
+    """Reuse inspected statement headers while preserving the original OCR result."""
+    from quant.data.resolve_financial_six_20260912 import resolve_batch
+
+    source = json.loads((disclosures/'summary.json').read_text(encoding='utf-8'))
+    reviewed = json.loads(headers.read_text(encoding='utf-8'))
+    pending = {row['announcement_id'] for row in source['unresolved']}
+    selected = {**reviewed, 'documents': [row for row in reviewed['documents']
+                                         if row['announcement_id'] in pending]}
+    corrections = resolve_batch(selected, source)
+    requests = {(row['symbol'], row['period']) for row in source['requests'] + corrections['requests']}
+    result = {**source,
+              'requests': [{'symbol': symbol, 'period': period}
+                           for symbol, period in sorted(requests, key=lambda pair: (pair[1], pair[0]))],
+              'unresolved': corrections['unresolved'],
+              'document_resolutions': source.get('document_resolutions', []) + corrections['document_resolutions'],
+              'reviewed_headers': reviewed}
+    path = output/'summary.json'
+    if path.is_file():
+        if json.loads(path.read_text(encoding='utf-8')) != result:
+            raise ValueError('Reviewed headers or source changed; choose a new output')
+        return result
+    output.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
+    return result
+
+
 def issuer_names(symbols: list[str], *, data_root: Path, output: Path) -> dict:
     """Keep exact provider full names; never guess how a stock abbreviation expands."""
     output.mkdir(parents=True, exist_ok=True)

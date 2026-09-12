@@ -8,7 +8,7 @@ from pathlib import Path
 
 from quant.data.refresh_financials import refresh_quarter
 from quant.data.collect_financial_disclosures import collect
-from quant.data.resolve_financial_disclosures import resolve
+from quant.data.resolve_financial_disclosures import apply_reviewed_headers, resolve
 
 
 def refresh_daily(*, end: dt.date, config: Path, data_root: Path, artifact_root: Path,
@@ -24,6 +24,11 @@ def refresh_daily(*, end: dt.date, config: Path, data_root: Path, artifact_root:
         resolve(disclosures=disclosures, data_root=data_root, output=enriched,
                 document_cache=artifact_root/'data'/'financial_document_ocr_v1')
         disclosures, version = enriched, 'v2'
+        headers = settings['financials'].get('reviewed_headers')
+        if headers:
+            reviewed = artifact_root/'data'/f'financial_disclosures_v3_{end:%Y%m%d}'
+            apply_reviewed_headers(disclosures=disclosures, headers=Path(headers), output=reviewed)
+            disclosures, version = reviewed, 'v3'
     return update(disclosures=disclosures, config=config, data_root=data_root,
                   output=artifact_root/'data'/f'financial_updates_{version}_{end:%Y%m%d}')
 

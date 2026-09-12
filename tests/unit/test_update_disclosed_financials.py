@@ -57,9 +57,11 @@ def test_unmapped_announcements_remain_visible_without_numeric_requests(tmp_path
 
 
 @pytest.mark.parametrize('fail', [False, True])
-def test_daily_document_resolution_precedes_numeric_update(tmp_path, monkeypatch, fail):
+@pytest.mark.parametrize('reviewed', [False, True])
+def test_daily_document_resolution_precedes_numeric_update(tmp_path, monkeypatch, fail, reviewed):
     config = tmp_path/'refresh.toml'
-    config.write_text('[financials]\nresolve_documents=true\n')
+    config.write_text('[financials]\nresolve_documents=true\n' +
+                      ('reviewed_headers="headers.json"\n' if reviewed else ''))
     calls = []
     monkeypatch.setattr(updater, 'collect', lambda **kwargs: calls.append('collect'))
 
@@ -72,12 +74,19 @@ def test_daily_document_resolution_precedes_numeric_update(tmp_path, monkeypatch
             raise RuntimeError('incomplete document capture')
 
     def update(**kwargs):
-        assert calls == ['collect', 'resolve']
-        assert kwargs['disclosures'].name == 'financial_disclosures_v2_20260910'
-        assert kwargs['output'].name == 'financial_updates_v2_20260910'
+        assert calls == ['collect', 'resolve'] + (['reviewed'] if reviewed else [])
+        version = 'v3' if reviewed else 'v2'
+        assert kwargs['disclosures'].name == f'financial_disclosures_{version}_20260910'
+        assert kwargs['output'].name == f'financial_updates_{version}_20260910'
         return {'new_rows': 2}
 
+    def apply(**kwargs):
+        assert kwargs['disclosures'].name == 'financial_disclosures_v2_20260910'
+        assert kwargs['headers'].name == 'headers.json'
+        calls.append('reviewed')
+
     monkeypatch.setattr(updater, 'resolve', resolve)
+    monkeypatch.setattr(updater, 'apply_reviewed_headers', apply)
     monkeypatch.setattr(updater, 'update', update)
     kwargs = dict(end=dt.date(2026, 9, 10), config=config, data_root=tmp_path,
                   artifact_root=tmp_path, lookback_days=3)
