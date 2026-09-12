@@ -56,3 +56,57 @@ def test_actual_values_and_missing_files_are_distinguished(tmp_path, monkeypatch
     args['factors'].append({'id': 'absent', 'family': 'daily'})
     result = quality.run_quality(**args, output=tmp_path/'second')
     assert len(result['errors']) == 1 and 'absent' in result['errors'][0]
+
+
+def test_daily_value_nulls_are_reported_and_wrong_finite_values_are_errors(tmp_path, monkeypatch):
+    date = dt.date(2026, 2, 24)
+    bars = pl.DataFrame({'trade_date': [date]*3, 'symbol': ['a', 'b', 'c'], 'close': [10.]*3})
+    basic = bars.with_columns(pl.Series('dividend_yield_ttm', [None, 0., 2.]))
+    adjustment = bars.select(pl.col('trade_date').alias('effective_date'), 'symbol', pl.lit(1.).alias('adj_factor'))
+    tables = {'bar_1d': bars, 'daily_basic': basic, 'adjust_factor': adjustment}
+    monkeypatch.setattr(quality, 'available_sessions', lambda *args: (date,))
+    monkeypatch.setattr(quality, 'read_stock_data', lambda **kwargs: tables[kwargs['table']])
+    folder = tmp_path/'factors'/'daily_dividend_yield_ttm'/'year=2026'
+    folder.mkdir(parents=True)
+    values = pl.DataFrame({'trade_date': [date]*3, 'ts_code': ['a', 'b', 'c'], 'value': [None, 0., .02]})
+    values.write_parquet(folder/'data.parquet')
+    args = dict(data_root=tmp_path, config=tmp_path/'config', end=date, financials={},
+                factors=[{'id': 'daily_dividend_yield_ttm', 'family': 'daily'}])
+    result = quality.run_quality(**args, output=tmp_path/'valid')
+    assert result['errors'] == []
+    assert result['daily_value_input_checks'][0]['reasons'] == {'source_field_null': 1, 'observed': 2}
+    observed = pl.read_parquet(tmp_path/'valid'/'daily_value_input_reasons.parquet')
+    assert observed.filter(pl.col('symbol') == 'a')['factor_value'].item() is None
+    # A source null must not silently become a finite factor, even zero.
+    values.with_columns(pl.col('value').fill_null(0.)).write_parquet(folder/'data.parquet')
+    result = quality.run_quality(**args, output=tmp_path/'wrong')
+    assert result['daily_value_input_checks'][0]['unexpected_factor_values'] == 1
+    assert any('unexpected finite values' in error for error in result['errors'])
+
+
+def test_sue_context_findings_reach_daily_report_without_changing_values(tmp_path, monkeypatch):
+    date = dt.date(2026, 2, 24)
+    bars = pl.DataFrame({'trade_date': [date], 'symbol': ['a'], 'close': [10.]})
+    adjustment = bars.select(pl.col('trade_date').alias('effective_date'), 'symbol', pl.lit(1.).alias('adj_factor'))
+    tables = {'bar_1d': bars, 'daily_basic': bars, 'adjust_factor': adjustment}
+    monkeypatch.setattr(quality, 'available_sessions', lambda *args: (date,))
+    monkeypatch.setattr(quality, 'read_stock_data', lambda **kwargs: tables[kwargs['table']])
+    folder = tmp_path/'factors'/'pit_sue8'/'year=2026'
+    folder.mkdir(parents=True)
+    values = pl.DataFrame({'trade_date': [date], 'ts_code': ['a'], 'value': [3.]})
+    values.write_parquet(folder/'data.parquet')
+
+    def context(**kwargs):
+        assert kwargs['snapshot'] == 'frozen' and kwargs['as_of'] == date
+        assert kwargs['factor_values']['value'].item() == 3.
+        return kwargs['pool'].with_columns(pl.lit(3.).alias('factor_value'),
+            pl.lit('non_industrial').alias('report_context'), pl.lit(True).alias('unexpected_factor_value'))
+
+    monkeypatch.setattr(quality, 'read_sue_report_context', context)
+    result = quality.run_quality(data_root=tmp_path, config=tmp_path/'config', end=date,
+        financials={'financial_snapshot': 'frozen'}, factors=[{'id': 'pit_sue8', 'family': 'pit'}],
+        output=tmp_path/'result')
+    assert result['sue_report_context_checks'][0]['unexpected_factor_values'] == 1
+    assert any('compatible latest PIT report context' in error for error in result['errors'])
+    assert pl.read_parquet(tmp_path/'result'/'sue_report_context.parquet')['factor_value'].item() == 3.
+    assert pl.read_parquet(folder/'data.parquet').equals(values)
