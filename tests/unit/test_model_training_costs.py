@@ -135,6 +135,29 @@ as_of = 2020-01-06
     table = pl.read_parquet(args['output']/'annual_cost_metrics.parquet')
     assert table.filter(pl.col('test_year') == 2020)['ending_equity'].to_list() == [110.]*3
     assert table.height == 6
+    from polars.testing import assert_frame_equal
+    original_loader = module.load_cost_history
+    monkeypatch.setattr(module, 'load_cost_history', lambda *args: pytest.fail('Unchanged completed histories must be reused'))
+    reused = module.run_cost_prefixes(**{**args, 'output': tmp_path/'reused', 'previous_costs': args['output']})
+    assert reused['reused_cost_factors'] == ['a']
+    for file in ('annual_cost_metrics.parquet', 'annual_benchmark_comparisons.parquet', 'annual_cost_screen.parquet'):
+        assert_frame_equal(pl.read_parquet(args['output']/file), pl.read_parquet(tmp_path/'reused'/file))
+    measurement.write_text('[benchmarks]\nequal_weight_snapshot="changed"\n')
+    with pytest.raises(ValueError, match='unchanged model and benchmark'):
+        module.run_cost_prefixes(**{**args, 'output': tmp_path/'changed_returns', 'previous_costs': args['output']})
+    measurement.write_text('[benchmarks]')
+    import shutil
+    replacement = tmp_path/'replacement'
+    shutil.copytree(run, replacement)
+    reads = []
+    def replaced_history(folder, *unused):
+        reads.append(folder)
+        return nav, trades
+    monkeypatch.setattr(module, 'load_cost_history', replaced_history)
+    replaced = module.run_cost_prefixes(**{**args, 'output': tmp_path/'replaced',
+        'cost_runs': [replacement], 'previous_costs': args['output']})
+    assert replaced['reused_cost_factors'] == [] and reads == [replacement]*3
+    monkeypatch.setattr(module, 'load_cost_history', original_loader)
     (prefix/'model.toml').write_text('[selection]\nminimum_known_months = 48\n')
     changed = module.run_cost_prefixes(**{**args, 'output': tmp_path/'training48'})
     assert changed['training_minimum_months'] == 48 and changed['final_battery_minimum_months'] == 96

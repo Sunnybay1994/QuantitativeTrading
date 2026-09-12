@@ -44,7 +44,8 @@ def prefix_cost_report(*, factor: str, histories: dict, benchmarks: dict,
 
 def run_cost_prefixes(*, prefix: Path, output: Path, cost_runs: list[Path],
                       cost_root: Path, benchmarks: Path, data_root: Path,
-                      return_benchmark_config: Path | None = None) -> dict:
+                      return_benchmark_config: Path | None = None,
+                      previous_costs: Path | None = None) -> dict:
     if return_benchmark_config is None:
         raise ValueError('Annual cost screening requires explicit return_benchmark_config')
     settings = tomllib.loads((prefix/'battery.toml').read_text(encoding='utf-8'))
@@ -64,6 +65,20 @@ def run_cost_prefixes(*, prefix: Path, output: Path, cost_runs: list[Path],
     screens = pl.read_parquet(prefix/'annual_statistical_screen.parquet')
     annual = {key[0]: frame for key, frame in screens.partition_by('test_year', as_dict=True).items()}
     reports: dict[int, list] = {year: [] for year in annual}
+    prior_sources: dict[str, str] = {}
+    prior_metrics = prior_comparisons = None
+    if previous_costs is not None:
+        for name, current in (('model.toml', prefix/'model.toml'), ('battery.toml', prefix/'battery.toml'),
+                              ('return_benchmarks.toml', return_benchmark_config)):
+            if (previous_costs/name).read_bytes() != current.read_bytes():
+                raise ValueError('Previous annual costs require unchanged model and benchmark settings')
+        prior = json.loads((previous_costs/'summary.json').read_text(encoding='utf-8'))
+        if prior.get('measurement') != MEASUREMENT:
+            raise ValueError('Previous annual costs use obsolete measurement')
+        prior_sources = prior['source_runs']
+        prior_metrics = pl.read_parquet(previous_costs/'annual_cost_metrics.parquet')
+        prior_comparisons = pl.read_parquet(previous_costs/'annual_benchmark_comparisons.parquet')
+    reused_factors = []
     sources = {}
     for run in [*cost_runs, *sorted(p.parent for p in cost_root.glob('*/summary.json'))]:
         if not (run/'summary.json').is_file():
@@ -73,6 +88,25 @@ def run_cost_prefixes(*, prefix: Path, output: Path, cost_runs: list[Path],
             raise ValueError('Duplicate factor cost history')
         sources[factor] = str(run)
         saved = json.loads((run/'summary.json').read_text(encoding='utf-8'))
+        if factor in prior_sources and Path(prior_sources[factor]).resolve() == run.resolve():
+            assert prior_metrics is not None and prior_comparisons is not None
+            cached_rows = prior_metrics.filter(pl.col('factor') == factor)
+            cached_comparisons = prior_comparisons.filter(pl.col('factor') == factor)
+            expected = {(year, row['variant'], row['cost_multiplier']) for year in annual for row in saved['rows']}
+            observed = cached_rows.select('test_year', 'variant', 'cost_multiplier').rows()
+            if len(observed) != len(expected) or set(observed) != expected:
+                raise ValueError('Previous annual costs are missing registered scenarios')
+            for year, table in annual.items():
+                year_rows = cached_rows.filter(pl.col('test_year') == year)
+                if set(year_rows['last_date']) != {str(table['refit_close'][0])}:
+                    raise ValueError('Previous annual cost cutoff differs from the statistical screen')
+                for row in year_rows.drop('test_year').iter_rows(named=True):
+                    scenario_comparisons = cached_comparisons.filter((pl.col('test_year') == year)
+                        & (pl.col('variant') == row['variant']) & (pl.col('cost_multiplier') == row['cost_multiplier']))
+                    reports[year].append({'rows': [row],
+                        'benchmark_comparisons': scenario_comparisons.drop('test_year').to_dicts(), 'measurement': MEASUREMENT})
+            reused_factors.append(factor)
+            continue
         histories = {(row['variant'], row['cost_multiplier']): load_cost_history(
             run, row['variant'], row['cost_multiplier'], end) for row in saved['rows']}
         for year, table in annual.items():
@@ -108,6 +142,7 @@ def run_cost_prefixes(*, prefix: Path, output: Path, cost_runs: list[Path],
             metrics.extend({**row, 'test_year': year} for row in report['rows'])
             comparisons.extend({**row, 'test_year': year} for row in report['benchmark_comparisons'])
     summary = {'complete_cost_factors': len(sources), 'annual_screens': counts, 'source_runs': sources,
+               'reused_cost_factors': reused_factors,
                'measurement': MEASUREMENT, 'final_battery_minimum_months': settings['admission']['minimum_months'],
                'training_minimum_months': training_settings['admission']['minimum_months'],
                'scope': 'refit-close holding-window statistics and return-index cost comparisons; annual correlations still required'}
@@ -131,12 +166,13 @@ def main() -> None:
     parser.add_argument('--cost-run', type=Path, action='append', default=[])
     parser.add_argument('--cost-root', type=Path, required=True)
     parser.add_argument('--return-benchmark-config', type=Path, required=True)
+    parser.add_argument('--previous-costs', type=Path, help='Reuse unchanged measured histories; recompute new or replaced factors')
     parser.add_argument('--benchmarks', type=Path, required=True)
     parser.add_argument('--data-root', type=Path, default=Path('data'))
     args = parser.parse_args()
     print(json.dumps(run_cost_prefixes(prefix=args.prefix, output=args.output, cost_runs=args.cost_run,
         cost_root=args.cost_root, benchmarks=args.benchmarks, data_root=args.data_root,
-        return_benchmark_config=args.return_benchmark_config)))
+        return_benchmark_config=args.return_benchmark_config, previous_costs=args.previous_costs)))
 
 
 if __name__ == '__main__':

@@ -62,10 +62,19 @@ def run_pipeline(*, config: Path, output: Path, data_root: Path, measurement_con
     print('Adding completed cost histories', flush=True)
     costs = reuse('costs', ('annual_cost_screen.parquet', 'model.toml', 'battery.toml')) if prior_complete else None
     if costs is None:
+        previous_costs = None
+        if resume_from is not None and return_benchmarks:
+            folder = resume_from/'costs'
+            required = ('summary.json', 'annual_cost_metrics.parquet', 'annual_benchmark_comparisons.parquet',
+                        'return_benchmarks.toml')
+            if (all((folder/name).is_file() for name in required)
+                    and (folder/'return_benchmarks.toml').read_bytes() == measurement_bytes):
+                previous_costs = folder
         costs = run_cost_prefixes(prefix=output/'statistics', output=output/'costs',
             cost_runs=[Path(path) for path in research.get('cost_runs', [])],
             cost_root=Path(research['cost_root']), benchmarks=benchmarks, data_root=data_root,
-            return_benchmark_config=output/'measurement.toml' if return_benchmarks else None)
+            return_benchmark_config=output/'measurement.toml' if return_benchmarks else None,
+            previous_costs=previous_costs)
         prior_complete = False
     print('Selecting factors using historical correlations', flush=True)
     selection = reuse('selection', ('annual_selection.parquet', 'model.toml', 'battery.toml')) if prior_complete else None
