@@ -10,14 +10,19 @@ from quant.data.forecast_text_scores import read_corpus, asof_panel
 from quant.factors.forecast_text_score import DIMENSIONS, score_key
 
 
-def cache_snapshot(*, source: Path, cache: Path, settings: dict, allowed_keys: set[str]) -> tuple[pl.DataFrame, dict]:
-    frame = read_corpus(source)
+def request_snapshot(cache: Path) -> list[dict]:
+    """One committed SQLite read; never reserve or submit requests."""
     db = sqlite3.connect(cache.resolve().as_uri()+'?mode=ro',uri=True)
     db.row_factory = sqlite3.Row
     try:
-        attempts = [dict(r) for r in db.execute('SELECT * FROM attempts ORDER BY id').fetchall()]
+        return [dict(r) for r in db.execute('SELECT * FROM attempts ORDER BY id').fetchall()]
     finally:
         db.close()
+
+
+def cache_snapshot(*, source: Path, cache: Path, settings: dict, allowed_keys: set[str]) -> tuple[pl.DataFrame, dict]:
+    frame = read_corpus(source)
+    attempts = request_snapshot(cache)
     latest = {r['cache_key']:r for r in attempts if r['cache_key'] in allowed_keys}
     rows = []
     for row in frame.iter_rows(named=True):
