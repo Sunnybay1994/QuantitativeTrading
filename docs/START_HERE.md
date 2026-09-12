@@ -95,6 +95,10 @@ D:\Miniforge3\python.exe -m quant.research.run_fixed_model_forecast --selection 
 D:\Miniforge3\python.exe -m quant.research.run_daily_model_forecast --to today --selection artifacts/models/p6c_calendar_model_20260911_02/selection --output artifacts/models/<新日更目录>
 # 已发布数据演练可加--saved-data --rehearsal；数据缺失/质量错误返回非零。仍使用新目录保留每次记录。
 
+# 9月14日起：同日刷新与预测、B20/B32冻结观察账户、B32月报一条命令；预测不驱动持仓
+D:\Miniforge3\python.exe -m quant.research.run_daily_observation --to today --output artifacts/research/<新日更观察目录>
+# 9月14日前的演练须加--saved-data --rehearsal --account-root <已初始化的隔离副本根目录>。
+
 # 仅分钟数据；BaoStock 单连接串行，首次历史回填时间较长
 D:\Miniforge3\python.exe -m quant.data.intraday --to today
 
