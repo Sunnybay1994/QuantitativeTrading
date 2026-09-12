@@ -10,6 +10,7 @@ from tests.unit.test_multifactor_assessment import fixture
 
 def test_report_writes_three_models_and_requires_full_grid_for_double_cost(tmp_path, monkeypatch):
     nav, one, baselines, model, _ = fixture()
+    nav = nav.with_columns(pl.lit(50).alias('position_count'))
     run, output = tmp_path/'run', tmp_path/'report'
     run.mkdir()
     source = Path('configs/models/p4_annual_walk_forward_20260911.toml').read_text(encoding='utf-8')
@@ -34,10 +35,13 @@ def test_report_writes_three_models_and_requires_full_grid_for_double_cost(tmp_p
     monkeypatch.setattr(reports, 'read_index_benchmark', index)
 
     def history(folder, variant, cost, end):
-        return nav, pl.DataFrame(schema={'date': pl.Date, 'notional': pl.Float64})
+        return nav, pl.DataFrame(schema={'date': pl.Date, 'symbol': pl.String, 'notional': pl.Float64})
 
     monkeypatch.setattr(reports, 'load_cost_history', history)
     result = reports.report_models(run=run, measurement_config=measurement, output=output, data_root=tmp_path)
+    burden = pl.read_csv(output/'execution_burden.csv')
+    assert burden.height == 18 and burden['fills'].sum() == 0
+    assert burden['mean_positions'].eq(50).all()
     assert len(result['conclusions']) == 3
     assert pl.read_parquet(output/'cost_metrics.parquet').height == 18
     assert pl.read_parquet(output/'benchmark_comparisons.parquet').height == 54

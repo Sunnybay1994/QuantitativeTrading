@@ -11,6 +11,7 @@ from quant.data.factor_panels import available_sessions
 from quant.data.equal_weight_index import load_return_benchmarks
 from quant.data.index_benchmarks import read_index_benchmark
 from quant.reporting.cycle_stress import path_statistics
+from quant.reporting.execution_burden import execution_burden, render_burden
 from quant.reporting.multifactor_assessment import assess_model, holding_metrics
 from quant.research.factor_battery_cost_report import load_cost_history
 
@@ -166,11 +167,13 @@ def report_models(*, run: Path, output: Path, data_root: Path,
     grid = [date for date in available_sessions(data_root, walk['test_end'])
             if walk['test_start'] <= date <= walk['test_end']]
     navs, report_rows = {}, []
+    burden_rows = []
     for variant, multiplier in observed:
         nav, trades = load_cost_history(run, variant, multiplier, walk['test_end'])
         if nav['date'].to_list() != grid:
             raise ValueError('Every cost scenario must retain every registered session, including cash years')
         navs[variant, multiplier] = nav
+        burden_rows.append({'variant': variant, 'cost_multiplier': multiplier, **execution_burden(nav, trades)})
         report_rows.append({'variant': variant, 'cost_multiplier': multiplier,
             **holding_metrics(nav, trades, initial_cash=settings['portfolio']['initial_cash'])})
     baselines, index_details = {}, []
@@ -248,6 +251,7 @@ def report_models(*, run: Path, output: Path, data_root: Path,
         (output/'constraints_config.toml').write_bytes(constraint_bytes)
         result['constraints_config'] = str(constraint_path)
     pl.from_dicts(report_rows, infer_schema_length=None).write_parquet(output/'cost_metrics.parquet')
+    pl.from_dicts(burden_rows, infer_schema_length=None).write_csv(output/'execution_burden.csv')
     comparison_frame = (pl.from_dicts(comparisons, infer_schema_length=None) if comparisons else
         pl.DataFrame(schema={'variant': pl.String, 'cost_multiplier': pl.Float64, 'benchmark': pl.String,
             'start': pl.Date, 'end': pl.Date, 'benchmark_cagr': pl.Float64, 'strategy_cagr': pl.Float64,
@@ -261,6 +265,7 @@ def report_models(*, run: Path, output: Path, data_root: Path,
         method_rows = [row for row in report_rows if row['variant'].startswith(f'{method}_top')]
         rendered = render_model_report(method, rows=method_rows, assessment=assessment, model=model,
                                        coverage=coverage.to_dicts() if coverage is not None else None)
+        rendered += render_burden([row for row in burden_rows if row['variant'].startswith(f'{method}_top')])
         if constraint_bytes is not None:
             scope = tomllib.loads(constraint_bytes.decode('utf-8')).get('strategy_names', [])
             rendered += f'\n本次独立组合约束仅应用于{scope}；其余场景保持原规则。配置见上级目录constraints_config.toml。\n'
