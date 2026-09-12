@@ -1,0 +1,16 @@
+source = "artifacts/research/q3_lagged_exposure_20260912_05"
+statistics = "artifacts/factors/battery_statistics_20260831_20260911"
+benchmark_config = "configs/data/return_benchmarks_q1b_20260912.toml"
+refresh_config = "configs/data/refresh.toml"
+start = 2024-01-01
+end = 2024-02-08
+auto_trade = false
+minimum_symbols = 100
+minimum_industry_symbols = 5
+weighting = "equal_weight_among_lagged_eligible_complete_cases"
+exposure = "strictly_prior_month_end_industry_and_log_total_market_value"
+size_identification = "within_industry_center_then_unit_population_standard_deviation"
+industry_identification = "equal_weight_cross_section_sum_of_industry_effects_zero"
+market = "all_market_equal_weight_total_return_plus_fitted_common_return"
+security_return = "adj_factor_times_close_adjacent_exchange_sessions"
+missing = "exclude_from_regression_and_report_portfolio_contribution_as_unmodeled"
