@@ -12,6 +12,16 @@ from quant.research.factor_battery_screen import screen_statistics
 from quant.research.factor_battery_statistics import monthly_ic_summary
 
 
+def training_prefix_settings(settings: dict, model: dict) -> dict:
+    """Use the registered training prefix without altering the final battery."""
+    if 'minimum_known_months' not in model['selection']:
+        return {**settings, 'admission': dict(settings['admission'])}
+    months = model['selection']['minimum_known_months']
+    if type(months) is not int or not 48 <= months <= settings['admission']['minimum_months']:
+        raise ValueError('Training prefix must cover at least 48 months and not exceed the final battery minimum')
+    return {**settings, 'admission': {**settings['admission'], 'minimum_months': months}}
+
+
 def outcome_calendar(labels: pl.DataFrame) -> pl.DataFrame:
     """One scheduled exit per signal, including explicitly unavailable outcomes."""
     calendar = labels.select('trade_date', 'exit_date_rebalance').unique().sort('trade_date')
@@ -56,8 +66,7 @@ def run_prefixes(*, config: Path, output: Path) -> dict:
     settings = tomllib.loads(battery_bytes.decode('utf-8'))
     if settings['run']['selected'] != 'all':
         raise ValueError('Annual screens require the all-factor statistical run')
-    if model['selection']['minimum_known_months'] != settings['admission']['minimum_months']:
-        raise ValueError('Model and battery history thresholds differ')
+    settings = training_prefix_settings(settings, model)
     family = pl.read_parquet(root/'statistics.parquet', columns=['factor', 'variant'])
     factors = sorted(family['factor'].unique().to_list())
     if set(family.rows()) != {(f, v) for f in factors for v in settings['variants']}:
@@ -94,6 +103,8 @@ def run_prefixes(*, config: Path, output: Path) -> dict:
             'primary_statistical_pass': primary['statistical_pass'].sum(),
             'maximum_known_months': primary['months'].max()})
     summary = {'factors': len(factors), 'annual_screens': counts,
+               'training_minimum_months': settings['admission']['minimum_months'],
+               'final_battery_minimum_months': tomllib.loads(battery_bytes.decode('utf-8'))['admission']['minimum_months'],
                'scope': 'training statistics only; prefix costs and correlations still required'}
     output.mkdir(parents=True, exist_ok=False)
     pl.concat(tables, how='diagonal_relaxed').write_parquet(output/'annual_statistical_screen.parquet')

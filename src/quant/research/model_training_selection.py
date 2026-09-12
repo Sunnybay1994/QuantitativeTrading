@@ -8,6 +8,7 @@ from pathlib import Path
 import polars as pl
 
 from quant.research.factor_battery_redundancy import monthly_rank_correlation, summarize_correlation
+from quant.research.model_training_prefix import training_prefix_settings
 
 
 def annual_selection(screen: pl.DataFrame, *, settings: dict, model: dict,
@@ -17,11 +18,16 @@ def annual_selection(screen: pl.DataFrame, *, settings: dict, model: dict,
         ['icir', 'factor'], descending=[True, False], nulls_last=True)
     if not ranked.height or ranked['factor'].n_unique() != ranked.height:
         raise ValueError('Selection requires a unique primary factor family')
-    higher, selected, confirmed, decisions = [], [], [], []
+    higher: list[str] = []
+    selected: list[str] = []
+    confirmed: list[str] = []
+    decisions: list[dict] = []
     uncertain = 0
     for row in ranked.iter_rows(named=True):
         factor = row['factor']
-        admitted, chosen, maximum = False, False, None
+        admitted: bool | None = False
+        chosen: bool | None = False
+        maximum: float | None = None
         excluded_without_costs = False
         reason = 'statistical_threshold'
         if row['statistical_pass']:
@@ -82,11 +88,14 @@ def annual_selection(screen: pl.DataFrame, *, settings: dict, model: dict,
 def run_selection(*, costs: Path, output: Path, correlations_from: Path | None = None) -> dict:
     model = tomllib.loads((costs/'model.toml').read_text(encoding='utf-8'))
     settings = tomllib.loads((costs/'battery.toml').read_text(encoding='utf-8'))
+    settings = training_prefix_settings(settings, model)
     root = Path(model['research']['statistics_source'])
     if (root/'battery.toml').read_bytes() != (costs/'battery.toml').read_bytes():
         raise ValueError('Correlation source differs from annual cost settings')
     screens = pl.read_parquet(costs/'annual_cost_screen.parquet')
-    all_decisions, summaries, pair_rows = [], [], []
+    all_decisions: list[dict] = []
+    summaries: list[dict] = []
+    pair_rows: list[dict] = []
     variant = model['selection']['variant']
     previous_pairs = {}
     if correlations_from is not None:
@@ -112,10 +121,12 @@ def run_selection(*, costs: Path, output: Path, correlations_from: Path | None =
         cache: dict[tuple[str, str], dict] = {}
 
         def compare(left: str, right: str) -> dict:
-            pair = tuple(sorted((left, right)))
+            pair = (min(left, right), max(left, right))
             if pair not in cache:
                 previous = previous_pairs.get((year, cutoff, pair))
                 if previous is not None:
+                    previous = {**previous, 'comparison_qualified':
+                        previous['months'] >= settings['admission']['minimum_months']}
                     result = {key: value for key, value in previous.items()
                               if key not in ('test_year', 'refit_close', 'left', 'right', 'variant')}
                     cache[pair] = result

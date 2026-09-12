@@ -6,6 +6,32 @@ import polars as pl
 import pytest
 
 from quant.research.model_training_prefix import known_outcomes, outcome_calendar, prefix_statistics, run_prefixes
+from quant.research.model_training_prefix import training_prefix_settings
+
+
+def test_training_prefix_can_be_48_without_changing_final_battery():
+    settings = {'admission': {'minimum_months': 96, 'minimum_icir': .3}}
+    result = training_prefix_settings(settings, {'selection': {'minimum_known_months': 48}})
+    assert result['admission'] == {'minimum_months': 48, 'minimum_icir': .3}
+    assert settings['admission']['minimum_months'] == 96
+    for months in (0, 47, 97, True, 48.0):
+        with pytest.raises(ValueError, match='at least 48 months'):
+            training_prefix_settings(settings, {'selection': {'minimum_known_months': months}})
+
+
+def test_48_month_candidate_passes_training_but_not_final_screen():
+    from quant.research.factor_battery_screen import screen_statistics
+
+    settings = tomllib.loads(Path('configs/factors/battery.toml').read_text(encoding='utf-8'))
+    rows = pl.from_dicts([{'factor': 'a', 'variant': variant, 'months': 48,
+        'p_value': .0001, 'newey_west_t': 5., 'icir': 2., 'yearly_positive_fraction': 1.,
+        'group_statistics': {'long_short_sharpe': 2.}} for variant in settings['variants']])
+    training = screen_statistics(statistics=rows, factors=['a'],
+        settings=training_prefix_settings(settings, {'selection': {'minimum_known_months': 48}}))
+    final = screen_statistics(statistics=rows, factors=['a'], settings=settings)
+    assert training['statistical_pass'].all()
+    assert not final['statistical_pass'].any()
+    assert all(failures == ['history'] for failures in final['statistical_failures'].to_list())
 
 
 def fixture():
