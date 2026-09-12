@@ -51,6 +51,44 @@ def test_models_share_rows_and_ic_weights_use_training_means():
         fit_predict(training=training.with_columns(pl.lit(dt.date(2023, 1, 3)).alias('exit_date_rebalance')),
             prediction=prediction, factors=['a', 'b'], mean_ic={'a': .3, 'b': .1}, cutoff=cutoff, settings=settings)
 
+    masked = prediction.with_columns(pl.lit(0.).alias('b'), pl.lit(True).alias('__active_a'),
+                                     pl.lit(False).alias('__active_b'))
+    scored, _, _ = fit_predict(training=training, prediction=masked, factors=['a', 'b'],
+        mean_ic={'a': .3, 'b': .1}, cutoff=cutoff, settings=settings)
+    assert scored['equal_z'].to_list() == [1., 3.]
+    assert scored['positive_mean_ic'].to_list() == pytest.approx([1., 3.])
+    with pytest.raises(ValueError, match='Invalid monthly factor exclusion'):
+        fit_predict(training=training, prediction=masked.with_columns(pl.lit(False).alias('__active_a')),
+            factors=['a', 'b'], mean_ic={'a': .3, 'b': .1}, cutoff=cutoff, settings=settings)
+
+
+def test_neutral_imputation_uses_eligible_pool_and_monthly_exclusion(tmp_path):
+    days = [dt.date(2023, 1, 31), dt.date(2023, 2, 28), dt.date(2023, 3, 31)]
+    symbols = [str(i) for i in range(11)]
+    keys = {'symbol': symbols*3, 'trade_date': [d for d in days for _ in symbols]}
+    inputs = tmp_path/'inputs/2023'
+    inputs.mkdir(parents=True)
+    pl.DataFrame({**keys, 'eligible': ([True]*10+[False])*3}).write_parquet(inputs/'universe.parquet')
+    for factor in ('a', 'b'):
+        folder = tmp_path/'factors'/factor
+        folder.mkdir(parents=True)
+        values = ([1.]*22+[None]*11) if factor == 'a' else (
+            [2.]*7+[None]*3+[999.]+[2.]*6+[None]*4+[999.]+[None]*11)
+        pl.DataFrame({**keys, 'size_industry_neutral': values}).write_parquet(folder/'monthly_scores.parquet')
+    kwargs = dict(statistics=tmp_path, factors=['a', 'b'], variant='size_industry_neutral',
+        start=days[0], end=days[-1], minimum_symbols=10,
+        missing_policy='neutral_zero_with_monthly_factor_exclusion')
+    result = common_features(**kwargs)
+    first = result.filter(pl.col('trade_date') == days[0])
+    second = result.filter(pl.col('trade_date') == days[1])
+    assert first.height == second.height == 10
+    assert first['__active_b'].all() and (first['b'] == 0).sum() == 3
+    assert not second['__active_b'].any() and (second['b'] == 0).all()
+    assert result.filter(pl.col('trade_date') == days[2]).is_empty()
+    assert '10' not in result['symbol']
+    # Excluding future months from the request cannot change January filling.
+    assert first.equals(common_features(**{**kwargs, 'end': days[0]}))
+
 
 def test_buffer_survives_refit_and_empty_pool_keeps_requesting_cash():
     dates = [dt.date(2022, 12, 30), dt.date(2023, 1, 31), dt.date(2023, 2, 28), dt.date(2023, 3, 31)]

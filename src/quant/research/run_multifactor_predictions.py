@@ -42,7 +42,9 @@ def run_predictions(*, selection: Path, output: Path) -> dict:
             fits.append({'test_year': year, 'factors': [], 'reason': 'no_admitted_factors', 'prediction_rows': 0})
             continue
         features = common_features(statistics=root, factors=selected, variant=model['selection']['variant'],
-            start=walk['history_start'], end=last, minimum_symbols=model['models']['minimum_signal_stocks'])
+            start=walk['history_start'], end=last, minimum_symbols=model['models']['minimum_signal_stocks'],
+            missing_policy=model['models'].get('missing_features', 'common_complete_case_pool_for_all_three_methods'),
+            maximum_missing_fraction=model['models'].get('maximum_missing_fraction', .3))
         training = training_panel(features=features, statistics=root, cutoff=cutoff,
                                   minimum_symbols=model['models']['minimum_signal_stocks'])
         if training.is_empty():

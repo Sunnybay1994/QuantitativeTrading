@@ -2,27 +2,55 @@
 import datetime as dt
 import math
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
 
+if TYPE_CHECKING:
+    from lightgbm import LGBMRegressor
 
 def common_features(*, statistics: Path, factors: list[str], variant: str,
                     start: dt.date, end: dt.date, minimum_symbols: int,
-                    statistics_sources: dict[str, list[Path]] | None = None) -> pl.DataFrame:
+                    statistics_sources: dict[str, list[Path]] | None = None,
+                    missing_policy: str = 'common_complete_case_pool_for_all_three_methods',
+                    maximum_missing_fraction: float = .3) -> pl.DataFrame:
     """Use the battery's already standardized scores, on one shared stock pool."""
     if not factors or len(factors) != len(set(factors)) or minimum_symbols < 1:
         raise ValueError('Require unique model factors and a positive stock minimum')
+    impute = missing_policy == 'neutral_zero_with_monthly_factor_exclusion'
+    if missing_policy not in {'common_complete_case_pool_for_all_three_methods',
+                              'neutral_zero_with_monthly_factor_exclusion'}:
+        raise ValueError('Unknown model missing-feature policy')
+    if impute and (variant != 'size_industry_neutral' or not 0 <= maximum_missing_fraction < 1):
+        raise ValueError('Neutral-zero filling requires neutral scores and a valid missing fraction')
     frames = []
     keys = ['symbol', 'trade_date']
     for factor in factors:
         roots = (statistics_sources or {}).get(factor, [statistics])
         frame = pl.concat([pl.scan_parquet(root/'factors'/factor/'monthly_scores.parquet').filter(
-            pl.col('trade_date').is_between(start, end) & pl.col(variant).is_finite()).select(
+            pl.col('trade_date').is_between(start, end)).select(
                 *keys, pl.col(variant).alias(factor)).collect() for root in roots])
         if frame.select(keys).is_duplicated().any():
             raise ValueError('Duplicate monthly factor keys')
-        frames.append(frame)
+        frames.append(frame if impute else frame.filter(pl.col(factor).is_finite()))
+    if impute:
+        dates = sorted({day for frame in frames for day in frame['trade_date']})
+        pool = pl.concat([pl.scan_parquet(path).filter(pl.col('eligible') &
+            pl.col('trade_date').is_in(dates)).select(keys).collect()
+            for path in sorted((statistics/'inputs').glob('*/universe.parquet'))])
+        if pool.select(keys).is_duplicated().any():
+            raise ValueError('Duplicate eligible model universe keys')
+        panel = pool
+        for factor, frame in zip(factors, frames, strict=True):
+            panel = panel.join(frame, on=keys, how='left', validate='1:1')
+            finite = pl.col(factor).is_finite().fill_null(False)
+            active = finite.sum().over('trade_date') >= (
+                pl.len().over('trade_date')*(1-maximum_missing_fraction))
+            panel = panel.with_columns(active.alias(f'__active_{factor}')).with_columns(
+                pl.when(finite & pl.col(f'__active_{factor}')).then(pl.col(factor)).otherwise(0.).alias(factor))
+        return panel.filter(pl.any_horizontal([pl.col(f'__active_{f}') for f in factors]) &
+            (pl.len().over('trade_date') >= minimum_symbols)).sort('trade_date', 'symbol')
     panel = frames[0]
     for frame in frames[1:]:
         panel = panel.join(frame, on=keys, validate='1:1')
@@ -42,7 +70,7 @@ def training_panel(*, features: pl.DataFrame, statistics: Path,
 
 
 def fit_predict(*, training: pl.DataFrame, prediction: pl.DataFrame, factors: list[str],
-                mean_ic: dict[str, float], cutoff: dt.date, settings: dict) -> tuple[pl.DataFrame, dict, object]:
+                mean_ic: dict[str, float], cutoff: dt.date, settings: dict) -> tuple[pl.DataFrame, dict, 'LGBMRegressor']:
     """Fit LightGBM on known labels; return all three predictions on identical rows."""
     from lightgbm import LGBMRegressor
 
@@ -52,6 +80,19 @@ def fit_predict(*, training: pl.DataFrame, prediction: pl.DataFrame, factors: li
         if (frame.select('symbol', 'trade_date').is_duplicated().any()
                 or frame.filter(~pl.all_horizontal([pl.col(f).is_finite().fill_null(False) for f in factors])).height):
             raise ValueError('Models require unique complete finite feature rows')
+        flags = [f'__active_{f}' for f in factors]
+        if (settings.get('missing_features') == 'neutral_zero_with_monthly_factor_exclusion'
+                and not all(name in frame.columns for name in flags)):
+            raise ValueError('Monthly exclusion policy requires its saved factor flags')
+        if any(name in frame.columns for name in flags):
+            if not all(name in frame.columns for name in flags):
+                raise ValueError('Require all monthly factor exclusion flags')
+            if (any(frame.schema[name] != pl.Boolean or frame[name].null_count() for name in flags)
+                    or frame.filter(~pl.any_horizontal(flags)).height
+                    or any(frame.filter((pl.col(flag).n_unique().over('trade_date') != 1)
+                        | (~pl.col(flag) & (pl.col(factor) != 0))).height
+                        for factor, flag in zip(factors, flags, strict=True))):
+                raise ValueError('Invalid monthly factor exclusion flags or nonzero excluded scores')
     if (training.filter(pl.col('exit_date_rebalance').is_null()
             | (pl.col('exit_date_rebalance') > cutoff)
             | (pl.col('exit_date_rebalance') <= pl.col('trade_date'))
@@ -66,13 +107,23 @@ def fit_predict(*, training: pl.DataFrame, prediction: pl.DataFrame, factors: li
     regressor.fit(training.select(factors).to_numpy(), training['label_rebalance'].to_numpy())
     values = prediction.select(factors).to_numpy()
     forecast = regressor.booster_.predict(values) if prediction.height else np.array([], dtype=float)
+    active_columns = [f'__active_{f}' for f in factors]
+    if all(name in prediction.columns for name in active_columns):
+        mask = prediction.select(active_columns).to_numpy().astype(float)
+        equal = values.sum(axis=1)/mask.sum(axis=1)
+        ic = (values @ weights)/(mask @ weights)
+    else:
+        equal, ic = values.mean(axis=1), values @ weights
     result = prediction.select('symbol', 'trade_date').with_columns(
-        pl.Series('equal_z', values.mean(axis=1)), pl.Series('positive_mean_ic', values @ weights),
+        pl.Series('equal_z', equal), pl.Series('positive_mean_ic', ic),
         pl.Series('lightgbm', forecast))
     metadata = {'factors': factors, 'training_rows': training.height,
         'training_months': training['trade_date'].n_unique(), 'last_known_exit': str(training['exit_date_rebalance'].max()),
         'refit_close': str(cutoff), 'prediction_rows': prediction.height,
-        'positive_mean_ic_weights': dict(zip(factors, weights.tolist(), strict=True))}
+        'positive_mean_ic_weights': dict(zip(factors, weights.tolist(), strict=True)),
+        'missing_features': settings.get('missing_features', 'common_complete_case_pool_for_all_three_methods'),
+        'monthly_exclusion_encoding': ('Linear weights renormalized over active factors; annual LightGBM schema retained with inactive columns neutralized to zero'
+            if all(name in prediction.columns for name in active_columns) else None)}
     return result, metadata, regressor
 
 
