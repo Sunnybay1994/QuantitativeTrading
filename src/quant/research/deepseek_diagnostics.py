@@ -229,7 +229,7 @@ def main() -> None:
                         help="Model assessment.json files; one list or repeated options")
     parser.add_argument("--config", type=Path, default=Path("configs/research/deepseek_diagnosis_v1.toml"))
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--cache", type=Path, default=Path("artifacts/research/deepseek_diagnosis_cache.sqlite"))
+    parser.add_argument("--cache", type=Path, default=Path("artifacts/research/p7_deepseek_cache.sqlite"))
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--development-test", action="store_true",
                         help="Allow development requests during peak hours; budget caps still apply")
@@ -244,6 +244,8 @@ def main() -> None:
     except (ValueError, RuntimeError):
         parser.exit(2, "Diagnosis stopped; check config, input facts and local key.\n")
     print(json.dumps({k: report[k] for k in ("result", "fact_count", "usd_bound_including_retries")}))
+    if args.execute and report['result'] != 'success':
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

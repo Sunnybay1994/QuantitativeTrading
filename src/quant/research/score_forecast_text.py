@@ -309,6 +309,11 @@ def main() -> None:
                   "deferred_until": report['deferred_until'],
                   "requests_this_run": report["requests_this_run"]}
     print(json.dumps(result, ensure_ascii=False))
+    if args.execute and not args.publish_run:
+        excluded = {'missing_text', 'same_day_conflict', 'input_too_long', 'not_selected'}
+        if any(count for state, count in report['summary'].items()
+               if state not in excluded | {'success'}):
+            raise SystemExit(1)
 
 
 if __name__ == "__main__":
