@@ -10,6 +10,8 @@ from quant.research.factor_battery_cost_batch import run_cost_batch
 
 
 def arguments(tmp_path):
+    (tmp_path/'battery.toml').write_text('start = 2010-01-01\n')
+    (tmp_path/'library').mkdir(exist_ok=True)
     return dict(config=tmp_path/'battery.toml', library=tmp_path/'library',
                 as_of=dt.date(2026, 8, 31), output=tmp_path/'run', data_root=tmp_path/'data',
                 execution_snapshot='frozen_inputs', workers=2)
@@ -116,3 +118,94 @@ def test_real_batch_reuses_external_result_without_a_local_replay(tmp_path):
     assert result['completed_runs'] == {'sample': str(external)}
     assert result['failures'] == result['pending_external_runs'] == {}
     assert not (tmp_path/'costs'/'sample').exists()
+
+
+def test_resume_reuses_heavy_stages_continues_costs_and_preserves_old_scorecard(tmp_path, monkeypatch):
+    args = arguments(tmp_path)
+    calls = []
+    cost_calls = []
+
+    def stage(name):
+        def run(**kwargs):
+            calls.append(name)
+            kwargs['output'].mkdir()
+            (kwargs['output']/'summary.json').write_text('{}')
+        return run
+
+    for name in ('statistics', 'screen', 'benchmarks', 'redundancy'):
+        monkeypatch.setattr(pipeline, 'run_'+name, stage(name))
+
+    def costs(**kwargs):
+        cost_calls.append(kwargs['resume'])
+        kwargs['output'].mkdir(exist_ok=True)
+        return {'completed_runs': {}, 'failures': {'a': 'interrupted'} if len(cost_calls) == 1 else {},
+                'pending_external_runs': {}}
+
+    def scorecard(**kwargs):
+        kwargs['output'].mkdir()
+        (kwargs['output']/'factor_scorecard.parquet').write_bytes(b'fixture')
+        return {'rows': 2, 'cost_complete_rows': len(cost_calls), 'admitted_rows': 0,
+                'admission_unresolved_rows': 0}
+
+    monkeypatch.setattr(pipeline, 'run_cost_batch', costs)
+    monkeypatch.setattr(pipeline, 'run_scorecard', scorecard)
+    first = pipeline.run_pipeline(**args)
+    second = pipeline.run_pipeline(**args, resume=True)
+    assert first['cost_failures'] and not second['cost_failures']
+    assert calls == ['statistics', 'screen', 'benchmarks', 'redundancy']
+    assert cost_calls == [False, True]
+    assert first['scorecard_path'] != second['scorecard_path']
+    assert (args['output']/'scorecard/factor_scorecard.parquet').is_file()
+    assert (args['output']/'scorecard_002/factor_scorecard.parquet').is_file()
+    assert pipeline.run_pipeline(**args, resume=True) == second
+    assert cost_calls == [False, True]
+
+
+@pytest.mark.parametrize('change', ['config', 'library', 'snapshot', 'external'])
+def test_resume_rejects_changed_inputs_before_any_stage(tmp_path, monkeypatch, change):
+    args = arguments(tmp_path)
+
+    def interrupted(**kwargs):
+        raise RuntimeError('interrupted statistics')
+
+    monkeypatch.setattr(pipeline, 'run_statistics', interrupted)
+    with pytest.raises(RuntimeError):
+        pipeline.run_pipeline(**args)
+    if change == 'config':
+        args['config'].write_text('start = 2011-01-01\n')
+    elif change == 'library':
+        (args['library']/'new.toml').write_text('id="new"\n')
+    elif change == 'snapshot':
+        args['execution_snapshot'] = 'different'
+    else:
+        args['existing_runs'] = [tmp_path/'different']
+    monkeypatch.setattr(pipeline, 'run_statistics', lambda **kwargs: pytest.fail('must reject before work'))
+    with pytest.raises(ValueError, match='unchanged'):
+        pipeline.run_pipeline(**args, resume=True)
+
+
+def test_resume_preserves_interrupted_benchmark_directory(tmp_path, monkeypatch):
+    args = arguments(tmp_path)
+    visits = []
+
+    def run_stage(**kwargs):
+        folder = kwargs['output']
+        folder.mkdir()
+        visits.append(folder.name)
+        if folder.name == 'benchmarks' and visits.count('benchmarks') == 1:
+            (folder/'partial.txt').write_text('keep this output')
+            raise RuntimeError('benchmark interrupted')
+        (folder/'summary.json').write_text('{}')
+
+    for name in ('statistics', 'screen', 'benchmarks', 'redundancy'):
+        monkeypatch.setattr(pipeline, 'run_'+name, run_stage)
+    monkeypatch.setattr(pipeline, 'run_cost_batch', lambda **kwargs: {
+        'completed_runs': {}, 'failures': {}, 'pending_external_runs': {}})
+    monkeypatch.setattr(pipeline, 'run_scorecard', lambda **kwargs: {
+        'rows': 2, 'cost_complete_rows': 0, 'admitted_rows': 0, 'admission_unresolved_rows': 2})
+    with pytest.raises(RuntimeError, match='benchmark interrupted'):
+        pipeline.run_pipeline(**args)
+    pipeline.run_pipeline(**args, resume=True)
+    assert visits == ['statistics', 'screen', 'benchmarks', 'benchmarks', 'redundancy']
+    preserved = list(args['output'].glob('benchmarks_partial_*/partial.txt'))
+    assert len(preserved) == 1 and preserved[0].read_text() == 'keep this output'
