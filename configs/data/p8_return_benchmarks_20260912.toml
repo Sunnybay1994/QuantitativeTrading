@@ -1,0 +1,3 @@
+[benchmarks]
+equal_weight_snapshot = "p8_monthly_gross_20260912"
+etf_total_return_snapshot = "p8_510300_total_return_20260912"

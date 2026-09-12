@@ -13,6 +13,7 @@ import polars as pl
 from quant.data.factor_benchmarks import read_csi800_members, read_etf_total_return
 from quant.data.factor_panels import available_sessions
 from quant.data.refresh_stocks import read_stock_data
+from quant.data.refresh_etf_prices import join_seam
 
 
 def monthly_selections(universe: pl.DataFrame, members: pl.DataFrame | None,
@@ -46,6 +47,14 @@ def monthly_selections(universe: pl.DataFrame, members: pl.DataFrame | None,
                      'membership_date': snapshot} for r in frame.iter_rows(named=True))
     return pl.DataFrame(rows, schema_overrides={'as_of': pl.Date, 'effective_date': pl.Date,
                                                'membership_date': pl.Date}).sort('effective_date', 'symbol')
+
+
+def require_monthly_inputs(universe: pl.DataFrame, sessions: tuple[dt.date, ...],
+                           start: dt.date, end: dt.date) -> None:
+    required = {a for a, b in zip(sessions, sessions[1:])
+                if (a.year, a.month) != (b.year, b.month) and start <= a < b <= end}
+    if missing := required-set(universe['trade_date']):
+        raise ValueError(f'Missing monthly universe inputs: {sorted(missing)}')
 
 
 def index_day(*, date: dt.date, state: dict, quotes: dict, actions: dict,
@@ -125,7 +134,9 @@ def publish(*, config: Path, data_root: Path) -> dict[str, Any]:
         raise FileExistsError('Choose a new index version')
     statistics = Path(settings['statistics'])
     battery = tomllib.loads((statistics / 'battery.toml').read_text(encoding='utf-8'))
-    start, end = battery['start'], battery['run']['as_of']
+    start, end = battery['start'], settings.get('end', battery['run']['as_of'])
+    if end < battery['run']['as_of']:
+        raise ValueError('Bounded extension cannot truncate the original period')
     sessions = available_sessions(data_root, end + dt.timedelta(days=40))
     month_ends = {a for a, b in zip(sessions, sessions[1:]) if (a.year, a.month) != (b.year, b.month)}
     universes = [pl.scan_parquet(statistics / f'inputs/{year}/universe.parquet')
@@ -133,6 +144,7 @@ def publish(*, config: Path, data_root: Path) -> dict[str, Any]:
                  .select('trade_date', 'symbol', 'eligible', 'close').collect()
                  for year in range(start.year, end.year + 1)]
     universe = pl.concat(universes)
+    require_monthly_inputs(universe, sessions, start, end)
     members = read_csi800_members(data_root=data_root, snapshot=battery['data']['csi800_snapshot'])
     plans = {name: monthly_selections(universe, membership, sessions, end)
              for name, membership in [('all_market_equal_weight', None), ('csi800_equal_weight', members)]}
@@ -140,6 +152,32 @@ def publish(*, config: Path, data_root: Path) -> dict[str, Any]:
     instruments = pl.read_parquet(folder / 'instruments.parquet')
     dividends = pl.read_parquet(folder / 'dividends.parquet')
     suspensions = pl.read_parquet(folder / 'suspensions.parquet')
+    extension_sources = []
+    if end > battery['run']['as_of']:
+        extension_start = settings.get('daily_execution_extension_start')
+        new_dates = [d for d in sessions if battery['run']['as_of'] < d <= end]
+        if not new_dates or extension_start != new_dates[0]:
+            raise ValueError('Daily execution extension must cover every new session')
+        latest_instruments = instruments
+        for date in new_dates:
+            daily = data_root/'clean/stock_paper_inputs'/f'date={date}'
+            provenance = json.loads((daily/'sources.json').read_text(encoding='utf-8'))
+            if provenance['as_of'] != str(date):
+                raise ValueError('Daily execution source date mismatch')
+            extra = pl.read_parquet(daily/'dividends.parquet').with_columns(pl.lit(True).alias('adjust_share_price'))
+            if extra.height and extra['ex_date'].unique().to_list() != [date]:
+                raise ValueError('Daily corporate actions have wrong ex-date')
+            dividends = pl.concat([dividends.filter(pl.col('ex_date') != date), extra], how='diagonal_relaxed')
+            halted = pl.read_parquet(daily/'suspensions.parquet')
+            if halted.height and halted['trade_date'].unique().to_list() != [date]:
+                raise ValueError('Daily suspensions have wrong date')
+            suspensions = pl.concat([suspensions.filter(pl.col('trade_date') != date), halted], how='diagonal_relaxed')
+            latest_instruments = pl.read_parquet(daily/'instruments.parquet')
+            extension_sources.append({'date': str(date), 'source': str(daily), 'dividend_rows': extra.height,
+                                      'suspension_rows': halted.height, 'instrument_rows': latest_instruments.height})
+        # Preserve old historical names omitted by a newer supplier observation.
+        instruments = pl.concat([instruments.join(latest_instruments.select('symbol'), on='symbol', how='anti'),
+                                 latest_instruments], how='diagonal_relaxed')
     if dividends.select('symbol', 'ex_date').is_duplicated().any():
         raise ValueError('Ambiguous corporate actions')
     delisted = dict(instruments.select('symbol', 'delist_date').iter_rows())
@@ -157,6 +195,9 @@ def publish(*, config: Path, data_root: Path) -> dict[str, Any]:
                                symbols=sorted(needed)).select('trade_date', 'symbol', 'open', 'close', 'volume')
         quotes = {key[0]: {r['symbol']: r for r in f.iter_rows(named=True)}
                   for key, f in bars.partition_by('trade_date', as_dict=True).items()}
+        absent_dates = [d for d in sessions if max(low, battery['run']['as_of']+dt.timedelta(days=1)) <= d <= high and d not in quotes]
+        if absent_dates:
+            raise ValueError(f'Entire new quote sessions missing: {absent_dates}')
         actions = {key[0]: {r['symbol']: r for r in f.iter_rows(named=True)} for key, f in
                    dividends.filter(pl.col('ex_date').is_between(low, high)).partition_by('ex_date', as_dict=True).items()}
         stopped = {key[0]: set(f['symbol']) for key, f in suspensions.filter(pl.col('trade_date').is_between(low, high))
@@ -175,14 +216,49 @@ def publish(*, config: Path, data_root: Path) -> dict[str, Any]:
     frame.write_parquet(output / 'data.parquet')
     events_frame = pl.DataFrame(all_events, infer_schema_length=None)
     events_frame.write_parquet(output / 'events.parquet')
+    unknown = events_frame.filter((pl.col('date') > battery['run']['as_of']) & (pl.col('kind') == 'missing_quote_last_mark'))
+    if unknown.height:
+        unknown.write_csv(output/'unexplained_new_quote_gaps.csv')
+        raise ValueError(f'New index sessions have {unknown.height} unexplained quote gaps; inspect saved events')
     summary = {'version': version, 'start': str(frame['trade_date'].min()), 'end': str(end),
                'anchor_level': 1000.0, 'rows': frame.height, 'statistics': str(statistics),
                'execution_snapshot': settings['execution_snapshot'], 'csi800_snapshot': battery['data']['csi800_snapshot'],
+               'daily_execution_extensions': extension_sources,
                'rules': settings['rules'], 'series': frame.group_by('index_name').agg(pl.len().alias('rows'),
                    pl.col('constituents').min().alias('minimum_constituents'), pl.col('constituents').max().alias('maximum_constituents')).to_dicts(),
                'events': events_frame.group_by('index_name', 'kind').len().to_dicts()}
     (output / 'summary.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
     return summary
+
+
+def publish_etf_extension(*, data_root: Path, previous: str, version: str, end: dt.date) -> dict:
+    """Reuse validated ETF seam logic; preserve every old total-return level exactly."""
+    for name in (previous, version):
+        if Path(name).name != name or name in ('', '.', '..'):
+            raise ValueError('Invalid ETF snapshot name')
+    output = data_root/'clean/factor_benchmarks'/version
+    if output.exists():
+        raise FileExistsError('Use a new ETF snapshot')
+    old = pl.read_parquet(data_root/'clean/factor_benchmarks'/previous/'prices.parquet').sort('trade_date')
+    fresh = pl.scan_parquet(str(data_root/'clean/research_price_1d/date=*/*.parquet')).filter(
+        (pl.col('symbol') == '510300.SH') & (pl.col('trade_date') <= end)).collect().sort('trade_date')
+    # A seam is local to the extension: retain historical source conventions
+    # rather than rescaling or replacing the old long-term history.
+    seam_start = old.tail(252)['trade_date'][0]
+    fresh = fresh.filter(pl.col('trade_date') >= seam_start)
+    addition, seam = join_seam(fresh, old)
+    combined = pl.concat([old, addition.select(old.columns)]).sort('trade_date')
+    expected = [d for d in available_sessions(data_root, end) if old['trade_date'][0] <= d <= end]
+    if combined['trade_date'].to_list() != expected:
+        raise ValueError('ETF extension does not cover the full session calendar')
+    if not combined.head(old.height).equals(old):
+        raise ValueError('ETF original total-return prefix changed')
+    output.mkdir(parents=True)
+    combined.write_parquet(output/'prices.parquet')
+    result = {'previous': previous, 'version': version, 'end': str(end), 'rows': combined.height,
+              'new_rows': addition.height, 'old_prefix_exact': True, 'seam_start': str(seam_start), 'seam': seam}
+    (output/'summary.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
+    return result
 
 
 def read_equal_weight_index(*, data_root: Path, version: str, index_name: str,
