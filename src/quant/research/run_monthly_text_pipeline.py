@@ -12,6 +12,37 @@ from quant.research.report_text_batch import run as report_quality
 from quant.research.score_forecast_text import load_settings, run_batch
 
 
+def render_report(result: dict) -> str:
+    quality, evaluation = result['quality'], result['evaluation']
+    lines = ['# P7月度文本流水线', '',
+        f"本次调用{result['requests_this_run']}次；请求批次成功{quality['successful_texts']}/{quality['selected_unique_texts']}段。"
+        f"共享缓存峰值费率记账含预留${quality['shared_charged_or_reserved_usd']:.6f}。", '',
+        f"合并评估保留{evaluation['sample_rows']}个冻结股票月。", '',
+        '|信号|单月最多共同样本|有效IC月|', '|---|---:|---:|']
+    lines += [f"|{r['factor']}|{r['max_common_symbols']}|{r['usable_months']}|" for r in evaluation['coverage']]
+    monthly = evaluation.get('monthly_statistics')
+    if monthly:
+        lines += ['', f"原始值及规模行业中性化共{monthly['variants']}条月度统计序列；"
+                  f"{monthly['coverage_sufficient_variants']}条达到原月份覆盖要求。"]
+    costs, scorecard = result.get('costs'), result.get('scorecard')
+    if costs is None:
+        lines += ['', '本次未请求成本阶段；统计结果见evaluation/monthly_statistics。']
+    else:
+        lines += ['', f"成本任务：完成{len(costs['completed_runs'])}个因子，"
+            f"统计未通过而跳过{len(costs.get('statistically_rejected_factors', []))}个，"
+            f"失败{len(costs['failures'])}个，等待外部任务{len(costs['pending_external_runs'])}个。"]
+        if costs['failures'] or costs['pending_external_runs']:
+            lines.append('成本证据尚未齐全；检查costs中的失败或等待项，不能把缺失成本当作通过。')
+    if scorecard is not None:
+        lines += [f"评分表：{scorecard.get('rows', '未知')}行，统计通过{scorecard.get('statistical_pass_rows', '未知')}行，"
+            f"成本完整{scorecard.get('cost_complete_rows', '未知')}行，通过因子条件{scorecard['admitted_rows']}行，"
+            f"准入未决{scorecard.get('admission_unresolved_rows', '未知')}行。",
+            '逐版本结果见scorecard；因子条件通过不直接产生策略持仓。']
+    lines += ['', '下一步：结合月度覆盖、数值控制下的增量诊断及实际成本结果决定是否继续研究。',
+        '响应成功率不是独立语义准确率，线性控制后的相关性也不能单独证明预测增量。', '']
+    return '\n'.join(lines)
+
+
 def validate_batch(plan: Path, prior_plans: list[Path]) -> dict:
     """Check the request file and rubric before spending or creating a result directory."""
     spec = tomllib.loads((plan / 'config.toml').read_text(encoding='utf-8'))
@@ -79,22 +110,7 @@ def run(*, plan: Path, prior_plans: list[Path], cache: Path, output: Path,
         'max_usd': max_usd if execute else None, 'workers': workers if execute else 0,
         'quality': quality, 'evaluation': evaluation, 'costs': costs, 'scorecard': scorecard}
     (output / 'summary.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
-    coverage = '\n'.join(f"|{r['factor']}|{r['max_common_symbols']}|{r['usable_months']}|"
-                         for r in evaluation['coverage'])
-    monthly = evaluation.get('monthly_statistics')
-    monthly_note = (f"\n\n原始值及规模行业中性化共{monthly['variants']}条月度统计序列；"
-        f"{monthly['coverage_sufficient_variants']}条达到原月份覆盖要求。"
-        "RankIC、分组及目标换手详见evaluation/monthly_statistics，成本回放另行评估。"
-        if monthly else '')
-    (output / 'report.md').write_text(
-        f"# P7月度文本流水线\n\n本次调用{result['requests_this_run']}次；请求批次成功"
-        f"{quality['successful_texts']}/{quality['selected_unique_texts']}段。"
-        f"共享缓存峰值费率记账含预留${quality['shared_charged_or_reserved_usd']:.6f}。\n\n"
-        f"合并评估保留{evaluation['sample_rows']}个冻结股票月。\n\n"
-        "|信号|单月最多共同样本|有效IC月|\n|---|---:|---:|\n" + coverage + monthly_note +
-        "\n\n下一步：覆盖达到原96月与100只门槛后，读取数值控制下的增量诊断并安排完整因子评估。"
-        "响应成功率不是独立语义准确率，线性控制后的相关性也不能单独证明预测增量。\n",
-        encoding='utf-8')
+    (output / 'report.md').write_text(render_report(result), encoding='utf-8')
     return result
 
 

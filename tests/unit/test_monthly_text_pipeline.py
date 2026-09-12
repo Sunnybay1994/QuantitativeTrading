@@ -112,3 +112,16 @@ def test_cost_stage_requires_global_peer_comparison_and_return_benchmarks(plan, 
         data_root=tmp_path,execution_snapshot='fixture',return_benchmark_config=benchmark)
     assert calls == ['costs','redundancy','scorecard']
     assert result['requests_this_run'] == 0 and result['scorecard']['admitted_rows'] == 0
+    assert '完成1个因子' in (tmp_path/'output/report.md').read_text(encoding='utf-8')
+
+
+def test_failed_cost_evidence_is_visible_in_the_main_report():
+    result = {'requests_this_run': 0, 'quality': {'successful_texts': 2, 'selected_unique_texts': 3,
+        'shared_charged_or_reserved_usd': .1}, 'evaluation': {'sample_rows': 100, 'coverage': []},
+        'costs': {'completed_runs': {}, 'failures': {'a': 'missing_execution'},
+                  'pending_external_runs': {'b': 'existing_run'}, 'statistically_rejected_factors': ['c']},
+        'scorecard': {'rows': 6, 'statistical_pass_rows': 2, 'cost_complete_rows': 0,
+                      'admitted_rows': 0, 'admission_unresolved_rows': 2}}
+    report = pipeline.render_report(result)
+    assert '失败1个' in report and '等待外部任务1个' in report and '准入未决2行' in report
+    assert '成本证据尚未齐全' in report
