@@ -1,0 +1,484 @@
+{
+  "version": "p7_output_budget_independent_constraints_v1",
+  "prompt_version": "p7_reason_v2",
+  "source": "artifacts\\research\\p7_output_budget_input_20260912_01\\independent_forecasts.parquet",
+  "model_results_seen": false,
+  "origin": "Main-agent rubric interpretation before calls on new companies; not independently human-labelled ground truth",
+  "scope": "Partial constraints; omitted dimensions and intensity are not graded; uncertain allowed where intensity is not explicit.",
+  "cases": [
+    {
+      "input_id": "0bce0bdfdc678651769cba1f7e5aeab72312c0d42200b667b9f4061607b30bd0",
+      "reason_sha256": "15a4fba827b23281e15cc54553a4b9da72cc5da22336947f832cfbd601556b2a",
+      "symbol": "300052.SZ",
+      "publication_date": "2018-01-31",
+      "checks": {
+        "nonrecurring_gain_dependency": [
+          {
+            "status": "scored",
+            "score": 1
+          },
+          {
+            "status": "scored",
+            "score": 2
+          },
+          {
+            "status": "scored",
+            "score": 3
+          },
+          {
+            "status": "uncertain",
+            "score": null
+          }
+        ],
+        "operating_pressure": [
+          {
+            "status": "scored",
+            "score": 0
+          }
+        ]
+      },
+      "reference_excerpt": "投资公司分红及处置部分股权产生较大的收益",
+      "rationale": "本期明确股权处置收益；孤立减值不自动表示经营压力；业务布局强度不评。"
+    },
+    {
+      "input_id": "a32b2101d50bcae2724286fb60e51be52ae623ca733e1797c9ff387f47aeb534",
+      "reason_sha256": "bfe246048e5d863c5b589fbac66073ec7657119a914e75b4521835cc73245879",
+      "symbol": "300462.SZ",
+      "publication_date": "2018-10-13",
+      "checks": {
+        "operating_improvement": [
+          {
+            "status": "scored",
+            "score": 0
+          }
+        ],
+        "nonrecurring_gain_dependency": [
+          {
+            "status": "scored",
+            "score": 1
+          },
+          {
+            "status": "scored",
+            "score": 2
+          },
+          {
+            "status": "scored",
+            "score": 3
+          },
+          {
+            "status": "uncertain",
+            "score": null
+          }
+        ],
+        "operating_pressure": [
+          {
+            "status": "scored",
+            "score": 0
+          }
+        ]
+      },
+      "reference_excerpt": "本报告期非经常性损益较上年度大幅增加",
+      "rationale": "本期明确非经常性收益，未给经营改善或压力原因。"
+    },
+    {
+      "input_id": "93ec56237073031fde1fe66c9cbecd472f1029e1a67f36ba574de53fe7eb1d1a",
+      "reason_sha256": "7a940e2492615524f67bd076dd1bd79b6b18b7c5f6f7dc72c68d270ab0bb4d43",
+      "symbol": "002249.SZ",
+      "publication_date": "2018-10-30",
+      "checks": {
+        "nonrecurring_gain_dependency": [
+          {
+            "status": "scored",
+            "score": 0
+          }
+        ],
+        "operating_pressure": [
+          {
+            "status": "scored",
+            "score": 1
+          },
+          {
+            "status": "scored",
+            "score": 2
+          },
+          {
+            "status": "scored",
+            "score": 3
+          },
+          {
+            "status": "uncertain",
+            "score": null
+          }
+        ]
+      },
+      "reference_excerpt": "采购成本大幅上升",
+      "rationale": "关税及经营成本压力明确，未给非经常性正收益；增收不增利的改善强度不评。"
+    },
+    {
+      "input_id": "d8919d6918a1fd053e0513d5ce7e317f5b10fc6144bc58e5576e48e89823cfcd",
+      "reason_sha256": "f4d40a18b3489f226713c11a4eacf8594e88a5de088af7dc17b02da91722e0cd",
+      "symbol": "002190.SZ",
+      "publication_date": "2018-10-25",
+      "checks": {
+        "operating_improvement": [
+          {
+            "status": "scored",
+            "score": 0
+          }
+        ],
+        "nonrecurring_gain_dependency": [
+          {
+            "status": "scored",
+            "score": 0
+          }
+        ],
+        "operating_pressure": [
+          {
+            "status": "scored",
+            "score": 1
+          },
+          {
+            "status": "scored",
+            "score": 2
+          },
+          {
+            "status": "scored",
+            "score": 3
+          },
+          {
+            "status": "uncertain",
+            "score": null
+          }
+        ]
+      },
+      "reference_excerpt": "产品单位成本较高",
+      "rationale": "本期产能不足、折旧增加与售价下跌；未来重组假定不作已发生收益。"
+    },
+    {
+      "input_id": "7203e031b6e4314a5e2cdeffe8bd0ce2ffd07f702e8373165c3e1b9ab647e718",
+      "reason_sha256": "88b00f23fcd8e71d92cf597e8edc7366c43b8a882e29aea9b7e5cc0fbceb8295",
+      "symbol": "002310.SZ",
+      "publication_date": "2021-04-15",
+      "checks": {
+        "operating_improvement": [
+          {
+            "status": "scored",
+            "score": 0
+          }
+        ],
+        "nonrecurring_gain_dependency": [
+          {
+            "status": "scored",
+            "score": 0
+          }
+        ],
+        "operating_pressure": [
+          {
+            "status": "scored",
+            "score": 1
+          },
+          {
+            "status": "scored",
+            "score": 2
+          },
+          {
+            "status": "scored",
+            "score": 3
+          },
+          {
+            "status": "uncertain",
+            "score": null
+          }
+        ]
+      },
+      "reference_excerpt": "营业收入减少,业绩出现亏损",
+      "rationale": "融资和施工影响收入；列举转让方式没有正处置收益证据。"
+    },
+    {
+      "input_id": "10bd1f33b5ffd4fd8fde42ad09effc46488d40c897479bfcbde714871660f8c1",
+      "reason_sha256": "f5dd871f1ac616f7389f30ed0266f3ba32b00c791bdcdeeae30f6630265d984d",
+      "symbol": "600726.SH",
+      "publication_date": "2023-07-15",
+      "checks": {
+        "operating_improvement": [
+          {
+            "status": "scored",
+            "score": 1
+          },
+          {
+            "status": "scored",
+            "score": 2
+          },
+          {
+            "status": "scored",
+            "score": 3
+          },
+          {
+            "status": "uncertain",
+            "score": null
+          }
+        ],
+        "operating_pressure": [
+          {
+            "status": "scored",
+            "score": 0
+          }
+        ]
+      },
+      "reference_excerpt": "燃煤价格下降导致燃料成本下降",
+      "rationale": "本期燃料成本下降；上期股权出售与本期投资收益的性质关系含糊，此维度不评。"
+    },
+    {
+      "input_id": "ef72f7c030d15d8437a8af6a64922f95fd9024579e91f794826aa7fa118158e0",
+      "reason_sha256": "06248434d12f81d0160da685e31640bc6e030abc0ba39e6a1ff745e750cc9a85",
+      "symbol": "002755.SZ",
+      "publication_date": "2022-07-15",
+      "checks": {
+        "operating_improvement": [
+          {
+            "status": "scored",
+            "score": 0
+          }
+        ],
+        "nonrecurring_gain_dependency": [
+          {
+            "status": "scored",
+            "score": 0
+          }
+        ],
+        "operating_pressure": [
+          {
+            "status": "scored",
+            "score": 1
+          },
+          {
+            "status": "scored",
+            "score": 2
+          },
+          {
+            "status": "scored",
+            "score": 3
+          },
+          {
+            "status": "uncertain",
+            "score": null
+          }
+        ]
+      },
+      "reference_excerpt": "价格和销量均有一定程度下降",
+      "rationale": "销售价格、销量、推广成本与研发开支带来本期压力；未来竞争力计划不编码为已实现改善。"
+    },
+    {
+      "input_id": "9c1e336b7d984e7a834b1edabbd1a763136334775052734fb6a316d94af6c222",
+      "reason_sha256": "bf94f20c7067a897a12d2f88aff9473060a9dbc2cd8232b4beb7509f15c6c442",
+      "symbol": "000066.SZ",
+      "publication_date": "2022-07-15",
+      "checks": {
+        "nonrecurring_gain_dependency": [
+          {
+            "status": "scored",
+            "score": 0
+          }
+        ],
+        "operating_pressure": [
+          {
+            "status": "scored",
+            "score": 1
+          },
+          {
+            "status": "scored",
+            "score": 2
+          },
+          {
+            "status": "scored",
+            "score": 3
+          },
+          {
+            "status": "uncertain",
+            "score": null
+          }
+        ]
+      },
+      "reference_excerpt": "部分订单交付延迟，致使收入减少毛利下降",
+      "rationale": "本期交付延迟与毛利下降；改革和中长期竞争力叙述的改善强度不评。"
+    },
+    {
+      "input_id": "d9aacc4333b383fba72c80a4b1354ad278286c5deae9dfb7ee2f58a708ded4b8",
+      "reason_sha256": "a061efc788b5f128b1511dc555e751c38752e3c64b0d53600e973ab6063f4185",
+      "symbol": "300189.SZ",
+      "publication_date": "2026-01-29",
+      "checks": {
+        "operating_improvement": [
+          {
+            "status": "scored",
+            "score": 1
+          },
+          {
+            "status": "scored",
+            "score": 2
+          },
+          {
+            "status": "scored",
+            "score": 3
+          },
+          {
+            "status": "uncertain",
+            "score": null
+          }
+        ],
+        "nonrecurring_gain_dependency": [
+          {
+            "status": "scored",
+            "score": 1
+          },
+          {
+            "status": "scored",
+            "score": 2
+          },
+          {
+            "status": "scored",
+            "score": 3
+          },
+          {
+            "status": "uncertain",
+            "score": null
+          }
+        ],
+        "operating_pressure": [
+          {
+            "status": "scored",
+            "score": 0
+          }
+        ]
+      },
+      "reference_excerpt": "因股权处置和剩余股权核算方法转换产生的投资收益导致公司利润增加",
+      "rationale": "本期经营改善及股权处置收益并存；房地产会计公允价值损失不自动成为经营压力。"
+    },
+    {
+      "input_id": "53023afa453db962f858abc0e89840a274368bfbf6f319356d6bae177f1ec064",
+      "reason_sha256": "a427341d3492919a620de73601c839183a11e06033423f545f6f02a3daf9720e",
+      "symbol": "002466.SZ",
+      "publication_date": "2025-07-15",
+      "checks": {
+        "nonrecurring_gain_dependency": [
+          {
+            "status": "uncertain",
+            "score": null
+          }
+        ],
+        "operating_pressure": [
+          {
+            "status": "scored",
+            "score": 1
+          },
+          {
+            "status": "scored",
+            "score": 2
+          },
+          {
+            "status": "scored",
+            "score": 3
+          },
+          {
+            "status": "uncertain",
+            "score": null
+          }
+        ]
+      },
+      "reference_excerpt": "公司在本报告期确认的对该联营公司的投资收益较上年同期增长",
+      "rationale": "联营投资收益及汇兑收益未明确非经常性性质；当期锂产品售价下降；采购时点改善强度不评。"
+    },
+    {
+      "input_id": "5d561b60087b5ee143279a3119ae9dc0e4f87400ca8e8d800e19625cf8e284e8",
+      "reason_sha256": "9601bcc38587a7cc79343c6bcdbd49610b1704f1b52bf7ebf787ccb6748c2dc1",
+      "symbol": "002362.SZ",
+      "publication_date": "2026-01-31",
+      "checks": {
+        "operating_improvement": [
+          {
+            "status": "scored",
+            "score": 0
+          }
+        ],
+        "nonrecurring_gain_dependency": [
+          {
+            "status": "scored",
+            "score": 0
+          }
+        ],
+        "operating_pressure": [
+          {
+            "status": "scored",
+            "score": 1
+          },
+          {
+            "status": "scored",
+            "score": 2
+          },
+          {
+            "status": "scored",
+            "score": 3
+          },
+          {
+            "status": "uncertain",
+            "score": null
+          }
+        ]
+      },
+      "reference_excerpt": "部分产品销售价格下降，加之部分产品的原材料成本上升",
+      "rationale": "本期经营价格和成本压力明确；研发未来用途不是已实现经营改善，一次性费用不是正收益。"
+    },
+    {
+      "input_id": "3dab1b8cdf40b6891ef01d515d31081499a627241ec2c813fd544dc77453e269",
+      "reason_sha256": "15e2f235533cf2a8bbeb77fc34661ea5470a88e0fcb71085c6d5e43a7331f27d",
+      "symbol": "600732.SH",
+      "publication_date": "2026-07-15",
+      "checks": {
+        "operating_improvement": [
+          {
+            "status": "scored",
+            "score": 1
+          },
+          {
+            "status": "scored",
+            "score": 2
+          },
+          {
+            "status": "scored",
+            "score": 3
+          },
+          {
+            "status": "uncertain",
+            "score": null
+          }
+        ],
+        "nonrecurring_gain_dependency": [
+          {
+            "status": "scored",
+            "score": 0
+          }
+        ],
+        "operating_pressure": [
+          {
+            "status": "scored",
+            "score": 1
+          },
+          {
+            "status": "scored",
+            "score": 2
+          },
+          {
+            "status": "scored",
+            "score": 3
+          },
+          {
+            "status": "uncertain",
+            "score": null
+          }
+        ]
+      },
+      "reference_excerpt": "组件销售毛利率实现同比、环比显著提升",
+      "rationale": "实际收入和毛利率改善与价格传导、出口退税压力并存；未给一次性正收益。"
+    }
+  ]
+}

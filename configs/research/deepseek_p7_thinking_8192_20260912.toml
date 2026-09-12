@@ -1,0 +1,19 @@
+# Output-budget calibration, registered before the new calls.
+# Same model/rubric/format/effort as thinking_low; only max_tokens increases.
+# Previous fixed 24: five incomplete completions used 4095/4096 output tokens.
+# Official max_tokens includes generated output; 8192 is below provider limits:
+# https://api-docs.deepseek.com/api/create-chat-completion/
+# One attempt per text; all costs are conservatively reserved at peak rates.
+model = "deepseek-flash"
+model_epoch = "DeepSeek-V4.1-Flash-docs-20260912"
+pricing_checked = 2026-09-12
+input_usd_per_million = 0.30
+output_usd_per_million = 1.20
+max_tokens = 8192
+max_input_bytes = 24000
+max_attempts = 1
+timeout_seconds = 120.0
+retry_delay_seconds = 2.0
+format_version = "compact_evidence_v1"
+thinking_mode = "enabled"
+reasoning_effort = "low"

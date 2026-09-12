@@ -14,7 +14,7 @@ import time
 import tomllib
 from typing import Annotated, Any, Callable, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from quant.data.connectors.deepseek import DeepSeekClient, RequestFailure, load_key
 from quant.data.forecast_text_scores import ScoreCache, publish_panels, read_corpus, write_scores
@@ -32,7 +32,7 @@ class Settings(BaseModel):
     pricing_checked: dt.date
     input_usd_per_million: Annotated[float, Field(gt=0, allow_inf_nan=False)]
     output_usd_per_million: Annotated[float, Field(gt=0, allow_inf_nan=False)]
-    max_tokens: Annotated[int, Field(ge=256, le=4096)] = 768
+    max_tokens: Annotated[int, Field(ge=256, le=8192)] = 768
     max_input_bytes: Annotated[int, Field(ge=100, le=100000)] = 24000
     max_attempts: Annotated[int, Field(ge=1, le=3)] = 2
     timeout_seconds: Annotated[float, Field(gt=0, le=120)] = 60.0
@@ -40,6 +40,12 @@ class Settings(BaseModel):
     format_version: Literal['original', 'compact_evidence_v1'] = 'original'
     thinking_mode: Literal['disabled', 'enabled'] = 'disabled'
     reasoning_effort: Literal['low', 'high', 'max'] = 'high'
+
+    @model_validator(mode='after')
+    def bounded_output_by_mode(self) -> Settings:
+        if self.thinking_mode == 'disabled' and self.max_tokens > 4096:
+            raise ValueError('Non-thinking output remains limited to 4096 tokens')
+        return self
 
 
 def load_settings(path: Path) -> dict:
@@ -56,7 +62,10 @@ def load_design(path: Path) -> dict:
             or [s["id"] for s in design["signals"]] != [f"text_{d}" for d in DIMENSIONS]
             or [s["direction"] for s in design["signals"]] != [1, -1, -1]
             or design["availability"] != "own_publication_date_after_close"
-            or design["maximum_age_calendar_days"] != 120):
+            or design["maximum_age_calendar_days"] != 120
+            or design['evaluation']['numeric_controls'] not in (
+                ['forecast_p_change_midpoint', 'pit_sue8'],
+                ['forecast_p_change_midpoint', 'pit_sue8_context_v2'])):
         raise ValueError("Unsupported P7 design; update implementation with a new rubric version")
     return design
 

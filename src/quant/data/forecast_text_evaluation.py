@@ -7,6 +7,17 @@ from pathlib import Path
 import polars as pl
 
 
+def read_sue_control(data_root: Path, *, year: int, sue_factor: str = 'pit_sue8') -> pl.DataFrame:
+    """Select the explicit SUE version; a missing partition never falls back to legacy data."""
+    if sue_factor not in {'pit_sue8', 'pit_sue8_context_v2'}:
+        raise ValueError('Unsupported SUE control version')
+    path = data_root / f'factors/{sue_factor}/year={year}/data.parquet'
+    if not path.is_file():
+        return pl.DataFrame(schema={'symbol': pl.String, 'trade_date': pl.Date, 'pit_sue8': pl.Float64})
+    return pl.read_parquet(path).rename({'ts_code': 'symbol', 'value': 'pit_sue8'}).select(
+        'symbol', 'trade_date', 'pit_sue8')
+
+
 def read_forecast_controls(source: Path) -> pl.DataFrame:
     frame = pl.read_parquet(source)
     if "symbol" not in frame.columns:
@@ -40,17 +51,14 @@ def attach_forecast_controls(keys: pl.DataFrame, events: pl.DataFrame, *, max_ag
 
 def read_text_evaluation_year(*, data_root: Path, year: int, known_through: dt.date,
                               universe: pl.DataFrame, numeric_events: pl.DataFrame,
-                              factors: list[str], max_age_days: int) -> tuple[pl.DataFrame, pl.DataFrame]:
+                              factors: list[str], max_age_days: int,
+                              sue_factor: str = 'pit_sue8') -> tuple[pl.DataFrame, pl.DataFrame]:
     from quant.data.factor_battery_inputs import read_battery_factor_year
 
     keys = ["symbol", "trade_date"]
     panel = attach_forecast_controls(universe, numeric_events, max_age_days=max_age_days)
-    sue_path = data_root / f"factors/pit_sue8/year={year}/data.parquet"
-    if sue_path.is_file():
-        sue = pl.read_parquet(sue_path).rename({"ts_code": "symbol", "value": "pit_sue8"})
-        panel = panel.join(sue.select(*keys, "pit_sue8"), on=keys, how="left", validate="1:1")
-    else:
-        panel = panel.with_columns(pl.lit(None, dtype=pl.Float64).alias("pit_sue8"))
+    sue = read_sue_control(data_root, year=year, sue_factor=sue_factor)
+    panel = panel.join(sue, on=keys, how='left', validate='1:1')
     labels = None
     for factor in factors:
         values, current_labels = read_battery_factor_year(data_root, factor=factor, year=year,

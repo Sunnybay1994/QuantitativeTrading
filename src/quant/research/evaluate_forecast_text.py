@@ -23,10 +23,14 @@ def write_incremental(parts: list[pl.DataFrame], supports: list[pl.DataFrame], *
     output.mkdir(parents=True, exist_ok=False)
     points = pl.concat(parts, how="vertical_relaxed")
     support = pl.concat(supports, how="vertical_relaxed")
+    sue_factor = design['evaluation']['numeric_controls'][1]
+    if sue_factor != 'pit_sue8':
+        points = points.with_columns(pl.col('comparator').replace({'pit_sue8': sue_factor}))
+        support = support.rename({'pit_sue8': sue_factor})
     summary = {"synthetic_fixture": synthetic, "purpose": "incremental_diagnostic_only",
                "minimum_months": settings["admission"]["minimum_months"],
                "minimum_symbols": settings["minimum_symbols"],
-               "regression_inputs": ["intercept", "forecast_p_change_midpoint", "pit_sue8",
+               "regression_inputs": ["intercept", "forecast_p_change_midpoint", sue_factor,
                                      "log_total_market_value", "industry_dummies"],
                "returns_used_in_regression": False,
                "summary": summarize_incremental(points, sessions=sessions, settings=settings, design=design)}
@@ -60,7 +64,8 @@ def run_incremental(*, run: Path, statistics: Path, data_root: Path, output: Pat
         panel, daily_labels = read_text_evaluation_year(data_root=data_root, year=year,
             known_through=design["end"], universe=universe, numeric_events=numeric,
             factors=[f"text_{name}" for name in DIMENSIONS],
-            max_age_days=design["maximum_age_calendar_days"])
+            max_age_days=design["maximum_age_calendar_days"],
+            sue_factor=design['evaluation']['numeric_controls'][1])
         monthly_labels = pl.read_parquet(folder / "monthly_labels.parquet")
         keys = ["symbol", "trade_date"]
         daily = panel.join(daily_labels.select(*keys, "label_20"), on=keys, how="left", validate="1:1")
@@ -194,6 +199,13 @@ def run_fixture(*, source: Path, output: Path, design_path: Path) -> dict:
     if ("synthetic_fixture" not in panel.columns or not panel.height
             or panel["synthetic_fixture"].null_count() or not panel["synthetic_fixture"].all()):
         raise ValueError("Fixture rows must explicitly declare synthetic_fixture=true")
+    sue_factor = design['evaluation']['numeric_controls'][1]
+    if sue_factor != 'pit_sue8':
+        if sue_factor not in panel.columns:
+            raise ValueError('Fixture requires the configured SUE control column')
+        if 'pit_sue8' in panel.columns:
+            panel = panel.drop('pit_sue8')
+        panel = panel.rename({sue_factor: 'pit_sue8'})
     panel = panel.filter(pl.col("trade_date").is_between(design["start"], design["end"]))
     if panel.is_empty():
         raise ValueError("Fixture must be within the frozen design window")
