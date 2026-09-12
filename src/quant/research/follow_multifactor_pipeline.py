@@ -23,17 +23,24 @@ def cost_batch_finished(research: dict) -> bool:
                for folder in batch.get('pending_external_runs', {}).values())
 
 
-def follow(*, config: Path, output: Path, data_root: Path, resume_from: Path | None = None,
+def follow(*, config: Path, output: Path, data_root: Path, measurement_config: Path,
+           resume_from: Path | None = None,
            interval_seconds: float = 300, max_wait_hours: float = 24) -> dict:
     if interval_seconds < 300 or max_wait_hours <= 0:
         raise ValueError('Check no faster than every five minutes and use a positive waiting limit')
     model = config.read_bytes()
+    measurement = measurement_config.read_bytes()
+    tomllib.loads(measurement.decode('utf-8'))
     research = tomllib.loads(model.decode('utf-8'))['research']
     output.mkdir(parents=True, exist_ok=True)
     saved_config = output/'model.toml'
     if saved_config.exists() and saved_config.read_bytes() != model:
         raise ValueError('Continue with the same frozen model configuration')
     saved_config.write_bytes(model)
+    saved_measurement = output/'measurement.toml'
+    if saved_measurement.exists() and saved_measurement.read_bytes() != measurement:
+        raise ValueError('Use a new follower directory when changing report measurement')
+    saved_measurement.write_bytes(measurement)
     attempts = sorted(output.glob('attempt_[0-9][0-9][0-9][0-9]'))
     if attempts:
         resume_from = attempts[-1]
@@ -55,12 +62,15 @@ def follow(*, config: Path, output: Path, data_root: Path, resume_from: Path | N
     while True:
         if config.read_bytes() != model:
             raise ValueError('Model configuration changed while waiting for costs')
+        if measurement_config.read_bytes() != measurement:
+            raise ValueError('Report measurement changed while waiting for costs')
         current = completed_costs(research)
         if observed is None or current != observed:
             # Capture before running so results arriving during computation are seen next time.
             observed = current
             attempt = output/f'attempt_{index:04d}'
             result = run_pipeline(config=config, output=attempt, data_root=data_root,
+                                  measurement_config=saved_measurement,
                                   resume_from=resume_from)
             resume_from = attempt
             index += 1
@@ -86,11 +96,13 @@ def main() -> None:
     parser.add_argument('--config', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--data-root', type=Path, default=Path('data'))
+    parser.add_argument('--measurement-config', type=Path, required=True)
     parser.add_argument('--resume-from', type=Path)
     parser.add_argument('--interval-seconds', type=float, default=300)
     parser.add_argument('--max-wait-hours', type=float, default=24)
     args = parser.parse_args()
     result = follow(config=args.config, output=args.output, data_root=args.data_root,
+                    measurement_config=args.measurement_config,
                     resume_from=args.resume_from, interval_seconds=args.interval_seconds,
                     max_wait_hours=args.max_wait_hours)
     print(json.dumps(result))

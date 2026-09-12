@@ -13,10 +13,12 @@ from quant.research.run_multifactor_predictions import run_predictions
 from quant.research.run_multifactor_replay import run_model_replay
 
 
-def run_pipeline(*, config: Path, output: Path, data_root: Path,
+def run_pipeline(*, config: Path, output: Path, data_root: Path, measurement_config: Path,
                  correlations_from: Path | None = None, resume_from: Path | None = None) -> dict:
     model_bytes = config.read_bytes()
     model = tomllib.loads(model_bytes.decode('utf-8'))
+    measurement_bytes = measurement_config.read_bytes()
+    tomllib.loads(measurement_bytes.decode('utf-8'))
     research = model['research']
     benchmarks = Path(research['stock_benchmarks'])
     if resume_from is not None and (resume_from/'model.toml').read_bytes() != model_bytes:
@@ -26,6 +28,7 @@ def run_pipeline(*, config: Path, output: Path, data_root: Path,
         correlations_from = resume_from/'selection'
     output.mkdir(parents=True, exist_ok=False)
     (output/'model.toml').write_bytes(model_bytes)
+    (output/'measurement.toml').write_bytes(measurement_bytes)
 
     def reuse(stage: str, files: tuple[str, ...]) -> dict | None:
         if resume_from is None:
@@ -78,7 +81,7 @@ def run_pipeline(*, config: Path, output: Path, data_root: Path,
             run_model_replay(predictions=output/'predictions', benchmarks=benchmarks,
                              output=output/'replay', data_root=data_root)
         print('Writing model reports', flush=True)
-        reports = report_models(run=output/'replay', benchmarks=benchmarks,
+        reports = report_models(run=output/'replay', measurement_config=output/'measurement.toml',
                                 output=output/'reports', data_root=data_root)
         result.update(model_results_ready=True, conclusions=reports['conclusions'])
     lines = ['# 多因子流水线结果', '',
@@ -99,10 +102,12 @@ def main() -> None:
     parser.add_argument('--config', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--data-root', type=Path, default=Path('data'))
+    parser.add_argument('--measurement-config', type=Path, required=True)
     parser.add_argument('--correlations-from', type=Path, help='Reuse matching annual historical comparisons')
     parser.add_argument('--resume-from', type=Path, help='Reuse completed stages in a new output directory')
     args = parser.parse_args()
     print(json.dumps(run_pipeline(config=args.config, output=args.output, data_root=args.data_root,
+                                  measurement_config=args.measurement_config,
                                   correlations_from=args.correlations_from, resume_from=args.resume_from)))
 
 

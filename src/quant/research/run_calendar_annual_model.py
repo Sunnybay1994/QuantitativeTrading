@@ -29,11 +29,13 @@ def annual_windows(*, fits: list[dict], sessions: tuple[dt.date, ...], start: dt
     return plan
 
 
-def run_annual(*, config_path: Path, output: Path, data_root: Path) -> dict:
+def run_annual(*, config_path: Path, output: Path, data_root: Path, measurement_config: Path) -> dict:
     from lightgbm import LGBMRegressor
 
     config_bytes = config_path.read_bytes()
     config = tomllib.loads(config_bytes.decode('utf-8'))
+    measurement_bytes = measurement_config.read_bytes()
+    tomllib.loads(measurement_bytes.decode('utf-8'))
     research, settings = config['research'], config['model']
     if research['auto_trade'] is not False or settings['method'] != 'lightgbm':
         raise ValueError('Require the registered research model')
@@ -54,6 +56,7 @@ def run_annual(*, config_path: Path, output: Path, data_root: Path) -> dict:
                 raise ValueError('Calendar score preprocessing differs from the source')
     output.mkdir(parents=True, exist_ok=False)
     (output/'config.toml').write_bytes(config_bytes)
+    (output/'measurement.toml').write_bytes(measurement_bytes)
     predictions = output/'predictions'
     predictions.mkdir()
     sources = {factor: roots for factor in config['replacements'].values()}
@@ -107,7 +110,8 @@ def run_annual(*, config_path: Path, output: Path, data_root: Path) -> dict:
     benchmarks = Path(original['research']['stock_benchmarks'])
     print('Replaying the complete source account period', flush=True)
     replay = run_model_replay(predictions=predictions, benchmarks=benchmarks, output=output/'replay', data_root=data_root)
-    report = report_models(run=output/'replay', benchmarks=benchmarks, output=output/'reports', data_root=data_root)
+    report = report_models(run=output/'replay', measurement_config=output/'measurement.toml',
+                          output=output/'reports', data_root=data_root)
     result = {'research_id': research['id'], 'annual_fits': completed, 'prediction_rows': combined.height,
               'conclusions': report['conclusions'], 'cost_rows': replay['rows']}
     (output/'summary.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
@@ -119,8 +123,10 @@ def main() -> None:
     parser.add_argument('--config', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--data-root', type=Path, default=Path('data'))
+    parser.add_argument('--measurement-config', type=Path, required=True)
     args = parser.parse_args()
-    print(json.dumps(run_annual(config_path=args.config, output=args.output, data_root=args.data_root)))
+    print(json.dumps(run_annual(config_path=args.config, output=args.output, data_root=args.data_root,
+                               measurement_config=args.measurement_config)))
 
 
 if __name__ == '__main__':

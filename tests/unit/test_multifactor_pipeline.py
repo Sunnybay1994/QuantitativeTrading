@@ -4,6 +4,11 @@ import pytest
 
 from quant.research import run_multifactor_pipeline as pipeline
 
+@pytest.fixture(autouse=True)
+def measurement_config(tmp_path):
+    (tmp_path/'measurement.toml').write_text("index_version='fixture'\nindex_codes=['H00300.CSI','H00906.CSI','H00985.CSI']\n")
+
+
 
 @pytest.mark.parametrize('complete', [False, True])
 def test_pipeline_waits_for_evidence_then_runs_prediction_replay_and_report(tmp_path, monkeypatch, complete):
@@ -25,15 +30,20 @@ def test_pipeline_waits_for_evidence_then_runs_prediction_replay_and_report(tmp_
         ('run_model_replay', 'replay', {}), ('report_models', 'reports', {'conclusions': {'equal_z': 'REJECTED'}})):
         monkeypatch.setattr(pipeline, function, stage(name, result))
     output = tmp_path/'output'
-    result = pipeline.run_pipeline(config=config, output=output, data_root=tmp_path/'data')
+    result = pipeline.run_pipeline(config=config, measurement_config=tmp_path/'measurement.toml', output=output, data_root=tmp_path/'data')
     assert [name for name, _ in calls] == (['statistics', 'costs', 'selection', 'predictions', 'replay', 'reports']
                                          if complete else ['statistics', 'costs', 'selection'])
     assert calls[1][1]['cost_runs'][0].name == 'external'
+    assert (output/'measurement.toml').read_bytes() == (tmp_path/'measurement.toml').read_bytes()
+    if complete:
+        assert calls[-1][1]['measurement_config'] == output/'measurement.toml'
+        assert 'benchmarks' not in calls[-1][1]
+        assert calls[-2][1]['benchmarks'].name == 'bench'
     assert result['model_results_ready'] is complete
     assert json.loads((output/'summary.json').read_text()) == result
     assert (output/'report.md').is_file()
     with pytest.raises(FileExistsError):
-        pipeline.run_pipeline(config=config, output=output, data_root=tmp_path/'data')
+        pipeline.run_pipeline(config=config, measurement_config=tmp_path/'measurement.toml', output=output, data_root=tmp_path/'data')
 
 
 @pytest.mark.parametrize('complete,replay_complete', [(False, False), (True, False), (True, True)])
@@ -80,13 +90,13 @@ def test_resume_preserves_prior_run_and_only_reuses_completed_evidence(tmp_path,
         ('run_selection', 'selection', selected), ('run_predictions', 'predictions', {}),
         ('run_model_replay', 'replay', {}), ('report_models', 'reports', {'conclusions': {}})):
         monkeypatch.setattr(pipeline, function, stage(name, result))
-    result = pipeline.run_pipeline(config=config, output=tmp_path/'new', data_root=tmp_path,
+    result = pipeline.run_pipeline(config=config, measurement_config=tmp_path/'measurement.toml', output=tmp_path/'new', data_root=tmp_path,
                                    resume_from=prior)
     assert calls == (['reports'] if replay_complete else ['replay', 'reports'] if complete else ['costs', 'selection'])
     assert result['completed_cost_factors'] == (2 if complete else 3)
     assert before == {str(p.relative_to(prior)): p.read_bytes() for p in prior.rglob('*') if p.is_file()}
     config.write_text(config.read_text()+'\nchanged=true\n')
     with pytest.raises(ValueError, match='same frozen'):
-        pipeline.run_pipeline(config=config, output=tmp_path/'mismatch', data_root=tmp_path,
+        pipeline.run_pipeline(config=config, measurement_config=tmp_path/'measurement.toml', output=tmp_path/'mismatch', data_root=tmp_path,
                               resume_from=prior)
     assert not (tmp_path/'mismatch').exists()
