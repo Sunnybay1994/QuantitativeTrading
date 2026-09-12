@@ -2,6 +2,7 @@
 import argparse
 import datetime as dt
 import json
+import math
 import tomllib
 import uuid
 from pathlib import Path
@@ -109,13 +110,45 @@ def main() -> None:
     parser.add_argument('--resume', action='store_true', help='Resume the same pipeline after its prior process has stopped')
     parser.add_argument('--existing-run', type=Path, action='append', default=[],
                         help='Reuse or reserve an existing factor cost run; repeat for multiple factors')
+    parser.add_argument('--diagnosis-config', type=Path, help='Append DeepSeek diagnosis; defaults to an offline plan')
+    parser.add_argument('--assessment', type=Path, action='append', default=[],
+                        help='Include a completed model assessment in diagnosis; repeat for each model')
+    parser.add_argument('--diagnosis-execute', action='store_true')
+    parser.add_argument('--diagnosis-max-requests', type=int, default=0)
+    parser.add_argument('--diagnosis-max-usd', type=float, default=0)
+    parser.add_argument('--diagnosis-cache', type=Path, default=Path('artifacts/research/p7_deepseek_cache.sqlite'))
     args = parser.parse_args()
+    if (args.diagnosis_execute or args.assessment) and args.diagnosis_config is None:
+        parser.error('Diagnosis execution and assessments require --diagnosis-config')
+    if (args.diagnosis_max_requests < 0 or not math.isfinite(args.diagnosis_max_usd)
+            or args.diagnosis_max_usd < 0 or (args.diagnosis_execute and
+                (args.diagnosis_max_requests < 1 or args.diagnosis_max_usd <= 0))):
+        parser.error('Live diagnosis requires positive finite request and USD caps')
+    if args.diagnosis_config:
+        from quant.research.score_forecast_text import load_settings
+        load_settings(args.diagnosis_config)
     result = run_pipeline(config=args.config, library=args.library, as_of=args.as_of,
                           output=args.output, data_root=args.data_root,
                           execution_snapshot=args.execution_snapshot, workers=args.workers,
                           existing_runs=args.existing_run, resume=args.resume)
+    if args.diagnosis_config:
+        from quant.research.deepseek_diagnostics import run_diagnosis
+        diagnosis_output = args.output/'diagnosis'
+        number = 2
+        while diagnosis_output.exists():
+            diagnosis_output = args.output/f'diagnosis_{number:03d}'
+            number += 1
+        diagnosis = run_diagnosis(inputs=[], scorecard=Path(result['scorecard_path']),
+            assessments=args.assessment, config=args.diagnosis_config, output=diagnosis_output,
+            cache_path=args.diagnosis_cache, artifact_root=Path('artifacts'), execute=args.diagnosis_execute,
+            max_requests=args.diagnosis_max_requests, max_usd=args.diagnosis_max_usd)
+        result['diagnosis'] = {'output': str(diagnosis_output), 'result': diagnosis['result'],
+            'dry_run': diagnosis['dry_run'], 'deferred_until': diagnosis['deferred_until'],
+            'usd_bound_including_retries': diagnosis['usd_bound_including_retries']}
+        (args.output/'summary.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
     print(json.dumps(result))
-    if result['cost_failures'] or result['pending_external_runs']:
+    if (result['cost_failures'] or result['pending_external_runs'] or
+            (args.diagnosis_execute and result['diagnosis']['result'] != 'success')):
         raise SystemExit(1)
 
 

@@ -1,6 +1,7 @@
 import datetime as dt
 import json
 import sys
+from pathlib import Path
 
 import pytest
 import polars as pl
@@ -209,3 +210,61 @@ def test_resume_preserves_interrupted_benchmark_directory(tmp_path, monkeypatch)
     assert visits == ['statistics', 'screen', 'benchmarks', 'benchmarks', 'redundancy']
     preserved = list(args['output'].glob('benchmarks_partial_*/partial.txt'))
     assert len(preserved) == 1 and preserved[0].read_text() == 'keep this output'
+
+
+@pytest.mark.parametrize('state', ['dry_run', 'success', 'deferred_off_peak', 'budget_exhausted'])
+def test_cli_appends_budgeted_diagnosis_without_replaying_complete_pipeline(tmp_path, monkeypatch, capsys, state):
+    from quant.research import deepseek_diagnostics
+    from quant.research import score_forecast_text
+    output = tmp_path/'run'
+    output.mkdir()
+    (output/'diagnosis').mkdir()
+    scorecard = output/'scorecard/factor_scorecard.parquet'
+    invoked = []
+    live = state != 'dry_run'
+    arguments = ['pipeline', '--as-of', '2026-08-31', '--execution-snapshot', 'saved',
+                 '--output', str(output), '--resume', '--diagnosis-config', 'diagnosis.toml',
+                 '--assessment', 'assessment.json']
+    if live:
+        arguments += ['--diagnosis-execute', '--diagnosis-max-requests', '20', '--diagnosis-max-usd', '0.05']
+    monkeypatch.setattr(sys, 'argv', arguments)
+    monkeypatch.setattr(score_forecast_text, 'load_settings', lambda path: {})
+
+    def pipeline_result(**kwargs):
+        assert kwargs['resume'] is True
+        return {'cost_failures': {}, 'pending_external_runs': {}, 'scorecard_path': str(scorecard)}
+
+    def diagnosis(**kwargs):
+        invoked.append(kwargs)
+        assert kwargs['scorecard'] == scorecard
+        assert kwargs['assessments'] == [Path('assessment.json')]
+        assert kwargs['execute'] is live
+        assert kwargs['max_requests'] == (20 if live else 0)
+        assert kwargs['max_usd'] == (0.05 if live else 0)
+        assert kwargs['output'] == output/'diagnosis_002'
+        assert kwargs['cache_path'] == Path('artifacts/research/p7_deepseek_cache.sqlite')
+        return {'result': state, 'dry_run': not live, 'deferred_until': 'later' if state == 'deferred_off_peak' else None,
+                'usd_bound_including_retries': .02}
+
+    monkeypatch.setattr(pipeline, 'run_pipeline', pipeline_result)
+    monkeypatch.setattr(deepseek_diagnostics, 'run_diagnosis', diagnosis)
+    if state in ('dry_run', 'success'):
+        pipeline.main()
+    else:
+        with pytest.raises(SystemExit) as error:
+            pipeline.main()
+        assert error.value.code == 1
+    assert len(invoked) == 1
+    saved = json.loads((output/'summary.json').read_text())
+    assert saved['scorecard_path'] == str(scorecard)
+    assert saved['diagnosis']['result'] == state
+    assert json.loads(capsys.readouterr().out) == saved
+
+
+def test_live_diagnosis_without_budget_rejected_before_research(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, 'argv', ['pipeline', '--as-of', '2026-08-31', '--execution-snapshot', 'saved',
+        '--output', str(tmp_path/'run'), '--diagnosis-config', 'config.toml', '--diagnosis-execute'])
+    monkeypatch.setattr(pipeline, 'run_pipeline', lambda **kwargs: pytest.fail('reject before expensive work'))
+    with pytest.raises(SystemExit) as error:
+        pipeline.main()
+    assert error.value.code == 2
