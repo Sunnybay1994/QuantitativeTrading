@@ -111,7 +111,7 @@ def render_model_report(method: str, *, rows: list[dict], assessment: dict, mode
         f"{one['stress_windows_not_worse']}/{one['stress_windows_total']}，适用{one['stress_windows_applicable']}。"
         f"未满足条件：{failed}。",
         '无股票持仓时为研究观察不足。阈值保持冻结，不因不适用窗口减少要求。', '',
-        '下一步：按既有冻结条件和前向观察推进。', '关键限制：本报告复用已研究历史，仅修正测量口径。', '']
+        '下一步：按既有冻结条件和前向观察推进。', '关键限制：本报告复用已研究历史，后续仍需真实事前记录。', '']
     return '\n'.join(lines)
 
 
