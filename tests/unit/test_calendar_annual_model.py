@@ -76,3 +76,18 @@ def test_resume_completed_run_skips_training_and_rejects_changed_config(tmp_path
     config.write_text('[research]\nid="other"\n')
     with pytest.raises(ValueError,match='unchanged'):
         resume_annual_replay(config_path=config,output=output,data_root=tmp_path,measurement_config=measurement)
+
+
+def test_replacements_can_use_different_frozen_score_partitions():
+    from pathlib import Path
+    from quant.research.run_calendar_annual_model import replacement_statistics_sources
+
+    config = {'replacements': {'old_calendar': 'calendar_v1', 'old_sue': 'sue_v2'},
+        'inputs': {'calendar_statistics': ['train', 'valid', 'test'],
+                   'factor_statistics_sources': {'sue_v2': ['sue_history']}}}
+    assert replacement_statistics_sources(config) == {
+        'calendar_v1': [Path('train'), Path('valid'), Path('test')],
+        'sue_v2': [Path('sue_history')]}
+    config['inputs']['factor_statistics_sources']['typo'] = ['other']
+    with pytest.raises(ValueError, match='registered replacement'):
+        replacement_statistics_sources(config)

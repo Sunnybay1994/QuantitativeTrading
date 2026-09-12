@@ -41,6 +41,24 @@ def source_annual_factors(*, source: Path, model: dict, from_selection: bool) ->
             for row in plan]
 
 
+def replacement_statistics_sources(config: dict) -> dict[str, list[Path]]:
+    """Keep each replacement tied to its actual score partitions."""
+    replacements = set(config['replacements'].values())
+    overrides = config['inputs'].get('factor_statistics_sources', {})
+    if set(overrides) - replacements:
+        raise ValueError('Statistics override must name a registered replacement factor')
+    default = config['inputs']['calendar_statistics']
+    result = {}
+    for factor in sorted(replacements):
+        paths = overrides.get(factor, default)
+        if (not isinstance(paths, list) or not paths
+                or any(not isinstance(path, str) or not path.strip() for path in paths)
+                or len(set(paths)) != len(paths)):
+            raise ValueError('Each replacement requires a nonempty list of unique statistics paths')
+        result[factor] = [Path(path) for path in paths]
+    return result
+
+
 def resume_annual_replay(*, config_path: Path, output: Path, data_root: Path,
                          measurement_config: Path) -> dict:
     """Resume only after frozen annual predictions exist; never silently retrain."""
@@ -94,8 +112,12 @@ def run_annual(*, config_path: Path, output: Path, data_root: Path, measurement_
     fits = source_annual_factors(source=source, model=original, from_selection='source_selection' in research)
     sessions = available_sessions(data_root, dt.date(settings['test_end'].year+1, 1, 31))
     plan = annual_windows(fits=fits, sessions=sessions, start=settings['test_start'], end=settings['test_end'])
-    roots = [Path(path) for path in config['inputs']['calendar_statistics']]
-    for root in roots:
+    sources = replacement_statistics_sources(config)
+    for factor, paths in sources.items():
+        for path in paths:
+            if not (path/'factors'/factor/'monthly_scores.parquet').is_file():
+                raise ValueError(f'Missing replacement statistics: {factor} at {path}')
+    for root in {path for paths in sources.values() for path in paths}:
         if (root/'battery.toml').exists():
             other = tomllib.loads((root/'battery.toml').read_text(encoding='utf-8'))
             if any(other[key] != battery[key] for key in ('preprocessing', 'universe', 'variants')):
@@ -105,7 +127,6 @@ def run_annual(*, config_path: Path, output: Path, data_root: Path, measurement_
     (output/'measurement.toml').write_bytes(measurement_bytes)
     predictions = output/'predictions'
     predictions.mkdir()
-    sources = {factor: roots for factor in config['replacements'].values()}
     statistics = Path(original['research']['statistics_source'])
     completed, parts = [], []
     feature_coverage: list[dict] = []

@@ -30,7 +30,10 @@ amihud_illiquidity_monthly = "amihud_illiquidity_monthly_calendar80_v1"
 free_float_turnover_abnormal_12m = "free_float_turnover_abnormal_12m_calendar80_v1"
 
 [inputs]
-calendar_statistics = ["artifacts/factors/search/p6c_batch01_window02_20260911/training", "artifacts/factors/search/p6c_batch01_window02_20260911/validation", "artifacts/models/p6c_calendar_model_20260911_02/calendar_scores", "artifacts/factors/q2_sue_context_v2_statistics_20260912_01"]
+calendar_statistics = ["artifacts/factors/search/p6c_batch01_window02_20260911/training", "artifacts/factors/search/p6c_batch01_window02_20260911/validation", "artifacts/models/p6c_calendar_model_20260911_02/calendar_scores"]
+
+[inputs.factor_statistics_sources]
+pit_sue8_context_v2 = ["artifacts/factors/q2_sue_context_v2_statistics_20260912_01"]
 
 [forward]
 start = 2026-09-14
