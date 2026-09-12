@@ -225,7 +225,8 @@ def main() -> None:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--input", type=Path, nargs="+", help="Bounded raw excerpts with a per-source fact allowance")
     mode.add_argument("--scorecard", type=Path, help="Full factor_scorecard.parquet for balanced research summary")
-    parser.add_argument("--assessment", type=Path, nargs="*", default=[], help="Optional model assessment.json files (primary sections)")
+    parser.add_argument("--assessment", type=Path, nargs="+", action="extend", default=[],
+                        help="Model assessment.json files; one list or repeated options")
     parser.add_argument("--config", type=Path, default=Path("configs/research/deepseek_diagnosis_v1.toml"))
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--cache", type=Path, default=Path("artifacts/research/deepseek_diagnosis_cache.sqlite"))
