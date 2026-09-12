@@ -1,0 +1,37 @@
+# Q2 historical SUE context repair against q1d_causal48_calendar_missing_20260912_01.
+# Measurement: configs/data/return_benchmarks_q1b_20260912.toml
+# Only replace legacy SUE values with the context-valid v2; retain causal selections and all thresholds.
+[research]
+id = "q2-sue-context-v2-causal48-20260912"
+registered_on = 2026-09-12
+hypothesis = "Replace pit_sue8 with pit_sue8_context_v2 only in years where the frozen causal48 plan selected SUE; recompute features and annual models while retaining original annual selections, missing policy, calendar repairs, portfolio rules and admission thresholds."
+single_variable = "SUE_latest_company_report_context"
+source_selection = "artifacts/models/q1d_causal48_admission_20260912_01/selection"
+historical_evidence = "retrospective_annual_walk_forward_not_an_unseen_holdout"
+auto_trade = false
+
+[model]
+method = "lightgbm"
+missing_features = "neutral_zero_with_monthly_factor_exclusion"
+maximum_missing_fraction = 0.3
+training_start = 2010-01-01
+test_start = 2015-01-01
+test_end = 2026-08-31
+minimum_training_months = 48
+minimum_signal_stocks = 100
+parameters = "unchanged_source_LightGBM"
+factor_selection = "causal_48_month_annual_selection_with_only_present_registered_calendar_replacements"
+insufficient_history = "cash"
+admission = "unchanged_source_thresholds_with_holding_window_return_indexes"
+
+[replacements]
+pit_sue8 = "pit_sue8_context_v2"
+amihud_illiquidity_monthly = "amihud_illiquidity_monthly_calendar80_v1"
+free_float_turnover_abnormal_12m = "free_float_turnover_abnormal_12m_calendar80_v1"
+
+[inputs]
+calendar_statistics = ["artifacts/factors/search/p6c_batch01_window02_20260911/training", "artifacts/factors/search/p6c_batch01_window02_20260911/validation", "artifacts/models/p6c_calendar_model_20260911_02/calendar_scores", "artifacts/factors/q2_sue_context_v2_statistics_20260912_01"]
+
+[forward]
+start = 2026-09-14
+minimum_observation_months = 12
