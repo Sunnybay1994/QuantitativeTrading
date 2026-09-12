@@ -97,7 +97,7 @@ D:\Miniforge3\python.exe -m quant.research.run_daily_model_forecast --to today -
 # --saved-data同样扫描完整输入质量；SUE v2检查错误0，旧SUE错误阻断记录保留。
 
 # 9月14日起：同日刷新与预测、B20/B32冻结观察账户、B32月报一条命令；预测不驱动持仓
-D:\Miniforge3\python.exe -m quant.research.run_daily_observation --config configs/research/daily_observation_q2_sue_v2_20260912.toml --to today --output artifacts/research/<新日更观察目录>
+D:\Miniforge3\python.exe -m quant.research.run_daily_observation --config configs/research/daily_observation_q2_sue_v2_20260912.toml --to today --output artifacts/daily/sue_v2/<新日更观察目录>
 # 9月14日前的演练须加--saved-data --rehearsal --account-root <已初始化的隔离副本根目录>。
 # output/report.md汇总阶段与输入问题；factor_health记录原始因子健康诊断，详见日更运行说明。
 
