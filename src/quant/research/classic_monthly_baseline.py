@@ -8,7 +8,7 @@ import json
 import math
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 import polars as pl
 from pandera.config import config_context
@@ -153,6 +153,9 @@ def replay(
     account_state: dict[str, Any] | None = None,
     target_turnover_budget: float | None = None,
     target_records: list[dict] | None = None,
+    target_constraints: Callable[[pl.DataFrame, dict], tuple[pl.DataFrame, dict]] | None = None,
+    constraint_records: list[dict] | None = None,
+    constraint_diagnostics: list[dict] | None = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """Replay a chunk; update optional account_state only after a successful run.
 
@@ -215,6 +218,22 @@ def replay(
                     target_records.append({**row, 'desired_weight': desired.get(row['symbol'], 0.),
                         'current_weight': held.get('quantity', 0)*held.get('mark_price', 0.)/equity,
                         'signal_equity': equity})
+        if batch is not None and target_constraints is not None:
+            desired = dict(batch.select('symbol', 'weight').iter_rows())
+            batch, constraint_info = target_constraints(batch, state)
+            if constraint_diagnostics is not None:
+                constraint_diagnostics.append(constraint_info)
+            if constraint_records is not None and constraint_info.get('applied', True):
+                signal_equity = state['nav'][-1]['equity']
+                for row in batch.to_dicts():
+                    held = state['holdings'].get(row['symbol'], {})
+                    constraint_records.append({**row,
+                        'desired_weight': desired.get(row['symbol'], 0.),
+                        'current_weight': held.get('quantity', 0)*held.get('mark_price', 0.)/signal_equity,
+                        'signal_equity': signal_equity, 'feasible': constraint_info['feasible']})
+            if not constraint_info['feasible']:
+                raise ValueError(f"Portfolio constraints failed at {constraint_info['as_of']}: "
+                                 f"{constraint_info.get('failure_reason')}")
         writeoff = 0.0
         removed = []
         if config["portfolio"].get("delisted_holding_recovery") == 0.0:
@@ -226,9 +245,9 @@ def replay(
                     removed.append(symbol)
             state["restricted_shares"] = [r for r in state.get("restricted_shares", [])
                                            if r["symbol"] not in removed]
-        if batch is not None and removed and target_turnover_budget is not None:
+        if batch is not None and removed and (target_turnover_budget is not None or target_constraints is not None):
             # A delisting writeoff is not a trade; never reintroduce a removed
-            # holding retained by the previous-close turnover blend.
+            # holding retained by a previous-close target transformation.
             batch = batch.filter(~pl.col('symbol').is_in(removed))
         state["pending"] = ([] if batch is None else batch.with_columns(
             pl.col("as_of").cast(pl.String), pl.col("execution_date").cast(pl.String),

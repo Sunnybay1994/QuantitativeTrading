@@ -1,6 +1,6 @@
 """Deterministic reductions of one signal-close portfolio; no orders or data IO."""
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import polars as pl
@@ -316,3 +316,75 @@ def constrain_relative_targets(*, targets: pl.DataFrame, current: pl.DataFrame,
             or band_capacity_conflicts else 'iteration_limit_not_a_proof_of_infeasibility'),
         'fallback': None if converged else 'conservative_diagnostic_only_reject_formal_replay',
         'conservative_diagnostics': ordinary}
+
+
+
+def constrain_account_targets(*, targets: pl.DataFrame, state: dict, market: pl.DataFrame,
+                              benchmark: pl.DataFrame,
+                              limits: RelativeConstraintLimits = RelativeConstraintLimits(),
+                              enabled: bool = True, sell_only: bool = False,
+                              unknown_industry_policy: str = 'reject',
+                              diagnostic_only: bool = False) -> tuple[pl.DataFrame, dict]:
+    """Adapt a closed daily_account checkpoint; infeasible proposals raise by default.
+
+    Receivables are not spending cash. A symbol with unlisted restricted shares
+    is conservatively unsellable as a whole here; final execution remains in the
+    shared account engine. The input state is never mutated. The caller should
+    invoke this immediately before replay's next-session advance, using the
+    preceding signal-close state and PIT market/benchmark inputs.
+    """
+    if type(diagnostic_only) is not bool:
+        raise ValueError('diagnostic_only must be boolean')
+    if targets.is_empty() or targets['as_of'].n_unique() != 1:
+        raise ValueError('Require one signal batch for account constraints')
+    signal = str(targets['as_of'][0])
+    nav = state.get('nav', [])
+    if state.get('date') != signal or not nav or str(nav[-1].get('date')) != signal:
+        raise ValueError('Require actual account valuation at signal close')
+    cash = float(state['cash'])
+    receivables = [float(r['amount']) for r in state.get('receivables', [])]
+    if any(not math.isfinite(v) or v < 0 for v in [cash, *receivables]):
+        raise ValueError('Invalid cash or receivables')
+    holdings = state['holdings']
+    values = {}
+    for symbol, holding in holdings.items():
+        quantity, mark = float(holding['quantity']), float(holding['mark_price'])
+        if not math.isfinite(quantity) or quantity < 0 or not math.isfinite(mark) or mark <= 0:
+            raise ValueError('Invalid actual holding quantity or mark')
+        if quantity:
+            values[symbol] = quantity*mark
+    equity = cash+sum(values.values())+sum(receivables)
+    if (not math.isfinite(equity) or equity <= 0 or not math.isclose(
+            equity, float(nav[-1]['equity']), abs_tol=1e-6, rel_tol=0)
+            or not math.isclose(cash, float(nav[-1]['cash']), abs_tol=1e-6, rel_tol=0)):
+        raise ValueError('Account holdings/cash differ from the signal-close NAV')
+    if limits.cash_buffer+sum(receivables)/equity >= 1:
+        raise ValueError('Receivables leave insufficient spendable cash for the reserve')
+    rows = [{'as_of': targets['as_of'][0], 'symbol': s, 'weight': value/equity}
+            for s, value in sorted(values.items())]
+    current = pl.from_dicts(rows, schema={'as_of': targets.schema['as_of'],
+                                        'symbol': pl.String, 'weight': pl.Float64})
+    restricted = set()
+    restricted_quantities: dict[str, float] = {}
+    for row in state.get('restricted_shares', []):
+        quantity = float(row['quantity'])
+        if not math.isfinite(quantity) or quantity < 0:
+            raise ValueError('Invalid restricted share quantity')
+        if str(row['list_date']) > signal and quantity > 0:
+            restricted_quantities[row['symbol']] = restricted_quantities.get(row['symbol'], 0.)+quantity
+            if row['symbol'] not in holdings or restricted_quantities[row['symbol']] > float(holdings[row['symbol']]['quantity']):
+                raise ValueError('Restricted shares exceed actual holdings')
+            restricted.add(row['symbol'])
+    observed = market.with_columns((pl.col('can_sell') &
+        ~pl.col('symbol').is_in(sorted(restricted))).alias('can_sell'))
+    out, info = constrain_relative_targets(targets=targets, current=current, market=observed,
+        benchmark=benchmark, equity=equity, limits=replace(limits,
+            cash_buffer=limits.cash_buffer+sum(receivables)/equity), enabled=enabled,
+        sell_only=sell_only, unknown_industry_policy=unknown_industry_policy)
+    info['account_equity'] = equity
+    info['receivable_weight'] = sum(receivables)/equity
+    info['spendable_cash_weight_after'] = info['cash_weight']-sum(receivables)/equity
+    info['restricted_symbols_frozen_for_selling'] = sorted(restricted)
+    if not info['feasible'] and not diagnostic_only:
+        raise ValueError(f"Account constraints infeasible: {info['failure_reason']}")
+    return out, info

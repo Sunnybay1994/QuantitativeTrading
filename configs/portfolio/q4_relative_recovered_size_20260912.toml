@@ -1,0 +1,25 @@
+id = "q4-relative-recovered-size-20260912"
+recovered_size = "artifacts/research/q4_benchmark_control_recovery_20260912_01/size/recovered_size.parquet"
+statistics = "artifacts/factors/p7_peer_statistics_20260831_20260912_01"
+strategy_names = ["p4_lightgbm_top50"]
+unknown_industry_policy = "explicit_unknown_bucket"
+unknown_industry_rule = "Preserve full benchmark weights in UNKNOWN bucket; forbid new UNKNOWN holdings; constrain and report UNKNOWN active weight. Missing size still rejects the date."
+mode = "research_only"
+auto_trade = false
+enabled = true
+sell_only = false
+benchmark = "all_market_equal_weight"
+benchmark_snapshot = "battery_monthly_gross_20260912"
+hypothesis = "Fixed Top50 candidate names; deterministic projection toward original targets under benchmark-relative industry and size limits, without adding names."
+active_weight_basis = "total_account_equity_including_cash; cash_has_zero_industry_and_size_exposure"
+size_definition = "log_total_market_value_standardized_by_full_benchmark_weighted_mean_and_population_std_at_signal_close"
+infeasible_policy = "diagnostic_only_conservative_targets; formal_replay_must_reject"
+
+[limits]
+cash_buffer = 0.02
+single_stock_weight = 0.03
+industry_active_band = 0.05
+size_active_band = 0.30
+adv_participation = 0.05
+maximum_iterations = 2000
+tolerance = 0.00000001

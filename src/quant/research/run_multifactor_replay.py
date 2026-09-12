@@ -4,6 +4,7 @@ import datetime as dt
 import json
 import tomllib
 from pathlib import Path
+from typing import Callable
 
 import polars as pl
 
@@ -45,7 +46,70 @@ def model_target_plans(scores: pl.DataFrame, *, model: dict, sessions: tuple[dt.
         for top_k in (portfolio['primary_top_k'], portfolio['sensitivity_top_k'])}
 
 
-def run_model_replay(*, predictions: Path, benchmarks: Path, output: Path, data_root: Path) -> dict:
+def prepare_constraints(*, config: Path, plans: dict, data_root: Path, output: Path,
+                        resume: bool) -> tuple[Callable[[pl.DataFrame, dict], tuple[pl.DataFrame, dict]], str]:
+    """Freeze existing PIT controls and benchmark weights for this explicit experiment."""
+    from quant.data.equal_weight_index import read_equal_weight_targets
+    from quant.data.factor_battery_inputs import read_frozen_battery_universe
+    from quant.data.neutralization_inputs import apply_recovered_market_values
+    from quant.portfolio.simple_constraints import RelativeConstraintLimits, constrain_account_targets
+
+    content = config.read_text(encoding='utf-8')
+    settings = tomllib.loads(content)
+    if settings.get('auto_trade') is not False or settings.get('mode') != 'research_only':
+        raise ValueError('Constraints require research_only and auto_trade=false')
+    names = settings['strategy_names']
+    if not names or len(names) != len(set(names)) or not set(names) <= {n for n, _ in plans.values()}:
+        raise ValueError('Constraint strategy_names must select existing unique plans')
+    dates = sorted({d for name, targets in plans.values() if name in names for d in targets['as_of']})
+    universe_dates = set(dates)
+    recovery = Path(settings['recovered_size']) if settings.get('recovered_size') else None
+    if recovery is not None:
+        # This is the explicit artifact overlay, never a read of raw/clean outside quant.data.
+        universe_dates.update(pl.read_parquet(recovery, columns=['as_of'])['as_of'])
+    universe = read_frozen_battery_universe(statistics=Path(settings['statistics']),
+        as_of_dates=sorted(universe_dates), include_tradeability=True)
+    if recovery is not None:
+        universe = apply_recovered_market_values(universe=universe, recovery_path=recovery)
+    benchmark = read_equal_weight_targets(data_root=data_root, version=settings['benchmark_snapshot'],
+        index_name=settings['benchmark'], as_of_dates=dates)
+    config_path = output/'constraints_config.toml'
+    frames = {'constraints_universe.parquet': universe, 'constraints_benchmark.parquet': benchmark}
+    if resume:
+        if not config_path.is_file() or config_path.read_text(encoding='utf-8') != content:
+            raise ValueError('Resume constraints configuration changed')
+        for filename, frame in frames.items():
+            if not (output/filename).is_file() or not pl.read_parquet(output/filename).equals(frame):
+                raise ValueError(f'Resume constraint inputs changed: {filename}')
+    else:
+        config_path.write_text(content, encoding='utf-8')
+        for filename, frame in frames.items():
+            frame.write_parquet(output/filename)
+
+    def transform(batch: pl.DataFrame, state: dict) -> tuple[pl.DataFrame, dict]:
+        signal = batch['as_of'][0]
+        if batch['strategy'].n_unique() != 1:
+            raise ValueError('Mixed strategy constraint batch')
+        if batch['strategy'][0] not in names:
+            return batch, {'as_of': str(signal), 'feasible': True, 'applied': False, 'failure_reason': None}
+        market = universe.filter(pl.col('trade_date') == signal).select(
+            pl.col('trade_date').alias('as_of'), pl.col('trade_date').alias('known_at'),
+            'symbol', 'industry_l1', 'total_market_value', pl.col('amount20').alias('adv20'),
+            pl.col('eligible').alias('can_buy'),
+            (pl.col('traded') & pl.col('limits_known') & pl.col('away_from_limits')).alias('can_sell'))
+        result, info = constrain_account_targets(targets=batch, state=state, market=market,
+            benchmark=benchmark.filter(pl.col('as_of') == signal),
+            limits=RelativeConstraintLimits(**settings['limits']), enabled=settings['enabled'],
+            sell_only=settings['sell_only'], unknown_industry_policy=settings['unknown_industry_policy'],
+            diagnostic_only=True)
+        info['applied'] = True
+        return result, info
+
+    return transform, content
+
+
+def run_model_replay(*, predictions: Path, benchmarks: Path, output: Path, data_root: Path,
+                     constraints_config: Path | None = None, resume: bool = False) -> dict:
     model_bytes = (predictions/'model.toml').read_bytes()
     model = tomllib.loads(model_bytes.decode('utf-8'))
     battery_bytes = (predictions/'battery.toml').read_bytes()
@@ -66,13 +130,30 @@ def run_model_replay(*, predictions: Path, benchmarks: Path, output: Path, data_
     scores = pl.read_parquet(predictions/'monthly_predictions.parquet')
     plans = model_target_plans(scores, model=model, sessions=sessions)
     snapshot = json.loads((benchmarks/'summary.json').read_text(encoding='utf-8'))['execution_snapshot']
-    output.mkdir(parents=True, exist_ok=False)
-    (output/'model.toml').write_bytes(model_bytes)
-    (output/'battery.toml').write_bytes(battery_bytes)
-    model_signal_coverage(scores, annual_fits=summary['annual_fits'], model=model,
-                          sessions=sessions).write_parquet(output/'model_signal_coverage.parquet')
+    if resume:
+        if ((output/'model.toml').read_bytes() != model_bytes
+                or (output/'battery.toml').read_bytes() != battery_bytes):
+            raise ValueError('Resume model or battery configuration changed')
+    else:
+        output.mkdir(parents=True, exist_ok=False)
+        (output/'model.toml').write_bytes(model_bytes)
+        (output/'battery.toml').write_bytes(battery_bytes)
+    transform = None
+    if constraints_config is not None:
+        transform, content = prepare_constraints(config=constraints_config, plans=plans,
+            data_root=data_root, output=output, resume=resume)
+        settings['target_constraints_config'] = content
+    elif resume and (output/'constraints_config.toml').exists():
+        raise ValueError('Resume cannot omit the original constraints configuration')
+    coverage = model_signal_coverage(scores, annual_fits=summary['annual_fits'], model=model, sessions=sessions)
+    if resume:
+        if not pl.read_parquet(output/'model_signal_coverage.parquet').equals(coverage):
+            raise ValueError('Resume model signal coverage changed')
+    else:
+        coverage.write_parquet(output/'model_signal_coverage.parquet')
     return run_cost_plans(settings=settings, plans=plans, sessions=sessions, output=output,
-        data_root=data_root, execution_snapshot=snapshot, factor=model['research']['id'], start=walk['test_start'])
+        data_root=data_root, execution_snapshot=snapshot, factor=model['research']['id'], start=walk['test_start'],
+        target_constraints=transform, resume=resume)
 
 
 def main() -> None:
@@ -81,9 +162,12 @@ def main() -> None:
     parser.add_argument('--benchmarks', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--data-root', type=Path, default=Path('data'))
+    parser.add_argument('--constraints-config', type=Path)
+    parser.add_argument('--resume', action='store_true')
     args = parser.parse_args()
     print(json.dumps(run_model_replay(predictions=args.predictions, benchmarks=args.benchmarks,
-                                     output=args.output, data_root=args.data_root)))
+                                     output=args.output, data_root=args.data_root,
+                                     constraints_config=args.constraints_config, resume=args.resume)))
 
 
 if __name__ == '__main__':

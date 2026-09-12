@@ -4,7 +4,7 @@ import polars as pl
 import pytest
 
 from quant.portfolio.simple_constraints import (
-    ConstraintLimits, RelativeConstraintLimits, constrain_relative_targets, constrain_targets,
+    ConstraintLimits, RelativeConstraintLimits, constrain_account_targets, constrain_relative_targets, constrain_targets,
 )
 
 DAY = dt.date(2026, 7, 31)
@@ -247,3 +247,51 @@ def test_unknown_bucket_never_imputes_missing_market_cap():
     m = m.with_columns(pl.lit(None, dtype=pl.Float64).alias('total_market_value'))
     with pytest.raises(ValueError, match='Missing PIT industry/size'):
         relative_run(t, h, m, b, unknown_industry_policy='explicit_unknown_bucket')
+
+
+
+def test_account_adapter_reserves_receivables_and_does_not_mutate_state():
+    import copy
+    t, _, m, b = relative_inputs()
+    state = {'date': str(DAY), 'cash': 900_000., 'holdings': {},
+        'receivables': [{'amount': 100_000.}],
+        'nav': [{'date': str(DAY), 'equity': 1_000_000., 'cash': 900_000.}]}
+    before = copy.deepcopy(state)
+    out, info = constrain_account_targets(targets=t, state=state, market=m, benchmark=b,
+        limits=RelativeConstraintLimits(single_stock_weight=.8, industry_active_band=.2))
+    assert info['feasible']
+    assert out['weight'].sum() <= .88+1e-8
+    assert info['spendable_cash_weight_after'] >= .02-1e-8
+    assert state == before
+
+
+def test_account_adapter_rejects_infeasible_by_default_and_bad_nav():
+    t, _, m, b = relative_inputs()
+    state = {'date': str(DAY), 'cash': 0., 'holdings': {
+        'A': {'quantity': 5000, 'mark_price': 100.}, 'B': {'quantity': 5000, 'mark_price': 100.}},
+        'receivables': [], 'nav': [{'date': str(DAY), 'equity': 1e6, 'cash': 0.}]}
+    with pytest.raises(ValueError, match='constraints infeasible'):
+        constrain_account_targets(targets=t, state=state, market=m, benchmark=b, enabled=False,
+            limits=RelativeConstraintLimits(single_stock_weight=.8))
+    _, info = constrain_account_targets(targets=t, state=state, market=m, benchmark=b, enabled=False,
+        limits=RelativeConstraintLimits(single_stock_weight=.8), diagnostic_only=True)
+    assert not info['feasible']
+    state['nav'][-1]['equity'] += 1
+    with pytest.raises(ValueError, match='differ from'):
+        constrain_account_targets(targets=t, state=state, market=m, benchmark=b)
+
+
+def test_account_adapter_restricted_shares_freeze_sales():
+    t, _, m, b = relative_inputs()
+    t = t.with_columns(pl.Series('weight', [0., 1.]))
+    state = {'date': str(DAY), 'cash': 100_000., 'holdings': {
+        'A': {'quantity': 5000, 'mark_price': 100.}, 'B': {'quantity': 4000, 'mark_price': 100.}},
+        'restricted_shares': [{'symbol': 'A', 'quantity': 100, 'list_date': '2026-08-10'}],
+        'receivables': [], 'nav': [{'date': str(DAY), 'equity': 1e6, 'cash': 100_000.}]}
+    out, info = constrain_account_targets(targets=t, state=state, market=m, benchmark=b,
+        limits=RelativeConstraintLimits(single_stock_weight=.8))
+    assert out.filter(pl.col('symbol')=='A')['weight'][0] == .5
+    assert info['restricted_symbols_frozen_for_selling'] == ['A']
+    state['date'] = '2026-07-30'
+    with pytest.raises(ValueError, match='signal close'):
+        constrain_account_targets(targets=t, state=state, market=m, benchmark=b)

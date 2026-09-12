@@ -6,6 +6,7 @@ import json
 import time
 import tomllib
 from pathlib import Path
+from typing import Callable
 
 import polars as pl
 
@@ -108,8 +109,11 @@ def run_factor_costs(*, statistics: Path, output: Path, data_root: Path,
 def run_cost_plans(*, settings: dict, plans: dict, sessions: tuple[dt.date, ...], output: Path,
                    data_root: Path, execution_snapshot: str, factor: str,
                    start: dt.date | None = None,
-                   turnover_budgets: dict[str, float] | None = None, resume: bool = False) -> dict:
+                   turnover_budgets: dict[str, float] | None = None, resume: bool = False,
+                   target_constraints: Callable[[pl.DataFrame, dict], tuple[pl.DataFrame, dict]] | None = None) -> dict:
     """Replay factor and equal-weight benchmark plans through the same account."""
+    if (target_constraints is not None) != ('target_constraints_config' in settings):
+        raise ValueError('Constraint hook requires its explicit replay configuration')
     end = settings['run']['as_of']
     if not plans or (start is None and any(targets.is_empty() for _, targets in plans.values())):
         raise ValueError('Cost replay requires nonempty target plans')
@@ -138,6 +142,8 @@ def run_cost_plans(*, settings: dict, plans: dict, sessions: tuple[dt.date, ...]
                 continue
             folder = output / variant / f"cost_{multiplier:g}" / str(year)
             if resume and folder.exists():
+                if target_constraints is not None and not (folder/'constraints.json').is_file():
+                    raise ValueError('Constraint checkpoint lacks its saved diagnostics')
                 if key in unfinished:
                     raise ValueError("Checkpoint years contain a gap; retain partial output")
                 accounts[key], chunk = read_year(folder, dates=dates, previous=accounts[key])
@@ -184,15 +190,36 @@ def run_cost_plans(*, settings: dict, plans: dict, sessions: tuple[dt.date, ...]
                 if not dates:
                     continue
                 target_records: list[dict] = []
-                chunk = replay(bars=inputs["bars"], calendar=inputs["calendar"],
-                    instruments=inputs["instruments"], targets=annual_targets[variant], dividends=dividends,
-                    market_states=states, config=scenario, sessions=dates, name=name, validate_once=True,
-                    account_state=accounts[(variant, multiplier)],
-                    target_turnover_budget=(turnover_budgets or {}).get(variant),
-                    target_records=target_records)
+                constraint_records: list[dict] = []
+                constraint_diagnostics: list[dict] = []
+                try:
+                    chunk = replay(bars=inputs["bars"], calendar=inputs["calendar"],
+                        instruments=inputs["instruments"], targets=annual_targets[variant], dividends=dividends,
+                        market_states=states, config=scenario, sessions=dates, name=name, validate_once=True,
+                        account_state=accounts[(variant, multiplier)],
+                        target_turnover_budget=(turnover_budgets or {}).get(variant),
+                        target_records=target_records, target_constraints=target_constraints,
+                        constraint_records=constraint_records, constraint_diagnostics=constraint_diagnostics)
+                except ValueError as exc:
+                    if target_constraints is not None:
+                        failures = output/variant/f'cost_{multiplier:g}'
+                        failures.mkdir(parents=True, exist_ok=True)
+                        path = failures/f'constraints_failure_{year}_{time.time_ns()}.json'
+                        path.write_text(json.dumps({'year': year, 'reason': str(exc),
+                            'diagnostics': constraint_diagnostics,
+                            'resume': 'Restart unfinished year from last completed annual checkpoint'},
+                            indent=2, default=str), encoding='utf-8')
+                        if constraint_records:
+                            pl.from_dicts(constraint_records).write_parquet(path.with_suffix('.parquet'))
+                    raise
                 parts = output / variant / f"cost_{multiplier:g}" / str(year)
                 save_year(parts, account=accounts[(variant, multiplier)], chunks=chunk,
                           target_records=target_records)
+                if target_constraints is not None:
+                    (parts/'constraints.json').write_text(json.dumps(constraint_diagnostics,
+                        indent=2, default=str), encoding='utf-8')
+                    if constraint_records:
+                        pl.from_dicts(constraint_records).write_parquet(parts/'constraint_targets.parquet')
                 pieces[(variant, multiplier)].append(chunk)
                 print(json.dumps({"factor": factor, "year": year, "variant": variant,
                     "multiplier": multiplier, "sessions": len(dates),
