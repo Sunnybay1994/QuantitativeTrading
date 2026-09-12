@@ -8,7 +8,7 @@ from pathlib import Path
 import polars as pl
 
 from quant.research.factor_battery_cost_batch import existing_cost_factor
-from quant.research.factor_battery_cost_report import collect_cost_report
+from quant.research.factor_battery_cost_report import MEASUREMENT, REQUIRED_BENCHMARKS, collect_cost_report
 
 
 def assemble_scorecard(screen: pl.DataFrame, *, cost_reports: list[dict],
@@ -32,6 +32,8 @@ def assemble_scorecard(screen: pl.DataFrame, *, cost_reports: list[dict],
                 raise ValueError('Unknown or duplicate cost result')
             seen.add(identity)
             prefix = f"cost_{row['cost_multiplier']:g}".replace('.', 'p')
+            extras[key][f'{prefix}_holding_evidence'] = row.get('holding_evidence')
+            extras[key]['measurement_current'] = report.get('measurement') == MEASUREMENT
             for metric in ('cagr', 'sharpe', 'max_drawdown', 'annualized_one_way_turnover', 'mean_invested_fraction'):
                 extras[key][f'{prefix}_{metric}'] = row[metric]
         for row in report['benchmark_comparisons']:
@@ -54,10 +56,22 @@ def assemble_scorecard(screen: pl.DataFrame, *, cost_reports: list[dict],
     rows = []
     for row in screen.iter_rows(named=True):
         extra = extras[(row['factor'], row['variant'])]
-        costs_ready = all(extra.get(f"cost_{mult:g}_cagr".replace('.', 'p')) is not None
-                          for mult in settings['portfolio']['cost_multipliers'])
+        current = extra.get('measurement_current') is True
+        no_holding = any(extra.get(f"cost_{mult:g}_holding_evidence".replace('.', 'p')) is False
+                         for mult in settings['portfolio']['cost_multipliers'])
+        costs_ready = current and all(
+            extra.get(f"cost_{mult:g}_holding_evidence".replace('.', 'p')) is True
+            and extra.get(f"cost_{mult:g}_cagr".replace('.', 'p')) is not None
+            and math.isfinite(extra[f"cost_{mult:g}_cagr".replace('.', 'p')])
+            for mult in settings['portfolio']['cost_multipliers'])
+        benchmark_ready = current and all(
+            extra.get(f"cost_{mult:g}_{name}_cagr_excess".replace('cost_0.5', 'cost_0p5')) is not None
+            and math.isfinite(extra[f"cost_{mult:g}_{name}_cagr_excess".replace('cost_0.5', 'cost_0p5')])
+            for mult in settings['portfolio']['cost_multipliers'] for name in REQUIRED_BENCHMARKS)
         excess = extra.get('cost_1_all_market_equal_weight_cagr_excess')
-        cost_pass = excess > settings['admission']['minimum_top_net_excess_all_market_ew'] if excess is not None and math.isfinite(excess) else None
+        cost_pass = excess > settings['admission']['minimum_top_net_excess_all_market_ew'] if current and excess is not None and math.isfinite(excess) else None
+        if no_holding:
+            cost_pass = False
         rho = extra.get('higher_max_absolute_rank_correlation')
         redundancy_pass = (rho < settings['admission']['maximum_absolute_rank_correlation_with_better']
                            if rho is not None and math.isfinite(rho) else None)
@@ -72,7 +86,7 @@ def assemble_scorecard(screen: pl.DataFrame, *, cost_reports: list[dict],
             admitted = False
         elif costs_ready and cost_pass is True and redundancy_pass is True:
             admitted = True
-        rows.append({**row, **extra, 'costs_complete': costs_ready, 'cost_excess_pass': cost_pass,
+        rows.append({**row, **extra, 'costs_complete': costs_ready, 'return_benchmarks_complete': benchmark_ready, 'cost_excess_pass': cost_pass,
                      'redundancy_pass': redundancy_pass, 'factor_admitted': admitted,
                      'conclusion': 'REJECTED' if not row['statistical_pass'] else 'RESEARCH_ONLY'})
     return pl.from_dicts(rows, infer_schema_length=None).sort('factor', 'variant')
@@ -80,7 +94,7 @@ def assemble_scorecard(screen: pl.DataFrame, *, cost_reports: list[dict],
 
 def run_scorecard(*, screen: Path, output: Path, cost_runs: list[Path], cost_root: Path | None,
                   benchmarks: Path | None, redundancy: Path | None, data_root: Path,
-                  previous_scorecard: Path | None = None) -> dict:
+                  previous_scorecard: Path | None = None, return_benchmark_config: Path | None = None) -> dict:
     config = (screen/'battery.toml').read_bytes()
     settings = tomllib.loads(config.decode('utf-8'))
     statistics = pl.read_parquet(screen/'statistical_screen.parquet')
@@ -98,8 +112,6 @@ def run_scorecard(*, screen: Path, output: Path, cost_runs: list[Path], cost_roo
     runs = list({path.resolve(): path for path in runs}.values())
     reports, paths = [], []
     benchmark_cache: dict[tuple, pl.DataFrame] = {}
-    if benchmarks is not None and not (benchmarks/'summary.json').is_file():
-        benchmarks = None
     snapshot = None
     factors_seen: set[str] = set()
     for run in runs:
@@ -114,7 +126,8 @@ def run_scorecard(*, screen: Path, output: Path, cost_runs: list[Path], cost_roo
             raise ValueError(f'Different completed cost runs for the same factor: {factor}')
         factors_seen.add(factor)
         reports.append(collect_cost_report(run=run, benchmarks=benchmarks, etf_reference=True,
-                                          data_root=data_root, benchmark_cache=benchmark_cache))
+                                          data_root=data_root, benchmark_cache=benchmark_cache,
+                                          return_benchmark_config=return_benchmark_config))
         paths.append(str(run))
     correlation_table = None
     if redundancy is not None and (redundancy/'correlation_maxima.parquet').is_file():
@@ -127,10 +140,13 @@ def run_scorecard(*, screen: Path, output: Path, cost_runs: list[Path], cost_roo
                'admitted_rows': result['factor_admitted'].fill_null(False).sum(),
                'admission_unresolved_rows': result['factor_admitted'].null_count(),
                'correlations_complete': correlation_table is not None,
-               'stock_benchmarks_complete': benchmarks is not None,
+               'stock_benchmarks_complete': bool(reports) and all(r.get('return_indexes_complete') for r in reports),
+               'measurement': MEASUREMENT,
                'cost_runs': paths}
     output.mkdir(parents=True, exist_ok=False)
     (output/'battery.toml').write_bytes(config)
+    if return_benchmark_config is not None:
+        (output/'return_benchmarks.toml').write_bytes(return_benchmark_config.read_bytes())
     result.write_parquet(output/'factor_scorecard.parquet')
     (output/'summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
     diagnostic = (
@@ -154,6 +170,7 @@ def main() -> None:
     parser.add_argument('--cost-root', type=Path)
     parser.add_argument('--previous-scorecard', type=Path,
                         help='Retain completed cost runs from a prior scorecard when collecting new results')
+    parser.add_argument('--return-benchmark-config', type=Path)
     parser.add_argument('--benchmarks', type=Path)
     parser.add_argument('--redundancy', type=Path)
     parser.add_argument('--data-root', type=Path, default=Path('data'))
@@ -161,7 +178,7 @@ def main() -> None:
     print(json.dumps(run_scorecard(screen=args.screen, output=args.output, cost_runs=args.cost_run,
                                   cost_root=args.cost_root, benchmarks=args.benchmarks,
                                   redundancy=args.redundancy, data_root=args.data_root,
-                                  previous_scorecard=args.previous_scorecard)))
+                                  previous_scorecard=args.previous_scorecard, return_benchmark_config=args.return_benchmark_config)))
 
 
 if __name__ == '__main__':

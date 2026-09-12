@@ -81,15 +81,76 @@ def test_benchmark_cache_is_shared_only_within_explicit_reporting_scope(tmp_path
     (benchmarks/'summary.json').write_text(json.dumps({'execution_snapshot': 'same', 'rows': [
         {'variant': variant, 'cost_multiplier': 1.} for variant in ('market', 'csi800')]}))
     calls = []
-    nav = pl.DataFrame({'date': [dt.date(2020,12,30),dt.date(2020,12,31)], 'unit_nav': [1.,1.01]})
+    index_calls = []
+    nav = pl.DataFrame({'date': [dt.date(2020,12,30),dt.date(2020,12,31)], 'unit_nav': [1.,1.01],
+        'equity': [100.,101.], 'market_value': [90.,90.], 'cumulative_fees': [0.,0.]})
     def load(folder, variant, multiplier, end):
         calls.append(folder)
-        return nav, pl.DataFrame()
+        return nav, pl.DataFrame(schema={'date': pl.Date, 'notional': pl.Float64})
     monkeypatch.setattr(reporting, 'load_cost_history', load)
-    monkeypatch.setattr(reporting, 'cost_metrics', lambda *args, **kwargs: {'cagr': .1})
+    def indexes(**kwargs):
+        index_calls.append(kwargs)
+        return {name: nav.select('date','unit_nav') for name in kwargs['names']}
+    monkeypatch.setattr('quant.data.equal_weight_index.load_return_benchmarks', indexes)
+    config_path = tmp_path/'return.toml'
+    config_path.write_text('[benchmarks]')
+    args = dict(run=run, benchmarks=benchmarks, return_benchmark_config=config_path)
     cache = {}
-    first = reporting.collect_cost_report(run=run, benchmarks=benchmarks, benchmark_cache=cache)
-    second = reporting.collect_cost_report(run=run, benchmarks=benchmarks, benchmark_cache=cache)
-    assert first == second and calls.count(benchmarks) == 2
-    reporting.collect_cost_report(run=run, benchmarks=benchmarks)
-    assert calls.count(benchmarks) == 4
+    first = reporting.collect_cost_report(**args, benchmark_cache=cache)
+    second = reporting.collect_cost_report(**args, benchmark_cache=cache)
+    assert first == second and len(index_calls) == 3
+    assert calls.count(benchmarks) == 0  # Legacy account is checked, never read as a benchmark NAV.
+    reporting.collect_cost_report(**args)
+    assert len(index_calls) == 6
+    absent = reporting.collect_cost_report(run=run, benchmarks=benchmarks)
+    assert all(row['comparison_status'] == 'unavailable' for row in absent['benchmark_comparisons'])
+    assert not absent['return_indexes_complete']
+
+
+@pytest.mark.parametrize('missing', ['first', 'last', 'middle'])
+def test_holding_comparison_never_shrinks_index_window(missing):
+    dates = [dt.date(2020, 1, day) for day in (2, 3, 6)]
+    nav = pl.DataFrame({'date': dates, 'unit_nav': [.99, 1.1, 1.2]})
+    index = nav.filter(pl.col('date') != dates[{'first': 0, 'middle': 1, 'last': 2}[missing]])
+    with pytest.raises(ValueError, match='no shrinking'):
+        reporting.compare_holding_index(nav, index, start=dates[0], end=dates[-1])
+
+
+def test_holding_metrics_keep_entry_fee_and_prior_equity():
+    dates = [dt.date(2020, 1, day) for day in (2, 3, 6)]
+    nav = pl.DataFrame({'date': dates, 'unit_nav': [1., .99, .98], 'equity': [100., 99., 98.],
+        'market_value': [0., 90., 0.], 'cumulative_fees': [0., 1., 2.]})
+    trades = pl.DataFrame({'date': dates[1:], 'notional': [90., 88.]})
+    result = reporting.holding_cost_metrics(nav, trades, initial_cash=100.)
+    assert result['total_return'] == pytest.approx(-.02)
+    assert result['sessions'] == 2 and result['initial_cash_period']['sessions'] == 1
+    assert result['annualized_one_way_turnover'] == pytest.approx((90/100+88/99)/2*252/2)
+
+
+def test_optional_etf_coverage_is_separate_for_raw_and_neutral(tmp_path, monkeypatch):
+    run = tmp_path/'cost'
+    run.mkdir()
+    (run/'battery.toml').write_text('[portfolio]\ninitial_cash=100.0\n[run]\nas_of=2020-01-03\n')
+    (run/'summary.json').write_text(json.dumps({'rows': [
+        {'factor': 'a', 'variant': v, 'cost_multiplier': 1.} for v in ('raw','neutral')]}))
+    config = tmp_path/'return.toml'
+    config.write_text('[benchmarks]')
+    dates = [dt.date(2020,1,2), dt.date(2020,1,3)]
+    def load(folder, variant, *args):
+        return pl.DataFrame({'date': dates, 'unit_nav': [1.,1.02], 'equity': [100.,102.],
+            'market_value': [90. if variant == 'raw' else 0.,90.], 'cumulative_fees': [0.,0.]}), \
+            pl.DataFrame(schema={'date': pl.Date, 'notional': pl.Float64})
+    def indexes(**kw):
+        name = kw['names'][0]
+        if name == '510300' and kw['start'] == dates[0]:
+            raise ValueError('ETF coverage starts later')
+        grid = [d for d in dates if d >= kw['start']]
+        return {name: pl.DataFrame({'date': grid, 'unit_nav': [1.]*len(grid)})}
+    monkeypatch.setattr(reporting, 'load_cost_history', load)
+    monkeypatch.setattr('quant.data.equal_weight_index.load_return_benchmarks', indexes)
+    result = reporting.collect_cost_report(run=run, return_benchmark_config=config)
+    rows = {(r['variant'],r['benchmark']):r for r in result['benchmark_comparisons']}
+    assert rows['raw','510300_total_return_reference']['comparison_status'] == 'unavailable'
+    assert rows['neutral','510300_total_return_reference']['comparison_status'] == 'complete'
+    assert rows['raw','all_market_equal_weight']['net_cagr_excess'] > 0
+    assert len(result['rows']) == 2

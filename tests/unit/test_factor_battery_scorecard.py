@@ -3,6 +3,7 @@ import pytest
 import json
 
 from quant.research.factor_battery_scorecard import assemble_scorecard
+from quant.research.factor_battery_cost_report import MEASUREMENT
 
 
 def fixture():
@@ -15,11 +16,12 @@ def fixture():
         'higher_max_absolute_rank_correlation': [None, .2, .7, .3, .2]})
     reports = []
     for factor, excess in (('a', 0.), ('b', .01), ('c', .02)):
-        reports.append({'rows': [{'factor': factor, 'variant': 'raw', 'cost_multiplier': multiplier,
-            'cagr': -.1 if multiplier == 2 else .1, 'sharpe': .4, 'max_drawdown': -.3,
+        reports.append({'measurement': MEASUREMENT, 'return_indexes_complete': True, 'rows': [{'factor': factor, 'variant': 'raw', 'cost_multiplier': multiplier,
+            'holding_evidence': True, 'cagr': -.1 if multiplier == 2 else .1, 'sharpe': .4, 'max_drawdown': -.3,
             'annualized_one_way_turnover': 1., 'mean_invested_fraction': .8} for multiplier in (.5, 1., 2.)],
-            'benchmark_comparisons': [{'variant': 'raw', 'cost_multiplier': 1.,
-                'benchmark': 'all_market_equal_weight', 'net_cagr_excess': excess}]})
+            'benchmark_comparisons': [{'variant': 'raw', 'cost_multiplier': cost,
+                'benchmark': name, 'net_cagr_excess': excess}
+                for cost in (1., .5, 2.) for name in ['all_market_equal_weight', 'csi800_equal_weight', '510300_total_return_reference']]})
     return screen, reports, correlations, settings
 
 
@@ -121,3 +123,29 @@ maximum_absolute_rank_correlation_with_better = 0.7
         assert result['cost_complete_rows'] == 2
         assert len(result['cost_runs']) == 2
         assert len(json.loads((previous/'summary.json').read_text())['cost_runs']) == 1
+
+
+
+def test_legacy_positive_cost_flags_cannot_be_reused():
+    screen, reports, correlations, settings = fixture()
+    del reports[1]['measurement']
+    result = assemble_scorecard(screen, cost_reports=reports, correlations=correlations, settings=settings)
+    row = result.filter(pl.col('factor') == 'b').row(0, named=True)
+    assert row['costs_complete'] is False and row['factor_admitted'] is None
+
+
+def test_no_holdings_is_explicit_rejection_not_a_pass():
+    screen, reports, correlations, settings = fixture()
+    for row in reports[1]['rows']:
+        row['holding_evidence'] = False
+        row['cagr'] = None
+    result = assemble_scorecard(screen, cost_reports=reports, correlations=correlations, settings=settings)
+    assert result.filter(pl.col('factor') == 'b')['factor_admitted'].item() is False
+
+
+def test_missing_optional_index_does_not_add_an_admission_condition():
+    screen, reports, correlations, settings = fixture()
+    reports[1]['benchmark_comparisons'] = [row for row in reports[1]['benchmark_comparisons']
+                                           if row['benchmark'] != 'csi800_equal_weight']
+    result = assemble_scorecard(screen, cost_reports=reports, correlations=correlations, settings=settings)
+    assert result.filter(pl.col('factor') == 'b')['factor_admitted'].item() is True
