@@ -83,7 +83,7 @@ def read_frozen_battery_universe(*, statistics: Path,
         raise ValueError('Universe as_of_dates must be nonempty unique dates')
     columns = ['symbol', 'trade_date', 'eligible', 'industry_l1', 'total_market_value', 'amount20']
     if include_tradeability:
-        columns += ['traded', 'limits_known', 'away_from_limits']
+        columns += ['traded', 'limits_known', 'away_from_limits', 'close', 'up_limit', 'down_limit']
     frames = []
     for year in sorted({day.year for day in as_of_dates}):
         dates = [day for day in as_of_dates if day.year == year]

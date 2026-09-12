@@ -46,6 +46,15 @@ def model_target_plans(scores: pl.DataFrame, *, model: dict, sessions: tuple[dt.
         for top_k in (portfolio['primary_top_k'], portfolio['sensitivity_top_k'])}
 
 
+def signal_sell_permission() -> pl.Expr:
+    """Signal-close sell permission: upper-limit closes may sell, lower may not."""
+    return (pl.col('traded') & pl.col('limits_known') &
+        pl.col('close').is_finite() & pl.col('up_limit').is_finite() &
+        pl.col('down_limit').is_finite() & (pl.col('down_limit') > 0) &
+        (pl.col('up_limit') > pl.col('down_limit')) &
+        (pl.col('close') > pl.col('down_limit'))).fill_null(False)
+
+
 def prepare_constraints(*, config: Path, plans: dict, data_root: Path, output: Path,
                         resume: bool, model_scores: pl.DataFrame | None = None) -> tuple[Callable[[pl.DataFrame, dict], tuple[pl.DataFrame, dict]], str]:
     """Freeze existing PIT controls and benchmark weights for this explicit experiment."""
@@ -69,6 +78,12 @@ def prepare_constraints(*, config: Path, plans: dict, data_root: Path, output: P
         universe_dates.update(pl.read_parquet(recovery, columns=['as_of'])['as_of'])
     universe = read_frozen_battery_universe(statistics=Path(settings['statistics']),
         as_of_dates=sorted(universe_dates), include_tradeability=True)
+    directional = settings.get('signal_tradeability') == 'directional_sell_eligible_buy'
+    if settings.get('signal_tradeability') not in (None, 'directional_sell_eligible_buy'):
+        raise ValueError('Unknown constraint signal_tradeability rule')
+    if not directional:
+        # Keep the original experiment inputs byte-for-byte comparable on resume.
+        universe = universe.drop(['close', 'up_limit', 'down_limit'], strict=False)
     if recovery is not None:
         universe = apply_recovered_market_values(universe=universe, recovery_path=recovery)
     benchmark = read_equal_weight_targets(data_root=data_root, version=settings['benchmark_snapshot'],
@@ -111,7 +126,8 @@ def prepare_constraints(*, config: Path, plans: dict, data_root: Path, output: P
             pl.col('trade_date').alias('as_of'), pl.col('trade_date').alias('known_at'),
             'symbol', 'industry_l1', 'total_market_value', pl.col('amount20').alias('adv20'),
             pl.col('eligible').alias('can_buy'),
-            (pl.col('traded') & pl.col('limits_known') & pl.col('away_from_limits')).alias('can_sell'))
+            (signal_sell_permission() if directional else
+             pl.col('traded') & pl.col('limits_known') & pl.col('away_from_limits')).alias('can_sell'))
         nominee_info = None
         if nominee_settings:
             from quant.portfolio.industry_candidate_selection import select_industry_candidates

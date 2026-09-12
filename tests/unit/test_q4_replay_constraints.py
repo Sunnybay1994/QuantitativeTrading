@@ -105,3 +105,12 @@ def test_nominee_buffer_survives_daily_advance_and_account_checkpoint(tmp_path, 
     checkpoint = json.loads((kwargs['output']/'raw/cost_1/2021/account.json').read_text())
     assert checkpoint['account']['constraint_nominees'] == ['persisted_nominee']
     costs.run_cost_plans(**kwargs,target_constraints=nominate,resume=True)
+
+def test_directional_signal_sell_permission():
+    from quant.research.run_multifactor_replay import signal_sell_permission
+    market = pl.DataFrame({'close': [11., 9., 10., 11., 11., 10., 10.],
+        'up_limit': [11., 11., 11., None, 11., 11., 8.],
+        'down_limit': [9., 9., 9., 9., 9., 9., 9.],
+        'traded': [True, True, True, True, False, True, True],
+        'limits_known': [True, True, True, False, True, None, True]})
+    assert market.select(signal_sell_permission())[:, 0].to_list() == [True, False, True, False, False, False, False]

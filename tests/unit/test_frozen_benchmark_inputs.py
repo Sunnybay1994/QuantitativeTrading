@@ -147,7 +147,8 @@ def test_duplicate_frozen_universe_keys_raise(tmp_path: Path) -> None:
 
 def test_optional_tradeability_is_saved_signal_day_evidence_not_eligibility(tmp_path: Path) -> None:
     original = _universe().with_columns(pl.lit(True).alias('traded'),
-        pl.lit(True).alias('limits_known'), pl.Series('away_from_limits', [True, True, False, None]))
+        pl.lit(True).alias('limits_known'), pl.Series('away_from_limits', [True, True, False, None]),
+        pl.lit(10.).alias('close'), pl.lit(11.).alias('up_limit'), pl.lit(9.).alias('down_limit'))
     _write_universe(tmp_path, original)
     result = read_frozen_battery_universe(statistics=tmp_path, as_of_dates=_DATES,
                                          include_tradeability=True)
@@ -156,3 +157,5 @@ def test_optional_tradeability_is_saved_signal_day_evidence_not_eligibility(tmp_
     assert result['away_from_limits'].to_list() == [True, True, False, None]
     default = read_frozen_battery_universe(statistics=tmp_path, as_of_dates=_DATES)
     assert 'traded' not in default.columns
+    assert result['close'].to_list() == [10.]*4
+    assert 'close' not in default.columns
