@@ -19,6 +19,38 @@ def _format(value, kind: str = '.2%') -> str:
     return '不适用' if value is None else format(value, kind)
 
 
+def apply_constraint_coverage(assessment: dict, *, run: Path, variant: str,
+                              costs: list[float]) -> None:
+    """Keep an explicit no-trade continuation distinct from verified constraints."""
+    scenarios = []
+    for cost in costs:
+        years = sorted((run/variant/f'cost_{cost:g}').glob('*/account.json'))
+        if not years:
+            raise ValueError('Missing saved accounts for constraint coverage')
+        events: list[dict] = []
+        for account in years:
+            path = account.parent/'constraints.json'
+            if not path.is_file():
+                raise ValueError('Missing constraint diagnostics for completed account')
+            events.extend(event for event in json.loads(path.read_text(encoding='utf-8'))
+                          if event.get('applied', True))
+        unverified = [event for event in events if event.get('feasible') is not True]
+        if any(event.get('action') != 'hold_actual_quantities'
+               or event.get('constraints_verified') is not False for event in unverified):
+            raise ValueError('Completed constrained replay contains an unsupported failure')
+        scenarios.append({'cost_multiplier': cost, 'signal_count': len(events),
+            'verified_count': len(events)-len(unverified),
+            'unverified_count': len(unverified),
+            'hold_dates': [event['as_of'] for event in unverified],
+            'maximum_unmodeled_held_weight': max(
+                (event['unmodeled_held_weight'] for event in unverified), default=0.)})
+    verified = all(row['unverified_count'] == 0 for row in scenarios)
+    assessment['constraint_coverage'] = {'all_verified': verified, 'scenarios': scenarios}
+    assessment['checks']['portfolio_constraints_verified'] = verified
+    if not verified:
+        assessment['conclusion'] = 'REJECTED'
+
+
 def render_model_report(method: str, *, rows: list[dict], assessment: dict, model: dict,
                         coverage: list[dict] | None = None) -> str:
     one = assessment['primary']
@@ -56,6 +88,12 @@ def render_model_report(method: str, *, rows: list[dict], assessment: dict, mode
         verdict = str(row['not_worse']) if row['applicable'] else '不适用：'+row['reason']
         lines.append(f"|{row['window']}|{_format(row.get('model_return'))}|{_format(row.get('benchmark_return'))}|"
             f"{_format(row.get('model_max_drawdown'))}|{_format(row.get('benchmark_max_drawdown'))}|{verdict}|")
+    if one.get('constraint_coverage'):
+        lines += ['', '风险字段缺失时保留实际股数，估值与公司行动继续；该次约束未验证，不能计为通过。', '',
+            '|成本|调仓信号|约束已验证|保留股数次数|缺风险字段持仓最大权重|', '|---|---:|---:|---:|---:|']
+        for row in one['constraint_coverage']['scenarios']:
+            lines.append(f"|{row['cost_multiplier']:g}×|{row['signal_count']}|{row['verified_count']}|"
+                         f"{row['unverified_count']}|{row['maximum_unmodeled_held_weight']:.3%}|")
     if coverage is not None:
         lines += ['', '|执行年份|月度信号数|有足够预测股票|缺失原因与次数|', '|---|---:|---:|---|']
         for year in sorted({row['test_year'] for row in coverage}):
@@ -102,6 +140,7 @@ def report_models(*, run: Path, output: Path, data_root: Path,
                 raise ValueError('Resume report inputs changed; use a new directory')
     constraint_path = run/'constraints_config.toml'
     constraint_bytes = constraint_path.read_bytes() if constraint_path.exists() else None
+    constraint_settings = tomllib.loads(constraint_bytes.decode('utf-8')) if constraint_bytes else {}
     if resume and (output/'constraints_config.toml').exists():
         if constraint_bytes is None or (output/'constraints_config.toml').read_bytes() != constraint_bytes:
             raise ValueError('Resume report constraints changed')
@@ -180,9 +219,14 @@ def report_models(*, run: Path, output: Path, data_root: Path,
         for top in tops:
             variant = f'{method}_top{top}'
             rows = {row['cost_multiplier']: row for row in report_rows if row['variant'] == variant}
-            assessment['primary' if top == tops[0] else 'sensitivity'] = assess_model(
+            measured = assess_model(
                 nav=navs[variant, 1.], one=rows[1.], two=rows[2.], benchmarks=baselines,
                 model=measured_model, windows=windows)
+            if (constraint_settings.get('missing_held_controls_policy') == 'hold_actual_quantities'
+                    and f'p4_{variant}' in constraint_settings.get('strategy_names', [])):
+                apply_constraint_coverage(measured, run=run, variant=variant,
+                    costs=model['portfolio']['cost_multipliers'])
+            assessment['primary' if top == tops[0] else 'sensitivity'] = measured
         assessments[method] = assessment
     result = {'source_run': str(run.resolve()), 'models': assessments,
               'measurement': {**measurement, 'indexes': index_details,

@@ -67,6 +67,11 @@ def prepare_constraints(*, config: Path, plans: dict, data_root: Path, output: P
     settings = tomllib.loads(content)
     if settings.get('auto_trade') is not False or settings.get('mode') != 'research_only':
         raise ValueError('Constraints require research_only and auto_trade=false')
+    missing_policy = settings.get('missing_held_controls_policy', 'reject')
+    if missing_policy not in ('reject', 'hold_actual_quantities'):
+        raise ValueError('Unknown missing held-controls policy')
+    if missing_policy == 'hold_actual_quantities' and settings.get('signal_direction_quantity_lock') is not True:
+        raise ValueError('Missing-control continuation requires signal direction quantity locks')
     names = settings['strategy_names']
     if not names or len(names) != len(set(names)) or not set(names) <= {n for n, _ in plans.values()}:
         raise ValueError('Constraint strategy_names must select existing unique plans')
@@ -155,6 +160,15 @@ def prepare_constraints(*, config: Path, plans: dict, data_root: Path, output: P
                 current=held_weights, benchmark=benchmark.filter(pl.col('as_of') == signal),
                 estimates=risk_estimates, as_of=signal,
                 maximum_staleness_days=risk_settings['maximum_staleness_days'])
+        if missing_policy == 'hold_actual_quantities':
+            from quant.portfolio.missing_control_hold import hold_missing_controls
+            continuation = hold_missing_controls(targets=batch, state=state, market=market,
+                benchmark=benchmark.filter(pl.col('as_of') == signal),
+                unknown_industry_policy=settings['unknown_industry_policy'])
+            if continuation is not None:
+                held_targets, held_info = continuation
+                held_info['held_risk_estimates'] = risk_info
+                return held_targets, held_info
         if nominee_settings:
             from quant.portfolio.industry_candidate_selection import select_industry_candidates
             assert nominee_scores is not None

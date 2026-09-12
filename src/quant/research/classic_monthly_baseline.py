@@ -244,8 +244,12 @@ def replay(
                         'current_weight': held.get('quantity', 0)*held.get('mark_price', 0.)/signal_equity,
                         'signal_equity': signal_equity, 'feasible': constraint_info['feasible']})
             if not constraint_info['feasible']:
-                raise ValueError(f"Portfolio constraints failed at {constraint_info['as_of']}: "
-                                 f"{constraint_info.get('failure_reason')}")
+                if constraint_info.get('action') == 'hold_actual_quantities':
+                    from quant.portfolio.missing_control_hold import validate_quantity_hold
+                    validate_quantity_hold(targets=batch, state=state, info=constraint_info)
+                else:
+                    raise ValueError(f"Portfolio constraints failed at {constraint_info['as_of']}: "
+                                     f"{constraint_info.get('failure_reason')}")
             if constraint_info.get('nominee_symbols') is not None:
                 state['constraint_nominees'] = constraint_info['nominee_symbols']
             execution_permissions = constraint_info.get('execution_direction_permissions')
