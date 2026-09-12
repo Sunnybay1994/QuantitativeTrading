@@ -31,7 +31,8 @@ def lagged_panel(bars: pl.DataFrame, controls: pl.DataFrame, sessions: list[dt.d
     return panel.with_columns(pl.when(pl.col('total_market_value') > 0).then(pl.col('total_market_value').log()).alias('log_size'))
 
 
-def fit_day(panel: pl.DataFrame, *, market_return: float, minimum_symbols: int, minimum_industry_symbols: int) -> tuple[pl.DataFrame, dict]:
+def fit_day(panel: pl.DataFrame, *, market_return: float, minimum_symbols: int, minimum_industry_symbols: int,
+            project_outside_universe: bool = False) -> tuple[pl.DataFrame, dict]:
     """OLS equivalent: full industry intercepts plus industry-demeaned size.
 
     With equal weights, size is orthogonal to every industry dummy. The common
@@ -65,8 +66,25 @@ def fit_day(panel: pl.DataFrame, *, market_return: float, minimum_symbols: int, 
            'market_return': market_return, 'common_return': common, 'size_return': beta, 'size_scale': scale,
            'weighted_industry_effect': valid['industry_component'].mean(), 'mean_specific_return': valid['specific_component'].mean(),
            'specific_size_inner_product': valid.select((pl.col('specific_component')*pl.col('size_exposure')).mean()).item()}
-    return valid.select('trade_date', 'symbol', 'exposure_date', 'security_return', 'industry', 'size_exposure',
-        'market_component', 'common_component', 'industry_component', 'size_component', 'specific_component'), fit
+    columns = ['trade_date', 'symbol', 'exposure_date', 'security_return', 'industry', 'size_exposure',
+        'market_component', 'common_component', 'industry_component', 'size_component', 'specific_component']
+    if project_outside_universe:
+        # The estimation universe fixes group membership, centers and scale.
+        # Holdings never participate in a second fit or change identification.
+        mapping = valid.select('industry_l1', 'industry').unique()
+        group_parameters = valid.group_by('industry').agg(pl.col('log_size').mean().alias('fitted_size_center'),
+            pl.col('industry_component').first())
+        projected = panel.filter(pl.col('security_return').is_finite() & pl.col('log_size').is_finite()
+            & pl.col('industry_l1').is_not_null()).join(mapping, on='industry_l1', how='inner', validate='m:1').join(
+                group_parameters, on='industry', validate='m:1')
+        projected = projected.with_columns(((pl.col('log_size')-pl.col('fitted_size_center'))/scale).alias('size_exposure'),
+            pl.lit(market_return).alias('market_component'), pl.lit(common).alias('common_component'))
+        projected = projected.with_columns((pl.col('size_exposure')*beta).alias('size_component'))
+        projected = projected.with_columns((pl.col('security_return')-pl.sum_horizontal('market_component', 'common_component',
+            'industry_component', 'size_component')).alias('specific_component'))
+        additional = projected.join(valid.select('trade_date', 'symbol'), on=['trade_date', 'symbol'], how='anti')
+        valid = pl.concat([valid.select(columns), additional.select(columns)])
+    return valid.select(columns), fit
 
 
 def portfolio_decomposition(holdings: pl.DataFrame, fitted: pl.DataFrame, daily: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
@@ -91,6 +109,10 @@ def run(*, config: Path, output: Path, data_root: Path) -> dict:
     spec = tomllib.loads(config.read_text(encoding='utf-8'))
     if spec['auto_trade'] is not False or spec['weighting'] != 'equal_weight_among_lagged_eligible_complete_cases':
         raise ValueError('Unsupported attribution settings')
+    objects = spec.get('attribution_objects', 'regression_sample_only')
+    if objects not in ('regression_sample_only', 'all_complete_cases_with_fitted_industry'):
+        raise ValueError('Unsupported attribution object policy')
+    project_outside = objects == 'all_complete_cases_with_fitted_industry'
     source = Path(spec['source'])
     holdings = pl.read_parquet(source/'security_daily.parquet').filter(pl.col('date').is_between(spec['start'], spec['end']))
     daily = pl.read_parquet(source/'daily_reconciliation.parquet').filter(pl.col('date').is_between(spec['start'], spec['end']))
@@ -110,19 +132,21 @@ def run(*, config: Path, output: Path, data_root: Path) -> dict:
     frames, fits = [], []
     for (day,), section in panel.partition_by('trade_date', as_dict=True).items():
         frame, fit = fit_day(section, market_return=market[day], minimum_symbols=spec['minimum_symbols'],
-                             minimum_industry_symbols=spec['minimum_industry_symbols'])
+                             minimum_industry_symbols=spec['minimum_industry_symbols'], project_outside_universe=project_outside)
         frames.append(frame)
         fits.append(fit)
     fitted = pl.concat(frames)
     joined, result = portfolio_decomposition(holdings, fitted, daily)
     quality = panel.select(pl.col('trade_date').alias('date'), 'symbol',
         pl.when(pl.col('exposure_date').is_null()).then(pl.lit('missing_prior_exposure'))
-        .when(~pl.col('eligible').fill_null(False)).then(pl.lit('outside_lagged_eligible_universe'))
+        .when(~pl.col('eligible').fill_null(False) & pl.lit(not project_outside)).then(pl.lit('outside_lagged_eligible_universe'))
         .when(~pl.col('security_return').is_finite().fill_null(False)).then(pl.lit('missing_adjacent_session_return'))
         .when(~pl.col('log_size').is_finite().fill_null(False)).then(pl.lit('missing_size'))
         .when(pl.col('industry_l1').is_null()).then(pl.lit('missing_industry')).otherwise(pl.lit('modeled')).alias('coverage_reason'))
     joined = joined.join(quality, on=['date', 'symbol'], how='left', validate='1:1').with_columns(
         pl.col('coverage_reason').fill_null('missing_session_bar'))
+    joined = joined.with_columns(pl.when(~pl.col('modeled') & (pl.col('coverage_reason') == 'modeled'))
+        .then(pl.lit('industry_absent_from_regression_sample')).otherwise(pl.col('coverage_reason')).alias('coverage_reason'))
     coverage = joined.filter(~pl.col('modeled')).group_by('date', 'coverage_reason').agg(
         pl.col('prior_weight', 'contribution').sum(), pl.len().alias('security_rows'))
     if result['date'].to_list() != daily.sort('date')['date'].to_list():

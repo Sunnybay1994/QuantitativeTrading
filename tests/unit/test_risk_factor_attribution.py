@@ -47,3 +47,28 @@ def test_portfolio_execution_and_unknown_contributions_are_preserved():
     assert result['unmodeled_contribution'][0] == -.01
     assert result['unmodeled_prior_weight'][0] == .4
     assert result['reconciliation_error'].abs().max() < 1e-12
+
+
+def test_projection_uses_fit_centers_without_refitting_or_inventing_industry():
+    panel = pl.DataFrame({'trade_date': [dt.date(2024, 1, 3)]*6,
+        'exposure_date': [dt.date(2023, 12, 29)]*6, 'symbol': ['a', 'b', 'c', 'd', 'held', 'unknown'],
+        'eligible': [True, True, True, True, False, False],
+        'industry_l1': ['one', 'one', 'two', 'two', 'one', 'unseen'],
+        'log_size': [1., 3., 4., 6., 5., 10.], 'security_return': [.01, .05, -.03, .01, .5, 1.]})
+    original, fit = fit_day(panel, market_return=.01, minimum_symbols=4, minimum_industry_symbols=2)
+    extended, projected_fit = fit_day(panel, market_return=.01, minimum_symbols=4,
+        minimum_industry_symbols=2, project_outside_universe=True)
+    assert fit == projected_fit
+    assert extended['symbol'].sort().to_list() == ['a', 'b', 'c', 'd', 'held']
+    held = extended.filter(pl.col('symbol') == 'held').row(0, named=True)
+    assert held['size_exposure'] == 3.  # Center 2 and scale 1 from eligible sample.
+    assert held['size_component'] == pytest.approx(.06)
+    assert held['industry_component'] == pytest.approx(.02)
+    assert held['specific_component'] == pytest.approx(.41)
+    common = extended.filter(pl.col('symbol').is_in(original['symbol'].to_list())).sort('symbol')
+    assert common.equals(original.sort('symbol'))
+    # Even extreme realized returns on held non-universe stocks cannot change fit.
+    _, extreme_fit = fit_day(panel.with_columns(pl.when(pl.col('symbol') == 'held').then(1000.)
+        .otherwise(pl.col('security_return')).alias('security_return')), market_return=.01,
+        minimum_symbols=4, minimum_industry_symbols=2, project_outside_universe=True)
+    assert extreme_fit == fit
