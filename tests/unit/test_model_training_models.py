@@ -68,7 +68,8 @@ def test_neutral_imputation_uses_eligible_pool_and_monthly_exclusion(tmp_path):
     keys = {'symbol': symbols*3, 'trade_date': [d for d in days for _ in symbols]}
     inputs = tmp_path/'inputs/2023'
     inputs.mkdir(parents=True)
-    pl.DataFrame({**keys, 'eligible': ([True]*10+[False])*3}).write_parquet(inputs/'universe.parquet')
+    pl.DataFrame({**keys, 'eligible': ([True]*10+[False])*3,
+        'total_market_value': [10.]*33, 'industry_l1': ['bank']*33}).write_parquet(inputs/'universe.parquet')
     for factor in ('a', 'b'):
         folder = tmp_path/'factors'/factor
         folder.mkdir(parents=True)
@@ -110,3 +111,22 @@ def test_buffer_survives_refit_and_empty_pool_keeps_requesting_cash():
     for date in (dt.date(2023, 3, 1), dt.date(2023, 4, 3)):
         cash = targets.filter(pl.col('execution_date') == date)
         assert cash.height and cash['weight'].sum() == 0.
+
+
+def test_neutral_imputation_never_reintroduces_missing_controls(tmp_path):
+    from quant.research.model_training_models import neutral_missing_features
+
+    day = dt.date(2026, 2, 27)
+    pool = pl.DataFrame({'symbol': ['A','B','C','D','E'], 'trade_date': [day]*5,
+        'total_market_value': [10., None, 10., float('inf'), 0.],
+        'industry_l1': ['bank', 'bank', None, 'bank', 'bank']})
+    frame = pool.select('symbol','trade_date').with_columns(pl.lit(None, dtype=pl.Float64).alias('a'))
+    second = pool.select('symbol','trade_date').with_columns(pl.lit(1.).alias('b'))
+    coverage = []
+    result = neutral_missing_features(pool=pool, frames=[frame,second], factors=['a','b'],
+        maximum_missing_fraction=.3, minimum_symbols=1, coverage=coverage)
+    assert result['symbol'].to_list() == ['A']
+    assert result['a'].to_list() == [0.]
+    assert all(row['controls_missing_stocks'] == 4 for row in coverage)
+    assert neutral_missing_features(pool=pool, frames=[frame,second], factors=['a','b'],
+        maximum_missing_fraction=.3, minimum_symbols=2).is_empty()

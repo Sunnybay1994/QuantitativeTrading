@@ -80,3 +80,12 @@ def test_missing_month_exclusion_matches_training_policy(method):
     with pytest.raises(ValueError, match='nonzero'):
         fixed_predict(features=features.with_columns(pl.lit(1.).alias('f2')), fit=fit,
                       method=method, source=Path('.'), minimum_symbols=3)
+
+
+def test_forward_missing_controls_stay_outside_imputed_pool():
+    args = fixture()
+    args['universe'] = args['universe'].with_columns(
+        pl.when(pl.col('symbol') == 'D').then(None).otherwise(pl.col('industry_l1')).alias('industry_l1'))
+    features, coverage = model_features(**args, missing_policy='neutral_zero_with_monthly_factor_exclusion')
+    assert 'D' not in features['symbol']
+    assert all(row['controls_missing_stocks'] == 1 for row in coverage)

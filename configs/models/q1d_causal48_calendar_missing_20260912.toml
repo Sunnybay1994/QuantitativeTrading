@@ -1,10 +1,10 @@
-# Q1d 48-month comparison against q1c_missing_on_calendar_96_20260912_01.
+# Q1d 48-month comparison against q1c_missing_valid_controls_96_20260912_01.
 # Measurement: configs/data/return_benchmarks_q1b_20260912.toml
 # Only causal training-history threshold changes; retain calendar and missing policies.
 [research]
 id = "q1d-causal48-calendar-missing-20260912"
 registered_on = 2026-09-12
-hypothesis = "Change causal annual admission and minimum training history from 96 to 48 months, retaining corrected return-index cost screening, fixed calendar repair, neutral missing policy, LightGBM parameters and portfolio rules. Final factor library assessment remains 96 months."
+hypothesis = "Change causal annual admission and minimum training history from 96 to 48 months, retaining corrected return-index cost screening, fixed calendar repair, neutral missing policy with valid size and industry controls, LightGBM parameters and portfolio rules. Final factor library assessment remains 96 months."
 single_variable = "causal_training_history_48_instead_of_96"
 source_selection = "artifacts/models/q1d_causal48_admission_20260912_01/selection"
 historical_evidence = "retrospective_annual_walk_forward_not_an_unseen_holdout"

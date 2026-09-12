@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 import polars as pl
 
+from quant.data.neutralization_inputs import neutralization_control_status
+
 if TYPE_CHECKING:
     from lightgbm import LGBMRegressor
 
@@ -38,7 +40,7 @@ def common_features(*, statistics: Path, factors: list[str], variant: str,
     if impute:
         dates = sorted({day for frame in frames for day in frame['trade_date']})
         pool = pl.concat([pl.scan_parquet(path).filter(pl.col('eligible') &
-            pl.col('trade_date').is_in(dates)).select(keys).collect()
+            pl.col('trade_date').is_in(dates)).select(*keys, 'total_market_value', 'industry_l1').collect()
             for path in sorted((statistics/'inputs').glob('*/universe.parquet'))])
         return neutral_missing_features(pool=pool, frames=frames, factors=factors,
             maximum_missing_fraction=maximum_missing_fraction, minimum_symbols=minimum_symbols, coverage=coverage)
@@ -57,7 +59,7 @@ def neutral_missing_features(*, pool: pl.DataFrame, frames: list[pl.DataFrame],
     keys = ['symbol', 'trade_date']
     if pool.select(keys).is_duplicated().any():
         raise ValueError('Duplicate eligible model universe keys')
-    panel = pool
+    panel = neutralization_control_status(pool).rename({'controls_valid': '__controls_valid'})
     for factor, frame in zip(factors, frames, strict=True):
         panel = panel.join(frame, on=keys, how='left', validate='1:1')
         finite = pl.col(factor).is_finite().fill_null(False)
@@ -65,14 +67,17 @@ def neutral_missing_features(*, pool: pl.DataFrame, frames: list[pl.DataFrame],
             pl.len().over('trade_date')*(1-maximum_missing_fraction))
         if coverage is not None:
             monthly = panel.group_by('trade_date').agg(pl.len().alias('eligible_stocks'),
-                finite.sum().alias('observed_stocks')).with_columns(
+                finite.sum().alias('observed_stocks'),
+                (~pl.col('__controls_valid')).sum().alias('controls_missing_stocks')).with_columns(
                     (1-pl.col('observed_stocks')/pl.col('eligible_stocks')).alias('missing_fraction'),
                     (pl.col('observed_stocks') >= pl.col('eligible_stocks')*(1-maximum_missing_fraction)).alias('active'))
             coverage.extend({'factor': factor, **row} for row in monthly.sort('trade_date').to_dicts())
         panel = panel.with_columns(active.alias(f'__active_{factor}')).with_columns(
             pl.when(finite & pl.col(f'__active_{factor}')).then(pl.col(factor)).otherwise(0.).alias(factor))
-    return panel.filter(pl.any_horizontal([pl.col(f'__active_{f}') for f in factors]) &
-        (pl.len().over('trade_date') >= minimum_symbols)).sort('trade_date', 'symbol')
+    return panel.filter(pl.col('__controls_valid')
+        & pl.any_horizontal([pl.col(f'__active_{f}') for f in factors])).filter(
+        pl.len().over('trade_date') >= minimum_symbols).select(
+            *keys, *factors, *[f'__active_{f}' for f in factors]).sort('trade_date', 'symbol')
 
 
 def training_panel(*, features: pl.DataFrame, statistics: Path,

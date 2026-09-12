@@ -39,7 +39,8 @@ def model_features(*, universe: pl.DataFrame, values: dict[str, pl.DataFrame],
             coverage.append({'factor': factor, 'eligible_finite_stocks': scores.height})
         frames.append(scores)
     if impute:
-        common = neutral_missing_features(pool=universe.filter(pl.col('eligible')).select('symbol', 'trade_date'),
+        common = neutral_missing_features(pool=universe.filter(pl.col('eligible')).select(
+            'symbol', 'trade_date', 'total_market_value', 'industry_l1'),
             frames=frames, factors=factors, maximum_missing_fraction=maximum_missing_fraction,
             minimum_symbols=1, coverage=coverage)
         coverage = [{**row, 'trade_date': str(row['trade_date']),
