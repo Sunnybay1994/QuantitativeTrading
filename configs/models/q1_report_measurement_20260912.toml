@@ -1,0 +1,5 @@
+# Q1 measurement correction; numerical admission thresholds remain in the frozen model.
+index_version = "csi_price_total_return_20260912"
+index_codes = ["H00300.CSI", "H00906.CSI", "H00985.CSI"]
+# stress_windows_config may explicitly select an expanded registered set.
+# Without an override, use the source model's frozen stress window configuration.
