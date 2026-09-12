@@ -71,13 +71,21 @@ def test_cost_failures_remain_visible_with_useful_scorecard(monkeypatch, tmp_pat
         assert all((kwargs[key]/'finished').is_file() for key in ('screen', 'benchmarks', 'redundancy'))
         assert kwargs['cost_root'] is None
         assert kwargs['cost_runs'] == [external]
+        assert kwargs['return_benchmark_config'] == tmp_path/'run'/'return_benchmarks.toml'
+        assert kwargs['return_benchmark_config'].read_text() == '[benchmarks]\nequal_weight_snapshot="fixture"\n'
         kwargs['output'].mkdir()
         return {'rows': 4, 'cost_complete_rows': 2, 'admitted_rows': 0, 'admission_unresolved_rows': 0}
 
     monkeypatch.setattr(pipeline, 'run_cost_batch', costs)
     monkeypatch.setattr(pipeline, 'run_scorecard', scorecard)
     args = arguments(tmp_path)
+    benchmark = tmp_path/'returns.toml'
+    benchmark.write_text('[benchmarks]\nequal_weight_snapshot="fixture"\n')
+    args['return_benchmark_config'] = benchmark
     result = pipeline.run_pipeline(**args, existing_runs=[external])
+    benchmark.write_text('[benchmarks]\nequal_weight_snapshot="changed"\n')
+    with pytest.raises(ValueError, match='unchanged pipeline'):
+        pipeline.run_pipeline(**args, existing_runs=[external], resume=True)
     assert result['scorecard']['cost_complete_rows'] == 2
     assert 'sparse_factor' in json.loads((args['output']/'summary.json').read_text())['cost_failures']
     assert 'No executable top-group observations' in (args['output']/'report.md').read_text(encoding='utf-8')

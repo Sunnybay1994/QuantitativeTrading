@@ -68,7 +68,7 @@ def _hashes(paths: list[Path]) -> dict[str, str]:
             for path in sorted(set(paths))}
 
 
-def _inputs(config: Path, settings: dict, design: dict) -> dict[str, str]:
+def _inputs(config: Path, settings: dict, design: dict, return_benchmark_config: Path | None = None) -> dict[str, str]:
     d, c = settings["diagnosis"], settings["candidates"]
     paths = [config, Path(c["design"]), Path(d["config"]),
              Path(c.get("config", d["config"])), Path(d["scorecard"]),
@@ -78,6 +78,8 @@ def _inputs(config: Path, settings: dict, design: dict) -> dict[str, str]:
             paths.append(Path(design["search"][name]))
     if "library" in design["search"]:
         paths.extend(Path(design["search"]["library"]).rglob("*.toml"))
+    if return_benchmark_config is not None:
+        paths.append(return_benchmark_config)
     return _hashes(paths)
 
 
@@ -145,7 +147,8 @@ def _validate_saved(path: Path, name: str, report: dict) -> None:
                 json.loads((path / stage / "summary.json").read_text(encoding="utf-8"))
 
 
-def run(*, config: Path, output: Path, execute: bool = False, development_test: bool = False, resume: bool = False) -> dict:
+def run(*, config: Path, output: Path, execute: bool = False, development_test: bool = False,
+        resume: bool = False, return_benchmark_config: Path | None = None) -> dict:
     """Explicit recovery uses unchanged inputs and the original cumulative cache.
 
     Candidate command strings are display-only. Evaluation is a direct call to
@@ -157,7 +160,10 @@ def run(*, config: Path, output: Path, execute: bool = False, development_test: 
         raise ValueError("Execution requires positive cumulative budget caps")
     if not output.resolve().is_relative_to(Path("artifacts").resolve()):
         raise ValueError("Research cycle outputs must stay under artifacts")
-    current_inputs = _inputs(config, settings, design)
+    current_inputs = _inputs(config, settings, design, return_benchmark_config)
+    return_bytes = return_benchmark_config.read_bytes() if return_benchmark_config is not None else None
+    if return_bytes is not None:
+        tomllib.loads(return_bytes.decode('utf-8'))['benchmarks']
     frozen_design, frozen_scoring = output / "design.toml", output / "llm.toml"
     frozen_candidate_scoring = output / "candidate_llm.toml"
     paths = {name: output / name for name in ("diagnosis", "candidates", "evaluation")}
@@ -228,7 +234,7 @@ def run(*, config: Path, output: Path, execute: bool = False, development_test: 
         return None
 
     def record(name: str, report: dict) -> None:
-        if _inputs(config, settings, design) != current_inputs:
+        if _inputs(config, settings, design, return_benchmark_config) != current_inputs:
             raise ValueError("Cycle inputs changed during execution")
         _validate_saved(paths[name], name, report)
         files = _stage_files(paths[name], name)
@@ -286,7 +292,13 @@ def run(*, config: Path, output: Path, execute: bool = False, development_test: 
         # Never interpret or execute report['next_command'] or any model-provided command.
         report = reuse(stage)
         if report is None:
-            report = run_factor_search(config=batch, output=paths["evaluation"])
+            if return_bytes is not None:
+                frozen_returns = output/'return_benchmarks.toml'
+                frozen_returns.write_bytes(return_bytes)
+                report = run_factor_search(config=batch, output=paths["evaluation"],
+                                           return_benchmark_config=frozen_returns)
+            else:
+                report = run_factor_search(config=batch, output=paths["evaluation"])
         result["stages"][stage].update(status=report["message"], result=report)
         if report["message"] == "completed":
             record(stage, report)
@@ -304,6 +316,7 @@ def main() -> None:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--development-test", action="store_true")
+    parser.add_argument('--return-benchmark-config', type=Path)
     try:
         result = run(**vars(parser.parse_args()))
     except (ValueError, KeyError, OSError, TypeError, sqlite3.Error) as exc:

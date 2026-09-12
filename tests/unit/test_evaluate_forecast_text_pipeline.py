@@ -31,14 +31,18 @@ def test_pipeline_connects_same_window_peers_benchmarks_and_complete_costs(tmp_p
     monkeypatch.setattr('quant.research.factor_battery_scorecard.run_scorecard',
                         stage('scorecard', {'admission_unresolved_rows': 1}))
     peer = tmp_path/'existing_peers' if reuse else None
+    benchmark = tmp_path/'returns.toml'
+    benchmark.write_text('[benchmarks]\nequal_weight_snapshot="fixture"\n')
     result = pipeline.run_pipeline(run=tmp_path/'scoring', output=tmp_path/'output',
         data_root=tmp_path/'data', design_path=Path('configs/factors/p7_text_evaluation_v2.toml'),
         execution_snapshot='snapshot' if full else None, peer_statistics=peer,
-        existing_cost_runs=[external] if full else None)
+        existing_cost_runs=[external] if full else None, return_benchmark_config=benchmark)
     assert result['mode'] == ('full' if full else 'statistics_only')
     card = calls[-1][1]
     assert calls[-1][0] == 'scorecard' and card['cost_root'] is None
     assert card['cost_runs'] == ([external] if full else [])
+    assert card['return_benchmark_config'] == tmp_path/'output'/'return_benchmarks.toml'
+    assert card['return_benchmark_config'].read_bytes() == benchmark.read_bytes()
     if full:
         peer_stats = peer or tmp_path/'output/peer_statistics'
         comparison = next(args for name, args in calls if name == 'redundancy')

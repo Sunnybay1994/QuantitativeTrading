@@ -80,7 +80,8 @@ def run_pipeline(*, run: Path, output: Path, data_root: Path, design_path: Path,
                  workers: int = 1, execution_snapshot: str | None = None,
                  peer_library: Path = Path('configs/factors/library'),
                  peer_statistics: Path | None = None,
-                 existing_cost_runs: list[Path] | None = None, resume: bool = False) -> dict:
+                 existing_cost_runs: list[Path] | None = None, resume: bool = False,
+                 return_benchmark_config: Path | None = None) -> dict:
     from quant.research.factor_battery_batch import run_statistics
     from quant.research.factor_battery_screen import run_screen
     from quant.research.factor_battery_scorecard import run_scorecard
@@ -101,6 +102,10 @@ def run_pipeline(*, run: Path, output: Path, data_root: Path, design_path: Path,
         'peer_statistics': str(peer_statistics.resolve()) if peer_statistics else None,
         'existing_cost_runs': sorted(str(p.resolve()) for p in existing_cost_runs or [])}
     saved_config = output/'pipeline_config.json'
+    return_text = return_benchmark_config.read_text(encoding='utf-8') if return_benchmark_config is not None else None
+    if return_text is not None:
+        configuration['return_benchmarks'] = return_text
+        tomllib.loads(return_text)['benchmarks']
     if resume:
         if not saved_config.is_file() or json.loads(saved_config.read_text(encoding='utf-8')) != configuration:
             raise ValueError('Resume requires the same scoring run, design and evaluation inputs')
@@ -112,6 +117,9 @@ def run_pipeline(*, run: Path, output: Path, data_root: Path, design_path: Path,
     else:
         output.mkdir(parents=True, exist_ok=False)
         saved_config.write_text(json.dumps(configuration, indent=2), encoding='utf-8')
+    if return_text is not None:
+        return_benchmark_config = output/'return_benchmarks.toml'
+        return_benchmark_config.write_text(return_text, encoding='utf-8')
 
     def stage(folder: Path, action, *, resumable: bool = False):
         if resume and (folder/'summary.json').is_file():
@@ -162,7 +170,8 @@ def run_pipeline(*, run: Path, output: Path, data_root: Path, design_path: Path,
         number += 1
     scorecard = run_scorecard(screen=output / 'screen', output=scorecard_output,
         cost_runs=[Path(path) for path in costs['completed_runs'].values()] if costs else [],
-        cost_root=None, benchmarks=benchmarks, redundancy=redundancy, data_root=data_root)
+        cost_root=None, benchmarks=benchmarks, redundancy=redundancy, data_root=data_root,
+        return_benchmark_config=return_benchmark_config)
     summary = {"synthetic_fixture": False, "publication": publication, "screen": screen,
         "incremental_series": len(incremental["summary"]), "costs": costs,
         "mode": "full" if execution_snapshot else "statistics_only",
@@ -227,6 +236,7 @@ def main() -> None:
     parser.add_argument('--peer-statistics', type=Path, help='Existing complete peer statistics with identical P7 settings')
     parser.add_argument('--existing-cost-run', type=Path, action='append', default=[])
     parser.add_argument('--resume', action='store_true', help='Continue the same evaluation after its previous process stops')
+    parser.add_argument('--return-benchmark-config', type=Path)
     args = parser.parse_args()
     if args.fixture:
         if args.resume:
@@ -236,7 +246,8 @@ def main() -> None:
         result = run_pipeline(run=args.run, output=args.output, data_root=args.data_root,
             design_path=args.design, workers=args.workers, execution_snapshot=args.execution_snapshot,
             peer_library=args.peer_library, peer_statistics=args.peer_statistics,
-            existing_cost_runs=args.existing_cost_run, resume=args.resume)
+            existing_cost_runs=args.existing_cost_run, resume=args.resume,
+            return_benchmark_config=args.return_benchmark_config)
     print(json.dumps(result, default=str, ensure_ascii=False))
     costs = result.get('costs')
     if costs and (costs['failures'] or costs['pending_external_runs']):

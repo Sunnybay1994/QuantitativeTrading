@@ -16,7 +16,8 @@ from quant.research.factor_battery_scorecard import run_scorecard
 from quant.research.factor_battery_screen import run_screen
 
 
-def run(*, config: Path, output: Path, data_root: Path = Path('data'), prepare_only: bool = False) -> dict:
+def run(*, config: Path, output: Path, data_root: Path = Path('data'), prepare_only: bool = False,
+        return_benchmark_config: Path | None = None) -> dict:
     settings = tomllib.loads(config.read_text(encoding='utf-8'))
     search, dates = settings['search'], settings['dates']
     if not (dates['start'] < dates['training_end'] < dates['validation_start'] <= dates['validation_end']
@@ -29,6 +30,16 @@ def run(*, config: Path, output: Path, data_root: Path = Path('data'), prepare_o
         raise ValueError('No valid, distinct candidate expressions')
     if prepare_only:
         return registered
+    frozen_returns = output/'return_benchmarks.toml'
+    return_bytes = return_benchmark_config.read_bytes() if return_benchmark_config is not None else None
+    if return_bytes is not None:
+        tomllib.loads(return_bytes.decode('utf-8'))['benchmarks']
+    if ((frozen_returns.exists() and frozen_returns.read_bytes() != return_bytes)
+            or (return_bytes is not None and not frozen_returns.exists() and (output/'battery_source.toml').exists())):
+        raise ValueError('Changed return benchmarks require a new search run')
+    if return_bytes is not None:
+        frozen_returns.write_bytes(return_bytes)
+        return_benchmark_config = frozen_returns
     started = time.monotonic()
     batch_library = output/'library'
     battery = Path(search['battery_config']).read_bytes()
@@ -128,7 +139,7 @@ def run(*, config: Path, output: Path, data_root: Path = Path('data'), prepare_o
         completed.append('costs')
         scorecard = stage('scorecard', lambda folder: run_scorecard(screen=output/'screen', output=folder,
             cost_runs=[Path(path) for path in completed_costs.values()], cost_root=None, benchmarks=output/'benchmarks',
-            redundancy=output/'redundancy', data_root=data_root))
+            redundancy=output/'redundancy', data_root=data_root, return_benchmark_config=return_benchmark_config))
         result = {'message': 'completed', 'attempt_count': registered['attempt_count'],
             'registered_count': registered['registered_count'], 'training_scorecard': scorecard,
             'training_end': str(dates['training_end']), 'validation_end': str(dates['validation_end']),
@@ -148,10 +159,11 @@ def main() -> None:
     parser.add_argument('--config', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--data-root', type=Path, default=Path('data'))
+    parser.add_argument('--return-benchmark-config', type=Path)
     parser.add_argument('--prepare-only', action='store_true')
     args = parser.parse_args()
     print(json.dumps(run(config=args.config, output=args.output, data_root=args.data_root,
-                         prepare_only=args.prepare_only)))
+                         prepare_only=args.prepare_only, return_benchmark_config=args.return_benchmark_config)))
 
 
 if __name__ == '__main__':

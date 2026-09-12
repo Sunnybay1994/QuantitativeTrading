@@ -17,7 +17,8 @@ from quant.research.factor_battery_screen import run_screen
 
 def run_pipeline(*, config: Path, library: Path, as_of: dt.date, output: Path,
                  data_root: Path, execution_snapshot: str, workers: int,
-                 existing_runs: list[Path] | None = None, resume: bool = False) -> dict:
+                 existing_runs: list[Path] | None = None, resume: bool = False,
+                 return_benchmark_config: Path | None = None) -> dict:
     """Use a new directory or explicitly resume the same frozen inputs.
 
     The factor panels and dated execution inputs must already be published.
@@ -34,6 +35,10 @@ def run_pipeline(*, config: Path, library: Path, as_of: dt.date, output: Path,
         'refresh_config': Path(refresh).read_text(encoding='utf-8') if refresh else None,
         'existing_runs': sorted(str(path.resolve()) for path in existing_runs or [])}
     saved_config = output/'pipeline_config.json'
+    return_text = return_benchmark_config.read_text(encoding='utf-8') if return_benchmark_config is not None else None
+    if return_text is not None:
+        configuration['return_benchmarks'] = return_text
+        tomllib.loads(return_text)['benchmarks']
     if resume:
         if not saved_config.is_file() or json.loads(saved_config.read_text(encoding='utf-8')) != configuration:
             raise ValueError('Resume requires unchanged pipeline settings, library and input locations')
@@ -44,6 +49,9 @@ def run_pipeline(*, config: Path, library: Path, as_of: dt.date, output: Path,
     else:
         output.mkdir(parents=True, exist_ok=False)
         saved_config.write_text(json.dumps(configuration, indent=2), encoding='utf-8')
+    if return_text is not None:
+        return_benchmark_config = output/'return_benchmarks.toml'
+        return_benchmark_config.write_text(return_text, encoding='utf-8')
 
     def stage(folder: Path, action, *, resumable: bool = False):
         if resume and (folder/'summary.json').is_file():
@@ -80,7 +88,8 @@ def run_pipeline(*, config: Path, library: Path, as_of: dt.date, output: Path,
         number += 1
     scorecard = run_scorecard(screen=screen, output=scorecard_output,
                              cost_runs=[Path(path) for path in batch['completed_runs'].values()], cost_root=None,
-                             benchmarks=benchmarks, redundancy=redundancy, data_root=data_root)
+                             benchmarks=benchmarks, redundancy=redundancy, data_root=data_root,
+                             return_benchmark_config=return_benchmark_config)
     result = {'as_of': str(as_of), 'scorecard': scorecard, 'cost_failures': batch['failures'],
               'pending_external_runs': batch['pending_external_runs'],
               'scorecard_path': str(scorecard_output/'factor_scorecard.parquet')}
@@ -105,6 +114,7 @@ def main() -> None:
     parser.add_argument('--as-of', type=dt.date.fromisoformat, required=True)
     parser.add_argument('--execution-snapshot', required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--return-benchmark-config', type=Path, help='Explicit dividend/equal-weight references for cost admission')
     parser.add_argument('--data-root', type=Path, default=Path('data'))
     parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--resume', action='store_true', help='Resume the same pipeline after its prior process has stopped')
@@ -130,7 +140,8 @@ def main() -> None:
     result = run_pipeline(config=args.config, library=args.library, as_of=args.as_of,
                           output=args.output, data_root=args.data_root,
                           execution_snapshot=args.execution_snapshot, workers=args.workers,
-                          existing_runs=args.existing_run, resume=args.resume)
+                          existing_runs=args.existing_run, resume=args.resume,
+                          return_benchmark_config=args.return_benchmark_config)
     if args.diagnosis_config:
         from quant.research.deepseek_diagnostics import run_diagnosis
         diagnosis_output = args.output/'diagnosis'

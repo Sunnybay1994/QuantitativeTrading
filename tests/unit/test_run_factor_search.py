@@ -69,6 +69,28 @@ def test_automatic_stages_keep_training_validation_separate_and_completed_run_is
     assert (tmp_path/'run'/'refresh.toml').is_file()
 
 
+def test_return_benchmark_snapshot_reaches_scorecard_and_change_cannot_reuse_scores(tmp_path, monkeypatch):
+    calls = fake_stages(monkeypatch)
+    original = search.run_scorecard
+    def scorecard(**kwargs):
+        if kwargs['cost_runs']:
+            assert kwargs['return_benchmark_config'] == tmp_path/'run'/'return_benchmarks.toml'
+            assert kwargs['return_benchmark_config'].read_bytes() == benchmark.read_bytes()
+        return original(**kwargs)
+    monkeypatch.setattr(search, 'run_scorecard', scorecard)
+    benchmark = tmp_path/'returns.toml'
+    benchmark.write_text('[benchmarks]\nequal_weight_snapshot="fixture"\n')
+    args = dict(config=CONFIG, output=tmp_path/'run', return_benchmark_config=benchmark)
+    assert search.run(**args)['message'] == 'completed'
+    count = len(calls)
+    assert search.run(**args)['message'] == 'completed'
+    assert len(calls) == count
+    benchmark.write_text('[benchmarks]\nequal_weight_snapshot="changed"\n')
+    with pytest.raises(ValueError, match='new search run'):
+        search.run(**args)
+    assert len(calls) == count
+
+
 def test_interrupted_fresh_directory_stage_resumes_without_recomputing_training(tmp_path, monkeypatch):
     calls = fake_stages(monkeypatch, benchmark_failure=True)
     with pytest.raises(RuntimeError, match='interrupted'):

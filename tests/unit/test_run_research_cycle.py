@@ -153,6 +153,22 @@ def test_success_calls_python_functions_with_shared_caps_and_fixed_paths(setup, 
     assert result["dates"]["training_end"] == "2023-12-29"
 
 
+def test_cycle_passes_return_benchmarks_and_refuses_changed_resume_before_llm(setup, monkeypatch):
+    calls = mocks(monkeypatch, setup)
+    benchmark = Path('artifacts/returns.toml')
+    benchmark.write_text('[benchmarks]\nequal_weight_snapshot="fixture"\n')
+    args = {**setup, 'execute': True, 'development_test': True, 'return_benchmark_config': benchmark}
+    assert cycle.run(**args)['status'] == 'completed'
+    assert calls[-1][1]['return_benchmark_config'].read_bytes() == benchmark.read_bytes()
+    count = len(calls)
+    assert cycle.run(**args, resume=True)['status'] == 'completed'
+    assert len(calls) == count
+    benchmark.write_text('[benchmarks]\nequal_weight_snapshot="changed"\n')
+    with pytest.raises(ValueError, match='Changed or unfrozen'):
+        cycle.run(**args, resume=True)
+    assert len(calls) == count
+
+
 @pytest.mark.parametrize("status", ["budget_exhausted", "deferred_off_peak", "failed", "retryable"])
 def test_diagnosis_non_success_preserves_result_and_never_generates(setup, monkeypatch, status):
     calls = mocks(monkeypatch, setup, diagnosis=status)
