@@ -23,6 +23,7 @@ def env(tmp_path, monkeypatch):
     for name, mock in [('run_daily', model), ('run_b20', b20),
                        ('run_b32', b32), ('run_monthly', monthly)]:
         monkeypatch.setattr(daily, name, mock)
+    monkeypatch.setattr(daily, 'run_risk', Mock(return_value={'status': 'complete'}))
     root = tmp_path/'accounts'
     for account in daily.ACCOUNTS:
         folder = root/'b32'/account/'2026-09-11'
@@ -135,3 +136,29 @@ def test_cli_nonzero(env, monkeypatch):
     monkeypatch.setattr('sys.argv', ['daily', '--output', str(args['output'])])
     with pytest.raises(SystemExit, match='1'):
         daily.main()
+
+
+def test_risk_failure_propagates_without_repeating_accounts(env, monkeypatch):
+    args, _, b20, b32, _ = env
+    risk = Mock(return_value={'status': 'incomplete'})
+    monkeypatch.setattr(daily, 'run_risk', risk)
+    result = daily.run(**args)
+    assert result['status'] == 'incomplete'
+    assert result['stages']['risk']['status'] == 'incomplete'
+    assert b20.call_count == b32.call_count == risk.call_count == 1
+    assert risk.call_args.kwargs['output'] == args['output']/'risk'
+    with pytest.raises(FileExistsError):
+        daily.run(**args)
+    assert b20.call_count == b32.call_count == 1
+
+
+def test_interrupt_preserves_completed_stage_and_running_marker(env):
+    args, _, b20, b32, _ = env
+    b20.side_effect = KeyboardInterrupt()
+    with pytest.raises(KeyboardInterrupt):
+        daily.run(**args)
+    saved = json.loads((args['output']/'summary.json').read_text(encoding='utf-8'))
+    assert saved['status'] == 'incomplete'
+    assert saved['stages']['model']['status'] == 'complete'
+    assert saved['stages']['b20']['status'] == 'running'
+    assert not b32.called

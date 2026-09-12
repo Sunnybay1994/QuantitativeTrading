@@ -9,6 +9,7 @@ from typing import Any, Callable
 from quant.data.refresh import SHANGHAI, completed_date, latest_session
 from quant.execution.cross_asset_forward import run as run_b20
 from quant.execution.stock_paper import run as run_b32
+from quant.execution.daily_observation_risk import DEFAULT_CONFIG, run as run_risk
 from quant.reporting.stock_paper_monthly import ACCOUNTS, run as run_monthly
 from quant.research.run_daily_model_forecast import run_daily
 
@@ -48,12 +49,22 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
     stages: dict[str, Any] = {}
     result: dict[str, Any] = {
         'requested_to': to, 'as_of': None, 'saved_data': saved_data, 'rehearsal': rehearsal,
-        'auto_trade': False, 'conclusion': 'RESEARCH_ONLY', 'stages': stages,
+        'auto_trade': False, 'conclusion': 'RESEARCH_ONLY', 'status': 'incomplete', 'stages': stages,
         'policy': 'B20 independent; B32 requires refresh success or saved-data; monthly requires B32.',
         'account_paths': dict(zip(('b20', 'b32'), map(str, accounts))),
     }
 
+    def save_summary() -> None:
+        temporary = output/'summary.json.tmp'
+        temporary.write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str),
+                             encoding='utf-8')
+        temporary.replace(output/'summary.json')
+
+    save_summary()
+
     def stage(name: str, operation: Callable[[], dict], valid: Callable[[dict], bool]) -> bool:
+        stages[name] = {'status': 'running'}
+        save_summary()
         try:
             value = operation()
             ok = valid(value)
@@ -61,6 +72,7 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
         except Exception as exc:
             ok = False
             stages[name] = {'status': 'failed', 'error': f'{type(exc).__name__}: {exc}'}
+        save_summary()
         return ok
 
     try:
@@ -117,10 +129,13 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
             stage('monthly', monthly, lambda value: value.get('as_of') == date)
         else:
             stages['monthly'] = {'status': 'skipped', 'reason': 'B32 did not complete'}
+    stage('risk', lambda: run_risk(record=result, output=output/'risk', data_root=data_root,
+        config=Path(settings.get('risk_config', DEFAULT_CONFIG))),
+        lambda value: value.get('status') == 'complete')
+    result['requires_review'] = stages['risk'].get('result', {}).get('requires_review', True)
     result['status'] = ('complete' if stages and all(
         s['status'] == 'complete' for s in stages.values()) else 'incomplete')
-    (output/'summary.json').write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str),
-                                     encoding='utf-8')
+    save_summary()
     return result
 
 
