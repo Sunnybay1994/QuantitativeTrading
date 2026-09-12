@@ -203,3 +203,10 @@ def test_relative_all_cash_keeps_industry_lower_bound_failure_explicit():
     assert not info['feasible']
     assert info['absent_required_industries'] == ['X', 'Y']
     assert out['weight'].sum() == 0
+
+
+
+def test_targets_cannot_shadow_point_in_time_industry():
+    t, h, m = frames()
+    with pytest.raises(ValueError, match='shadow PIT industry'):
+        run(t.with_columns(pl.lit('STALE').alias('industry_l1')), h, m)

@@ -34,6 +34,8 @@ def constrain_targets(*, targets: pl.DataFrame, current: pl.DataFrame,
     These are reference weights; execution must recheck T+1, lots and next-day
     limits. enabled=False freezes all actual weights; sell_only prevents buys.
     """
+    if {'industry_l1', '_sector', '_total'} & set(targets.columns):
+        raise ValueError('Target columns must not shadow PIT industry or constraint work columns')
     if not math.isfinite(equity) or equity <= 0:
         raise ValueError('Require positive marked equity')
     if not (0 < limits.adv_participation <= 1):
