@@ -84,7 +84,8 @@ def expand(settings: dict, existing: list[FactorDefinition]) -> tuple[list[Facto
             expression = template['expr'].format(**params)
             trial = {'factor': factor_id, 'expression': expression, 'parameters': params}
             try:
-                if not re.fullmatch(r'[a-z][a-z0-9_]*', factor_id) or template['direction'] not in (-1, 1):
+                if (not re.fullmatch(r'[a-z][a-z0-9_]*', factor_id)
+                        or type(template['direction']) is not int or template['direction'] not in (-1, 1)):
                     raise ValueError('Invalid factor identity or direction')
                 tree = ast.parse(expression, mode='eval')
                 def depth(node):
@@ -96,7 +97,9 @@ def expand(settings: dict, existing: list[FactorDefinition]) -> tuple[list[Facto
                 fields = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)} - calls
                 if not fields <= allowed_fields or not calls <= allowed_operators:
                     raise ValueError('Expression uses an unregistered field or operator')
-                required_history(expression)
+                history = required_history(expression)
+                if 'maximum_history' in budget and history > budget['maximum_history']:
+                    raise ValueError('Expression history exceeds the registered limit')
                 # Validate operator arity and supported syntax before allocating historical panels.
                 engine = ExpressionEngine(pl.DataFrame({'symbol': ['sample'], 'trade_date': [0],
                                                        **{field: [1.0] for field in fields}}))
@@ -114,15 +117,17 @@ def expand(settings: dict, existing: list[FactorDefinition]) -> tuple[list[Facto
                 candidates.append(definition)
                 identifiers[factor_id], seen[key] = definition, factor_id
                 trials.append({**trial, 'result': 'registered'})
-            except (ValueError, SyntaxError) as exc:
+            except (ValueError, SyntaxError, IndexError, TypeError, RecursionError) as exc:
                 trials.append({**trial, 'result': 'invalid_expression', 'reason': str(exc)})
     if len({row.id for row in candidates}) != len(candidates):
         raise ValueError('Grid generated duplicate factor IDs')
     return candidates, trials
 
 
-def prepare(*, config: Path, library: Path, output: Path) -> dict:
+def prepare(*, config: Path, library: Path, output: Path, allow_fixture: bool = False) -> dict:
     settings = tomllib.loads(config.read_text(encoding='utf-8'))
+    if settings.get('candidate_generation', {}).get('synthetic_fixture') and not allow_fixture:
+        raise ValueError('Synthetic candidate fixtures cannot enter the research evaluation pipeline')
     output.mkdir(parents=True, exist_ok=True)
     frozen = output/'search.toml'
     if frozen.is_file() and frozen.read_bytes() != config.read_bytes():
