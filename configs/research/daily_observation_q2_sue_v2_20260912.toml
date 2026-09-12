@@ -1,0 +1,17 @@
+# Explicit research forecast version; existing B20/B32 account strategies are unchanged.
+auto_trade = false
+data_root = "data"
+artifact_root = "artifacts"
+refresh_config = "configs/data/refresh_q2_sue_v2_model_20260912.toml"
+intraday = true
+
+[model]
+selection = "artifacts/models/q2_sue_v2_frozen_forward_20260912_01"
+
+[b20]
+config = "configs/research/b20_three_asset_forward_20260909.toml"
+output = "artifacts/forward/b20"
+
+[b32]
+config = "configs/paper/b32_stock_observation_20260909.toml"
+output = "artifacts/paper/b32_stock_observation"

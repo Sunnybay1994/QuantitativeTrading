@@ -87,17 +87,17 @@ D:\Miniforge3\python.exe -m quant.research.follow_multifactor_pipeline --config 
 # 固定三种模型方法按验证RankIC自动选型；仅研究前向观察
 D:\Miniforge3\python.exe -m quant.research.run_strategy_template_selection --config configs/models/p6c_method_selection_20260911.toml --output artifacts/models/<新选型目录>
 
-# 固定日历口径修正版生成研究预测，继承原冻结方法；9月14日前核对须显式使用--rehearsal
-# 原版selection因旧月度换手因子缺失，9月11日无完整特征；修正版当天演练生成2393条，仍为RESEARCH_ONLY。
-D:\Miniforge3\python.exe -m quant.research.run_fixed_model_forecast --selection artifacts/models/p6c_calendar_model_20260911_02/selection --as-of YYYY-MM-DD --output artifacts/models/<新预测目录>
+# 保存的年度SUE v2模型生成研究预测；9月14日前须显式使用--rehearsal
+# 9月11日完整质量错误0、3914条预测；历史模型REJECTED，导出仅RESEARCH_ONLY。
+D:\Miniforge3\python.exe -m quant.research.run_fixed_model_forecast --selection artifacts/models/q2_sue_v2_frozen_forward_20260912_01 --as-of YYYY-MM-DD --output artifacts/models/<新预测目录>
 
 # 一条命令刷新完成交易日的数据与因子、检查质量、记录同日冻结模型预测；不改账户持仓
-D:\Miniforge3\python.exe -m quant.research.run_daily_model_forecast --to today --selection artifacts/models/p6c_calendar_model_20260911_02/selection --output artifacts/models/<新日更目录>
+D:\Miniforge3\python.exe -m quant.research.run_daily_model_forecast --to today --selection artifacts/models/q2_sue_v2_frozen_forward_20260912_01 --refresh-config configs/data/refresh_q2_sue_v2_model_20260912.toml --output artifacts/models/<新日更目录>
 # 已发布数据演练可加--saved-data --rehearsal；数据缺失/质量错误返回非零。仍使用新目录保留每次记录。
-# --saved-data同样扫描完整配置范围的实际质量；当前旧SUE的2个错误会阻止预测。
+# --saved-data同样扫描完整输入质量；SUE v2检查错误0，旧SUE错误阻断记录保留。
 
 # 9月14日起：同日刷新与预测、B20/B32冻结观察账户、B32月报一条命令；预测不驱动持仓
-D:\Miniforge3\python.exe -m quant.research.run_daily_observation --to today --output artifacts/research/<新日更观察目录>
+D:\Miniforge3\python.exe -m quant.research.run_daily_observation --config configs/research/daily_observation_q2_sue_v2_20260912.toml --to today --output artifacts/research/<新日更观察目录>
 # 9月14日前的演练须加--saved-data --rehearsal --account-root <已初始化的隔离副本根目录>。
 # output/report.md汇总阶段与输入问题；factor_health记录原始因子健康诊断，详见日更运行说明。
 
