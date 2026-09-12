@@ -185,6 +185,24 @@ def test_saved_quality_honors_nonrequired_exclusion_and_runs_before_forecast(tmp
     assert calls == ['quality', 'forecast'] and result['status'] == 'recorded'
 
 
+@pytest.mark.parametrize('health_status', ['recorded', 'unavailable'])
+def test_daily_forwards_health_without_rerun_or_changing_quality_errors(tmp_path, monkeypatch, health_status):
+    args = arguments(tmp_path, monkeypatch)
+    health = {'enabled': True, 'status': health_status, 'as_of': '2026-09-14',
+        'output': 'record/input_quality/factor_health', 'diagnostics_only': True}
+    calls = []
+    def quality(**kwargs):
+        calls.append(kwargs)
+        return {'errors': [], 'factor_health': health}
+    monkeypatch.setattr(daily, 'run_quality', quality)
+    monkeypatch.setattr(daily, 'run_forecast', lambda **kwargs: {'prediction_stocks': 1})
+    result = daily.run_daily(**args, saved_data=True)
+    assert len(calls) == 1
+    assert result['factor_health'] == health and result['status'] == 'recorded'
+    assert result['input_errors'] == []
+    assert json.loads((args['output']/'summary.json').read_text(encoding='utf-8'))['factor_health'] == health
+
+
 @pytest.mark.parametrize('failure', ['disabled', 'missing_settings', 'missing_battery', 'missing_input', 'invalid_input'])
 def test_saved_quality_cannot_be_disabled_or_silently_skipped(tmp_path, monkeypatch, failure):
     args = arguments(tmp_path, monkeypatch)

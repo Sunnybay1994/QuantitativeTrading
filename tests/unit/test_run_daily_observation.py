@@ -200,3 +200,29 @@ def test_saved_quality_failure_propagates_and_accounts_validate_independently(en
     assert result['stages']['refresh']['input_errors'] == errors
     assert b20.called and b32.called and monthly.called
     assert result['signal_monitor_status'] == 'insufficient'
+
+
+@pytest.mark.parametrize('health_status', ['recorded', 'unavailable'])
+def test_health_summary_survives_blocked_model_and_independent_accounts(env, health_status):
+    args, model, b20, b32, monthly = env
+    health = {'enabled': True, 'status': health_status, 'as_of': '2026-09-11',
+        'output': 'model/input_quality/factor_health', 'diagnostics_only': True}
+    error = 'pit_sue8: incompatible PIT context'
+    def checked(**kwargs):
+        kwargs['output'].mkdir()
+        (kwargs['output']/'refresh.json').write_text(json.dumps({
+            'latest_session': '2026-09-11', 'intraday_errors': [],
+            'input_quality': {'errors': [error], 'factor_health': health}}))
+        return {'as_of': '2026-09-11', 'status': 'input_errors', 'input_errors': [error],
+                'factor_health': health}
+    model.side_effect = checked
+    result = daily.run(**args)
+    assert result['factor_health'] == health
+    assert result['stages']['refresh']['input_errors'] == [error]
+    assert result['status'] == 'incomplete'
+    assert model.call_count == b20.call_count == b32.call_count == monthly.call_count == 1
+    assert json.loads((args['output']/'summary.json').read_text(encoding='utf-8'))['factor_health'] == health
+    report = (args['output']/'report.md').read_text(encoding='utf-8')
+    assert '历史演练' in report and '本次模型预测：0只股票' in report
+    assert error in report and '|B20六账户|完成|' in report and '|B32双账户|完成|' in report
+    assert '因子健康日志' in report

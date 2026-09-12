@@ -2,6 +2,7 @@
 import argparse
 import datetime as dt
 import json
+import os
 import tomllib
 from pathlib import Path
 from typing import Any, Callable
@@ -17,6 +18,59 @@ from quant.research.run_daily_model_forecast import run_daily
 
 def _overlap(a: Path, b: Path) -> bool:
     return a == b or a in b.parents or b in a.parents
+
+
+def write_daily_report(record: dict[str, Any], output: Path) -> None:
+    """Keep one readable summary beside the detailed stage artifacts."""
+    names = {'calendar': '交易日历', 'model': '模型预测', 'refresh': '输入质量',
+        'b20': 'B20六账户', 'b32': 'B32双账户', 'monthly': '月报',
+        'risk': '订单风险', 'signal_monitor': '滚动信号监控'}
+    statuses = {'complete': '完成', 'incomplete': '未完成', 'failed': '失败',
+                'running': '进行中', 'skipped': '跳过'}
+    lines = [f"# 日更记录：{record['as_of'] or record['requested_to']}", '',
+        f"模式：{'历史演练' if record['rehearsal'] else '前向记录'}；"
+        f"数据：{'已保存本地数据' if record['saved_data'] else '本次刷新'}；自动交易：关闭。", '',
+        '|环节|结果|', '|---|---|']
+    for name, stage in record['stages'].items():
+        lines.append(f"|{names.get(name, name)}|{statuses.get(stage['status'], stage['status'])}|")
+    model = record['stages'].get('model', {}).get('result', {})
+    errors = model.get('input_errors', [])
+    if model:
+        lines += ['', f"本次模型预测：{model.get('prediction_stocks', 0)}只股票。"]
+    if errors:
+        lines += ['', '需处理的输入问题：', *['- '+str(error) for error in errors]]
+    for name, stage in record['stages'].items():
+        if stage.get('error'):
+            lines += ['', f"{names.get(name, name)}：{stage['error']}"]
+    risk = record['stages'].get('risk', {}).get('result', {})
+    accounts = risk.get('accounts', [])
+    if accounts:
+        completed = sum(account.get('status') == 'complete' for account in accounts)
+        lines += ['', f'账户风险检查：{completed}/{len(accounts)}份完成。']
+        if risk.get('source_errors'):
+            lines += ['风险汇总仍需处理上游问题：'+ '、'.join(
+                names.get(name, '模型输入质量' if name == 'model_input_quality' else name)
+                for name in risk['source_errors'])+'。']
+    monitor = record['stages'].get('signal_monitor', {}).get('result', {})
+    if monitor.get('status') == 'insufficient':
+        lines += ['', '滚动信号监控：前向样本不足，尚未形成足够长度的监控窗口。']
+    health = record.get('factor_health')
+    if health:
+        lines += ['', '## 因子健康日志', '']
+        if health.get('status') == 'recorded':
+            lines += [f"配置范围{health.get('factor_count')}项，其中{health.get('measured_factors')}项有有限值；"
+                f"同日合格股票池{health.get('current_eligible_symbols')}只。"]
+        elif health.get('status') == 'unavailable':
+            lines += ['暂不可用：'+str(health.get('reason', '详见质量记录'))]
+        else:
+            lines += ['当前配置未启用健康日志。']
+        if health.get('status') == 'recorded' and health.get('output'):
+            target = Path(os.path.relpath(Path(health['output'])/'summary.json', output)).as_posix()
+            lines += ['', f'[健康诊断详情]({target})；诊断数值不改变既有准入或持仓。']
+    lines += ['', '[完整运行记录](summary.json)', '']
+    temporary = output/'report.md.tmp'
+    temporary.write_text('\n'.join(lines), encoding='utf-8')
+    temporary.replace(output/'report.md')
 
 
 def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = False,
@@ -51,6 +105,7 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
     result: dict[str, Any] = {
         'requested_to': to, 'as_of': None, 'saved_data': saved_data, 'rehearsal': rehearsal,
         'auto_trade': False, 'conclusion': 'RESEARCH_ONLY', 'status': 'incomplete', 'stages': stages,
+        'factor_health': None,
         'policy': 'B20 independent; B32 requires refresh success or saved-data; monthly requires B32.',
         'account_paths': dict(zip(('b20', 'b32'), map(str, accounts))),
     }
@@ -60,6 +115,7 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
         temporary.write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str),
                              encoding='utf-8')
         temporary.replace(output/'summary.json')
+        write_daily_report(result, output)
 
     save_summary()
 
@@ -92,6 +148,7 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
             lambda value: value.get('as_of') == date and value.get('status') == 'recorded')
         try:
             refresh = json.loads((output/'model/refresh.json').read_text(encoding='utf-8'))
+            result['factor_health'] = refresh['input_quality'].get('factor_health')
             refresh_errors = [*refresh['intraday_errors'], *refresh['input_quality']['errors']]
             if refresh['latest_session'] != date:
                 refresh_errors.append('Refresh snapshot does not match requested session')

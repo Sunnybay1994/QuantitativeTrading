@@ -147,6 +147,7 @@ def run_daily(*, to: str, selection: Path, output: Path, data_root: Path,
     result = {'as_of': str(end), 'selection': str(selection), 'saved_data': saved_data,
               'rehearsal': rehearsal, 'auto_trade': False, 'conclusion': 'RESEARCH_ONLY',
               'input_errors': errors, 'forecast_path': None, 'prediction_stocks': 0,
+              'factor_health': refresh['input_quality'].get('factor_health'),
               'model_factor_requirements': requirements, 'model_factor_inputs': evidence,
               'status': 'input_errors' if errors else 'missing_model_inputs'}
     if not errors:
