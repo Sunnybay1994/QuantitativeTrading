@@ -1,0 +1,36 @@
+# Q1d 48-month comparison against q1c_missing_on_calendar_96_20260912_01.
+# Measurement: configs/data/return_benchmarks_q1b_20260912.toml
+# Only causal training-history threshold changes; retain calendar and missing policies.
+[research]
+id = "q1d-causal48-calendar-missing-20260912"
+registered_on = 2026-09-12
+hypothesis = "Change causal annual admission and minimum training history from 96 to 48 months, retaining corrected return-index cost screening, fixed calendar repair, neutral missing policy, LightGBM parameters and portfolio rules. Final factor library assessment remains 96 months."
+single_variable = "causal_training_history_48_instead_of_96"
+source_selection = "artifacts/models/q1d_causal48_admission_20260912_01/selection"
+historical_evidence = "retrospective_annual_walk_forward_not_an_unseen_holdout"
+auto_trade = false
+
+[model]
+method = "lightgbm"
+missing_features = "neutral_zero_with_monthly_factor_exclusion"
+maximum_missing_fraction = 0.3
+training_start = 2010-01-01
+test_start = 2015-01-01
+test_end = 2026-08-31
+minimum_training_months = 48
+minimum_signal_stocks = 100
+parameters = "unchanged_source_LightGBM"
+factor_selection = "causal_48_month_annual_selection_with_only_present_registered_calendar_replacements"
+insufficient_history = "cash"
+admission = "unchanged_source_thresholds_with_holding_window_return_indexes"
+
+[replacements]
+amihud_illiquidity_monthly = "amihud_illiquidity_monthly_calendar80_v1"
+free_float_turnover_abnormal_12m = "free_float_turnover_abnormal_12m_calendar80_v1"
+
+[inputs]
+calendar_statistics = ["artifacts/factors/search/p6c_batch01_window02_20260911/training", "artifacts/factors/search/p6c_batch01_window02_20260911/validation", "artifacts/models/p6c_calendar_model_20260911_02/calendar_scores"]
+
+[forward]
+start = 2026-09-14
+minimum_observation_months = 12

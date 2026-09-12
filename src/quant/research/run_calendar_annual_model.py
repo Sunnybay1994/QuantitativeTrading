@@ -11,6 +11,7 @@ from quant.data.factor_panels import available_sessions
 from quant.reporting.multifactor_models import report_models
 from quant.research.model_training_models import common_features, training_panel
 from quant.research.run_multifactor_replay import run_model_replay
+from quant.research.run_multifactor_predictions import completed_fit_plan
 
 
 def annual_windows(*, fits: list[dict], sessions: tuple[dt.date, ...], start: dt.date, end: dt.date) -> list[dict]:
@@ -23,10 +24,21 @@ def annual_windows(*, fits: list[dict], sessions: tuple[dt.date, ...], start: dt
         cutoff = max(day for day in sessions if day < dt.date(year, 1, 1))
         last = (end if year == end.year else
                 max(day for day in sessions if day < dt.date(year+1, 1, 1))-dt.timedelta(days=1))
-        if fit.get('refit_close') and (fit['refit_close'] != str(cutoff) or fit['last_known_exit'] > str(cutoff)):
+        if fit.get('refit_close') and (fit['refit_close'] != str(cutoff)
+                or (not fit.get('selection_only', False) and fit['last_known_exit'] > str(cutoff))):
             raise ValueError('Source fit crosses its annual calendar cutoff')
         plan.append({'test_year': year, 'cutoff': cutoff, 'end': last, 'source_factors': fit['factors']})
     return plan
+
+
+def source_annual_factors(*, source: Path, model: dict, from_selection: bool) -> list[dict]:
+    """Use completed causal selections directly, without fitting an unused baseline."""
+    if not from_selection:
+        return json.loads((source/'summary.json').read_text(encoding='utf-8'))['annual_fits']
+    plan = completed_fit_plan(source, model)
+    return [{'test_year': row['test_year'], 'factors': row['provisional_selected'],
+             'refit_close': row['refit_close'], 'selection_only': True}
+            for row in plan]
 
 
 def run_annual(*, config_path: Path, output: Path, data_root: Path, measurement_config: Path) -> dict:
@@ -43,13 +55,16 @@ def run_annual(*, config_path: Path, output: Path, data_root: Path, measurement_
         raise ValueError('Unknown monthly missing-feature policy')
     if research['auto_trade'] is not False or settings['method'] != 'lightgbm':
         raise ValueError('Require the registered research model')
-    source = Path(research['source_predictions'])
+    sources_present = [key for key in ('source_predictions', 'source_selection') if key in research]
+    if len(sources_present) != 1:
+        raise ValueError('Specify exactly one annual predictions or completed selection source')
+    source = Path(research[sources_present[0]])
     model_text = (source/'model.toml').read_text(encoding='utf-8')
     original = tomllib.loads(model_text)
     if any(settings[key] != original['walk_forward'][key] for key in ('test_start', 'test_end')):
         raise ValueError('Full replay must retain the source period')
     battery = tomllib.loads((source/'battery.toml').read_text(encoding='utf-8'))
-    fits = json.loads((source/'summary.json').read_text(encoding='utf-8'))['annual_fits']
+    fits = source_annual_factors(source=source, model=original, from_selection='source_selection' in research)
     sessions = available_sessions(data_root, dt.date(settings['test_end'].year+1, 1, 31))
     plan = annual_windows(fits=fits, sessions=sessions, start=settings['test_start'], end=settings['test_end'])
     roots = [Path(path) for path in config['inputs']['calendar_statistics']]
