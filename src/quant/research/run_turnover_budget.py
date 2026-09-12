@@ -57,6 +57,8 @@ def summarize_budget_history(output: Path, *, end: dt.date, budget: float) -> di
             rows.append({'variant': variant, 'cost_multiplier': multiplier, 'active_sessions': active.height,
                 'active_cagr': (active['equity'][-1]/active['prior'][0])**(252/active.height)-1,
                 'active_turnover': daily.select((pl.col('notional')/pl.col('prior')/2).sum()).item()*252/active.height,
+                'median_fills_per_trade_day': trades.group_by('date').len()['len'].median(),
+                'small_fill_fraction': trades.filter(pl.col('notional') < 5000.).height/trades.height if trades.height else None,
                 'fills': trades.height, 'fills_under_5000': trades.filter(pl.col('notional') < 5000.).height,
                 'mean_active_positions': active['position_count'].mean(),
                 'maximum_positions': active['position_count'].max(),
@@ -101,6 +103,19 @@ def write_budget_report(output: Path, result: dict) -> None:
             status = ('通过' if s['not_worse'] else '未通过') if s['applicable'] else f"不适用：{s['reason']}"
             lines.append(f"|{s['window']}|{fmt(s.get('model_return'))}|{fmt(s.get('benchmark_return'))}|{status}|")
     lines += ['', '固定0.5预算约束目标调整距离，实际成交换手仍受价格、现金和整手影响；已研究历史只作回顾性对照。']
+    if result.get('execution_improvement'):
+        lines += ['', '## 小额调仓暂缓：相对原Q10预算组合', '',
+            '执行改善条件：'+json.dumps(result['execution_improvement'], ensure_ascii=False), '',
+            '|组合|成本|成交日中位笔数|平均持仓|最大持仓|成交笔数|小于5000占比|费用|滑点成本|',
+            '|---|---:|---:|---:|---:|---:|---:|---:|---:|']
+        for row in result['actual_execution']['active_results']:
+            lines.append(f"|{row['variant']}|{row['cost_multiplier']}|{row['median_fills_per_trade_day']}|"
+                f"{row['mean_active_positions']:.2f}|{row['maximum_positions']}|{row['fills']}|"
+                f"{row['small_fill_fraction']:.2%}|{row['fees']:.2f}|{row['slippage_cost']:.2f}|")
+        lines += ['', '|组合|成本|收益基准|同窗基准年化|年化超额|', '|---|---:|---|---:|---:|']
+        for row in result['benchmark_comparisons']:
+            lines.append(f"|{row['variant']}|{row['cost_multiplier']}|{row['benchmark']}|"
+                f"{fmt(row['benchmark_cagr'])}|{fmt(row['net_cagr_excess'])}|")
     (output/'report.md').write_text('\n'.join(lines)+'\n', encoding='utf-8')
 
 
@@ -121,6 +136,8 @@ def run(*, config: Path, output: Path, data_root: Path, resume: bool = False,
     source, benchmarks = Path(research['predictions']), Path(research['benchmarks'])
     model = tomllib.loads((source/'model.toml').read_text(encoding='utf-8'))
     settings = tomllib.loads((source/'battery.toml').read_text(encoding='utf-8'))
+    if spec.get('small_adjustment') and model['admission']['maximum_annualized_one_way_turnover'] != 6.:
+        raise ValueError('Q12 must retain original 6x turnover admission')
     reference = tomllib.loads((benchmarks/'battery.toml').read_text(encoding='utf-8'))
     for key in ('portfolio', 'costs', 'universe', 'run', 'data'):
         if settings[key] != reference[key]:
@@ -157,10 +174,16 @@ def run(*, config: Path, output: Path, data_root: Path, resume: bool = False,
         saved_events.write_text(event_content,encoding='utf-8')
     if allocations[policy['allocation']] != 'linear_blend':
         settings['turnover_allocations'] = {'budgeted': allocations[policy['allocation']]}
+    budgets = {'budgeted': policy['monthly_one_way_budget']}
+    if spec.get('small_adjustment'):
+        if policy['monthly_one_way_budget'] != .5 or policy['allocation'] != 'linear_blend_current_holdings_toward_original_targets':
+            raise ValueError('Small-adjustment experiment requires unchanged Q10 budget')
+        settings['small_adjustment_floors'] = {'budgeted': spec['small_adjustment']['floor_cny']}
+        budgets['control'] = policy['monthly_one_way_budget']
     run_cost_plans(settings=settings, plans={'control': (name, targets), 'budgeted': (name, targets)},
         sessions=sessions, output=output, data_root=data_root, execution_snapshot=snapshot,
         factor=research['id'], start=walk['test_start'],
-        turnover_budgets={'budgeted': policy['monthly_one_way_budget']}, resume=resume)
+        turnover_budgets=budgets, resume=resume)
     report = collect_cost_report(run=output, benchmarks=benchmarks, data_root=data_root,
                                  return_benchmark_config=output/'measurement.toml')
     baselines = load_return_benchmarks(config=output/'measurement.toml', data_root=data_root,
@@ -181,17 +204,43 @@ def run(*, config: Path, output: Path, data_root: Path, resume: bool = False,
     original_replay = Path(research.get('control_replay', str(source.parent/'replay')))
     comparisons = []
     for multiplier in (.5, 1., 2.):
-        original, _ = load_cost_history(original_replay, f"{research['method']}_top{research['top_k']}", multiplier, walk['test_end'])
-        control, _ = load_cost_history(output, 'control', multiplier, walk['test_end'])
+        original, original_trades = load_cost_history(original_replay, research.get('control_variant', f"{research['method']}_top{research['top_k']}"), multiplier, walk['test_end'])
+        control, control_trades = load_cost_history(output, 'control', multiplier, walk['test_end'])
         columns = ['date', 'equity', 'market_value', 'cash', 'unit_nav']
         if not original.select(columns).equals(control.select(columns)):
             raise ValueError('Replayed control differs from frozen original NAV')
-        comparisons.append({'cost_multiplier': multiplier, 'sessions': control.height, 'nav_exact_equal': True})
+        if not original_trades.equals(control_trades):
+            raise ValueError('Replayed control trades differ from frozen Q10 reference')
+        comparisons.append({'cost_multiplier': multiplier, 'sessions': control.height,
+                            'nav_exact_equal': True, 'trades_exact_equal': True})
     (output/'control_comparison.json').write_text(json.dumps(comparisons, indent=2), encoding='utf-8')
-    summarize_budget_history(output, end=walk['test_end'], budget=policy['monthly_one_way_budget'])
+    diagnostics = summarize_budget_history(output, end=walk['test_end'], budget=policy['monthly_one_way_budget'])
+    if spec.get('small_adjustment'):
+        result['actual_execution'] = diagnostics
+        result['execution_improvement'] = assess_small_adjustments(result, diagnostics, spec['execution_improvement'])
     (output/'assessment.json').write_text(json.dumps(result, indent=2, default=str), encoding='utf-8')
     write_budget_report(output, result)
     return result
+
+
+def assess_small_adjustments(result: dict, diagnostics: dict, policy: dict) -> dict:
+    actual = {(r['variant'], r['cost_multiplier']): r for r in diagnostics['active_results']}
+    rows = {(r['variant'], r['cost_multiplier']): r for r in result['rows']}
+    old, new = actual['control', 1.], actual['budgeted', 1.]
+    reduction = 1-new['median_fills_per_trade_day']/old['median_fills_per_trade_day']
+    checks = {'median_trade_day_fills': reduction >= policy['minimum_median_trade_day_fills_reduction'],
+        'mean_actual_positions': new['mean_active_positions'] <= old['mean_active_positions']}
+    for cost in policy['sharpe_not_lower_costs']:
+        checks[f'sharpe_{cost:g}'] = rows['budgeted', cost]['sharpe'] >= rows['control', cost]['sharpe']
+    for cost in policy['max_drawdown_not_worse_costs']:
+        checks[f'drawdown_{cost:g}'] = rows['budgeted', cost]['max_drawdown'] >= rows['control', cost]['max_drawdown']
+    sensitivity = dict(result['assessments']['budgeted']['checks'])
+    sensitivity['turnover'] = rows['budgeted', 1.]['annualized_one_way_turnover'] <= policy['retrospective_sensitivity_only']
+    return {'checks': checks, 'median_trade_day_fills_reduction': reduction,
+        'promote_execution_rule': all(checks.values()), 'evidence': 'retrospective',
+        'original_admission_unchanged': True,
+        'turnover_6_5_retrospective_only': {'checks': sensitivity, 'all_pass': all(sensitivity.values()),
+            'does_not_replace_original_admission': True}}
 
 
 def main() -> None:

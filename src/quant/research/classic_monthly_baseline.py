@@ -153,6 +153,7 @@ def replay(
     account_state: dict[str, Any] | None = None,
     target_turnover_budget: float | None = None,
     target_turnover_allocation: str = 'linear_blend',
+    small_adjustment_floor: float | None = None,
     target_records: list[dict] | None = None,
     target_constraints: Callable[[pl.DataFrame, dict], tuple[pl.DataFrame, dict]] | None = None,
     constraint_records: list[dict] | None = None,
@@ -263,6 +264,10 @@ def replay(
             if constraint_info.get('nominee_symbols') is not None:
                 state['constraint_nominees'] = constraint_info['nominee_symbols']
             execution_permissions = constraint_info.get('execution_direction_permissions')
+        if batch is not None and small_adjustment_floor is not None:
+            from quant.portfolio.turnover_budget import small_adjustment_permissions
+            blocked = small_adjustment_permissions(batch, state, floor=small_adjustment_floor)
+            execution_permissions = {**(execution_permissions or {}), **blocked}
         writeoff = 0.0
         removed = []
         exchange_rows = apply_share_exchanges(date=date, state=state, events=exchanges, dividends=dividends) if exchanges else []

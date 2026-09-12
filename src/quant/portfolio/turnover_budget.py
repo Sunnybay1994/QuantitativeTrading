@@ -51,3 +51,30 @@ def budget_targets(targets: pl.DataFrame, state: dict, *, budget: float,
              'weight': current.get(symbol, 0.) + fraction*(desired.get(symbol, 0.)-current.get(symbol, 0.))}
             for symbol in symbols]
     return pl.from_dicts(rows, schema=targets.schema)
+
+
+def small_adjustment_permissions(targets: pl.DataFrame, state: dict, *, floor: float) -> dict:
+    """Block both sides for this signal's sub-floor nonzero-target adjustments.
+
+    Notional uses the same close equity and marked actual holdings as the budget.
+    No execution-day prices or post-trade filtering; zero-target exits stay open.
+    """
+    if not math.isfinite(floor) or floor <= 0:
+        raise ValueError('Small-adjustment floor must be positive and finite')
+    if (targets.is_empty() or targets['as_of'].n_unique() != 1
+            or targets['symbol'].is_duplicated().any()
+            or state.get('date') != str(targets['as_of'][0]) or not state.get('nav')):
+        raise ValueError('Small-adjustment filter requires signal-close actual account')
+    equity = state['nav'][-1]['equity']
+    if not math.isfinite(equity) or equity <= 0:
+        raise ValueError('Invalid signal-close equity')
+    blocked = {}
+    for row in targets.iter_rows(named=True):
+        weight = row['weight']
+        holding = state['holdings'].get(row['symbol'], {'quantity': 0, 'mark_price': 0.})
+        value = holding['quantity']*holding['mark_price']
+        if any(not math.isfinite(v) or v < 0 for v in (weight, value)):
+            raise ValueError('Invalid planned target or signal-close holding value')
+        if weight > 0 and abs(weight*equity-value) < floor:
+            blocked[row['symbol']] = (False, False)
+    return blocked
