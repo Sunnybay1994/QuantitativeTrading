@@ -192,9 +192,11 @@ def score_one(reason: str, *, settings: dict, cache: ScoreCache, client: Any,
 def run_batch(*, source: Path, config: Path, design_path: Path, output: Path,
               cache_path: Path, execute: bool = False, max_requests: int = 0,
               max_usd: float = 0, limit: int | None = None, client: Any = None,
-              development_test: bool = False) -> dict:
+              development_test: bool = False, workers: int = 1) -> dict:
     settings, design = load_settings(config), load_design(design_path)
     prompt = scoring_prompt(settings['format_version'])
+    if type(workers) is not int or not 1 <= workers <= 4 or (workers > 1 and client is not None):
+        raise ValueError('Use 1-4 workers; injected clients require serial execution')
     if (type(max_requests) is not int or max_requests < 0 or not math.isfinite(max_usd)
             or max_usd < 0 or (execute and (max_requests < 1 or max_usd <= 0))
             or (limit is not None and (type(limit) is not int or limit < 1))):
@@ -227,7 +229,7 @@ def run_batch(*, source: Path, config: Path, design_path: Path, output: Path,
             "usd_bound_one_attempt": sum(estimates),
             "usd_bound_including_retries": sum(estimates) * settings["max_attempts"],
             "max_requests": max_requests, "max_usd": max_usd}
-    owned_client = execute and client is None
+    owned_client = execute and client is None and workers == 1
     if owned_client:
         client = DeepSeekClient(load_key(Path.cwd()), timeout=settings["timeout_seconds"])
     output.mkdir(parents=True, exist_ok=False)
@@ -236,10 +238,18 @@ def run_batch(*, source: Path, config: Path, design_path: Path, output: Path,
     result_by_key = {}
     try:
         if cache:
-            for key, reason in selected.items():
-                result_by_key[key] = score_one(reason, settings=settings, cache=cache, client=client,
-                                               max_requests=max_requests, max_usd=max_usd,
-                                               development_test=development_test)
+            if workers > 1:
+                from quant.research.parallel_text_scoring import score_parallel
+                api_key = load_key(Path.cwd())
+                result_by_key = score_parallel(selected,settings=settings,cache_path=cache_path,
+                    max_requests=max_requests,max_usd=max_usd,workers=workers,
+                    client_factory=lambda: DeepSeekClient(api_key,timeout=settings['timeout_seconds']),
+                    development_test=development_test)
+            else:
+                for key, reason in selected.items():
+                    result_by_key[key] = score_one(reason, settings=settings, cache=cache, client=client,
+                                                   max_requests=max_requests, max_usd=max_usd,
+                                                   development_test=development_test)
         rows = []
         for record in records:
             reason = record["reason_text"]
@@ -276,7 +286,7 @@ def run_batch(*, source: Path, config: Path, design_path: Path, output: Path,
                   "plan": plan, "summary": dict(Counter(row["result"] for row in rows)),
                   "cache_totals_before": totals_before, "cache_totals_after": totals_after,
                   "requests_this_run": totals_after["requests"] - totals_before["requests"],
-                  "cache_path": str(cache_path) if execute else None}
+                  "cache_path": str(cache_path) if execute else None, "workers": workers}
         (output / "scoring.toml").write_bytes(config.read_bytes())
         (output / "design.toml").write_bytes(design_path.read_bytes())
         # Reuse every existing battery threshold; only restrict its start to the frozen P7 window.
@@ -311,6 +321,7 @@ def run_batch(*, source: Path, config: Path, design_path: Path, output: Path,
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path)
+    parser.add_argument('--workers',type=int,default=1)
     parser.add_argument("--config", type=Path, default=Path("configs/research/deepseek_p7_v1.toml"))
     parser.add_argument("--design", type=Path, default=Path("configs/factors/p7_text_evaluation_v2.toml"))
     parser.add_argument("--output", type=Path)
@@ -334,7 +345,7 @@ def main() -> None:
             report = run_batch(source=args.input, config=args.config, design_path=args.design,
                                output=args.output, cache_path=args.cache, execute=args.execute,
                                max_requests=args.max_requests, max_usd=args.max_usd, limit=args.limit,
-                               development_test=args.development_test)
+                               development_test=args.development_test,workers=args.workers)
         except (ValueError, RuntimeError) as exc:
             # Pydantic errors can echo supplied values: keep CLI failures path/key safe.
             parser.exit(2, f"Scoring stopped: {type(exc).__name__}; check config, local key and cache.\n")
