@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
+import hashlib
+import sqlite3
 import json
 import math
 from pathlib import Path
 import tomllib
 from typing import Any
 
-from quant.research.deepseek_diagnostics import run_diagnosis
+from quant.research.deepseek_diagnostics import parse_diagnosis, run_diagnosis
 from quant.research.generate_factor_candidates import run as generate_candidates
 from quant.research.run_factor_search import run as run_factor_search
 
@@ -60,8 +63,90 @@ def _check_batch(path: Path, *, candidate_root: Path, design: dict) -> None:
             raise ValueError("Generated batch must use its local registry and frozen evaluation inputs")
 
 
-def run(*, config: Path, output: Path, execute: bool = False, development_test: bool = False) -> dict:
-    """No same-directory resume; a new cycle reuses the configured cumulative cache.
+def _hashes(paths: list[Path]) -> dict[str, str]:
+    return {str(path.resolve()): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(set(paths))}
+
+
+def _inputs(config: Path, settings: dict, design: dict) -> dict[str, str]:
+    d, c = settings["diagnosis"], settings["candidates"]
+    paths = [config, Path(c["design"]), Path(d["config"]),
+             Path(c.get("config", d["config"])), Path(d["scorecard"]),
+             *map(Path, d["assessments"])]
+    for name in ("battery_config", "refresh_config"):
+        if name in design["search"]:
+            paths.append(Path(design["search"][name]))
+    if "library" in design["search"]:
+        paths.extend(Path(design["search"]["library"]).rglob("*.toml"))
+    return _hashes(paths)
+
+
+def _cache_totals(path: Path) -> dict:
+    if not path.is_file():
+        raise ValueError("Resume requires the original shared cache; never create a replacement")
+    with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as db:
+        row = db.execute("SELECT COUNT(*), COALESCE(SUM(charged_usd),0) FROM attempts").fetchone()
+    return {"requests": row[0], "charged_or_reserved_usd": row[1]}
+
+
+def _archive_partial(path: Path) -> None:
+    if path.exists():
+        number = 1
+        target = path.with_name(f"{path.name}_partial_{number:03d}")
+        while target.exists():
+            number += 1
+            target = path.with_name(f"{path.name}_partial_{number:03d}")
+        if not path.resolve().is_relative_to(path.parent.resolve()) or not target.resolve().is_relative_to(path.parent.resolve()):
+            raise ValueError("Partial stage must remain inside the cycle directory")
+        path.rename(target)
+
+
+def _stage_files(path: Path, name: str) -> list[Path]:
+    if name != "evaluation":
+        return [p for p in path.rglob("*") if p.is_file()]
+    # Large factor panels are owned by the search's existing recovery mechanism.
+    return [*path.rglob("*summary.json"), *path.rglob("scorecard.parquet"),
+            *path.glob("*.toml"), *path.glob("trials.json")]
+
+
+def _validate_saved(path: Path, name: str, report: dict) -> None:
+    filename = "summary.json" if name == "evaluation" else "run.json"
+    saved = json.loads((path / filename).read_text(encoding="utf-8"))
+    if saved != json.loads(json.dumps(report, default=str)):
+        raise ValueError(f"Saved {name} report differs from cycle result")
+    if name == "diagnosis":
+        parse_diagnosis((path / "diagnosis.json").read_text(encoding="utf-8"),
+                        json.loads((path / "facts.json").read_text(encoding="utf-8")))
+    elif name == "candidates":
+        request = json.loads((path / "frozen_request.json").read_text(encoding="utf-8"))
+        if report.get("synthetic_fixture") is not False or request["synthetic_fixture"] is not False:
+            raise ValueError("Synthetic candidates cannot be resumed into evaluation")
+        batch = path / "batch.toml"
+        if (path / "prepared/search.toml").read_bytes() != batch.read_bytes():
+            raise ValueError("Prepared candidates differ from the generated batch")
+        trials = json.loads((path / "prepared/trials.json").read_text(encoding="utf-8"))
+        if trials["registered_count"] != report["accepted_count"] or report["accepted_count"] < 1:
+            raise ValueError("Missing prepared candidates")
+        for factor in trials["factors"]:
+            if (path / "registry" / f"{factor}.toml").read_bytes() != (
+                    path / "prepared/library" / f"{factor}.toml").read_bytes():
+                raise ValueError("Prepared candidate library mismatch")
+        payload = json.loads((path / "candidates.json").read_text(encoding="utf-8"))
+        if not payload["candidates"]:
+            raise ValueError("Missing generated candidate payload")
+    else:
+        if saved.get("message") != "completed" or not saved.get("completed_stages"):
+            raise ValueError("Missing completed evaluation evidence")
+        for stage in saved["completed_stages"]:
+            if stage == "costs":
+                if not list((path / "costs").glob("attempt_*/batch_summary.json")):
+                    raise ValueError("Missing cost summaries")
+            else:
+                json.loads((path / stage / "summary.json").read_text(encoding="utf-8"))
+
+
+def run(*, config: Path, output: Path, execute: bool = False, development_test: bool = False, resume: bool = False) -> dict:
+    """Explicit recovery uses unchanged inputs and the original cumulative cache.
 
     Candidate command strings are display-only. Evaluation is a direct call to
     the existing function using this cycle's fixed batch path.
@@ -72,14 +157,9 @@ def run(*, config: Path, output: Path, execute: bool = False, development_test: 
         raise ValueError("Execution requires positive cumulative budget caps")
     if not output.resolve().is_relative_to(Path("artifacts").resolve()):
         raise ValueError("Research cycle outputs must stay under artifacts")
-    output.mkdir(parents=True, exist_ok=False)
-    (output / "cycle.toml").write_bytes(config.read_bytes())
-    frozen_design = output / "design.toml"
-    frozen_design.write_bytes(Path(candidates["design"]).read_bytes())
-    frozen_scoring = output / "llm.toml"
-    frozen_scoring.write_bytes(Path(diagnosis["config"]).read_bytes())
+    current_inputs = _inputs(config, settings, design)
+    frozen_design, frozen_scoring = output / "design.toml", output / "llm.toml"
     frozen_candidate_scoring = output / "candidate_llm.toml"
-    frozen_candidate_scoring.write_bytes(Path(candidates.get("config", diagnosis["config"])).read_bytes())
     paths = {name: output / name for name in ("diagnosis", "candidates", "evaluation")}
     result: dict[str, Any] = {"status": "running", "execute": execute, "development_test": development_test,
         "conclusion": "RESEARCH_ONLY", "stages": {name: {"path": str(path.resolve()), "status": "not_run"}
@@ -89,12 +169,72 @@ def run(*, config: Path, output: Path, execute: bool = False, development_test: 
         "cost_estimates": {"diagnosis_usd_bound_including_retries": None,
             "candidates_usd_bound_including_retries": None, "full_cycle_usd_bound": None,
             "scope": "Candidate input is unknown until diagnosis succeeds; null is unknown, not zero. Shared budget caps remain authoritative."},
-        "resume": "No same-directory cycle resume. Use a new output with the same cache; successful model requests are reusable. Evaluation may be resumed directly with run_factor_search."}
+        "resume": "Use --resume with unchanged config, inputs and shared cumulative cache"}
+
+    if resume:
+        result = json.loads((output / "run.json").read_text(encoding="utf-8"))
+        if result.get("input_hashes") != current_inputs:
+            raise ValueError("Changed or unfrozen cycle inputs; refusing resume")
+        if result["execute"] != execute:
+            raise ValueError("Resume must preserve --execute mode")
+        frozen = {output / "cycle.toml": config, frozen_design: Path(candidates["design"]),
+                  frozen_scoring: Path(diagnosis["config"]), frozen_candidate_scoring:
+                  Path(candidates.get("config", diagnosis["config"]))}
+        if any(a.read_bytes() != b.read_bytes() for a, b in frozen.items()):
+            raise ValueError("Frozen configuration changed")
+        if result["budget"]["cache"] != str(Path(budget["cache"]).resolve()):
+            raise ValueError("Shared cache changed")
+        if execute:
+            totals = _cache_totals(Path(budget["cache"]))
+            floor = result.get("cache_totals", {})
+            if any(totals[k] < v for k, v in floor.items()):
+                raise ValueError("Shared cumulative cache usage moved backwards")
+        for name, value in result["stages"].items():
+            saved = value.get("output_hashes")
+            if saved is not None and saved != _hashes(_stage_files(paths[name], name)):
+                raise ValueError(f"Saved {name} outputs changed or are missing")
+        candidate_report = paths["candidates"] / "run.json"
+        if candidate_report.is_file() and json.loads(candidate_report.read_text(encoding="utf-8")).get("synthetic_fixture") is True:
+            raise ValueError("Synthetic candidates cannot be resumed")
+        for name, value in result["stages"].items():
+            if value.get("output_hashes"):
+                _validate_saved(paths[name], name, value["result"])
+        # Validate local candidate safety even if the outer cycle says completed.
+        if result["stages"]["candidates"].get("output_hashes"):
+            _check_batch(paths["candidates"] / "batch.toml",
+                         candidate_root=paths["candidates"], design=design)
+    else:
+        output.mkdir(parents=True, exist_ok=False)
+        for target, source in ((output / "cycle.toml", config),
+                               (frozen_design, Path(candidates["design"])),
+                               (frozen_scoring, Path(diagnosis["config"])),
+                               (frozen_candidate_scoring, Path(candidates.get("config", diagnosis["config"])))):
+            target.write_bytes(source.read_bytes())
+        result["input_hashes"] = current_inputs
 
     def save(status: str) -> dict:
         result["status"] = status
-        (output / "run.json").write_text(json.dumps(result, default=str, ensure_ascii=False, indent=2), encoding="utf-8")
+        if execute and Path(budget["cache"]).is_file():
+            result["cache_totals"] = _cache_totals(Path(budget["cache"]))
+        temporary = output / "run.tmp.json"
+        temporary.write_text(json.dumps(result, default=str, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(output / "run.json")
         return result
+
+    def reuse(name: str) -> dict | None:
+        value = result["stages"][name]
+        if resume and value.get("output_hashes"):
+            return value["result"]
+        return None
+
+    def record(name: str, report: dict) -> None:
+        if _inputs(config, settings, design) != current_inputs:
+            raise ValueError("Cycle inputs changed during execution")
+        _validate_saved(paths[name], name, report)
+        files = _stage_files(paths[name], name)
+        if not files:
+            raise ValueError(f"No saved {name} artifacts")
+        result["stages"][name]["output_hashes"] = _hashes(files)
 
     shared = {"config": frozen_scoring, "cache_path": Path(budget["cache"]).resolve(),
               "max_requests": budget["max_requests"], "max_usd": budget["max_usd"],
@@ -103,9 +243,13 @@ def run(*, config: Path, output: Path, execute: bool = False, development_test: 
     try:
         result["stages"][stage]["status"] = "running"
         save("running")
-        report = run_diagnosis(inputs=[], scorecard=Path(diagnosis["scorecard"]),
-            assessments=[Path(path) for path in diagnosis["assessments"]], artifact_root=Path("artifacts"),
-            output=paths[stage], **shared)
+        report = reuse(stage)
+        if report is None:
+            if resume:
+                _archive_partial(paths[stage])
+            report = run_diagnosis(inputs=[], scorecard=Path(diagnosis["scorecard"]),
+                assessments=[Path(path) for path in diagnosis["assessments"]], artifact_root=Path("artifacts"),
+                output=paths[stage], **shared)
         result["stages"][stage].update(status=report["result"], result=report)
         result["cost_estimates"]["diagnosis_usd_bound_including_retries"] = report.get("usd_bound_including_retries")
         if not execute:
@@ -115,13 +259,18 @@ def run(*, config: Path, output: Path, execute: bool = False, development_test: 
         if report["result"] != "success":
             result["stopped_stage"] = stage
             return save("stopped")
+        record(stage, report)
         stage = "candidates"
         result["stages"][stage]["status"] = "running"
         save("running")
-        report = generate_candidates(diagnosis=paths["diagnosis"], design=frozen_design,
-            scope=candidates["scope"], fields=candidates["fields"], operators=candidates["operators"],
-            maximum_candidates=candidates["maximum_candidates"], maximum_history=candidates["maximum_history"],
-            output=paths[stage], **{**shared, "config": frozen_candidate_scoring})
+        report = reuse(stage)
+        if report is None:
+            if resume:
+                _archive_partial(paths[stage])
+            report = generate_candidates(diagnosis=paths["diagnosis"], design=frozen_design,
+                scope=candidates["scope"], fields=candidates["fields"], operators=candidates["operators"],
+                maximum_candidates=candidates["maximum_candidates"], maximum_history=candidates["maximum_history"],
+                output=paths[stage], **{**shared, "config": frozen_candidate_scoring})
         result["stages"][stage].update(status=report["result"], result=report)
         result["cost_estimates"]["candidates_usd_bound_including_retries"] = report.get("usd_bound_including_retries")
         if report["result"] != "success" or report["accepted_count"] < 1 or report.get("synthetic_fixture") is not False:
@@ -130,12 +279,17 @@ def run(*, config: Path, output: Path, execute: bool = False, development_test: 
             return save("stopped")
         batch = paths["candidates"] / "batch.toml"
         _check_batch(batch, candidate_root=paths["candidates"], design=design)
+        record(stage, report)
         stage = "evaluation"
         result["stages"][stage]["status"] = "running"
         save("running")
         # Never interpret or execute report['next_command'] or any model-provided command.
-        report = run_factor_search(config=batch, output=paths["evaluation"])
+        report = reuse(stage)
+        if report is None:
+            report = run_factor_search(config=batch, output=paths["evaluation"])
         result["stages"][stage].update(status=report["message"], result=report)
+        if report["message"] == "completed":
+            record(stage, report)
         return save("completed" if report["message"] == "completed" else "stopped")
     except Exception as exc:
         result["stages"][stage].update(status="failed", error_type=type(exc).__name__, error=str(exc)[:1000])
@@ -147,11 +301,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--resume", action="store_true")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--development-test", action="store_true")
     try:
         result = run(**vars(parser.parse_args()))
-    except (ValueError, KeyError, OSError, TypeError) as exc:
+    except (ValueError, KeyError, OSError, TypeError, sqlite3.Error) as exc:
         print(json.dumps({"status": "invalid_input", "error_type": type(exc).__name__, "error": str(exc)[:1000]}))
         raise SystemExit(2) from None
     print(json.dumps({"status": result["status"], "stages": {
