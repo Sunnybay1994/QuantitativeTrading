@@ -1,0 +1,6 @@
+version = "p7_quadratic_diagnostic_v1"
+scope = "Supplementary diagnostic only; no parameter selection or admission changes"
+controls = ["forecast_p_change_midpoint", "pit_sue8_context_v2", "log_market_value", "industry_l1"]
+basis = "intercept, standardized continuous controls, their squares and pairwise products, industry dummies"
+fit = "contemporaneous common support; future return values never used in projection"
+interpretation = "Residual IC is conditional on this fixed basis, not proof of information beyond all nonlinear numeric models"

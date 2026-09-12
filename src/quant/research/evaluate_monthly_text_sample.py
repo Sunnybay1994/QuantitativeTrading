@@ -61,6 +61,9 @@ def run(*, plan: Path, cache: Path, output: Path, data_root: Path,
         supports.append(support)
     write_incremental(points,supports,output=output/'incremental',sessions=tuple(sorted(set(text['trade_date']))),
         settings=battery,design=design,synthetic=False)
+    from quant.research.text_quadratic_diagnostic import run as quadratic_diagnostic
+    quadratic = quadratic_diagnostic(output/'incremental/common_support.parquet',
+        output=output/'quadratic_diagnostic',minimum_symbols=battery['minimum_symbols'])
     combined = pl.concat(points)
     counts = combined.filter(pl.col('comparator') == 'text').group_by('factor').agg(
         pl.col('text_count').max().alias('max_text_symbols'),
@@ -73,6 +76,7 @@ def run(*, plan: Path, cache: Path, output: Path, data_root: Path,
     cost_inputs = export(statistics=output/'monthly_statistics',
         battery=Path(spec['statistics'])/'battery.toml',output=output/'cost_inputs')
     result = {**status,'sample_rows':text.height,'coverage':counts.to_dicts(),
+        'quadratic_diagnostic':quadratic,
         'monthly_statistics':{'variants':len(monthly['summary']),
             'coverage_sufficient_variants':sum(r['coverage_sufficient'] for r in monthly['summary']),
             'path':str(output/'monthly_statistics/summary.json')},
