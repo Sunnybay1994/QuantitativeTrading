@@ -75,6 +75,34 @@ def read_battery_factor_year(data_root: Path, *, factor: str, year: int,
     return values, labels.with_columns(expressions)
 
 
+def read_frozen_battery_universe(*, statistics: Path,
+                                as_of_dates: list[dt.date]) -> pl.DataFrame:
+    """Read requested saved universe dates, keeping ineligible rows and null controls."""
+    if (not as_of_dates or any(type(day) is not dt.date for day in as_of_dates)
+            or len(set(as_of_dates)) != len(as_of_dates)):
+        raise ValueError('Universe as_of_dates must be nonempty unique dates')
+    columns = ['symbol', 'trade_date', 'eligible', 'industry_l1', 'total_market_value', 'amount20']
+    frames = []
+    for year in sorted({day.year for day in as_of_dates}):
+        dates = [day for day in as_of_dates if day.year == year]
+        path = statistics / f'inputs/{year}/universe.parquet'
+        if not path.is_file():
+            raise ValueError(f'Missing frozen universe for requested dates: {dates}')
+        saved = pl.scan_parquet(path)
+        if not set(columns) <= set(saved.collect_schema().names()):
+            raise ValueError(f'Frozen universe missing required columns: {year}')
+        frames.append(saved.filter(pl.col('trade_date').is_in(dates)).select(columns).collect())
+    frame = pl.concat(frames)
+    missing = set(as_of_dates) - set(frame['trade_date'])
+    if missing:
+        raise ValueError(f'Missing frozen universe trade dates: {sorted(missing)}')
+    if frame.select('symbol', 'trade_date').is_duplicated().any():
+        raise ValueError('Duplicate frozen universe symbol/trade_date keys')
+    if frame['symbol'].null_count():
+        raise ValueError('Null frozen universe symbol')
+    return frame.sort('trade_date', 'symbol')
+
+
 def read_battery_year(*, data_root: Path, refresh_config: Path, limits_snapshot: str,
                       start: dt.date, end: dt.date, known_through: dt.date,
                       minimum_listing_days: int = 120, amount_window_sessions: int = 20,

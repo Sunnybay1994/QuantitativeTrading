@@ -201,6 +201,43 @@ def read_equal_weight_index(*, data_root: Path, version: str, index_name: str,
                                      (pl.col('index_level') / 1000).alias('unit_nav')).collect()
 
 
+def read_equal_weight_targets(*, data_root: Path, version: str, index_name: str,
+                              as_of_dates: list[dt.date]) -> pl.DataFrame:
+    """Read complete saved signal-date targets without rebuilding or substituting dates."""
+    if (not version or version in ('.', '..')
+            or any(not c.isascii() or not (c.isalnum() or c in '_.-') for c in version)):
+        raise ValueError('Invalid equal-weight target version')
+    if index_name not in ('all_market_equal_weight', 'csi800_equal_weight'):
+        raise ValueError('Invalid equal-weight target index name')
+    if (not as_of_dates or any(type(day) is not dt.date for day in as_of_dates)
+            or len(set(as_of_dates)) != len(as_of_dates)):
+        raise ValueError('Target as_of_dates must be nonempty unique dates')
+    path = data_root / 'clean/equal_weight_indexes' / version / f'{index_name}_selections.parquet'
+    if not path.is_file():
+        raise ValueError(f'Saved equal-weight targets unavailable: {version}/{index_name}')
+    saved = pl.scan_parquet(path)
+    if not {'as_of', 'effective_date', 'symbol', 'weight'} <= set(saved.collect_schema().names()):
+        raise ValueError('Saved equal-weight targets are missing required columns')
+    frame = saved.filter(pl.col('as_of').is_in(as_of_dates)).collect()
+    missing = set(as_of_dates) - set(frame['as_of'])
+    if missing:
+        raise ValueError(f'Missing equal-weight target as_of dates: {sorted(missing)}')
+    if frame.select('as_of', 'symbol').is_duplicated().any():
+        raise ValueError('Duplicate equal-weight target as_of/symbol keys')
+    if frame['symbol'].null_count():
+        raise ValueError('Null equal-weight target symbol')
+    if frame.filter(pl.col('weight').is_null() | ~pl.col('weight').is_finite()
+                    | (pl.col('weight') <= 0)).height:
+        raise ValueError('Equal-weight target weights must be finite and positive')
+    sums = frame.group_by('as_of').agg(pl.col('weight').sum())
+    if sums.filter((pl.col('weight') - 1).abs() > 1e-10).height:
+        raise ValueError('Equal-weight target weights must sum to one per as_of date')
+    if frame.filter(pl.col('effective_date').is_null()
+                    | (pl.col('effective_date') <= pl.col('as_of'))).height:
+        raise ValueError('Equal-weight target effective_date must follow as_of')
+    return frame.sort('as_of', 'symbol')
+
+
 def load_return_benchmarks(*, config: Path, data_root: Path, start: dt.date,
                            end: dt.date, names: list[str] | None = None) -> dict[str, pl.DataFrame]:
     """Load selected references with complete coverage; default to all three."""
