@@ -18,6 +18,9 @@ from quant.data.factor_panels import (
     read_factor_financial_history,
 )
 from quant.data.refresh import SHANGHAI, completed_date
+from quant.data.forecast_numeric import (
+    attach_forecast_numeric, forecast_numeric_input_names, read_forecast_numeric_config,
+)
 from quant.factors.expressions import evaluate_expressions
 from quant.factors.library import load_library
 from quant.research.factor_labels import build_next_open_factor_labels
@@ -114,6 +117,12 @@ def run(
         if special_names:
             panel = attach_legacy_special_factors(panel, bars, basic,
                 tuple(day for day in sessions if read_start <= day <= read_end), special_names)
+        numeric_names = forecast_numeric_input_names(tuple(row.expr for row in pending))
+        if numeric_names:
+            events = read_forecast_numeric_config(data_root, refresh_config)
+            numeric = attach_forecast_numeric(panel.select("symbol", "trade_date"), events)
+            panel = panel.join(numeric.select("symbol", "trade_date", *numeric_names),
+                               on=["symbol", "trade_date"], how="left", validate="1:1")
         keys = bars.filter(pl.col("trade_date").is_between(low, high)).select("symbol", "trade_date")
         row_counts = {}
         if pending:

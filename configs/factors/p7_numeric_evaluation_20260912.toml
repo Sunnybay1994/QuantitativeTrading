@@ -1,0 +1,22 @@
+# Fixed before the numeric batch scorecard; no text/LLM scores enter this run.
+version = "p7_numeric_v1"
+scope = "configs/data/p7_forecast_scope_all_20260912.json"
+library = "configs/factors/p7_numeric_library"
+battery = "configs/factors/p7_numeric_battery_20260912.toml"
+refresh_config = "configs/data/refresh_p7_numeric_20260912.toml"
+return_benchmark_config = "configs/data/return_benchmarks_q1b_20260912.toml"
+peer_statistics = "artifacts/factors/p7_peer_statistics_20260831_20260912_01"
+execution_snapshot = "factor_battery_20260911_v2"
+start = 2017-01-01
+end = 2026-08-31
+maximum_age_calendar_days = 120
+availability = "own_publication_date_after_close"
+execution = "next_open_session_or_later"
+same_day_conflicts = "exclude"
+newer_invalid_publication = "invalidate_previous_value"
+invalid_bounds = "missing_nonfinite_or_lower_above_upper_are_null"
+report_period_tie_break = "latest_report_period_on_latest_publication_date"
+midpoint_direction = 1
+width_direction = -1
+width_units = "percentage_points"
+profit_status = "omitted"

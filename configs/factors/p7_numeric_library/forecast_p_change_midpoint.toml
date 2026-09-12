@@ -1,0 +1,5 @@
+id = "forecast_p_change_midpoint"
+expr = "forecast_p_change_midpoint"
+family = "forecast_numeric"
+direction = 1
+source_ref = "https://tushare.pro/document/2?doc_id=45; numeric baseline batch 2026-09-12; own publication after close, 120 calendar days"

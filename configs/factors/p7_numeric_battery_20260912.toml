@@ -1,0 +1,95 @@
+# Frozen before the first battery scorecard. Raw and neutralized versions are both reported.
+start = 2017-01-01
+primary_variant = "size_industry_neutral"
+variants = ["raw", "size_industry_neutral"]
+direction = "library_definition"
+monthly_label = "next_open_to_next_monthly_rebalance_open"
+decay_sessions = [1, 5, 10, 20, 60]
+minimum_symbols = 100
+minimum_paired_coverage = 0.95
+groups = 10
+monthly_newey_west_lag = 6
+daily_20_session_newey_west_lag = 20
+icir_annualized = false
+minimum_months_per_year = 6
+
+[data]
+refresh_config = "configs/data/refresh.toml"
+csi800_snapshot = "csi800_20260911"
+etf_total_return_snapshot = "510300_total_return_20260911"
+limits_snapshot = "limits_20260911"
+
+[preprocessing]
+mad_multiplier = 3.0
+mad_normal_scale = 1.4826
+zero_mad = "skip_clipping"
+size_field = "log_total_market_value"
+industry_field = "industry_l1"
+neutralization = "OLS_intercept_log_size_industry_dummies_then_zscore"
+zero_variance = "missing"
+
+[universe]
+historical_st = "exclude"
+unknown_historical_name = "exclude"
+minimum_listing_days = 120
+listing_age_basis = "calendar_days"
+suspended = "exclude"
+signal_day_limit_up_or_down = "exclude"
+amount_window_sessions = 20
+amount_exclude_bottom_fraction = 0.20
+universe = "all_historical_SH_SZ_stocks"
+
+[admission]
+minimum_months = 96
+minimum_absolute_newey_west_t = 3.0
+minimum_directional_icir = 0.3
+minimum_yearly_positive_fraction = 0.70
+minimum_long_short_sharpe = 0.5
+maximum_absolute_rank_correlation_with_better = 0.7
+minimum_top_net_excess_all_market_ew = 0.0
+redundancy_order = "descending_primary_icir_then_factor_id"
+
+[multiple_testing]
+method = "Benjamini_Hochberg"
+q = 0.05
+family = "all_factors_both_variants"
+p_value = "two_sided_asymptotic_normal_from_HAC_t"
+admission_requires_fdr = false
+false_discoveries_report = "nominal_q_times_discoveries_not_observed_false_count_or_guaranteed_bound"
+
+[portfolio]
+rebalance = "month_end_signal_next_open_execution"
+top_group_weights = "equal"
+initial_cash = 1000000.0
+cost_multipliers = [0.5, 1.0, 2.0]
+cost_engine = "quant.backtest.daily_account"
+long_short = "diagnostic_D10_minus_D1_not_executable_short_book"
+stock_dividend_withholding = 0.20
+delisted_holding_recovery = 0.0
+gross_commission_includes_exchange_fees = true
+
+# Same execution friction assumptions as B93, extended to the 2010 start.
+# Early Shanghai minimum/retention/par value are conservative model assumptions.
+[costs.a_share]
+commission_rate = 0.00025
+commission_min = 5.0
+stamp_tax_sell = 0.0005
+transfer_fee = 0.00001
+slippage = 0.001
+effective_from = 2010-01-01
+historical_statutory_fees = true
+pre_2015_sh_transfer_multiplier = 2.0
+pre_2015_sh_transfer_min = 1.0
+pre_2015_sh_par_value = 1.0
+
+[costs.etf]
+commission_rate = 0.00025
+commission_min = 5.0
+slippage = 0.001
+effective_from = 2010-01-01
+
+[benchmarks]
+names = ["510300", "csi800_equal_weight", "all_market_equal_weight"]
+memberships = "latest_snapshot_at_or_before_signal_close"
+rebalance = "monthly_equal_weight_for_stock_benchmarks"
+etf_price = "cash_dividend_total_return"

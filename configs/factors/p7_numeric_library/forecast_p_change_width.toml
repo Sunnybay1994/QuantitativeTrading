@@ -1,0 +1,5 @@
+id = "forecast_p_change_width"
+expr = "forecast_p_change_width"
+family = "forecast_numeric"
+direction = -1
+source_ref = "https://tushare.pro/document/2?doc_id=45; narrower guidance hypothesis fixed before evaluation 2026-09-12; percentage-point width"
