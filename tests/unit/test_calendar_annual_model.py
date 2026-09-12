@@ -53,3 +53,26 @@ def test_direct_selection_keeps_calendar_cutoff_and_rejects_incomplete_evidence(
     file.write_text(json.dumps({'annual_selection': [row]}))
     with pytest.raises(ValueError, match='Finish annual factor evidence'):
         source_annual_factors(source=tmp_path, model=model, from_selection=True)
+
+
+def test_resume_completed_run_skips_training_and_rejects_changed_config(tmp_path):
+    from quant.research.run_calendar_annual_model import resume_annual_replay
+
+    config = tmp_path/'input.toml'
+    config.write_text('[research]\nid="test"\n')
+    measurement = tmp_path/'input_measurement.toml'
+    measurement.write_text('version="test"\n')
+    output = tmp_path/'run'
+    pred = output/'predictions'
+    pred.mkdir(parents=True)
+    (output/'config.toml').write_bytes(config.read_bytes())
+    (output/'measurement.toml').write_bytes(measurement.read_bytes())
+    (pred/'model.toml').write_text('[research]\nid="test"\n')
+    for name in ('battery.toml','summary.json','monthly_predictions.parquet'):
+        (pred/name).touch()
+    (output/'summary.json').write_text('{"complete":true}')
+    assert resume_annual_replay(config_path=config,output=output,data_root=tmp_path,
+        measurement_config=measurement) == {'complete':True}
+    config.write_text('[research]\nid="other"\n')
+    with pytest.raises(ValueError,match='unchanged'):
+        resume_annual_replay(config_path=config,output=output,data_root=tmp_path,measurement_config=measurement)

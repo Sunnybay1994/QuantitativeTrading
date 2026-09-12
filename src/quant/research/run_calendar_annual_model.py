@@ -41,6 +41,33 @@ def source_annual_factors(*, source: Path, model: dict, from_selection: bool) ->
             for row in plan]
 
 
+def resume_annual_replay(*, config_path: Path, output: Path, data_root: Path,
+                         measurement_config: Path) -> dict:
+    """Resume only after frozen annual predictions exist; never silently retrain."""
+    if ((output/'config.toml').read_bytes() != config_path.read_bytes()
+            or (output/'measurement.toml').read_bytes() != measurement_config.read_bytes()):
+        raise ValueError('Resume requires unchanged experiment and measurement configuration')
+    predictions = output/'predictions'
+    required = ['model.toml', 'battery.toml', 'summary.json', 'monthly_predictions.parquet']
+    if any(not (predictions/name).is_file() for name in required):
+        raise ValueError('Finish annual predictions before --resume-replay; use a new run for interrupted training')
+    model = tomllib.loads((predictions/'model.toml').read_text(encoding='utf-8'))
+    config = tomllib.loads(config_path.read_text(encoding='utf-8'))
+    if model['research']['id'] != config['research']['id']:
+        raise ValueError('Frozen predictions belong to a different experiment')
+    if (output/'summary.json').is_file():
+        return json.loads((output/'summary.json').read_text(encoding='utf-8'))
+    fit = json.loads((predictions/'summary.json').read_text(encoding='utf-8'))
+    replay = run_model_replay(predictions=predictions, benchmarks=Path(model['research']['stock_benchmarks']),
+        output=output/'replay', data_root=data_root, resume=(output/'replay').exists())
+    report = report_models(run=output/'replay', measurement_config=output/'measurement.toml',
+        output=output/'reports', data_root=data_root, resume=(output/'reports').exists())
+    result = {'research_id': config['research']['id'], 'annual_fits': fit['annual_fits'],
+        'prediction_rows': fit['prediction_rows'], 'conclusions': report['conclusions'], 'cost_rows': replay['rows']}
+    (output/'summary.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
+    return result
+
+
 def run_annual(*, config_path: Path, output: Path, data_root: Path, measurement_config: Path) -> dict:
     from lightgbm import LGBMRegressor
 
@@ -158,8 +185,10 @@ def main() -> None:
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--data-root', type=Path, default=Path('data'))
     parser.add_argument('--measurement-config', type=Path, required=True)
+    parser.add_argument('--resume-replay', action='store_true', help='Resume saved predictions through replay/reporting without retraining')
     args = parser.parse_args()
-    print(json.dumps(run_annual(config_path=args.config, output=args.output, data_root=args.data_root,
+    runner = resume_annual_replay if args.resume_replay else run_annual
+    print(json.dumps(runner(config_path=args.config, output=args.output, data_root=args.data_root,
                                measurement_config=args.measurement_config)))
 
 

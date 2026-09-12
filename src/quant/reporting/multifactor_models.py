@@ -78,10 +78,11 @@ def render_model_report(method: str, *, rows: list[dict], assessment: dict, mode
 
 
 def report_models(*, run: Path, output: Path, data_root: Path,
-                  measurement_config: Path | None = None, benchmarks: Path | None = None) -> dict:
+                  measurement_config: Path | None = None, benchmarks: Path | None = None,
+                  resume: bool = False) -> dict:
     if measurement_config is None or benchmarks is not None:
         raise ValueError('Supply --measurement-config with return indexes; account benchmarks are unsupported')
-    if output.exists():
+    if output.exists() and not resume:
         raise FileExistsError('Use a new report directory; retain old results')
     measurement_bytes = measurement_config.read_bytes()
     measurement = tomllib.loads(measurement_bytes.decode('utf-8'))
@@ -94,6 +95,19 @@ def report_models(*, run: Path, output: Path, data_root: Path,
         raise ValueError('Select three distinct official total-return index codes')
     model_bytes = (run/'model.toml').read_bytes()
     model = tomllib.loads(model_bytes.decode('utf-8'))
+    if resume and output.exists():
+        expected_inputs = {'model.toml': model_bytes, 'measurement.toml': measurement_bytes}
+        for name, content in expected_inputs.items():
+            if (output/name).exists() and (output/name).read_bytes() != content:
+                raise ValueError('Resume report inputs changed; use a new directory')
+    constraint_path = run/'constraints_config.toml'
+    constraint_bytes = constraint_path.read_bytes() if constraint_path.exists() else None
+    if resume and (output/'constraints_config.toml').exists():
+        if constraint_bytes is None or (output/'constraints_config.toml').read_bytes() != constraint_bytes:
+            raise ValueError('Resume report constraints changed')
+    elif resume and constraint_bytes is not None and any(
+            (output/name).exists() for name in ('summary.json', 'cost_metrics.parquet')):
+        raise ValueError('Resume report constraints changed; use a new directory')
     settings = tomllib.loads((run/'battery.toml').read_text(encoding='utf-8'))
     source = json.loads((run/'summary.json').read_text(encoding='utf-8'))
     if source['factor'] != model['research']['id']:
@@ -146,6 +160,8 @@ def report_models(*, run: Path, output: Path, data_root: Path,
     window_path = Path(measurement.get('stress_windows_config', model['admission']['stress_windows_config']))
     window_bytes = window_path.read_bytes()
     windows = tomllib.loads(window_bytes.decode('utf-8'))['cycle_validation']['stress_windows']
+    if resume and (output/'stress_windows.toml').exists() and (output/'stress_windows.toml').read_bytes() != window_bytes:
+        raise ValueError('Resume report stress windows changed')
     measured_model = copy.deepcopy(model)
     measured_model['admission']['benchmarks'] = list(baselines)
     comparisons = []
@@ -177,11 +193,13 @@ def report_models(*, run: Path, output: Path, data_root: Path,
               'conclusions': {name: value['primary']['conclusion'] for name, value in assessments.items()}}
     coverage_path = run/'model_signal_coverage.parquet'
     coverage = pl.read_parquet(coverage_path) if coverage_path.is_file() else None
-    output.mkdir(parents=True, exist_ok=False)
+    output.mkdir(parents=True, exist_ok=resume)
     (output/'model.toml').write_bytes(model_bytes)
     (output/'measurement.toml').write_bytes(measurement_bytes)
     (output/'stress_windows.toml').write_bytes(window_bytes)
-    (output/'summary.json').write_text(json.dumps(result, indent=2, default=str), encoding='utf-8')
+    if constraint_bytes is not None:
+        (output/'constraints_config.toml').write_bytes(constraint_bytes)
+        result['constraints_config'] = str(constraint_path)
     pl.from_dicts(report_rows, infer_schema_length=None).write_parquet(output/'cost_metrics.parquet')
     comparison_frame = (pl.from_dicts(comparisons, infer_schema_length=None) if comparisons else
         pl.DataFrame(schema={'variant': pl.String, 'cost_multiplier': pl.Float64, 'benchmark': pl.String,
@@ -192,11 +210,16 @@ def report_models(*, run: Path, output: Path, data_root: Path,
         coverage.write_parquet(output/'model_signal_coverage.parquet')
     for method, assessment in assessments.items():
         folder = output/method
-        folder.mkdir()
+        folder.mkdir(exist_ok=resume)
         method_rows = [row for row in report_rows if row['variant'].startswith(f'{method}_top')]
-        (folder/'report.md').write_text(render_model_report(method, rows=method_rows, assessment=assessment, model=model,
-                                       coverage=coverage.to_dicts() if coverage is not None else None), encoding='utf-8')
+        rendered = render_model_report(method, rows=method_rows, assessment=assessment, model=model,
+                                       coverage=coverage.to_dicts() if coverage is not None else None)
+        if constraint_bytes is not None:
+            scope = tomllib.loads(constraint_bytes.decode('utf-8')).get('strategy_names', [])
+            rendered += f'\n本次独立组合约束仅应用于{scope}；其余场景保持原规则。配置见上级目录constraints_config.toml。\n'
+        (folder/'report.md').write_text(rendered, encoding='utf-8')
         (folder/'assessment.json').write_text(json.dumps(assessment, indent=2, default=str), encoding='utf-8')
+    (output/'summary.json').write_text(json.dumps(result, indent=2, default=str), encoding='utf-8')
     return result
 
 
@@ -206,9 +229,10 @@ def main() -> None:
     parser.add_argument('--measurement-config', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--data-root', type=Path, default=Path('data'))
+    parser.add_argument('--resume', action='store_true', help='Rebuild an interrupted report with unchanged inputs')
     args = parser.parse_args()
     print(json.dumps(report_models(run=args.run, measurement_config=args.measurement_config,
-                                   output=args.output, data_root=args.data_root)['conclusions']))
+                                   output=args.output, data_root=args.data_root, resume=args.resume)['conclusions']))
 
 
 if __name__ == '__main__':

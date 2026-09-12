@@ -48,6 +48,28 @@ def test_report_writes_three_models_and_requires_full_grid_for_double_cost(tmp_p
         assert '2024_early_year_selloff' in report
         assert '|2024|2|1|共同预测截面不足=1|' in report
 
+    saved_metrics = pl.read_parquet(output/'cost_metrics.parquet')
+    (output/'cost_metrics.parquet').unlink()
+    resumed = reports.report_models(run=run, measurement_config=measurement, output=output, data_root=tmp_path, resume=True)
+    assert resumed == result
+    assert pl.read_parquet(output/'cost_metrics.parquet').equals(saved_metrics)
+    altered = tmp_path/'altered.toml'
+    altered.write_bytes(measurement.read_bytes()+b'\n# changed\n')
+    with pytest.raises(ValueError, match='inputs changed'):
+        reports.report_models(run=run, measurement_config=altered, output=output, data_root=tmp_path, resume=True)
+
+    constraint_path = run/'constraints_config.toml'
+    constraint_path.write_text('strategy_names = ["p4_lightgbm_top50"]\n')
+    with pytest.raises(ValueError, match='constraints changed'):
+        reports.report_models(run=run, measurement_config=measurement, output=output, data_root=tmp_path, resume=True)
+    constrained = tmp_path/'constrained_report'
+    reports.report_models(run=run, measurement_config=measurement, output=constrained, data_root=tmp_path)
+    assert (constrained/'constraints_config.toml').read_bytes() == constraint_path.read_bytes()
+    assert "['p4_lightgbm_top50']" in (constrained/'lightgbm'/'report.md').read_text(encoding='utf-8')
+    constraint_path.write_text('strategy_names = ["p4_lightgbm_top100"]\n')
+    with pytest.raises(ValueError, match='constraints changed'):
+        reports.report_models(run=run, measurement_config=measurement, output=constrained, data_root=tmp_path, resume=True)
+
     def missing_cash_start(folder, variant, cost, end):
         if folder == run and variant == 'equal_z_top50' and cost == 2.:
             return nav.slice(1), pl.DataFrame(schema={'date': pl.Date, 'notional': pl.Float64})
