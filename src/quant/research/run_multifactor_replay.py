@@ -90,6 +90,19 @@ def prepare_constraints(*, config: Path, plans: dict, data_root: Path, output: P
         index_name=settings['benchmark'], as_of_dates=dates)
     config_path = output/'constraints_config.toml'
     frames = {'constraints_universe.parquet': universe, 'constraints_benchmark.parquet': benchmark}
+    risk_settings = settings.get('held_risk_estimate')
+    risk_estimates = None
+    if risk_settings:
+        from quant.data.held_control_supplements import read_held_risk_estimates
+        risk_path = Path(risk_settings['path'])
+        # Artifact keys identify the bounded requests; the data reader validates values/evidence.
+        keys = pl.read_parquet(risk_path, columns=['as_of', 'symbol'])
+        if keys.is_empty():
+            raise ValueError('Held risk estimate artifact is empty')
+        risk_estimates = pl.concat([read_held_risk_estimates(path=risk_path, as_of=day,
+            symbols=keys.filter(pl.col('as_of') == day)['symbol'].to_list())
+            for day in sorted(set(keys['as_of']))])
+        frames['constraints_held_risk_estimates.parquet'] = risk_estimates
     nominee_settings = settings.get('candidate_selection')
     nominee_scores = None
     if nominee_settings:
@@ -129,6 +142,18 @@ def prepare_constraints(*, config: Path, plans: dict, data_root: Path, output: P
             (signal_sell_permission() if directional else
              pl.col('traded') & pl.col('limits_known') & pl.col('away_from_limits')).alias('can_sell'))
         nominee_info = None
+        risk_info = []
+        if risk_estimates is not None:
+            from quant.portfolio.simple_constraints import apply_suspended_held_risk_estimates
+            equity = state['nav'][-1]['equity']
+            held_weights = pl.from_dicts([{'as_of': signal, 'symbol': symbol,
+                'weight': h['quantity']*h['mark_price']/equity}
+                for symbol, h in sorted(state['holdings'].items()) if h['quantity'] > 0],
+                schema={'as_of': batch.schema['as_of'], 'symbol': pl.String, 'weight': pl.Float64})
+            market, risk_info = apply_suspended_held_risk_estimates(market=market,
+                current=held_weights, benchmark=benchmark.filter(pl.col('as_of') == signal),
+                estimates=risk_estimates, as_of=signal,
+                maximum_staleness_days=risk_settings['maximum_staleness_days'])
         if nominee_settings:
             from quant.portfolio.industry_candidate_selection import select_industry_candidates
             assert nominee_scores is not None
@@ -155,7 +180,8 @@ def prepare_constraints(*, config: Path, plans: dict, data_root: Path, output: P
                 industry_active_band=settings['limits']['industry_active_band'])
             if not nominee_info['feasible']:
                 return batch, {'as_of': str(signal), 'applied': True, 'feasible': False,
-                    'failure_reason': 'candidate_selection_failed', 'candidate_selection': nominee_info}
+                    'failure_reason': 'candidate_selection_failed', 'candidate_selection': nominee_info,
+                    'held_risk_estimates': risk_info}
             selected = set(nominees['symbol'])
             template = batch.row(0, named=True)
             batch = pl.from_dicts([{**template, 'symbol': symbol,
@@ -167,6 +193,8 @@ def prepare_constraints(*, config: Path, plans: dict, data_root: Path, output: P
             sell_only=settings['sell_only'], unknown_industry_policy=settings['unknown_industry_policy'],
             diagnostic_only=True)
         info['applied'] = True
+        if risk_info:
+            info['held_risk_estimates'] = risk_info
         if nominee_info is not None:
             info['candidate_selection'] = nominee_info
             info['nominee_symbols'] = sorted(nominees['symbol'])

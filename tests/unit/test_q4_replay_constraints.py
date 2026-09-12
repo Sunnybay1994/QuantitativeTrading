@@ -131,3 +131,52 @@ def test_constraint_input_exception_records_signal_account(tmp_path, monkeypatch
     assert diagnostic['as_of'] == diagnostic['account_at_signal']['date']
     assert sum(h['quantity'] for h in diagnostic['account_at_signal']['holdings'].values()) > 0
     assert diagnostic['account_at_signal']['nav']['equity'] > 0
+
+def test_held_risk_overlay_is_snapshotted_and_only_applied_to_actual_positions(tmp_path,monkeypatch):
+    import datetime as dt
+    from quant.data import equal_weight_index,factor_battery_inputs,held_control_supplements
+    from quant.portfolio import simple_constraints
+    day=dt.date(2024,4,30)
+    batch=pl.DataFrame({'as_of':[day],'execution_date':[dt.date(2024,5,6)],
+        'symbol':['B'],'strategy':['probe'],'weight':[.02]})
+    universe=pl.DataFrame({'trade_date':[day],'symbol':['B'],'industry_l1':['X'],
+        'total_market_value':[1e9],'amount20':[1e8],'eligible':[True],
+        'traded':[True],'limits_known':[True],'away_from_limits':[True],
+        'close':[10.],'up_limit':[11.],'down_limit':[9.]})
+    estimates=pl.DataFrame({'as_of':[day],'symbol':['A'],'industry_l1':['X'],
+        'total_market_value':[2e9],'source_date':[day-dt.timedelta(days=1)],
+        'staleness_days':[1],'known_at':[day],'risk_estimate':[True],
+        'suspended':[True],'capital_events_verified':[True]})
+    path=tmp_path/'risk.parquet'
+    estimates.write_parquet(path)
+    monkeypatch.setattr(factor_battery_inputs,'read_frozen_battery_universe',lambda **kw: universe)
+    monkeypatch.setattr(equal_weight_index,'read_equal_weight_targets',lambda **kw:
+        batch.select('as_of','symbol').with_columns(pl.lit(1.).alias('weight')))
+    monkeypatch.setattr(held_control_supplements,'read_held_risk_estimates',lambda **kw: estimates,raising=False)
+    observed=[]
+    def capture(**kw):
+        observed.append(kw['market'])
+        return kw['targets'],{'feasible':True}
+    monkeypatch.setattr(simple_constraints,'constrain_account_targets',capture)
+    config=tmp_path/'config.toml'
+    config.write_text('auto_trade=false\nmode="research_only"\nstrategy_names=["probe"]\n'
+        'statistics="fixture"\nbenchmark_snapshot="fixture"\nbenchmark="all_market_equal_weight"\n'
+        'enabled=true\nsell_only=false\nunknown_industry_policy="explicit_unknown_bucket"\n'
+        '[limits]\nsingle_stock_weight=0.03\n[held_risk_estimate]\n'
+        f'path="{path.as_posix()}"\nmaximum_staleness_days=7\n')
+    output=tmp_path/'out'
+    output.mkdir()
+    kwargs=dict(config=config,plans={'raw':('probe',batch)},data_root=tmp_path,output=output)
+    hook,_=prepare_constraints(**kwargs,resume=False)
+    state={'date':str(day),'nav':[{'equity':10000.}],
+        'holdings':{'A':{'quantity':10,'mark_price':10.}}}
+    _,info=hook(batch,state)
+    assert info['held_risk_estimates'][0]['symbol']=='A'
+    assert observed[-1].filter(pl.col('symbol')=='A')['can_sell'][0] is False
+    state['holdings']={}
+    _,info=hook(batch,state)
+    assert 'held_risk_estimates' not in info
+    assert 'A' not in observed[-1]['symbol'].to_list()
+    estimates=estimates.with_columns(pl.lit(False).alias('capital_events_verified'))
+    with pytest.raises(ValueError,match='constraint inputs changed'):
+        prepare_constraints(**kwargs,resume=True)
