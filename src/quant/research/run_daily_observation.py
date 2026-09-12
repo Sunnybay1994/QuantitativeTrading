@@ -10,6 +10,7 @@ from quant.data.refresh import SHANGHAI, completed_date, latest_session
 from quant.execution.cross_asset_forward import run as run_b20
 from quant.execution.stock_paper import run as run_b32
 from quant.execution.daily_observation_risk import DEFAULT_CONFIG, run as run_risk
+from quant.reporting.rolling_signal_monitor import DEFAULT_CONFIG as MONITOR_CONFIG, run as run_monitor
 from quant.reporting.stock_paper_monthly import ACCOUNTS, run as run_monthly
 from quant.research.run_daily_model_forecast import run_daily
 
@@ -132,7 +133,15 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
     stage('risk', lambda: run_risk(record=result, output=output/'risk', data_root=data_root,
         config=Path(settings.get('risk_config', DEFAULT_CONFIG))),
         lambda value: value.get('status') == 'complete')
-    result['requires_review'] = stages['risk'].get('result', {}).get('requires_review', True)
+    if result['as_of'] is not None:
+        stage('signal_monitor', lambda: run_monitor(known_through=dt.date.fromisoformat(result['as_of']),
+            output=output/'signal_monitor', config=Path(settings.get('monitor_config', MONITOR_CONFIG))),
+            lambda value: value.get('status') in ('insufficient', 'warning', 'observed'))
+    else:
+        stages['signal_monitor'] = {'status': 'skipped', 'reason': 'No known session cutoff'}
+    result['signal_monitor_status'] = stages['signal_monitor'].get('result', {}).get('status', 'unavailable')
+    result['requires_review'] = (stages['risk'].get('result', {}).get('requires_review', True)
+        or stages['signal_monitor'].get('result', {}).get('requires_review', True))
     result['status'] = ('complete' if stages and all(
         s['status'] == 'complete' for s in stages.values()) else 'incomplete')
     save_summary()

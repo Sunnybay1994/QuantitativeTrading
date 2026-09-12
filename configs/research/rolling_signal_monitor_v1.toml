@@ -1,0 +1,10 @@
+auto_trade = false
+calendar_windows = [12, 24, 36]
+minimum_months = 12
+newey_west_lag = 6
+# Existing factor-battery ICIR reference; advisory only, not a strategy admission rule.
+icir_warning = 0.3
+# Optional [[series]]: id, kind=model|holding_factor, scores, labels. Saved rank_ic already has registered direction.
+# scores: trade_date, rank_ic, optional forward_evidence and rehearsal.
+# labels: trade_date, exit_date_rebalance. Missing forward metadata means historical.
+# Factor battery inputs can select variant; labels may be an explicit list of annual files.

@@ -162,3 +162,17 @@ def test_interrupt_preserves_completed_stage_and_running_marker(env):
     assert saved['stages']['model']['status'] == 'complete'
     assert saved['stages']['b20']['status'] == 'running'
     assert not b32.called
+
+
+def test_monitor_insufficient_is_visible_and_failure_is_incomplete(env, monkeypatch):
+    args, *_ = env
+    monitor = Mock(return_value={'status': 'insufficient', 'requires_review': False})
+    monkeypatch.setattr(daily, 'run_monitor', monitor)
+    result = daily.run(**args)
+    assert result['status'] == 'complete'
+    assert result['signal_monitor_status'] == 'insufficient'
+    assert monitor.call_args.kwargs['known_through'] == dt.date(2026, 9, 11)
+    args['output'] = args['output'].with_name('record_monitor_failure')
+    monitor.side_effect = ValueError('missing labels')
+    result = daily.run(**args)
+    assert result['status'] == 'incomplete' and result['requires_review']
