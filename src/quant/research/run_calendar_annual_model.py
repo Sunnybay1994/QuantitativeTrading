@@ -37,6 +37,10 @@ def run_annual(*, config_path: Path, output: Path, data_root: Path, measurement_
     measurement_bytes = measurement_config.read_bytes()
     tomllib.loads(measurement_bytes.decode('utf-8'))
     research, settings = config['research'], config['model']
+    missing_policy = settings.get('missing_features', 'common_complete_case_pool_for_all_three_methods')
+    maximum_missing = settings.get('maximum_missing_fraction', .3)
+    if missing_policy not in {'common_complete_case_pool_for_all_three_methods', 'neutral_zero_with_monthly_factor_exclusion'}:
+        raise ValueError('Unknown monthly missing-feature policy')
     if research['auto_trade'] is not False or settings['method'] != 'lightgbm':
         raise ValueError('Require the registered research model')
     source = Path(research['source_predictions'])
@@ -62,6 +66,7 @@ def run_annual(*, config_path: Path, output: Path, data_root: Path, measurement_
     sources = {factor: roots for factor in config['replacements'].values()}
     statistics = Path(original['research']['statistics_source'])
     completed, parts = [], []
+    feature_coverage: list[dict] = []
     for annual in plan:
         year, cutoff = annual['test_year'], annual['cutoff']
         factors = [config['replacements'].get(f, f) for f in annual['source_factors']]
@@ -70,9 +75,12 @@ def run_annual(*, config_path: Path, output: Path, data_root: Path, measurement_
         if not factors:
             completed.append({'test_year': year, 'factors': [], 'reason': 'no_admitted_factors', 'prediction_rows': 0})
             continue
+        annual_coverage: list[dict] = []
         features = common_features(statistics=statistics, factors=factors, variant=original['selection']['variant'],
             start=settings['training_start'], end=annual['end'], minimum_symbols=settings['minimum_signal_stocks'],
-            statistics_sources=sources)
+            statistics_sources=sources, missing_policy=missing_policy, maximum_missing_fraction=maximum_missing,
+            coverage=annual_coverage)
+        feature_coverage.extend({'test_year': year, 'refit_close': cutoff, **row} for row in annual_coverage)
         train = training_panel(features=features, statistics=statistics, cutoff=cutoff,
                                minimum_symbols=settings['minimum_signal_stocks'])
         if train['trade_date'].n_unique() < settings['minimum_training_months']:
@@ -88,7 +96,10 @@ def run_annual(*, config_path: Path, output: Path, data_root: Path, measurement_
         regressor.booster_.save_model(str(predictions/f'lightgbm_{year}.txt'))
         fit = {'test_year': year, 'factors': factors, 'refit_close': str(cutoff),
             'last_known_exit': str(train['exit_date_rebalance'].max()), 'training_rows': train.height,
-            'training_months': train['trade_date'].n_unique(), 'prediction_rows': future.height}
+            'training_months': train['trade_date'].n_unique(), 'prediction_rows': future.height,
+            'missing_features': missing_policy,
+            'monthly_exclusion_encoding': ('annual LightGBM feature columns retained; excluded month values neutralized to zero'
+                if missing_policy == 'neutral_zero_with_monthly_factor_exclusion' else None)}
         completed.append(fit)
         print(json.dumps(fit), flush=True)
     combined = pl.concat(parts) if parts else pl.DataFrame(schema={'symbol': pl.String, 'trade_date': pl.Date,
@@ -96,11 +107,19 @@ def run_annual(*, config_path: Path, output: Path, data_root: Path, measurement_
     if combined.select('symbol', 'trade_date').is_duplicated().any():
         raise ValueError('Annual predictions overlap')
     combined.write_parquet(predictions/'monthly_predictions.parquet')
+    if feature_coverage:
+        pl.from_dicts(feature_coverage).write_parquet(predictions/'monthly_feature_coverage.parquet')
     (predictions/'summary.json').write_text(json.dumps({'annual_fits': completed, 'prediction_rows': combined.height}, indent=2), encoding='utf-8')
     model_text = model_text.replace(original['research']['id'], research['id']).replace(
         'methods = ["equal_z", "positive_mean_ic", "lightgbm"]', 'methods = ["lightgbm"]').replace(
         json.dumps(original['research']['hypothesis']), json.dumps(research['hypothesis'])).replace(
         json.dumps(original['selection']['candidate_library']), json.dumps(settings['factor_selection']))
+    if missing_policy != original['models']['missing_features']:
+        old = 'missing_features = '+json.dumps(original['models']['missing_features'])
+        new = 'missing_features = '+json.dumps(missing_policy)+f'\nmaximum_missing_fraction = {maximum_missing}'
+        if model_text.count(old) != 1:
+            raise ValueError('Source missing-feature configuration format changed')
+        model_text = model_text.replace(old, new)
     model_text += '\n[research.factor_statistics_sources]\n' + '\n'.join(
         f'{factor} = {json.dumps([str(root) for root in paths])}' for factor, paths in sources.items())+'\n'
     if tomllib.loads(model_text)['models']['methods'] != ['lightgbm']:

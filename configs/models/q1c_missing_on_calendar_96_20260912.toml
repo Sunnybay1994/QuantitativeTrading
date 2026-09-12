@@ -1,0 +1,36 @@
+# Q1c missing-policy comparison against q1c_calendar_on_q1b_96_20260912_01.
+# Measurement: configs/data/return_benchmarks_q1b_20260912.toml
+# Only missing policy changes from the calendar baseline; keep selection and training thresholds.
+[research]
+id = "q1c-missing-on-calendar-96-20260912"
+registered_on = 2026-09-12
+hypothesis = "After the fixed calendar repair, fill individual missing neutral scores with zero and exclude factor-months above 30 percent missing; retain annual LightGBM columns, annual selections, 96 months and portfolio rules."
+single_variable = "neutral_missing_feature_policy_after_calendar_repair"
+source_predictions = "artifacts/models/q1b_return_benchmark_96_follow_20260912_02/attempt_0001/predictions"
+historical_evidence = "retrospective_annual_walk_forward_not_an_unseen_holdout"
+auto_trade = false
+
+[model]
+method = "lightgbm"
+missing_features = "neutral_zero_with_monthly_factor_exclusion"
+maximum_missing_fraction = 0.3
+training_start = 2010-01-01
+test_start = 2015-01-01
+test_end = 2026-08-31
+minimum_training_months = 96
+minimum_signal_stocks = 100
+parameters = "unchanged_source_LightGBM"
+factor_selection = "source_each_year_selected_factors_with_only_present_registered_replacements"
+insufficient_history = "cash"
+admission = "unchanged_source_thresholds_with_holding_window_return_indexes"
+
+[replacements]
+amihud_illiquidity_monthly = "amihud_illiquidity_monthly_calendar80_v1"
+free_float_turnover_abnormal_12m = "free_float_turnover_abnormal_12m_calendar80_v1"
+
+[inputs]
+calendar_statistics = ["artifacts/factors/search/p6c_batch01_window02_20260911/training", "artifacts/factors/search/p6c_batch01_window02_20260911/validation", "artifacts/models/p6c_calendar_model_20260911_02/calendar_scores"]
+
+[forward]
+start = 2026-09-14
+minimum_observation_months = 12

@@ -60,3 +60,23 @@ def test_feature_column_order_follows_frozen_fit():
     result = fixed_predict(features=features, fit=fit, method='positive_mean_ic', source=Path('.'), minimum_symbols=3)
     expected = features['f1']*0.25 + features['f2']*0.75
     np.testing.assert_allclose(result['prediction'], expected)
+
+
+@pytest.mark.parametrize('method', ['equal_z', 'positive_mean_ic'])
+def test_missing_month_exclusion_matches_training_policy(method):
+    args = fixture()
+    args['values']['f2'] = args['values']['f2'].with_columns(pl.lit(None, dtype=pl.Float64).alias('value'))
+    features, coverage = model_features(**args, missing_policy='neutral_zero_with_monthly_factor_exclusion')
+    assert features.height == 4
+    assert coverage[-1]['observed_stocks'] == 0 and coverage[-1]['active'] is False
+    assert features['f2'].to_list() == [0.]*4
+    fit = {'factors': ['f1', 'f2'], 'positive_mean_ic_weights': {'f1': .25, 'f2': .75},
+           'missing_features': 'neutral_zero_with_monthly_factor_exclusion'}
+    result = fixed_predict(features=features, fit=fit, method=method, source=Path('.'), minimum_symbols=3)
+    np.testing.assert_allclose(result['prediction'], features['f1'])
+    with pytest.raises(ValueError, match='flags'):
+        fixed_predict(features=features.drop('__active_f2'), fit=fit, method=method,
+                      source=Path('.'), minimum_symbols=3)
+    with pytest.raises(ValueError, match='nonzero'):
+        fixed_predict(features=features.with_columns(pl.lit(1.).alias('f2')), fit=fit,
+                      method=method, source=Path('.'), minimum_symbols=3)

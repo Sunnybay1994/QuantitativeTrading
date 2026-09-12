@@ -78,7 +78,12 @@ def test_neutral_imputation_uses_eligible_pool_and_monthly_exclusion(tmp_path):
     kwargs = dict(statistics=tmp_path, factors=['a', 'b'], variant='size_industry_neutral',
         start=days[0], end=days[-1], minimum_symbols=10,
         missing_policy='neutral_zero_with_monthly_factor_exclusion')
-    result = common_features(**kwargs)
+    coverage = []
+    result = common_features(**kwargs, coverage=coverage)
+    b = [row for row in coverage if row['factor'] == 'b']
+    assert [row['eligible_stocks'] for row in b] == [10, 10, 10]
+    assert [row['observed_stocks'] for row in b] == [7, 6, 0]
+    assert [row['active'] for row in b] == [True, False, False]
     first = result.filter(pl.col('trade_date') == days[0])
     second = result.filter(pl.col('trade_date') == days[1])
     assert first.height == second.height == 10

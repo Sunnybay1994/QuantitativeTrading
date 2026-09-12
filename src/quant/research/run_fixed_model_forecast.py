@@ -10,13 +10,21 @@ import numpy as np
 import polars as pl
 
 from quant.research.factor_battery_evaluation import score_factor_sections
+from quant.research.model_training_models import neutral_missing_features, validate_active_features
 
 
 def model_features(*, universe: pl.DataFrame, values: dict[str, pl.DataFrame],
                    directions: dict[str, int], settings: dict, factors: list[str],
-                   variant: str, as_of: dt.date) -> tuple[pl.DataFrame, list[dict]]:
+                   variant: str, as_of: dt.date,
+                   missing_policy: str = 'common_complete_case_pool_for_all_three_methods',
+                   maximum_missing_fraction: float = .3) -> tuple[pl.DataFrame, list[dict]]:
     if universe.filter(pl.col('trade_date') != as_of).height or not factors or len(factors) != len(set(factors)):
         raise ValueError('Require one signal date and distinct model factors')
+    impute = missing_policy == 'neutral_zero_with_monthly_factor_exclusion'
+    if missing_policy not in {'common_complete_case_pool_for_all_three_methods', 'neutral_zero_with_monthly_factor_exclusion'}:
+        raise ValueError('Unknown model missing-feature policy')
+    if impute and variant != 'size_industry_neutral':
+        raise ValueError('Neutral-zero filling requires neutral scores')
     frames, coverage = [], []
     for factor in factors:
         frame = values[factor]
@@ -24,10 +32,19 @@ def model_features(*, universe: pl.DataFrame, values: dict[str, pl.DataFrame],
             raise ValueError('Factor values cross the signal date')
         scores = score_factor_sections(universe=universe, values=frame,
             direction=directions[factor], settings=settings)
-        scores = scores.filter(pl.col(variant).is_finite()).select(
+        scores = scores.select(
             'symbol', 'trade_date', pl.col(variant).alias(factor))
-        coverage.append({'factor': factor, 'eligible_finite_stocks': scores.height})
+        if not impute:
+            scores = scores.filter(pl.col(factor).is_finite())
+            coverage.append({'factor': factor, 'eligible_finite_stocks': scores.height})
         frames.append(scores)
+    if impute:
+        common = neutral_missing_features(pool=universe.filter(pl.col('eligible')).select('symbol', 'trade_date'),
+            frames=frames, factors=factors, maximum_missing_fraction=maximum_missing_fraction,
+            minimum_symbols=1, coverage=coverage)
+        coverage = [{**row, 'trade_date': str(row['trade_date']),
+            'eligible_finite_stocks': row['observed_stocks']} for row in coverage]
+        return common, coverage
     common = frames[0]
     for frame in frames[1:]:
         common = common.join(frame, on=['symbol', 'trade_date'], validate='1:1')
@@ -43,6 +60,10 @@ def fixed_predict(*, features: pl.DataFrame, fit: dict, method: str, source: Pat
     matrix = features.select(factors).to_numpy()
     if not np.isfinite(matrix).all():
         raise ValueError('Prediction requires complete finite features')
+    validate_active_features(features, factors,
+        required=fit.get('missing_features') == 'neutral_zero_with_monthly_factor_exclusion')
+    flags = [f'__active_{f}' for f in factors]
+    mask = features.select(flags).to_numpy().astype(float) if all(f in features.columns for f in flags) else None
     if method == 'lightgbm':
         from lightgbm import Booster
 
@@ -51,12 +72,12 @@ def fixed_predict(*, features: pl.DataFrame, fit: dict, method: str, source: Pat
             raise ValueError('Frozen model feature count differs from its fit')
         forecast = model.predict(matrix, num_threads=2)
     elif method == 'equal_z':
-        forecast = matrix.mean(axis=1)
+        forecast = matrix.mean(axis=1) if mask is None else matrix.sum(axis=1)/mask.sum(axis=1)
     elif method == 'positive_mean_ic':
         weights = np.array([fit['positive_mean_ic_weights'][f] for f in factors])
         if not np.isfinite(weights).all() or (weights <= 0).any() or not np.isclose(weights.sum(), 1.0):
             raise ValueError('Invalid frozen IC weights')
-        forecast = matrix @ weights
+        forecast = matrix @ weights if mask is None else (matrix @ weights)/(mask @ weights)
     else:
         raise ValueError('Unknown frozen method')
     if not np.isfinite(forecast).all():
@@ -102,7 +123,9 @@ def run_forecast(*, selection: Path, as_of: dt.date, output: Path, data_root: Pa
     directions = {factor: json.loads((Path(roots.get(factor, [str(statistics)])[0])/'factors'/factor/'statistics.json').read_text(
         encoding='utf-8'))['definition']['direction'] for factor in factors}
     features, coverage = model_features(universe=universe, values=values, directions=directions,
-        settings=settings, factors=factors, variant=model['selection']['variant'], as_of=as_of)
+        settings=settings, factors=factors, variant=model['selection']['variant'], as_of=as_of,
+        missing_policy=model['models'].get('missing_features', 'common_complete_case_pool_for_all_three_methods'),
+        maximum_missing_fraction=model['models'].get('maximum_missing_fraction', .3))
     predictions = fixed_predict(features=features, fit=fit, method=decision['selected_method'],
         source=source, minimum_symbols=model['models']['minimum_signal_stocks'])
     result = {'as_of': str(as_of),
@@ -118,7 +141,7 @@ def run_forecast(*, selection: Path, as_of: dt.date, output: Path, data_root: Pa
     result['recorded_at'] = dt.datetime.now(now.tzinfo).isoformat()
     (output/'summary.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
     lines = ['# 固定模型预测记录', '', f"日期{as_of}；方法{result['method']}；演练={rehearsal}。",
-        f"可选股票{result['eligible_stocks']}只，共同完整特征{features.height}只，预测{predictions.height}只。", '',
+        f"可选股票{result['eligible_stocks']}只，可用模型特征{features.height}只，预测{predictions.height}只。", '',
         '仅作研究预测记录。' if predictions.height else '输入不足：本次不产生新信号，已有持仓保持原处理规则。', '',
         '|因子|有效股票数|', '|---|---:|']
     lines += [f"|{row['factor']}|{row['eligible_finite_stocks']}|" for row in coverage]

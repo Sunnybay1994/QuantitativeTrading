@@ -14,7 +14,8 @@ def common_features(*, statistics: Path, factors: list[str], variant: str,
                     start: dt.date, end: dt.date, minimum_symbols: int,
                     statistics_sources: dict[str, list[Path]] | None = None,
                     missing_policy: str = 'common_complete_case_pool_for_all_three_methods',
-                    maximum_missing_fraction: float = .3) -> pl.DataFrame:
+                    maximum_missing_fraction: float = .3,
+                    coverage: list[dict] | None = None) -> pl.DataFrame:
     """Use the battery's already standardized scores, on one shared stock pool."""
     if not factors or len(factors) != len(set(factors)) or minimum_symbols < 1:
         raise ValueError('Require unique model factors and a positive stock minimum')
@@ -39,22 +40,39 @@ def common_features(*, statistics: Path, factors: list[str], variant: str,
         pool = pl.concat([pl.scan_parquet(path).filter(pl.col('eligible') &
             pl.col('trade_date').is_in(dates)).select(keys).collect()
             for path in sorted((statistics/'inputs').glob('*/universe.parquet'))])
-        if pool.select(keys).is_duplicated().any():
-            raise ValueError('Duplicate eligible model universe keys')
-        panel = pool
-        for factor, frame in zip(factors, frames, strict=True):
-            panel = panel.join(frame, on=keys, how='left', validate='1:1')
-            finite = pl.col(factor).is_finite().fill_null(False)
-            active = finite.sum().over('trade_date') >= (
-                pl.len().over('trade_date')*(1-maximum_missing_fraction))
-            panel = panel.with_columns(active.alias(f'__active_{factor}')).with_columns(
-                pl.when(finite & pl.col(f'__active_{factor}')).then(pl.col(factor)).otherwise(0.).alias(factor))
-        return panel.filter(pl.any_horizontal([pl.col(f'__active_{f}') for f in factors]) &
-            (pl.len().over('trade_date') >= minimum_symbols)).sort('trade_date', 'symbol')
+        return neutral_missing_features(pool=pool, frames=frames, factors=factors,
+            maximum_missing_fraction=maximum_missing_fraction, minimum_symbols=minimum_symbols, coverage=coverage)
     panel = frames[0]
     for frame in frames[1:]:
         panel = panel.join(frame, on=keys, validate='1:1')
     return panel.filter(pl.len().over('trade_date') >= minimum_symbols).sort('trade_date', 'symbol')
+
+
+def neutral_missing_features(*, pool: pl.DataFrame, frames: list[pl.DataFrame],
+                             factors: list[str], maximum_missing_fraction: float,
+                             minimum_symbols: int, coverage: list[dict] | None = None) -> pl.DataFrame:
+    """Apply the same eligible-pool missing policy to training and frozen forecasts."""
+    if not 0 <= maximum_missing_fraction < 1 or minimum_symbols < 1:
+        raise ValueError('Invalid missing fraction or stock minimum')
+    keys = ['symbol', 'trade_date']
+    if pool.select(keys).is_duplicated().any():
+        raise ValueError('Duplicate eligible model universe keys')
+    panel = pool
+    for factor, frame in zip(factors, frames, strict=True):
+        panel = panel.join(frame, on=keys, how='left', validate='1:1')
+        finite = pl.col(factor).is_finite().fill_null(False)
+        active = finite.sum().over('trade_date') >= (
+            pl.len().over('trade_date')*(1-maximum_missing_fraction))
+        if coverage is not None:
+            monthly = panel.group_by('trade_date').agg(pl.len().alias('eligible_stocks'),
+                finite.sum().alias('observed_stocks')).with_columns(
+                    (1-pl.col('observed_stocks')/pl.col('eligible_stocks')).alias('missing_fraction'),
+                    (pl.col('observed_stocks') >= pl.col('eligible_stocks')*(1-maximum_missing_fraction)).alias('active'))
+            coverage.extend({'factor': factor, **row} for row in monthly.sort('trade_date').to_dicts())
+        panel = panel.with_columns(active.alias(f'__active_{factor}')).with_columns(
+            pl.when(finite & pl.col(f'__active_{factor}')).then(pl.col(factor)).otherwise(0.).alias(factor))
+    return panel.filter(pl.any_horizontal([pl.col(f'__active_{f}') for f in factors]) &
+        (pl.len().over('trade_date') >= minimum_symbols)).sort('trade_date', 'symbol')
 
 
 def training_panel(*, features: pl.DataFrame, statistics: Path,
@@ -69,6 +87,23 @@ def training_panel(*, features: pl.DataFrame, statistics: Path,
     return joined.filter(pl.len().over('trade_date') >= minimum_symbols).sort('trade_date', 'symbol')
 
 
+def validate_active_features(frame: pl.DataFrame, factors: list[str], *, required: bool = False) -> None:
+    """Validate the saved monthly exclusions before fitting or predicting."""
+    flags = [f'__active_{f}' for f in factors]
+    if (required
+            and not all(name in frame.columns for name in flags)):
+        raise ValueError('Monthly exclusion policy requires its saved factor flags')
+    if any(name in frame.columns for name in flags):
+        if not all(name in frame.columns for name in flags):
+            raise ValueError('Require all monthly factor exclusion flags')
+        if (any(frame.schema[name] != pl.Boolean or frame[name].null_count() for name in flags)
+                or frame.filter(~pl.any_horizontal(flags)).height
+                or any(frame.filter((pl.col(flag).n_unique().over('trade_date') != 1)
+                    | (~pl.col(flag) & (pl.col(factor) != 0))).height
+                    for factor, flag in zip(factors, flags, strict=True))):
+            raise ValueError('Invalid monthly factor exclusion flags or nonzero excluded scores')
+
+
 def fit_predict(*, training: pl.DataFrame, prediction: pl.DataFrame, factors: list[str],
                 mean_ic: dict[str, float], cutoff: dt.date, settings: dict) -> tuple[pl.DataFrame, dict, 'LGBMRegressor']:
     """Fit LightGBM on known labels; return all three predictions on identical rows."""
@@ -80,19 +115,8 @@ def fit_predict(*, training: pl.DataFrame, prediction: pl.DataFrame, factors: li
         if (frame.select('symbol', 'trade_date').is_duplicated().any()
                 or frame.filter(~pl.all_horizontal([pl.col(f).is_finite().fill_null(False) for f in factors])).height):
             raise ValueError('Models require unique complete finite feature rows')
-        flags = [f'__active_{f}' for f in factors]
-        if (settings.get('missing_features') == 'neutral_zero_with_monthly_factor_exclusion'
-                and not all(name in frame.columns for name in flags)):
-            raise ValueError('Monthly exclusion policy requires its saved factor flags')
-        if any(name in frame.columns for name in flags):
-            if not all(name in frame.columns for name in flags):
-                raise ValueError('Require all monthly factor exclusion flags')
-            if (any(frame.schema[name] != pl.Boolean or frame[name].null_count() for name in flags)
-                    or frame.filter(~pl.any_horizontal(flags)).height
-                    or any(frame.filter((pl.col(flag).n_unique().over('trade_date') != 1)
-                        | (~pl.col(flag) & (pl.col(factor) != 0))).height
-                        for factor, flag in zip(factors, flags, strict=True))):
-                raise ValueError('Invalid monthly factor exclusion flags or nonzero excluded scores')
+        validate_active_features(frame, factors,
+            required=settings.get('missing_features') == 'neutral_zero_with_monthly_factor_exclusion')
     if (training.filter(pl.col('exit_date_rebalance').is_null()
             | (pl.col('exit_date_rebalance') > cutoff)
             | (pl.col('exit_date_rebalance') <= pl.col('trade_date'))
