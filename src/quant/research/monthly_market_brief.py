@@ -224,10 +224,62 @@ def score(*, brief: Path, output: Path, known_through: dt.date, outcomes: Path |
         'mean_brier': sum(r['brier'] for r in rows)/len(rows) if rows else None,
         'baseline_probability_up': .5,
         'baseline_mean_brier': .25 if rows else None,
+        'brief_source': str(brief.resolve()), 'actual_model': saved.get('actual_model'),
         'outcomes_source': str(outcomes.resolve()) if outcomes is not None else None}
     output.mkdir(parents=True, exist_ok=False)
     (output/'score.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     return report
+
+
+def summarize(*, scores: list[Path], output: Path) -> dict:
+    """Count one monthly observation per issue, never three index forecasts as months."""
+    if not scores:
+        raise ValueError('Provide saved score files')
+    records = [strict_json(path.read_text(encoding='utf-8')) for path in scores]
+    months = [dt.date.fromisoformat(row['as_of']).strftime('%Y-%m') for row in records]
+    if len(set(months)) != len(months):
+        raise ValueError('Require one issue per signal calendar month; do not duplicate rescoring snapshots')
+    groups: dict[str, list[dict]] = {'forward': [], 'rehearsal': []}
+    ids = None
+    pending = []
+    for path, row in zip(scores, records, strict=True):
+        if row['auto_trade'] is not False or row['affects_positions'] is not False:
+            raise ValueError('Only observation scores are supported')
+        if row['status'] != 'scored':
+            pending.append({'source': str(path), 'as_of': row['as_of'], 'status': row['status']})
+            continue
+        series = row['series']
+        names = sorted(item['id'] for item in series)
+        if len(names) != 3 or len(set(names)) != 3 or (ids is not None and ids != names):
+            raise ValueError('Keep the same three distinct forecast series across issues')
+        ids = names
+        values = []
+        for item in series:
+            p, observed = item['probability_up'], item['total_return']
+            if not _number(p) or not 0 <= p <= 1 or not _number(observed) or observed < -1:
+                raise ValueError('Invalid saved probability or realized return')
+            value = (p-int(observed > 0))**2
+            if not _number(item['brier']) or not math.isclose(item['brier'], value, abs_tol=1e-12):
+                raise ValueError('Saved Brier differs from probability and outcome')
+            values.append(value)
+        group = ('forward' if row['forward_evidence'] is True and row['mode'] == 'forward'
+                 and row.get('development_test', False) is False else 'rehearsal')
+        groups[group].append({'as_of': row['as_of'], 'target_date': row['target_date'],
+            'mean_brier': sum(values)/3, 'actual_model': row.get('actual_model'), 'source': str(path)})
+    summaries = {}
+    for group, rows in groups.items():
+        mean = sum(row['mean_brier'] for row in rows)/len(rows) if rows else None
+        summaries[group] = {'months': len(rows), 'index_forecasts': len(rows)*3,
+            'mean_brier': mean, 'baseline_mean_brier': .25 if rows else None,
+            'brier_skill_vs_half': 1-mean/.25 if mean is not None else None,
+            'actual_models': sorted({row['actual_model'] or 'unknown' for row in rows}),
+            'periods': sorted(rows, key=lambda row: row['as_of'])}
+    result = {'status': 'summarized', 'mode': 'observation_only', **summaries, 'unscored': pending,
+        'minimum_observation_months': 12, 'auto_trade': False, 'affects_positions': False,
+        'interpretation': 'Monthly issues are the time samples; index forecasts in one issue are correlated.'}
+    output.mkdir(parents=True, exist_ok=False)
+    (output/'summary.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
+    return result
 
 
 def main() -> None:
@@ -247,9 +299,17 @@ def main() -> None:
     grading.add_argument('--output', type=Path, required=True)
     grading.add_argument('--known-through', type=dt.date.fromisoformat, required=True)
     grading.add_argument('--outcomes', type=Path)
+    aggregate = sub.add_parser('summarize')
+    aggregate.add_argument('--score', dest='scores', type=Path, action='append', required=True)
+    aggregate.add_argument('--output', type=Path, required=True)
     args = vars(parser.parse_args())
     command = args.pop('command')
-    result = generate(**args) if command == 'generate' else score(**args)
+    if command == 'generate':
+        result = generate(**args)
+    elif command == 'score':
+        result = score(**args)
+    else:
+        result = summarize(**args)
     print(json.dumps({'status': result['status'], 'mode': result['mode']}))
 
 
