@@ -16,6 +16,34 @@ from tests.unit.test_paper_ledger import SYMBOL, inputs
 DAYS = [dt.date(2020, 12, day) for day in (29, 30, 31)] + [dt.date(2021, 1, day) for day in (4, 5)]
 
 
+def test_late_fractional_receivable_survives_nav_and_checkpoint(tmp_path):
+    source = scenario()
+    days = [dt.date(2020, 1, 2) + dt.timedelta(days=i) for i in range(130)]
+    source['bars'] = pl.concat([source['bars'].head(1).with_columns(
+        pl.lit(day).alias('trade_date')) for day in days])
+    source['calendar'] = pl.concat([source['calendar'].head(1).with_columns(
+        pl.lit(day).alias('date')) for day in days])
+    source['market_states'] = {(day, SYMBOL): DailyMarketState() for day in days}
+    source['targets'] = source['targets'].head(1).with_columns(
+        pl.lit(days[0] - dt.timedelta(days=1)).alias('as_of'),
+        pl.lit(days[0]).alias('execution_date'))
+    source['dividends'] = source['dividends'].head(1).with_columns(
+        pl.lit(days[0]).alias('ann_date'), pl.lit(days[100]).alias('record_date'),
+        pl.lit(days[101]).alias('ex_date'), pl.lit(days[-1]).alias('pay_date'),
+        pl.lit(days[-1]).alias('share_list_date'), pl.lit(.008).alias('div_cash'))
+    account = {}
+    chunks = replay(**source, sessions=days, name='probe', validate_once=True, account_state=account)
+    nav = chunks[0]
+    assert nav['receivable'].head(100).sum() == 0
+    assert nav['receivable'][101] == pytest.approx(.8)
+    assert account['nav'][101]['receivable'] == nav['receivable'][101]
+    folder = tmp_path/'2020'
+    checkpoints.save_year(folder, account=account, chunks=chunks, target_records=[])
+    restored, saved_chunks = checkpoints.read_year(folder, dates=days, previous={})
+    assert {key: restored[key] for key in account} == account
+    assert_frame_equal(saved_chunks[0], nav)
+
+
 @pytest.mark.parametrize('failure', ['transient', 'persistent', 'target_appears'])
 def test_annual_publication_retries_permission_only_and_keeps_failed_stage(tmp_path, monkeypatch, failure):
     _, _, kwargs = setup_run(monkeypatch, tmp_path/'replay')

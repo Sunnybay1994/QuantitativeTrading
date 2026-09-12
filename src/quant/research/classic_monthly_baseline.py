@@ -274,7 +274,9 @@ def replay(
     if account_state is not None:
         account_state.clear()
         account_state.update(state)
-    return (pl.DataFrame(state["nav"][prior_nav_count:]).with_columns(pl.col("date").str.to_date()),
+    # A dividend receivable may first become fractional after the inference
+    # sample. Preserve the complete account values in the published NAV.
+    return (pl.DataFrame(state["nav"][prior_nav_count:], infer_schema_length=None).with_columns(pl.col("date").str.to_date()),
             pl.concat(trades, how="vertical_relaxed"), pl.concat(rejections, how="vertical_relaxed"))
 
 
