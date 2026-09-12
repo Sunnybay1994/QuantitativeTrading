@@ -114,3 +114,20 @@ def test_directional_signal_sell_permission():
         'traded': [True, True, True, True, False, True, True],
         'limits_known': [True, True, True, False, True, None, True]})
     assert market.select(signal_sell_permission())[:, 0].to_list() == [True, False, True, False, False, False, False]
+
+def test_constraint_input_exception_records_signal_account(tmp_path, monkeypatch):
+    _, _, kwargs = setup_run(monkeypatch, tmp_path/'run')
+    kwargs['settings'] = {**kwargs['settings'], 'target_constraints_config': 'fixture'}
+    def invalid_controls(batch, state):
+        if batch['execution_date'][0].year == 2021:
+            raise ValueError('Missing PIT industry/size for A')
+        return batch, {'as_of': str(batch['as_of'][0]), 'feasible': True, 'applied': False}
+    with pytest.raises(ValueError, match='Missing PIT'):
+        costs.run_cost_plans(**kwargs, target_constraints=invalid_controls)
+    failure = next((kwargs['output']/'raw/cost_0.5').glob('constraints_failure_2021_*.json'))
+    diagnostic = json.loads(failure.read_text())['diagnostics'][-1]
+    assert not diagnostic['feasible']
+    assert not diagnostic['constraint_output_valid']
+    assert diagnostic['as_of'] == diagnostic['account_at_signal']['date']
+    assert sum(h['quantity'] for h in diagnostic['account_at_signal']['holdings'].values()) > 0
+    assert diagnostic['account_at_signal']['nav']['equity'] > 0

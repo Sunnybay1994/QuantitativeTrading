@@ -220,7 +220,18 @@ def replay(
                         'signal_equity': equity})
         if batch is not None and target_constraints is not None:
             desired = dict(batch.select('symbol', 'weight').iter_rows())
-            batch, constraint_info = target_constraints(batch, state)
+            try:
+                batch, constraint_info = target_constraints(batch, state)
+            except ValueError as exc:
+                if constraint_diagnostics is not None:
+                    constraint_diagnostics.append({'as_of': str(batch['as_of'][0]),
+                        'execution_date': str(date), 'feasible': False, 'applied': True,
+                        'failure_reason': str(exc), 'constraint_output_valid': False,
+                        'account_at_signal': {'date': state['date'],
+                            'holdings': {s: dict(h) for s, h in state['holdings'].items()},
+                            'nav': dict(state['nav'][-1]),
+                            'restricted_shares': list(state.get('restricted_shares', []))}})
+                raise
             if constraint_diagnostics is not None:
                 constraint_diagnostics.append(constraint_info)
             if constraint_records is not None and constraint_info.get('applied', True):
