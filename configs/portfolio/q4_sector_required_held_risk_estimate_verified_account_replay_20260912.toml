@@ -1,0 +1,51 @@
+signal_tradeability = "directional_sell_eligible_buy"
+tradeability_rule = "Signal-day upper limit permits selling; lower limit forbids selling; missing/invalid price bands forbid selling. Buys retain the frozen eligible score-universe filter, which excludes both limit closes. Execution-day direction checks remain in the original executor."
+id = "q4-sector-required-held-risk-estimate-verified-account-replay-20260912"
+recovered_size = "artifacts/research/q4_benchmark_control_recovery_20260912_01/size/recovered_size.parquet"
+statistics = "artifacts/factors/p7_peer_statistics_20260831_20260912_01"
+strategy_names = ["p4_lightgbm_top50"]
+unknown_industry_policy = "explicit_unknown_bucket"
+unknown_industry_rule = "Preserve full benchmark weights in UNKNOWN bucket; forbid new UNKNOWN holdings; constrain and report UNKNOWN active weight. Missing size still rejects the date."
+mode = "research_only"
+auto_trade = false
+enabled = true
+sell_only = false
+benchmark = "all_market_equal_weight"
+benchmark_snapshot = "battery_monthly_gross_20260912"
+hypothesis = "Change only candidate construction: retain unsellable actual positions, nominate the minimum score-ranked names required by each industry lower bound, then apply the original Top75 retention priority and score ranking up to Top50; use the unchanged industry/size/ADV/cash projection."
+active_weight_basis = "total_account_equity_including_cash; cash_has_zero_industry_and_size_exposure"
+size_definition = "log_total_market_value_standardized_by_full_benchmark_weighted_mean_and_population_std_at_signal_close"
+infeasible_policy = "diagnostic_only_conservative_targets; formal_replay_must_reject"
+
+[limits]
+cash_buffer = 0.02
+single_stock_weight = 0.03
+industry_active_band = 0.05
+size_active_band = 0.30
+adv_participation = 0.05
+maximum_iterations = 2000
+tolerance = 0.00000001
+
+[candidate_selection]
+top_k = 50
+retention_multiplier = 1.5
+score_column = "lightgbm"
+minimum_signal_stocks = 100
+scores = "artifacts/models/q1c_missing_valid_controls_96_20260912_01/predictions/monthly_predictions.parquet"
+original_targets = "artifacts/models/q4_relative_valid_controls_96_replay_20260912_01/targets_lightgbm_top50.parquet"
+minimum_industry_slots = "ceil(max(benchmark_industry_weight - industry_active_band, 0) / single_stock_weight)"
+priority = "unsellable_actual_holdings; required_sector_score_rank; previous_nominees_in_Top75; full_score_rank"
+rank_tie_break = "symbol_ascending"
+capacity_caveat = "Slot quotas are a necessary lower bound; actual ADV, locked holding weights, size and cash constraints still determine feasibility."
+unsellable_overflow = "retain_all_for_diagnostics_and_fail; never_drop_actual_holdings"
+
+
+[held_risk_estimate]
+path = "artifacts/research/q4_held_control_recovery_20260912_02/held_risk_estimates.parquet"
+maximum_staleness_days = 7
+hypothesis = "For actual positive suspended holdings missing same-day size only, use last legally known market capitalization as a risk estimate for at most 7 calendar days after verifying no unknown capital events. Same-day complete controls immediately supersede estimates."
+scope = "actual_positive_holdings_only; never_new_candidates_or_positive_benchmark_members"
+permissions = "freeze_buys_and_sells; retain_actual_quantity_and_mark_price"
+provenance = "risk_estimate_true; source_date; staleness_days; known_at; suspension_and_capital_event_evidence"
+incomplete_evidence = "reject_without_imputation"
+
