@@ -92,12 +92,15 @@ def run_cost_prefixes(*, prefix: Path, output: Path, cost_runs: list[Path],
             assert prior_metrics is not None and prior_comparisons is not None
             cached_rows = prior_metrics.filter(pl.col('factor') == factor)
             cached_comparisons = prior_comparisons.filter(pl.col('factor') == factor)
-            expected = {(year, row['variant'], row['cost_multiplier']) for year in annual for row in saved['rows']}
+            expected = {(year, row['variant'], row['cost_multiplier']) for year, table in annual.items()
+                        for row in saved['rows'] if row.get('first_date', '0001-01-01') <= str(table['refit_close'][0])}
             observed = cached_rows.select('test_year', 'variant', 'cost_multiplier').rows()
             if len(observed) != len(expected) or set(observed) != expected:
                 raise ValueError('Previous annual costs are missing registered scenarios')
             for year, table in annual.items():
                 year_rows = cached_rows.filter(pl.col('test_year') == year)
+                if year_rows.is_empty():
+                    continue  # The saved cost history can begin after this refit cutoff.
                 if set(year_rows['last_date']) != {str(table['refit_close'][0])}:
                     raise ValueError('Previous annual cost cutoff differs from the statistical screen')
                 for row in year_rows.drop('test_year').iter_rows(named=True):

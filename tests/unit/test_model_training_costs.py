@@ -157,6 +157,21 @@ as_of = 2020-01-06
     replaced = module.run_cost_prefixes(**{**args, 'output': tmp_path/'replaced',
         'cost_runs': [replacement], 'previous_costs': args['output']})
     assert replaced['reused_cost_factors'] == [] and reads == [replacement]*3
+    late = tmp_path/'late_inception'
+    shutil.copytree(run, late)
+    late_summary = json.loads((late/'summary.json').read_text())
+    for row in late_summary['rows']:
+        row['first_date'] = str(dates[-1])
+    (late/'summary.json').write_text(json.dumps(late_summary))
+    monkeypatch.setattr(module, 'load_cost_history', lambda *args: (nav.tail(1), trades.filter(pl.col('date') == dates[-1])))
+    late_args = {**args, 'cost_runs': [late], 'output': tmp_path/'late_report'}
+    module.run_cost_prefixes(**late_args)
+    monkeypatch.setattr(module, 'load_cost_history', lambda *args: pytest.fail('Late inception cache must also be reusable'))
+    late_reuse = module.run_cost_prefixes(**{**late_args, 'output': tmp_path/'late_reused',
+                                            'previous_costs': late_args['output']})
+    assert late_reuse['reused_cost_factors'] == ['a']
+    assert_frame_equal(pl.read_parquet(late_args['output']/'annual_cost_screen.parquet'),
+                       pl.read_parquet(tmp_path/'late_reused'/'annual_cost_screen.parquet'))
     monkeypatch.setattr(module, 'load_cost_history', original_loader)
     (prefix/'model.toml').write_text('[selection]\nminimum_known_months = 48\n')
     changed = module.run_cost_prefixes(**{**args, 'output': tmp_path/'training48'})
