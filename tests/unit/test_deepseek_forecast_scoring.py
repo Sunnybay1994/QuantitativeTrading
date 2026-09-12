@@ -250,6 +250,35 @@ def corpus(path):
                   "reason_text": [REASON, None, REASON, "不同原因"]}).write_parquet(path)
 
 
+def test_explicit_format_hint_keeps_old_keys_and_reaches_transport_and_saved_prompt(tmp_path):
+    from quant.factors.forecast_text_score import input_token_bound, scoring_prompt
+
+    settings = load_settings(CONFIG)
+    legacy = {key: value for key, value in settings.items() if key != 'format_version'}
+    assert score_key(REASON, legacy) == score_key(REASON, settings)
+    revised = {**settings, 'format_version': 'compact_evidence_v1'}
+    assert score_key(REASON, revised) != score_key(REASON, settings)
+    assert input_token_bound(REASON, format_version='compact_evidence_v1') > input_token_bound(REASON)
+
+    def handle(request):
+        data = json.loads(request.content)
+        assert data['messages'][0]['content'] == scoring_prompt('compact_evidence_v1')
+        assert json.loads(data['messages'][1]['content'])['reason_text'] == REASON
+        return httpx.Response(200, json=response())
+
+    client = DeepSeekClient('fixture-key', transport=httpx.MockTransport(handle))
+    config = tmp_path/'scoring.toml'
+    config.write_text(CONFIG.read_text(encoding='utf-8')+'\nformat_version = "compact_evidence_v1"\n')
+    source = tmp_path/'input.parquet'
+    corpus(source)
+    output = tmp_path/'run'
+    result = run_batch(source=source, config=config, design_path=DESIGN, output=output,
+        cache_path=tmp_path/'cache.sqlite', execute=True, max_requests=1, max_usd=1, client=client)
+    client.close()
+    assert result['requests_this_run'] == 1
+    assert (output/'prompt.txt').read_text(encoding='utf-8') == scoring_prompt('compact_evidence_v1')
+
+
 def test_batch_missing_conflicts_and_resume(tmp_path):
     source = tmp_path / "input.parquet"
     corpus(source)

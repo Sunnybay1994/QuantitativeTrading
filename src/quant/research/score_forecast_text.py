@@ -12,14 +12,14 @@ from pathlib import Path
 import re
 import time
 import tomllib
-from typing import Annotated, Any, Callable
+from typing import Annotated, Any, Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from quant.data.connectors.deepseek import DeepSeekClient, RequestFailure, load_key
 from quant.data.forecast_text_scores import ScoreCache, publish_panels, read_corpus, write_scores
 from quant.factors.forecast_text_score import (
-    DIMENSIONS, PROMPT, PROMPT_VERSION, input_token_bound, parse_score, score_key,
+    DIMENSIONS, PROMPT_VERSION, input_token_bound, parse_score, score_key, scoring_prompt,
 )
 from quant.research.lightweight_run import dataframe_input_digest
 from quant.research.deepseek_batch_window import request_window
@@ -37,6 +37,7 @@ class Settings(BaseModel):
     max_attempts: Annotated[int, Field(ge=1, le=3)] = 2
     timeout_seconds: Annotated[float, Field(gt=0, le=120)] = 60.0
     retry_delay_seconds: Annotated[float, Field(ge=0, le=30)] = 2.0
+    format_version: Literal['original', 'compact_evidence_v1'] = 'original'
 
 
 def load_settings(path: Path) -> dict:
@@ -123,7 +124,8 @@ def score_one(reason: str, *, settings: dict, cache: ScoreCache, client: Any,
               parse: Callable[[str], dict] | None = None,
               development_test: bool = False) -> dict:
     key = request_key or score_key(reason, settings)
-    input_bound = token_bound if token_bound is not None else input_token_bound(reason)
+    input_bound = token_bound if token_bound is not None else input_token_bound(
+        reason, format_version=settings.get('format_version', 'original'))
     bound = cost_for(input_bound, settings["max_tokens"], settings)
     for attempt_number in range(settings["max_attempts"]):
         prior = cache.latest(key)
@@ -181,6 +183,7 @@ def run_batch(*, source: Path, config: Path, design_path: Path, output: Path,
               max_usd: float = 0, limit: int | None = None, client: Any = None,
               development_test: bool = False) -> dict:
     settings, design = load_settings(config), load_design(design_path)
+    prompt = scoring_prompt(settings['format_version'])
     if (type(max_requests) is not int or max_requests < 0 or not math.isfinite(max_usd)
             or max_usd < 0 or (execute and (max_requests < 1 or max_usd <= 0))
             or (limit is not None and (type(limit) is not int or limit < 1))):
@@ -205,7 +208,7 @@ def run_batch(*, source: Path, config: Path, design_path: Path, output: Path,
                 and len(reason.encode()) <= settings["max_input_bytes"]):
             candidates.setdefault(score_key(reason, settings), reason)
     selected = dict(list(candidates.items())[:limit])
-    estimates = [cost_for(input_token_bound(reason), settings["max_tokens"], settings)
+    estimates = [cost_for(input_token_bound(reason, format_version=settings['format_version']), settings["max_tokens"], settings)
                  for reason in selected.values()]
     plan = {"input_rows": frame.height, "eligible_unique_texts": len(candidates),
             "selected_unique_texts": len(selected), "request_bound_including_retries":
@@ -258,7 +261,7 @@ def run_batch(*, source: Path, config: Path, design_path: Path, output: Path,
                   "source": str(source), "inputs": inputs, "design": design, "scoring": settings,
                   "evidence_scope": "provided_reason_excerpt_not_full_announcement",
                   "prompt_version": PROMPT_VERSION,
-                  "prompt_sha256": hashlib.sha256(PROMPT.encode()).hexdigest(),
+                  "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
                   "plan": plan, "summary": dict(Counter(row["result"] for row in rows)),
                   "cache_totals_before": totals_before, "cache_totals_after": totals_after,
                   "requests_this_run": totals_after["requests"] - totals_before["requests"],
@@ -272,7 +275,7 @@ def run_batch(*, source: Path, config: Path, design_path: Path, output: Path,
         if tomllib.loads(battery)["start"] != design["start"]:
             raise ValueError("Cannot align battery start with P7 design")
         (output / "battery.toml").write_text(battery, encoding="utf-8")
-        (output / "prompt.txt").write_text(PROMPT, encoding="utf-8")
+        (output / "prompt.txt").write_text(prompt, encoding="utf-8")
         requests = cache.requests(set(selected)) if cache else []
         (output / "requests.json").write_text(json.dumps(requests, ensure_ascii=False, indent=2),
                                               encoding="utf-8")

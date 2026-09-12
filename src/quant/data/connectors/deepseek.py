@@ -48,7 +48,7 @@ class DeepSeekClient:
         self.client.close()
 
     def complete(self, reason: str, settings: dict) -> dict:
-        return self.complete_messages(messages(reason), settings)
+        return self.complete_messages(messages(reason, format_version=settings.get('format_version', 'original')), settings)
 
     def complete_messages(self, prompt_messages: list[dict[str, str]], settings: dict) -> dict:
         try:

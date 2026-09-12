@@ -97,21 +97,37 @@ def parse_score(text: str, reason: str) -> TextScore:
     return score
 
 
-def messages(reason: str) -> list[dict[str, str]]:
+def scoring_prompt(format_version: str = 'original') -> str:
+    if format_version == 'original':
+        return PROMPT
+    if format_version != 'compact_evidence_v1':
+        raise ValueError('Unknown output format version')
+    return PROMPT + '''
+输出前逐字段检查JSON结构和证据长度：
+1. 顶层只允许 operating_improvement、nonrecurring_gain_dependency、operating_pressure。
+   status只能放在三个维度内部，不能出现在顶层。
+2. 每个evidence优先选取10至40字的最直接连续原文短句，绝对不能超过80个字符（标点也计数）。
+   不要复制整个长段落。scored、uncertain、numeric_only三种status都适用同一80字符上限。
+3. 较长原句应只选其中能支持判断的连续短句，不能拼接、不加省略号、不改写原文。
+4. 保留原评分标准及不确定性；缩短的是证据摘录，不能为了格式完整而把未知分数改成0。
+'''
+
+
+def messages(reason: str, *, format_version: str = 'original') -> list[dict[str, str]]:
     # Deliberately omit company/date metadata to reduce memorized fact contamination.
-    return [{"role": "system", "content": PROMPT},
+    return [{"role": "system", "content": scoring_prompt(format_version)},
             {"role": "user", "content": json.dumps({
                 "record_id": hashlib.sha256(reason.encode()).hexdigest()[:16],
                 "reason_text": reason}, ensure_ascii=False)}]
 
 
 def score_key(reason: str, settings: dict) -> str:
-    payload = {"messages": messages(reason), "version": PROMPT_VERSION,
+    payload = {"messages": messages(reason, format_version=settings.get('format_version', 'original')), "version": PROMPT_VERSION,
                **{k: settings[k] for k in ("model", "model_epoch", "max_tokens")}}
     return hashlib.sha256(json.dumps(payload, sort_keys=True,
                                      ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
-def input_token_bound(reason: str) -> int:
+def input_token_bound(reason: str, *, format_version: str = 'original') -> int:
     # Byte-length ceiling with allowance for message framing; no tokenizer dependency.
-    return len(json.dumps(messages(reason), ensure_ascii=False).encode("utf-8")) + 1024
+    return len(json.dumps(messages(reason, format_version=format_version), ensure_ascii=False).encode("utf-8")) + 1024
