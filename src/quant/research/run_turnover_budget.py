@@ -1,16 +1,16 @@
 """Full-calendar paired turnover-budget replay using frozen source predictions."""
 import argparse
+import copy
 import datetime as dt
 import json
 import tomllib
 from pathlib import Path
 
-from quant.data.factor_benchmarks import read_etf_total_return
+from quant.data.equal_weight_index import load_return_benchmarks
 from quant.data.factor_panels import available_sessions
 from quant.reporting.multifactor_assessment import assess_model
 from quant.research.factor_battery_cost_report import collect_cost_report, load_cost_history
 from quant.research.factor_battery_costs import run_cost_plans
-from quant.research.run_concentration_caps import write_report
 
 import polars as pl
 
@@ -50,11 +50,53 @@ def summarize_budget_history(output: Path, *, end: dt.date, budget: float) -> di
     return result
 
 
-def run(*, config: Path, output: Path, data_root: Path) -> dict:
+def assess_budget_variants(*, histories: dict, rows: list[dict], baselines: dict,
+                           model: dict, windows: list[dict]) -> dict:
+    expected = {(variant, cost) for variant in ('control', 'budgeted') for cost in (.5, 1., 2.)}
+    if {(r['variant'], r['cost_multiplier']) for r in rows} != expected or len(rows) != len(expected):
+        raise ValueError('Require six paired cost scenarios')
+    if len({r['active_start'] for r in rows}) != 1:
+        raise ValueError('Paired comparisons require identical holding windows')
+    measured_model = copy.deepcopy(model)
+    measured_model['admission']['benchmarks'] = list(baselines)
+    assessments = {}
+    for variant in ('control', 'budgeted'):
+        measured = {r['cost_multiplier']: r for r in rows if r['variant'] == variant}
+        assessments[variant] = assess_model(nav=histories[variant], one=measured[1.], two=measured[2.],
+            benchmarks=baselines, model=measured_model, windows=windows)
+    return assessments
+
+
+def write_budget_report(output: Path, result: dict) -> None:
+    lines = ['# 固定月度换手预算回放', '', '冻结预测、统一成本；从首次实际持股起连续计量，保留其后现金期。', '',
+        '|组合|成本|持股期年化|Sharpe|最大回撤|单边年换手|', '|---|---:|---:|---:|---:|---:|']
+    def fmt(value, style='.2%'):
+        return format(value, style) if value is not None else 'NA'
+    for r in result['rows']:
+        lines.append(f"|{r['variant']}|{r['cost_multiplier']}|{fmt(r['cagr'])}|{fmt(r['sharpe'], '.3f')}|"
+            f"{fmt(r['max_drawdown'])}|{fmt(r['annualized_one_way_turnover'], '.2f')}|")
+    for variant, assessment in result['assessments'].items():
+        failed = ', '.join(k for k, v in assessment['checks'].items() if not v)
+        lines += ['', f"{variant}：{assessment['conclusion']}；未通过：{failed or '无'}。",
+            f"最强收益指数：{assessment['strongest_benchmark']}；年化超额：{fmt(assessment['net_cagr_excess'])}；"
+            f"压力通过 {assessment['stress_windows_not_worse']}/{assessment['stress_windows_total']}。", '',
+            '|窗口|策略收益|基准收益|判定|', '|---|---:|---:|---|']
+        for s in assessment['stress']:
+            status = ('通过' if s['not_worse'] else '未通过') if s['applicable'] else f"不适用：{s['reason']}"
+            lines.append(f"|{s['window']}|{fmt(s.get('model_return'))}|{fmt(s.get('benchmark_return'))}|{status}|")
+    lines += ['', '固定0.5预算约束目标调整距离，实际成交换手仍受价格、现金和整手影响；已研究历史只作回顾性对照。']
+    (output/'report.md').write_text('\n'.join(lines)+'\n', encoding='utf-8')
+
+
+def run(*, config: Path, output: Path, data_root: Path, resume: bool = False) -> dict:
     spec = tomllib.loads(config.read_text(encoding='utf-8'))
     research, policy = spec['research'], spec['policy']
     if policy['auto_trade'] is not False:
         raise ValueError('Research requires auto_trade=false')
+    if 'return_benchmark_config' not in research:
+        raise ValueError('Require return_benchmark_config; account benchmarks cannot supply performance comparisons')
+    measurement_path = Path(research['return_benchmark_config'])
+    measurement_bytes = measurement_path.read_bytes()
     source, benchmarks = Path(research['predictions']), Path(research['benchmarks'])
     model = tomllib.loads((source/'model.toml').read_text(encoding='utf-8'))
     settings = tomllib.loads((source/'battery.toml').read_text(encoding='utf-8'))
@@ -71,36 +113,52 @@ def run(*, config: Path, output: Path, data_root: Path) -> dict:
     dates = targets.select('as_of', 'execution_date').unique()
     if dates.select(pl.col('execution_date').dt.strftime('%Y-%m')).is_duplicated().any():
         raise ValueError('Monthly budget requires at most one signal per execution month')
-    output.mkdir(parents=True, exist_ok=False)
+    if resume:
+        for filename, expected in [('config.toml', config.read_bytes()), ('measurement.toml', measurement_bytes),
+            ('model.toml', (source/'model.toml').read_bytes()), ('battery.toml', (source/'battery.toml').read_bytes())]:
+            if (output/filename).read_bytes() != expected:
+                raise ValueError('Resume requires unchanged saved inputs')
+    else:
+        output.mkdir(parents=True, exist_ok=False)
     (output/'config.toml').write_bytes(config.read_bytes())
+    (output/'measurement.toml').write_bytes(measurement_bytes)
     for filename in ('battery.toml', 'model.toml'):
         (output/filename).write_bytes((source/filename).read_bytes())
     snapshot = json.loads((benchmarks/'summary.json').read_text())['execution_snapshot']
     run_cost_plans(settings=settings, plans={'control': (name, targets), 'budgeted': (name, targets)},
         sessions=sessions, output=output, data_root=data_root, execution_snapshot=snapshot,
         factor=research['id'], start=walk['test_start'],
-        turnover_budgets={'budgeted': policy['monthly_one_way_budget']})
-    report = collect_cost_report(run=output, benchmarks=benchmarks, etf_reference=True, data_root=data_root)
-    baselines = {key: load_cost_history(benchmarks, key, 1., walk['test_end'])[0]
-        for key in ('csi800_equal_weight', 'all_market_equal_weight')}
-    baselines['510300_total_return_reference'] = read_etf_total_return(data_root=data_root,
-        snapshot=settings['data']['etf_total_return_snapshot'], end=walk['test_end'])
+        turnover_budgets={'budgeted': policy['monthly_one_way_budget']}, resume=resume)
+    report = collect_cost_report(run=output, benchmarks=benchmarks, data_root=data_root,
+                                 return_benchmark_config=output/'measurement.toml')
+    baselines = load_return_benchmarks(config=output/'measurement.toml', data_root=data_root,
+        start=walk['test_start'], end=walk['test_end'])
+    baselines = {('510300_total_return_reference' if key == '510300' else key): frame for key, frame in baselines.items()}
     windows = tomllib.loads(Path(model['admission']['stress_windows_config']).read_text(encoding='utf-8'))[
         'cycle_validation']['stress_windows']
-    assessments = {}
+    histories = {}
     for variant in ('control', 'budgeted'):
-        rows = {row['cost_multiplier']: row for row in report['rows'] if row['variant'] == variant}
         nav, _ = load_cost_history(output, variant, 1., walk['test_end'])
         if nav['date'].to_list() != [d for d in sessions if walk['test_start'] <= d <= walk['test_end']]:
             raise ValueError('Incomplete replay calendar')
-        assessments[variant] = assess_model(nav=nav, one=rows[1.], two=rows[2.],
-            benchmarks=baselines, model=model, windows=windows)
-    result = {'rows': report['rows'], 'assessments': assessments}
+        histories[variant] = nav
+    assessments = assess_budget_variants(histories=histories, rows=report['rows'], baselines=baselines,
+        model=model, windows=windows)
+    result = {'rows': report['rows'], 'assessments': assessments, 'measurement': report['measurement'],
+              'benchmark_comparisons': report['benchmark_comparisons']}
+    original_replay = source.parent/'replay'
+    comparisons = []
+    for multiplier in (.5, 1., 2.):
+        original, _ = load_cost_history(original_replay, f"{research['method']}_top{research['top_k']}", multiplier, walk['test_end'])
+        control, _ = load_cost_history(output, 'control', multiplier, walk['test_end'])
+        columns = ['date', 'equity', 'market_value', 'cash', 'unit_nav']
+        if not original.select(columns).equals(control.select(columns)):
+            raise ValueError('Replayed control differs from frozen original NAV')
+        comparisons.append({'cost_multiplier': multiplier, 'sessions': control.height, 'nav_exact_equal': True})
+    (output/'control_comparison.json').write_text(json.dumps(comparisons, indent=2), encoding='utf-8')
     summarize_budget_history(output, end=walk['test_end'], budget=policy['monthly_one_way_budget'])
     (output/'assessment.json').write_text(json.dumps(result, indent=2, default=str), encoding='utf-8')
-    write_report(output, result, title='固定月度换手预算回放',
-        description='2015—2026-08；日历LightGBM Top50固定预测，按实际信号日持仓限制月度目标调整。',
-        caveat='复用已有历史，信号权重调整预算不保证实际成交额上限。')
+    write_budget_report(output, result)
     return result
 
 
@@ -109,8 +167,9 @@ def main() -> None:
     parser.add_argument('--config', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--data-root', type=Path, default=Path('data'))
+    parser.add_argument('--resume', action='store_true')
     args = parser.parse_args()
-    run(config=args.config, output=args.output, data_root=args.data_root)
+    run(config=args.config, output=args.output, data_root=args.data_root, resume=args.resume)
 
 
 if __name__ == '__main__':
