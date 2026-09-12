@@ -35,6 +35,15 @@ def test_legacy_account_measurement_cannot_start(tmp_path):
         runner.run(config=config, output=tmp_path/'run', data_root=tmp_path)
 
 
+def test_unknown_allocation_fails_before_reading_inputs(tmp_path):
+    config = tmp_path/'config.toml'
+    config.write_text('[research]\nreturn_benchmark_config="absent.toml"\n'
+        '[policy]\nauto_trade=false\nallocation="typo"\n', encoding='utf-8')
+    with pytest.raises(ValueError, match='allocation'):
+        runner.run(config=config, output=tmp_path/'run', data_root=tmp_path)
+    assert not (tmp_path/'run').exists()
+
+
 def test_cash_stress_window_renders_na_without_fake_pass(tmp_path):
     assessment = {'conclusion': 'REJECTED', 'checks': {'stress': False},
         'strongest_benchmark': 'all_market_equal_weight', 'net_cagr_excess': .01,

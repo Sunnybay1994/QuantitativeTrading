@@ -108,10 +108,14 @@ def run(*, config: Path, output: Path, data_root: Path, resume: bool = False,
         share_exchanges_config: Path = Path('configs/data/share_exchanges_20260912.toml')) -> dict:
     spec = tomllib.loads(config.read_text(encoding='utf-8'))
     research, policy = spec['research'], spec['policy']
+    allocations = {'linear_blend_current_holdings_toward_original_targets': 'linear_blend',
+                   'complete_adjustments': 'complete_adjustments'}
     if policy['auto_trade'] is not False:
         raise ValueError('Research requires auto_trade=false')
     if 'return_benchmark_config' not in research:
         raise ValueError('Require return_benchmark_config; account benchmarks cannot supply performance comparisons')
+    if policy.get('allocation') not in allocations:
+        raise ValueError('Unknown registered budget allocation')
     measurement_path = Path(research['return_benchmark_config'])
     measurement_bytes = measurement_path.read_bytes()
     source, benchmarks = Path(research['predictions']), Path(research['benchmarks'])
@@ -151,6 +155,8 @@ def run(*, config: Path, output: Path, data_root: Path, resume: bool = False,
             raise ValueError('Resume requires unchanged share exchanges')
     else:
         saved_events.write_text(event_content,encoding='utf-8')
+    if allocations[policy['allocation']] != 'linear_blend':
+        settings['turnover_allocations'] = {'budgeted': allocations[policy['allocation']]}
     run_cost_plans(settings=settings, plans={'control': (name, targets), 'budgeted': (name, targets)},
         sessions=sessions, output=output, data_root=data_root, execution_snapshot=snapshot,
         factor=research['id'], start=walk['test_start'],

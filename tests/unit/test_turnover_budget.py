@@ -11,6 +11,40 @@ from tests.unit.test_batched_daily_replay import cash_inputs, replay_inputs
 from tests.unit.test_paper_ledger import D1, D2, D3
 
 
+def test_complete_adjustments_preserve_side_budgets_and_reduce_fragments():
+    day = dt.date(2024, 1, 31)
+    targets = pl.DataFrame({'as_of': [day]*50,
+        'symbol': [f'new{i:02}' for i in range(50)], 'weight': [.02]*50})
+    state = {'date': str(day), 'nav': [{'equity': 1000.}],
+        'holdings': {f'old{i:02}': {'quantity': 2, 'mark_price': 10.} for i in range(50)}}
+    blend = budget_targets(targets, state, budget=.5)
+    completed = budget_targets(targets.reverse(), state, budget=.5, allocation='complete_adjustments')
+    assert completed.filter(pl.col('weight') > 1e-12).height == 50
+    assert blend.filter(pl.col('weight') > 1e-12).height == 100
+    for frame in (blend, completed):
+        buys = frame.filter(pl.col('symbol').str.starts_with('new'))['weight'].sum()
+        sales = 1.-frame.filter(pl.col('symbol').str.starts_with('old'))['weight'].sum()
+        assert buys == pytest.approx(.5) and sales == pytest.approx(.5)
+        assert frame['weight'].sum() == pytest.approx(1.)
+
+
+def test_complete_adjustments_exit_small_names_first_and_do_not_overshoot_targets():
+    day = dt.date(2024, 1, 31)
+    targets = pl.DataFrame({'as_of': [day]*2, 'symbol': ['retained', 'new'], 'weight': [.2, .8]})
+    state = {'date': str(day), 'nav': [{'equity': 100.}], 'holdings': {
+        'small': {'quantity': 1, 'mark_price': 1.},
+        'big': {'quantity': 19, 'mark_price': 1.},
+        'retained': {'quantity': 30, 'mark_price': 1.}}}
+    result = budget_targets(targets, state, budget=.1, allocation='complete_adjustments')
+    weights = dict(result.select('symbol', 'weight').iter_rows())
+    assert weights['small'] == 0. and weights['retained'] == .3
+    assert 0 < weights['big'] < .19 and 0 < weights['new'] < .8
+    assert result['weight'].sum() == pytest.approx(
+        budget_targets(targets, state, budget=.1)['weight'].sum())
+    with pytest.raises(ValueError, match='Unknown turnover'):
+        budget_targets(targets, state, budget=.1, allocation='ignored_typo')
+
+
 def test_replacement_preserves_unsold_names_and_limits_one_way_distance():
     day = dt.date(2024, 1, 31)
     targets = pl.DataFrame({'as_of': [day], 'symbol': ['new'], 'weight': [1.]})

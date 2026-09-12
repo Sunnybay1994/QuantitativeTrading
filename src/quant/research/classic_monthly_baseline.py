@@ -152,6 +152,7 @@ def replay(
     config: dict[str, Any], sessions: list[dt.date], name: str, validate_once: bool = False,
     account_state: dict[str, Any] | None = None,
     target_turnover_budget: float | None = None,
+    target_turnover_allocation: str = 'linear_blend',
     target_records: list[dict] | None = None,
     target_constraints: Callable[[pl.DataFrame, dict], tuple[pl.DataFrame, dict]] | None = None,
     constraint_records: list[dict] | None = None,
@@ -215,7 +216,8 @@ def replay(
         if batch is not None and target_turnover_budget is not None:
             from quant.portfolio.turnover_budget import budget_targets
             desired = dict(batch.select('symbol', 'weight').iter_rows())
-            batch = budget_targets(batch, state, budget=target_turnover_budget)
+            batch = budget_targets(batch, state, budget=target_turnover_budget,
+                                   allocation=target_turnover_allocation)
             if target_records is not None:
                 equity = state['nav'][-1]['equity']
                 for row in batch.to_dicts():

@@ -113,6 +113,10 @@ def run_cost_plans(*, settings: dict, plans: dict, sessions: tuple[dt.date, ...]
                    target_constraints: Callable[[pl.DataFrame, dict], tuple[pl.DataFrame, dict]] | None = None,
                    constraint_execution_symbols: pl.DataFrame | None = None) -> dict:
     """Replay factor and equal-weight benchmark plans through the same account."""
+    allocations = settings.get('turnover_allocations', {})
+    if (set(allocations)-set(turnover_budgets or {}) or
+            any(v not in {'linear_blend', 'complete_adjustments'} for v in allocations.values())):
+        raise ValueError('Unknown allocation or allocation without a turnover budget')
     if constraint_execution_symbols is not None and target_constraints is None:
         raise ValueError('Candidate execution symbols require an active constraint hook')
     if (target_constraints is not None) != ('target_constraints_config' in settings):
@@ -216,6 +220,7 @@ def run_cost_plans(*, settings: dict, plans: dict, sessions: tuple[dt.date, ...]
                         market_states=states, config=scenario, sessions=dates, name=name, validate_once=True,
                         account_state=accounts[(variant, multiplier)],
                         target_turnover_budget=(turnover_budgets or {}).get(variant),
+                        target_turnover_allocation=allocations.get(variant, 'linear_blend'),
                         target_records=target_records, target_constraints=target_constraints,
                         constraint_records=constraint_records, constraint_diagnostics=constraint_diagnostics)
                 except ValueError as exc:
