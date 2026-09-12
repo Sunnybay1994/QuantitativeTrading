@@ -91,6 +91,10 @@ D:\Miniforge3\python.exe -m quant.research.run_strategy_template_selection --con
 # 原版selection因旧月度换手因子缺失，9月11日无完整特征；修正版当天演练生成2393条，仍为RESEARCH_ONLY。
 D:\Miniforge3\python.exe -m quant.research.run_fixed_model_forecast --selection artifacts/models/p6c_calendar_model_20260911_02/selection --as-of YYYY-MM-DD --output artifacts/models/<新预测目录>
 
+# 一条命令刷新完成交易日的数据与因子、检查质量、记录同日冻结模型预测；不改账户持仓
+D:\Miniforge3\python.exe -m quant.research.run_daily_model_forecast --to today --selection artifacts/models/p6c_calendar_model_20260911_02/selection --output artifacts/models/<新日更目录>
+# 已发布数据演练可加--saved-data --rehearsal；数据缺失/质量错误返回非零。仍使用新目录保留每次记录。
+
 # 仅分钟数据；BaoStock 单连接串行，首次历史回填时间较长
 D:\Miniforge3\python.exe -m quant.data.intraday --to today
 

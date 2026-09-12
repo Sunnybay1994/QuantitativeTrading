@@ -37,7 +37,7 @@ def completed_date(requested: str, now: dt.datetime) -> dt.date:
     return requested_date
 
 
-def latest_session(*, data_root: Path, through: dt.date) -> dt.date:
+def latest_session(*, data_root: Path, through: dt.date, refresh_calendar: bool = True) -> dt.date:
     start = through - dt.timedelta(days=40)
     for market in ("SH", "SZ"):
         path = data_root / "clean/trade_calendar" / f"market={market}/data.parquet"
@@ -46,6 +46,8 @@ def latest_session(*, data_root: Path, through: dt.date) -> dt.date:
                    and existing.filter(pl.col("date").is_between(start, through)).height
                    == (through - start).days + 1)
         if not covered:
+            if not refresh_calendar:
+                raise ValueError('Saved calendar does not cover the requested date; refresh inputs first')
             connector = TushareConnector(config_path=Path("configs/tushare.local.toml"))
             raw = connector.fetch_trade_calendar(market, start, through)
             RawStore(data_root / "raw").write(
