@@ -109,3 +109,45 @@ def test_all_models_cash_writes_empty_comparison_table(saved_run, monkeypatch):
     result = module.report_models(**saved_run)
     assert set(result['conclusions'].values()) == {'RESEARCH_ONLY'}
     assert pl.read_parquet(saved_run['output']/'benchmark_comparisons.parquet').is_empty()
+
+
+@pytest.mark.parametrize('broken', [None, 'missing_day', 'wrong_name'])
+def test_registered_equal_weight_references_keep_first_day_return(saved_run, monkeypatch, broken):
+    measurement = saved_run['measurement_config']
+    windows = tomllib.loads(measurement.read_text())['stress_windows_config']
+    measurement.write_text(f'stress_windows_config = {json.dumps(windows)}\n'
+                           '[benchmarks]\nequal_weight_snapshot="fixture"\netf_total_return_snapshot="fixture"\n')
+
+    def load(**kwargs):
+        assert kwargs['config'] == measurement
+        dates = [dt.date(2024, 1, i) for i in range(1, 7)]
+        frames = {name: pl.DataFrame({'date': dates, 'unit_nav': [1.1, 1.1, 1.122, 1.122, 1.122, 1.122]})
+                  for name in ('510300', 'csi800_equal_weight', 'all_market_equal_weight')}
+        if broken == 'missing_day':
+            frames['all_market_equal_weight'] = frames['all_market_equal_weight'].slice(1)
+        elif broken == 'wrong_name':
+            frames['cap_weighted'] = frames.pop('all_market_equal_weight')
+        return frames
+
+    monkeypatch.setattr(module, 'load_return_benchmarks', load)
+    monkeypatch.setattr(module, 'read_index_benchmark', lambda **kw: pytest.fail('No official-index substitution'))
+    if broken:
+        with pytest.raises(ValueError, match='session grid|three registered'):
+            module.report_models(**saved_run)
+        assert not saved_run['output'].exists()
+        return
+    result = module.report_models(**saved_run)
+    half = pl.read_parquet(saved_run['output']/'benchmark_comparisons.parquet').filter(
+        (pl.col('variant') == 'equal_z_top50') & (pl.col('cost_multiplier') == .5))
+    assert half['benchmark_total_return'].to_list() == pytest.approx([.122]*3)
+    one = result['models']['equal_z']['primary']
+    assert [b['total_return'] for b in one['benchmarks']] == pytest.approx([.02]*3)
+    assert result['measurement']['indexes'][1]['source'] == 'monthly_equal_weight'
+
+
+def test_ambiguous_index_config_rejected(saved_run):
+    path = saved_run['measurement_config']
+    path.write_text(path.read_text()+'\n[benchmarks]\nequal_weight_snapshot="fixture"\n')
+    with pytest.raises(ValueError, match='Choose either'):
+        module.report_models(**saved_run)
+    assert not saved_run['output'].exists()

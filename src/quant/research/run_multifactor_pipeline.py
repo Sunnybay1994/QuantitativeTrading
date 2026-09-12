@@ -18,7 +18,8 @@ def run_pipeline(*, config: Path, output: Path, data_root: Path, measurement_con
     model_bytes = config.read_bytes()
     model = tomllib.loads(model_bytes.decode('utf-8'))
     measurement_bytes = measurement_config.read_bytes()
-    tomllib.loads(measurement_bytes.decode('utf-8'))
+    measurement = tomllib.loads(measurement_bytes.decode('utf-8'))
+    return_benchmarks = 'benchmarks' in measurement
     research = model['research']
     benchmarks = Path(research['stock_benchmarks'])
     if resume_from is not None and (resume_from/'model.toml').read_bytes() != model_bytes:
@@ -54,12 +55,17 @@ def run_pipeline(*, config: Path, output: Path, data_root: Path, measurement_con
             previous = json.loads(saved_selection.read_text(encoding='utf-8'))
             prior_complete = bool(previous['annual_selection']) and all(
                 row['selection_complete'] for row in previous['annual_selection'])
+            if return_benchmarks:
+                prior_measurement = resume_from/'costs'/'return_benchmarks.toml'
+                prior_complete = (prior_complete and prior_measurement.is_file()
+                                  and prior_measurement.read_bytes() == measurement_bytes)
     print('Adding completed cost histories', flush=True)
     costs = reuse('costs', ('annual_cost_screen.parquet', 'model.toml', 'battery.toml')) if prior_complete else None
     if costs is None:
         costs = run_cost_prefixes(prefix=output/'statistics', output=output/'costs',
             cost_runs=[Path(path) for path in research.get('cost_runs', [])],
-            cost_root=Path(research['cost_root']), benchmarks=benchmarks, data_root=data_root)
+            cost_root=Path(research['cost_root']), benchmarks=benchmarks, data_root=data_root,
+            return_benchmark_config=output/'measurement.toml' if return_benchmarks else None)
         prior_complete = False
     print('Selecting factors using historical correlations', flush=True)
     selection = reuse('selection', ('annual_selection.parquet', 'model.toml', 'battery.toml')) if prior_complete else None

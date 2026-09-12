@@ -8,6 +8,7 @@ from pathlib import Path
 import polars as pl
 
 from quant.data.factor_panels import available_sessions
+from quant.data.equal_weight_index import load_return_benchmarks
 from quant.data.index_benchmarks import read_index_benchmark
 from quant.reporting.cycle_stress import path_statistics
 from quant.reporting.multifactor_assessment import assess_model, holding_metrics
@@ -41,7 +42,7 @@ def render_model_report(method: str, *, rows: list[dict], assessment: dict, mode
         lines.append(f"|{row['variant']}/{row['cost_multiplier']:g}×|{cash['start']}—{cash['end']}|"
                      f"{cash['sessions']}|{_format(cash['total_return'])}|")
     lines += ['', f"Top{model['portfolio']['sensitivity_top_k']}仅作敏感性报告，不能替代失败的Top{model['portfolio']['primary_top_k']}。",
-              '基准为官方全收益指数，使用数据源原名，不含整手或现金账户约束。', '',
+              '基准为含分红收益序列，名称区分官方指数、ETF参考与自建等权指数，不含整手或现金账户约束。', '',
               '|1×同期收益指数|年化|最大回撤|', '|---|---:|---:|']
     for row in one['benchmarks']:
         lines.append(f"|{row['benchmark']}|{_format(row['cagr'])}|{_format(row['max_drawdown'])}|")
@@ -84,9 +85,12 @@ def report_models(*, run: Path, output: Path, data_root: Path,
         raise FileExistsError('Use a new report directory; retain old results')
     measurement_bytes = measurement_config.read_bytes()
     measurement = tomllib.loads(measurement_bytes.decode('utf-8'))
-    codes = measurement['index_codes']
-    if len(codes) != 3 or len(set(codes)) != 3 or not set(codes) <= {
-            'H00300.CSI', 'H00905.CSI', 'H00852.CSI', 'H00906.CSI', 'H00985.CSI'}:
+    use_equal_weight = 'benchmarks' in measurement
+    if use_equal_weight and ('index_codes' in measurement or 'index_version' in measurement):
+        raise ValueError('Choose either registered equal-weight references or official index diagnostics')
+    codes = [] if use_equal_weight else measurement['index_codes']
+    if not use_equal_weight and (len(codes) != 3 or len(set(codes)) != 3 or not set(codes) <= {
+            'H00300.CSI', 'H00905.CSI', 'H00852.CSI', 'H00906.CSI', 'H00985.CSI'}):
         raise ValueError('Select three distinct official total-return index codes')
     model_bytes = (run/'model.toml').read_bytes()
     model = tomllib.loads(model_bytes.decode('utf-8'))
@@ -114,6 +118,20 @@ def report_models(*, run: Path, output: Path, data_root: Path,
         report_rows.append({'variant': variant, 'cost_multiplier': multiplier,
             **holding_metrics(nav, trades, initial_cash=settings['portfolio']['initial_cash'])})
     baselines, index_details = {}, []
+    if use_equal_weight:
+        baselines = load_return_benchmarks(config=measurement_config, data_root=data_root,
+                                         start=walk['test_start'], end=walk['test_end'])
+        baselines = {('510300_total_return_reference' if name == '510300' else name): frame
+                     for name, frame in baselines.items()}
+        if set(baselines) != {'510300_total_return_reference', 'csi800_equal_weight', 'all_market_equal_weight'}:
+            raise ValueError('Require the three registered dividend and equal-weight references')
+        for name, baseline in baselines.items():
+            if (baseline.columns != ['date', 'unit_nav'] or baseline['date'].to_list() != grid
+                    or baseline['unit_nav'].null_count() or not baseline['unit_nav'].is_finite().all()
+                    or (baseline['unit_nav'] <= 0).any()):
+                raise ValueError('Return benchmarks require the complete model session grid')
+            index_details.append({'name': name, 'return_type': 'total_return',
+                                  'source': 'etf_reference' if name.startswith('510300') else 'monthly_equal_weight'})
     for code in codes:
         frame = read_index_benchmark(data_root=data_root, version=measurement['index_version'],
             index_code=code, start=walk['test_start'], end=walk['test_end'], required_return_type='total_return')

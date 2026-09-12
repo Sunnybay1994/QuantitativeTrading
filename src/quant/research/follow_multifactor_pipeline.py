@@ -30,7 +30,7 @@ def follow(*, config: Path, output: Path, data_root: Path, measurement_config: P
         raise ValueError('Check no faster than every five minutes and use a positive waiting limit')
     model = config.read_bytes()
     measurement = measurement_config.read_bytes()
-    tomllib.loads(measurement.decode('utf-8'))
+    return_benchmarks = 'benchmarks' in tomllib.loads(measurement.decode('utf-8'))
     research = tomllib.loads(model.decode('utf-8'))['research']
     output.mkdir(parents=True, exist_ok=True)
     saved_config = output/'model.toml'
@@ -54,7 +54,10 @@ def follow(*, config: Path, output: Path, data_root: Path, measurement_config: P
             raise ValueError('Continue with the same frozen model configuration')
         prior = json.loads((resume_from/'summary.json').read_text(encoding='utf-8'))
         sources = json.loads((resume_from/'costs'/'summary.json').read_text(encoding='utf-8'))
-        if not prior['model_results_ready'] and 'source_runs' in sources:
+        prior_measurement = resume_from/'costs'/'return_benchmarks.toml'
+        same_measurement = (not return_benchmarks or (prior_measurement.is_file()
+                            and prior_measurement.read_bytes() == measurement))
+        if not prior['model_results_ready'] and 'source_runs' in sources and same_measurement:
             result = prior
             observed = frozenset((Path(folder)/'summary.json').resolve()
                                  for folder in sources['source_runs'].values())

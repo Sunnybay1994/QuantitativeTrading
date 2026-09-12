@@ -47,7 +47,9 @@ def test_pipeline_waits_for_evidence_then_runs_prediction_replay_and_report(tmp_
 
 
 @pytest.mark.parametrize('complete,replay_complete', [(False, False), (True, False), (True, True)])
-def test_resume_preserves_prior_run_and_only_reuses_completed_evidence(tmp_path, monkeypatch, complete, replay_complete):
+@pytest.mark.parametrize('benchmark_change', [False, True])
+def test_resume_preserves_prior_run_and_only_reuses_completed_evidence(
+        tmp_path, monkeypatch, complete, replay_complete, benchmark_change):
     config = tmp_path/'model.toml'
     config.write_text("[research]\nstock_benchmarks='bench'\ncost_root='costs'\n")
     prior = tmp_path/'prior'
@@ -76,6 +78,8 @@ def test_resume_preserves_prior_run_and_only_reuses_completed_evidence(tmp_path,
         (prior/'replay'/'battery.toml').write_text('fixture')
     before = {str(p.relative_to(prior)): p.read_bytes() for p in prior.rglob('*') if p.is_file()}
     calls = []
+    if benchmark_change:
+        (tmp_path/'measurement.toml').write_text('[benchmarks]\nequal_weight_snapshot="new"\n')
 
     def stage(name, result):
         def run(**kwargs):
@@ -92,8 +96,11 @@ def test_resume_preserves_prior_run_and_only_reuses_completed_evidence(tmp_path,
         monkeypatch.setattr(pipeline, function, stage(name, result))
     result = pipeline.run_pipeline(config=config, measurement_config=tmp_path/'measurement.toml', output=tmp_path/'new', data_root=tmp_path,
                                    resume_from=prior)
-    assert calls == (['reports'] if replay_complete else ['replay', 'reports'] if complete else ['costs', 'selection'])
-    assert result['completed_cost_factors'] == (2 if complete else 3)
+    expected = (['costs', 'selection', 'predictions', 'replay', 'reports'] if complete
+                else ['costs', 'selection']) if benchmark_change else (
+                    ['reports'] if replay_complete else ['replay', 'reports'] if complete else ['costs', 'selection'])
+    assert calls == expected
+    assert result['completed_cost_factors'] == (2 if complete and not benchmark_change else 3)
     assert before == {str(p.relative_to(prior)): p.read_bytes() for p in prior.rglob('*') if p.is_file()}
     config.write_text(config.read_text()+'\nchanged=true\n')
     with pytest.raises(ValueError, match='same frozen'):

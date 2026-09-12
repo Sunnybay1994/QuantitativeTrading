@@ -112,15 +112,23 @@ def test_new_cost_during_run_is_not_lost_when_batch_finishes(tmp_path, monkeypat
     assert len(calls) == 2 and result['model_results_ready']
 
 
-def test_completed_diagnostic_is_not_repeated_without_new_cost(tmp_path, monkeypatch):
+@pytest.mark.parametrize('benchmark_change', [False, True])
+def test_completed_diagnostic_is_not_repeated_without_new_cost(tmp_path, monkeypatch, benchmark_change):
     _, config, clock = setup(tmp_path, monkeypatch)
     prior = tmp_path/'prior'
     (prior/'costs').mkdir(parents=True)
     (prior/'model.toml').write_bytes(config.read_bytes())
     (prior/'summary.json').write_text('{"model_results_ready": false}')
     (prior/'costs'/'summary.json').write_text('{"source_runs": {}}')
-    monkeypatch.setattr(follower, 'run_pipeline', lambda **kwargs: pytest.fail('No new costs'))
+    calls = []
+    def run(**kwargs):
+        calls.append(kwargs)
+        return {'model_results_ready': True}
+    monkeypatch.setattr(follower, 'run_pipeline', run)
+    if benchmark_change:
+        (tmp_path/'measurement.toml').write_text('[benchmarks]\nequal_weight_snapshot="new"\n')
     monkeypatch.setattr(follower.time, 'sleep', lambda seconds: clock.__setitem__(0, clock[0]+seconds))
     result = follower.follow(config=config, measurement_config=tmp_path/'measurement.toml', output=tmp_path/'follow', data_root=tmp_path,
                              resume_from=prior, max_wait_hours=0.1)
-    assert result['latest_run'] == str(prior)
+    assert len(calls) == int(benchmark_change)
+    assert result['latest_run'] == (str(tmp_path/'follow'/'attempt_0001') if benchmark_change else str(prior))
