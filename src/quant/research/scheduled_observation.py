@@ -29,6 +29,8 @@ def completed_record(root: Path, date: str) -> Path | None:
                 continue
         except (OSError, ValueError):
             continue
+        if not isinstance(value, dict):
+            continue
         if (
             value.get("as_of") == date
             and value.get("status") == "complete"
@@ -96,7 +98,14 @@ def run(
     s0_status = root / f"{date}_s0.json"
     if value.get("stages", {}).get("refresh", {}).get("status") == "complete":
         # The S0 CLI owns same-day no-op, halt/sell-only and its forward start.
-        previous = json.loads(s0_status.read_text(encoding="utf-8")) if s0_status.exists() else {}
+        try:
+            previous = json.loads(s0_status.read_text(encoding="utf-8")) if s0_status.exists() else {}
+        except ValueError:
+            # This is only the scheduler's completion hint. The S0 ledger remains
+            # authoritative and its own no-op makes recovery safe after interruption.
+            previous = {}
+        if not isinstance(previous, dict):
+            previous = {}
         if previous.get("exit_code") == 0:
             s0_code = 0
         else:

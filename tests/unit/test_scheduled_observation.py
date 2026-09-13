@@ -118,3 +118,18 @@ def test_s0_failure_retries_without_repeating_observation(tmp_path, monkeypatch)
     monkeypatch.setattr(scheduled.subprocess, "run", execute)
     assert scheduled.run(config=config, root=root, now=NOW)["status"] == "incomplete"
     assert scheduled.run(config=config, root=root, now=NOW)["status"] == "complete"
+
+
+def test_interrupted_s0_hint_recovers_through_ledger(tmp_path, monkeypatch):
+    config = setup_config(tmp_path, monkeypatch)
+    root = Path("records")
+    record(root)
+    (root / "2026-09-14_s0.json").write_text('{"exit_code":')
+
+    def execute(command, **kwargs):
+        assert command[2] == "quant.execution.paper_ledger"
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(scheduled.subprocess, "run", execute)
+    assert scheduled.run(config=config, root=root, now=NOW)["status"] == "complete"
+    assert json.loads((root / "2026-09-14_s0.json").read_text())["exit_code"] == 0
