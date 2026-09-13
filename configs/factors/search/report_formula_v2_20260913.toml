@@ -1,0 +1,62 @@
+# Manual extraction from saved session research; local adaptations, not exact paper replications.
+# Previously studied history is retrospective; no untouched historical test is claimed.
+[search]
+id = "report_batch01_20260913"
+maximum_candidates = 20
+maximum_depth = 20
+workers = 2
+maximum_hours = 8
+maximum_cost_attempts = 2
+library = "configs/factors/library"
+battery_config = "configs/factors/battery.toml"
+refresh_config = "configs/data/refresh_q2_sue_v2_model_20260912.toml"
+execution_snapshot = "factor_battery_20260911_v2"
+fields = ["adj_close", "free_float_turnover_level_monthly_calendar80_v1", "turnover_rate"]
+operators = ["delay", "ts_mean", "ts_std", "ts_std0"]
+unit_rule = "Dimensionless price ratios, risk scaled returns, and normalized turnover."
+feedback = "Fixed family and direction before execution; validation diagnostic only."
+budget_semantics = "Eight hours between stages; resume existing command without expanding grid."
+
+[dates]
+start = 2010-01-01
+training_end = 2023-12-29
+validation_start = 2024-01-01
+validation_end = 2025-12-31
+panel_end = 2026-09-11
+forward_start = 2026-09-14
+
+[[templates]]
+id = "report01_skip_month_momentum"
+expr = "delay(adj_close, 21) / delay(adj_close, {n}) - 1"
+family = "report01_price_liquidity"
+direction = 1
+source_ref = "docs/research/研究议程_因子与策略清单.md section 2.2: 12-1 momentum; local 21-session skip and fixed horizon family"
+[templates.parameters]
+n = [63, 84, 126, 189, 252]
+
+[[templates]]
+id = "report01_risk_scaled_momentum"
+expr = "(delay(adj_close, 21) / delay(adj_close, {n}) - 1) / ts_std(adj_close / delay(adj_close, 1) - 1, {n})"
+family = "report01_price_liquidity"
+direction = 1
+source_ref = "docs/research/研究议程_因子与策略清单.md section 2.1: risk adjusted momentum; local cross-sectional adaptation and 21-session skip"
+[templates.parameters]
+n = [63, 84, 126, 189, 252]
+
+[[templates]]
+id = "report01_turnover_stability"
+expr = "ts_std(free_float_turnover_level_monthly_calendar80_v1, {n}) / ts_mean(free_float_turnover_level_monthly_calendar80_v1, {n})"
+family = "report01_price_liquidity"
+direction = -1
+source_ref = "docs/research/研究议程_因子与策略清单.md turnover variability; local coefficient of variation of calendar-valid monthly turnover observations"
+[templates.parameters]
+n = [10, 20, 40, 60, 120]
+
+[[templates]]
+id = "report01_liquidity_reversal"
+expr = "(adj_close / delay(adj_close, {n}) - 1) * (free_float_turnover_level_monthly_calendar80_v1 / ts_mean(free_float_turnover_level_monthly_calendar80_v1, 120))"
+family = "report01_price_liquidity"
+direction = -1
+source_ref = "docs/research/A股港股统计信号文章评估与后续范围_20260911.md section 1: liquidity and reversal; local relative-turnover interaction, not paper formula"
+[templates.parameters]
+n = [5, 10, 20, 40, 60]

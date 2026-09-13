@@ -23,6 +23,7 @@ def expression_units(node: ast.AST) -> tuple[int, int]:
         return (0, 0)
     if isinstance(node, ast.Name):
         units = {'adj_close': (1, 0), 'adj_high': (1, 0), 'adj_low': (1, 0), 'volume': (0, 1),
+                 'turnover_rate': (0, 0),
                  'amihud_illiquidity_monthly_calendar80_v1': (-1, -1),
                  'free_float_turnover_level_monthly_calendar80_v1': (0, 0),
                  'free_float_turnover_abnormal_12m_calendar80_v1': (0, 0)}
@@ -41,7 +42,7 @@ def expression_units(node: ast.AST) -> tuple[int, int]:
             return (left[0]-right[0], left[1]-right[1])
         raise ValueError('Incompatible units or unregistered arithmetic')
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-        if node.func.id in ('delay', 'ts_mean', 'ts_std'):
+        if node.func.id in ('delay', 'ts_mean', 'ts_std', 'ts_std0'):
             return expression_units(node.args[0])
         if node.func.id == 'ts_corr':
             for argument in node.args[:-1]:
