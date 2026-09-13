@@ -148,6 +148,16 @@ def run(*, config: Path, output: Path, data_root: Path = Path('data'), prepare_o
             'training_end': str(dates['training_end']), 'validation_end': str(dates['validation_end']),
             'forward_start': str(dates['forward_start']), 'completed_stages': completed,
             'scope': 'Finite factor search; model and portfolio conclusions require their registered replay'}
+        if search.get('reference_statistics'):
+            if scorecard.get('admitted_rows', 0):
+                from quant.research.factor_batch_overlap import run as compare_library
+                # The existing overlap reader requires the completed factor summary.
+                (output/'summary.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
+                result['library_overlap'] = stage('library_overlap', lambda folder: compare_library(
+                    batch=output, reference=Path(search['reference_statistics']),
+                    output=folder, workers=search['workers']))
+            else:
+                result['library_overlap'] = {'skipped': True, 'reason': 'No batch-admitted candidates'}
         if model_config is not None:
             from quant.research.follow_factor_models import follow_factor_models, next_model_output
             assert measurement_config is not None

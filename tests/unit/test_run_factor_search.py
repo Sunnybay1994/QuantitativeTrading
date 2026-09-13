@@ -10,6 +10,35 @@ from quant.research import run_factor_search as search
 CONFIG = Path('configs/factors/search/p6c_finite_batch01_20260911.toml')
 
 
+def test_registered_reference_overlap_runs_once_after_admission(tmp_path, monkeypatch):
+    fake_stages(monkeypatch)
+    original = search.run_scorecard
+    def scorecard(**kwargs):
+        result = original(**kwargs)
+        result['admitted_rows'] = 1
+        (kwargs['output']/'summary.json').write_text(json.dumps(result))
+        return result
+    monkeypatch.setattr(search, 'run_scorecard', scorecard)
+    calls = []
+    def compare(**kwargs):
+        assert json.loads((kwargs['batch']/'summary.json').read_text())['message'] == 'completed'
+        calls.append(kwargs)
+        kwargs['output'].mkdir()
+        result = {'candidate_versions_with_high_overlap': 1}
+        (kwargs['output']/'summary.json').write_text(json.dumps(result))
+        return result
+    monkeypatch.setattr('quant.research.factor_batch_overlap.run', compare)
+    config = tmp_path/'search.toml'
+    config.write_text(CONFIG.read_text(encoding='utf-8').replace('[search]',
+        '[search]\nreference_statistics = "artifacts/reference"'), encoding='utf-8')
+    args = dict(config=config, output=tmp_path/'run')
+    result = search.run(**args)
+    assert result['library_overlap']['candidate_versions_with_high_overlap'] == 1
+    assert 'library_overlap' in result['completed_stages']
+    search.run(**args)
+    assert len(calls) == 1
+
+
 def fake_stages(monkeypatch, *, benchmark_failure=False, cost_failure=False, passes=2):
     calls = []
     def prepare(**kwargs):

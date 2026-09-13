@@ -9,7 +9,7 @@ assessments = [
 config = "configs/research/deepseek_diagnosis_cycle_20260913.toml"
 
 [candidates]
-design = "configs/factors/search/cycle_design_20260913.toml"
+design = "configs/factors/search/cycle_design_with_reference_20260913.toml"
 config = "configs/research/deepseek_candidates_v1.toml"
 scope = "根据完整评分表与模型诊断提出一批有经济解释的价量或流动性表达式，优先处理量纲、覆盖及旧库冗余问题。每项理由不超过40个汉字，数量可低于上限。沿用冻结设计；历史数据已用于研究，不能宣称独立测试通过。"
 fields = ["adj_close", "adj_high", "adj_low", "volume", "amihud_illiquidity_monthly_calendar80_v1", "free_float_turnover_level_monthly_calendar80_v1", "free_float_turnover_abnormal_12m_calendar80_v1"]
