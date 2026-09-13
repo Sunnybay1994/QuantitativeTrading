@@ -1,0 +1,5 @@
+id = "gp_3ee9ec4c596fdb23"
+expr = "((-((adj_close / delay(adj_close, 20) - 1) * (free_float_turnover_level_monthly_calendar80_v1 / ts_mean(free_float_turnover_level_monthly_calendar80_v1, 120))))-(ts_std(free_float_turnover_level_monthly_calendar80_v1, 60) / ts_mean(free_float_turnover_level_monthly_calendar80_v1, 60)))"
+family = "genetic_price_liquidity"
+direction = 1
+source_ref = "artifacts\\factors\\genetic_price_liquidity_20260913_01\\frozen_selection.json"

@@ -1,0 +1,41 @@
+# Frozen before GP results; retrospective historical experiment.
+library = "configs/factors/library"
+statistics = ["artifacts/factors/report_batch01_20260913_01/training", "artifacts/factors/report_batch01_20260913_01/validation"]
+terminals = ["report01_skip_month_momentum_n63", "report01_skip_month_momentum_n126", "report01_skip_month_momentum_n252", "report01_risk_scaled_momentum_n63", "report01_risk_scaled_momentum_n126", "report01_turnover_stability_n20", "report01_turnover_stability_n60", "report01_liquidity_reversal_n5", "report01_liquidity_reversal_n20"]
+
+[dates]
+start = 2010-01-01
+training_end = 2019-12-31
+validation_start = 2020-01-01
+validation_end = 2022-12-31
+test_start = 2023-01-01
+test_end = 2025-12-31
+
+[genetic]
+seed = 20260913
+population_size = 24
+generations = 4
+max_unique_evaluations = 80
+max_attempts = 240
+max_depth = 3
+minimum_symbols = 100
+minimum_months = 96
+minimum_paired_coverage = 0.8
+complexity_penalty = 0.0002
+crossover_probability = 0.6
+mutation_probability = 0.3
+tournament_size = 3
+candidate_count = 12
+random_baseline = true
+
+[selection]
+minimum_validation_months = 30
+minimum_validation_ic = 0.01
+maximum_selected = 3
+
+[evaluation]
+refresh_config = "configs/data/refresh_q2_sue_v2_model_20260912.toml"
+battery_config = "configs/factors/battery.toml"
+execution_snapshot = "factor_battery_20260911_v2"
+return_benchmark_config = "configs/data/return_benchmarks_q1b_20260912.toml"
+workers = 2

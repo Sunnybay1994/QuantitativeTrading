@@ -28,6 +28,8 @@ data = [
 ]
 # 研究面重依赖(M3 里程碑);不进入交易路径
 research = [
+    "deap==1.4.4",
+    "moocore==0.3.2",
     "mlflow>=2.12",
     "lightgbm>=4.3",
     "scikit-learn>=1.4",
