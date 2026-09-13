@@ -12,6 +12,7 @@ from quant.research.monthly_current_ratio import build_monthly_current_ratio
 from quant.research.monthly_debt_ebitda import build_monthly_debt_ebitda
 from quant.research.monthly_gross_margin import build_monthly_gross_margin
 from quant.research.monthly_gross_profitability import build_monthly_gross_profitability
+from quant.research.monthly_inventory_expansion import build_monthly_inventory_expansion
 from quant.research.monthly_leverage import build_monthly_leverage
 from quant.research.monthly_profit_acceleration import build_monthly_profit_acceleration
 from quant.research.monthly_profit_growth import build_monthly_profit_growth
@@ -39,6 +40,7 @@ DIRECT: dict[str, tuple[Callable[..., PITQualitySignalResult], dict[str, tuple[s
     "pit_gross_profitability_ttm": (build_monthly_gross_profitability,
                                    {"income": ("revenue", "oper_cost"), "balancesheet": ()}, None),
     "pit_gross_margin_ttm": (build_monthly_gross_margin, {"income": ("revenue", "oper_cost")}, None),
+    "pit_inventory_expansion_yoy": (build_monthly_inventory_expansion, {"balancesheet": ("inventories",)}, None),
     "pit_asset_growth_yoy": (build_monthly_asset_growth, {"balancesheet": ()}, None),
     "pit_current_ratio": (build_monthly_current_ratio, {"balancesheet": ("total_cur_assets", "total_cur_liab")}, None),
     "pit_liabilities_to_assets": (build_monthly_leverage, {"balancesheet": ("total_liab",)}, None),

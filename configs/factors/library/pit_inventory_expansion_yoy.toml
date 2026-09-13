@@ -1,0 +1,5 @@
+id = "pit_inventory_expansion_yoy"
+expr = "pit_inventory_expansion_yoy"
+family = "pit_financial"
+direction = -1
+source_ref = "docs/research/策略发现_20260909.md"

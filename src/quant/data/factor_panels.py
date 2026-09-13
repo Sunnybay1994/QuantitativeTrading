@@ -49,7 +49,7 @@ def read_factor_financial_history(
         raise ValueError("Financial factors require dated daily input")
     extras = {"income": ("revenue", "oper_cost", "ebit"),
               "balancesheet": ("total_liab", "total_cur_assets", "total_cur_liab", "money_cap", "st_borr",
-                               "lt_borr", "bond_payable", "taxes_payable", "surplus_rese", "undistr_porfit"),
+                               "lt_borr", "bond_payable", "taxes_payable", "surplus_rese", "undistr_porfit", "inventories"),
               "cashflow": ("depr_fa_coga_dpba", "c_pay_acq_const_fiolta")}
     result = {name: read_tushare_financial_history(data_root=data_root, query=TushareFinancialHistoryQuery(
         snapshot_id=snapshot, dataset=name, start_period=dt.date(1900, 1, 1),
