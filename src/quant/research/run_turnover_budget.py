@@ -220,6 +220,8 @@ def run(*, config: Path, output: Path, data_root: Path, resume: bool = False,
         result['execution_improvement'] = assess_small_adjustments(result, diagnostics, spec['execution_improvement'])
     (output/'assessment.json').write_text(json.dumps(result, indent=2, default=str), encoding='utf-8')
     write_budget_report(output, result)
+    from quant.reporting.experiment_registry import register_run
+    register_run(output)
     return result
 
 

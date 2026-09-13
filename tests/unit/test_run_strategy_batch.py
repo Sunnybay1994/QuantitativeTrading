@@ -6,6 +6,13 @@ import pytest
 from quant.research import run_strategy_batch as batch
 
 
+@pytest.fixture(autouse=True)
+def isolated_registry(tmp_path, monkeypatch):
+    from quant.reporting import experiment_registry
+    monkeypatch.setattr(experiment_registry, 'DEFAULT_REGISTRY', tmp_path/'registry/experiments.parquet')
+    monkeypatch.setattr(experiment_registry, 'DEFAULT_LEADERBOARD', tmp_path/'leaderboard.md')
+
+
 def completed(tmp_path, kind):
     root = tmp_path/kind
     root.mkdir()
@@ -92,6 +99,7 @@ def test_incomplete_or_mismatched_existing_result_does_not_rerun(tmp_path, damag
 
 
 def test_static_dispatch_failure_does_not_stop_next_registered_job(tmp_path, monkeypatch):
+    monkeypatch.setattr('quant.reporting.experiment_registry.register_run', lambda *args: 0)
     calls = []
     def overlay(**kwargs):
         calls.append('overlay')

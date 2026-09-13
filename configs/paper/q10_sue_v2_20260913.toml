@@ -1,0 +1,40 @@
+[research]
+assessment = "artifacts/models/r1_q10_calendar_turnover_20260913_01/assessment.json"
+conclusion = "PAPER_CANDIDATE"
+predictions = "artifacts/models/q2_sue_context_v2_causal48_20260912_02/predictions"
+
+[paper]
+name = "q10_sue_v2"
+inception_date = 2026-09-13
+initial_cash = 1000000.0
+auto_trade = false
+halt = false
+sell_only = false
+
+[model]
+selection = "artifacts/models/q2_sue_v2_frozen_forward_20260912_01"
+forecast_root = "artifacts/daily/sue_v2"
+
+[data]
+refresh_config = "configs/data/refresh.toml"
+warmup_start = 2026-09-01
+
+[universe]
+minimum_daily_symbols = 1
+
+[portfolio]
+stock_dividend_withholding = 0.20
+
+[costs.a_share]
+commission_rate = 0.00025
+commission_min = 5.0
+stamp_tax_sell = 0.0005
+transfer_fee = 0.00001
+slippage = 0.001
+effective_from = 2023-08-28
+
+[costs.etf]
+commission_rate = 0.00025
+commission_min = 5.0
+slippage = 0.001
+effective_from = 2023-01-01

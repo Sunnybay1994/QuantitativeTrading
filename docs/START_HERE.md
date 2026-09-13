@@ -33,9 +33,9 @@ D:\Miniforge3\python.exe -m quant.execution.order_risk --snapshot artifacts/pape
 
 ## 环境（唯一）
 
-固定模型预测的事后月度评分使用`quant.research.score_model_forecasts --forecast <预测目录> --known-through <已收盘日期> --output <新目录>`；多个日期重复传`--forecast`。历史演练与事前记录分开，见[评分口径与真实核对](research/固定模型预测评分_20260911.md)。
+固定模型预测的事后月度评分使用`quant.research.score_model_forecasts --forecast <预测目录> --known-through <已收盘日期> --output <新目录>`；多个日期重复传`--forecast`。历史演练与事前记录分开，见[评分口径与真实核对](research/experiments_2026-09/固定模型预测评分_20260911.md)。
 
-已有模型及候选的流动性、规模、行业、市场状态与成交容量诊断：`quant.reporting.model_stratification --config configs/models/p6cd_stratified_diagnostics_20260911.toml --output <新目录>`；见[诊断结论](research/模型与候选分层诊断_20260911.md)。
+已有模型及候选的流动性、规模、行业、市场状态与成交容量诊断：`quant.reporting.model_stratification --config configs/models/p6cd_stratified_diagnostics_20260911.toml --output <新目录>`；见[诊断结论](research/experiments_2026-09/模型与候选分层诊断_20260911.md)。
 
 ```powershell
 cd F:\AI_Coding\QuantitativeTrading

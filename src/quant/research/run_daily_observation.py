@@ -165,6 +165,12 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
         except (OSError, ValueError, KeyError) as exc:
             refresh_errors = [f'Unavailable input-quality result: {type(exc).__name__}: {exc}']
         refresh_ok = not refresh_errors
+        if settings.get('q10') and not rehearsal and end >= dt.date(2026, 9, 13):
+            from quant.execution.q10_paper import run as run_q10
+            stage('q10', lambda: run_q10(config_path=Path(settings['q10']['config']),
+                data_root=data_root, output=Path(settings['q10']['output']), end=end,
+                forecast=output/'model/forecast'),
+                lambda value: value.get('as_of') == date)
         stages['refresh'] = {'status': 'complete' if refresh_ok else 'failed',
                              'mode': 'saved_data' if saved_data else 'refresh',
                              'input_errors': refresh_errors,

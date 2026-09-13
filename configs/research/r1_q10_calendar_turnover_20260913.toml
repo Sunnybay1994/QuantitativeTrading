@@ -1,0 +1,9 @@
+[research]
+id = "r1-q10-calendar-turnover-20260913"
+source = "artifacts/models/q10_sue_v2_turnover_budget_05_20260912_01"
+rule = "roadmap_1.2_20260913"
+decision_turnover = "calendar_year_median_including_labeled_partial_years_without_extrapolation"
+hard_limit = 6.0
+exception_limit = 8.0
+exception_minimum_double_cost_excess = 0.05
+auto_trade = false

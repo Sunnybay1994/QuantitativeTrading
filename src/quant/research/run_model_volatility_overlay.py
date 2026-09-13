@@ -141,6 +141,8 @@ def run(*, config: Path, output: Path, data_root: Path = Path('data')) -> dict:
             assessments['overlay']['conclusion'] == 'PAPER_CANDIDATE' else 'REJECTED'}
     (output/'assessment.json').write_text(json.dumps(result, indent=2, default=str), encoding='utf-8')
     write_report(output, result)
+    from quant.reporting.experiment_registry import register_run
+    register_run(output)
     return result
 
 

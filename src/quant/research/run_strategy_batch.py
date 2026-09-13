@@ -108,6 +108,8 @@ def run(*, config: Path, output: Path, data_root: Path = Path('data')) -> dict:
                 else:
                     run_budget(config=registered, output=destination, data_root=data_root)
             item.update(saved_result(kind=job['kind'], config=registered, output=destination))
+            from quant.reporting.experiment_registry import register_run
+            register_run(destination)
             item['status'] = 'reused' if existing else 'ran'
         except Exception as exc:
             item.update(status='failed', error=f'{type(exc).__name__}: {exc}')

@@ -272,6 +272,8 @@ def report_models(*, run: Path, output: Path, data_root: Path,
         (folder/'report.md').write_text(rendered, encoding='utf-8')
         (folder/'assessment.json').write_text(json.dumps(assessment, indent=2, default=str), encoding='utf-8')
     (output/'summary.json').write_text(json.dumps(result, indent=2, default=str), encoding='utf-8')
+    from quant.reporting.experiment_registry import register_run
+    register_run(output)
     return result
 
 

@@ -12,6 +12,9 @@ from quant.reporting import multifactor_models as module
 
 @pytest.fixture
 def saved_run(tmp_path, monkeypatch):
+    from quant.reporting import experiment_registry
+    monkeypatch.setattr(experiment_registry, 'DEFAULT_REGISTRY', tmp_path/'registry/experiments.parquet')
+    monkeypatch.setattr(experiment_registry, 'DEFAULT_LEADERBOARD', tmp_path/'leaderboard.md')
     run = tmp_path/'saved'
     run.mkdir()
     text = Path('configs/models/p4_annual_walk_forward_20260911.toml').read_text(encoding='utf-8')
@@ -32,9 +35,11 @@ def saved_run(tmp_path, monkeypatch):
                 folder = run/f'{method}_top{top}'/f'cost_{cost:g}'/'2024'
                 folder.mkdir(parents=True)
                 pl.DataFrame({'date': dates, 'unit_nav': values,
-                    'equity': [v*100 for v in values], 'market_value': market}).write_parquet(folder/'nav.parquet')
-                trades = (pl.DataFrame({'date': [dates[entry]], 'notional': [80.]}) if method != 'lightgbm'
-                          else pl.DataFrame(schema={'date': pl.Date, 'notional': pl.Float64}))
+                    'equity': [v*100 for v in values], 'market_value': market,
+                    'position_count': [int(v > 0) for v in market]}).write_parquet(folder/'nav.parquet')
+                trades = (pl.DataFrame({'date': [dates[entry]], 'symbol': ['TEST'], 'notional': [80.]})
+                          if method != 'lightgbm' else pl.DataFrame(
+                              schema={'date': pl.Date, 'symbol': pl.String, 'notional': pl.Float64}))
                 trades.write_parquet(folder/'trades.parquet')
                 rows.append({'variant': f'{method}_top{top}', 'cost_multiplier': cost})
     (run/'summary.json').write_text(json.dumps({'factor': model['research']['id'], 'rows': rows}))
@@ -104,7 +109,7 @@ def test_all_models_cash_writes_empty_comparison_table(saved_run, monkeypatch):
     def cash(*args):
         nav, _ = original(*args)
         return nav.with_columns(pl.lit(0.).alias('market_value'), pl.lit(1.).alias('unit_nav')), \
-            pl.DataFrame(schema={'date': pl.Date, 'notional': pl.Float64})
+            pl.DataFrame(schema={'date': pl.Date, 'symbol': pl.String, 'notional': pl.Float64})
     monkeypatch.setattr(module, 'load_cost_history', cash)
     result = module.report_models(**saved_run)
     assert set(result['conclusions'].values()) == {'RESEARCH_ONLY'}
