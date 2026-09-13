@@ -1,0 +1,10 @@
+scoring_config = "configs/research/deepseek_diagnosis_v1.toml"
+cache_path = "artifacts/research/p7_deepseek_cache.sqlite"
+fields = ["adj_close", "free_float_turnover_level_monthly_calendar80_v1"]
+operators = ["delay", "ts_mean", "ts_std"]
+maximum_candidates = 4
+maximum_history = 300
+maximum_report_bytes = 22000
+maximum_requests = 1
+maximum_incremental_usd = 0.02
+shared_usd_ceiling = 30

@@ -46,6 +46,10 @@ def _configuration(config: Path) -> tuple[dict, dict]:
         dates["start"] < dates["training_end"] < dates["validation_start"] <= dates["validation_end"]
         <= dates["panel_end"] < dates["forward_start"]):
         raise ValueError("Invalid frozen candidate dates or fields")
+    if 'models' in settings:
+        if (set(settings['models']) != {'config', 'measurement_config'}
+                or any(not Path(value).is_file() for value in settings['models'].values())):
+            raise ValueError('Model continuation requires existing model and measurement configurations')
     return settings, design
 
 
@@ -80,6 +84,7 @@ def _inputs(config: Path, settings: dict, design: dict, return_benchmark_config:
         paths.extend(Path(design["search"]["library"]).rglob("*.toml"))
     if return_benchmark_config is not None:
         paths.append(return_benchmark_config)
+    paths.extend(Path(value) for value in settings.get('models', {}).values())
     return _hashes(paths)
 
 
@@ -123,6 +128,14 @@ def _validate_saved(path: Path, name: str, report: dict) -> None:
         request = json.loads((path / "frozen_request.json").read_text(encoding="utf-8"))
         if report.get("synthetic_fixture") is not False or request["synthetic_fixture"] is not False:
             raise ValueError("Synthetic candidates cannot be resumed into evaluation")
+        if report.get('result') == 'success' and report.get('accepted_count') == 0:
+            payload = json.loads((path / 'candidates.json').read_text(encoding='utf-8'))
+            trials = report.get('trials', [])
+            if (len(payload['candidates']) != len(trials)
+                    or any(row.get('result') == 'accepted' for row in trials)
+                    or report.get('prepared') is not None):
+                raise ValueError('Empty batch evidence is inconsistent')
+            return
         batch = path / "batch.toml"
         if (path / "prepared/search.toml").read_bytes() != batch.read_bytes():
             raise ValueError("Prepared candidates differ from the generated batch")
@@ -206,7 +219,8 @@ def run(*, config: Path, output: Path, execute: bool = False, development_test: 
             if value.get("output_hashes"):
                 _validate_saved(paths[name], name, value["result"])
         # Validate local candidate safety even if the outer cycle says completed.
-        if result["stages"]["candidates"].get("output_hashes"):
+        if (result["stages"]["candidates"].get("output_hashes")
+                and result['stages']['candidates']['result']['accepted_count'] > 0):
             _check_batch(paths["candidates"] / "batch.toml",
                          candidate_root=paths["candidates"], design=design)
     else:
@@ -225,6 +239,16 @@ def run(*, config: Path, output: Path, execute: bool = False, development_test: 
         temporary = output / "run.tmp.json"
         temporary.write_text(json.dumps(result, default=str, ensure_ascii=False, indent=2), encoding="utf-8")
         temporary.replace(output / "run.json")
+        lines = ['# 自动研究循环', '', f'运行状态：{status}。', '',
+                 '| 环节 | 状态 |', '|---|---|']
+        for name, value in result['stages'].items():
+            lines.append(f"| {name} | {value['status']} |")
+        candidate_result = result['stages']['candidates'].get('result', {})
+        if 'accepted_count' in candidate_result:
+            lines += ['', f"有效候选：{candidate_result['accepted_count']}。"]
+        lines += ['', '诊断与表达式见 diagnosis/ 和 candidates/；评估结果见 evaluation/。',
+                  '历史诊断产生的候选属于回顾性研究，原准入条件保持。']
+        (output / 'report.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
         return result
 
     def reuse(name: str) -> dict | None:
@@ -279,10 +303,16 @@ def run(*, config: Path, output: Path, execute: bool = False, development_test: 
                 output=paths[stage], **{**shared, "config": frozen_candidate_scoring})
         result["stages"][stage].update(status=report["result"], result=report)
         result["cost_estimates"]["candidates_usd_bound_including_retries"] = report.get("usd_bound_including_retries")
-        if report["result"] != "success" or report["accepted_count"] < 1 or report.get("synthetic_fixture") is not False:
+        if report["result"] != "success" or report.get("synthetic_fixture") is not False:
             result["stopped_stage"] = stage
             result["stages"]["evaluation"]["reason"] = "Requires successful generation with accepted non-fixture candidates"
             return save("stopped")
+        if report['accepted_count'] == 0:
+            record(stage, report)
+            result['stages']['evaluation'].update(status='skipped',
+                reason='No valid new candidates; successful empty batch requires no evaluation')
+            result['conclusion'] = 'REJECTED'
+            return save('completed')
         batch = paths["candidates"] / "batch.toml"
         _check_batch(batch, candidate_root=paths["candidates"], design=design)
         record(stage, report)
@@ -292,13 +322,20 @@ def run(*, config: Path, output: Path, execute: bool = False, development_test: 
         # Never interpret or execute report['next_command'] or any model-provided command.
         report = reuse(stage)
         if report is None:
+            model_options: dict[str, Any] = {}
+            if 'models' in settings:
+                for key, filename in (('config', 'model_template.toml'),
+                                      ('measurement_config', 'model_measurement.toml')):
+                    (output/filename).write_bytes(Path(settings['models'][key]).read_bytes())
+                model_options = {'model_config': output/'model_template.toml',
+                                 'measurement_config': output/'model_measurement.toml'}
             if return_bytes is not None:
                 frozen_returns = output/'return_benchmarks.toml'
                 frozen_returns.write_bytes(return_bytes)
                 report = run_factor_search(config=batch, output=paths["evaluation"],
-                                           return_benchmark_config=frozen_returns)
+                                           return_benchmark_config=frozen_returns, **model_options)
             else:
-                report = run_factor_search(config=batch, output=paths["evaluation"])
+                report = run_factor_search(config=batch, output=paths["evaluation"], **model_options)
         result["stages"][stage].update(status=report["message"], result=report)
         if report["message"] == "completed":
             record(stage, report)

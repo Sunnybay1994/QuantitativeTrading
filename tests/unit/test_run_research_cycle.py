@@ -98,9 +98,11 @@ def mocks(monkeypatch, setup, *, diagnosis="success", candidate="success", count
         (kwargs["output"] / "batch.toml").write_text(text)
         report = {"result": candidate, "accepted_count": count, "synthetic_fixture": synthetic,
                 "next_command": ["DO_NOT_EXECUTE", "malicious model command"], "usd_bound_including_retries": .02}
+        if count == 0:
+            report.update(trials=[], prepared=None)
         (kwargs["output"] / "run.json").write_text(json.dumps(report))
         (kwargs["output"] / "frozen_request.json").write_text(json.dumps({"synthetic_fixture": synthetic}))
-        (kwargs["output"] / "candidates.json").write_text('{"candidates": [{}]}')
+        (kwargs["output"] / "candidates.json").write_text(json.dumps({'candidates': [{}] if count else []}))
         prepared = kwargs["output"] / "prepared"
         prepared.mkdir()
         (prepared / "search.toml").write_text(text)
@@ -184,8 +186,28 @@ def test_diagnosis_non_success_preserves_result_and_never_generates(setup, monke
 def test_candidate_stop_and_fixture_never_evaluate(setup, monkeypatch, status, count, synthetic):
     calls = mocks(monkeypatch, setup, candidate=status, count=count, synthetic=synthetic)
     result = cycle.run(**setup, execute=True)
-    assert result["status"] == "stopped" and len(calls) == 2
-    assert result["stages"]["evaluation"]["status"] == "not_run"
+    empty = status == 'success' and count == 0 and not synthetic
+    assert result["status"] == ('completed' if empty else 'stopped') and len(calls) == 2
+    assert result["stages"]["evaluation"]["status"] == ('skipped' if empty else 'not_run')
+    if empty:
+        resumed = cycle.run(**setup, execute=True, resume=True)
+        assert resumed['status'] == 'completed' and len(calls) == 2
+
+
+def test_optional_model_continuation_is_frozen_and_passed_directly(setup, monkeypatch):
+    model = Path('artifacts/model_template.toml')
+    measurement = Path('artifacts/model_measurement.toml')
+    model.write_text('[execution]\nauto_trade = false\n')
+    measurement.write_text('[benchmarks]\nequal_weight_snapshot = "fixture"\n')
+    with setup['config'].open('a') as handle:
+        handle.write(f'\n[models]\nconfig = "{model.as_posix()}"\n'
+                     f'measurement_config = "{measurement.as_posix()}"\n')
+    calls = mocks(monkeypatch, setup)
+    result = cycle.run(**setup, execute=True)
+    assert result['status'] == 'completed'
+    options = calls[-1][1]
+    assert options['model_config'].read_bytes() == model.read_bytes()
+    assert options['measurement_config'].read_bytes() == measurement.read_bytes()
 
 
 @pytest.mark.parametrize("stage", ["diagnosis", "candidates", "evaluation"])
