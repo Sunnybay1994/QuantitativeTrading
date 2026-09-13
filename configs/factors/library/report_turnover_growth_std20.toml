@@ -1,0 +1,5 @@
+id = "report_turnover_growth_std20"
+expr = "ts_std0(turnover_rate/delay(turnover_rate,1)-1,20)"
+family = "report_turnover_growth_stability"
+direction = -1
+source_ref = "https://file.iyanbao.com/pdf/034a0-f62a88b5-eb5e-4618-86cc-fdb816341902.pdf PDF p8; raw GTR precursor; local ddof=0 and complete 20 sessions, zero previous turnover missing; original size-only neutralization differs from battery size-industry variant."

@@ -3,6 +3,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import time
 import tomllib
 from pathlib import Path
 from typing import Any, Callable
@@ -30,9 +31,11 @@ def write_daily_report(record: dict[str, Any], output: Path) -> None:
     lines = [f"# 日更记录：{record['as_of'] or record['requested_to']}", '',
         f"模式：{'历史演练' if record['rehearsal'] else '前向记录'}；"
         f"数据：{'已保存本地数据' if record['saved_data'] else '本次刷新'}；自动交易：关闭。", '',
-        '|环节|结果|', '|---|---|']
+        '|环节|结果|耗时（秒）|', '|---|---|---:|']
     for name, stage in record['stages'].items():
-        lines.append(f"|{names.get(name, name)}|{statuses.get(stage['status'], stage['status'])}|")
+        seconds = stage.get('elapsed_seconds')
+        duration = f'{seconds:.1f}' if seconds is not None else '—'
+        lines.append(f"|{names.get(name, name)}|{statuses.get(stage['status'], stage['status'])}|{duration}|")
     model = record['stages'].get('model', {}).get('result', {})
     errors = model.get('input_errors', [])
     if model:
@@ -127,6 +130,7 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
     def stage(name: str, operation: Callable[[], dict], valid: Callable[[dict], bool]) -> bool:
         stages[name] = {'status': 'running'}
         save_summary()
+        started = time.monotonic()
         try:
             value = operation()
             ok = valid(value)
@@ -134,6 +138,7 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
         except Exception as exc:
             ok = False
             stages[name] = {'status': 'failed', 'error': f'{type(exc).__name__}: {exc}'}
+        stages[name]['elapsed_seconds'] = round(time.monotonic() - started, 3)
         save_summary()
         return ok
 

@@ -1,0 +1,63 @@
+# Manually extracted from original broker PDF formula pages, before local evaluation.
+# Local adaptations are explicitly recorded per source_ref; no exact replication claim.
+[search]
+id = "broker_original_batch_20260913"
+maximum_candidates = 20
+maximum_depth = 20
+workers = 4
+maximum_hours = 8
+maximum_cost_attempts = 2
+library = "configs/factors/library"
+reference_statistics = "artifacts/factors/battery_statistics_20260831_20260911"
+battery_config = "configs/factors/battery.toml"
+refresh_config = "configs/data/refresh_q2_sue_v2_model_20260912.toml"
+execution_snapshot = "factor_battery_20260911_v2"
+fields = ["adj_close", "adj_high", "adj_low", "turnover_rate"]
+operators = ["delay", "ts_mean", "ts_std", "ts_std0", "ts_max"]
+unit_rule = "Dimensionless price ratios, risk scaled returns, and normalized turnover."
+feedback = "Fixed family and direction before execution; validation diagnostic only."
+budget_semantics = "Eight hours between stages; resume existing command without expanding grid."
+
+[dates]
+start = 2010-01-01
+training_end = 2023-12-29
+validation_start = 2024-01-01
+validation_end = 2025-12-31
+panel_end = 2026-09-11
+forward_start = 2026-09-14
+
+
+[[templates]]
+id = "report_williams_upper_mean_20"
+expr = "ts_mean((adj_high-adj_close)/ts_mean((adj_high-adj_close),5),20)"
+family = "report_shadow_normalization"
+direction = -1
+source_ref = "https://file.iyanbao.com/pdf/6e53f-1eee82d3-95b0-46b7-9e11-35011749d18f.pdf PDF pp7-8, table5; local adjusted OHLC, current-inclusive windows, ddof=0, missing zero denominator. Raw precursor; existing battery adds size-industry neutralization."
+
+[[templates]]
+id = "report_williams_upper_std0_20"
+expr = "ts_std0((adj_high-adj_close)/ts_mean((adj_high-adj_close),5),20)"
+family = "report_shadow_normalization"
+direction = -1
+source_ref = "https://file.iyanbao.com/pdf/6e53f-1eee82d3-95b0-46b7-9e11-35011749d18f.pdf PDF pp7-8, table5; local adjusted OHLC, current-inclusive windows, ddof=0, missing zero denominator. Raw precursor; existing battery adds size-industry neutralization."
+
+[[templates]]
+id = "report_williams_lower_mean_20"
+expr = "ts_mean((adj_close-adj_low)/ts_mean((adj_close-adj_low),5),20)"
+family = "report_shadow_normalization"
+direction = -1
+source_ref = "https://file.iyanbao.com/pdf/6e53f-1eee82d3-95b0-46b7-9e11-35011749d18f.pdf PDF pp7-8, table5; local adjusted OHLC, current-inclusive windows, ddof=0, missing zero denominator. Raw precursor; existing battery adds size-industry neutralization."
+
+[[templates]]
+id = "report_williams_lower_std0_20"
+expr = "ts_std0((adj_close-adj_low)/ts_mean((adj_close-adj_low),5),20)"
+family = "report_shadow_normalization"
+direction = -1
+source_ref = "https://file.iyanbao.com/pdf/6e53f-1eee82d3-95b0-46b7-9e11-35011749d18f.pdf PDF pp7-8, table5; local adjusted OHLC, current-inclusive windows, ddof=0, missing zero denominator. Raw precursor; existing battery adds size-industry neutralization."
+
+[[templates]]
+id = "report_turnover_growth_std20"
+expr = "ts_std0(turnover_rate/delay(turnover_rate,1)-1,20)"
+family = "report_turnover_growth_stability"
+direction = -1
+source_ref = "https://file.iyanbao.com/pdf/034a0-f62a88b5-eb5e-4618-86cc-fdb816341902.pdf PDF p8; raw GTR precursor; local ddof=0 and complete 20 sessions, zero previous turnover missing; original size-only neutralization differs from battery size-industry variant."

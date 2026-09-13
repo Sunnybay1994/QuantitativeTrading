@@ -59,6 +59,18 @@ def test_missing_model_independent_accounts_continue(env):
     assert b20.called and b32.called and monthly.called
 
 
+def test_stage_duration_recorded_for_failure_and_success(env, monkeypatch):
+    args, model, _, _, _ = env
+    ticks = iter(range(100))
+    monkeypatch.setattr(daily.time, 'monotonic', lambda: next(ticks))
+    model.side_effect = ValueError('temporary input failure')
+    result = daily.run(**args)
+    assert result['stages']['model']['elapsed_seconds'] == 1
+    assert result['stages']['b20']['elapsed_seconds'] == 1
+    report = (args['output']/'report.md').read_text(encoding='utf-8')
+    assert '耗时（秒）' in report and '|失败|1.0|' in report
+
+
 def test_live_refresh_failure_blocks_stock_only(env):
     args, model, b20, b32, monthly = env
     args['saved_data'] = False

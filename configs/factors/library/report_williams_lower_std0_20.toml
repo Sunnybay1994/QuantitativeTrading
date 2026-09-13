@@ -1,0 +1,5 @@
+id = "report_williams_lower_std0_20"
+expr = "ts_std0((adj_close-adj_low)/ts_mean((adj_close-adj_low),5),20)"
+family = "report_shadow_normalization"
+direction = -1
+source_ref = "https://file.iyanbao.com/pdf/6e53f-1eee82d3-95b0-46b7-9e11-35011749d18f.pdf PDF pp7-8, table5; local adjusted OHLC, current-inclusive windows, ddof=0, missing zero denominator. Raw precursor; existing battery adds size-industry neutralization."
