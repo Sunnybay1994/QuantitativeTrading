@@ -1,0 +1,27 @@
+id = "strategy-batch-q6-q10-20260913"
+auto_trade = false
+evidence = "retrospective_registered_rules_no_selection"
+
+[[strategies]]
+id = "q6_volatility"
+kind = "volatility_overlay"
+config = "configs/models/q6_benchmark_volatility_20260912.toml"
+existing_output = "artifacts/models/q6_benchmark_volatility_20260912_01"
+
+[[strategies]]
+id = "q6_ma"
+kind = "volatility_overlay"
+config = "configs/models/q6_benchmark_ma_20260912.toml"
+existing_output = "artifacts/models/q6_benchmark_ma_20260912_01"
+
+[[strategies]]
+id = "q6_drawdown"
+kind = "volatility_overlay"
+config = "configs/models/q6_benchmark_drawdown_20260912.toml"
+existing_output = "artifacts/models/q6_benchmark_drawdown_20260912_01"
+
+[[strategies]]
+id = "q10_budget"
+kind = "turnover_budget"
+config = "configs/models/q10_sue_v2_turnover_budget_05_20260912.toml"
+existing_output = "artifacts/models/q10_sue_v2_turnover_budget_05_20260912_01"
