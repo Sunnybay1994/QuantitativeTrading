@@ -31,7 +31,7 @@ def read_tushare_financial_history(*, data_root: Path, query: TushareFinancialHi
                  "balancesheet": ["total_assets", "total_hldr_eqy_exc_min_int"],
                  "cashflow": ["n_cashflow_act"]}[query.dataset]
     allowed_extra = ({"revenue", "oper_cost", "ebit"} if query.dataset == "income"
-                     else {"total_liab", "total_cur_assets", "total_cur_liab", "money_cap", "st_borr", "lt_borr", "bond_payable", "taxes_payable", "surplus_rese", "undistr_porfit"}
+                     else {"total_liab", "total_cur_assets", "total_cur_liab", "money_cap", "st_borr", "lt_borr", "bond_payable", "taxes_payable", "surplus_rese", "undistr_porfit", "inventories"}
                      if query.dataset == "balancesheet" else {"depr_fa_coga_dpba", "c_pay_acq_const_fiolta"})
     if len(set(query.extra_fields)) != len(query.extra_fields) or not set(query.extra_fields) <= allowed_extra:
         raise ValueError("Unsupported financial fields")
