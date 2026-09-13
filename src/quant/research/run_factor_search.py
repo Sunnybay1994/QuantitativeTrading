@@ -17,7 +17,10 @@ from quant.research.factor_battery_screen import run_screen
 
 
 def run(*, config: Path, output: Path, data_root: Path = Path('data'), prepare_only: bool = False,
-        return_benchmark_config: Path | None = None) -> dict:
+        return_benchmark_config: Path | None = None, model_config: Path | None = None,
+        measurement_config: Path | None = None) -> dict:
+    if (model_config is None) != (measurement_config is None):
+        raise ValueError('Supply model_config and measurement_config together')
     settings = tomllib.loads(config.read_text(encoding='utf-8'))
     search, dates = settings['search'], settings['dates']
     if not (dates['start'] < dates['training_end'] < dates['validation_start'] <= dates['validation_end']
@@ -145,6 +148,11 @@ def run(*, config: Path, output: Path, data_root: Path = Path('data'), prepare_o
             'training_end': str(dates['training_end']), 'validation_end': str(dates['validation_end']),
             'forward_start': str(dates['forward_start']), 'completed_stages': completed,
             'scope': 'Finite factor search; model and portfolio conclusions require their registered replay'}
+        if model_config is not None:
+            from quant.research.follow_factor_models import follow_factor_models, next_model_output
+            assert measurement_config is not None
+            result['models'] = follow_factor_models(evaluation=output, model_config=model_config,
+                measurement_config=measurement_config, output=next_model_output(output), data_root=data_root)
         (output/'summary.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
         return result
     except Exception as exc:
@@ -161,9 +169,12 @@ def main() -> None:
     parser.add_argument('--data-root', type=Path, default=Path('data'))
     parser.add_argument('--return-benchmark-config', type=Path)
     parser.add_argument('--prepare-only', action='store_true')
+    parser.add_argument('--model-config', type=Path)
+    parser.add_argument('--measurement-config', type=Path)
     args = parser.parse_args()
     print(json.dumps(run(config=args.config, output=args.output, data_root=args.data_root,
-                         prepare_only=args.prepare_only, return_benchmark_config=args.return_benchmark_config)))
+                         prepare_only=args.prepare_only, return_benchmark_config=args.return_benchmark_config,
+                         model_config=args.model_config, measurement_config=args.measurement_config)))
 
 
 if __name__ == '__main__':

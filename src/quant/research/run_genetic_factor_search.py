@@ -39,7 +39,8 @@ def write_json(path: Path, value: object) -> None:
 
 
 def run(config: Path, output: Path, data_root: Path = Path('data'),
-        evaluate: bool = False) -> dict:
+        evaluate: bool = False, *, model_config: Path | None = None,
+        measurement_config: Path | None = None) -> dict:
     from quant.factors.genetic_search import GeneticSearchConfig, search_genetic
 
     settings = tomllib.loads(config.read_text(encoding='utf-8'))
@@ -139,12 +140,16 @@ def run(config: Path, output: Path, data_root: Path = Path('data'),
               '关键限制：这是自适应历史研究，项目已研究过这些历史区间；须完成统一成本评估及前向观察。']
     (output / 'report.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
     if evaluate and winners:
-        evaluate_selected(config=config, output=output, data_root=data_root)
+        evaluate_selected(config=config, output=output, data_root=data_root,
+                          model_config=model_config, measurement_config=measurement_config)
     return summary
 
 
-def evaluate_selected(*, config: Path, output: Path, data_root: Path) -> dict:
+def evaluate_selected(*, config: Path, output: Path, data_root: Path,
+                      model_config: Path | None = None, measurement_config: Path | None = None) -> dict:
     """Feed the frozen library to the existing compute/statistics/cost pipeline."""
+    if (model_config is None) != (measurement_config is None):
+        raise ValueError("Supply model_config and measurement_config together")
     from quant.factors.compute import run as compute
     from quant.research.run_factor_pipeline import run_pipeline
 
@@ -161,6 +166,12 @@ def evaluate_selected(*, config: Path, output: Path, data_root: Path) -> dict:
         execution_snapshot=evaluation['execution_snapshot'], workers=evaluation['workers'],
         resume=(output / 'evaluation').exists(),
         return_benchmark_config=Path(evaluation['return_benchmark_config']))
+    if model_config is not None:
+        from quant.research.follow_factor_models import follow_factor_models, next_model_output
+        if measurement_config is None:
+            raise ValueError('Model continuation requires explicit measurement_config')
+        result['models'] = follow_factor_models(evaluation=output/'evaluation', model_config=model_config,
+            measurement_config=measurement_config, output=next_model_output(output), data_root=data_root)
     write_json(output / 'evaluation_result.json', result)
     return result
 
@@ -174,11 +185,19 @@ def main() -> None:
                         help='Continue into existing full-history statistics and cost evaluation')
     parser.add_argument('--evaluate-only', action='store_true',
                         help='Evaluate an existing frozen mining run without repeating search/test')
+    parser.add_argument('--model-config', type=Path)
+    parser.add_argument('--measurement-config', type=Path)
     args = parser.parse_args()
+    if (args.model_config is None) != (args.measurement_config is None):
+        parser.error('--model-config and --measurement-config must be supplied together')
+    if args.model_config is not None and not (args.evaluate or args.evaluate_only):
+        parser.error('Model continuation requires --evaluate or --evaluate-only')
     if args.evaluate_only:
-        result = evaluate_selected(config=args.config, output=args.output, data_root=args.data_root)
+        result = evaluate_selected(config=args.config, output=args.output, data_root=args.data_root,
+                                   model_config=args.model_config, measurement_config=args.measurement_config)
     else:
-        result = run(args.config, args.output, args.data_root, args.evaluate)
+        result = run(args.config, args.output, args.data_root, args.evaluate,
+                     model_config=args.model_config, measurement_config=args.measurement_config)
     print(json.dumps(result, default=str))
 
 
