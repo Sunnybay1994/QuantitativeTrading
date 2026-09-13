@@ -1,0 +1,5 @@
+id = "report01_risk_scaled_momentum_n252"
+expr = "(delay(adj_close, 21) / delay(adj_close, 252) - 1) / ts_std(adj_close / delay(adj_close, 1) - 1, 252)"
+family = "report01_price_liquidity"
+direction = 1
+source_ref = "docs/research/研究议程_因子与策略清单.md section 2.1: risk adjusted momentum; local cross-sectional adaptation and 21-session skip"

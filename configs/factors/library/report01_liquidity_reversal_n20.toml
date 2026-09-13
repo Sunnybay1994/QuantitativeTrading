@@ -1,0 +1,5 @@
+id = "report01_liquidity_reversal_n20"
+expr = "(adj_close / delay(adj_close, 20) - 1) * (free_float_turnover_level_monthly_calendar80_v1 / ts_mean(free_float_turnover_level_monthly_calendar80_v1, 120))"
+family = "report01_price_liquidity"
+direction = -1
+source_ref = "docs/research/A股港股统计信号文章评估与后续范围_20260911.md section 1: liquidity and reversal; local relative-turnover interaction, not paper formula"

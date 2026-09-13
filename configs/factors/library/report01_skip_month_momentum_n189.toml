@@ -1,0 +1,5 @@
+id = "report01_skip_month_momentum_n189"
+expr = "delay(adj_close, 21) / delay(adj_close, 189) - 1"
+family = "report01_price_liquidity"
+direction = 1
+source_ref = "docs/research/研究议程_因子与策略清单.md section 2.2: 12-1 momentum; local 21-session skip and fixed horizon family"

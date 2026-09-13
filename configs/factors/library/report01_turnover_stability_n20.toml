@@ -1,0 +1,5 @@
+id = "report01_turnover_stability_n20"
+expr = "ts_std(free_float_turnover_level_monthly_calendar80_v1, 20) / ts_mean(free_float_turnover_level_monthly_calendar80_v1, 20)"
+family = "report01_price_liquidity"
+direction = -1
+source_ref = "docs/research/研究议程_因子与策略清单.md turnover variability; local coefficient of variation of calendar-valid monthly turnover observations"
