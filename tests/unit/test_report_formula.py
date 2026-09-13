@@ -1,7 +1,15 @@
 import pytest
 
 from quant.factors.search import canonical
+from quant.factors.search import expression_units
 from quant.research.report_formula import formula_expression
+
+
+def test_extreme_price_ratio_keeps_dimensionless_units():
+    import ast
+
+    assert expression_units(ast.parse('adj_close/ts_max(adj_high,252)', mode='eval').body) == (0, 0)
+    assert expression_units(ast.parse('ts_min(volume,20)/ts_max(volume,20)', mode='eval').body) == (0, 0)
 
 
 def test_report_cv_population_std_and_alias_are_preserved():

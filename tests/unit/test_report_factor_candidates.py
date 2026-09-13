@@ -46,6 +46,54 @@ def test_reports_have_bounded_complete_snapshots(tmp_path):
         mod.read_reports([path],maximum_bytes=5)
 
 
+def test_semantic_definition_preserves_source_and_direction_boundaries():
+    text = '因子：今日复权收盘价除以17个交易日前复权收盘价，再减一。高值优先。'
+    item = candidate(expression_quote='今日复权收盘价除以17个交易日前复权收盘价，再减一',
+                     direction_quote='高值优先', definition_quote=text)
+    reports = {'report0': {'text': text}}
+    payload = {'candidates': [item], 'skipped': []}
+    assert mod.check_evidence(payload, reports)[0] == []
+    accepted, _ = mod.check_evidence(payload, reports, mode='semantic_definition')
+    assert accepted[0]['expression'] == FORMULA
+    for changes in ({'direction': -1}, {'expression_quote': '不在原文内'},
+                    {'definition_quote': '高值优先'}):
+        bad = {'candidates': [{**item, **changes}], 'skipped': []}
+        assert mod.check_evidence(bad, reports, mode='semantic_definition')[0] == []
+    with pytest.raises(ValueError, match='Unknown report extraction mode'):
+        mod.check_evidence(payload, reports, mode='unchecked')
+
+
+@pytest.mark.parametrize('calibration_only', [False, True])
+def test_semantic_live_path_keeps_dsl_validation(inputs, calibration_only):
+    text = '因子：今日复权收盘价除以17个交易日前复权收盘价，再减一。高值优先。'
+    inputs['reports'][0].write_text(text, encoding='utf-8')
+    inputs['config'].write_text(f'calibration_only={str(calibration_only).lower()}\nextraction_mode="semantic_definition"\n' +
+        inputs['config'].read_text(encoding='utf-8'), encoding='utf-8')
+    item = candidate(expression_quote='今日复权收盘价除以17个交易日前复权收盘价，再减一',
+                     direction_quote='高值优先', definition_quote=text)
+
+    class Client:
+        def complete_messages(self, messages, settings):
+            assert '非可信数据' in messages[0]['content']
+            assert '不能靠经验补充' in messages[0]['content']
+            payload = {'candidates': [item, {**item, 'expression': "__import__('os')"}], 'skipped': []}
+            return {'model': 'deepseek-flash', 'usage': {'prompt_tokens': 100, 'completion_tokens': 100, 'total_tokens': 200},
+                    'choices': [{'finish_reason': 'stop', 'message': {'content': json.dumps(payload, ensure_ascii=False)}}]}
+
+    summary = mod.run(**inputs, client=Client(), execute=True, development_test=True)
+    assert summary['accepted_count'] == 1
+    assert summary['extraction_mode'] == 'semantic_definition'
+    if calibration_only:
+        assert summary['batch'] is None and summary['next_command'] is None
+        assert not (inputs['output']/'batch.toml').exists()
+        with pytest.raises(ValueError, match='Calibration inputs cannot start'):
+            mod.run(**{**inputs, 'output': inputs['output'].parent/'evaluation'}, client=Client(), execute=True,
+                    evaluate=True, return_benchmark_config=Path('configs/data/return_benchmarks_q1b_20260912.toml'))
+        return
+    batch = tomllib.loads((inputs['output']/'batch.toml').read_text(encoding='utf-8'))
+    assert batch['templates'][0]['family'] == 'report_semantic_candidates'
+
+
 @pytest.fixture
 def inputs(tmp_path):
     source=tmp_path/'report.md'

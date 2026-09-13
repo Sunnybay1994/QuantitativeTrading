@@ -1,0 +1,14 @@
+{
+  "scope": "Synthetic translation calibration only; not research candidates or historical source evidence",
+  "pass_condition": "All six defined formulas and directions match; both incomplete definitions are skipped",
+  "cases": [
+    {"text": "计算今日复权收盘价除以17个交易日前的复权收盘价，再减去一，作为过去17个交易日收益率。高值优先。", "expression": "adj_close / delay(adj_close, 17) - 1", "direction": 1},
+    {"text": "计算包含今日在内的最近7个交易日成交股数均值，除以包含今日在内的最近43个交易日成交股数均值，得到成交量比率。高值优先。", "expression": "ts_mean(volume, 7) / ts_mean(volume, 43)", "direction": 1},
+    {"text": "先以每日复权收盘价除以前一交易日复权收盘价再减一得到简单日收益率，再取包含今日在内最近20个交易日日收益率的总体标准差，ddof为0。低值优先。", "expression": "ts_std0(adj_close / delay(adj_close, 1) - 1, 20)", "direction": -1},
+    {"text": "跳过最近21个交易日：以21个交易日前的复权收盘价除以252个交易日前的复权收盘价，再减一得到区间动量。高值优先。", "expression": "delay(adj_close, 21) / delay(adj_close, 252) - 1", "direction": 1},
+    {"text": "使用换手率百分数字段turnover_rate，计算包含今日在内最近20个交易日的总体标准差（ddof=0），再除以同一窗口换手率百分数的均值，作为变异系数。低值优先。", "expression": "ts_std0(turnover_rate, 20) / ts_mean(turnover_rate, 20)", "direction": -1},
+    {"text": "以今日复权收盘价除以包含今日在内最近37个交易日复权收盘价的均值，再减一，作为价格相对均线的偏离。低值优先。", "expression": "adj_close / ts_mean(adj_close, 37) - 1", "direction": -1},
+    {"text": "取最近20个交易日日收益率的标准差，标准差采用何种分母以及日收益率定义均未给出。低值优先。", "expression": null, "direction": null},
+    {"text": "计算过去12个月的收益率并跳过最近1个月，月份必须使用实际日历月，未给出日历月到交易日的固定换算，也未给出可用的日历月算子。高值优先。", "expression": null, "direction": null}
+  ]
+}

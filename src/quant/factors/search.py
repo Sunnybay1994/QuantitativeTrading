@@ -42,7 +42,7 @@ def expression_units(node: ast.AST) -> tuple[int, int]:
             return (left[0]-right[0], left[1]-right[1])
         raise ValueError('Incompatible units or unregistered arithmetic')
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-        if node.func.id in ('delay', 'ts_mean', 'ts_std', 'ts_std0'):
+        if node.func.id in ('delay', 'ts_mean', 'ts_std', 'ts_std0', 'ts_min', 'ts_max'):
             return expression_units(node.args[0])
         if node.func.id == 'ts_corr':
             for argument in node.args[:-1]:
