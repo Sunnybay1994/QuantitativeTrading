@@ -14,7 +14,20 @@ from scipy.stats import rankdata  # type: ignore[import-untyped]
 
 from quant.factors.expressions import _UNARY, _WINDOW, evaluate_expressions
 from quant.factors.library import load_library
-from quant.research.factor_battery_statistics import monthly_ic_summary, rank_ic_by_date
+from quant.research.factor_battery_statistics import monthly_ic_summary, preprocess_cross_section, rank_ic_by_date
+
+_FITNESS_PREPROCESSING = 'battery_raw_mad3_scale1.4826_v1'
+
+
+def preprocess_training_scores(frame: pl.DataFrame) -> pl.DataFrame:
+    """Use the battery's raw score transform before training IC and redundancy."""
+    sections = []
+    for section in frame.partition_by('trade_date'):
+        scores = preprocess_cross_section(
+            section['candidate'].to_numpy(), np.zeros(section.height),
+            np.full(section.height, '', dtype=object), neutralize=False)
+        sections.append(section.with_columns(pl.Series('candidate', scores).fill_nan(None)))
+    return pl.concat(sections) if sections else frame
 
 
 def primitive_set(terminals: list[str]) -> gp.PrimitiveSet:
@@ -115,6 +128,8 @@ def search(panel: pl.DataFrame, labels: pl.DataFrame, mapping: dict[str, str], s
     cached=json.loads(checkpoint.read_text(encoding='utf-8')) if checkpoint.exists() else None
     cache_path=output/'fitness_cache.json'
     records=cached['records'] if cached else (json.loads(cache_path.read_text(encoding='utf-8')) if cache_path.exists() else [])
+    if any(row.get('fitness_preprocessing') != _FITNESS_PREPROCESSING for row in records):
+        raise ValueError('GP fitness preprocessing changed; preserve this checkpoint and use a new run directory')
     cache={r['terminal_expression']:r for r in records}
     def assess(ind):
         expression = gp.compile(ind, pset)
@@ -122,7 +137,8 @@ def search(panel: pl.DataFrame, labels: pl.DataFrame, mapping: dict[str, str], s
             ind.fitness.values = (cache[expression]['fitness'],)
             return
         row = {'expression': expand_expression(expression, mapping), 'terminal_expression': expression,
-               'complexity': len(ind), 'depth': ind.height, 'fitness': -1e9}
+               'complexity': len(ind), 'depth': ind.height, 'fitness': -1e9,
+               'fitness_preprocessing': _FITNESS_PREPROCESSING}
         try:
             if ind.height > settings['max_depth']:
                 raise ValueError('depth exceeded')
@@ -130,6 +146,7 @@ def search(panel: pl.DataFrame, labels: pl.DataFrame, mapping: dict[str, str], s
                            if isinstance(node,ast.Name) and node.id in panel.columns}-{'symbol','trade_date'})
             values = evaluate_expressions(panel.select('symbol','trade_date',*fields), {'candidate': expression})
             scored = monthly.join(values.select('symbol', 'trade_date', 'candidate'), on=['symbol', 'trade_date'])
+            scored = preprocess_training_scores(scored)
             series = rank_ic_by_date(scored, score='candidate', label='label', minimum_symbols=100,
                                      minimum_paired_coverage=.8)
             stats = monthly_ic_summary(series['trade_date'].to_list(), series['rank_ic'].to_list())

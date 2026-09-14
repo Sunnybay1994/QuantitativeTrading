@@ -154,3 +154,56 @@ def test_gp_resume_reuses_fitness_without_recalculating(tmp_path: Path,monkeypat
     checkpoint.write_text(json.dumps(saved))
     again=nightly_gp.search(frame.drop('label'),frame.select('symbol','trade_date','label'),mapping,settings,tmp_path,family='fixture')
     assert again==winners
+
+
+def test_gp_training_scores_match_battery_and_reject_tiny_signal():
+    from quant.research.factor_battery_evaluation import score_factor_sections
+    from quant.research.nightly_gp import preprocess_training_scores
+
+    rows = []
+    for month, scale in ((1, 1.), (2, 1e-30)):
+        for i in range(120):
+            rows.append({'symbol':str(i), 'trade_date':dt.date(2020,month,15),
+                         'candidate':scale * (1e4 if i == 119 else float(i)),
+                         'label':float(i), 'eligible':True,
+                         'total_market_value':1e8, 'industry_l1':'test'})
+    frame = pl.from_dicts(rows)
+    scored = preprocess_training_scores(frame)
+    battery = score_factor_sections(universe=frame,
+        values=frame.rename({'candidate':'value'}), direction=1,
+        settings={'variants':['raw'], 'preprocessing':{'mad_multiplier':3., 'mad_normal_scale':1.4826}})
+    np.testing.assert_allclose(scored['candidate'].to_numpy(), battery['raw'].to_numpy(), equal_nan=True)
+    assert scored.filter(pl.col('trade_date') == dt.date(2020,2,15))['candidate'].null_count() == 120
+    assert scored.filter(pl.col('trade_date') == dt.date(2020,1,15))['candidate'].null_count() == 0
+
+
+def test_gp_rejects_legacy_fitness_cache_without_overwriting(tmp_path: Path):
+    from quant.research.nightly_gp import search
+
+    cache = tmp_path/'fitness_cache.json'
+    original = json.dumps([{'terminal_expression':'gp_x', 'fitness':.1}])
+    cache.write_text(original)
+    frame = pl.DataFrame({'symbol':['a'], 'trade_date':[dt.date(2020,1,15)], 'gp_x':[1.]})
+    labels = frame.select('symbol','trade_date').with_columns(pl.lit(1.).alias('label'))
+    with pytest.raises(ValueError, match='use a new run directory'):
+        search(frame, labels, {'gp_x':'adj_close'}, {'seed':1}, tmp_path, family='fixture')
+    assert cache.read_text() == original
+
+
+def test_gp_does_not_export_tiny_rank_predictive_candidate(tmp_path: Path, monkeypatch):
+    from quant.research import nightly_gp
+
+    pset = gp.PrimitiveSet('DAILY', 0)
+    pset.addTerminal('gp_tiny')
+    pset.addPrimitive(lambda a:f'(-{a})', 1, name='neg')
+    monkeypatch.setattr(nightly_gp, 'primitive_set', lambda _:pset)
+    frame = pl.from_dicts([
+        {'symbol':str(i), 'trade_date':dt.date(year,month,15),
+         'gp_tiny':float(i)*1e-30, 'label':float(i)}
+        for year in range(2010,2014) for month in range(1,13) for i in range(120)])
+    winners = nightly_gp.search(frame.drop('label'), frame.select('symbol','trade_date','label'),
+        {'gp_tiny':'adj_close'}, {'seed':1, 'population_size':10, 'generations':0,
+        'max_depth':5, 'complexity_penalty':.0005}, tmp_path, family='fixture')
+    assert winners == []
+    trials = json.loads((tmp_path/'search.json').read_text())['trials']
+    assert trials and all(row['error'] == 'fewer than 48 valid training months' for row in trials)
