@@ -193,6 +193,7 @@ def incremental_statistics(panel: pl.DataFrame, candidate: str, controls: list[s
         scores = paired.select('symbol','trade_date','label').with_columns(pl.Series('residual',residual))
         ic = rank_ic_by_date(scores,score='residual',label='label',minimum_symbols=100,minimum_paired_coverage=.95)
         rows.extend(ic.select('trade_date','rank_ic').to_dicts())
+    rows.sort(key=lambda row: row['trade_date'])
     result=monthly_ic_summary([r['trade_date'] for r in rows],[r['rank_ic'] for r in rows],lag=6)
     complete=panel.filter(pl.all_horizontal(pl.col(c).is_finite() for c in [candidate,'label',*controls])).height
     result.update(input_rows=panel.height,complete_control_rows=complete,

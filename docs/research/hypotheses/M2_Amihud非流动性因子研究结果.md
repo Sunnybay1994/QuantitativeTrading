@@ -6,7 +6,7 @@
 ## 1. 可重放身份
 
 - 不可覆盖 run：
-  [`25c747ae9d608ab71aaa5a09034b6e0a5f14fa7c3c5209383964df6b7068329c`](../../artifacts/research/runs/25c747ae9d608ab71aaa5a09034b6e0a5f14fa7c3c5209383964df6b7068329c/run.json)；
+  [`25c747ae9d608ab71aaa5a09034b6e0a5f14fa7c3c5209383964df6b7068329c`](../../../artifacts/research/runs/25c747ae9d608ab71aaa5a09034b6e0a5f14fa7c3c5209383964df6b7068329c/run.json)；
 - bar snapshot：`b79a7b5e66dee0ae439c030078414157ca6c1f3b6ce7fbe5e36ff3910c1089d2`，
   17,766,134 条股票日线；
 - daily-basic snapshot：`e97c0e9c82c445bbc9b389e8e8504f61b0b67d2f789208f75625526c38b4c03c`，

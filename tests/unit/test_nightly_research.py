@@ -14,6 +14,23 @@ from quant.research.nightly_steps import incremental_statistics, ingest
 from quant.data.nightly_genetic_inputs import admitted_controls
 
 
+def test_incremental_statistics_is_invariant_to_join_row_order():
+    rng = np.random.default_rng(31)
+    rows = []
+    for month in range(1, 5):
+        for symbol in range(120):
+            candidate, control = rng.normal(size=2)
+            rows.append({'trade_date': dt.date(2020, month, 28), 'symbol': str(symbol),
+                         'candidate': candidate, 'control': control,
+                         'label': .1*candidate+rng.normal()})
+    frame = pl.from_dicts(rows)
+    ordered = incremental_statistics(frame, 'candidate', ['control'], 1)
+    shuffled = incremental_statistics(frame.sample(fraction=1, shuffle=True, seed=5),
+                                      'candidate', ['control'], 1)
+    assert ordered['months'] == shuffled['months'] == 4
+    assert ordered['newey_west_t'] == pytest.approx(shuffled['newey_west_t'])
+
+
 def test_ingest_skips_published_candidate_but_rejects_changed_definition(tmp_path):
     queue = tmp_path/'queue'
     queue.mkdir()

@@ -1,92 +1,68 @@
-# A 股港股通个人量化投研交易系统
+# 个人 A 股 / ETF 量化系统
 
-个人使用的 A 股与港股通量化系统:日频起步,研究与交易解耦,共享同一数据契约与
-`target_weight` 接口。先轻量投研,纸面稳定后再逐步接入实盘。
+日频与月频研究、固定模型前向预测、模拟账户和人工订单清单。日更和夜间研究由 Windows 计划任务运行，实盘默认关闭。
 
-## 文档
+## 从哪里开始
 
-| 文档 | 内容 |
+| 入口 | 用途 |
 |---|---|
-| [docs/START_HERE.md](docs/START_HERE.md) | **新 Agent 从这里开始**：环境、入口、启动 prompt |
-| [AGENTS.md](AGENTS.md) | 智能体行为准则（v2：单 Agent、业务优先、反过度工程化） |
-| [项目实施路线图.md](项目实施路线图.md) | 当前阶段目标、本周任务、冻结清单、结果台账（v4） |
-| [A股港股通个人量化投研交易系统调研.md](A股港股通个人量化投研交易系统调研.md) | 技术选型依据与模块设计("为什么") |
-| [docs/research/研究流程精简版.md](docs/research/研究流程精简版.md) | 一个假设怎么从想法到结论 |
-| [docs/项目审查与流程重构报告_20260908.md](docs/项目审查与流程重构报告_20260908.md) | 2026-09-08 流程诊断与重构决定 |
-| [docs/archive/](docs/archive/2026-07至09_多Agent治理期/README.md) | 2026-07 至 09 多 Agent 治理期的全部历史文档，只读 |
+| [项目实施路线图](项目实施路线图.md) | 当前任务、判定口径与冻结范围 |
+| [接手与运行指南](docs/START_HERE.md) | 调度归属、恢复方式、配置及证据位置 |
+| [AGENTS.md](AGENTS.md) | 项目工作准则和安全约束 |
+| [机器排行榜](docs/research/排行榜.md) | 读取结果注册表生成的实验结果 |
+| [研究文档索引](docs/research/README.md) | 方法、操作说明和历史结论入口 |
 
-## 目录结构
+## 日常运行
 
-```text
-quant/
-├─ pyproject.toml            # 依赖:核心 / data(Tushare及校验源) / research / dev
-├─ configs/
-│  ├─ research/              # 股票池、因子、模型、成本(带版本与有效期)
-│  └─ trading/               # 非秘密交易参数;实盘默认关闭
-├─ src/quant/
-│  ├─ domain/                # 数据契约(Pandera)与枚举 —— 全系统唯一真源
-│  ├─ data/                  # 原始采集接口、raw/clean 分层、质量门禁
-│  │  └─ connectors/         # 第三方数据源薄适配器（SDK 仅在这里导入）
-│  ├─ factors/               # 因子定义与注册(M2/M3)
-│  ├─ strategies/            # Strategy 接口:as_of 可知数据 → target_weight
-│  ├─ research/              # 研究编排 CLI；不承载数据源或交易逻辑
-│  ├─ portfolio/             # 组合约束与目标订单(M4)
-│  ├─ backtest/              # 统一市场约束回测(M2/M4)
-│  ├─ execution/             # 纸面账户、OMS、风控、券商 Gateway(M4/M5)
-│  └─ reporting/             # 日报、归因、告警
-├─ tests/                    # unit / integration / fixtures(黄金数据集)
-├─ data/                     # raw / clean / features / qlib / legacy(不进 Git)
-├─ artifacts/                # 回测、模型、报告及历史实验产物(不进 Git)
-└─ docs/                     # START_HERE、研究流程与假设卡(research/)、历史归档(archive/)
-```
-
-## 架构铁律
-
-1. 券商 API 只允许出现在 `execution` 的 Gateway 适配器内部。
-2. 数据源 SDK 只允许出现在 `data/connectors` 内部;换源不改下游。
-   只有 `quant.data` 的显式 repository/工具可读取项目 `data/`；其他层不得直接读取数据目录。
-3. 策略只输出 `target_weight`,不做 IO、不碰订单。
-4. 原始数据(raw 层)不可覆盖;clean 层必须通过 Pandera 质量门禁。
-5. 财务数据用真实披露时间(PIT);信号可知时间与成交时间分离。
-6. 实盘默认关闭；完成回测和模拟盘验证后，由用户确认小资金实盘。
-
-## 快速开始
-
-唯一运行环境：Windows 原生 Miniforge（`D:\Miniforge3\python.exe`，Python 3.13）。WSL / Linux Gate /
-py312 环境已冻结，不再是任何任务的验收条件。
+唯一生产环境是 Windows 原生 `D:\Miniforge3\python.exe`（Python 3.13）。在项目根目录运行：
 
 ```powershell
-cd F:\AI_Coding\QuantitativeTrading
-$env:PYTHONPATH = "F:\AI_Coding\QuantitativeTrading\src"
-D:\Miniforge3\python.exe -m pip install -e ".[dev,data,research]"   # 首次或依赖变化时
-D:\Miniforge3\python.exe -m pytest tests/unit/test_lightweight_research_run.py -q   # 冒烟
+$env:PYTHONPATH = "$PWD\src"
+$env:POLARS_MAX_THREADS = '4'
+$env:PYTHONUTF8 = '1'
 
-# 每日数据刷新：17点前取上一开市日；重复执行为 no-op
-D:\Miniforge3\python.exe -m quant.data.refresh --to today
+# 只检查日更配置，不刷新数据或修改账户
+D:\Miniforge3\python.exe -m quant.research.scheduled_observation --check-only
 
-# ETF 策略 walk-forward
-D:\Miniforge3\python.exe -m quant.research.run_s1_walk_forward --config configs/research/m2_s2_volatility_target.toml
-# 全市场因子评估
-D:\Miniforge3\python.exe -m quant.research.run_classic_factors --config configs/research/m2_classic_daily_factors.toml --threads 8
-
-# 整库因子评估流水线：已发布因子面板及执行数据 → 统计/三基准/相关性/成本/评分表
-D:\Miniforge3\python.exe -m quant.research.run_factor_pipeline --as-of 2026-08-31 --execution-snapshot factor_battery_20260911_v2 --output artifacts/factors/new_battery_run --workers 6
-
-# 年度多因子流水线：已有因子评估流水线统计/成本 → 年度筛选 → 三模型 → 回放与报告
-D:\Miniforge3\python.exe -m quant.research.run_multifactor_pipeline --config configs/models/p4_annual_walk_forward_20260911.toml --output artifacts/models/p4_new_run
+# 查看已注册任务，不启动第二份进程
+Get-ScheduledTask -TaskName 'QuantitativeTrading*' | Select-Object TaskName,State
 ```
 
-多因子运行每次使用新输出目录；成本证据未齐时输出缺项诊断，补齐后重跑会继续到模型报告。输入成本目录写在模型配置中。
-后续批次可加`--correlations-from <上一批selection目录>`，复用同一统计源和历史截止日的相关性结果，只补算新的因子对。
+| 执行者 | 时间（北京时间） | 内容 | 结果位置 |
+|---|---|---|---|
+| `QuantitativeTrading-DailyObservation` | 工作日17:30、21:30 | 数据/因子增量、冻结模型预测、观察账户、风险与月报；S0接续 | `artifacts/daily/sue_v2/`、`artifacts/daily/scheduler/` |
+| `QuantitativeTrading-NightlyResearch` | 工作日22:30、周六09:00 | 候选队列、GP、完整评估、准入、到期月度模型 | `artifacts/research/nightly/`、`artifacts/factors/nightly_batches/` |
+| 主进程统一跟进 | 周一09:00、R5未完成时每日15:00、工作日22:00 | 检查结果、恢复失败、每周诊断、月末评分 | 当前任务及已有机器报告 |
 
-整库因子评估流水线同样使用新目录，需已有对应月份的因子面板和执行数据；这是耗时的全量任务。成本个别失败会保留成功结果和失败原因，并以非零退出码结束。已有整库批次运行时，继续收集该批次的结果，避免重复启动全量计算。
+电脑须开机，Windows调度账户须登录；Codex检查由应用运行。计划任务状态 `Ready` 仅表示等待运行，完成依据是实际日志、退出码和结果文件。机器休眠或有其他写入任务时可能延后，不能仅看计划时间判定成功。
 
-数据刷新同时覆盖沪深股票日线、复权因子、daily_basic，以及 11 只 ETF 的成交行情和总回报价格。
-股票增量保存在 `data/clean/tushare_incremental/`，可通过 `quant.data.refresh_stocks.read_stock_data`
-与历史快照合并读取。详细配置见 `configs/data/refresh.toml`。
+## 配置与产物
 
-`refresh` 同时补齐因子使用的510300日线与复权因子：核对衔接价格及交易日后发布新版本，自动更新配置中的基准路径；重复运行无新增。因子面板自动计算仍待财务和行业数据更新接入。
+| 工作 | 配置入口 | 产物入口 |
+|---|---|---|
+| 日更观察 | [daily_observation_q2_sue_v2_20260912.toml](configs/research/daily_observation_q2_sue_v2_20260912.toml) | `artifacts/daily/sue_v2/` |
+| Q10模拟账户 | [q10_sue_v2_20260913.toml](configs/paper/q10_sue_v2_20260913.toml) | `artifacts/paper/q10_sue_v2/` |
+| 夜间研究 | [nightly.toml](configs/research/nightly.toml) | `artifacts/research/nightly/` |
+| 因子定义 / 自动入库 / 待评估队列 | `configs/factors/library/`、`library/auto/`、`configs/factors/queue/` | `artifacts/factors/nightly_batches/` |
+| 因子评估规则 | [battery.toml](configs/factors/battery.toml) | 各批次 `evaluation/summary.json` 和 `report.md` |
+| 实验注册表 | `artifacts/registry/experiments.parquet` | [排行榜](docs/research/排行榜.md) |
 
-## S0 模拟盘
+结果只写机器生成的 `artifacts/<run>/report.md`，排行榜由注册表生成，不手工填写收益数字：
 
-`D:\Miniforge3\python.exe -m quant.execution.paper_ledger --to today` 生成每日持仓、净值和订单参考；先运行数据刷新命令。前向首日 2026-10-08，详见 [运行说明](docs/research/模拟盘运行.md)。
+```powershell
+D:\Miniforge3\python.exe -m quant.reporting.leaderboard
+```
+
+需要运行一个新实验或恢复失败阶段时，先按[接手指南](docs/START_HERE.md)确认进程、输入版本和输出目录，避免与日更/夜间任务并发写入。
+
+## 目录与边界
+
+- `src/quant/data/`：采集、raw/clean、PIT与数据读取；SDK在`connectors/`。
+- `src/quant/factors/`、`strategies/`：计算因子与目标权重；策略不读取账户、不下单。
+- `src/quant/portfolio/`、`backtest/`、`execution/`：约束、统一成本回放、模拟账户与人工订单。
+- `src/quant/research/`、`reporting/`：流水线编排、评估与机器报告。
+- `configs/`：版本化规则；`*.local.toml`为忽略的本机凭据配置。
+- `data/`、`artifacts/`：数据与可恢复实验现场，通常不进入Git；不得按临时缓存批量清理。
+- `tests/`：定向验证；`docs/research/experiments_2026-09/`保留历史结论，`docs/archive/`为冻结历史。
+
+保持原始数据不可覆盖、财务按公告日期可知、收盘信号最早下一开市日成交、统一交易规则与三档成本。`auto_trade=false`，真实资金操作由用户确认。WSL/Qlib formal链、旧OMS与高频相关模块按路线图冻结，不作为当前运行入口。

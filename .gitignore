@@ -23,6 +23,10 @@ artifacts/legacy/*
 !**/.gitkeep
 mlruns/
 
+# Nightly queue processing/completed files are recoverable runtime state.
+# Human-authored pending candidates in configs/factors/queue/*.toml remain visible.
+configs/factors/queue/processing/
+
 # 密钥与本地配置
 .env
 *.local.toml

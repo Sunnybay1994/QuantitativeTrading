@@ -1,152 +1,68 @@
-# START HERE — 新 Agent 接手指南
+# 接手与运行指南
 
-> 你是这个项目唯一的量化研究员兼工程师。你的 KPI 是让用户的钱赚到经风险调整后为正的收益，
-> 不是写文档、不是造框架、不是通过 Gate。
+先读根目录[AGENTS.md](../AGENTS.md)，再读[路线图](../项目实施路线图.md)的§1.0.3与§1.2。最新代码、配置和机器产物优先于历史交接或旧文档。
 
-## 第一次进入项目时（10 分钟内完成，不要多读）
+## 接手顺序
 
-只读这五个文件，按顺序：
+1. 查看`git status --short`与最近提交，保留其他工作的未提交改动。
+2. 核对Windows计划任务和实际Python进程。已有正常运行任务时，读取一次紧凑状态即可，不重复启动。
+3. 按路线图选择当前尚未完成事项，写一句目标和时间盒；不要照旧启动提示重新做R1/R2。
+4. 实验用版本化配置与独立run目录；修复后按原入口恢复，保留失败日志和原截止时间。
+5. 结果由机器报告及注册表保存，排行榜自动生成；只提交本轮明确文件。
 
-1. [`../AGENTS.md`](../AGENTS.md) —— 行为准则，特别是 §1 "已获永久授权的事项"、§2 人机分工、§3 硬规则（尤其第 11–13 条）和 §6 研究范围。
-2. [`../项目实施路线图.md`](../项目实施路线图.md) —— 只看 **§1.0.3 当前两周任务 R1–R8**、§1.2 预注册规则（含 09-13 换手口径裁定）。
-   R1–R8 的来历是 [`项目审查_自动化能力与优化空间_20260913.md`](项目审查_自动化能力与优化空间_20260913.md)：Q10 进模拟盘、夜间研究循环、风险模型、文档节制。
-3. [`research/因子挖掘流水线_设计与分工.md`](research/因子挖掘流水线_设计与分工.md) —— **当前阶段的总设计**：为什么 93 个假设没有产出、
-   因子库/因子评估流水线/多因子模型怎么建、Agent 该做什么不该做什么。
-4. [`research/研究流程精简版.md`](research/研究流程精简版.md) —— 因子轨道 vs 假设轨道；策略级假设怎么从想法到结论。
-5. [`research/研究议程_因子与策略清单.md`](research/研究议程_因子与策略清单.md) —— 因子与策略的内容清单（流水线的输入范围）。
-   结果记到 [`research/排行榜.md`](research/排行榜.md)；分钟数据见 [`research/分钟级数据源调研_20260909.md`](research/分钟级数据源调研_20260909.md)。
-
-**不要**去读 `docs/archive/` 里的任何东西，除非路线图明确让你去查一个具体数字。那里有约 1,200 份
-2026-07 至 09 期间的任务书/交付/审查/治理文档，它们是这个项目过去两个月停滞的原因，不是知识。
-
-## 订单风险诊断
-
-已有观察账户的持仓与参考订单可以生成只读风险报告：
-
-```powershell
-D:\Miniforge3\python.exe -m quant.execution.order_risk --snapshot artifacts/paper/b32_stock_observation/b32_cv20_buffer75/2026-09-09 --config configs/paper/order_risk_diagnostic_v1_20260911.toml --output artifacts/order_risk/<新目录>
-```
-
-输出`risk.json`与`report.md`，使用信号日已保存的行情、官方限制及历史行业，检查现金、可卖数量、整手、集中度和流动性。现金不足、超卖或非整手订单会停止资金和持仓预测，报告保留需修正项目。执行日市场状态需届时核对；这一步只做诊断，阈值不改变既有观察账户规则。
-
-手工成交与现金事件可用`quant.execution.manual_fills`导入新账本，去重并与同日持仓核对；`quant.execution.manual_nav`逐日处理公司行动、收盘估值和资金流调整；`quant.execution.manual_orders`生成风险过滤后的次日订单演练；`quant.research.run_manual_order_replay`按固定股数和实际次日行情完成三档成本回放，见[输入格式与演练](research/手工成交导入与对账_20260911.md)。
-
-## 环境（唯一）
-
-固定模型预测的事后月度评分使用`quant.research.score_model_forecasts --forecast <预测目录> --known-through <已收盘日期> --output <新目录>`；多个日期重复传`--forecast`。历史演练与事前记录分开，见[评分口径与真实核对](research/experiments_2026-09/固定模型预测评分_20260911.md)。
-
-已有模型及候选的流动性、规模、行业、市场状态与成交容量诊断：`quant.reporting.model_stratification --config configs/models/p6cd_stratified_diagnostics_20260911.toml --output <新目录>`；见[诊断结论](research/experiments_2026-09/模型与候选分层诊断_20260911.md)。
+## 唯一运行环境
 
 ```powershell
 cd F:\AI_Coding\QuantitativeTrading
-$env:PYTHONPATH = "F:\AI_Coding\QuantitativeTrading\src"
-D:\Miniforge3\python.exe --version          # Python 3.13；polars/duckdb/pandera/tushare/akshare/baostock/lightgbm 已装
-D:\Miniforge3\python.exe -m pytest tests/unit/test_lightweight_research_run.py -q   # 冒烟
+$env:PYTHONPATH = "$PWD\src"
+$env:POLARS_MAX_THREADS = '4'
+$env:PYTHONUTF8 = '1'
+D:\Miniforge3\python.exe --version
+D:\Miniforge3\python.exe -m quant.research.scheduled_observation --check-only
 ```
 
-Tushare token 在 `configs/tushare.local.toml`（已 gitignore）。不打印、不复制到任何产物。
-不需要 WSL，不需要 conda 环境切换，不需要向用户申请运行权限。
+凭据从ignored本地配置读取，不能打印配置内容。依赖以`pyproject.toml`为准。WSL、旧Qlib环境与跨平台验证已经冻结。
 
-## 常用入口
+## 当前调度归属
 
-```powershell
-# 因子库全市场历史/每日增量（P1已完成；相同数据再次运行no-op）
-D:\Miniforge3\python.exe -m quant.factors.compute --factors all --from 2010-01-01 --to today
+| 执行入口 | 当前职责 |
+|---|---|
+| [run_daily_observation.ps1](../scripts/run_daily_observation.ps1) | Windows `QuantitativeTrading-DailyObservation`，工作日17:30/21:30 |
+| [run_nightly_research.ps1](../scripts/run_nightly_research.ps1) | Windows `QuantitativeTrading-NightlyResearch`，工作日22:30/周六09:00 |
+| Codex `automation`：量化主进程统一跟进 | 09/15/22唤醒，分别按周一、R5待验收、工作日日更分支检查；不代替Windows再启动同一批任务 |
 
-# ETF 策略 walk-forward（S0/S1/S2 系列；config 决定假设）
-D:\Miniforge3\python.exe -m quant.research.run_s1_walk_forward --config configs/research/m2_s2_volatility_target.toml
+调度配置入口：[日更](../configs/research/daily_observation_q2_sue_v2_20260912.toml)、[夜间](../configs/research/nightly.toml)。两个安装/注册脚本仅在首次部署或明确修改调度时使用，不作为日常启动命令。
 
-# A 股三因子月度 Top50（阶段 A 基线）
-D:\Miniforge3\python.exe -m quant.research.run_classic_factor_composite --config configs/research/a7_monthly_zscore_20260909.toml --threads 4
+旧`background_mining`三轮已结束且接续暂停；当前R5为单独授权的夜间流水线。不要因为旧配置仍在仓库而恢复旧搜索。原来源任务已交接，不再向其发执行请求。
 
-# 全市场因子评估（RankIC / 分组 / Top50 成本后收益）
-D:\Miniforge3\python.exe -m quant.research.run_classic_factors --config configs/research/m2_classic_daily_factors.toml --threads 8
+## 看哪些证据
 
-# 财务四表 clean 重建（自动生成新版本名，保留 raw）
-D:\Miniforge3\python.exe -m quant.data.publish_tushare_financials --workers 8
+| 问题 | 核对位置 |
+|---|---|
+| 日更是否完整 | `artifacts/daily/scheduler/`日志、当日`artifacts/daily/sue_v2/`的`summary.json`与`scheduler.json`；S0记录独立检查 |
+| Q10是否产生真实前向记录 | `artifacts/paper/q10_sue_v2/`，规则见[账户配置](../configs/paper/q10_sue_v2_20260913.toml)；初始化现金不算成交 |
+| 夜间是否完成 | `artifacts/research/nightly/<日期>/summary.json`、`digest.md`和各阶段`result.json` |
+| 候选是否评估和入库 | `artifacts/factors/nightly_batches/<批次>/evaluation/summary.json`、`admission_scorecard.parquet`及`configs/factors/library/auto/` |
+| 历史实验结论 | `artifacts/registry/experiments.parquet`及[机器排行榜](research/排行榜.md)；旧文档只供追溯 |
 
-# S0 模拟盘（先刷新数据）
-D:\Miniforge3\python.exe -m quant.execution.paper_ledger --to today
+R5验收要求连续三个真实计划调度夜的完整记录；零入选可以，失败和`nightly_validation/`白天验证不能计数。月度模型首次到期由配置决定，未到期跳过不表示已经完成月度模型实跑。
 
-# B32 A股双账户固定前向观察（每日21点后；RESEARCH_ONLY）
-D:\Miniforge3\python.exe -m quant.execution.stock_paper --to today
-D:\Miniforge3\python.exe -m quant.reporting.stock_paper_monthly
+## 恢复失败任务
 
-# 数据补齐（日频 + 分钟 + 基准 + 财务 + 因子增量及实际覆盖检查；17点前取上一完整日）
-D:\Miniforge3\python.exe -m quant.data.refresh --to today
+- 先确认实际进程已结束，再读失败阶段日志；保留原run与断点。
+- 夜间恢复使用该run已冻结的`config.toml`调用`quant.research.nightly --config <原配置>`，原`deadline_at`不重置。
+- GP已完成时复用其输出；已有因子批次复用统计、成本年度断点和最新评分表。N3没有完成时不能跳过它直接入库。
+- 成本异常分开处理：全部版本统计拒绝且确无可执行组合可终态拒绝；数据缺失、计算异常与外部任务未完成仍需修复。
+- 日期或输入版本变化时创建新run，不能修改冻结配置冒充同一次恢复。队列processing/completed由流水线维护，人工整理不要移动活跃候选。
+- 日更保持S0、B20、B32、Q10各自冻结账户规则；自动研究不会直接驱动实盘。
 
-# 扫描财务公告使用已有 Poppler 和 Windows 中文 OCR；识别页缓存，重复更新复用。
-# 待解析公告、实际因子覆盖和财务版本见刷新结果中的 input_quality / financials。
+## 按需入口
 
-# 有限因子搜索：展开固定24项候选 → 历史计算 → 开发/验证 → 成本及评分表；同一目录恢复
-# 确认原进程已停止后重跑；未写完批次汇总的成本阶段会复用已完成因子，并恢复本批次年度账户断点。
-D:\Miniforge3\python.exe -m quant.research.run_factor_search --config configs/factors/search/p6c_finite_batch01_20260911.toml --output artifacts/factors/search/p6c_batch01_20260911
+日更、队列和夜间流水线是默认入口。需要理解某一环节再读相应操作说明：
 
-# 多因子模型随既有成本结果自动续跑（五分钟检查一次；最多等待24小时）
-D:\Miniforge3\python.exe -m quant.research.follow_multifactor_pipeline --config configs/models/p4_annual_walk_forward_20260911.toml --output artifacts/models/p4_follow_new --resume-from artifacts/models/p4_pipeline_20260911_04_resumed
+- [日更与观察账户](research/日更模型与观察账户运行说明_20260912.md)、[Windows日更调度](research/Windows独立日更调度_20260913.md)
+- [PAPER月度对照](research/PAPER月度对照运行说明.md)、[手工成交与对账](research/手工成交导入与对账_20260911.md)
+- [因子评估成本口径](research/因子评估流水线_历史成本口径_20260911.md)、[年度模型接续](research/因子评估接续年度模型_20260913.md)
+- [研究方法与历史索引](research/README.md)
 
-# 固定三种模型方法按验证RankIC自动选型；仅研究前向观察
-D:\Miniforge3\python.exe -m quant.research.run_strategy_template_selection --config configs/models/p6c_method_selection_20260911.toml --output artifacts/models/<新选型目录>
-
-# 保存的年度SUE v2模型生成研究预测；9月14日前须显式使用--rehearsal
-# 9月11日完整质量错误0、3914条预测；历史模型REJECTED，导出仅RESEARCH_ONLY。
-D:\Miniforge3\python.exe -m quant.research.run_fixed_model_forecast --selection artifacts/models/q2_sue_v2_frozen_forward_20260912_01 --as-of YYYY-MM-DD --output artifacts/models/<新预测目录>
-
-# 一条命令刷新完成交易日的数据与因子、检查质量、记录同日冻结模型预测；不改账户持仓
-D:\Miniforge3\python.exe -m quant.research.run_daily_model_forecast --to today --selection artifacts/models/q2_sue_v2_frozen_forward_20260912_01 --refresh-config configs/data/refresh_q2_sue_v2_model_20260912.toml --output artifacts/models/<新日更目录>
-# 已发布数据演练可加--saved-data --rehearsal；数据缺失/质量错误返回非零。仍使用新目录保留每次记录。
-# --saved-data同样扫描完整输入质量；SUE v2检查错误0，旧SUE错误阻断记录保留。
-
-# 9月14日起：同日刷新与预测、B20/B32冻结观察账户、B32月报一条命令；预测不驱动持仓
-D:\Miniforge3\python.exe -m quant.research.run_daily_observation --config configs/research/daily_observation_q2_sue_v2_20260912.toml --to today --output artifacts/daily/sue_v2/<新日更观察目录>
-# 9月14日前的演练须加--saved-data --rehearsal --account-root <已初始化的隔离副本根目录>。
-# output/report.md汇总阶段与输入问题；factor_health记录原始因子健康诊断，详见日更运行说明。
-
-# 仅分钟数据；BaoStock 单连接串行，首次历史回填时间较长
-D:\Miniforge3\python.exe -m quant.data.intraday --to today
-
-# 有界个股分钟补齐：固定名单前200只，仅查询指定日期，保留历史缺口
-D:\Miniforge3\python.exe -m quant.data.intraday --stock-from 2026-09-11 --to 2026-09-11 --no-yahoo --limit 200
-
-# 只刷新日频（例如分钟历史回填仍在后台运行时）
-D:\Miniforge3\python.exe -m quant.data.refresh --to today --no-intraday
-```
-
-日常`quant.data.refresh`按配置补最近7个自然日的个股分钟线；历史补缺仍用上面的完整分钟入口。
-个股分钟数据发生变化后，日常入口会重算该日期范围内的分钟因子，随后检查覆盖率。
-行业快照过期时，日常入口更新当前申万成员、复用已结束的SW2014历史，并重算新增日期的行业表达式。
-
-run 产物在 `artifacts/research/runs/<run_id>/`；`run.json` 有假设、config/code 哈希、结论。
-研究结论一页一个，放 `docs/research/hypotheses/`。
-
-## 每个工作会话的固定开场
-
-1. `git status` + `git log --oneline -5`：确认在 `main`、工作树干净。
-2. 打开路线图 §1.1，选一个未完成任务，写一句话目标和时间盒。
-3. 干活。产出：run / 数据 / 代码 / 一页结论，四选一以上。
-4. 更新路线图 §4 结果台账（一行）和 [`research/排行榜.md`](research/排行榜.md) 对应行，必要时更新 §1.1 状态与 §5 阻塞栏；
-   在研究议程里把做完的因子/策略勾掉。
-5. `git commit`，提交信息说人话："feat(research): S2 波动率目标在 2026-07~09 样本外 +1.2%"。
-
-## 会话结束前自检
-
-- 这次会话让"回测结论 / 数据覆盖 / 订单清单 / 模拟盘净值"四者中至少一个发生了变化吗？
-  没有 → 下次会话第一件事必须是让其中一个变化。
-- 我有没有新建任务书、审查报告、状态标签、receipt、锁、"待批示"？有 → 删掉。
-- 我有没有因为"未授权"而停下？有 → 重读 AGENTS.md §1，除了真实资金和删 raw，都不需要授权。
-- 我的汇报是否是"做了什么 + 数字 + 下一步"三段式？
-
-## 给用户的启动 prompt（可直接复制到新会话）
-
-```text
-你接手 F:\AI_Coding\QuantitativeTrading。先读 AGENTS.md（重点 §3 第 11–16 条）、项目实施路线图.md §1.0.3 与 §1.2、
-docs/项目审查_自动化能力与优化空间_20260913.md，然后从路线图 §1.0.3 的 R1 开始按顺序做（R1、R2 今天内完成）。
-R1：按 §1.2 新换手口径重算 Q10，符合即进模拟盘第二账户——这是项目第一个真正的候选，不要再找理由拖。
-R2：建结果注册表并让排行榜由机器重写；把 docs/research/ 顶层压到 ≤ 30 个文件。
-然后 R3 风险模型、R4 约束组合、R5 夜间研究循环并行；R5 完成后你不再手工跑因子评估，每周一读 digest 和排行榜。
-Q1–Q9 不再追加变体；P7 文本因子和 Q6 择时叠加已 REJECTED，不再碰。
-实验结果不手写文档：只有 artifacts 里机器生成的 report.md 和机器重写的排行榜；手写文档每天 ≤ 2 篇。
-不需要向我申请运行 Python、读写数据、联网抓数据、注册 Windows 计划任务或使用 CPU 的权限；LLM API 月度 $30 内自决。
-不要读 docs/archive。不要新建任务书、审查报告或状态标签。
-汇报只要三段：做了什么（带数字）、下一步、最多一条需要我确认的事。
-```
+研究结果不再手写进`docs/research/`；新因子批量登记，模型/组合规则才需要预注册设计。排行榜通过`D:\Miniforge3\python.exe -m quant.reporting.leaderboard`更新。测试只运行与改动相关的范围，大改动再扩大验证。

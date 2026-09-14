@@ -1,0 +1,26 @@
+# One real bounded cycle; cumulative shared cache cap USD20, within monthly USD30.
+[diagnosis]
+scorecard = "artifacts/research/background_mining/round_20260913_01/evaluation/scorecard/factor_scorecard.parquet"
+assessments = [
+  "artifacts/models/p4_follow_20260911_01/attempt_0017/reports/equal_z/assessment.json",
+  "artifacts/models/p4_follow_20260911_01/attempt_0017/reports/positive_mean_ic/assessment.json",
+  "artifacts/models/p4_follow_20260911_01/attempt_0017/reports/lightgbm/assessment.json",
+]
+config = "configs/research/deepseek_diagnosis_cycle_20260913.toml"
+
+[candidates]
+design = "configs/factors/search/cycle_design_with_reference_20260913.toml"
+config = "configs/research/deepseek_candidates_v1.toml"
+scope = "后台挖掘第2轮：上一轮月度换手平滑候选与旧因子相关超过0.7，不能视为新信号；另两项统计未通过。禁止重复 ts_mean(free_float_turnover_level_monthly_calendar80_v1,20)、ts_corr(amihud_illiquidity_monthly_calendar80_v1,volume,60)、ts_std(amihud_illiquidity_monthly_calendar80_v1,20)。优先探索具有独立经济机制的价量变化，勿仅平滑月度变量。原始研报候选成本后超额均失败，重点改善换手与成本。禁止重复纯价格成交量20日相关及上下影线均值标准差。根据完整评分表与模型诊断提出一批有经济解释的价量或流动性表达式，优先处理量纲、覆盖及旧库冗余问题。每项理由不超过40个汉字，数量可低于上限。沿用冻结设计；历史数据已用于研究，不能宣称独立测试通过。"
+fields = ["adj_close", "adj_high", "adj_low", "volume", "amihud_illiquidity_monthly_calendar80_v1", "free_float_turnover_level_monthly_calendar80_v1", "free_float_turnover_abnormal_12m_calendar80_v1"]
+operators = ["delay", "ts_mean", "ts_std", "ts_corr"]
+maximum_candidates = 4
+maximum_history = 252
+
+[budget]
+cache = "artifacts/research/p7_deepseek_cache.sqlite"
+max_requests = 7000
+max_usd = 20.0
+
+
+

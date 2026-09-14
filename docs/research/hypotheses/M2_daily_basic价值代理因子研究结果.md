@@ -6,7 +6,7 @@
 > **TARGET R11 HOLD（2026-08-16）**：本页绑定的 immutable run 与历史状态不回写，但其
 > `targets.parquet`、`portfolio_nav.parquet`、组合收益、换手和成本字段由受影响的诊断目标 helper 生成，
 > 当前不得作为通过、forward、S2/admission 或 PAPER 证据。RankIC、coverage 等只保留为描述线索；
-> 后续处置以 [M2 执行路线图](roadmaps/M2_策略与因子库并行建设路线图.md) 为准。
+> 后续处置以 [M2 执行路线图](../../archive/2026-07至09_多Agent治理期/research/roadmaps/M2_策略与因子库并行建设路线图.md) 为准。
 
 ## 1. 可重放身份
 
@@ -16,7 +16,7 @@
 - clean manifest SHA-256：`dd62e6fde8d8eba287a07095cb0a5265f2c2b1802752fecb5a54cabd05115ca2`；
 - bar snapshot：`b79a7b5e66dee0ae439c030078414157ca6c1f3b6ce7fbe5e36ff3910c1089d2`；
 - 不可覆盖 research run：
-  [`05606a6502cf23f2c3c6cfa69d81147eb2ee8260e99c6e637c7a6ed9741b4015`](../../artifacts/research/runs/05606a6502cf23f2c3c6cfa69d81147eb2ee8260e99c6e637c7a6ed9741b4015/run.json)。
+  [`05606a6502cf23f2c3c6cfa69d81147eb2ee8260e99c6e637c7a6ed9741b4015`](../../../artifacts/research/runs/05606a6502cf23f2c3c6cfa69d81147eb2ee8260e99c6e637c7a6ed9741b4015/run.json)。
 
 clean 发布物包含 16,949,896 条沪深合格记录和 250,398 条 quarantine 记录；物理键重复、逐请求
 行数偏差、参数日期偏差、关键空值、非法数值与静默行上限均为 0。研究面板为 1,230,134 行，冻结股票池
