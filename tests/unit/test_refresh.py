@@ -84,7 +84,7 @@ def test_refresh_updates_factor_benchmark_after_prices(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize('minute_errors', [[], ['missing minute input']])
-def test_factor_refresh_follows_all_inputs_and_stops_on_minute_error(monkeypatch, tmp_path, minute_errors):
+def test_factor_refresh_follows_all_inputs_and_marks_minute_availability(monkeypatch, tmp_path, minute_errors):
     config = tmp_path / 'refresh.toml'
     config.write_text('etf_config="configs/research/m2_s2_volatility_target.toml"\n'
                       'factor_benchmark_snapshot="base"\n[factors]\nenabled=true\n')
@@ -102,6 +102,7 @@ def test_factor_refresh_follows_all_inputs_and_stops_on_minute_error(monkeypatch
     def factors(**kwargs):
         assert calls == ['benchmark'] and kwargs['end'] == dt.date(2026, 9, 8)
         assert kwargs['minute_start'] == dt.date(2020, 1, 1)
+        assert kwargs['minute_available'] is (not bool(minute_errors))
         calls.append('factors')
         return {'years': [{'year': 2026}], 'message': 'updated'}
 
@@ -109,7 +110,7 @@ def test_factor_refresh_follows_all_inputs_and_stops_on_minute_error(monkeypatch
     monkeypatch.setattr(refresh, 'refresh_factors', factors)
     result = refresh.run_refresh(to='2026-09-08', data_root=tmp_path, artifact_root=tmp_path,
         config=config, now=dt.datetime(2026, 9, 8, 20, tzinfo=refresh.SHANGHAI))
-    assert calls == (['benchmark'] if minute_errors else ['benchmark', 'factors'])
+    assert calls == ['benchmark', 'factors']
     assert result['message'] == ('partial' if minute_errors else 'updated')
     assert result['intraday_errors'] == minute_errors
 
@@ -187,6 +188,36 @@ def test_input_quality_after_factors_makes_missing_data_visible(monkeypatch, tmp
     result = refresh.run_refresh(to='2026-09-10', data_root=tmp_path, artifact_root=tmp_path,
         config=config, intraday=False)
     assert result['message'] == 'partial' and result['input_quality']['errors']
+
+
+@pytest.mark.parametrize('daily_present', [True, False])
+def test_missing_minutes_compute_only_independent_factors(monkeypatch, tmp_path, daily_present):
+    from types import SimpleNamespace
+    from quant.factors import compute, library
+    from quant.factors.intraday_low_frequency import DAILY_NAMES
+
+    definitions = [SimpleNamespace(id='minute', expr='minute_' + DAILY_NAMES[0])]
+    if daily_present:
+        definitions.append(SimpleNamespace(id='daily', expr='adj_close / adj_open'))
+    monkeypatch.setattr(library, 'load_library', lambda *args: definitions)
+    calls = []
+
+    def run(**kwargs):
+        calls.append(kwargs)
+        return {'years': [{'year': 2026}], 'factor_count': 1, 'output': 'daily_increment'}
+
+    monkeypatch.setattr(compute, 'run', run)
+    result = refresh.refresh_factors(data_root=tmp_path, artifact_root=tmp_path,
+        config=tmp_path/'refresh.toml', end=dt.date(2026, 9, 14),
+        settings={'library': 'unused', 'start': '2010-01-01'},
+        minute_start=dt.date(2026, 9, 14), minute_available=False)
+    assert result['skipped_minute_factors'] == ['minute']
+    assert len(calls) == int(daily_present)
+    if daily_present:
+        assert calls[0]['selected'] == 'daily'
+        assert result['minute_rebuild'] is None
+    else:
+        assert result['factor_count'] == 0
 
 
 def test_late_stock_minutes_rebuild_only_minute_consumers(monkeypatch, tmp_path):

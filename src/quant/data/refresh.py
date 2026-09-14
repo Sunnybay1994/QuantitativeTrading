@@ -95,11 +95,9 @@ def run_refresh(
         with contextlib.redirect_stdout(io.StringIO()):
             industry = refresh_industry(data_root=data_root, end=end)
     if settings.get("factors", {}).get("enabled", False):
-        if minutes.get("errors"):
-            factors["message"] = "skipped: intraday input refresh failed"
-        else:
-            factors = refresh_factors(data_root=data_root, artifact_root=artifact_root,
+        factors = refresh_factors(data_root=data_root, artifact_root=artifact_root,
                                       config=config, end=end, settings=settings["factors"],
+                                      minute_available=not bool(minutes.get('errors')),
                                       minute_start=(minute_options.get('stock_from', dt.date(2020, 1, 1))
                                                     if minutes.get('stock_changed_rows', 0) else None),
                                       industry_start=(dt.date.fromisoformat(industry['rebuild_from'])
@@ -158,7 +156,8 @@ def refresh_factor_selection(settings: dict[str, Any]) -> str:
 def refresh_factors(*, data_root: Path, artifact_root: Path, config: Path,
                     end: dt.date, settings: dict[str, Any],
                     minute_start: dt.date | None = None,
-                    industry_start: dt.date | None = None) -> dict[str, Any]:
+                    industry_start: dt.date | None = None,
+                    minute_available: bool = True) -> dict[str, Any]:
     """Reuse the factor engine's incremental coverage, including unfinished labels."""
     # compute uses the completed-session date helpers in this module.
     from quant.factors.compute import run
@@ -166,6 +165,16 @@ def refresh_factors(*, data_root: Path, artifact_root: Path, config: Path,
     from quant.research.factor_intraday import minute_input_names
 
     selected = refresh_factor_selection(settings)
+    skipped_minute_factors = []
+    if not minute_available:
+        definitions = load_library(Path(settings['library']), selected)
+        skipped_minute_factors = [row.id for row in definitions if minute_input_names((row.expr,))]
+        selected = ','.join(row.id for row in definitions if row.id not in skipped_minute_factors)
+        minute_start = None
+        if not selected:
+            return {'message': 'skipped: all selected factors require unavailable minute inputs',
+                    'years': [], 'factor_count': 0, 'selected': '',
+                    'skipped_minute_factors': skipped_minute_factors}
     with contextlib.redirect_stdout(io.StringIO()):
         result = run(data_root=data_root, refresh_config=config,
                      library=Path(settings["library"]), selected=selected,
@@ -192,6 +201,7 @@ def refresh_factors(*, data_root: Path, artifact_root: Path, config: Path,
     return {"message": "updated" if result["years"] or minute_rebuild or industry_rebuild else "no-op",
             "years": result["years"], "factor_count": result["factor_count"],
             "selected": selected, "excluded_factors": settings.get('excluded_factors', []),
+            "skipped_minute_factors": skipped_minute_factors,
             "output": result["output"], "minute_rebuild": minute_rebuild, "industry_rebuild": industry_rebuild}
 
 
