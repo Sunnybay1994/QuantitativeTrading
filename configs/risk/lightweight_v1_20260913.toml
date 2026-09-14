@@ -1,0 +1,42 @@
+id = "r3-lightweight-v1-20260913"
+registered_on = 2026-09-13
+start = 2019-01-01
+end = 2026-08-31
+warmup_start = 2018-01-01
+statistics = "artifacts/factors/battery_statistics_20260831_20260911"
+exposures = "strictly_previous_exchange_session_daily_published_PIT_descriptors"
+styles = ["size", "value", "momentum", "volatility", "liquidity", "profitability", "growth", "leverage", "beta", "reversal"]
+weighting = "sqrt_total_market_value"
+winsor_quantiles = [0.01, 0.99]
+missing_styles = "eligible_industry_median_then_eligible_market_median_with_explicit_counts"
+missing_industry = "explicit_unknown_category"
+covariance_half_life = 126
+specific_half_life = 63
+minimum_history = 60
+covariance_diagonal_shrinkage = 0.1
+covariance_regime = "reset_factor_EWMA_when_lagged_eligible_industry_set_changes; require_60_new_observations"
+specific_prior = "prior_session_cross_section_median_for_unseasoned_symbols"
+benchmark = "daily_equal_weight_lagged_eligible_universe_risk_proxy"
+attribution = "saved_fill_prior_weights; residual_execution_costs_and_unmodeled_separately; capital_link_monthly"
+industry_identification = "full_industry_intercepts_no_common_intercept"
+auto_trade = false
+
+[[portfolios]]
+name = "q10"
+folder = "artifacts/models/q10_sue_v2_turnover_budget_05_20260912_01/budgeted/cost_1"
+replay_config = "artifacts/models/q10_sue_v2_turnover_budget_05_20260912_01/replay_config.json"
+
+[[portfolios]]
+name = "equal_z"
+folder = "artifacts/models/p4_follow_20260911_01/attempt_0017/replay/equal_z_top50/cost_1"
+replay_config = "artifacts/models/p4_follow_20260911_01/attempt_0017/replay/replay_config.json"
+
+[[portfolios]]
+name = "positive_mean_ic"
+folder = "artifacts/models/p4_follow_20260911_01/attempt_0017/replay/positive_mean_ic_top50/cost_1"
+replay_config = "artifacts/models/p4_follow_20260911_01/attempt_0017/replay/replay_config.json"
+
+[[portfolios]]
+name = "lightgbm"
+folder = "artifacts/models/p4_follow_20260911_01/attempt_0017/replay/lightgbm_top50/cost_1"
+replay_config = "artifacts/models/p4_follow_20260911_01/attempt_0017/replay/replay_config.json"

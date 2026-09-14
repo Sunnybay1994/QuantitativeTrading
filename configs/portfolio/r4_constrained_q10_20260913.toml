@@ -1,0 +1,40 @@
+[research]
+id = "r4_constrained_q10_20260913"
+registered_on = 2026-09-13
+hypothesis = "Fixed industry and size constraints reduce Q10 drawdown without losing more than 2 percentage points of active CAGR."
+predictions = "artifacts/models/q2_sue_context_v2_causal48_20260912_02/predictions"
+control = "artifacts/models/q10_sue_v2_turnover_budget_05_20260912_01"
+control_assessment = "artifacts/models/r1_q10_calendar_turnover_20260913_01/assessment.json"
+statistics = "artifacts/factors/p7_peer_statistics_20260831_20260912_01"
+benchmarks = "artifacts/factors/battery_stock_benchmarks_20260911"
+return_benchmark_config = "configs/data/return_benchmarks_q1b_20260912.toml"
+evidence = "retrospective_frozen_predictions_no_parameter_selection"
+
+[policy]
+auto_trade = false
+top_k = 50
+retention_multiplier = 1.5
+cash_buffer = 0.02
+single_stock_weight = 0.03
+industry_active_band = 0.05
+size_band = 0.3
+adv_participation = 0.05
+maximum_iterations = 4000
+tolerance = 0.00000001
+benchmark = "signal_date_eligible_all_market_equal_weight"
+unknown_benchmark_industry = "explicit_UNKNOWN_bucket_no_new_buys"
+size = "R3_winsor_1_99_log_market_cap_eligible_equal_weight_z"
+selection = "industry_quota_buffered_top50_projection_full_scored_pool"
+objective = "Euclidean_distance_to_industry_stratified_buffered_equal_weights"
+infeasible = "freeze_actual_quantities_record_violations_never_count_as_constraint_pass"
+missing_held_controls = "freeze_actual_quantities_no_risk_imputation"
+cost_multipliers = [0.5, 1.0, 2.0]
+
+[replacement]
+reference = "budgeted"
+cost_multiplier = 1.0
+maximum_cagr_loss = 0.02
+require_drawdown_improvement = true
+require_all_signal_constraints = true
+stress_start = 2024-01-01
+stress_end = 2024-02-08
