@@ -4,6 +4,7 @@ import ast
 import datetime as dt
 import hashlib
 import json
+import shutil
 import tomllib
 from pathlib import Path
 
@@ -36,6 +37,30 @@ def assess(panel: pl.DataFrame, candidate: dict, minimum_symbols: int) -> dict:
 def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2, default=str,
                                allow_nan=False), encoding='utf-8')
+
+
+def run_nightly(settings: dict, output: Path) -> dict:
+    """Daily DSL search with monthly sample fitness and the full raw terminal library."""
+    from quant.research.nightly_gp import run as run_daily_dsl
+    for prior in sorted(output.parent.parent.glob('*/N2/search_checkpoint.json')):
+        if not (prior.parent/'search.json').exists():
+            frozen=prior.parent.parent/'effective_settings.json'
+            if frozen.exists():
+                settings=json.loads(frozen.read_text(encoding='utf-8'))
+                for field in ('as_of','training_end','history_start'):
+                    settings[field]=dt.date.fromisoformat(settings[field])
+                output=prior.parent
+                break
+    result=run_daily_dsl(settings, output)
+    result['gp_output']=str(output)
+    # Persist completed search candidates before the nightly deadline can skip N3.
+    processing=Path(settings['queue'])/'processing'
+    processing.mkdir(parents=True,exist_ok=True)
+    for candidate in (output/'library').glob('*.toml'):
+        destination=processing/candidate.name
+        if not destination.exists() and not (Path(settings['library'])/'auto'/candidate.name).exists():
+            shutil.copyfile(candidate,destination)
+    return result
 
 
 def run(config: Path, output: Path, data_root: Path = Path('data'),

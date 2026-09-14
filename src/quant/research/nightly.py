@@ -1,0 +1,227 @@
+"""Recoverable N1-N6 nightly research with bounded subprocesses and real digests."""
+import argparse
+import datetime as dt
+import json
+import shutil
+import subprocess
+import sys
+import time
+import tomllib
+from pathlib import Path
+
+from quant.research.nightly_steps import dump
+
+
+def wait_bounded(process: subprocess.Popen, *, run: Path, timeout: float,
+                 minimum_free_gb: float, interval: float = 30) -> int:
+    """Check available space throughout a worker, killing its children on failure."""
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            code = process.poll()
+            if code is not None:
+                return code
+            free = shutil.disk_usage(run.resolve()).free / (1024**3)
+            if free < minimum_free_gb:
+                raise RuntimeError(f'Disk guard: {free:.1f} GiB < {minimum_free_gb} GiB')
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f'Worker exceeded {timeout:.0f} seconds')
+            try:
+                return process.wait(timeout=min(interval, remaining))
+            except subprocess.TimeoutExpired:
+                continue
+    except (RuntimeError, TimeoutError, OSError):
+        if sys.platform == 'win32':
+            subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'],
+                           capture_output=True, check=False)
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+        raise
+
+
+def failed_streak(root: Path, day: dt.date, step: str) -> int:
+    streak=0
+    # Only real, distinct, completed nightly runs count; no synthetic calendar rows.
+    for path in sorted(root.glob('*/summary.json'), reverse=True):
+        if path.parent.name>day.isoformat():
+            continue
+        row=json.loads(path.read_text(encoding='utf-8'))
+        state=row.get('steps',{}).get(step,{})
+        if state.get('ok') is False:
+            streak+=1
+        else:
+            break
+    return streak
+
+
+def digest(settings: dict, run: Path, summary: dict, *, rewrite_leaderboard: bool = True) -> None:
+    from quant.factors.library import load_library
+    from quant.reporting.leaderboard import write_leaderboard, DEFAULT_REGISTRY, DEFAULT_LEADERBOARD
+    summary['library_after']=len(load_library(Path(settings['library'])))
+    summary['finished_at']=dt.datetime.now().isoformat()
+    dump(run/'summary.json',summary)
+    alerts=[s for s in summary['steps'] if failed_streak(run.parent,dt.date.fromisoformat(run.name),s)>=3]
+    lines=[f'# 夜间研究 {run.name}','']
+    if alerts:
+        lines+=['<strong style="color:red">连续三夜失败：'+', '.join(alerts)+'</strong>','']
+    n1=summary['steps'].get('N1',{}).get('result',{})
+    n2=summary['steps'].get('N2',{}).get('result',{})
+    n4=summary['steps'].get('N4',{}).get('result',{})
+    lines += [f"候选：队列 {n1.get('queued_candidates',0)}，GP {n2.get('candidates',0)}；"
+              f"通过 {n4.get('admitted',0)}，拒绝 {n4.get('rejected',0)}；"
+              f"库规模 {summary['library_before']} → {summary['library_after']}。",'']
+    for name,state in summary['steps'].items():
+        lines.append(f"- {name}：{'完成' if state['ok'] else '未完成'}；{state.get('error',state.get('result',{}))}")
+    lines+=['','模型变化：'+('本夜执行月度模型，见 N5 产物。' if summary['steps'].get('N5',{}).get('result',{}).get('scheduled') else '非月度模型日，最佳模型未重估。')]
+    (run/'digest.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
+    (run/'report.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
+    if rewrite_leaderboard:
+        write_leaderboard(DEFAULT_REGISTRY,DEFAULT_LEADERBOARD)
+
+
+def record_deferred(config: Path, reason: str) -> dict:
+    """Record a skipped scheduler attempt without changing another writer's results."""
+    from quant.factors.library import load_library
+    settings = tomllib.loads(config.read_text(encoding='utf-8'))
+    now = dt.datetime.now()
+    run = Path(settings['output_root'])/now.date().isoformat()
+    run.mkdir(parents=True, exist_ok=True)
+    attempt = {'date': now.date().isoformat(), 'attempted_at': now.isoformat(), 'reason': reason}
+    stamp = now.strftime('%H%M%S_%f')
+    dump(run/f'deferred_attempt_{stamp}.json', attempt)
+    if not (run/'summary.json').exists():
+        summary = {'date': run.name, 'started_at': now.isoformat(), 'execution_deferred': True,
+                   'library_before': len(load_library(Path(settings['library']))),
+                   'steps': {'scheduler': {'ok': False, 'error': reason}}}
+        digest(settings, run, summary, rewrite_leaderboard=False)
+    else:
+        (run/f'deferred_digest_{stamp}.md').write_text(
+            f'# 夜间调度延后 {now.isoformat()}\n\n{reason}\n', encoding='utf-8')
+    return attempt
+
+
+def reopen_empty_evaluation(run: Path, summary: dict, search_result: dict) -> None:
+    """A resumed GP can supply candidates after an earlier empty downstream pass."""
+    result = run/'N3'/'result.json'
+    if not search_result.get('candidates') or not result.exists():
+        return
+    previous = json.loads(result.read_text(encoding='utf-8'))
+    if previous.get('evaluated') != 0:
+        return
+    stamp = dt.datetime.now().strftime('%H%M%S_%f')
+    for step in ('N3', 'N4'):
+        path = run/step/'result.json'
+        if path.exists():
+            path.rename(path.with_name(f'result_before_gp_resume_{stamp}.json'))
+        summary['steps'].pop(step, None)
+
+
+def work_order(settings: dict, day: dt.date) -> tuple[str, ...]:
+    """Resume monthly work before another GP/battery consumes the night's budget."""
+    from quant.research.nightly_monthly import pending_month
+    if pending_month(settings, Path(settings['output_root'])/day.isoformat()) is not None:
+        return ('N1', 'N5', 'N2', 'N3', 'N4')
+    return ('N1', 'N2', 'N3', 'N4', 'N5')
+
+
+def execute(config: Path, *, now: dt.datetime|None=None) -> dict:
+    from quant.factors.library import load_library
+    settings=tomllib.loads(config.read_text(encoding='utf-8'))
+    now=now or dt.datetime.now()
+    run=Path(settings['output_root'])/now.date().isoformat()
+    run.mkdir(parents=True,exist_ok=True)
+    frozen=run/'config.toml'
+    if frozen.exists() and frozen.read_bytes()!=config.read_bytes():
+        raise ValueError('Resume requires unchanged nightly configuration')
+    if not frozen.exists():
+        frozen.write_bytes(config.read_bytes())
+    hours=settings['weekend_hours'] if now.weekday()>=5 else settings['weekday_hours']
+    summary_path = run/'summary.json'
+    summary: dict = json.loads(summary_path.read_text(encoding='utf-8')) if summary_path.exists() else {
+        'date': run.name, 'started_at': now.isoformat(),
+        'library_before': len(load_library(Path(settings['library']))), 'steps': {}}
+    if summary.pop('execution_deferred', False):
+        summary['steps'].pop('scheduler', None)
+    # Persist before spawning: restarting this night's process never buys a new timebox.
+    started = dt.datetime.fromisoformat(summary['started_at'])
+    summary.setdefault('deadline_at', (started+dt.timedelta(hours=hours)).isoformat())
+    deadline = time.monotonic() + (dt.datetime.fromisoformat(summary['deadline_at'])-now).total_seconds()
+    dump(summary_path, summary)
+    try:
+        from quant.research.nightly_steps import resolve_settings
+        settings = resolve_settings(settings, run)
+    except (RuntimeError, ValueError, OSError) as exc:
+        summary['steps'] = {'N1': {'ok': False, 'error': f'Input preparation: {exc}'}}
+        digest(settings, run, summary)
+        return summary
+    for step in work_order(settings, now.date()):
+        folder=run/step
+        folder.mkdir(exist_ok=True)
+        result=folder/'result.json'
+        if result.exists():
+            summary['steps'][step]={'ok':True,'result':json.loads(result.read_text(encoding='utf-8'))}
+            if step == 'N2':
+                reopen_empty_evaluation(run, summary, summary['steps'][step]['result'])
+            continue
+        # A failed GP search must not strand existing queued candidates or monthly work.
+        prerequisite = {'N4': 'N3'}.get(step)
+        if prerequisite and not summary['steps'].get(prerequisite, {}).get('ok'):
+            summary['steps'][step] = {'ok': False, 'error': f'{prerequisite} did not complete'}
+            dump(summary_path, summary)
+            continue
+        free=shutil.disk_usage(run.resolve()).free/(1024**3)
+        remaining=deadline-time.monotonic()
+        if free<settings['minimum_free_gb'] or remaining<=0:
+            summary['steps'][step]={'ok':False,'error':f'Time/disk guard: {remaining:.0f}s, {free:.1f} GiB'}
+            continue
+        timeout=min(remaining,settings['step_timeout_seconds'][step])
+        try:
+            with (folder/'process.log').open('a',encoding='utf-8') as log:
+                process=subprocess.Popen([sys.executable,'-m','quant.research.nightly','--config',str(frozen),
+                    '--worker',step,'--run',str(run)],stdout=log,stderr=subprocess.STDOUT)
+                code=wait_bounded(process, run=run, timeout=timeout,
+                                  minimum_free_gb=settings['minimum_free_gb'])
+            if code or not result.exists():
+                raise RuntimeError(f'{step} exit={code}; see {folder}/process.log')
+            summary['steps'][step]={'ok':True,'result':json.loads(result.read_text(encoding='utf-8'))}
+            if step == 'N2':
+                reopen_empty_evaluation(run, summary, summary['steps'][step]['result'])
+        except (RuntimeError,TimeoutError,OSError) as exc:
+            summary['steps'][step]={'ok':False,'error':str(exc)}
+        dump(run/'summary.json',summary)
+    digest(settings,run,summary)
+    return summary
+
+
+def main() -> None:
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--config',type=Path,default=Path('configs/research/nightly.toml'))
+    parser.add_argument('--worker',choices=['N1','N2','N3','N4','N5'])
+    parser.add_argument('--run',type=Path)
+    parser.add_argument('--deferred-reason')
+    args=parser.parse_args()
+    if args.deferred_reason:
+        print(json.dumps(record_deferred(args.config, args.deferred_reason), ensure_ascii=False))
+        raise SystemExit(2)
+    if args.worker:
+        from quant.research import nightly_steps
+        from quant.research.run_genetic_factor_search import run_nightly
+        if args.run is None:
+            parser.error('--worker requires --run')
+        settings=tomllib.loads(args.config.read_text(encoding='utf-8'))
+        settings=nightly_steps.resolve_settings(settings,args.run)
+        functions={'N1':nightly_steps.ingest,'N2':lambda s,r:run_nightly(s,r/'N2'),
+                   'N3':nightly_steps.evaluate,'N4':nightly_steps.admit,'N5':nightly_steps.monthly_models}
+        result=functions[args.worker](settings,args.run)
+        dump(args.run/args.worker/'result.json',result)
+    else:
+        summary = execute(args.config)
+        print(json.dumps(summary,ensure_ascii=False,default=str))
+        if any(not state.get('ok', False) for state in summary['steps'].values()):
+            raise SystemExit(1)
+
+
+if __name__=='__main__':
+    main()

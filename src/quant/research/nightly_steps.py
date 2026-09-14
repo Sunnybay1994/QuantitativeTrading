@@ -1,0 +1,244 @@
+"""Business stages used by the subprocess-isolated nightly research runner."""
+import datetime as dt
+import hashlib
+import json
+import shutil
+import tomllib
+from pathlib import Path
+
+import numpy as np
+import polars as pl
+
+from quant.factors.library import load_library
+from quant.research.factor_battery_statistics import monthly_ic_summary, rank_ic_by_date
+from quant.research.nightly_gp import maximum_correlation
+
+
+def dump(path: Path, value: object) -> None:
+    path.write_text(json.dumps(value, indent=2, ensure_ascii=False, default=str, allow_nan=False), encoding='utf-8')
+
+
+def resolve_settings(settings: dict, run: Path) -> dict:
+    from quant.data.nightly_genetic_inputs import latest_month_end
+    path=run/'effective_settings.json'
+    if path.exists():
+        result=json.loads(path.read_text(encoding='utf-8'))
+    else:
+        result=dict(settings)
+        day=dt.date.fromisoformat(run.name)
+        result['as_of']=latest_month_end(Path(settings['data_root']),day)
+        result['training_end']=dt.date(day.year-1,12,31)
+        choices=[]
+        for completed in Path(settings['output_root']).glob('monthly/*/summary.json'):
+            row=json.loads(completed.read_text(encoding='utf-8'))
+            if row.get('completed') and row.get('reference_statistics') and row.get('reference_scorecard'):
+                source=Path(row['reference_statistics'])
+                known=tomllib.loads((source/'battery.toml').read_text(encoding='utf-8'))['run']['as_of']
+                if known<=result['as_of']:
+                    choices.append((known,str(source),row['reference_scorecard']))
+        if choices:
+            _,result['reference_statistics'],result['reference_scorecard']=max(choices)
+        dump(path,result)
+    for field in ('as_of','training_end','history_start'):
+        if isinstance(result[field],str):
+            result[field]=dt.date.fromisoformat(result[field])
+    return result
+
+
+def ingest(settings: dict, run: Path) -> dict:
+    queue = Path(settings['queue'])
+    processing = queue/'processing'
+    processing.mkdir(parents=True, exist_ok=True)
+    failures = []
+    for path in sorted(queue.glob('*.toml')):
+        try:
+            # Accept normal single-factor definitions and [[factors]] batch files.
+            content = tomllib.loads(path.read_text(encoding='utf-8'))
+            rows = content.get('factors', [content])
+            for row in rows:
+                from quant.factors.expressions import required_history
+                required_history(row['expr'])
+                if row['direction'] not in (-1, 1):
+                    raise ValueError('direction must be +1 or -1')
+            target = processing/path.name
+            if target.exists():
+                if target.read_bytes() != path.read_bytes():
+                    raise ValueError('queue basename collision')
+                path.unlink()
+            else:
+                path.rename(target)
+        except (ValueError, KeyError) as exc:
+            failures.append({'file':str(path), 'reason':str(exc)})
+    count = 0
+    library = run/'candidates'
+    library.mkdir(exist_ok=True)
+    for path in sorted(processing.glob('*.toml')):
+        content = tomllib.loads(path.read_text(encoding='utf-8'))
+        for row in content.get('factors', [content]):
+            identifier = row['id']
+            if not identifier.isidentifier() or identifier.startswith('_'):
+                raise ValueError('unsafe factor id')
+            (library/f'{identifier}.toml').write_text(''.join(
+                f'{k} = {json.dumps(row[k], ensure_ascii=False)}\n'
+                for k in ('id', 'expr', 'family', 'direction', 'source_ref')), encoding='utf-8')
+            count += 1
+    if count:
+        load_library(library)
+    return {'queued_candidates':count, 'queue_errors':failures}
+
+
+def evaluate(settings: dict, run: Path) -> dict:
+    from quant.factors.compute import run as compute
+    from quant.research.run_factor_pipeline import run_pipeline
+    from quant.reporting.experiment_registry import register_run
+    from quant.data.nightly_genetic_inputs import require_execution_coverage
+    library = run/'candidates'
+    library.mkdir(exist_ok=True)
+    gp_result=run/'N2'/'result.json'
+    gp_output=Path(json.loads(gp_result.read_text(encoding='utf-8')).get('gp_output',str(run/'N2'))) if gp_result.exists() else run/'N2'
+    for path in sorted((gp_output/'library').glob('*.toml')):
+        processing=Path(settings['queue'])/'processing'
+        processing.mkdir(parents=True,exist_ok=True)
+        # Retain unprocessed GP work across nights, even if the battery times out.
+        if not (processing/path.name).exists() and not (Path(settings['library'])/'auto'/path.name).exists():
+            shutil.copyfile(path,processing/path.name)
+        destination = library/path.name
+        if destination.exists():
+            previous=tomllib.loads(destination.read_text(encoding='utf-8'))
+            proposed=tomllib.loads(path.read_text(encoding='utf-8'))
+            if any(previous[k]!=proposed[k] for k in ('id','expr','direction')):
+                raise ValueError('candidate definition collision')
+        else:
+            shutil.copyfile(path, destination)
+    if not list(library.glob('*.toml')):
+        return {'candidates':0, 'evaluated':0, 'reason':'No queued or completed GP candidates'}
+    batch_id = hashlib.sha256(str(settings['as_of']).encode()+b''.join(p.read_bytes() for p in sorted(library.glob('*.toml')))).hexdigest()[:16]
+    batch = Path(settings['batch_root'])/batch_id
+    batch.mkdir(parents=True, exist_ok=True)
+    frozen = batch/'library'
+    if not frozen.exists():
+        shutil.copytree(library, frozen)
+        dump(batch/'settings.json',settings)
+    # Finish the oldest interrupted battery before beginning another candidate batch.
+    for prior in sorted(Path(settings['batch_root']).iterdir(),key=lambda p:p.stat().st_mtime):
+        if not (prior/'library').is_dir():
+            continue
+        if not (prior/'admission_scorecard.parquet').exists():
+            batch=prior
+            frozen=batch/'library'
+            break
+    if (batch/'settings.json').exists():
+        settings=json.loads((batch/'settings.json').read_text(encoding='utf-8'))
+        for field in ('as_of','training_end','history_start'):
+            settings[field]=dt.date.fromisoformat(settings[field])
+    definitions = load_library(frozen)
+    require_execution_coverage(Path(settings['data_root']),settings['execution_snapshot'],settings['as_of'])
+    compute(data_root=Path(settings['data_root']), refresh_config=Path(settings['refresh_config']),
+            library=frozen, selected='all', start=settings['history_start'], end=settings['as_of'],
+            artifact_root=batch/'compute')
+    result = run_pipeline(config=Path(settings['battery_config']), library=frozen,
+        as_of=settings['as_of'], output=batch/'evaluation', data_root=Path(settings['data_root']),
+        execution_snapshot=settings['execution_snapshot'], workers=settings['workers'],
+        resume=(batch/'evaluation').exists(), return_benchmark_config=Path(settings['return_benchmark_config']))
+    if result['cost_failures'] or result.get('pending_external_runs'):
+        raise ValueError(f'Candidate battery unfinished: {result["cost_failures"]}; pending {result.get("pending_external_runs")}')
+    register_run(batch/'evaluation')
+    return {'candidates':len(definitions), 'evaluated':len(definitions), 'batch':str(batch),'as_of':str(settings['as_of']),
+            'scorecard':result['scorecard_path'], 'cost_failures':result['cost_failures']}
+
+
+def incremental_statistics(panel: pl.DataFrame, candidate: str, controls: list[str], direction: int) -> dict:
+    """Project contemporaneous ranks on admitted ranks; future returns are response only."""
+    rows = []
+    for section in panel.partition_by('trade_date'):
+        paired = section.filter(pl.all_horizontal(pl.col(c).is_finite() for c in [candidate, 'label', *controls]))
+        if paired.height < max(100, len(controls)+2):
+            continue
+        ranks = paired.select(pl.col(c).rank('average') for c in [candidate,*controls]).to_numpy()
+        ranks = (ranks-ranks.mean(axis=0))/np.maximum(ranks.std(axis=0),1e-12)
+        x = np.column_stack([np.ones(paired.height), ranks[:,1:]])
+        residual = direction*(ranks[:,0]-x@np.linalg.lstsq(x,ranks[:,0],rcond=None)[0])
+        if np.std(residual)<1e-10:
+            continue
+        scores = paired.select('symbol','trade_date','label').with_columns(pl.Series('residual',residual))
+        ic = rank_ic_by_date(scores,score='residual',label='label',minimum_symbols=100,minimum_paired_coverage=.95)
+        rows.extend(ic.select('trade_date','rank_ic').to_dicts())
+    result=monthly_ic_summary([r['trade_date'] for r in rows],[r['rank_ic'] for r in rows],lag=6)
+    complete=panel.filter(pl.all_horizontal(pl.col(c).is_finite() for c in [candidate,'label',*controls])).height
+    result.update(input_rows=panel.height,complete_control_rows=complete,
+                  complete_control_fraction=complete/panel.height if panel.height else 0.)
+    return result
+
+
+def admit(settings: dict, run: Path) -> dict:
+    from quant.data.nightly_genetic_inputs import read_raw_monthly,admitted_controls
+    evaluation = json.loads((run/'N3'/'result.json').read_text(encoding='utf-8'))
+    if not evaluation.get('evaluated'):
+        return {'admitted':0,'rejected':0,'reason':'No completed candidate battery'}
+    batch = Path(evaluation['batch'])
+    if (batch/'settings.json').exists():
+        settings=json.loads((batch/'settings.json').read_text(encoding='utf-8'))
+        for field in ('as_of','training_end','history_start'):
+            settings[field]=dt.date.fromisoformat(settings[field])
+    definitions = {d.id:d for d in load_library(batch/'library')}
+    library = load_library(Path(settings['library']))
+    reference_ids = [d.id for d in library if d.id not in definitions]
+    reference_scorecard = pl.read_parquet(settings['reference_scorecard'])
+    reference_date=tomllib.loads((Path(settings['reference_statistics'])/'battery.toml').read_text(encoding='utf-8'))['run']['as_of']
+    if reference_date<settings['as_of']:
+        raise ValueError(f'ADMITTED controls end {reference_date}, required {settings["as_of"]}; complete monthly full-library battery before retry')
+    controls,admitted=admitted_controls(Path(settings['reference_statistics']),reference_scorecard)
+    scorecard = pl.read_parquet(evaluation['scorecard'])
+    panel = read_raw_monthly(data_root=Path(settings['data_root']),
+        statistics=batch/'evaluation'/'statistics', factors=reference_ids,
+        start=settings['history_start'],end=settings['as_of'])
+    panel = panel.filter(pl.col('label_exit_date') <= settings['as_of']).join(controls,on=['symbol','trade_date'],how='left',validate='1:1')
+    rows = []
+    destination = Path(settings['library'])/'auto'
+    destination.mkdir(exist_ok=True)
+    for identifier, definition in definitions.items():
+        variants=scorecard.filter(pl.col('factor')==identifier).sort('factor_admitted',descending=True)
+        variant=variants['variant'][0]
+        values=pl.read_parquet(batch/'evaluation'/'statistics'/'factors'/identifier/'monthly_scores.parquet').select(
+            'symbol','trade_date',pl.col(variant).alias('candidate'))
+        scored=panel.join(values,on=['symbol','trade_date'],how='left',validate='1:1')
+        incremental = incremental_statistics(scored,'candidate',admitted,1)
+        corr = maximum_correlation(scored,'candidate',reference_ids)
+        battery_pass = bool(variants['factor_admitted'][0])
+        passed = (battery_pass and incremental['months']>=96 and
+                  incremental['newey_west_t'] is not None and incremental['newey_west_t']>=2.5 and corr<.6)
+        rows.append({'factor':identifier,'variant':variant,'battery_pass':battery_pass,'incremental_months':incremental['months'],
+                     'incremental_nw_t':incremental['newey_west_t'],'maximum_rank_correlation':corr,
+                     'complete_control_fraction':incremental['complete_control_fraction'],
+                     'factor_admitted':passed,'source':'nightly_gp'})
+        if passed:
+            text = (batch/'library'/f'{identifier}.toml').read_text(encoding='utf-8')+'source = "nightly_gp"\n'
+            target = destination/f'{identifier}.toml'
+            if target.exists() and target.read_text(encoding='utf-8') != text:
+                raise ValueError('admitted factor definition conflict')
+            target.write_text(text,encoding='utf-8')
+    result = pl.from_dicts(rows)
+    result.write_parquet(run/'N4'/'admission_scorecard.parquet')
+    rejected = Path(settings['rejected_root'])
+    rejected.mkdir(parents=True,exist_ok=True)
+    result.filter(~pl.col('factor_admitted')).write_parquet(rejected/f'{run.name}.parquet')
+    # Queued definitions are complete only after the actual battery and admission decision.
+    processing = Path(settings['queue'])/'processing'
+    complete = processing/'completed'
+    complete.mkdir(exist_ok=True)
+    for path in processing.glob('*.toml'):
+        content=tomllib.loads(path.read_text(encoding='utf-8'))
+        if all(row['id'] in definitions for row in content.get('factors',[content])):
+            target=complete/f'{run.name}_{path.name}'
+            if not target.exists():
+                path.rename(target)
+    result.write_parquet(batch/'admission_scorecard.parquet')
+    return {'admitted':sum(r['factor_admitted'] for r in rows),'rejected':sum(not r['factor_admitted'] for r in rows),
+            'admitted_controls':len(admitted),'reference_factors':len(reference_ids),
+            'admitted_factors':[r for r in rows if r['factor_admitted']],
+            'admission_scorecard':str(run/'N4'/'admission_scorecard.parquet')}
+
+
+def monthly_models(settings: dict, run: Path) -> dict:
+    from quant.research.nightly_monthly import run_monthly
+    return run_monthly(settings,run)

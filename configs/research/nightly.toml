@@ -1,0 +1,39 @@
+# Frozen nightly search and admission rules. No live orders or LLM calls.
+output_root = "artifacts/research/nightly"
+batch_root = "artifacts/factors/nightly_batches"
+rejected_root = "artifacts/factors/rejected"
+queue = "configs/factors/queue"
+library = "configs/factors/library"
+data_root = "data"
+history_start = 2010-01-01
+# Resolved each real run from completed exchange month and previous calendar year.
+date_policy = "latest_completed_month_previous_year_training"
+statistics = ["artifacts/factors/battery_statistics_20260831_20260911"]
+reference_statistics = "artifacts/factors/battery_statistics_20260831_20260911"
+reference_scorecard = "artifacts/factors/scorecard/2026-08-31_20260912_q1b_01/factor_scorecard.parquet"
+refresh_config = "configs/data/refresh_q2_sue_v2_model_20260912.toml"
+battery_config = "configs/factors/battery.toml"
+execution_snapshot = "factor_battery_20260911_v2"
+return_benchmark_config = "configs/data/return_benchmarks_q1b_20260912.toml"
+measurement_config = "configs/models/q1_report_measurement_20260912.toml"
+model_config = "configs/models/p4_annual_walk_forward_20260911.toml"
+constrained_config = "configs/portfolio/r4_constrained_q10_20260913.toml"
+monthly_first_period = "2026-10"
+workers = 4
+weekday_hours = 6
+weekend_hours = 20
+minimum_free_gb = 50
+
+[genetic]
+seed = 20260913
+population_size = 200
+generations = 30
+max_depth = 5
+complexity_penalty = 0.0005
+
+[step_timeout_seconds]
+N1 = 300
+N2 = 10800
+N3 = 43200
+N4 = 10800
+N5 = 43200
