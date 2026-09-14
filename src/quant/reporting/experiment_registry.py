@@ -24,6 +24,8 @@ def _json(path: Path) -> dict:
 def _number(value: object) -> float | None:
     if value is None:
         return None
+    if not isinstance(value, (str, int, float)):
+        raise TypeError('Metric must be numeric or missing')
     result = float(value)
     return result if math.isfinite(result) else None
 
@@ -31,6 +33,8 @@ def _number(value: object) -> float | None:
 def records_from_run(run: Path) -> list[dict]:
     """Read already measured results; never infer missing costs or conclusions."""
     run = run.resolve()
+    if (run/'pipeline_config.json').is_file():
+        return factor_records_from_run(run)
     model_report = (run/'cost_metrics.parquet').is_file()
     config = run/('model.toml' if model_report else 'config.toml')
     config_bytes = config.read_bytes()
@@ -92,6 +96,41 @@ def records_from_run(run: Path) -> list[dict]:
             elif row['cost_multiplier'] == 1.:
                 excess = assessment.get('net_cagr_excess')
             record[f'excess_{suffix}'] = _number(excess)
+        records.append(record)
+    return records
+
+
+def factor_records_from_run(run: Path) -> list[dict]:
+    """Register completed battery rows, retaining missing costs as missing."""
+    result = _json(run/'summary.json')
+    if result['cost_failures'] or result['pending_external_runs']:
+        raise ValueError('Cannot register an unfinished factor battery')
+    config = run/'pipeline_config.json'
+    report = run/'report.md'
+    if not report.is_file():
+        raise ValueError('Missing completed factor report')
+    scorecard = Path(result['scorecard_path']).resolve()
+    if not scorecard.is_relative_to(run.resolve()):
+        raise ValueError('Factor scorecard must belong to its run')
+    records = []
+    for row in pl.read_parquet(scorecard).to_dicts():
+        if row['conclusion'] not in ('REJECTED', 'RESEARCH_ONLY', 'PAPER_CANDIDATE'):
+            raise ValueError('Unknown factor conclusion')
+        record = {'run_path': run.as_posix(), 'variant': f"{row['factor']}/{row['variant']}",
+            'experiment_id': row['factor'], 'config_sha256': hashlib.sha256(config.read_bytes()).hexdigest(),
+            'config_path': config.as_posix(), 'report_path': report.as_posix(), 'source_run': '',
+            'start': None, 'end': None, 'measurement': 'factor_battery_holding_window_costs',
+            'conclusion': row['conclusion'], 'strongest_benchmark': None,
+            'primary': row['variant'] == 'size_industry_neutral',
+            'result_time': dt.datetime.fromtimestamp(report.stat().st_mtime, dt.UTC).isoformat()}
+        for cost, suffix in COSTS.items():
+            prefix = {0.5: 'cost_0p5', 1.0: 'cost_1', 2.0: 'cost_2'}[cost]
+            for metric, source in METRICS.items():
+                record[f'{metric}_{suffix}'] = _number(row.get(f'{prefix}_{source}'))
+            excess = [_number(value) for key, value in row.items()
+                      if key.startswith(prefix+'_') and key.endswith('_cagr_excess')]
+            observed = [value for value in excess if value is not None]
+            record[f'excess_{suffix}'] = min(observed) if observed else None
         records.append(record)
     return records
 

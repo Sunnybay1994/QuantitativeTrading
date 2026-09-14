@@ -8,6 +8,20 @@ import pytest
 
 from quant.research.factor_battery_cost_batch import cost_order, existing_cost_factor, run_cost_batch
 from quant.research import factor_battery_cost_batch as batch_module
+from quant.research.factor_battery_costs import NoExecutableTopGroup
+
+
+@pytest.mark.parametrize('error,passes,expected', [
+    (NoExecutableTopGroup('empty'), [False, False], True),
+    (NoExecutableTopGroup('empty'), [False, True], False),
+    (NoExecutableTopGroup('empty'), [False, None], False),
+    (ValueError('Factor has no executable top-group observations'), [False, False], False),
+    (OSError('missing panel'), [False, False], False),
+])
+def test_empty_cost_rejection_does_not_swallow_other_failures(error, passes, expected):
+    table = pl.DataFrame({'factor': ['a', 'a'], 'statistical_pass': passes})
+    assert batch_module.terminal_cost_rejection(error, table, 'a') is expected
+    assert not batch_module.terminal_cost_rejection(error, table, 'unknown')
 
 
 @pytest.mark.parametrize('state', ['complete', 'failed', 'pending'])

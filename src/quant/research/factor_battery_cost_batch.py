@@ -8,7 +8,15 @@ from pathlib import Path
 
 import polars as pl
 
-from quant.research.factor_battery_costs import run_factor_costs
+from quant.research.factor_battery_costs import NoExecutableTopGroup, run_factor_costs
+
+
+def terminal_cost_rejection(error: Exception, table: pl.DataFrame, factor: str) -> bool:
+    """Only a typed empty portfolio plus complete statistical rejection is final."""
+    rows = table.filter(pl.col('factor') == factor)
+    return (isinstance(error, NoExecutableTopGroup) and rows.height > 0
+            and rows['statistical_pass'].null_count() == 0
+            and not rows['statistical_pass'].any())
 
 
 def cost_order(screen: pl.DataFrame, *, primary: str) -> list[str]:
@@ -59,6 +67,7 @@ def run_cost_batch(*, statistics: Path, screen: Path, output: Path, data_root: P
     if not config.exists():
         config.write_bytes(settings_bytes)
     completed, failures, pending_external = {}, {}, {}
+    rejected = {}
     todo = []
     for factor in ordered:
         folder = Path(existing[factor]) if factor in existing else output/factor
@@ -89,7 +98,10 @@ def run_cost_batch(*, statistics: Path, screen: Path, output: Path, data_root: P
                 future.result()
                 completed[factor] = str(output/factor)
             except Exception as exc:
-                failures[factor] = str(exc)
+                if terminal_cost_rejection(exc, table, factor):
+                    rejected[factor] = str(exc)
+                else:
+                    failures[factor] = str(exc)
             print(json.dumps({'factor': factor, 'completed': len(completed), 'failed': len(failures),
                               'error': failures.get(factor)}), flush=True)
     # External runs may have completed while the queued work ran.
@@ -97,7 +109,8 @@ def run_cost_batch(*, statistics: Path, screen: Path, output: Path, data_root: P
         if (Path(external_folder)/'summary.json').is_file():
             completed[factor] = pending_external.pop(factor)
     result = {'factors': len(ordered), 'completed_runs': completed, 'failures': failures,
-              'pending_external_runs': pending_external, 'statistically_rejected_factors': skipped}
+              'pending_external_runs': pending_external, 'statistically_rejected_factors': skipped,
+              'non_executable_rejections': rejected}
     (output/'batch_summary.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
     return result
 

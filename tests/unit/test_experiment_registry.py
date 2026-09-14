@@ -7,6 +7,26 @@ import pytest
 from quant.reporting.experiment_registry import records_from_run, register_run
 
 
+def test_factor_battery_registration_keeps_empty_costs_and_requires_completion(tmp_path):
+    run = tmp_path/'battery'
+    run.mkdir()
+    (run/'pipeline_config.json').write_text('{}')
+    (run/'report.md').write_text('Generated report')
+    scorecard = run/'factor_scorecard.parquet'
+    pl.DataFrame({'factor': ['empty'], 'variant': ['raw'], 'conclusion': ['REJECTED']}).write_parquet(scorecard)
+    summary = {'scorecard_path': str(scorecard), 'cost_failures': {}, 'pending_external_runs': {},
+               'non_executable_rejections': {'empty': 'no top group'}}
+    (run/'summary.json').write_text(json.dumps(summary))
+    records = records_from_run(run)
+    assert len(records) == 1 and records[0]['conclusion'] == 'REJECTED'
+    assert records[0]['cagr_1x'] is None and records[0]['excess_2x'] is None
+    assert register_run(run, tmp_path/'registry.parquet', tmp_path/'board.md') == 1
+    summary['cost_failures'] = {'empty': 'missing input'}
+    (run/'summary.json').write_text(json.dumps(summary))
+    with pytest.raises(ValueError, match='unfinished'):
+        records_from_run(run)
+
+
 def saved_run(root: Path, conclusion: str = 'REJECTED') -> Path:
     root.mkdir()
     (root/'config.toml').write_text('[research]\nid="example"\n', encoding='utf-8')

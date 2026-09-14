@@ -19,6 +19,10 @@ from quant.research.factor_cost_checkpoint import prepare_resume, read_year, sav
 from quant.research.run_s1_walk_forward import metrics
 
 
+class NoExecutableTopGroup(ValueError):
+    """Valid score inputs produce no next-session top-group portfolio."""
+
+
 def cost_metrics(nav: pl.DataFrame, trades: pl.DataFrame, *, initial_cash: float) -> dict:
     """Normalize turnover by prior-session equity and expose invested fractions."""
     if (nav.is_empty() or nav['date'].null_count() or not nav['date'].is_sorted()
@@ -98,7 +102,7 @@ def run_factor_costs(*, statistics: Path, output: Path, data_root: Path,
         if not targets.is_empty():
             plans[variant] = (name, targets)
     if not plans:
-        raise ValueError("Factor has no executable top-group observations")
+        raise NoExecutableTopGroup("Factor has no executable top-group observations")
     config_bytes = (statistics / "battery.toml").read_bytes() + (
         f'\n[cost_replay]\nfactor = {json.dumps(factor)}\n'
         f'execution_snapshot = {json.dumps(execution_snapshot)}\n'

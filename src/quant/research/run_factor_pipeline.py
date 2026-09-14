@@ -92,6 +92,7 @@ def run_pipeline(*, config: Path, library: Path, as_of: dt.date, output: Path,
                              benchmarks=benchmarks, redundancy=redundancy, data_root=data_root,
                              return_benchmark_config=return_benchmark_config)
     result = {'as_of': str(as_of), 'scorecard': scorecard, 'cost_failures': batch['failures'],
+              'non_executable_rejections': batch.get('non_executable_rejections', {}),
               'pending_external_runs': batch['pending_external_runs'],
               'scorecard_path': str(scorecard_output/'factor_scorecard.parquet')}
     (output/'summary.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
@@ -102,6 +103,7 @@ def run_pipeline(*, config: Path, library: Path, as_of: dt.date, output: Path,
         f"评分表{scorecard['rows']}行，完整成本{scorecard['cost_complete_rows']}行，"
         f"通过准入{scorecard['admitted_rows']}行，待补准入证据{scorecard['admission_unresolved_rows']}行。\n\n"
         f"评分表：`{scorecard_output.name}/factor_scorecard.parquet`。\n\n"
+        + f"统计未通过且无可执行组合的终态拒绝：{len(batch.get('non_executable_rejections', {}))}项；原因保留于summary.json。\n\n"
         + ('成本回放失败明细：\n\n'+failures+'\n' if failures else '成本批处理无失败项。\n')
         + ('\n外部成本回放尚未完成：\n\n'+pending+'\n' if pending else ''),
         encoding='utf-8')
