@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import polars as pl
+import pytest
 from deap import gp
 
 from quant.factors.expressions import _UNARY, _WINDOW, required_history
@@ -11,6 +12,25 @@ from quant.research.nightly import failed_streak
 from quant.research.nightly_gp import expand_expression, maximum_correlation, primitive_set
 from quant.research.nightly_steps import incremental_statistics, ingest
 from quant.data.nightly_genetic_inputs import admitted_controls
+
+
+def test_ingest_skips_published_candidate_but_rejects_changed_definition(tmp_path):
+    queue = tmp_path/'queue'
+    queue.mkdir()
+    library = tmp_path/'library'
+    (library/'auto').mkdir(parents=True)
+    text = ('id="gp_known"\nexpr="delta(adj_close, 5)"\nfamily="price"\n'
+            'direction=1\nsource_ref="fixture"\n')
+    (library/'auto/gp_known.toml').write_text(text+'source="nightly_gp"\n')
+    (queue/'gp_known.toml').write_text(text)
+    run = tmp_path/'run'
+    run.mkdir()
+    settings = {'queue': str(queue), 'library': str(library)}
+    assert ingest(settings, run)['queued_candidates'] == 0
+    assert not list((run/'candidates').glob('*.toml'))
+    (queue/'processing/gp_known.toml').write_text(text.replace('direction=1', 'direction=-1'))
+    with pytest.raises(ValueError, match='Published candidate definition collision'):
+        ingest(settings, run)
 
 
 def test_dsl_grammar_contains_every_operator_and_daily_windows():

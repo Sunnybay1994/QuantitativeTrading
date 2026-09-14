@@ -18,6 +18,20 @@ def dump(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False, default=str, allow_nan=False), encoding='utf-8')
 
 
+def published_candidate(row: dict, settings: dict) -> bool:
+    if not isinstance(row.get('id'), str) or not row['id'].isidentifier() or row['id'].startswith('_'):
+        raise ValueError('unsafe factor id')
+    if 'library' not in settings:
+        return False
+    target = Path(settings['library'])/'auto'/f"{row['id']}.toml"
+    if not target.exists():
+        return False
+    previous = tomllib.loads(target.read_text(encoding='utf-8'))
+    if any(previous[key] != row[key] for key in ('id', 'expr', 'direction')):
+        raise ValueError(f"Published candidate definition collision: {row['id']}")
+    return True
+
+
 def resolve_settings(settings: dict, run: Path) -> dict:
     from quant.data.nightly_genetic_inputs import latest_month_end
     path=run/'effective_settings.json'
@@ -74,10 +88,24 @@ def ingest(settings: dict, run: Path) -> dict:
     library.mkdir(exist_ok=True)
     for path in sorted(processing.glob('*.toml')):
         content = tomllib.loads(path.read_text(encoding='utf-8'))
-        for row in content.get('factors', [content]):
+        rows = content.get('factors', [content])
+        if all(published_candidate(row, settings) for row in rows):
+            complete = processing/'completed'
+            complete.mkdir(exist_ok=True)
+            destination = complete/f'{run.name}_{path.name}'
+            if destination.exists():
+                if destination.read_bytes() != path.read_bytes():
+                    raise ValueError('completed queue basename collision')
+                path.unlink()
+            else:
+                path.rename(destination)
+            continue
+        for row in rows:
             identifier = row['id']
             if not identifier.isidentifier() or identifier.startswith('_'):
                 raise ValueError('unsafe factor id')
+            if published_candidate(row, settings):
+                continue
             (library/f'{identifier}.toml').write_text(''.join(
                 f'{k} = {json.dumps(row[k], ensure_ascii=False)}\n'
                 for k in ('id', 'expr', 'family', 'direction', 'source_ref')), encoding='utf-8')
@@ -97,6 +125,8 @@ def evaluate(settings: dict, run: Path) -> dict:
     gp_result=run/'N2'/'result.json'
     gp_output=Path(json.loads(gp_result.read_text(encoding='utf-8')).get('gp_output',str(run/'N2'))) if gp_result.exists() else run/'N2'
     for path in sorted((gp_output/'library').glob('*.toml')):
+        if published_candidate(tomllib.loads(path.read_text(encoding='utf-8')), settings):
+            continue
         processing=Path(settings['queue'])/'processing'
         processing.mkdir(parents=True,exist_ok=True)
         # Retain unprocessed GP work across nights, even if the battery times out.
@@ -228,7 +258,8 @@ def admit(settings: dict, run: Path) -> dict:
     complete.mkdir(exist_ok=True)
     for path in processing.glob('*.toml'):
         content=tomllib.loads(path.read_text(encoding='utf-8'))
-        if all(row['id'] in definitions for row in content.get('factors',[content])):
+        if all(row['id'] in definitions or published_candidate(row, settings)
+               for row in content.get('factors',[content])):
             target=complete/f'{run.name}_{path.name}'
             if not target.exists():
                 path.rename(target)
