@@ -196,6 +196,33 @@ def _simulate(
     )
 
 
+@pytest.mark.parametrize('selling', [False, True])
+def test_adv_notional_cap_uses_execution_price_and_board_lots(selling):
+    result = simulate_daily_targets(
+        calendar=_calendar(SESSION), bars=_bar(open_price=12., close_price=12.),
+        scheduled_targets=_target(0. if selling else 1.), instruments=_instruments(),
+        market_states={(SESSION, STOCK): DailyMarketState()},
+        initial_cash=0. if selling else 20000., etf_costs=_etf_costs(),
+        stock_costs=_stock_costs_scaled(1.), strategy='m2-u1',
+        initial_positions=_initial_position(quantity=1000, settled_quantity=1000) if selling else None,
+        execution_notional_caps={STOCK: 2500.})
+    assert result.trades['quantity'].to_list() == [200]
+    assert result.trades['notional'][0] <= 2500.
+    curtailed = result.rejections.filter(pl.col('reason') == 'PARTICIPATION_CAP')
+    assert curtailed.height == 1
+    assert curtailed['rejected_quantity'][0] == curtailed['requested_quantity'][0] - 200
+
+
+def test_missing_adv_cap_blocks_trade_instead_of_allowing_unbounded_order():
+    result = simulate_daily_targets(
+        calendar=_calendar(SESSION), bars=_bar(), scheduled_targets=_target(1.),
+        instruments=_instruments(), market_states={(SESSION, STOCK): DailyMarketState()},
+        initial_cash=20000., etf_costs=_etf_costs(), stock_costs=_stock_costs(),
+        strategy='m2-u1', execution_notional_caps={})
+    assert result.trades.is_empty()
+    assert result.rejections['reason'].to_list() == ['PARTICIPATION_CAP']
+
+
 def test_full_day_suspension_without_bar_carries_mark_and_rejects_sale() -> None:
     result = _simulate(
         bars=_bar().head(0),

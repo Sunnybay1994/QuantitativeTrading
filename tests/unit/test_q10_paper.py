@@ -93,5 +93,3 @@ def test_month_end_orders_execute_next_session_and_restart(tmp_path, monkeypatch
     assert (fills['quantity'] % 100 == 0).all()
     repeated = q10.run(output=output, end=dt.date(2026, 10, 1), forecast=forecast)
     assert repeated['equity'] == next_day['equity']
-
-

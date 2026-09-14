@@ -120,6 +120,7 @@ def advance(
     dividends: pl.DataFrame, config: dict[str, Any],
     scheduled_orders: pl.DataFrame | None = None,
     target_permissions: dict[str, tuple[bool, bool]] | None = None,
+    execution_notional_caps: dict[str, float] | None = None,
 ) -> tuple[dict[str, Any], Any]:
     """Settle prior holdings, recognize dividends, then execute yesterday's targets."""
     paper = config["paper"]
@@ -173,6 +174,7 @@ def advance(
         stock_costs=AShareCostModel(**config["costs"]["a_share"]),
         strategy=paper["name"], initial_positions=initial, scheduled_orders=scheduled_orders,
         target_permissions=target_permissions,
+        execution_notional_caps=execution_notional_caps,
     )
     nav = result.nav.row(-1, named=True)
     nav["receivable"] = sum(r["amount"] for r in receivables)

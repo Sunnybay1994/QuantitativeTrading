@@ -18,6 +18,27 @@ def arguments(tmp_path):
                 execution_snapshot='frozen_inputs', workers=2)
 
 
+def test_resume_detects_changed_automatically_admitted_factor(tmp_path, monkeypatch):
+    args = arguments(tmp_path)
+    auto = args['library']/'auto'
+    auto.mkdir()
+    definition = auto/'new.toml'
+    definition.write_text('id="new"\nexpr="adj_close"\nsource="nightly_gp"\n')
+    calls = []
+
+    def interrupted(**kwargs):
+        calls.append('statistics')
+        raise ValueError('interrupted before completion')
+
+    monkeypatch.setattr(pipeline, 'run_statistics', interrupted)
+    with pytest.raises(ValueError, match='interrupted before completion'):
+        pipeline.run_pipeline(**args)
+    definition.write_text('id="new"\nexpr="volume"\nsource="nightly_gp"\n')
+    with pytest.raises(ValueError, match='unchanged pipeline'):
+        pipeline.run_pipeline(**args, resume=True)
+    assert calls == ['statistics']
+
+
 def test_failed_statistics_preserves_partial_run_and_never_starts_costs(monkeypatch, tmp_path):
     calls = []
 

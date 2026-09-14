@@ -75,8 +75,15 @@ def simulate_daily_targets(
     initial_positions: pl.DataFrame | None = None,
     scheduled_orders: pl.DataFrame | None = None,
     target_permissions: Mapping[str, tuple[bool, bool]] | None = None,
+    execution_notional_caps: Mapping[str, float] | None = None,
 ) -> DailySimulationResult:
     """按权威 session 模拟股票/ETF 目标权重，显式保留拒单证据。"""
+    if execution_notional_caps is not None and any(
+        not isinstance(symbol, str) or not symbol or isinstance(value, bool)
+        or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0
+        for symbol, value in execution_notional_caps.items()
+    ):
+        raise ValueError('Invalid signal-date execution notional caps')
     if target_permissions is not None:
         if scheduled_orders is not None or any(
             not isinstance(symbol, str) or not symbol or len(permissions) != 2
@@ -313,6 +320,29 @@ def simulate_daily_targets(
                             reference_price=references[symbol]['open'])
                     else:
                         desired[symbol] += quantity if side is OrderSide.BUY else -quantity
+
+            if execution_notional_caps is not None:
+                for symbol in sorted(relevant_symbols):
+                    difference = desired[symbol] - positions[symbol].quantity
+                    if not difference:
+                        continue
+                    side = OrderSide.BUY if difference > 0 else OrderSide.SELL
+                    requested = abs(difference)
+                    price, _, _ = _execution_values(
+                        date=date, symbol=symbol, side=side, quantity=1,
+                        open_price=references[symbol]['open'],
+                        instrument_type=instrument_rows[symbol]['instrument_type'],
+                        etf_costs=etf_costs, stock_costs=stock_costs)
+                    cap = execution_notional_caps.get(symbol, 0.)
+                    if requested * price <= cap:
+                        continue
+                    lot = int(instrument_rows[symbol]['board_lot'])
+                    permitted = max(0, math.floor(cap / price / lot) * lot)
+                    desired[symbol] = positions[symbol].quantity + (permitted if difference > 0 else -permitted)
+                    _append_rejection(rows=rejection_rows, strategy=strategy, date=date,
+                        symbol=symbol, side=side, reason=ExecutionRejectReason.PARTICIPATION_CAP,
+                        quantity=requested, reference_price=references[symbol]['open'])
+                    rejection_rows[-1]['rejected_quantity'] = requested - permitted
 
             for symbol in sorted(relevant_symbols):
                 requested = positions[symbol].quantity - desired[symbol]

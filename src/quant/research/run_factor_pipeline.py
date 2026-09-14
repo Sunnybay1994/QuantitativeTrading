@@ -30,7 +30,8 @@ def run_pipeline(*, config: Path, library: Path, as_of: dt.date, output: Path,
     config_text = config.read_text(encoding='utf-8')
     refresh = tomllib.loads(config_text).get('data', {}).get('refresh_config')
     configuration = {'battery': config_text, 'as_of': str(as_of),
-        'library': {path.name: path.read_text(encoding='utf-8') for path in sorted(library.glob('*.toml'))},
+        'library': {path.relative_to(library).as_posix(): path.read_text(encoding='utf-8')
+                    for path in sorted([*library.glob('*.toml'), *(library/'auto').rglob('*.toml')])},
         'data_root': str(data_root.resolve()), 'execution_snapshot': execution_snapshot,
         'refresh_config': Path(refresh).read_text(encoding='utf-8') if refresh else None,
         'existing_runs': sorted(str(path.resolve()) for path in existing_runs or [])}

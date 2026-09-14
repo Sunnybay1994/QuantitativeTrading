@@ -25,8 +25,14 @@ class FactorDefinition:
 
 def load_library(root: Path, selected: str = "all") -> list[FactorDefinition]:
     definitions = []
-    for path in sorted(root.glob("*.toml")):
+    paths = list(root.glob("*.toml")) + list((root / "auto").rglob("*.toml"))
+    for path in sorted(paths):
         row = tomllib.loads(path.read_text(encoding="utf-8"))
+        # Provenance is persisted in TOML, outside the computational definition.
+        # Adding metadata must not invalidate all existing factor-panel caches.
+        source = row.pop("source", None)
+        if source is not None and (not isinstance(source, str) or not source.strip()):
+            raise ValueError(f"Invalid factor source: {path}")
         definition = FactorDefinition(**row)
         if (not re.fullmatch(r"[a-z][a-z0-9_]*", definition.id)
                 or definition.direction not in {-1, 1}
