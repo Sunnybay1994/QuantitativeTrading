@@ -127,3 +127,18 @@ def test_unfinished_monthly_work_precedes_new_search(tmp_path):
     (month / "summary.json").write_text('{"completed":true}', encoding="utf-8")
     order = nightly.work_order(settings, dt.date(2026, 10, 5))
     assert order.index("N2") < order.index("N5")
+
+
+@pytest.mark.parametrize("monthly, expected", [
+    ({"ok": True, "result": {"completed": True, "skipped": False}}, "月度模型已完成"),
+    ({"ok": False, "error": "Time guard"}, "月度步骤未完成"),
+    ({"ok": True, "result": {"skipped": True}}, "本夜无需月度重训"),
+])
+def test_digest_uses_actual_monthly_outcome(monkeypatch, tmp_path, monthly, expected):
+    from quant.factors import library
+    monkeypatch.setattr(library, "load_library", lambda _: [])
+    run = tmp_path / "2026-10-03"
+    run.mkdir()
+    nightly.digest({"library": "unused"}, run,
+                   {"library_before": 0, "steps": {"N5": monthly}}, rewrite_leaderboard=False)
+    assert expected in (run / "digest.md").read_text(encoding="utf-8")

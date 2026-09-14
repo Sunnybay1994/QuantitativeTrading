@@ -74,7 +74,15 @@ def digest(settings: dict, run: Path, summary: dict, *, rewrite_leaderboard: boo
               f"库规模 {summary['library_before']} → {summary['library_after']}。",'']
     for name,state in summary['steps'].items():
         lines.append(f"- {name}：{'完成' if state['ok'] else '未完成'}；{state.get('error',state.get('result',{}))}")
-    lines+=['','模型变化：'+('本夜执行月度模型，见 N5 产物。' if summary['steps'].get('N5',{}).get('result',{}).get('scheduled') else '非月度模型日，最佳模型未重估。')]
+    monthly = summary['steps'].get('N5', {})
+    monthly_result = monthly.get('result', {})
+    if monthly.get('ok') and monthly_result.get('completed'):
+        model_note = '月度模型已完成，见 N5 产物。'
+    elif monthly.get('ok') and monthly_result.get('skipped'):
+        model_note = '本夜无需月度重训，最佳模型未重估。'
+    else:
+        model_note = '月度步骤未完成，后续继续；本夜无完整模型结果。'
+    lines += ['', '模型变化：'+model_note]
     (run/'digest.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
     (run/'report.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
     if rewrite_leaderboard:
