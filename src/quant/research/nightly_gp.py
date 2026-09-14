@@ -235,7 +235,9 @@ def run(settings: dict, output: Path) -> dict:
         mapping=previous
         definitions=[d for d in definitions if f'gp_{d.id}' in mapping]
     else:
-        mapping_path.write_text(json.dumps(mapping,indent=2),encoding='utf-8')
+        temporary = mapping_path.with_suffix('.tmp')
+        temporary.write_text(json.dumps(mapping,indent=2),encoding='utf-8')
+        temporary.replace(mapping_path)
     end = settings['training_end']
     sample,monthly_sample=output/'daily_sample.parquet',output/'monthly_sample.parquet'
     if sample.exists() and monthly_sample.exists():
@@ -247,7 +249,9 @@ def run(settings: dict, output: Path) -> dict:
         temporary=sample.with_suffix('.partial.parquet')
         panel.write_parquet(temporary)
         temporary.replace(sample)
-        labels.write_parquet(monthly_sample)
+        temporary = monthly_sample.with_suffix('.partial.parquet')
+        labels.write_parquet(temporary)
+        temporary.replace(monthly_sample)
     search_day=dt.date.fromisoformat(output.parent.name)
     family = ('price_volume','financial','minute','mixed')[search_day.toordinal()%4]
     search_settings=dict(settings['genetic'])

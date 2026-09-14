@@ -15,7 +15,9 @@ from quant.research.nightly_gp import maximum_correlation
 
 
 def dump(path: Path, value: object) -> None:
-    path.write_text(json.dumps(value, indent=2, ensure_ascii=False, default=str, allow_nan=False), encoding='utf-8')
+    temporary = path.with_suffix(path.suffix+'.tmp')
+    temporary.write_text(json.dumps(value, indent=2, ensure_ascii=False, default=str, allow_nan=False), encoding='utf-8')
+    temporary.replace(path)
 
 
 def published_candidate(row: dict, settings: dict) -> bool:

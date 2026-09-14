@@ -1,0 +1,37 @@
+param([switch]$CheckOnly)
+$ErrorActionPreference = 'Stop'
+$workspace = Split-Path -Parent $PSScriptRoot
+Set-Location -LiteralPath $workspace
+$env:PYTHONPATH = Join-Path $workspace 'src'
+$env:POLARS_MAX_THREADS = '4'
+$env:PYTHONUTF8 = '1'
+$root = Join-Path $workspace 'artifacts\research\continuous'
+New-Item -ItemType Directory -Path $root -Force | Out-Null
+$clock = Get-Date
+$hours = 2.0
+$reason = $null
+if ([int]$clock.DayOfWeek -in 1,2,3,4,5) {
+    foreach ($hour in 17,21) {
+        $cutoff = $clock.Date.AddHours($hour).AddMinutes(20)
+        $end = $cutoff.AddMinutes(20)
+        if ($clock -ge $cutoff -and $clock -lt $end) { $reason = 'Reserved for daily observation' }
+        if ($clock -lt $cutoff) { $hours = [Math]::Min($hours, ($cutoff - $clock).TotalHours) }
+    }
+}
+$writers = @(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" |
+    Where-Object { $_.CommandLine -match 'quant\.(data\.(refresh|intraday)|factors\.compute|research\.(continuous_mining|nightly|run_daily|scheduled_observation|run_factor_search|run_genetic_factor_search|run_research_cycle|run_constrained|run_multifactor)|execution\.(q10_paper|stock_paper|paper_ledger|cross_asset_forward))|daily_recovery.+recover.py' })
+if ($writers.Count -gt 0) { $reason = 'Another data/factor/account writer is running' }
+if ($hours -lt (1.0 / 60)) { $reason = 'Daily observation starts shortly' }
+if ($reason) {
+    @{status='deferred'; updated_at=$clock.ToString('o'); reason=$reason} |
+        ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'scheduler.json') -Encoding utf8
+    exit 0
+}
+if ($CheckOnly) { Write-Output "Ready; maximum slice hours: $hours"; exit 0 }
+$logRoot = Join-Path $root 'scheduler'
+New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
+$log = Join-Path $logRoot ($clock.ToString('yyyy-MM-dd_HHmmss_fffffff') + '.log')
+@{status='started'; updated_at=$clock.ToString('o'); log=$log; slice_hours=$hours} |
+    ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'scheduler.json') -Encoding utf8
+& 'D:\Miniforge3\python.exe' -m quant.research.continuous_mining --config configs/research/nightly.toml --output-root artifacts/research/continuous --slice-hours ($hours.ToString('0.######',[Globalization.CultureInfo]::InvariantCulture)) *> $log
+exit $LASTEXITCODE

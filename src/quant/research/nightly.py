@@ -134,11 +134,12 @@ def work_order(settings: dict, day: dt.date) -> tuple[str, ...]:
     return ('N1', 'N2', 'N3', 'N4', 'N5')
 
 
-def execute(config: Path, *, now: dt.datetime|None=None) -> dict:
+def execute(config: Path, *, now: dt.datetime|None=None, run_path: Path|None=None,
+            session_hours: float|None=None) -> dict:
     from quant.factors.library import load_library
     settings=tomllib.loads(config.read_text(encoding='utf-8'))
     now=now or dt.datetime.now()
-    run=Path(settings['output_root'])/now.date().isoformat()
+    run=run_path or Path(settings['output_root'])/now.date().isoformat()
     run.mkdir(parents=True,exist_ok=True)
     frozen=run/'config.toml'
     if frozen.exists() and frozen.read_bytes()!=config.read_bytes():
@@ -155,6 +156,11 @@ def execute(config: Path, *, now: dt.datetime|None=None) -> dict:
     # Persist before spawning: restarting this night's process never buys a new timebox.
     started = dt.datetime.fromisoformat(summary['started_at'])
     summary.setdefault('deadline_at', (started+dt.timedelta(hours=hours)).isoformat())
+    if session_hours is not None:
+        if session_hours <= 0:
+            raise ValueError('session_hours must be positive')
+        summary['session_started_at'] = now.isoformat()
+        summary['deadline_at'] = (now+dt.timedelta(hours=session_hours)).isoformat()
     deadline = time.monotonic() + (dt.datetime.fromisoformat(summary['deadline_at'])-now).total_seconds()
     dump(summary_path, summary)
     try:

@@ -28,8 +28,8 @@ D:\Miniforge3\python.exe -m quant.research.scheduled_observation --check-only
 | 执行入口 | 当前职责 |
 |---|---|
 | [run_daily_observation.ps1](../scripts/run_daily_observation.ps1) | Windows `QuantitativeTrading-DailyObservation`，工作日17:30/21:30 |
-| [run_nightly_research.ps1](../scripts/run_nightly_research.ps1) | Windows `QuantitativeTrading-NightlyResearch`，工作日22:30/周六09:00 |
-| Codex `automation`：量化主进程统一跟进 | 09/15/22唤醒，分别按周一、R5待验收、工作日日更分支检查；不代替Windows再启动同一批任务 |
+| [run_continuous_mining.ps1](../scripts/run_continuous_mining.ps1) | Windows `QuantitativeTrading-ContinuousMining`，登录后及每10分钟尝试接续，运行中不重复启动；原 `NightlyResearch` 调度停用 |
+| Codex `automation`：量化主进程统一跟进 | 当前暂停，持续挖掘由Windows独立运行；不要自行恢复旧跟进 |
 
 调度配置入口：[日更](../configs/research/daily_observation_q2_sue_v2_20260912.toml)、[夜间](../configs/research/nightly.toml)。两个安装/注册脚本仅在首次部署或明确修改调度时使用，不作为日常启动命令。
 
@@ -41,16 +41,26 @@ D:\Miniforge3\python.exe -m quant.research.scheduled_observation --check-only
 |---|---|
 | 日更是否完整 | `artifacts/daily/scheduler/`日志、当日`artifacts/daily/sue_v2/`的`summary.json`与`scheduler.json`；S0记录独立检查 |
 | Q10是否产生真实前向记录 | `artifacts/paper/q10_sue_v2/`，规则见[账户配置](../configs/paper/q10_sue_v2_20260913.toml)；初始化现金不算成交 |
-| 夜间是否完成 | `artifacts/research/nightly/<日期>/summary.json`、`digest.md`和各阶段`result.json` |
+| 持续批次是否完成 | `artifacts/research/continuous/status.json`、`batch_*/<日期>/summary.json`、`digest.md`和各阶段`result.json`；旧夜间记录仍在`artifacts/research/nightly/` |
 | 候选是否评估和入库 | `artifacts/factors/nightly_batches/<批次>/evaluation/summary.json`、`admission_scorecard.parquet`及`configs/factors/library/auto/` |
 | 历史实验结论 | `artifacts/registry/experiments.parquet`及[机器排行榜](research/排行榜.md)；旧文档只供追溯 |
 
-R5验收要求连续三个真实计划调度夜的完整记录；零入选可以，失败和`nightly_validation/`白天验证不能计数。月度模型首次到期由配置决定，未到期跳过不表示已经完成月度模型实跑。
+09-14用户要求持续运行后，默认入口改为持续批次。已有夜间验证产物保留，不把恢复次数或白天测试冒充多个完整研究批次。月度模型首次到期由配置决定，未到期跳过不表示已经完成月度模型实跑。
+
+### 持续挖掘与关机恢复
+
+电脑唤醒且Windows用户登录后自动接续；不依赖Codex窗口。每次最多运行2小时，优先恢复旧批次，完成后下一次触发才创建新seed批次。工作日17:20/21:20前结束当前执行片段，为17:30/21:30日更让路；日更仍在运行则继续等待。
+
+关机后从最近保存的GP种群、随机状态、已评估表达式及成本断点恢复；尚未保存的计算会重做。相同批次连续三次非超时错误会停止重试并显示需要处理，原产物保留。不要删除断点或换目录绕过失败。
+
+查看实时任务/进程/批次与GP代数：`powershell -NoProfile -File scripts/show_factor_mining_status.ps1`。机器状态为`artifacts/research/continuous/status.json`，每批结果在`batch_*/<日期>/digest.md`，调度日志在`artifacts/research/continuous/scheduler/`。
+
+本地GP与评估不调用LLM。现有DeepSeek批量入口保留闲时限制：北京时间工作日09–12与14–18延后，其余时间及周末允许；缓存和费用上限照常生效（[官方价格，09-14核实](https://api-docs.deepseek.com/quick_start/pricing/)）。
 
 ## 恢复失败任务
 
 - 先确认实际进程已结束，再读失败阶段日志；保留原run与断点。
-- 夜间恢复使用该run已冻结的`config.toml`调用`quant.research.nightly --config <原配置>`，原`deadline_at`不重置。
+- 持续批次由`quant.research.continuous_mining`自动恢复原run，执行时间片重新计时；旧夜间恢复仍用该run冻结的`config.toml`，原`deadline_at`不重置。
 - GP已完成时复用其输出；已有因子批次复用统计、成本年度断点和最新评分表。N3没有完成时不能跳过它直接入库。
 - 成本异常分开处理：全部版本统计拒绝且确无可执行组合可终态拒绝；数据缺失、计算异常与外部任务未完成仍需修复。
 - 日期或输入版本变化时创建新run，不能修改冻结配置冒充同一次恢复。队列processing/completed由流水线维护，人工整理不要移动活跃候选。
