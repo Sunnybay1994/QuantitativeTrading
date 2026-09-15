@@ -63,6 +63,10 @@ D:\Miniforge3\python.exe -m quant.research.scheduled_observation --check-only
 
 页面使用保存账户的净值、实际持仓权重和观察期半成交额换手。影子价格使用参考订单对应下一交易日开盘与完整 5/15/30 分钟窗口；缺失分钟成交额或覆盖不完整时留空并提示处理。此记录用于积累校准证据，不能当作实际成交滑点。页面视觉检查尚待浏览器访问授权。
 
+## 手工分日执行建议
+
+手工订单演练现在同时生成 `execution_plan.csv`：按历史成交额参与率估计最多三日的分配，超过容量或缺少日历则标记拒绝。它不解除 `orders.csv` 的风险拦截；每日按实际成交重新核对现金、可卖数量和剩余需求。开盘后用当日核实的价格计算价格带：`D:\Miniforge3\python.exe -m quant.execution.manual_execution_plan --opening 10.03 --down-limit 9 --up-limit 11`（这里是演示值）。输出只用于价格核对，不执行交易。
+
 ## 恢复失败任务
 
 - 先确认实际进程已结束，再读失败阶段日志；保留原run与断点。

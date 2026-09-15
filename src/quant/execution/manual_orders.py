@@ -12,6 +12,7 @@ import polars as pl
 
 from quant.data.stock_paper_inputs import StockPaperInputs
 from quant.execution.order_risk import assess_reference_orders, render_report
+from quant.execution.manual_execution_plan import build_plan
 from quant.execution.stock_paper import ORDER_SCHEMA, reference_orders
 
 
@@ -59,8 +60,11 @@ def prepare_manual_orders(*, state: dict[str, Any], targets: pl.DataFrame,
         proposal = proposal.filter(pl.col('side') == 'SELL')
     risk = assess_reference_orders(state=state, orders=proposal, market=market,
         next_session=next_session, limits=limits)
+    execution_plan = build_plan(orders=proposal, market=market, sessions=sessions,
+        participation_rate=limits['participation_rate'])
     blocked = risk['requires_review']
     result = {'rehearsal': True, 'auto_trade': False, 'risk': risk,
+              'execution_plan': execution_plan.to_dicts(),
               'halt': not config['paper'].get('enabled', True),
               'sell_only': config['paper'].get('sell_only', False),
               'withheld': blocked, 'proposed_orders': proposal.height,
@@ -95,11 +99,14 @@ def main() -> None:
     args.output.mkdir(parents=True, exist_ok=False)
     proposed.write_csv(args.output/'proposed_orders.csv')
     orders.write_csv(args.output/'orders.csv')
+    from quant.execution.manual_execution_plan import SCHEMA as PLAN_SCHEMA
+    pl.from_dicts(result['execution_plan'], schema=PLAN_SCHEMA).write_csv(args.output/'execution_plan.csv')
     targets.write_csv(args.output/'targets.csv')
     (args.output/'config.toml').write_bytes(args.config.read_bytes())
     (args.output/'summary.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
     heading = '# 手工账户次日订单演练\n\n'
     heading += f"拟议{proposed.height}笔；风险拦截后参考清单{orders.height}笔。仅供演练。\n\n"
+    heading += '[分日执行建议](execution_plan.csv)：最多三个交易日，每日重新核对现金、可卖数量及行情；价格带为当日开盘价±1%与官方涨跌停区间的交集。建议不解除风险拦截。\n\n'
     (args.output/'report.md').write_text(heading + render_report(result['risk']), encoding='utf-8')
     print(json.dumps({'output': str(args.output), **{k: v for k, v in result.items() if k != 'risk'}}))
 
