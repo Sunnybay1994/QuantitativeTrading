@@ -120,7 +120,8 @@ def resolve(*, disclosures: Path, data_root: Path, output: Path, document_cache:
         return saved
     output.mkdir(parents=True, exist_ok=True)
     names = issuer_names([item['symbol'] for item in source['unresolved']], data_root=data_root, output=output)
-    raw_rows = pl.read_parquet(source['raw_paths']).to_dicts() if source['raw_paths'] else []
+    # Provider metadata can change between captures; preserve each file's fields.
+    raw_rows = [row for path in source['raw_paths'] for row in pl.read_parquet(path).to_dicts()]
     rows = {str(row['announcementId']): row for row in raw_rows}
     requests = {(row['symbol'], row['period']) for row in source['requests']}
     recognized, excluded, unresolved = [], [], []

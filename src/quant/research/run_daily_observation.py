@@ -21,6 +21,18 @@ def _overlap(a: Path, b: Path) -> bool:
     return a == b or a in b.parents or b in a.parents
 
 
+def _replace_report(temporary: Path, target: Path) -> None:
+    """Allow a brief Windows reader conflict without losing the daily run."""
+    for attempt in range(6):
+        try:
+            temporary.replace(target)
+            return
+        except PermissionError:
+            if attempt == 5:
+                raise
+            time.sleep(0.2 * (attempt + 1))
+
+
 def write_daily_report(record: dict[str, Any], output: Path) -> None:
     """Keep one readable summary beside the detailed stage artifacts."""
     names = {'calendar': '交易日历', 'model': '模型预测', 'refresh': '输入质量',
@@ -85,7 +97,7 @@ def write_daily_report(record: dict[str, Any], output: Path) -> None:
     lines += ['', '[完整运行记录](summary.json)', '']
     temporary = output/'report.md.tmp'
     temporary.write_text('\n'.join(lines), encoding='utf-8')
-    temporary.replace(output/'report.md')
+    _replace_report(temporary, output/'report.md')
 
 
 def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = False,
@@ -131,7 +143,7 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
         temporary = output/'summary.json.tmp'
         temporary.write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str),
                              encoding='utf-8')
-        temporary.replace(output/'summary.json')
+        _replace_report(temporary, output/'summary.json')
         write_daily_report(result, output)
 
     save_summary()

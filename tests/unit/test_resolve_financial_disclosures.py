@@ -10,9 +10,12 @@ def test_resolution_preserves_raw_and_adds_only_recognized_issuer_periods(tmp_pa
     raw = tmp_path/'announcements.parquet'
     pl.DataFrame({'announcementId': ['1', '2', '3'], 'secName': ['金道科技']*3,
                   'adjunctUrl': ['finalpage/2026-09-10/'+str(i)+'.PDF' for i in (1, 2, 3)]}).write_parquet(raw)
+    later = tmp_path/'later.parquet'
+    pl.DataFrame({'announcementId': ['4'], 'id': [42], 'secName': ['金道科技'],
+                  'adjunctUrl': ['finalpage/2026-09-10/4.PDF']}).write_parquet(later)
     source = tmp_path/'source'
     source.mkdir()
-    original = {'start': '2026-09-10', 'end': '2026-09-10', 'raw_paths': [str(raw)],
+    original = {'start': '2026-09-10', 'end': '2026-09-10', 'raw_paths': [str(raw), str(later)],
         'requests': [{'symbol': '301279.SZ', 'period': '2026-06-30'}], 'unresolved': [
             {'symbol': '301279.SZ', 'announcement_id': str(i), 'announcement_date': '2026-09-10',
              'title': title, 'reason': 'report_period_not_explicit_in_title'} for i, title in

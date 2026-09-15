@@ -8,6 +8,33 @@ import pytest
 from quant.research import run_daily_observation as daily
 
 
+@pytest.mark.parametrize('failures', [2, 6])
+def test_report_replace_handles_transient_conflict_but_surfaces_persistent_error(tmp_path, monkeypatch, failures):
+    target, temporary = tmp_path/'summary.json', tmp_path/'summary.json.tmp'
+    target.write_text('old')
+    temporary.write_text('new')
+    replace = Path.replace
+    calls = []
+
+    def competing_reader(path, destination):
+        calls.append(path)
+        if len(calls) <= failures:
+            raise PermissionError('Reader holds the destination')
+        return replace(path, destination)
+
+    monkeypatch.setattr(Path, 'replace', competing_reader)
+    monkeypatch.setattr(daily.time, 'sleep', lambda _: None)
+    if failures == 6:
+        with pytest.raises(PermissionError):
+            daily._replace_report(temporary, target)
+        assert target.read_text() == 'old' and temporary.read_text() == 'new'
+        assert len(calls) == 6
+    else:
+        daily._replace_report(temporary, target)
+        assert target.read_text() == 'new' and not temporary.exists()
+        assert len(calls) == 3
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     config = tmp_path/'config.toml'
