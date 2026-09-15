@@ -55,7 +55,7 @@ D:\Miniforge3\python.exe -m quant.research.scheduled_observation --check-only
 
 查看实时任务/进程/批次与GP代数：`powershell -NoProfile -File scripts/show_factor_mining_status.ps1`。机器状态为`artifacts/research/continuous/status.json`，每批结果在`batch_*/<日期>/digest.md`，调度日志在`artifacts/research/continuous/scheduler/`。
 
-本地GP与评估不调用LLM。现有DeepSeek批量入口保留闲时限制：北京时间工作日09–12与14–18延后，其余时间及周末允许；缓存和费用上限照常生效（[官方价格，09-14核实](https://api-docs.deepseek.com/quick_start/pricing/)）。
+本地GP与评估本身不调用LLM。持续调度通过`configs/research/weekly_factor_candidates.toml`每周尝试一次DeepSeek候选生成，复用共享缓存，上海自然周上限$5、自然月上限$30，未知扣费保留预留。北京时间工作日09–12与14–18延后，其余时间及周末允许；价格快照过期时只延后LLM，本地GP继续（[官方价格，09-14核实](https://api-docs.deepseek.com/quick_start/pricing/)）。生成候选经DSL校验去重后进入原队列，实测相关性比例由N4结果自动写入`artifacts/research/weekly_candidates/<周一日期>/report.md`，未评估时不报通过比例。
 
 ## 恢复失败任务
 

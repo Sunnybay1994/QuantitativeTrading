@@ -1,4 +1,5 @@
-# Frozen nightly search and admission rules. No live orders or LLM calls.
+# Frozen search/admission rules; optional weekly LLM generation has independent budgets.
+weekly_candidates_config = "configs/research/weekly_factor_candidates.toml"
 output_root = "artifacts/research/nightly"
 batch_root = "artifacts/factors/nightly_batches"
 rejected_root = "artifacts/factors/rejected"

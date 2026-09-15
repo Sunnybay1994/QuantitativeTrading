@@ -14,6 +14,25 @@ def success():
     return {'steps': {step: {'ok': True} for step in ('N1', 'N2', 'N3', 'N4', 'N5')}}
 
 
+def test_weekly_candidates_run_before_local_research_without_blocking_on_failure(tmp_path, monkeypatch):
+    from quant.research import weekly_factor_candidates as weekly
+    path = config(tmp_path)
+    path.write_text('weekly_candidates_config = "weekly.toml"\n' + path.read_text())
+    calls = []
+    def generate(config, **kwargs):
+        assert kwargs['execute'] is True
+        calls.append('weekly')
+        raise ValueError('Pricing snapshot requires refresh')
+    def execute(*args, **kwargs):
+        assert calls == ['weekly']
+        return success()
+    monkeypatch.setattr(weekly, 'run', generate)
+    monkeypatch.setattr(mining.nightly, 'execute', execute)
+    result = mining.dispatch(path, tmp_path/'continuous')
+    assert result['state'] == 'completed'
+    assert result['weekly_candidates']['state'] == 'needs_attention'
+
+
 def test_cross_day_interruption_resumes_same_frozen_batch(tmp_path, monkeypatch):
     path, root = config(tmp_path), tmp_path/'continuous'
     calls = []

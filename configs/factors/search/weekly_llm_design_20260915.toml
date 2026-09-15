@@ -1,0 +1,7 @@
+# Candidate definition bounds only; admission remains in the frozen battery/nightly rules.
+[search]
+maximum_candidates = 20
+maximum_history = 252
+maximum_depth = 16
+fields = ["adj_close", "adj_high", "adj_low", "volume", "turnover_rate", "amihud_illiquidity_monthly_calendar80_v1", "free_float_turnover_level_monthly_calendar80_v1", "free_float_turnover_abnormal_12m_calendar80_v1"]
+operators = ["delay", "ts_mean", "ts_std", "ts_std0", "ts_min", "ts_max", "ts_corr"]

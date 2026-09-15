@@ -240,12 +240,13 @@ def admit(settings: dict, run: Path) -> dict:
         battery_pass = bool(variants['factor_admitted'][0])
         passed = (battery_pass and incremental['months']>=96 and
                   incremental['newey_west_t'] is not None and incremental['newey_west_t']>=2.5 and corr<.6)
+        source = 'weekly_llm' if identifier.startswith('llm_dsl_') else 'nightly_gp'
         rows.append({'factor':identifier,'variant':variant,'battery_pass':battery_pass,'incremental_months':incremental['months'],
                      'incremental_nw_t':incremental['newey_west_t'],'maximum_rank_correlation':corr,
                      'complete_control_fraction':incremental['complete_control_fraction'],
-                     'factor_admitted':passed,'source':'nightly_gp'})
+                     'factor_admitted':passed,'source':source})
         if passed:
-            text = (batch/'library'/f'{identifier}.toml').read_text(encoding='utf-8')+'source = "nightly_gp"\n'
+            text = (batch/'library'/f'{identifier}.toml').read_text(encoding='utf-8')+f'source = "{source}"\n'
             target = destination/f'{identifier}.toml'
             if target.exists() and target.read_text(encoding='utf-8') != text:
                 raise ValueError('admitted factor definition conflict')

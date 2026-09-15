@@ -1,0 +1,11 @@
+output_root = "artifacts/research/weekly_candidates"
+library = "configs/factors/library"
+queue = "configs/factors/queue"
+scorecard = "artifacts/factors/scorecard/2026-08-31_20260912_q1b_01/factor_scorecard.parquet"
+scoring_config = "configs/research/deepseek_weekly_candidates_20260915.toml"
+cache = "artifacts/research/p7_deepseek_cache.sqlite"
+design = "configs/factors/search/weekly_llm_design_20260915.toml"
+maximum_candidates = 20
+weekly_usd = 5.0
+monthly_usd = 30.0
+scope = "首批只研究已有日频价量和日历流动性输入。优先个人小订单可能保留收益的短期成交异动与反转、价格位置交互机制，遵守A股T+1。避免与完整库及历史候选简单换窗口重复；不因百万级容量不足排除机制。给出明确经济机制和预先确定方向；不强凑候选数量，不要求资金档位回放，不生成交易决策。"
