@@ -33,7 +33,7 @@ D:\Miniforge3\python.exe -m quant.research.scheduled_observation --check-only
 
 调度配置入口：[日更](../configs/research/daily_observation_q2_sue_v2_20260912.toml)、[夜间](../configs/research/nightly.toml)。两个安装/注册脚本仅在首次部署或明确修改调度时使用，不作为日常启动命令。
 
-旧`background_mining`三轮已结束且接续暂停；当前R5为单独授权的夜间流水线。不要因为旧配置仍在仓库而恢复旧搜索。原来源任务已交接，不再向其发执行请求。
+旧`background_mining`三轮已结束且接续暂停；当前R5为用户授权的持续流水线，白天也执行。不要因为旧配置仍在仓库而恢复旧搜索或旧夜间调度。原来源任务已交接，不再向其发执行请求。
 
 ## 看哪些证据
 
