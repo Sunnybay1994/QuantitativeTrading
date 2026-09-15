@@ -54,6 +54,7 @@ def run(config: Path, output: Path, data_root: Path = Path('data')) -> None:
         return cap_targets(batch, state, days[batch['as_of'][0]], spec['participation_limit'])
     snapshot = json.loads((source/'summary.json').read_text())['execution_snapshot']
     reports: list[dict] = []
+    comparisons: list[dict] = []
     for capital in spec['initial_capitals']:
         folder = output/f'capital_{capital}'
         resume = folder.exists()
@@ -68,11 +69,14 @@ def run(config: Path, output: Path, data_root: Path = Path('data')) -> None:
             output=folder, data_root=data_root, execution_snapshot=snapshot, factor=spec['id'],
             start=walk['test_start'], turnover_budgets={'budgeted': .5}, resume=resume,
             target_constraints=cap)
-        report = collect_cost_report(run=folder, benchmarks=Path(spec['benchmarks']),
+        report = collect_cost_report(run=folder,
             data_root=data_root, return_benchmark_config=Path(spec['return_benchmark_config']))
+        if not report['return_indexes_complete']:
+            raise ValueError('Capacity report requires complete holding-period return indexes')
         reports.extend({**r, 'initial_capital': capital} for r in report['rows'])
+        comparisons.extend({**r, 'variant': f'capital_{capital}'} for r in report['benchmark_comparisons'])
         (output/'progress.json').write_text(json.dumps({'completed_capital': capital, 'rows': reports}, default=str), encoding='utf-8')
-    (output/'summary.json').write_text(json.dumps({'rows': reports, 'auto_trade': False,
+    (output/'summary.json').write_text(json.dumps({'rows': reports, 'benchmark_comparisons': comparisons, 'auto_trade': False,
         'interpretation': spec['interpretation']}, default=str, indent=2), encoding='utf-8')
     from quant.reporting.capacity_report import run as report_capacity
     report_capacity(output, data_root)

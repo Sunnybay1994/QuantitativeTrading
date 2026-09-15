@@ -47,6 +47,7 @@ def run(output: Path, data_root: Path = Path('data')) -> dict:
             'annualized_one_way_turnover': turnover['median'], 'calendar_turnover': turnover})
     rows = measured
     assessment = {'rows': rows, 'source': config['source'], 'conclusion': 'RESEARCH_ONLY',
+        'benchmark_comparisons': summary['benchmark_comparisons'],
         'assessments': {r['variant']: {'conclusion': 'RESEARCH_ONLY'} for r in rows},
         'measurement': 'actual_holding_period_returns_and_calendar_median_turnover',
         'execution_check': {'checked_symbol_trade_days': checked, 'violations': 0}}
