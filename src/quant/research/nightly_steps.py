@@ -277,7 +277,7 @@ def admit(settings: dict, run: Path) -> dict:
     result.write_parquet(run/'N4'/'admission_scorecard.parquet')
     rejected = Path(settings['rejected_root'])
     rejected.mkdir(parents=True,exist_ok=True)
-    result.filter(~pl.col('factor_admitted')).write_parquet(rejected/f'{run.name}.parquet')
+    result.filter(~pl.col('factor_admitted')).write_parquet(rejected/f'{run.name}_{batch.name}.parquet')
     # Queued definitions are complete only after the actual battery and admission decision.
     processing = Path(settings['queue'])/'processing'
     complete = processing/'completed'
