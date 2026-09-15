@@ -43,3 +43,19 @@ def test_etf_snapshot_is_explicit_and_missing_minutes_are_reported(tmp_path, mon
         data_root=tmp_path, refresh_config=Path('fixture'), etf_snapshot='frozen_b20')
     assert calls == ['frozen_b20'] and daily.height == 1 and minute.is_empty()
     assert errors[0]['input'] == 'minute'
+
+
+def test_etf_uses_yahoo_and_preserves_missing_turnover(tmp_path, monkeypatch):
+    import polars as pl
+    from quant.execution.shadow_slippage import calculate
+    args = inputs()
+    args['orders'] = args['orders'].with_columns(pl.lit('etf').alias('asset_type'))
+    folder = tmp_path/'clean/bar_intraday/freq=1m/source=yahoo/symbol=000001.SZ'
+    folder.mkdir(parents=True)
+    args['minutes'].with_columns(pl.lit(None, dtype=pl.Float64).alias('amount')).write_parquet(folder/'data.parquet')
+    monkeypatch.setattr(reader, 'read_cross_asset_etfs', lambda *a: {'bars': args['daily']})
+    daily, minute, errors = reader.read_inputs(orders=args['orders'], known_through=DAY,
+        data_root=tmp_path, refresh_config=Path('fixture'))
+    assert not errors and minute.height == 6
+    detail, _ = calculate(orders=args['orders'], daily=daily, minutes=minute, known_through=DAY)
+    assert detail.filter(pl.col('horizon') != 'open')['slippage_bps'].null_count() == 3

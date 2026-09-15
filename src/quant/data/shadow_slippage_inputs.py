@@ -37,17 +37,20 @@ def read_inputs(*, orders: pl.DataFrame, known_through: dt.date, data_root: Path
                 & pl.col('trade_date').is_between(start, known_through)).select(list(DAILY_SCHEMA)))
         except Exception as exc:
             errors.append({'asset_type': asset, 'input': 'daily', 'error': f'{type(exc).__name__}: {exc}'})
-    for symbol in sorted(set(ready['symbol'])):
+    for asset, symbol in sorted(set(ready.select('asset_type', 'symbol').iter_rows())):
         if len(symbol) != 9 or not symbol[:6].isdigit() or symbol[6:] not in ('.SH', '.SZ', '.BJ'):
             errors.append({'symbol': symbol, 'input': 'minute', 'error': 'Unsupported symbol'})
             continue
-        path = data_root/'clean/bar_intraday'/f'freq={frequency}'/f'source={minute_source}'/f'symbol={symbol}'/'data.parquet'
+        # ETF accumulation uses Yahoo 1m; BaoStock covers the stock universe only.
+        source, freq = ('yahoo', '1m') if asset == 'etf' else (minute_source, frequency)
+        path = data_root/'clean/bar_intraday'/f'freq={freq}'/f'source={source}'/f'symbol={symbol}'/'data.parquet'
         try:
             frame = pl.scan_parquet(path).filter(pl.col('trade_date').is_between(start, known_through)).collect()
             if set(frame['symbol'])- {symbol}:
                 raise ValueError('Minute partition contains another symbol')
             minutes.append(frame.select(list(SCHEMA)))
         except Exception as exc:
-            errors.append({'symbol': symbol, 'input': 'minute', 'error': f'{type(exc).__name__}: {exc}'})
+            errors.append({'symbol': symbol, 'input': 'minute', 'source': source,
+                'frequency': freq, 'error': f'{type(exc).__name__}: {exc}'})
     return (pl.concat(daily, how='vertical_relaxed') if daily else pl.DataFrame(schema=DAILY_SCHEMA),
         pl.concat(minutes, how='vertical_relaxed') if minutes else pl.DataFrame(schema=SCHEMA), errors)
