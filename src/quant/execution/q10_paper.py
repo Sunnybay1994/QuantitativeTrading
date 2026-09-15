@@ -11,7 +11,7 @@ import polars as pl
 from quant.data.refresh import SHANGHAI
 from quant.data.stock_paper_inputs import read_stock_paper_calendar, read_stock_paper_inputs
 from quant.execution.stock_paper import (
-    ORDER_SCHEMA, _controls, _write_snapshot, advance_stock_day, reference_orders,
+    ORDER_SCHEMA, _controls, _write_current_orders, _write_snapshot, advance_stock_day, reference_orders,
 )
 from quant.portfolio.turnover_budget import budget_targets
 
@@ -133,7 +133,7 @@ def run(*, config_path: Path = DEFAULT_CONFIG, data_root: Path = Path('data'),
             orders = orders.clear()
         elif controls['sell_only']:
             orders = orders.filter(pl.col('side') == 'SELL')
-    orders.write_csv(output/'latest_orders.csv')
+    _write_current_orders(output, orders, controls, f"Q10 SUE v2：{state['date']} 订单参考")
     summary = {'as_of': state['date'], 'conclusion': 'PAPER_CANDIDATE', 'auto_trade': False,
         'cash': state['cash'], 'positions': len(state['holdings']), 'equity': state['nav'][-1]['equity'],
         'controls': controls, 'reference_orders': orders.height, 'output': str(output)}

@@ -293,25 +293,31 @@ def advance_stock_day(
     return next_state, result
 
 
-def _write_current_orders(folder: Path, orders: pl.DataFrame, controls: dict[str, bool]) -> None:
-    orders.write_csv(folder / "latest_orders.csv")
+def render_order_reference(orders: pl.DataFrame, controls: dict[str, bool],
+                           title: str = 'B32 A股研究观察：下一日订单参考') -> str:
     lines = [
-        "# B32 A股研究观察：下一日订单参考",
+        f"# {title}",
         "",
-        f"全局暂停={controls['halt']}；仅卖出={controls['sell_only']}；auto_trade=false。",
+        f"全局暂停={controls.get('halt', '未记录')}；仅卖出={controls.get('sell_only', '未记录')}；auto_trade=false。",
         "按信号日收盘价估算，次日模拟成交按真实开盘及官方涨跌停/停牌状态重算。",
         "",
-        "|证券|方向|股数|参考价|估算费用|剩余现金|",
-        "|---|---|---:|---:|---:|---:|",
+        "|信号日|执行日|证券|方向|股数|参考价|估算成交金额|估算费用|剩余现金|",
+        "|---|---|---|---|---:|---:|---:|---:|---:|",
     ]
     lines.extend(
-        f"|{r['symbol']}|{r['side']}|{r['quantity']}|{r['reference_price']:.2f}|"
+        f"|{r['as_of']}|{r['execution_date']}|{r['symbol']}|{r['side']}|{r['quantity']}|{r['reference_price']:.2f}|{r['estimated_notional']:.2f}|"
         f"{r['estimated_fee']:.2f}|{r['cash_after']:.2f}|"
         for r in orders.iter_rows(named=True)
     )
     if orders.is_empty():
         lines.append("\n无当前可执行参考订单。")
-    (folder / "latest_orders.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return "\n".join(lines) + "\n"
+
+
+def _write_current_orders(folder: Path, orders: pl.DataFrame, controls: dict[str, bool],
+                          title: str = 'B32 A股研究观察：下一日订单参考') -> None:
+    orders.write_csv(folder / "latest_orders.csv")
+    (folder / "latest_orders.md").write_text(render_order_reference(orders, controls, title), encoding="utf-8")
 
 
 def _write_snapshot(
@@ -323,6 +329,9 @@ def _write_snapshot(
 ) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     orders.write_csv(folder / "orders.csv")
+    (folder/'orders.md').write_text(render_order_reference(orders,
+        state.get('controls_at_snapshot', {}),
+        f"{state['date']} 股票观察账户订单参考"), encoding='utf-8')
     pl.DataFrame(state["pending"], schema=TARGET_SCHEMA).write_csv(folder / "targets.csv")
     pl.DataFrame(
         [{"symbol": symbol, **holding} for symbol, holding in state["holdings"].items()],
