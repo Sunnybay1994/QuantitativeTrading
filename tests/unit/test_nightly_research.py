@@ -14,6 +14,67 @@ from quant.research.nightly_steps import incremental_statistics, ingest
 from quant.data.nightly_genetic_inputs import admitted_controls
 
 
+def test_gp_family_selection_falls_back_and_rotates_without_lowering_coverage():
+    from quant.research.nightly_gp import select_family
+    groups = {'price_volume':['price'], 'financial':['pit'], 'minute':['minute'],
+              'mixed':['price','pit','minute']}
+    coverage = {'price':72, 'pit':72, 'minute':71}
+    selection = select_family(groups, coverage, 2)
+    assert selection['requested_family'] == 'minute'
+    assert selection['family'] == 'mixed'
+    assert selection['family_selection_reason'] == 'preferred_family_insufficient_history'
+    assert {select_family(groups, coverage, seed)['family'] for seed in range(4)} == {
+        'price_volume', 'financial', 'mixed'}
+    unavailable = select_family(groups, dict.fromkeys(coverage,71), 2)
+    assert unavailable['family_terminals_with_72_months'] == 0
+    assert unavailable['family_selection_reason'] == 'no_family_has_required_history'
+
+
+def test_gp_family_selection_preserves_checkpoint_family_and_favored_terminals():
+    from quant.research.nightly_gp import select_family
+    groups = {'price_volume':['price'], 'minute':['new_minute'], 'mixed':['price','new_minute']}
+    coverage = {'price':72, 'new_minute':72, 'old_minute':71}
+    frozen = {'family':'minute', 'favored_terminals':['old_minute']}
+    selection = select_family(groups, coverage, 0, frozen)
+    assert selection['family'] == 'minute'
+    assert selection['favored_terminals'] == ['old_minute']
+    assert selection['family_terminals_with_72_months'] == 0
+    with pytest.raises(ValueError, match='changed or disappeared'):
+        select_family(groups, {'price':72}, 0, frozen)
+
+
+@pytest.mark.parametrize('symbols', [99, 100])
+def test_gp_run_family_coverage_boundary(tmp_path: Path, monkeypatch, symbols: int):
+    from quant.research import nightly_gp
+    output = tmp_path/'2026-09-15'/'N2'
+    output.mkdir(parents=True)
+    library = tmp_path/'library'
+    library.mkdir()
+    (library/'x.toml').write_text('id="x"\nexpr="adj_close"\nfamily="price"\ndirection=1\nsource_ref="fixture"\n')
+    rows = [{'symbol':str(i), 'trade_date':dt.date(year,month,15), 'gp_x':float(i)}
+            for year in range(2010,2016) for month in range(1,13) for i in range(symbols)]
+    frame = pl.from_dicts(rows)
+    frame.write_parquet(output/'daily_sample.parquet')
+    frame.select('symbol','trade_date').with_columns(pl.lit(.1).alias('label'),
+        pl.lit(dt.date(2016,1,1)).alias('label_exit_date')).write_parquet(output/'monthly_sample.parquet')
+    def fake_search(*args, **kwargs):
+        assert symbols == 100, 'insufficient coverage must not reach GP search'
+        assert kwargs['family'] == 'mixed'
+        return []
+    monkeypatch.setattr(nightly_gp, 'search', fake_search)
+    settings = {'library':str(library), 'training_end':'2016-01-01',
+                'genetic':{'seed':(2-dt.date(2026,9,15).toordinal()) % 4}}
+    if symbols == 99:
+        with pytest.raises(ValueError, match='72 months and 100 finite stocks'):
+            nightly_gp.run(settings, output)
+    else:
+        assert nightly_gp.run(settings, output)['family'] == 'mixed'
+    summary = json.loads((output/'input_summary.json').read_text())
+    assert summary['requested_family'] == 'minute'
+    assert summary['family_selection_reason'] == (
+        'no_family_has_required_history' if symbols == 99 else 'preferred_family_insufficient_history')
+
+
 def test_incremental_statistics_is_invariant_to_join_row_order():
     rng = np.random.default_rng(31)
     rows = []

@@ -221,6 +221,31 @@ def search(panel: pl.DataFrame, labels: pl.DataFrame, mapping: dict[str, str], s
     return winners
 
 
+def select_family(groups: dict[str, list[str]], coverage: dict[str, int], seed: int,
+                  frozen: dict | None = None) -> dict:
+    """Rotate preferences, using only families with the unchanged training coverage."""
+    families = list(groups)
+    requested = families[seed % len(families)]
+    available = {name: sum(coverage.get(c, 0) >= 72 for c in columns)
+                 for name, columns in groups.items()}
+    if frozen is not None:
+        family = frozen['family']
+        favored = frozen.get('favored_terminals', groups.get(family, []))
+        if family not in groups or any(c not in coverage for c in favored):
+            raise ValueError('Frozen GP family terminals changed or disappeared')
+        return {'requested_family':frozen.get('requested_family', family), 'family':family,
+                'family_selection_reason':frozen.get('family_selection_reason', 'frozen_checkpoint'),
+                'favored_terminals':favored, 'available_family_terminals':available,
+                'family_terminals_with_72_months':sum(coverage[c] >= 72 for c in favored)}
+    ordered = families[seed % len(families):] + families[:seed % len(families)]
+    family = next((name for name in ordered if available[name]), requested)
+    reason = ('preferred_family_available' if available[requested] else
+              'preferred_family_insufficient_history' if available[family] else 'no_family_has_required_history')
+    return {'requested_family':requested, 'family':family, 'family_selection_reason':reason,
+            'favored_terminals':groups[family], 'available_family_terminals':available,
+            'family_terminals_with_72_months':available[family]}
+
+
 def run(settings: dict, output: Path) -> dict:
     from quant.data.nightly_genetic_inputs import read_training_sample
     definitions = load_library(Path(settings['library']))
@@ -253,24 +278,33 @@ def run(settings: dict, output: Path) -> dict:
         labels.write_parquet(temporary)
         temporary.replace(monthly_sample)
     search_day=dt.date.fromisoformat(output.parent.name)
-    family = ('price_volume','financial','minute','mixed')[search_day.toordinal()%4]
     search_settings=dict(settings['genetic'])
     search_settings['seed']+=search_day.toordinal()
     keywords={'price_volume':('alpha','price','liquidity','momentum'),
               'financial':('financial','pit','value','quality'),
-              'minute':('minute','intraday'), 'mixed':('',)}[family]
-    search_settings['favored_terminals']=[f'gp_{d.id}' for d in definitions if any(k in d.family for k in keywords)]
+              'minute':('minute','intraday'), 'mixed':('',)}
+    groups = {family:[f'gp_{d.id}' for d in definitions if any(k in d.family for k in terms)]
+              for family, terms in keywords.items()}
     monthly=panel.select('symbol','trade_date',*mapping).join(labels.select('symbol','trade_date'),on=['symbol','trade_date'])
     coverage=monthly.group_by('trade_date').agg(pl.col(c).is_finite().sum().alias(c) for c in mapping).select(
         (pl.col(c)>=100).sum().alias(c) for c in mapping).to_dicts()[0]
+    summary_path = output/'input_summary.json'
+    has_checkpoint = any((output/name).exists() for name in ('search_checkpoint.json', 'fitness_cache.json'))
+    if has_checkpoint and not summary_path.exists():
+        raise ValueError('GP checkpoint has no frozen input summary; cannot safely select its family')
+    frozen = json.loads(summary_path.read_text(encoding='utf-8')) if has_checkpoint else None
+    selection = select_family(groups, coverage, search_settings['seed'], frozen)
+    family = selection['family']
+    search_settings['favored_terminals'] = selection['favored_terminals']
     input_summary={'sample_symbols':labels['symbol'].n_unique(),'sample_months':labels['trade_date'].n_unique(),
-                   'family':family,'terminal_count':len(mapping),
+                   **selection,'terminal_count':len(mapping),
                    'sample_first_signal':str(labels['trade_date'].min()),
                    'sample_last_signal':str(labels['trade_date'].max()),
                    'last_label_exit':str(labels['label_exit_date'].max()),'training_end':str(end),
-                   'finite_terminal_months':coverage,'family_terminals_with_72_months':sum(
-                       coverage[c]>=72 for c in search_settings['favored_terminals'])}
-    (output/'input_summary.json').write_text(json.dumps(input_summary,indent=2),encoding='utf-8')
+                   'finite_terminal_months':coverage}
+    temporary = summary_path.with_suffix('.tmp')
+    temporary.write_text(json.dumps(input_summary,indent=2),encoding='utf-8')
+    temporary.replace(summary_path)
     if labels['trade_date'].n_unique()!=72 or not input_summary['family_terminals_with_72_months']:
         raise ValueError(f'{family} has no terminal with 72 months and 100 finite stocks; see input_summary.json')
     winners = search(panel, labels, mapping, search_settings, output, family=family)

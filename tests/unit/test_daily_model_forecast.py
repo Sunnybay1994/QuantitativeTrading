@@ -8,6 +8,7 @@ from quant.research import run_daily_model_forecast as daily
 
 
 def arguments(tmp_path, monkeypatch):
+    monkeypatch.setattr(daily, 'capture_stock_paper_day', lambda *args: None)
     selection = tmp_path/'selection'
     selection.mkdir()
     (selection/'selection.json').write_text(json.dumps({'forward_start':'2026-09-14',
@@ -60,6 +61,23 @@ def test_refresh_then_forecast_and_failures_remain_visible(tmp_path,monkeypatch,
     assert result['auto_trade'] is False
     with pytest.raises(FileExistsError):
         daily.run_daily(**args)
+
+
+@pytest.mark.parametrize('saved', [False, True])
+def test_forecast_prepares_reference_snapshot_only_in_refresh_mode(tmp_path, monkeypatch, saved):
+    args = arguments(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(daily, 'run_refresh', lambda **kwargs: {
+        'latest_session': '2026-09-14', 'intraday_errors': [], 'input_quality': {'errors': []}})
+    def capture(root, day):
+        assert root == args['data_root'] and day == dt.date(2026, 9, 14)
+        calls.append('capture')
+    def forecast(**kwargs):
+        assert calls == ([] if saved else ['capture'])
+        return {'prediction_stocks': 1}
+    monkeypatch.setattr(daily, 'capture_stock_paper_day', capture)
+    monkeypatch.setattr(daily, 'run_forecast', forecast)
+    assert daily.run_daily(**args, saved_data=saved)['status'] == 'recorded'
 
 
 def test_saved_input_rehearsal_does_not_refresh(tmp_path,monkeypatch):

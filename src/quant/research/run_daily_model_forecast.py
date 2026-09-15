@@ -12,6 +12,7 @@ from quant.data.daily_input_quality import run_quality
 from quant.data.factor_panels import panel_complete, read_coverage
 from quant.data.model_forward_inputs import read_forward_values
 from quant.data.refresh import SHANGHAI, completed_date, latest_session, refresh_factor_selection, run_refresh
+from quant.data.stock_paper_inputs import capture_stock_paper_day
 from quant.factors.library import load_library
 from quant.research.run_fixed_model_forecast import run_forecast
 
@@ -151,6 +152,9 @@ def run_daily(*, to: str, selection: Path, output: Path, data_root: Path,
               'model_factor_requirements': requirements, 'model_factor_inputs': evidence,
               'status': 'input_errors' if errors else 'missing_model_inputs'}
     if not errors:
+        if not saved_data:
+            # Forecast universe needs today's instruments/limits before account replay.
+            capture_stock_paper_day(data_root, end)
         folder = output/'forecast'
         quality_args = ({'input_quality': refresh['input_quality']}
                         if decision.get('requires_local_quality') else {})
