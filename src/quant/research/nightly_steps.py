@@ -117,6 +117,28 @@ def ingest(settings: dict, run: Path) -> dict:
     return {'queued_candidates':count, 'queue_errors':failures}
 
 
+def preserve_gp_candidates(settings: dict, run: Path, search_result: dict) -> int:
+    """Queue GP output even when an older nonempty evaluation is already complete."""
+    folder = Path(search_result.get('gp_output', str(run/'N2')))/'library'
+    queued = 0
+    for path in sorted(folder.glob('*.toml')):
+        row = tomllib.loads(path.read_text(encoding='utf-8'))
+        if published_candidate(row, settings):
+            continue
+        target = Path(settings['queue'])/'processing'/path.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            previous = tomllib.loads(target.read_text(encoding='utf-8'))
+            if any(previous[key] != row[key] for key in ('id', 'expr', 'direction')):
+                raise ValueError('Queued GP definition collision')
+            continue
+        temporary = target.with_suffix('.toml.tmp')
+        temporary.write_bytes(path.read_bytes())
+        temporary.replace(target)
+        queued += 1
+    return queued
+
+
 def evaluate(settings: dict, run: Path) -> dict:
     from quant.factors.compute import run as compute
     from quant.research.run_factor_pipeline import run_pipeline

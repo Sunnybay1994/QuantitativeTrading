@@ -177,6 +177,8 @@ def execute(config: Path, *, now: dt.datetime|None=None, run_path: Path|None=Non
         if result.exists():
             summary['steps'][step]={'ok':True,'result':json.loads(result.read_text(encoding='utf-8'))}
             if step == 'N2':
+                from quant.research.nightly_steps import preserve_gp_candidates
+                preserve_gp_candidates(settings, run, summary['steps'][step]['result'])
                 reopen_empty_evaluation(run, summary, summary['steps'][step]['result'])
             continue
         # A failed GP search must not strand existing queued candidates or monthly work.
@@ -201,6 +203,8 @@ def execute(config: Path, *, now: dt.datetime|None=None, run_path: Path|None=Non
                 raise RuntimeError(f'{step} exit={code}; see {folder}/process.log')
             summary['steps'][step]={'ok':True,'result':json.loads(result.read_text(encoding='utf-8'))}
             if step == 'N2':
+                from quant.research.nightly_steps import preserve_gp_candidates
+                preserve_gp_candidates(settings, run, summary['steps'][step]['result'])
                 reopen_empty_evaluation(run, summary, summary['steps'][step]['result'])
         except (RuntimeError,TimeoutError,OSError) as exc:
             summary['steps'][step]={'ok':False,'error':str(exc)}

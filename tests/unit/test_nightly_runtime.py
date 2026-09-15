@@ -118,6 +118,26 @@ def test_gp_resume_reopens_only_empty_evaluation(tmp_path):
     assert (tmp_path / "N3" / "result.json").read_text(encoding="utf-8") == completed
 
 
+def test_gp_candidates_survive_completed_nonempty_evaluation(tmp_path):
+    from quant.research.nightly_steps import preserve_gp_candidates
+    folder = tmp_path/'run/N2/library'
+    folder.mkdir(parents=True)
+    content = 'id="gp_new"\nexpr="close"\ndirection=1\n'
+    (folder/'gp_new.toml').write_text(content)
+    prior = tmp_path/'run/N3/result.json'
+    prior.parent.mkdir()
+    prior.write_text('{"evaluated":4}')
+    settings = {'queue': str(tmp_path/'queue'), 'library': str(tmp_path/'library')}
+    assert preserve_gp_candidates(settings, tmp_path/'run', {'candidates': 1}) == 1
+    queued = tmp_path/'queue/processing/gp_new.toml'
+    assert queued.read_text() == content
+    assert prior.read_text() == '{"evaluated":4}'
+    assert preserve_gp_candidates(settings, tmp_path/'run', {'candidates': 1}) == 0
+    queued.write_text(content.replace('direction=1', 'direction=-1'))
+    with pytest.raises(ValueError, match='collision'):
+        preserve_gp_candidates(settings, tmp_path/'run', {'candidates': 1})
+
+
 def test_unfinished_monthly_work_precedes_new_search(tmp_path):
     settings = {"output_root": str(tmp_path), "monthly_first_period": "2026-10"}
     month = tmp_path / "monthly" / "2026-10"
