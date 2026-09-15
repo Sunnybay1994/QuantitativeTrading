@@ -41,6 +41,11 @@ foreach ($name in 'status.json','scheduler.json') {
                 $rows += [pscustomobject]@{Step=$step;Status=$state;PID=($workers.ProcessId -join ',');Reason=$reason}
             }
             $rows | Format-Table -AutoSize -Wrap
+            $evaluationLog = Join-Path $run 'N3\process.log'
+            if (Test-Path -LiteralPath $evaluationLog) {
+                Write-Output "N3 last saved log lines (not proof of a live worker; updated $((Get-Item -LiteralPath $evaluationLog).LastWriteTime))"
+                Get-Content -LiteralPath $evaluationLog -Tail 3 -Encoding UTF8
+            }
             $admissionPath = Join-Path $run 'N4\admission_progress.json'
             if (Test-Path -LiteralPath $admissionPath) {
                 $admission = Get-Content -LiteralPath $admissionPath -Raw -Encoding UTF8 | ConvertFrom-Json
