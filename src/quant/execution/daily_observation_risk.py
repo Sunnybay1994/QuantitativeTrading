@@ -66,9 +66,18 @@ def run(*, record: dict[str, Any], output: Path, data_root: Path,
     if stages.get('model', {}).get('result', {}).get('input_errors'):
         source_errors.append('model_input_quality')
     results: list[dict[str, Any]] = []
-    for group, expected in (('b20', 6), ('b32', 2)):
+    groups = [('b20', 6), ('b32', 2)]
+    if 'q10' in stages:
+        groups.append(('q10', 1))
+        if stages['q10'].get('status') != 'complete':
+            source_errors.append('q10')
+    for group, expected in groups:
         stage = stages.get(group, {})
         accounts = stage.get('result', {}).get('accounts', [])
+        if group == 'q10' and stage.get('status') == 'complete':
+            value = stage.get('result', {})
+            accounts = ([{'account': 'q10_sue_v2', 'output': str(Path(value['output'])/str(date))}]
+                if value.get('output') and value.get('as_of') == date else [])
         if stage.get('status') != 'complete' or len(accounts) != expected:
             results.append({'account': group, 'status': 'unavailable',
                             'error': 'Current account stage incomplete or account count wrong'})
@@ -86,7 +95,7 @@ def run(*, record: dict[str, Any], output: Path, data_root: Path,
                 item['saved'] = saved
                 folder = output/f'{group}_{number}'
                 folder.mkdir()
-                if group == 'b32':
+                if group in ('b32', 'q10'):
                     symbols = sorted(set(state['holdings']) | set(orders['symbol']))
                     market, next_session = read_order_risk_inputs(data_root=data_root,
                         refresh_config=Path(settings['refresh_config']), symbols=symbols,
@@ -121,7 +130,7 @@ def run(*, record: dict[str, Any], output: Path, data_root: Path,
             except Exception as exc:
                 item['error'] = f'{type(exc).__name__}: {exc}'
             results.append(item)
-    complete = not source_errors and len(results) == 8 and all(
+    complete = not source_errors and len(results) == sum(n for _, n in groups) and all(
         row['status'] == 'complete' for row in results)
     summary = {'as_of': date, 'auto_trade': False, 'mode': 'diagnostic_only',
         'status': 'complete' if complete else 'incomplete', 'source_errors': source_errors,

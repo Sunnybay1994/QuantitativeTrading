@@ -48,6 +48,24 @@ def test_saved_risk_and_repeated_output(source, tmp_path):
         risk.run(**args)
 
 
+@pytest.mark.parametrize('status', ['complete', 'failed'])
+def test_q10_is_included_and_failed_stage_cannot_disappear(source, tmp_path, status):
+    import shutil
+    snapshot = Path(source['stages']['b32']['result']['accounts'][0]['output'])
+    root = tmp_path/'q10'
+    shutil.copytree(snapshot, root/'2026-09-11')
+    source['stages']['q10'] = {'status': status, 'result': {
+        'as_of': '2026-09-11', 'output': str(root)}}
+    result = risk.run(record=source, output=tmp_path/'risk', data_root=Path('data'))
+    assert len(result['accounts']) == 9
+    if status == 'complete':
+        assert result['status'] == 'complete'
+        assert result['accounts'][-1]['scope'] == 'stock_reference_order_risk'
+        assert (tmp_path/'risk/q10_0/execution_risk.json').exists()
+    else:
+        assert result['status'] == 'incomplete' and 'q10' in result['source_errors']
+
+
 @pytest.mark.parametrize('failure', ['quality', 'stale', 'market', 'target'])
 def test_bad_inputs_not_healthy(source, tmp_path, monkeypatch, failure):
     if failure == 'quality':
