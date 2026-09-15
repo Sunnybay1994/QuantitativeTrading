@@ -56,6 +56,26 @@ def test_same_day_buys_cannot_supply_later_sell_orders():
     assert '订单不可行，暂停预测' in render_report(result)
 
 
+def test_full_liquidation_still_checks_order_participation():
+    state, market, orders = inputs()
+    orders = orders.head(1).with_columns(pl.lit(1000).alias('quantity'))
+    result = assess(state, market, orders)
+    assert result['positions'] == []
+    assert result['order_liquidity'][0]['participation_rate'] == 1
+    assert result['order_liquidity'][0]['minimum_execution_days'] == 20
+    assert 'order_participation' in {r['rule'] for r in result['issues']}
+
+
+def test_splitting_same_symbol_does_not_bypass_daily_participation():
+    state, market, orders = inputs()
+    market = market.with_columns(pl.lit(60000.).alias('average_amount'))
+    orders = pl.concat([orders.head(1), orders.head(1)])
+    result = assess(state, market, orders)
+    assert len(result['order_liquidity']) == 1
+    assert result['order_liquidity'][0]['gross_order_amount'] == 4000
+    assert 'order_participation' in {r['rule'] for r in result['issues']}
+
+
 def test_restricted_shares_and_cash_are_checked_without_trusting_cash_after():
     state, market, orders = inputs()
     state['restricted_shares'] = [{'symbol': 'A', 'quantity': 900, 'list_date': '2026-09-14'}]

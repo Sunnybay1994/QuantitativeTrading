@@ -22,6 +22,7 @@ RULE_LABELS = {
     'missing_liquidity': '缺少完整成交额窗口',
     'liquidation_days': '预计变现天数超限',
     'industry_weight': '预计行业持仓比例超限',
+    'order_participation': '当日订单总额超过历史成交额参与率上限，需拆日并重新核对',
 }
 
 
@@ -70,6 +71,7 @@ def assess_reference_orders(*, state: dict[str, Any], orders: pl.DataFrame,
         raise ValueError('Restricted shares exceed holdings')
     issues: list[dict[str, Any]] = []
     gross = 0.0
+    order_amounts: dict[str, float] = {}
     for row in orders.iter_rows(named=True):
         symbol, side, quantity = row['symbol'], row['side'], row['quantity']
         if (row['as_of'] != str(as_of) or row['execution_date'] != str(next_session)
@@ -96,6 +98,7 @@ def assess_reference_orders(*, state: dict[str, Any], orders: pl.DataFrame,
             issues.append({'rule': 'signal_day_price_limit', 'symbol': symbol})
         notional = quantity * price
         gross += notional
+        order_amounts[symbol] = order_amounts.get(symbol, 0.0) + notional
         if side == 'SELL':
             available[symbol] = available.get(symbol, 0) - quantity
             holdings[symbol] = holdings.get(symbol, 0) - quantity
@@ -105,7 +108,20 @@ def assess_reference_orders(*, state: dict[str, Any], orders: pl.DataFrame,
             cash -= notional + fee
         if cash < -1e-8:
             issues.append({'rule': 'insufficient_cash', 'symbol': symbol})
+    liquidity = []
+    for symbol, notional in sorted(order_amounts.items()):
+        amount = data[symbol]['average_amount']
+        rate = notional / amount if amount is not None and math.isfinite(amount) and amount > 0 else None
+        if rate is None:
+            issues.append({'rule': 'missing_liquidity', 'symbol': symbol})
+        elif rate > limits['participation_rate']:
+            issues.append({'rule': 'order_participation', 'symbol': symbol})
+        liquidity.append({'symbol': symbol, 'gross_order_amount': notional,
+            'average_daily_amount': amount if rate is not None else None,
+            'participation_rate': rate, 'maximum_participation_rate': limits['participation_rate'],
+            'minimum_execution_days': max(1, math.ceil(rate / limits['participation_rate'])) if rate is not None else None})
     common = {'as_of': str(as_of), 'execution_date': str(next_session), 'auto_trade': False,
+              'order_liquidity': liquidity,
               'mode': 'diagnostic_only', 'initial_equity': initial_equity,
               'one_way_turnover': gross / (2 * initial_equity),
               'execution_day_market_status': 'unknown_at_signal_close'}
@@ -198,7 +214,13 @@ def render_report(result: dict[str, Any]) -> str:
         days = row['liquidation_days']
         lines.append(f"|{row['symbol']}|{row['weight']:.2%}|{row['industry'] or '未知'}|"
                      + (f"{days:.2f}|{2*days:.2f}|" if days is not None else '未知|未知|'))
-    lines += ['', *[f"- {RULE_LABELS[row['rule']]}：{row.get('symbol') or row.get('industry') or '账户'}"
+    lines += ['', '|证券|订单总额|历史成交额参与率|估计最少执行天数|', '|---|---:|---:|---:|']
+    for row in result.get('order_liquidity', []):
+        rate = row['participation_rate']
+        formatted = f'{rate:.2%}' if rate is not None else '未知'
+        lines.append(f"|{row['symbol']}|{row['gross_order_amount']:.2f}|{formatted}|{row['minimum_execution_days'] or '未知'}|")
+    lines += ['', '执行天数按信号日历史成交额估计；整手、价格及每日成交变化可能要求更多天。',
+              '', *[f"- {RULE_LABELS[row['rule']]}：{row.get('symbol') or row.get('industry') or '账户'}"
                    for row in result['issues']]]
     return '\n'.join(lines)+'\n'
 
