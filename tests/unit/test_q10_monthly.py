@@ -23,3 +23,13 @@ def test_full_observed_calendar_and_month_boundary_returns():
     result = observed_months(nav, calendar)
     assert result['observed_return'].to_list() == pytest.approx([.1, .1])
     assert result['complete_month'].all()
+
+
+def test_missing_month_does_not_turn_multi_month_return_into_monthly_return():
+    dates = [dt.date(2026, 9, 30), dt.date(2026, 10, 30), dt.date(2026, 11, 2)]
+    calendar = pl.DataFrame({'date': dates, 'is_open': [True]*3})
+    nav = pl.DataFrame({'date': [dates[0], dates[2]], 'unit_nav': [1., 1.2]})
+    result = observed_months(nav, calendar)
+    assert result['observed_return'][1] is None
+    assert result['complete_month'][1] is False
+    assert result['month_start_boundary_known'][1] is False
