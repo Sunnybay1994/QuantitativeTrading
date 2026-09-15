@@ -51,6 +51,23 @@ def test_saved_isolated_and_controls_not_overridden(env):
     assert monthly.call_count == 1
 
 
+def test_q10_monthly_runs_independently_of_b32_monthly_failure(env, monkeypatch):
+    from quant.execution import q10_paper
+    from quant.reporting import q10_monthly
+    args, *_ = env
+    with args['config'].open('a', encoding='utf-8') as stream:
+        stream.write('\n[q10]\nconfig="fixture"\noutput="fixture"\nmonthly_backtest="frozen"\n')
+    args['rehearsal'] = False
+    monkeypatch.setattr(daily, 'latest_session', lambda **k: dt.date(2026, 9, 14))
+    monkeypatch.setattr(q10_paper, 'run', Mock(return_value={'as_of': '2026-09-14'}))
+    monthly = Mock(return_value={'status': 'recorded'})
+    monkeypatch.setattr(q10_monthly, 'run', monthly)
+    result = daily.run(**args)
+    assert result['stages']['q10_monthly']['status'] == 'complete'
+    assert monthly.call_args.kwargs['as_of'] == dt.date(2026, 9, 14)
+    assert monthly.call_args.kwargs['backtest'] == Path('frozen')
+
+
 @pytest.mark.parametrize('errors', [[], [{'input': 'minute', 'error': 'missing'}]])
 def test_tracking_uses_isolated_accounts_and_surfaces_input_errors(env, monkeypatch, errors):
     from quant.execution import shadow_slippage

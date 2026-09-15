@@ -28,5 +28,6 @@ patterns = ["daily/sue_v2/**/model/forecast/summary.json"]
 rolling_config = "configs/research/rolling_signal_monitor_v1.toml"
 
 [q10]
+monthly_backtest = "artifacts/models/q10_sue_v2_turnover_budget_05_20260912_01"
 config = "configs/paper/q10_sue_v2_20260913.toml"
 output = "artifacts/paper/q10_sue_v2"

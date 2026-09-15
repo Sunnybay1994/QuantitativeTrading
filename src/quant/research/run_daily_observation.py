@@ -25,7 +25,8 @@ def write_daily_report(record: dict[str, Any], output: Path) -> None:
     """Keep one readable summary beside the detailed stage artifacts."""
     names = {'calendar': '交易日历', 'model': '模型预测', 'refresh': '输入质量',
         'b20': 'B20六账户', 'b32': 'B32双账户', 'monthly': '月报',
-        'risk': '订单风险', 'signal_monitor': '滚动信号监控', 'forward_tracking': '前向账户与影子滑点'}
+        'risk': '订单风险', 'signal_monitor': '滚动信号监控', 'forward_tracking': '前向账户与影子滑点',
+        'q10_monthly': 'Q10月度记录'}
     statuses = {'complete': '完成', 'incomplete': '未完成', 'failed': '失败',
                 'running': '进行中', 'skipped': '跳过'}
     lines = [f"# 日更记录：{record['as_of'] or record['requested_to']}", '',
@@ -66,6 +67,8 @@ def write_daily_report(record: dict[str, Any], output: Path) -> None:
         lines += ['', '[前向账户跟踪页](forward_tracking/dashboard.html)',
             f"影子参考订单 {slip.get('orders', 0)} 笔；已观测价格窗口 {slip.get('observed_horizons', 0)} 个，"
             f"缺失 {slip.get('missing_horizons', 0)} 个。属于假设成交价格观测，尚未完成实盘滑点校准。"]
+    if record['stages'].get('q10_monthly', {}).get('status') == 'complete':
+        lines += ['', '[Q10月度前向与历史分布](q10_monthly/report.md)']
     health = record.get('factor_health')
     if health:
         lines += ['', '## 因子健康日志', '']
@@ -227,6 +230,14 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
     else:
         stages['signal_monitor'] = {'status': 'skipped', 'reason': 'No known session cutoff'}
     result['signal_monitor_status'] = stages['signal_monitor'].get('result', {}).get('status', 'unavailable')
+    if settings.get('q10', {}).get('monthly_backtest') and not rehearsal and 'q10' in stages:
+        if stages['q10']['status'] == 'complete':
+            from quant.reporting.q10_monthly import run as q10_monthly
+            stage('q10_monthly', lambda: q10_monthly(account=Path(settings['q10']['output']),
+                as_of=end, backtest=Path(settings['q10']['monthly_backtest']),
+                output=output/'q10_monthly', data_root=data_root), lambda value: value['status'] == 'recorded')
+        else:
+            stages['q10_monthly'] = {'status': 'skipped', 'reason': 'Q10 account update incomplete'}
     if settings.get('forward_tracking', {}).get('enabled') and result['as_of'] is not None:
         def tracking() -> dict:
             from quant.execution.shadow_slippage import run as shadow
