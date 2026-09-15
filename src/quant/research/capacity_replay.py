@@ -74,6 +74,8 @@ def run(config: Path, output: Path, data_root: Path = Path('data')) -> None:
         (output/'progress.json').write_text(json.dumps({'completed_capital': capital, 'rows': reports}, default=str), encoding='utf-8')
     (output/'summary.json').write_text(json.dumps({'rows': reports, 'auto_trade': False,
         'interpretation': spec['interpretation']}, default=str, indent=2), encoding='utf-8')
+    from quant.reporting.capacity_report import run as report_capacity
+    report_capacity(output, data_root)
 
 
 if __name__ == '__main__':
