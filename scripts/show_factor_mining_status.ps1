@@ -41,6 +41,16 @@ foreach ($name in 'status.json','scheduler.json') {
                 $rows += [pscustomobject]@{Step=$step;Status=$state;PID=($workers.ProcessId -join ',');Reason=$reason}
             }
             $rows | Format-Table -AutoSize -Wrap
+            $admissionPath = Join-Path $run 'N4\admission_progress.json'
+            if (Test-Path -LiteralPath $admissionPath) {
+                $admission = Get-Content -LiteralPath $admissionPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                [pscustomobject]@{
+                    Stage = 'N4 saved checkpoint (not proof of a live worker)'
+                    CompletedCandidates = @($admission.rows).Count
+                    TotalCandidates = @($admission.candidates).Count
+                    SavedAt = (Get-Item -LiteralPath $admissionPath).LastWriteTime
+                } | Format-List
+            }
             $progress = Join-Path $run 'N2\search_progress.json'
             if (Test-Path -LiteralPath $progress) {
                 Write-Output "GP checkpoint progress (saved at $((Get-Item -LiteralPath $progress).LastWriteTime))"
