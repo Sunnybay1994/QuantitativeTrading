@@ -148,6 +148,9 @@ class ExpressionEngine:
             if name in {"ts_slope", "ts_rsquare", "ts_resi"}:
                 if n < 2:
                     raise ValueError("Regression requires at least two sessions")
+                # Weighted rolling kernels return floats even for integer
+                # indicators; normalize before grouping to keep one dtype.
+                x = x.cast(pl.Float64)
                 centered_time = [i - (n - 1) / 2 for i in range(n)]
                 time_ss = n * (n * n - 1) / 12
                 complete = x.is_not_null().cast(pl.Int32).rolling_sum(n, min_samples=n).over("symbol") == n
