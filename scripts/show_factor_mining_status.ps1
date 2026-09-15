@@ -4,11 +4,17 @@ $root = Join-Path $workspace 'artifacts\research\continuous'
 $task = Get-ScheduledTask -TaskName 'QuantitativeTrading-ContinuousMining' -ErrorAction SilentlyContinue
 if ($task) {
     $info = $task | Get-ScheduledTaskInfo
-    [pscustomobject]@{Task=$task.TaskName;State=[string]$task.State;Last=$info.LastRunTime;Next=$info.NextRunTime;ExitCode=$info.LastTaskResult} | Format-List
+    [pscustomobject]@{Task=$task.TaskName;State=[string]$task.State;Last=$info.LastRunTime;Next=$info.NextRunTime;TaskSchedulerLastResult=$info.LastTaskResult} | Format-List
 }
-Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" |
-    Where-Object { $_.CommandLine -match 'quant\.research\.(continuous_mining|nightly)' } |
-    Select-Object ProcessId,CreationDate,CommandLine | Format-List
+$processes = @()
+try {
+    $processes = @(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" |
+        Where-Object { $_.CommandLine -match 'quant\.research\.(continuous_mining|nightly)' })
+    $processes | Select-Object ProcessId,CreationDate,CommandLine | Format-List
+    Write-Output "Live mining processes: $($processes.Count). Saved state below may describe an earlier attempt."
+} catch {
+    Write-Output "Process inspection unavailable: $($_.Exception.Message). Saved files cannot prove a worker is running."
+}
 foreach ($name in 'status.json','scheduler.json') {
     $path = Join-Path $root $name
     if (Test-Path -LiteralPath $path) {
@@ -16,11 +22,30 @@ foreach ($name in 'status.json','scheduler.json') {
         $record | Select-Object state,status,batch,run,updated_at,retry_after,reason,log | Format-List
         if ($record.run) {
             $run = Join-Path $workspace $record.run
+            $rows = @()
             foreach ($step in 'N1','N2','N3','N4','N5') {
-                [pscustomobject]@{Step=$step;Completed=(Test-Path -LiteralPath (Join-Path $run "$step\result.json"))} | Format-Table -HideTableHeaders
+                $resultPath = Join-Path $run "$step\result.json"
+                $workers = @($processes | Where-Object {
+                    $_.CommandLine -match "--worker\s+$step(?:\s|$)" -and
+                    $_.CommandLine.Replace('\','/').IndexOf($record.run.Replace('\','/'), [StringComparison]::OrdinalIgnoreCase) -ge 0
+                })
+                $state = 'No saved result'
+                $reason = $null
+                if (Test-Path -LiteralPath $resultPath) {
+                    $saved = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                    $state = 'Saved result (not proof of current completion)'
+                    $reason = $saved.reason
+                    if ($saved.skipped -or $reason) { $state = 'Saved skip / diagnostic' }
+                }
+                if ($workers.Count -gt 0) { $state = 'Running worker' }
+                $rows += [pscustomobject]@{Step=$step;Status=$state;PID=($workers.ProcessId -join ',');Reason=$reason}
             }
+            $rows | Format-Table -AutoSize -Wrap
             $progress = Join-Path $run 'N2\search_progress.json'
-            if (Test-Path -LiteralPath $progress) { Get-Content -LiteralPath $progress -Raw -Encoding UTF8 }
+            if (Test-Path -LiteralPath $progress) {
+                Write-Output "GP checkpoint progress (saved at $((Get-Item -LiteralPath $progress).LastWriteTime))"
+                Get-Content -LiteralPath $progress -Raw -Encoding UTF8
+            }
         }
     }
 }
