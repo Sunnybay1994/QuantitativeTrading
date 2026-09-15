@@ -5,6 +5,9 @@ artifact_root = "artifacts"
 refresh_config = "configs/data/refresh_q2_sue_v2_model_20260912.toml"
 intraday = true
 
+[forward_tracking]
+enabled = true
+
 [model]
 selection = "artifacts/models/q2_sue_v2_frozen_forward_20260912_01"
 

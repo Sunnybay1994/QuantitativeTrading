@@ -57,6 +57,12 @@ D:\Miniforge3\python.exe -m quant.research.scheduled_observation --check-only
 
 本地GP与评估本身不调用LLM。持续调度通过`configs/research/weekly_factor_candidates.toml`每周尝试一次DeepSeek候选生成，复用共享缓存，上海自然周上限$5、自然月上限$30，未知扣费保留预留。北京时间工作日09–12与14–18延后，其余时间及周末允许；价格快照过期时只延后LLM，本地GP继续（[官方价格，09-14核实](https://api-docs.deepseek.com/quick_start/pricing/)）。生成候选经DSL校验去重后进入原队列，实测相关性比例由N4结果自动写入`artifacts/research/weekly_candidates/<周一日期>/report.md`，未评估时不报通过比例。
 
+## 前向跟踪与影子价格
+
+日更配置的 `forward_tracking.enabled=true` 会在本次日更目录的 `forward_tracking/` 生成 `dashboard.html`、`dashboard.json`、`shadow_execution.csv` 与 `slippage_monthly.csv`。日更 `report.md` 提供页面入口；历史演练只读隔离账户，不混入生产 Q10。
+
+页面使用保存账户的净值、实际持仓权重和观察期半成交额换手。影子价格使用参考订单对应下一交易日开盘与完整 5/15/30 分钟窗口；缺失分钟成交额或覆盖不完整时留空并提示处理。此记录用于积累校准证据，不能当作实际成交滑点。页面视觉检查尚待浏览器访问授权。
+
 ## 恢复失败任务
 
 - 先确认实际进程已结束，再读失败阶段日志；保留原run与断点。

@@ -25,7 +25,7 @@ def write_daily_report(record: dict[str, Any], output: Path) -> None:
     """Keep one readable summary beside the detailed stage artifacts."""
     names = {'calendar': '交易日历', 'model': '模型预测', 'refresh': '输入质量',
         'b20': 'B20六账户', 'b32': 'B32双账户', 'monthly': '月报',
-        'risk': '订单风险', 'signal_monitor': '滚动信号监控'}
+        'risk': '订单风险', 'signal_monitor': '滚动信号监控', 'forward_tracking': '前向账户与影子滑点'}
     statuses = {'complete': '完成', 'incomplete': '未完成', 'failed': '失败',
                 'running': '进行中', 'skipped': '跳过'}
     lines = [f"# 日更记录：{record['as_of'] or record['requested_to']}", '',
@@ -60,6 +60,12 @@ def write_daily_report(record: dict[str, Any], output: Path) -> None:
             '[预测评分与监控详情](signal_monitor/summary.json)']
         if monitor.get('status') == 'insufficient':
             lines += ['前向样本不足，尚未形成足够长度的监控窗口。']
+    tracking = record['stages'].get('forward_tracking', {}).get('result', {})
+    if tracking:
+        slip = tracking['shadow']
+        lines += ['', '[前向账户跟踪页](forward_tracking/dashboard.html)',
+            f"影子参考订单 {slip.get('orders', 0)} 笔；已观测价格窗口 {slip.get('observed_horizons', 0)} 个，"
+            f"缺失 {slip.get('missing_horizons', 0)} 个。属于假设成交价格观测，尚未完成实盘滑点校准。"]
     health = record.get('factor_health')
     if health:
         lines += ['', '## 因子健康日志', '']
@@ -221,8 +227,26 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
     else:
         stages['signal_monitor'] = {'status': 'skipped', 'reason': 'No known session cutoff'}
     result['signal_monitor_status'] = stages['signal_monitor'].get('result', {}).get('status', 'unavailable')
+    if settings.get('forward_tracking', {}).get('enabled') and result['as_of'] is not None:
+        def tracking() -> dict:
+            from quant.execution.shadow_slippage import run as shadow
+            from quant.reporting.forward_dashboard import account_specs, run as dashboard
+            tracking_settings = {**settings,
+                'b20': {**settings['b20'], 'output': str(accounts[0])},
+                'b32': {**settings['b32'], 'output': str(accounts[1])}}
+            if rehearsal:
+                tracking_settings.pop('q10', None)
+            folder = output/'forward_tracking'
+            slip = shadow(accounts=account_specs(tracking_settings), known_through=end,
+                output=folder, data_root=data_root, refresh_config=Path(settings['refresh_config']))
+            view = dashboard(settings=tracking_settings, as_of=end, output=folder)
+            return {'dashboard': view, 'shadow': slip, 'output': str(folder),
+                'requires_review': slip['requires_review'] or view['status'] != 'complete'}
+        stage('forward_tracking', tracking, lambda value:
+            value['dashboard']['status'] == 'complete' and not value['shadow']['errors'])
     result['requires_review'] = (stages['risk'].get('result', {}).get('requires_review', True)
-        or stages['signal_monitor'].get('result', {}).get('requires_review', True))
+        or stages['signal_monitor'].get('result', {}).get('requires_review', True)
+        or stages.get('forward_tracking', {}).get('result', {}).get('requires_review', False))
     result['status'] = ('complete' if stages and all(
         s['status'] == 'complete' for s in stages.values()) else 'incomplete')
     save_summary()

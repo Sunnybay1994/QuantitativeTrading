@@ -51,6 +51,26 @@ def test_saved_isolated_and_controls_not_overridden(env):
     assert monthly.call_count == 1
 
 
+@pytest.mark.parametrize('errors', [[], [{'input': 'minute', 'error': 'missing'}]])
+def test_tracking_uses_isolated_accounts_and_surfaces_input_errors(env, monkeypatch, errors):
+    from quant.execution import shadow_slippage
+    from quant.reporting import forward_dashboard
+    args, *_ = env
+    with args['config'].open('a', encoding='utf-8') as stream:
+        stream.write('\n[forward_tracking]\nenabled = true\n')
+    shadow = Mock(return_value={'errors': errors, 'requires_review': bool(errors)})
+    view = Mock(return_value={'status': 'complete'})
+    monkeypatch.setattr(shadow_slippage, 'run', shadow)
+    monkeypatch.setattr(forward_dashboard, 'run', view)
+    result = daily.run(**args)
+    specs = shadow.call_args.kwargs['accounts']
+    assert len(specs) == 8
+    assert all(args['account_root'] in Path(spec['root']).parents for spec in specs)
+    assert shadow.call_args.kwargs['known_through'] == dt.date(2026, 9, 11)
+    assert view.call_args.kwargs['output'] == args['output']/'forward_tracking'
+    assert result['stages']['forward_tracking']['status'] == ('incomplete' if errors else 'complete')
+
+
 def test_missing_model_independent_accounts_continue(env):
     args, model, b20, b32, monthly = env
     model.return_value['status'] = 'missing_model_inputs'
