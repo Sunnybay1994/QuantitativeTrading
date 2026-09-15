@@ -12,7 +12,7 @@ from typing import Annotated, Any
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
-from quant.data.connectors.deepseek import DeepSeekClient, load_key
+from quant.llm import DeepSeekClient, load_key
 from quant.data.forecast_text_scores import ScoreCache
 from quant.factors.forecast_text_score import request_key_settings, strict_json
 from quant.research.score_forecast_text import cost_for, load_settings, score_one

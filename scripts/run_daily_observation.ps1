@@ -9,21 +9,28 @@ $python = 'D:\Miniforge3\python.exe'
 $logRoot = Join-Path $workspace 'artifacts\daily\scheduler'
 New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
 $logFile = Join-Path $logRoot ((Get-Date -Format 'yyyy-MM-dd_HHmmss_fffffff') + '.log')
+function Notify-Failure([string]$title, [string]$body) {
+    & $python -m quant notify send --title $title --body $body *>> $logFile
+}
 try {
     if (-not $CheckOnly) {
-        # Task Scheduler IgnoreNew handles its own overlap. Also defer to ad-hoc writers.
         $writers = @(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" |
-            Where-Object { $_.CommandLine -match 'quant\.(data\.(refresh|intraday)|factors\.compute|research\.(continuous_mining|run_daily|scheduled_observation|run_factor_search|run_research_cycle|nightly|run_genetic_factor_search|run_constrained_portfolio|run_multifactor)|execution\.(stock_paper|q10_paper|paper_ledger|cross_asset_forward))' })
+            Where-Object { $_.CommandLine -match 'quant research (daily|nightly|mining|cycle|gp)|quant\.(data\.(refresh|intraday)|factors\.compute|research\.(continuous_mining|run_daily|scheduled_observation|run_factor_search|run_research_cycle|nightly|run_genetic_factor_search|run_constrained_portfolio|run_multifactor)|execution\.(stock_paper|q10_paper|paper_ledger|cross_asset_forward))' })
         if ($writers.Count -gt 0) {
             'Deferred: another data/factor/account writer is running.' | Out-File $logFile -Encoding utf8
             exit 2
         }
     }
-    $runArgs = @('-m', 'quant.research.scheduled_observation')
+    $runArgs = @('-m', 'quant', 'research', 'daily')
     if ($CheckOnly) { $runArgs += '--check-only' }
     & $python @runArgs *> $logFile
-    exit $LASTEXITCODE
+    $code = $LASTEXITCODE
+    if ($code -notin 0, 2) {
+        Notify-Failure '日更失败' "exit=$code log=$logFile"
+    }
+    exit $code
 } catch {
     $_.Exception.Message | Out-File $logFile -Append -Encoding utf8
+    Notify-Failure '日更异常' $_.Exception.Message
     exit 1
 }

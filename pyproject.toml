@@ -47,8 +47,22 @@ dev = [
     "mypy>=1.10",
 ]
 
+[project.scripts]
+quant = "quant.cli:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/quant"]
+[tool.ruff.lint]
+# 通知通道失败不能炸掉其他通道；情报扫描必须吞掉单源网络错误。
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+"src/quant/notify/__init__.py" = ["BLE001"]
+"src/quant/intel/extract.py" = ["BLE001"]
+"src/quant/intel/sources.py" = ["BLE001"]
+"src/quant/intel/pipeline.py" = ["BLE001"]
+"src/quant/cli.py" = ["BLE001"]
+
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

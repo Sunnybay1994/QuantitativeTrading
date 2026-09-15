@@ -16,7 +16,7 @@ from typing import Annotated, Any, Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from quant.data.connectors.deepseek import DeepSeekClient, RequestFailure, load_key
+from quant.llm import DeepSeekClient, RequestFailure, load_key
 from quant.data.forecast_text_scores import ScoreCache, publish_panels, read_corpus, write_scores
 from quant.factors.forecast_text_score import (
     DIMENSIONS, PROMPT_VERSION, input_token_bound, parse_score, score_key, scoring_prompt,

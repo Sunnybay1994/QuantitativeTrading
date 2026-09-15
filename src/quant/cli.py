@@ -1,0 +1,129 @@
+"""统一命令门面：``python -m quant <组> <命令>``。旧 ``-m quant.x.y`` 入口保持可用。"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import runpy
+import sys
+from typing import Any
+
+from quant.core.gpu import detect_device
+from quant.core.paths import project_paths
+from quant.core.settings import load_runtime_settings
+from quant.llm.budget import month_spend_usd, remaining_budget_usd
+
+# 组、命令 → 现有 __main__ 模块。未知参数原样转交。
+_DELEGATE: dict[tuple[str, str], str] = {
+    ("data", "refresh"): "quant.data.refresh",
+    ("factors", "compute"): "quant.factors.compute",
+    ("research", "daily"): "quant.research.scheduled_observation",
+    ("research", "nightly"): "quant.research.nightly",
+    ("research", "mining"): "quant.research.continuous_mining",
+    ("research", "cycle"): "quant.research.run_research_cycle",
+    ("research", "gp"): "quant.research.run_genetic_factor_search",
+    ("paper", "q10"): "quant.execution.q10_paper",
+    ("paper", "orders"): "quant.execution.manual_orders",
+    ("report", "leaderboard"): "quant.reporting.leaderboard",
+}
+
+
+def _delegate(module: str, argv: list[str]) -> int:
+    sys.argv = [module, *argv]
+    try:
+        runpy.run_module(module, run_name="__main__")
+    except SystemExit as exc:
+        code = exc.code
+        return 0 if code is None else int(code)
+    return 0
+
+
+def _status() -> dict[str, Any]:
+    from pathlib import Path
+
+    root = project_paths()
+    runtime = load_runtime_settings()
+    gpu = detect_device()
+    daily = sorted((root.artifacts / "daily" / "scheduler").glob("*.log")) if (root.artifacts / "daily" / "scheduler").exists() else []
+    mining = root.artifacts / "research" / "continuous" / "status.json"
+    return {
+        "root": str(root.root),
+        "device": gpu.to_dict(),
+        "llm_month_spend_usd": month_spend_usd(),
+        "llm_remaining_usd": remaining_budget_usd(runtime.llm_monthly_budget_usd),
+        "latest_scheduler_log": None if not daily else str(daily[-1]),
+        "mining_status": json.loads(mining.read_text(encoding="utf-8")) if mining.exists() else None,
+        "notify_config": str(Path(runtime.notify_config)),
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="quant",
+        description="个人量化投研与交易系统",
+    )
+    sub = parser.add_subparsers(dest="group")
+
+    gpu = sub.add_parser("gpu-check", help="探测 NVIDIA / LightGBM OpenCL")
+    gpu.add_argument("--refresh", action="store_true")
+
+    sub.add_parser("status", help="调度、预算、最近日更的只读快照")
+
+    notify = sub.add_parser("notify", help="人工通道发消息")
+    notify.add_argument("action", choices=["test", "send"], nargs="?", default="test")
+    notify.add_argument("--title", default="QuantitativeTrading")
+    notify.add_argument("--body", default="notify test")
+    notify.add_argument("--dry-run", action="store_true")
+    notify.add_argument("--channel", action="append", dest="channels")
+
+    intel = sub.add_parser("intel", help="扫描论文/开源并写入因子队列")
+    intel.add_argument("action", choices=["scan"], nargs="?", default="scan")
+    intel.add_argument("--config")
+    intel.add_argument("--no-extract", action="store_true")
+
+    data = sub.add_parser("data", help="数据刷新")
+    data.add_argument("command", choices=["refresh"])
+    factors = sub.add_parser("factors", help="因子计算")
+    factors.add_argument("command", choices=["compute"])
+    research = sub.add_parser("research", help="投研流水线")
+    research.add_argument("command", choices=["daily", "nightly", "mining", "cycle", "gp"])
+    paper = sub.add_parser("paper", help="模拟盘与人工订单")
+    paper.add_argument("command", choices=["q10", "orders"])
+    report = sub.add_parser("report", help="机器报告")
+    report.add_argument("command", choices=["leaderboard"])
+
+    args, rest = parser.parse_known_args(argv)
+    if args.group is None:
+        parser.print_help()
+        return 0
+    if args.group == "gpu-check":
+        from quant.core.gpu import main as gpu_main
+        return gpu_main(["--refresh"] if args.refresh else [])
+    if args.group == "status":
+        print(json.dumps(_status(), ensure_ascii=False, indent=2, default=str))
+        return 0
+    if args.group == "notify":
+        from quant.notify import main as notify_main
+        extra: list[str] = [args.action, "--title", args.title, "--body", args.body]
+        if args.dry_run:
+            extra.append("--dry-run")
+        for channel in args.channels or []:
+            extra.extend(["--channel", channel])
+        return notify_main(extra)
+    if args.group == "intel":
+        from quant.intel.pipeline import main as intel_main
+        extra = []
+        if args.config:
+            extra.extend(["--config", args.config])
+        if args.no_extract:
+            extra.append("--no-extract")
+        return intel_main(extra)
+    key = (args.group, args.command)
+    module = _DELEGATE.get(key)
+    if module is None:
+        parser.error(f"未知命令: {args.group} {getattr(args, 'command', '')}")
+    return _delegate(module, rest)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

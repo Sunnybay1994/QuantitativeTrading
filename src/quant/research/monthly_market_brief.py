@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from quant.data.connectors.deepseek import DeepSeekClient, load_key
+from quant.llm import DeepSeekClient, load_key
 from quant.data.forecast_text_scores import ScoreCache
 from quant.factors.forecast_text_score import request_key_settings, strict_json
 from quant.research.deepseek_diagnostics import DiagnosticClient

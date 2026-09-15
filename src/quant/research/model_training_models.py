@@ -132,7 +132,9 @@ def fit_predict(*, training: pl.DataFrame, prediction: pl.DataFrame, factors: li
     if not np.isfinite(weights).all() or (weights <= 0).any():
         raise ValueError('Positive-IC weights require finite positive training means')
     weights /= weights.sum()
-    regressor = LGBMRegressor(**settings['lightgbm'])
+    from quant.core.gpu import lightgbm_params
+
+    regressor = LGBMRegressor(**lightgbm_params(settings['lightgbm']))
     regressor.fit(training.select(factors).to_numpy(), training['label_rebalance'].to_numpy())
     values = prediction.select(factors).to_numpy()
     forecast = regressor.booster_.predict(values) if prediction.height else np.array([], dtype=float)

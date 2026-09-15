@@ -1,0 +1,83 @@
+from quant.core.paths import project_paths
+from quant.intel.extract import extract_candidates
+from quant.intel.pipeline import run_intel
+from quant.intel.sources import collect, fetch_arxiv
+
+
+ATOM = """<?xml version="1.0"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>A reversal test</title>
+    <id>http://arxiv.org/abs/0000.00001</id>
+    <summary>Cross-sectional reversal using past returns.</summary>
+    <published>2026-09-01T00:00:00Z</published>
+  </entry>
+</feed>
+"""
+
+
+def test_arxiv_parser():
+    items = fetch_arxiv(getter=lambda url: ATOM)
+    assert items[0]["source"] == "arxiv"
+    assert "reversal" in items[0]["title"].lower()
+
+
+def test_extract_keeps_valid_dsl_and_drops_python():
+    items = [{"id": "abcd1234efgh0000", "source": "arxiv", "title": "x", "summary": "y"}]
+    accepted, rejected = extract_candidates(
+        items,
+        existing_canonical=set(),
+        complete=lambda messages, settings: {
+            "candidates": [
+                {"expression": "-ts_mean(adj_close/delay(adj_close,20),20)",
+                 "direction": 1, "rationale": "reversal", "source_id": "abcd1234efgh0000"},
+                {"expression": "os.system('rm')", "direction": 1, "rationale": "bad",
+                 "source_id": "abcd1234efgh0000"},
+            ]
+        },
+    )
+    assert len(accepted) == 1
+    assert accepted[0]["expr"].startswith("-ts_mean")
+    assert rejected
+
+
+def test_pipeline_writes_queue(monkeypatch, tmp_path):
+    (tmp_path / "src" / "quant").mkdir(parents=True)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='quant'\n")
+    monkeypatch.setenv("QUANT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("QUANT_ARTIFACTS_ROOT", str(tmp_path / "artifacts"))
+    project_paths.cache_clear()
+    configs = tmp_path / "configs"
+    (configs / "research").mkdir(parents=True)
+    (configs / "factors" / "queue").mkdir(parents=True)
+    (configs / "research" / "intel.toml").write_text(
+        'library="configs/factors/library"\nqueue="configs/factors/queue"\n'
+        "maximum_candidates=4\n[sources]\narxiv=true\ngithub=false\nrss=[]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "quant.intel.pipeline.collect",
+        lambda config, getter=None: [{
+            "id": "abcd1234efgh0000", "source": "arxiv", "title": "A reversal test",
+            "url": "http://arxiv.org/abs/0000.00001", "summary": "reversal", "published": "2026-09-01",
+        }],
+    )
+    result = run_intel(
+        config_path=configs / "research" / "intel.toml",
+        complete=lambda messages, settings: {"candidates": [{
+            "expression": "delay(adj_close,20)/adj_close",
+            "direction": -1, "rationale": "reversal", "source_id": "abcd1234efgh0000",
+        }]},
+    )
+    assert result["accepted"] == 1
+    queue = tmp_path / "configs" / "factors" / "queue"
+    written = list(queue.glob("intel_*.toml"))
+    assert written and "delay(adj_close,20)" in written[0].read_text(encoding="utf-8")
+    digest = tmp_path / "artifacts" / "intel"
+    assert list(digest.glob("*/digest.md"))
+    project_paths.cache_clear()
+
+
+def test_collect_swallows_network_errors():
+    assert collect({"sources": {"arxiv": True, "github": False, "rss": []}},
+                   getter=lambda url: (_ for _ in ()).throw(RuntimeError("offline"))) == []

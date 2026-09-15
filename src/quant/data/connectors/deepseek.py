@@ -1,4 +1,7 @@
-"""DeepSeek chat completions transport, without implicit SDK retries."""
+"""DeepSeek chat completions transport, without implicit SDK retries.
+
+新代码请从 ``quant.llm`` 导入；本模块只保留 HTTP 传输实现。
+"""
 from __future__ import annotations
 
 import os

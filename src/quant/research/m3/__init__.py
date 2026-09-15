@@ -1,4 +1,8 @@
-"""M3 机器学习研究边界；重依赖仅允许在具体适配器内导入。"""
+"""M3 机器学习研究边界；重依赖仅允许在具体适配器内导入。
+
+FROZEN（2026-09-15）：本包只修不扩。A 股回测器依赖 contracts/release/run_state。
+新研究走 ``quant.research`` 流水线，不要在这里加正式身份/successor。
+"""
 
 import importlib
 

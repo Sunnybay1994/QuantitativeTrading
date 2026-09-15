@@ -1,0 +1,14 @@
+# 全局运行时设置。环境变量 QUANT_DEVICE / POLARS_MAX_THREADS / QUANT_LLM_BUDGET_USD 可覆盖。
+# 密钥不写在这里：DEEPSEEK_API_KEY、SMTP_PASSWORD、WECOM_WEBHOOK、FEISHU_WEBHOOK 走环境变量。
+
+[runtime]
+# cpu：默认，结果可复现；gpu：LightGBM OpenCL（本机 GTX 1070 实测可用，但小数据集比 CPU 慢）；auto：探测到可用 GPU 才用。
+device = "cpu"
+polars_threads = 4
+lightgbm_threads = 4
+timezone = "Asia/Shanghai"
+notify_config = "configs/notify.toml"
+
+[llm]
+model = "deepseek-chat"
+monthly_budget_usd = 30.0

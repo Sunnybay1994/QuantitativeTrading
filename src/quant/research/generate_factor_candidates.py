@@ -15,7 +15,7 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
-from quant.data.connectors.deepseek import DeepSeekClient, load_key
+from quant.llm import DeepSeekClient, load_key
 from quant.data.forecast_text_scores import ScoreCache
 from quant.factors.forecast_text_score import request_key_settings, strict_json
 from quant.factors.library import load_library

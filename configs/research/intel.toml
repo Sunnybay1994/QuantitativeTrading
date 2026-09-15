@@ -1,0 +1,16 @@
+# 公开情报扫描。由 `python -m quant intel` 或夜间周步调用。
+
+library = "configs/factors/library"
+queue = "configs/factors/queue"
+maximum_candidates = 8
+
+[sources]
+arxiv = true
+arxiv_limit = 20
+github = true
+github_limit = 10
+rss_limit = 10
+rss = [
+    "https://rss.arxiv.org/rss/q-fin.ST",
+    "https://rss.arxiv.org/rss/q-fin.PM",
+]
