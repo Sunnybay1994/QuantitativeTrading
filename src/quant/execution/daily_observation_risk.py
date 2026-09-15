@@ -9,7 +9,8 @@ from typing import Any
 
 import polars as pl
 
-from quant.data.order_risk_inputs import read_order_risk_inputs
+from quant.data.order_risk_inputs import read_execution_sessions, read_order_risk_inputs
+from quant.execution.manual_execution_plan import SCHEMA as PLAN_SCHEMA, build_plan
 from quant.execution.execution_risk_log import summarize_execution_risk
 from quant.execution.order_risk import assess_reference_orders, render_report
 
@@ -111,11 +112,20 @@ def run(*, record: dict[str, Any], output: Path, data_root: Path,
                     (folder/'execution_risk.json').write_text(
                         json.dumps(execution, ensure_ascii=False, indent=2, allow_nan=False),
                         encoding='utf-8')
+                    plan = (build_plan(orders=orders, market=market,
+                        sessions=read_execution_sessions(data_root, dt.date.fromisoformat(date)),
+                        participation_rate=settings['limits']['participation_rate'])
+                        if orders.height else pl.DataFrame(schema=PLAN_SCHEMA))
+                    plan.write_csv(folder/'execution_plan.csv')
+                    with (folder/'report.md').open('a', encoding='utf-8') as report:
+                        report.write('\n[分日执行建议](execution_plan.csv)：仅供核对，保留原风险提示；每日重新核对账户和行情。\n')
                     item.update(scope='stock_reference_order_risk',
+                        execution_plan_rows=plan.height,
+                        execution_plan_rejected=plan.filter(pl.col('status') == 'rejected').height,
                         execution_requires_review=execution['requires_review'],
                         participation_exceeded_symbols=execution['participation_exceeded_symbols'],
                         execution_observed_through=execution['observed_through'],
-                        requires_review=risk['requires_review'] or execution['requires_review'],
+                        requires_review=risk['requires_review'] or execution['requires_review'] or bool(plan.height),
                         issue_count=len(risk['issues']),
                         projection_valid=risk['projection_valid'])
                 else:

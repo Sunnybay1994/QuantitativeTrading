@@ -66,6 +66,24 @@ def test_q10_is_included_and_failed_stage_cannot_disappear(source, tmp_path, sta
         assert result['status'] == 'incomplete' and 'q10' in result['source_errors']
 
 
+def test_daily_stock_orders_generate_split_plan_without_changing_orders(source, tmp_path, monkeypatch):
+    import datetime as dt
+    import polars as pl
+    snapshot = Path(source['stages']['b32']['result']['accounts'][0]['output'])
+    path = snapshot/'orders.csv'
+    path.write_text('as_of,execution_date,symbol,side,quantity,estimated_fill_price\n2026-09-11,2026-09-14,A,BUY,2500,10\n')
+    original = path.read_bytes()
+    monkeypatch.setattr(risk, 'read_order_risk_inputs', Mock(return_value=(
+        pl.DataFrame({'symbol': ['A'], 'board_lot': [100], 'average_amount': [200000.]}),
+        dt.date(2026, 9, 14))))
+    monkeypatch.setattr(risk, 'read_execution_sessions', lambda *a: [dt.date(2026, 9, d) for d in (14, 15, 16)])
+    result = risk.run(record=source, output=tmp_path/'risk', data_root=Path('data'))
+    assert result['status'] == 'complete' and result['requires_review']
+    plan = pl.read_csv(tmp_path/'risk/b32_0/execution_plan.csv')
+    assert plan['quantity'].to_list() == [1000, 1000, 500]
+    assert path.read_bytes() == original
+
+
 @pytest.mark.parametrize('failure', ['quality', 'stale', 'market', 'target'])
 def test_bad_inputs_not_healthy(source, tmp_path, monkeypatch, failure):
     if failure == 'quality':

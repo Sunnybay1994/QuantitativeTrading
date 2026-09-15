@@ -8,6 +8,12 @@ from quant.data.factor_panels import available_sessions, read_factor_industry
 from quant.data.refresh_stocks import read_stock_data
 
 
+def read_execution_sessions(data_root: Path, as_of: dt.date) -> list[dt.date]:
+    """Return known exchange sessions for a maximum three-day indicative plan."""
+    return [day for day in available_sessions(data_root, as_of + dt.timedelta(days=40))
+            if day > as_of][:3]
+
+
 def read_order_risk_inputs(*, data_root: Path, refresh_config: Path,
                           symbols: list[str], as_of: dt.date,
                           lookback: int) -> tuple[pl.DataFrame, dt.date]:
