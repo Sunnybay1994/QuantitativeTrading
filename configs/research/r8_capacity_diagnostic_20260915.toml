@@ -3,4 +3,6 @@ statistics = "artifacts/factors/battery_statistics_20260831_20260911"
 initial_capitals = [1000000, 5000000, 20000000]
 participation_limit = 0.05
 auto_trade = false
+recover_missing_adv = true
+refresh_config = "configs/data/refresh.toml"
 method = "linear_scaled_realized_fills_against_prior_session_ADV20_diagnostic_only"

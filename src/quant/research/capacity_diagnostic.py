@@ -8,6 +8,7 @@ import tomllib
 import polars as pl
 
 from quant.data.factor_panels import available_sessions
+from quant.data.capacity_inputs import read_missing_adv
 
 
 def run(config: Path, output: Path, data_root: Path = Path('data')) -> dict:
@@ -39,6 +40,15 @@ def run(config: Path, output: Path, data_root: Path = Path('data')) -> dict:
     base = fills.join(pl.concat(frames), on=['as_of', 'symbol'], how='left', validate='m:1')
     base = base.with_columns(pl.when(pl.col('amount20').is_finite() & (pl.col('amount20') > 0))
         .then(pl.col('amount20')).otherwise(None).alias('amount20'))
+    base = base.with_columns(pl.when(pl.col('amount20').is_not_null()).then(pl.lit('frozen_universe'))
+        .otherwise(pl.lit('missing')).alias('adv_source'))
+    missing = base.filter(pl.col('amount20').is_null()).select('symbol', 'as_of').unique()
+    if missing.height and spec.get('recover_missing_adv'):
+        recovered = read_missing_adv(missing, data_root, Path(spec['refresh_config']))
+        base = base.join(recovered, on=['symbol', 'as_of'], how='left', validate='m:1').with_columns(
+            pl.when(pl.col('amount20').is_null() & pl.col('recovered_adv20').is_not_null())
+            .then(pl.lit('saved_daily_bars')).otherwise(pl.col('adv_source')).alias('adv_source'),
+            pl.coalesce('amount20', 'recovered_adv20').alias('amount20'))
     rows = []
     details = []
     for capital in spec['initial_capitals']:
@@ -48,6 +58,7 @@ def run(config: Path, output: Path, data_root: Path = Path('data')) -> dict:
         valid = detail.filter(pl.col('participation').is_not_null())
         rows.append({'initial_capital': capital, 'symbol_days': detail.height,
             'known_adv': valid.height, 'missing_adv': detail.height-valid.height,
+            'recovered_adv': detail.filter(pl.col('adv_source') == 'saved_daily_bars').height,
             'p95_participation': valid['participation'].quantile(.95),
             'maximum_participation': valid['participation'].max(),
             'above_5pct': valid.filter(pl.col('participation') > spec['participation_limit']).height})
