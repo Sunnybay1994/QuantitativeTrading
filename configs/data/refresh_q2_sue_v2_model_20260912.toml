@@ -2,8 +2,8 @@
 # Incremental data follows the existing Shanghai/Shenzhen stock research universe.
 stock_snapshot = "b79a7b5e66dee0ae439c030078414157ca6c1f3b6ce7fbe5e36ff3910c1089d2"
 daily_basic_snapshot = "e97c0e9c82c445bbc9b389e8e8504f61b0b67d2f789208f75625526c38b4c03c"
-financial_snapshot = "financial_updates_v3_20260911_004"
-factor_benchmark_snapshot = "510300_20260911T091923081611Z"
+financial_snapshot = "financial_updates_v3_20260915_003"
+factor_benchmark_snapshot = "510300_20260915T100010758517Z"
 financial_share_changes_snapshot = "20260910_cycle2013"
 financial_share_change_notices = "configs/data/share_change_notice_resolutions_20260910.json"
 etf_config = "configs/research/m2_s2_volatility_target.toml"
