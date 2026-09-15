@@ -69,8 +69,12 @@ def digest(settings: dict, run: Path, summary: dict, *, rewrite_leaderboard: boo
     n1=summary['steps'].get('N1',{}).get('result',{})
     n2=summary['steps'].get('N2',{}).get('result',{})
     n4=summary['steps'].get('N4',{}).get('result',{})
+    admission = '入库判定未完成'
+    if (summary['steps'].get('N4', {}).get('ok')
+            and 'admitted' in n4 and 'rejected' in n4):
+        admission = f"通过 {n4['admitted']}，拒绝 {n4['rejected']}"
     lines += [f"候选：队列 {n1.get('queued_candidates',0)}，GP {n2.get('candidates',0)}；"
-              f"通过 {n4.get('admitted',0)}，拒绝 {n4.get('rejected',0)}；"
+              f"{admission}；"
               f"库规模 {summary['library_before']} → {summary['library_after']}。",'']
     for name,state in summary['steps'].items():
         lines.append(f"- {name}：{'完成' if state['ok'] else '未完成'}；{state.get('error',state.get('result',{}))}")
