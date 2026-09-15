@@ -59,6 +59,12 @@ def discover(*, settings: dict, known_through: dt.date, current: Path | None = N
             # Qualification metadata is part of identity: a late/rehearsal rerun cannot replace a forward record.
             identity = {key: record.get(key) for key in (
                 'source_selection', 'as_of', 'method', 'auto_trade', 'rehearsal', 'recorded_at', 'refit_close')}
+            if record.get('recorded_at'):
+                stamp = dt.datetime.fromisoformat(record['recorded_at'])
+                if stamp.tzinfo is not None:
+                    local = stamp.astimezone(dt.timezone(dt.timedelta(hours=8)))
+                    if local.date() == day and local.hour >= 15:
+                        identity['recorded_at'] = f'{day}:after_close'
             groups.setdefault(str(day), []).append((path.parent, identity, predictions))
         except (OSError, ValueError, KeyError, pl.exceptions.PolarsError) as exc:
             if signal_key is not None:

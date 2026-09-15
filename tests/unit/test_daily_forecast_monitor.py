@@ -69,6 +69,23 @@ def test_identical_duplicate_deduplicates_but_qualification_change_conflicts(set
     assert not result['discovery']['forecasts']
 
 
+@pytest.mark.parametrize('stamp,conflict', [
+    ('2026-01-30T21:30:00+08:00', False),
+    ('2026-01-30T14:30:00+08:00', True),
+    ('2026-02-02T10:00:00+08:00', True),
+])
+def test_same_close_retry_preserves_timing_qualification(setup, stamp, conflict):
+    _, folder, _, record = setup
+    other = folder.parent/'b'
+    shutil.copytree(folder, other)
+    (other/'summary.json').write_text(json.dumps({**record, 'recorded_at': stamp}))
+    result = invoke(setup)
+    assert bool(result['discovery']['conflicts']) is conflict
+    if not conflict:
+        assert result['scoring']['records'] == 1
+        assert len(result['discovery']['duplicates']) == 1
+
+
 def test_empty_search_is_not_success_and_bad_prediction_is_failure(setup):
     _, folder, _, record = setup
     (folder/'summary.json').write_text(json.dumps({**record, 'source_selection': 'another-selection'}))
