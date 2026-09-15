@@ -238,20 +238,37 @@ def admit(settings: dict, run: Path) -> dict:
     definitions = {d.id:d for d in load_library(batch/'library')}
     library = load_library(Path(settings['library']))
     reference_ids = [d.id for d in library if d.id not in definitions]
+    checkpoint = run/'N4'/'admission_progress.json'
+    progress = json.loads(checkpoint.read_text(encoding='utf-8')) if checkpoint.exists() else None
+    if progress is not None:
+        if progress['batch'] != str(batch) or progress['candidates'] != list(definitions):
+            raise ValueError('Admission checkpoint inputs changed; retain the original batch')
+        reference_ids = progress['reference_ids']
     reference_scorecard = pl.read_parquet(settings['reference_scorecard'])
     reference_date=tomllib.loads((Path(settings['reference_statistics'])/'battery.toml').read_text(encoding='utf-8'))['run']['as_of']
     if reference_date<settings['as_of']:
         raise ValueError(f'ADMITTED controls end {reference_date}, required {settings["as_of"]}; complete monthly full-library battery before retry')
     controls,admitted=admitted_controls(Path(settings['reference_statistics']),reference_scorecard)
+    if progress is None:
+        progress = {'batch':str(batch), 'candidates':list(definitions),
+                    'reference_ids':reference_ids, 'admitted_controls':admitted, 'rows':[]}
+        dump(checkpoint, progress)
+    elif progress['admitted_controls'] != admitted:
+        raise ValueError('Admission checkpoint controls changed; retain the original batch')
     scorecard = pl.read_parquet(evaluation['scorecard'])
     panel = read_raw_monthly(data_root=Path(settings['data_root']),
         statistics=batch/'evaluation'/'statistics', factors=reference_ids,
         start=settings['history_start'],end=settings['as_of'])
     panel = panel.filter(pl.col('label_exit_date') <= settings['as_of']).join(controls,on=['symbol','trade_date'],how='left',validate='1:1')
-    rows = []
+    rows = progress['rows']
+    completed = {row['factor'] for row in rows}
+    if len(completed) != len(rows) or not completed <= set(definitions):
+        raise ValueError('Invalid completed admission candidates')
     destination = Path(settings['library'])/'auto'
     destination.mkdir(exist_ok=True)
     for identifier, definition in definitions.items():
+        if identifier in completed:
+            continue
         variants=scorecard.filter(pl.col('factor')==identifier).sort('factor_admitted',descending=True)
         variant=variants['variant'][0]
         values=pl.read_parquet(batch/'evaluation'/'statistics'/'factors'/identifier/'monthly_scores.parquet').select(
@@ -273,6 +290,7 @@ def admit(settings: dict, run: Path) -> dict:
             if target.exists() and target.read_text(encoding='utf-8') != text:
                 raise ValueError('admitted factor definition conflict')
             target.write_text(text,encoding='utf-8')
+        dump(checkpoint, progress)
     result = pl.from_dicts(rows)
     result.write_parquet(run/'N4'/'admission_scorecard.parquet')
     rejected = Path(settings['rejected_root'])

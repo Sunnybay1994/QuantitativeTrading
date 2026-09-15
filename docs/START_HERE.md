@@ -53,6 +53,8 @@ D:\Miniforge3\python.exe -m quant.research.scheduled_observation --check-only
 
 关机后从最近保存的GP种群、随机状态、已评估表达式及成本断点恢复；尚未保存的计算会重做。相同批次连续三次非超时错误会停止重试并显示需要处理，原产物保留。不要删除断点或换目录绕过失败。
 
+入库判定每完成一个候选保存 `N4/admission_progress.json`，恢复时沿用本批参考因子列表并跳过已完成候选；中断时正在计算的候选会重算。旧批次没有该文件时从入库阶段起点运行，已完成的搜索和成本评估仍复用。
+
 查看实时任务/进程/批次与GP代数：`powershell -NoProfile -File scripts/show_factor_mining_status.ps1`。机器状态为`artifacts/research/continuous/status.json`，每批结果在`batch_*/<日期>/digest.md`，调度日志在`artifacts/research/continuous/scheduler/`。
 
 拒绝结果保存为 `artifacts/factors/rejected/<日期>_<评估批次>.parquet`，同日多批分别保留；旧的仅日期文件保留作历史记录。
