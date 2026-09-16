@@ -108,6 +108,15 @@ def dispatch(config: Path, root: Path, *, now: dt.datetime | None = None,
                       'needs_attention' if failures >= max_failures else 'cooldown',
                       error=errors, retry_after=attempt['retry_after'], updated_at=finished.isoformat())
     save(root/'status.json', status)
+    policy = tomllib.loads(config.read_text(encoding='utf-8')).get('research_policy')
+    if policy:
+        from quant.research.research_feedback import update as update_research_feedback
+        try:
+            feedback = update_research_feedback(Path(policy))
+            status['research_feedback'] = feedback['policy']['output_root']
+        except (OSError, ValueError, RuntimeError) as exc:
+            status['research_feedback_error'] = f'{type(exc).__name__}: {exc}'
+        save(root/'status.json', status)
     if weekly_config:
         from quant.research.weekly_factor_feedback import update
         try:

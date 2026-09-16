@@ -1,3 +1,4 @@
+research_policy = "configs/research/research_priorities.toml"
 # Frozen search/admission rules; optional weekly LLM generation has independent budgets.
 weekly_candidates_config = "configs/research/weekly_factor_candidates.toml"
 output_root = "artifacts/research/nightly"

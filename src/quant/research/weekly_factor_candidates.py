@@ -175,6 +175,9 @@ def run(config: Path, now: dt.datetime | None = None, client: Any = None,
                    'fields': search['fields'], 'operators': search['operators'],
                    'maximum_candidates': maximum, 'maximum_depth': search['maximum_depth'],
                    'maximum_history': search['maximum_history']}
+        if cfg.get('research_policy'):
+            from quant.research.research_feedback import prompt_context
+            request['research_feedback'] = prompt_context(Path(cfg['research_policy']))
         messages = [{'role': 'system', 'content': PROMPT},
                     {'role': 'user', 'content': json.dumps(request, ensure_ascii=False)}]
         encoded = json.dumps(messages, ensure_ascii=False).encode()

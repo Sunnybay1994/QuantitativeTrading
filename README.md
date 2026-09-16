@@ -55,3 +55,5 @@ D:\Miniforge3\python.exe -m quant report dashboard --port 8768
 - `docs/` 长期文档；按日期命名的实验页在 `docs/research/experiments_2026-09/` 与 `docs/archive/`
 
 `auto_trade=false`。真实资金下单只由用户确认。
+
+研究反馈：`python -m quant research feedback` 汇总已完成电池的失败、家族、衰减与基准缺口；下一次持续调度自动更新，新周度候选使用该反馈。研究目标与准入门槛分开，详见 [研究协议](docs/RESEARCH_PROTOCOL.md)。

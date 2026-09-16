@@ -1,0 +1,11 @@
+# Research objectives are not admission thresholds.
+output_root = "artifacts/research/feedback"
+continuous_root = "artifacts/research/continuous"
+sharpe_objective = 1.5
+risk_free_sensitivity = [0.0, 0.02]
+representative_account_cny = 100000
+maximum_account_validations = 1
+priorities = ["Small-capacity non-information-pressure reversal complementary to SUE", "Check signal decay, exit impact, family coverage and train/full-history differences before expanding GP", "Use intraday mechanisms only when existing point-in-time coverage is sufficient"]
+constraints = ["Low correlation is not predictive evidence", "No repeated Q1-Q9/P7/Q6 variants without a distinct preregistered mechanism", "At most one preregistered portfolio hypothesis; no capital-size grids", "Do not tune to observed validation/test results; independent future evidence remains necessary"]
+risk_attribution = "artifacts/risk/r3_lightweight_20260914_03/report.md"
+sharpe_diagnostic = "artifacts/research/sharpe_diagnostic_20260916_01/diagnostic.json"

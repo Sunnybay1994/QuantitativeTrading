@@ -158,3 +158,22 @@ def test_historical_weekly_and_queue_expressions_are_known(setup):
     (historical/'accepted.json').write_text(json.dumps([{**row, 'id': 'history', 'expr': 'delay(adj_close,10)'}]))
     known = weekly.known_definitions(paths['library'], paths['queue'], paths['output_root'])
     assert {row.id for row in known} == {'old', 'queued', 'history'}
+
+
+def test_research_feedback_is_frozen_with_weekly_request(setup, monkeypatch):
+    from quant.research import research_feedback
+    config, paths = setup
+    config.write_text(config.read_text()+'\nresearch_policy="policy.toml"\n')
+    calls = []
+    def context(path):
+        calls.append(path)
+        return {'marker': 'completed-only'}
+    monkeypatch.setattr(research_feedback, 'prompt_context', context)
+    now = dt.datetime(2026, 9, 15, 12)
+    weekly.run(config, now)
+    request = paths['output_root']/'2026-09-14'/'request.json'
+    frozen = request.read_bytes()
+    assert b'completed-only' in frozen
+    weekly.run(config, now)
+    assert request.read_bytes() == frozen
+    assert len(calls) == 1
