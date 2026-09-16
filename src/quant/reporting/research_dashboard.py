@@ -8,7 +8,7 @@ import subprocess
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlparse, parse_qs
 
 import polars as pl
 
@@ -108,7 +108,28 @@ def main() -> None:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             route = urlparse(self.path)
-            if route.path == '/api/status':
+            if route.path in ('/api/curves', '/api/curve'):
+                from quant.reporting.dashboard_curves import catalog, compare
+                try:
+                    entries = catalog(ROOT)
+                    if route.path == '/api/curves':
+                        payload = [{k:v for k,v in e.items() if k not in ('paths','code')} for e in entries]
+                    else:
+                        query = parse_qs(route.query)
+                        ids = query.get('id', [])
+                        selected = [e for e in entries if e['id'] in ids]
+                        if len(selected) != len(set(ids)):
+                            raise ValueError('曲线不存在，请刷新列表')
+                        payload = compare(selected,query.get('start',[''])[0],query.get('end',[''])[0])
+                    body = json.dumps(payload,ensure_ascii=False,allow_nan=False).encode('utf-8')
+                    mime = 'application/json'
+                except (ValueError, OSError, KeyError, pl.exceptions.PolarsError) as exc:
+                    body = json.dumps({'error':str(exc)},ensure_ascii=False).encode('utf-8')
+                    mime = 'application/json'
+            elif route.path == '/curves.js':
+                body = Path(__file__).with_name('dashboard_curves.js').read_bytes()
+                mime = 'text/javascript'
+            elif route.path == '/api/status':
                 if route.query == 'refresh=1' or time.monotonic() - cache['at'] > 15:
                     payload = snapshot()
                     # Dates and non-finite experimental values must remain valid JSON.
