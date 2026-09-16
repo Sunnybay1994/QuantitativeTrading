@@ -1,4 +1,4 @@
-"""Local, read-only research dashboard backed by saved runs and live processes."""
+"""Local research dashboard with guarded resume of the existing mining task."""
 import argparse
 import datetime as dt
 import json
@@ -104,8 +104,30 @@ def main() -> None:
     parser.add_argument('--port', type=int, default=8768)
     args = parser.parse_args()
     cache = {'at': 0., 'body': b''}
+    import secrets
+    mining_token = secrets.token_urlsafe(32)
 
     class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            from quant.reporting.mining_control import authorized, resume
+            if self.path != '/api/mining/restart':
+                self.send_error(404)
+                return
+            if not authorized(self.headers, mining_token, args.port):
+                self.send_error(403)
+                return
+            try:
+                payload, status = resume(), 200
+                cache['at'] = 0.
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                payload, status = {'state': 'error', 'message': f'恢复请求失败（{type(exc).__name__}），请检查计划任务及权限'}, 503
+            body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+            self.send_response(status)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_GET(self):
             route = urlparse(self.path)
             if route.path in ('/api/curves', '/api/curve', '/api/periods', '/api/period-report'):
@@ -144,7 +166,7 @@ def main() -> None:
                     cache.update(at=time.monotonic(), body=body.encode('utf-8'))
                 body, mime = cache['body'], 'application/json'
             elif route.path == '/':
-                body = Path(__file__).with_name('research_dashboard.html').read_bytes()
+                body = Path(__file__).with_name('research_dashboard.html').read_text(encoding='utf-8').replace('__MINING_TOKEN__', mining_token).encode('utf-8')
                 mime = 'text/html'
             elif route.path.startswith('/artifact/'):
                 path = artifact_path(ROOT, unquote(route.path[len('/artifact/'):]))
