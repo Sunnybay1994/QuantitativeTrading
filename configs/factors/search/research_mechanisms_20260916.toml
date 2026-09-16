@@ -1,0 +1,34 @@
+# Batch preregistered before evaluation; all directions +1; original battery thresholds unchanged.
+# Research hypotheses only. Daily close inputs; earliest next-session execution; no parameter search.
+
+# FIP conditional momentum; fixed 12-1 formation, continuous same-direction path receives greater weight.
+[[factors]]
+id = "research_fip_conditional_20260916"
+expr = "(delay(where(volume > 0, adj_close, 0/0), 21) / delay(where(volume > 0, adj_close, 0/0), 252) - 1) * (1 + sign((delay(where(volume > 0, adj_close, 0/0), 21) / delay(where(volume > 0, adj_close, 0/0), 252) - 1)) * delay(ts_mean(sign((where(volume > 0, adj_close, 0/0) / delay(where(volume > 0, adj_close, 0/0), 1) - 1)), 231), 21))"
+family = "information_path"
+direction = 1
+source_ref = "https://academicweb.nd.edu/~zda/Frog.pdf"
+
+# Local magnitude-sensitive adaptation: discount formation return dominated by a single jump; not a direct paper replication.
+[[factors]]
+id = "research_fip_concentration_20260916"
+expr = "(delay(where(volume > 0, adj_close, 0/0), 21) / delay(where(volume > 0, adj_close, 0/0), 252) - 1) * (1 - delay(ts_max(abs((where(volume > 0, adj_close, 0/0) / delay(where(volume > 0, adj_close, 0/0), 1) - 1)), 231) / ts_sum(abs((where(volume > 0, adj_close, 0/0) / delay(where(volume > 0, adj_close, 0/0), 1) - 1)), 231), 21))"
+family = "information_path"
+direction = 1
+source_ref = "https://academicweb.nd.edu/~zda/Frog.pdf"
+
+# Local T+1 cross-sectional adaptation: overnight optimism reversal weighted by overnight-intraday disagreement.
+[[factors]]
+id = "research_overnight_disagreement_20260916"
+expr = "-ts_mean(log(adj_open / delay(adj_close, 1)), 20) * rank(ts_mean(abs(log(adj_open / delay(adj_close, 1)) - log(adj_close / adj_open)), 20))"
+family = "session_disagreement"
+direction = 1
+source_ref = "https://conference.nber.org/confer/2015/APf15/Lou_Polk_Skouras.pdf"
+
+# Local hypothesis: positive intraday absorption after negative overnight gaps predicts resilience; daily close signal, next-session execution.
+[[factors]]
+id = "research_intraday_absorption_20260916"
+expr = "ts_mean(where(log(adj_open / delay(adj_close, 1)) < 0, log(adj_close / adj_open), 0), 20) / (ts_mean(abs(log(adj_open / delay(adj_close, 1))), 20) + 0.000001)"
+family = "session_disagreement"
+direction = 1
+source_ref = "https://conference.nber.org/confer/2015/APf15/Lou_Polk_Skouras.pdf"
