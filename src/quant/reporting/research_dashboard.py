@@ -58,6 +58,10 @@ def snapshot(root: Path = ROOT) -> dict:
                         row['report_path'] = ''
         except (OSError, pl.exceptions.PolarsError) as exc:
             registry_error = type(exc).__name__
+    from quant.reporting.strategy_review import enrich
+    from quant.reporting.daily_attention import attention
+    if results:
+        results = enrich(results, root)
     runtime = {}
     import tomllib
     runtime_path = root/'configs/runtime.toml'
@@ -87,7 +91,7 @@ def snapshot(root: Path = ROOT) -> dict:
             'process_error': process_error, 'gpu': gpu, 'device': runtime.get('device', 'cpu'),
             'gp': read(run/'N2/search_progress.json'), 'admission_done': len(progress.get('rows', [])),
             'admission_total': len(progress.get('candidates', [])), 'batches': batches,
-            'daily': daily, 'daily_report': str(reports[-1].parent.relative_to(root)/'report.md') if reports else '',
+            'daily': daily, 'daily_attention': attention(daily), 'daily_report': str(reports[-1].parent.relative_to(root)/'report.md') if reports else '',
             'results': results, 'registry_error': registry_error,
             'queue_files': len(list((root/'configs/factors/queue').glob('*.toml'))),
             'completed_costs': len(list(costs.glob('*/summary.json'))) if costs else None}

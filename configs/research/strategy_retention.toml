@@ -1,0 +1,6 @@
+# Research retention only; this does not grant PAPER_CANDIDATE or trading access.
+minimum_years = 5.0
+strong_excess = 0.05
+strong_sharpe = 1.5
+soft_checks = ["turnover", "drawdown", "underwater", "stress_windows", "annual_outperformance"]
+required_checks = ["net_excess", "double_cost_positive", "sharpe", "active_evidence"]
