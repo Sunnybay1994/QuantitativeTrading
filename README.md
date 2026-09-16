@@ -28,6 +28,24 @@ D:\Miniforge3\python.exe -m quant research daily --check-only
 
 电脑须开机并登录。失败通知见 `configs/notify.toml`（未配通道则写 `artifacts/notify/outbox.jsonl`）。
 
+## 投研看板
+
+在项目根目录启动本地只读看板：
+
+```powershell
+$env:PYTHONPATH = "$PWD\src"
+D:\Miniforge3\python.exe -m quant report dashboard --port 8768
+```
+
+浏览器打开 [投研工作台](http://127.0.0.1:8768/)。服务仅监听本机；关闭服务或重启电脑后需重新启动。
+
+- 查看实际研究进程、CPU 累计计算时间、显卡占用，以及挖掘阶段、断点进度和候选入库结果。
+- 查看历史回测的成本后收益、夏普、回撤与报告证据，支持搜索、结论筛选和点击表头切换升降序。
+- 查看每日模拟观察、风险检查、账户权益、现金比例、持仓数与订单数。
+- 每 20 秒自动刷新，也可点击“手动刷新”立即读取最新数据；刷新保留当前筛选和排序。
+
+看板读取已有结果，不启动挖掘或下单。保存状态与实际进程分别展示；显卡占用是整张显卡的用量，不代表本项目用量。
+
 ## 目录
 
 - `src/quant/` 运行时代码；`legacy/` 已迁出的死模块
