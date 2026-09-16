@@ -253,8 +253,10 @@ def admit(settings: dict, run: Path) -> dict:
         progress = {'batch':str(batch), 'candidates':list(definitions),
                     'reference_ids':reference_ids, 'admitted_controls':admitted, 'rows':[]}
         dump(checkpoint, progress)
-    elif progress['admitted_controls'] != admitted:
+    elif set(progress['admitted_controls']) != set(admitted):
         raise ValueError('Admission checkpoint controls changed; retain the original batch')
+    else:
+        admitted = progress['admitted_controls']
     scorecard = pl.read_parquet(evaluation['scorecard'])
     panel = read_raw_monthly(data_root=Path(settings['data_root']),
         statistics=batch/'evaluation'/'statistics', factors=reference_ids,

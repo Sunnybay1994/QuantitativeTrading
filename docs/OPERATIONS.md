@@ -21,6 +21,7 @@ python -m quant gpu-check
 | 扫描论文/开源 | `python -m quant intel scan`（`--no-extract` 不花 LLM） |
 | 发一条通知 | `python -m quant notify test` |
 | 排行榜 | `python -m quant report leaderboard` |
+| 本地投研看板 | `python -m quant report dashboard --port 8768`（浏览器打开 `http://127.0.0.1:8768`，重启电脑后需重新启动服务） |
 | 挖掘状态 | `.\scripts\show_factor_mining_status.ps1` |
 
 计划任务安装：`.\scripts\install_daily_observation.ps1`、`.\scripts\register_continuous_mining.ps1`。电脑须开机且用户登录。

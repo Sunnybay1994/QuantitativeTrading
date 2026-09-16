@@ -29,7 +29,8 @@ def test_admission_resumes_completed_candidates_with_frozen_references(tmp_path,
     refs = ['r']
     monkeypatch.setattr(steps, 'load_library', lambda path: [SimpleNamespace(id=x)
         for x in (['a','b'] if path == batch/'library' else refs)])
-    monkeypatch.setattr(inputs, 'admitted_controls', lambda *args: (keys, []))
+    control_ids = ['control_a', 'control_b']
+    monkeypatch.setattr(inputs, 'admitted_controls', lambda *args: (keys, list(control_ids)))
     seen_refs = []
 
     def panel(**kwargs):
@@ -40,6 +41,7 @@ def test_admission_resumes_completed_candidates_with_frozen_references(tmp_path,
     calls = []
 
     def incremental(*args):
+        assert args[2] == ['control_a', 'control_b']
         calls.append(1)
         if len(calls) == 2:
             raise RuntimeError('interruption on second candidate')
@@ -57,6 +59,7 @@ def test_admission_resumes_completed_candidates_with_frozen_references(tmp_path,
     assert [row['factor'] for row in saved['rows']] == ['a']
     assert (library/'auto'/'a.toml').exists()
     refs.append('new_reference')
+    control_ids.reverse()
     result = steps.admit(settings, run)
     assert len(calls) == 3  # First candidate is not evaluated again.
     assert seen_refs == [['r'], ['r']]
