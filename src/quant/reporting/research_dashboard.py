@@ -109,7 +109,7 @@ def main() -> None:
         def do_GET(self):
             route = urlparse(self.path)
             if route.path == '/api/status':
-                if time.monotonic() - cache['at'] > 15:
+                if route.query == 'refresh=1' or time.monotonic() - cache['at'] > 15:
                     payload = snapshot()
                     # Dates and non-finite experimental values must remain valid JSON.
                     body = json.dumps(payload, ensure_ascii=False, default=str)
