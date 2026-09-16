@@ -13,6 +13,8 @@ from quant.data.capacity_inputs import read_missing_adv
 
 def run(config: Path, output: Path, data_root: Path = Path('data')) -> dict:
     spec = tomllib.loads(config.read_text(encoding='utf-8'))
+    from quant.research.capacity_limits import validate_capitals
+    validate_capitals(spec['initial_capitals'])
     if spec['auto_trade'] is not False:
         raise ValueError('Diagnostic only')
     source = Path(spec['source'])

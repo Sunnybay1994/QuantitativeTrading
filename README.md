@@ -57,3 +57,5 @@ D:\Miniforge3\python.exe -m quant report dashboard --port 8768
 `auto_trade=false`。真实资金下单只由用户确认。
 
 研究反馈：`python -m quant research feedback` 汇总已完成电池的失败、家族、衰减与基准缺口；下一次持续调度自动更新，新周度候选使用该反馈。研究目标与准入门槛分开，详见 [研究协议](docs/RESEARCH_PROTOCOL.md)。
+
+策略曲线下方可切换年度 / 月度指标与对比基准，查看策略简述、原回测资金，并下载 HTML 期间报告。超额为累计收益差（百分点），夏普按日收益年化；缺少可比基准时保留空值。新资金回放最多使用 10 万、100 万两档，不改变三档成本测试。

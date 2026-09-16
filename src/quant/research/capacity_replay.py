@@ -21,6 +21,8 @@ from quant.research.run_multifactor_replay import model_target_plans
 def run(config: Path, output: Path, data_root: Path = Path('data')) -> None:
     payload = config.read_bytes()
     spec = tomllib.loads(payload.decode('utf-8'))
+    from quant.research.capacity_limits import validate_capitals
+    validate_capitals(spec['initial_capitals'])
     if spec['auto_trade'] is not False or spec['monthly_turnover_budget'] != .5:
         raise ValueError('Require frozen Q10 budget and paper-only research')
     source, predictions = Path(spec['source']), Path(spec['predictions'])

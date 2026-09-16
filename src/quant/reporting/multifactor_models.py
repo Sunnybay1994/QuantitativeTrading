@@ -266,6 +266,17 @@ def report_models(*, run: Path, output: Path, data_root: Path,
         rendered = render_model_report(method, rows=method_rows, assessment=assessment, model=model,
                                        coverage=coverage.to_dicts() if coverage is not None else None)
         rendered += render_burden([row for row in burden_rows if row['variant'].startswith(f'{method}_top')])
+        from quant.reporting.period_metrics import period_metrics, write_period_reports
+        from quant.reporting.strategy_description import describe
+        description = describe(output/'model.toml', method)
+        rendered += '\n策略简述：'+description+'\n\n年度 / 月度明细（各成本档分别统计）：\n\n'
+        for row in method_rows:
+            variant, multiplier = row['variant'], row['cost_multiplier']
+            relative = f"periods/{variant}_cost_{multiplier:g}"
+            periods = period_metrics(navs[variant, multiplier], baselines)
+            write_period_reports(folder/relative, periods, description)
+            rendered += f'- [{variant} · {multiplier:g}×]({relative}/report.md)\n'
+
         if constraint_bytes is not None:
             scope = tomllib.loads(constraint_bytes.decode('utf-8')).get('strategy_names', [])
             rendered += f'\n本次独立组合约束仅应用于{scope}；其余场景保持原规则。配置见上级目录constraints_config.toml。\n'

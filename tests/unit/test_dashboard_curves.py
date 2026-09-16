@@ -33,3 +33,14 @@ def test_nonfinite_nav_is_rejected(tmp_path):
     a=spec(tmp_path,'a',['2025-01-01','2025-01-02'],[1.,float('nan')])
     with pytest.raises(ValueError,match='非有限值'):
         read_curve(a)
+
+
+def test_period_report_keeps_cross_currency_comparison_unavailable(tmp_path):
+    from quant.reporting.dashboard_curves import period_report
+    a = spec(tmp_path, 'a', ['2025-12-31', '2026-01-02', '2026-01-05'], [1., .9, .99])
+    b = spec(tmp_path, 'b', ['2025-12-31', '2026-01-02', '2026-01-05'], [1., 1., 1.])
+    b.update(kind='benchmark', currency='USD')
+    result = period_report([a, b], start='2026-01-02')
+    assert result['rows'][0]['total_return'] == pytest.approx(-.01)
+    assert result['rows'][0]['benchmark_results'] == []
+    assert result['excluded']

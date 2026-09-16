@@ -108,8 +108,8 @@ def main() -> None:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             route = urlparse(self.path)
-            if route.path in ('/api/curves', '/api/curve'):
-                from quant.reporting.dashboard_curves import catalog, compare
+            if route.path in ('/api/curves', '/api/curve', '/api/periods', '/api/period-report'):
+                from quant.reporting.dashboard_curves import catalog, compare, period_report
                 try:
                     entries = catalog(ROOT)
                     if route.path == '/api/curves':
@@ -120,9 +120,15 @@ def main() -> None:
                         selected = [e for e in entries if e['id'] in ids]
                         if len(selected) != len(set(ids)):
                             raise ValueError('曲线不存在，请刷新列表')
-                        payload = compare(selected,query.get('start',[''])[0],query.get('end',[''])[0])
-                    body = json.dumps(payload,ensure_ascii=False,allow_nan=False).encode('utf-8')
-                    mime = 'application/json'
+                        reader = period_report if route.path in ('/api/periods', '/api/period-report') else compare
+                        payload = reader(selected,query.get('start',[''])[0],query.get('end',[''])[0])
+                    if route.path == '/api/period-report':
+                        from quant.reporting.period_metrics import render_html
+                        body = render_html(payload, query.get('benchmark', [''])[0]).encode('utf-8')
+                        mime = 'text/html'
+                    else:
+                        body = json.dumps(payload,ensure_ascii=False,allow_nan=False).encode('utf-8')
+                        mime = 'application/json'
                 except (ValueError, OSError, KeyError, pl.exceptions.PolarsError) as exc:
                     body = json.dumps({'error':str(exc)},ensure_ascii=False).encode('utf-8')
                     mime = 'application/json'
@@ -153,6 +159,8 @@ def main() -> None:
             self.send_response(200)
             self.send_header('Content-Type', mime+'; charset=utf-8')
             self.send_header('Cache-Control', 'no-store')
+            if route.path == '/api/period-report' and mime == 'text/html':
+                self.send_header('Content-Disposition', 'attachment; filename="strategy-period-report.html"')
             self.end_headers()
             self.wfile.write(body)
 

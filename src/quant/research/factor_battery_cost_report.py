@@ -190,6 +190,20 @@ def report_costs(*, run: Path, output: Path, benchmarks: Path | None = None,
     if comparisons:
         pl.from_dicts(comparisons, infer_schema_length=None).write_parquet(output/'benchmark_comparisons.parquet')
     (output/'summary.json').write_text(json.dumps(result, indent=2, default=str), encoding='utf-8')
+    from quant.reporting.period_metrics import period_metrics, write_period_reports
+    from quant.reporting.strategy_description import describe
+    settings = tomllib.loads((run/'battery.toml').read_text(encoding='utf-8'))
+    links = ['# 保存净值的年度与月度表现', '']
+    cache = {}
+    for row in rows:
+        variant, multiplier = row['variant'], row['cost_multiplier']
+        nav, _ = load_cost_history(run, variant, multiplier, settings['run']['as_of'])
+        baselines = return_indexes(config=return_benchmark_config, data_root=data_root,
+            start=row['active_start'], end=settings['run']['as_of'], cache=cache) if return_benchmark_config and row['active_start'] else {}
+        relative = f'periods/{variant}_cost_{multiplier:g}'
+        write_period_reports(output/relative, period_metrics(nav, baselines), describe(run/'config.toml', variant))
+        links.append(f'- [{variant} · {multiplier:g}×]({relative}/report.md)')
+    (output/'report.md').write_text('\n'.join(links)+'\n', encoding='utf-8')
     return result
 
 
