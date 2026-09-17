@@ -197,6 +197,8 @@ def report_costs(*, run: Path, output: Path, benchmarks: Path | None = None,
     cache = {}
     for row in rows:
         variant, multiplier = row['variant'], row['cost_multiplier']
+        if multiplier != 1.:
+            continue
         nav, _ = load_cost_history(run, variant, multiplier, settings['run']['as_of'])
         baselines = return_indexes(config=return_benchmark_config, data_root=data_root,
             start=row['active_start'], end=settings['run']['as_of'], cache=cache) if return_benchmark_config and row['active_start'] else {}

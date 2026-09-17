@@ -137,6 +137,9 @@ def factor_records_from_run(run: Path) -> list[dict]:
 
 def append_records(records: list[dict], registry: Path = DEFAULT_REGISTRY) -> int:
     """Upsert by report run and variant, preserving separate historical runs."""
+    if registry.resolve() == DEFAULT_REGISTRY.resolve():
+        from quant.reporting.registered_periods import attach
+        attach(records, ROOT)
     registry.parent.mkdir(parents=True, exist_ok=True)
     prior = pl.read_parquet(registry).to_dicts() if registry.exists() else []
     merged = {(r['run_path'], r['variant']): r for r in prior}

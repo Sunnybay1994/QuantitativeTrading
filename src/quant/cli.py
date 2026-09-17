@@ -27,6 +27,7 @@ _DELEGATE: dict[tuple[str, str], str] = {
     ("paper", "orders"): "quant.execution.manual_orders",
     ("report", "leaderboard"): "quant.reporting.leaderboard",
     ("report", "review"): "quant.reporting.strategy_review",
+    ("report", "periods"): "quant.reporting.registered_periods",
     ("report", "dashboard"): "quant.reporting.research_dashboard",
 }
 
@@ -93,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
     paper = sub.add_parser("paper", help="模拟盘与人工订单")
     paper.add_argument("command", choices=["q10", "orders"])
     report = sub.add_parser("report", help="机器报告")
-    report.add_argument("command", choices=["leaderboard", "dashboard", "review"])
+    report.add_argument("command", choices=["leaderboard", "dashboard", "review", "periods"])
 
     args, rest = parser.parse_known_args(argv)
     if args.group is None:

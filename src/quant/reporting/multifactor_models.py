@@ -269,9 +269,11 @@ def report_models(*, run: Path, output: Path, data_root: Path,
         from quant.reporting.period_metrics import period_metrics, write_period_reports
         from quant.reporting.strategy_description import describe
         description = describe(output/'model.toml', method)
-        rendered += '\n策略简述：'+description+'\n\n年度 / 月度明细（各成本档分别统计）：\n\n'
+        rendered += '\n策略简述：'+description+'\n\n年度 / 月度明细（1x成本）：\n\n'
         for row in method_rows:
             variant, multiplier = row['variant'], row['cost_multiplier']
+            if multiplier != 1.:
+                continue
             relative = f"periods/{variant}_cost_{multiplier:g}"
             periods = period_metrics(navs[variant, multiplier], baselines)
             write_period_reports(folder/relative, periods, description)
