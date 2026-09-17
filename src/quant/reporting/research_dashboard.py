@@ -19,6 +19,16 @@ def is_research_process(command: str) -> bool:
     return bool(re.search(r'-m\s+quant(?:\s+(?:research|factors|paper)\s|\.(?:research|factors|execution)\.)', command))
 
 
+def research_process_tree(processes: list[dict]) -> list[dict]:
+    """Include multiprocessing descendants whose command lacks the quant module."""
+    selected = {p['pid'] for p in processes if is_research_process(p.get('command') or '')}
+    while True:
+        expanded = selected | {p['pid'] for p in processes if p.get('parent_pid') in selected}
+        if expanded == selected:
+            return [p for p in processes if p['pid'] in selected]
+        selected = expanded
+
+
 def read(path: Path) -> dict:
     try:
         return json.loads(path.read_text(encoding='utf-8-sig'))
@@ -69,12 +79,12 @@ def snapshot(root: Path = ROOT) -> dict:
         runtime = tomllib.loads(runtime_path.read_text(encoding='utf-8')).get('runtime', {})
     processes, process_error = [], None
     try:
-        script = "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.CommandLine -match 'quant.*(research|factors|paper)' } | ForEach-Object { $p=Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue; [pscustomobject]@{pid=$_.ProcessId; command=$_.CommandLine; cpu_seconds=$p.CPU; memory_mb=[math]::Round($p.WorkingSet64/1MB)} } | ConvertTo-Json -Compress"
+        script = "$ErrorActionPreference='Stop'; Get-CimInstance Win32_Process -Filter \"Name='python.exe' OR Name='pythonw.exe'\" | ForEach-Object { $p=Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue; [pscustomobject]@{pid=$_.ProcessId; parent_pid=$_.ParentProcessId; command=$_.CommandLine; cpu_seconds=$p.CPU; memory_mb=[math]::Round($p.WorkingSet64/1MB)} } | ConvertTo-Json -Compress"
         text = subprocess.run(['powershell.exe', '-NoProfile', '-Command', script],
                               capture_output=True, text=True, timeout=10, check=True).stdout.strip()
         parsed = json.loads(text) if text else []
         processes = parsed if isinstance(parsed, list) else [parsed]
-        processes = [p for p in processes if is_research_process(p.get('command') or '')]
+        processes = research_process_tree(processes)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         process_error = type(exc).__name__
     gpu = '不可用'
