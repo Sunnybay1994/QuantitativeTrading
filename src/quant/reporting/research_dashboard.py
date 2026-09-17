@@ -72,6 +72,8 @@ def snapshot(root: Path = ROOT) -> dict:
     from quant.reporting.daily_attention import attention
     if results:
         results = enrich(results, root)
+        from quant.reporting.result_groups import cached_annotations
+        results = cached_annotations(results, root)
     runtime = {}
     import tomllib
     runtime_path = root/'configs/runtime.toml'
