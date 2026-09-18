@@ -36,6 +36,11 @@ def run_pipeline(*, config: Path, library: Path, as_of: dt.date, output: Path,
         'refresh_config': Path(refresh).read_text(encoding='utf-8') if refresh else None,
         'existing_runs': sorted(str(path.resolve()) for path in existing_runs or [])}
     saved_config = output/'pipeline_config.json'
+    # Existing frozen pipelines retain their original execution mode on resume.
+    deduplicate = (json.loads(saved_config.read_text(encoding='utf-8')).get('cost_deduplication', False)
+                   if resume and saved_config.is_file() else True)
+    if deduplicate:
+        configuration['cost_deduplication'] = True
     return_text = return_benchmark_config.read_text(encoding='utf-8') if return_benchmark_config is not None else None
     if return_text is not None:
         configuration['return_benchmarks'] = return_text
@@ -80,7 +85,7 @@ def run_pipeline(*, config: Path, library: Path, as_of: dt.date, output: Path,
     print('Replaying all factor portfolios at all cost levels', flush=True)
     batch = run_cost_batch(statistics=statistics, screen=screen, output=costs, data_root=data_root,
                           execution_snapshot=execution_snapshot, existing_runs=existing_runs or [], workers=workers,
-                          resume=resume)
+                          resume=resume, deduplicate=deduplicate)
     print('Writing scorecard and outstanding cost failures', flush=True)
     scorecard_output = output/'scorecard'
     number = 2
@@ -92,6 +97,8 @@ def run_pipeline(*, config: Path, library: Path, as_of: dt.date, output: Path,
                              benchmarks=benchmarks, redundancy=redundancy, data_root=data_root,
                              return_benchmark_config=return_benchmark_config)
     result = {'as_of': str(as_of), 'scorecard': scorecard, 'cost_failures': batch['failures'],
+              'reused_factors': batch.get('reused_factors', {}),
+              'saved_variant_cost_replays': batch.get('saved_variant_cost_replays', 0),
               'non_executable_rejections': batch.get('non_executable_rejections', {}),
               'pending_external_runs': batch['pending_external_runs'],
               'scorecard_path': str(scorecard_output/'factor_scorecard.parquet')}
@@ -103,6 +110,7 @@ def run_pipeline(*, config: Path, library: Path, as_of: dt.date, output: Path,
         f"评分表{scorecard['rows']}行，完整成本{scorecard['cost_complete_rows']}行，"
         f"通过准入{scorecard['admitted_rows']}行，待补准入证据{scorecard['admission_unresolved_rows']}行。\n\n"
         f"评分表：`{scorecard_output.name}/factor_scorecard.parquet`。\n\n"
+        + f"等价信号复用{len(batch.get('reused_factors', {}))}个因子，节省{batch.get('saved_variant_cost_replays', 0)}组版本×成本回放；独立统计检验保留。\n\n"
         + f"统计未通过且无可执行组合的终态拒绝：{len(batch.get('non_executable_rejections', {}))}项；原因保留于summary.json。\n\n"
         + ('成本回放失败明细：\n\n'+failures+'\n' if failures else '成本批处理无失败项。\n')
         + ('\n外部成本回放尚未完成：\n\n'+pending+'\n' if pending else ''),

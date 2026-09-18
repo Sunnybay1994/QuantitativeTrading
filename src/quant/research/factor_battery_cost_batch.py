@@ -9,6 +9,7 @@ from pathlib import Path
 import polars as pl
 
 from quant.research.factor_battery_costs import NoExecutableTopGroup, run_factor_costs
+from quant.research.factor_cost_reuse import prepare_plan, publish_alias, validate_published
 
 
 def terminal_cost_rejection(error: Exception, table: pl.DataFrame, factor: str) -> bool:
@@ -39,7 +40,8 @@ def existing_cost_factor(run: Path, *, settings: dict, snapshot: str) -> str:
 
 def run_cost_batch(*, statistics: Path, screen: Path, output: Path, data_root: Path,
                    execution_snapshot: str, existing_runs: list[Path], workers: int,
-                   only_statistical_pass: bool = False, resume: bool = False) -> dict:
+                   only_statistical_pass: bool = False, resume: bool = False,
+                   deduplicate: bool = False) -> dict:
     settings_bytes = (statistics/'battery.toml').read_bytes()
     settings = tomllib.loads(settings_bytes.decode('utf-8'))
     if workers < 1 or (screen/'battery.toml').read_bytes() != settings_bytes:
@@ -66,6 +68,10 @@ def run_cost_batch(*, statistics: Path, screen: Path, output: Path, data_root: P
         raise ValueError('Use a new batch directory for changed settings')
     if not config.exists():
         config.write_bytes(settings_bytes)
+    plan = prepare_plan(statistics, output, ordered, data_root, execution_snapshot) if deduplicate else None
+    if plan is None and (output/'reuse_plan.json').exists():
+        raise ValueError('Resume must preserve enabled replay deduplication')
+    aliases = plan['aliases'] if plan else {}
     completed, failures, pending_external = {}, {}, {}
     rejected = {}
     todo = []
@@ -75,6 +81,8 @@ def run_cost_batch(*, statistics: Path, screen: Path, output: Path, data_root: P
             if existing_cost_factor(folder, settings=settings, snapshot=execution_snapshot) != factor:
                 raise ValueError('Cached cost run belongs to another factor')
             completed[factor] = str(folder)
+            if (folder/'reuse.json').exists():
+                validate_published(folder, plan)
         elif factor in existing:
             pending_external[factor] = str(folder)
         elif folder.exists():
@@ -86,6 +94,8 @@ def run_cost_batch(*, statistics: Path, screen: Path, output: Path, data_root: P
                 failures[factor] = 'Partial prior output retained; use --resume with complete account checkpoints or a new directory'
         else:
             todo.append(factor)
+    deferred_aliases = {factor: aliases[factor] for factor in todo if factor in aliases}
+    todo = [factor for factor in todo if factor not in deferred_aliases]
     os.environ['POLARS_MAX_THREADS'] = '4'
     with ProcessPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(run_factor_costs, statistics=statistics, output=output/factor,
@@ -108,9 +118,26 @@ def run_cost_batch(*, statistics: Path, screen: Path, output: Path, data_root: P
     for factor, external_folder in list(pending_external.items()):
         if (Path(external_folder)/'summary.json').is_file():
             completed[factor] = pending_external.pop(factor)
+    for factor, representative in deferred_aliases.items():
+        if representative in completed:
+            try:
+                publish_alias(Path(completed[representative]), output/factor, factor=factor,
+                              representative=representative, statistics=statistics, plan=plan)
+                completed[factor] = str(output/factor)
+            except Exception as exc:
+                failures[factor] = f'Reuse publication failed: {exc}'
+        elif representative in rejected and terminal_cost_rejection(
+                NoExecutableTopGroup(rejected[representative]), table, factor):
+            rejected[factor] = f'Equivalent empty portfolio: {representative}'
+        else:
+            failures[factor] = f'Waiting for complete representative: {representative}'
+    reused = {factor: validate_published(Path(folder), plan) for factor, folder in completed.items()
+              if (Path(folder)/'reuse.json').exists()}
     result = {'factors': len(ordered), 'completed_runs': completed, 'failures': failures,
               'pending_external_runs': pending_external, 'statistically_rejected_factors': skipped,
-              'non_executable_rejections': rejected}
+              'non_executable_rejections': rejected,
+              'reused_factors': {factor: receipt['representative'] for factor, receipt in reused.items()},
+              'saved_variant_cost_replays': sum(r['saved_variant_cost_replays'] for r in reused.values())}
     (output/'batch_summary.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
     return result
 

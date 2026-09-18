@@ -150,7 +150,8 @@ def test_real_batch_reuses_external_result_without_a_local_replay(tmp_path):
     assert not (tmp_path/'costs'/'sample').exists()
 
 
-def test_resume_reuses_heavy_stages_continues_costs_and_preserves_old_scorecard(tmp_path, monkeypatch):
+@pytest.mark.parametrize('legacy', [False, True])
+def test_resume_reuses_heavy_stages_continues_costs_and_preserves_old_scorecard(tmp_path, monkeypatch, legacy):
     args = arguments(tmp_path)
     calls = []
     cost_calls = []
@@ -166,6 +167,7 @@ def test_resume_reuses_heavy_stages_continues_costs_and_preserves_old_scorecard(
         monkeypatch.setattr(pipeline, 'run_'+name, stage(name))
 
     def costs(**kwargs):
+        assert kwargs['deduplicate'] == (not legacy or not cost_calls)
         cost_calls.append(kwargs['resume'])
         kwargs['output'].mkdir(exist_ok=True)
         return {'completed_runs': {}, 'failures': {'a': 'interrupted'} if len(cost_calls) == 1 else {},
@@ -180,6 +182,11 @@ def test_resume_reuses_heavy_stages_continues_costs_and_preserves_old_scorecard(
     monkeypatch.setattr(pipeline, 'run_cost_batch', costs)
     monkeypatch.setattr(pipeline, 'run_scorecard', scorecard)
     first = pipeline.run_pipeline(**args)
+    if legacy:
+        path = args['output']/'pipeline_config.json'
+        config = json.loads(path.read_text())
+        config.pop('cost_deduplication')
+        path.write_text(json.dumps(config))
     second = pipeline.run_pipeline(**args, resume=True)
     assert first['cost_failures'] and not second['cost_failures']
     assert calls == ['statistics', 'screen', 'benchmarks', 'redundancy']
