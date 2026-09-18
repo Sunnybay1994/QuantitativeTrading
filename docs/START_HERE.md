@@ -1,6 +1,6 @@
 # 接手
 
-先读根目录 [AGENTS.md](../AGENTS.md)，再读 [OPERATIONS.md](OPERATIONS.md) 和路线图 §1.0.3 / §1.2。
+先读根目录 [AGENTS.md](../AGENTS.md)，再读 [OPERATIONS.md](OPERATIONS.md) 和路线图 §1.0.3 / §1.0.4 / §1.2。
 
 1. `git status` 与最近提交，保留他人未提交改动。
 2. `python -m quant status` 与计划任务；已有挖掘/日更在跑就不要再开一份。
