@@ -162,6 +162,9 @@ def run(*, accounts: list[dict], known_through: dt.date, output: Path,
         'sign': 'positive adverse: BUY +1, SELL -1; price-only, excludes all fees',
         'minute_source': minute_source, 'frequency': frequency,
         'etf_minute_source': etf_minute_source, 'etf_frequency': '1m', 'output': str(output),
-        'local_minute_recovery': recovery}
+        'local_minute_recovery': recovery,
+        'source_quality_warnings': [row for row in recovery
+            if row.get('whole_day_validation', {}).get('status') == 'failed'],
+        'recovery_scope': 'Only validated opening windows are used; whole-day warnings remain in minute_recovery.json.'}
     (output/'summary.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2, default=str, allow_nan=False), encoding='utf-8')
     return summary

@@ -29,7 +29,7 @@ def test_recovery_snapshot_and_future_boundary(tmp_path):
     orders, bars, reference = fixture(tmp_path)
     result, audit = recover(orders=orders, minutes=reference, known_through=DAY,
                            tdx_root=tmp_path/'tdx', output=tmp_path/'out')
-    assert result.equals(bars) and audit[0]['status'] == 'recovered'
+    assert result.equals(bars.head(30)) and audit[0]['status'] == 'recovered'
     assert len(list((tmp_path/'out/raw_tdx').glob('*.lc1'))) == 1
     again, _ = recover(orders=orders, minutes=reference, known_through=DAY,
                        tdx_root=tmp_path/'tdx', output=tmp_path/'out')
@@ -55,3 +55,31 @@ def test_missing_file_preserves_missing_amount(tmp_path):
     result, audit = recover(orders=orders, minutes=reference, known_through=DAY,
                            tdx_root=tmp_path/'missing', output=tmp_path/'out')
     assert result.equals(reference) and audit[0]['status'] == 'unavailable'
+
+
+def test_late_bad_turnover_does_not_certify_whole_day(tmp_path):
+    orders, _, reference = fixture(tmp_path)
+    path = tmp_path/'tdx/sh/minline/sh510300.lc1'
+    payload = bytearray(path.read_bytes())
+    struct.pack_into('<f', payload, 90*32+20, 2000.)
+    path.write_bytes(payload)
+    result, audit = recover(orders=orders, minutes=reference, known_through=DAY,
+                           tdx_root=tmp_path/'tdx', output=tmp_path/'out')
+    assert result.height == 30
+    assert audit[0]['whole_day_validation']['status'] == 'failed'
+    assert all(row['status'] == 'passed' for row in audit[0]['windows'])
+
+
+def test_bad_turnover_inside_window_keeps_larger_horizons_missing(tmp_path):
+    orders, _, reference = fixture(tmp_path)
+    path = tmp_path/'tdx/sh/minline/sh510300.lc1'
+    payload = bytearray(path.read_bytes())
+    struct.pack_into('<f', payload, 10*32+20, 2000.)
+    path.write_bytes(payload)
+    result, audit = recover(orders=orders, minutes=reference, known_through=DAY,
+                           tdx_root=tmp_path/'tdx', output=tmp_path/'out')
+    assert result.height == 5
+    assert [r['status'] for r in audit[0]['windows']] == ['passed', 'failed', 'failed']
+    from quant.execution.shadow_slippage import _vwap
+    assert _vwap(result, DAY, 5)[0] == 10.
+    assert _vwap(result, DAY, 15)[0] is None
