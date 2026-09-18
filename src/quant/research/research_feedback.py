@@ -5,6 +5,7 @@ import argparse
 from collections import Counter
 import json
 import math
+import statistics as descriptive
 from pathlib import Path
 import tomllib
 
@@ -50,6 +51,27 @@ def summarize(rows: list[dict]) -> dict:
             'benchmark_complete': len(rows)-len(missing)}
 
 
+def sample_summary(diagnostics: list[dict]) -> dict:
+    rows = [r for r in diagnostics if (r.get('sample_comparison') or {}).get('status') == 'complete']
+    groups = {
+        'reported_training': [r['train_direction_adjusted']['mean_ic'] for r in rows],
+        'search_keys_battery_scores': [r['sample_comparison']['search_keys_with_battery_scores'][
+            'battery_labels_battery_coverage']['mean_ic'] for r in rows],
+        'full_pool_search_dates': [r['sample_comparison']['all_battery_stocks_by_window'][
+            'search_dates']['mean_ic'] for r in rows],
+        'full_pool_after_search': [r['sample_comparison']['all_battery_stocks_by_window'][
+            'after_search']['mean_ic'] for r in rows],
+    }
+    distributions = {}
+    for key, raw in groups.items():
+        values = [v for v in raw if v is not None and math.isfinite(v)]
+        distributions[key] = {'available': len(values), 'median': descriptive.median(values) if values else None,
+                              'nonpositive': sum(v <= 0 for v in values)}
+    return {'candidate_records': len(rows), 'independent_factors': False,
+            'label_disagreement_rows': sum(r['sample_comparison']['label_difference_over_1e_12_rows'] for r in rows),
+            'mean_ic_distribution': distributions}
+
+
 def build(config: Path) -> dict:
     policy = tomllib.loads(config.read_text(encoding='utf-8'))
     batches, pending = [], []
@@ -69,6 +91,16 @@ def build(config: Path) -> dict:
         input_path = path.parent/'N2/input_summary.json'
         inputs = json.loads(input_path.read_text(encoding='utf-8')) if input_path.exists() else {}
         diagnostics = [candidate_diagnostic(row, trained.get(row['factor'], {}), inputs) for row in rows]
+        from quant.research.search_sample_diagnostics import batch_diagnostics
+        statistics = Path(scorecard).parent.parent/'statistics'
+        try:
+            samples = batch_diagnostics(path.parent, statistics)
+            for diagnostic in diagnostics:
+                if diagnostic.get('same_score_preprocessing'):
+                    diagnostic['sample_comparison'] = samples.get(diagnostic['factor'])
+        except (OSError, ValueError, pl.exceptions.PolarsError) as exc:
+            for diagnostic in diagnostics:
+                diagnostic['sample_comparison'] = {'status': 'unavailable', 'error': str(exc)}
         comparable = [row for row in diagnostics if row['full_minus_training_mean_ic'] is not None]
         batches.append({'run': str(path.parent), 'source': scorecard, **summarize(rows),
                         'families': {f: summarize([r for r in rows if r.get('family', 'unknown') == f])
@@ -79,6 +111,7 @@ def build(config: Path) -> dict:
                             'independent_validation': False},
                         'candidate_diagnostics': diagnostics})
     return {'policy': policy, 'completed_batteries': batches, 'pending_batteries': pending,
+            'sample_comparison_summary': sample_summary([r for b in batches for r in b['candidate_diagnostics']]),
             'interpretation': 'Data gaps and statistical failures are independent. Missing benchmark is not prediction failure. Objectives do not replace admission rules.'}
 
 
