@@ -7,6 +7,30 @@ import pytest
 from quant.research.mining_recovery_audit import check_nav_keys, scheduler_records
 
 
+def test_file_comparison_does_not_certify_resume_and_detects_change(tmp_path):
+    import hashlib
+    from quant.research.mining_recovery_audit import compare_files
+    p = tmp_path/'data.bin'
+    p.write_bytes(b'original')
+    baseline = tmp_path/'baseline.json'
+    baseline.write_text(json.dumps({'files': [{'path': 'data.bin',
+        'sha256': hashlib.sha256(p.read_bytes()).hexdigest(), 'mtime_ns': p.stat().st_mtime_ns}]}))
+    result = compare_files(tmp_path, baseline)
+    assert result['content_matches'] and result['mtime_matches']
+    assert result['automatic_resume_verified'] is False
+    p.write_bytes(b'changed')
+    assert not compare_files(tmp_path, baseline)['content_matches']
+    p.unlink()
+    assert compare_files(tmp_path, baseline)['files'][0]['status'] == 'unavailable'
+
+
+def test_empty_file_evidence_is_not_a_pass(tmp_path):
+    from quant.research.mining_recovery_audit import compare_files
+    baseline = tmp_path/'baseline.json'
+    baseline.write_text('{"files": []}')
+    assert not compare_files(tmp_path, baseline)['content_matches']
+
+
 def test_scheduler_evidence_retains_sources_and_ignores_non_status_logs(tmp_path):
     record = {'batch': 'batch_1', 'run': 'saved', 'state': 'resumable', 'seed': 1,
               'updated_at': '2026-09-18T10:00:00'}

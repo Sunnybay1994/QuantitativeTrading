@@ -1,9 +1,42 @@
 """Read-only audit of scheduler recovery history and completed cost NAV keys."""
 import argparse
 import json
+import hashlib
+import datetime as dt
 from pathlib import Path
 
 import polars as pl
+
+
+def compare_files(root: Path, baseline: Path) -> dict:
+    """Compare captured files; this does not establish that a worker resumed."""
+    saved = json.loads(baseline.read_text(encoding='utf-8'))
+    results, seen = [], set()
+    for row in saved['files']:
+        path = (root/row['path']).resolve()
+        if not path.is_relative_to(root.resolve()) or path in seen:
+            raise ValueError('Baseline contains an outside-root or duplicate path')
+        seen.add(path)
+        result = {'path': row['path']}
+        try:
+            before = path.stat()
+            with path.open('rb') as stream:
+                digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+            after = path.stat()
+            stable = (before.st_mtime_ns, before.st_size) == (after.st_mtime_ns, after.st_size)
+            result.update(status='compared' if stable else 'changed_during_read',
+                          content_matches=stable and digest == row['sha256'],
+                          mtime_matches=stable and after.st_mtime_ns == row['mtime_ns'],
+                          current_sha256=digest)
+        except OSError as exc:
+            result.update(status='unavailable', error=str(exc), content_matches=False, mtime_matches=False)
+        results.append(result)
+    return {'checked_at': dt.datetime.now().astimezone().isoformat(), 'baseline': str(baseline),
+            'scope': saved.get('verification_scope', 'Only files explicitly named in baseline'),
+            'checked_files': len(results), 'content_matches': bool(results) and all(r['content_matches'] for r in results),
+            'mtime_matches': bool(results) and all(r['mtime_matches'] for r in results),
+            'automatic_resume_verified': False, 'files': results,
+            'limitation': 'File equality alone cannot prove resume or exclude an identical-byte rewrite.'}
 
 
 def scheduler_records(folder: Path) -> list[dict]:
@@ -90,11 +123,16 @@ def main() -> None:
     parser.add_argument('--root', type=Path, default=Path('.'))
     parser.add_argument('--continuous', type=Path, default=Path('artifacts/research/continuous'))
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--file-baseline', type=Path, help='Compare existing before/after file evidence only')
     args = parser.parse_args()
-    result = audit(args.root.resolve(), args.root/args.continuous)
+    result = (compare_files(args.root.resolve(), args.file_baseline) if args.file_baseline
+              else audit(args.root.resolve(), args.root/args.continuous))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open('x', encoding='utf-8') as stream:
         json.dump(result, stream, indent=2)
+    if args.file_baseline:
+        print(json.dumps({k: result[k] for k in ('checked_files', 'content_matches', 'mtime_matches', 'automatic_resume_verified')}))
+        return
     print(json.dumps({'recovered_batches': result['recovered_batches'], 'batches': [
         {k: b[k] for k in ('batch', 'resume_events', 'context_matches', 'final_nav_keys_passed')}
         for b in result['batches']]}))
