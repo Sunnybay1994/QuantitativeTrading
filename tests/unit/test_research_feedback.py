@@ -2,7 +2,7 @@ import json
 
 import polars as pl
 
-from quant.research.research_feedback import build, summarize
+from quant.research.research_feedback import build, summarize, candidate_diagnostic
 
 
 def test_missing_benchmark_is_independent_of_prediction_failure():
@@ -14,6 +14,21 @@ def test_missing_benchmark_is_independent_of_prediction_failure():
     assert result['statistical_pass'] == 1
     assert result['statistical_failure_counts'] == {'hac_t': 1}
     assert result['benchmark_incomplete'] == [{'factor': 'a', 'variant': None}]
+
+
+def test_negative_search_direction_is_aligned_before_comparing_history():
+    candidate = {'direction': -1, 'fitness_preprocessing': 'battery_raw_mad3_scale1.4826_v1',
+                 'train': {'mean_ic': -.03, 'icir': -.4, 'newey_west_t': -3.}}
+    row = {'factor': 'a', 'variant': 'raw', 'direction': -1, 'mean_ic': .01, 'cost_1_sharpe': .5}
+    result = candidate_diagnostic(row, candidate, {'sample_symbols': 300})
+    assert result['train_direction_adjusted']['mean_ic'] == .03
+    assert abs(result['full_minus_training_mean_ic'] + .02) < 1e-12
+    assert result['validation'] is None
+    assert result['costs'] == {'cost_1_sharpe': .5}
+    assert result['training_sample']['sample_symbols'] == 300
+    assert candidate_diagnostic({**row, 'variant': 'size_industry_neutral'}, candidate, {})[
+        'full_minus_training_mean_ic'] is None
+    assert candidate_diagnostic(row, {}, {})['full_minus_training_mean_ic'] is None
 
 
 def test_partial_battery_is_not_a_zero_pass_result(tmp_path):

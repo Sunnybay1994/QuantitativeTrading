@@ -4,10 +4,38 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 import json
+import math
 from pathlib import Path
 import tomllib
 
 import polars as pl
+
+
+def candidate_diagnostic(row: dict, candidate: dict, inputs: dict) -> dict:
+    """Align signed search statistics; full history remains descriptive evidence."""
+    train = candidate.get('train')
+    direction = candidate.get('direction')
+    signed = {key: train.get(key)*direction if train and direction in (-1, 1)
+              and isinstance(train.get(key), (int, float)) and math.isfinite(train[key]) else None
+              for key in ('mean_ic', 'icir', 'newey_west_t')}
+    compatible = (row.get('variant') == 'raw'
+                  and candidate.get('fitness_preprocessing') == 'battery_raw_mad3_scale1.4826_v1'
+                  and direction in (-1, 1) and direction == row.get('direction'))
+    full_ic = row.get('mean_ic')
+    delta = (full_ic-signed['mean_ic'] if compatible and signed['mean_ic'] is not None
+             and isinstance(full_ic, (int, float)) and math.isfinite(full_ic) else None)
+    return {'factor': row['factor'], 'variant': row.get('variant'), 'train': train,
+            'search_direction': direction, 'train_direction_adjusted': signed,
+            'search_preprocessing': candidate.get('fitness_preprocessing'),
+            'training_sample': {key: inputs.get(key) for key in ('sample_symbols', 'sample_months',
+                'sample_first_signal', 'sample_last_signal', 'last_label_exit', 'training_end')},
+            'full_history': {key: row.get(key) for key in ('months', 'first_valid_month', 'last_valid_month',
+                'median_paired_stocks', 'mean_ic', 'icir', 'newey_west_t', 'decay', 'annual_ic',
+                'yearly_positive_fraction', 'long_short_sharpe', 'statistical_failures')},
+            'same_score_preprocessing': compatible, 'full_minus_training_mean_ic': delta,
+            'comparison_note': 'Different date windows and stock samples; difference is not causal attribution or independent validation.',
+            'costs': {key: value for key, value in row.items() if key.startswith('cost_')},
+            'validation': None, 'validation_note': 'Full-history battery is not independent validation'}
 
 
 def summarize(rows: list[dict]) -> dict:
@@ -37,16 +65,19 @@ def build(config: Path) -> dict:
         families = sorted({r.get('family', 'unknown') for r in rows})
         search_path = path.parent/'N2'/'search.json'
         search = json.loads(search_path.read_text(encoding='utf-8')) if search_path.exists() else {}
-        trained = {r.get('factor_id'): r.get('train') for r in search.get('candidates', [])}
+        trained = {r.get('factor_id'): r for r in search.get('candidates', [])}
+        input_path = path.parent/'N2/input_summary.json'
+        inputs = json.loads(input_path.read_text(encoding='utf-8')) if input_path.exists() else {}
+        diagnostics = [candidate_diagnostic(row, trained.get(row['factor'], {}), inputs) for row in rows]
+        comparable = [row for row in diagnostics if row['full_minus_training_mean_ic'] is not None]
         batches.append({'run': str(path.parent), 'source': scorecard, **summarize(rows),
                         'families': {f: summarize([r for r in rows if r.get('family', 'unknown') == f])
                                      for f in families},
-                        'candidate_diagnostics': [
-                            {'factor': r['factor'], 'variant': r.get('variant'),
-                             'train': trained.get(r['factor']),
-                             'full_history': {k: r.get(k) for k in ('mean_ic', 'icir', 'newey_west_t', 'decay')},
-                             'validation': None,
-                             'validation_note': 'Full-history battery is not independent validation'} for r in rows]})
+                        'search_alignment': {'comparable_raw_candidates': len(comparable),
+                            'full_ic_below_training': sum(r['full_minus_training_mean_ic'] < 0 for r in comparable),
+                            'full_directional_ic_nonpositive': sum(r['full_history']['mean_ic'] <= 0 for r in comparable),
+                            'independent_validation': False},
+                        'candidate_diagnostics': diagnostics})
     return {'policy': policy, 'completed_batteries': batches, 'pending_batteries': pending,
             'interpretation': 'Data gaps and statistical failures are independent. Missing benchmark is not prediction failure. Objectives do not replace admission rules.'}
 
