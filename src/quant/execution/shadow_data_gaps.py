@@ -2,13 +2,13 @@
 import polars as pl
 
 
-def summarize_gaps(detail: pl.DataFrame) -> tuple[pl.DataFrame, dict]:
+def summarize_gaps(detail: pl.DataFrame, *, etf_minute_source: str = 'yahoo') -> tuple[pl.DataFrame, dict]:
     missing = detail.filter(pl.col('status') == 'missing')
     keys = ['asset_type', 'symbol', 'execution_date', 'horizon', 'reason']
     gaps = missing.group_by(keys).agg(pl.len().alias('affected_observations'),
         pl.col('account').n_unique().alias('affected_accounts')).sort(keys)
-    # Current ETF input contract is Yahoo 1m; its normalized amount is always null.
-    unavailable = ((pl.col('asset_type') == 'etf')
+    # Yahoo lacks turnover; a TDX missing value is a different data-quality issue.
+    unavailable = (pl.lit(etf_minute_source == 'yahoo') & (pl.col('asset_type') == 'etf')
                    & (pl.col('reason') == 'missing_or_invalid_minute_turnover'))
     gaps = gaps.with_columns(
         pl.when(unavailable).then(pl.lit('source_amount_unavailable'))

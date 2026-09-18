@@ -59,3 +59,19 @@ def test_etf_uses_yahoo_and_preserves_missing_turnover(tmp_path, monkeypatch):
     assert not errors and minute.height == 6
     detail, _ = calculate(orders=args['orders'], daily=daily, minutes=minute, known_through=DAY)
     assert detail.filter(pl.col('horizon') != 'open')['slippage_bps'].null_count() == 3
+
+
+def test_explicit_tdx_etf_source_preserves_turnover(tmp_path, monkeypatch):
+    import polars as pl
+    from quant.execution.shadow_slippage import calculate
+    args = inputs()
+    args['orders'] = args['orders'].with_columns(pl.lit('etf').alias('asset_type'))
+    folder = tmp_path/'clean/bar_intraday/freq=1m/source=tdx/symbol=000001.SZ'
+    folder.mkdir(parents=True)
+    args['minutes'].write_parquet(folder/'data.parquet')
+    monkeypatch.setattr(reader, 'read_cross_asset_etfs', lambda *a: {'bars': args['daily']})
+    daily, minute, errors = reader.read_inputs(orders=args['orders'], known_through=DAY,
+        data_root=tmp_path, refresh_config=Path('fixture'), etf_minute_source='tdx')
+    assert not errors
+    detail, _ = calculate(orders=args['orders'], daily=daily, minutes=minute, known_through=DAY)
+    assert detail.filter(pl.col('status') == 'observed').height == 4

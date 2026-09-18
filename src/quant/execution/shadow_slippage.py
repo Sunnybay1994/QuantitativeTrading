@@ -129,7 +129,8 @@ def calculate(*, orders: pl.DataFrame, daily: pl.DataFrame, minutes: pl.DataFram
 
 def run(*, accounts: list[dict], known_through: dt.date, output: Path,
         data_root: Path = Path('data'), refresh_config: Path = Path('configs/data/refresh.toml'),
-        etf_snapshot: str | None = None, minute_source: str = 'baostock', frequency: str = '5m') -> dict:
+        etf_snapshot: str | None = None, minute_source: str = 'baostock', frequency: str = '5m',
+        etf_minute_source: str = 'yahoo') -> dict:
     now = dt.datetime.now(ZONE)
     if known_through > now.date() or (known_through == now.date() and now.hour < 15):
         raise ValueError('Shadow recording requires an actual completed close')
@@ -137,12 +138,12 @@ def run(*, accounts: list[dict], known_through: dt.date, output: Path,
     orders, errors = read_orders(accounts, known_through)
     daily, minutes, input_errors = read_inputs(orders=orders, known_through=known_through,
         data_root=data_root, refresh_config=refresh_config, etf_snapshot=etf_snapshot,
-        minute_source=minute_source, frequency=frequency)
+        minute_source=minute_source, frequency=frequency, etf_minute_source=etf_minute_source)
     detail, monthly = calculate(orders=orders, daily=daily, minutes=minutes, known_through=known_through)
     detail.write_csv(output/'shadow_execution.csv')
     monthly.write_csv(output/'slippage_monthly.csv')
     from quant.execution.shadow_data_gaps import summarize_gaps
-    gaps, gap_summary = summarize_gaps(detail)
+    gaps, gap_summary = summarize_gaps(detail, etf_minute_source=etf_minute_source)
     gaps.write_csv(output/'data_gaps.csv')
     valid = detail.filter(pl.col('status') == 'observed').height
     summary = {'known_through': str(known_through), 'accounts': accounts, 'orders': orders.height,
@@ -154,6 +155,6 @@ def run(*, accounts: list[dict], known_through: dt.date, output: Path,
         'price_basis': 'unadjusted signal reference, daily open, sum(amount CNY)/sum(volume shares)',
         'sign': 'positive adverse: BUY +1, SELL -1; price-only, excludes all fees',
         'minute_source': minute_source, 'frequency': frequency,
-        'etf_minute_source': 'yahoo', 'etf_frequency': '1m', 'output': str(output)}
+        'etf_minute_source': etf_minute_source, 'etf_frequency': '1m', 'output': str(output)}
     (output/'summary.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2, default=str, allow_nan=False), encoding='utf-8')
     return summary

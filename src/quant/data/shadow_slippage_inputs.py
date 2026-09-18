@@ -13,7 +13,9 @@ DAILY_SCHEMA = {'symbol': pl.String, 'trade_date': pl.Date, 'open': pl.Float64}
 
 def read_inputs(*, orders: pl.DataFrame, known_through: dt.date, data_root: Path,
         refresh_config: Path, etf_snapshot: str | None = None, minute_source: str = 'baostock',
-        frequency: str = '5m') -> tuple[pl.DataFrame, pl.DataFrame, list[dict]]:
+        frequency: str = '5m', etf_minute_source: str = 'yahoo') -> tuple[pl.DataFrame, pl.DataFrame, list[dict]]:
+    if etf_minute_source not in ('yahoo', 'tdx'):
+        raise ValueError('Unsupported ETF minute source')
     if frequency not in ('1m', '5m') or minute_source not in ('baostock', 'tdx', 'yahoo', 'futu'):
         raise ValueError('Unsupported explicit local minute source/frequency')
     ready = orders.filter(pl.col('execution_date') <= known_through)
@@ -42,7 +44,7 @@ def read_inputs(*, orders: pl.DataFrame, known_through: dt.date, data_root: Path
             errors.append({'symbol': symbol, 'input': 'minute', 'error': 'Unsupported symbol'})
             continue
         # ETF accumulation uses Yahoo 1m; BaoStock covers the stock universe only.
-        source, freq = ('yahoo', '1m') if asset == 'etf' else (minute_source, frequency)
+        source, freq = (etf_minute_source, '1m') if asset == 'etf' else (minute_source, frequency)
         path = data_root/'clean/bar_intraday'/f'freq={freq}'/f'source={source}'/f'symbol={symbol}'/'data.parquet'
         try:
             frame = pl.scan_parquet(path).filter(pl.col('trade_date').is_between(start, known_through)).collect()
