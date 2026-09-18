@@ -7,6 +7,7 @@ intraday = true
 
 [forward_tracking]
 enabled = true
+tdx_recovery_root = "D:/new_tdx/vipdoc"
 
 [model]
 selection = "artifacts/models/q2_sue_v2_frozen_forward_20260912_01"

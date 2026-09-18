@@ -101,7 +101,7 @@ def test_tracking_uses_isolated_accounts_and_surfaces_input_errors(env, monkeypa
     from quant.reporting import forward_dashboard
     args, *_ = env
     with args['config'].open('a', encoding='utf-8') as stream:
-        stream.write('\n[forward_tracking]\nenabled = true\n')
+        stream.write('\n[forward_tracking]\nenabled = true\ntdx_recovery_root = "local_tdx"\n')
     shadow = Mock(return_value={'errors': errors, 'requires_review': bool(errors)})
     view = Mock(return_value={'status': 'complete'})
     monkeypatch.setattr(shadow_slippage, 'run', shadow)
@@ -111,6 +111,7 @@ def test_tracking_uses_isolated_accounts_and_surfaces_input_errors(env, monkeypa
     assert len(specs) == 8
     assert all(args['account_root'] in Path(spec['root']).parents for spec in specs)
     assert shadow.call_args.kwargs['known_through'] == dt.date(2026, 9, 11)
+    assert shadow.call_args.kwargs['tdx_recovery_root'] == Path('local_tdx')
     assert view.call_args.kwargs['output'] == args['output']/'forward_tracking'
     assert result['stages']['forward_tracking']['status'] == ('incomplete' if errors else 'complete')
 

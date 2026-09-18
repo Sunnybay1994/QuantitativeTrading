@@ -261,7 +261,9 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
                 tracking_settings.pop('q10', None)
             folder = output/'forward_tracking'
             slip = shadow(accounts=account_specs(tracking_settings), known_through=end,
-                output=folder, data_root=data_root, refresh_config=Path(settings['refresh_config']))
+                output=folder, data_root=data_root, refresh_config=Path(settings['refresh_config']),
+                tdx_recovery_root=Path(settings['forward_tracking']['tdx_recovery_root'])
+                if settings['forward_tracking'].get('tdx_recovery_root') else None)
             view = dashboard(settings=tracking_settings, as_of=end, output=folder)
             return {'dashboard': view, 'shadow': slip, 'output': str(folder),
                 'requires_review': slip['requires_review'] or view['status'] != 'complete'}

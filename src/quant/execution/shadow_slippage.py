@@ -130,7 +130,7 @@ def calculate(*, orders: pl.DataFrame, daily: pl.DataFrame, minutes: pl.DataFram
 def run(*, accounts: list[dict], known_through: dt.date, output: Path,
         data_root: Path = Path('data'), refresh_config: Path = Path('configs/data/refresh.toml'),
         etf_snapshot: str | None = None, minute_source: str = 'baostock', frequency: str = '5m',
-        etf_minute_source: str = 'yahoo') -> dict:
+        etf_minute_source: str = 'yahoo', tdx_recovery_root: Path | None = None) -> dict:
     now = dt.datetime.now(ZONE)
     if known_through > now.date() or (known_through == now.date() and now.hour < 15):
         raise ValueError('Shadow recording requires an actual completed close')
@@ -139,6 +139,12 @@ def run(*, accounts: list[dict], known_through: dt.date, output: Path,
     daily, minutes, input_errors = read_inputs(orders=orders, known_through=known_through,
         data_root=data_root, refresh_config=refresh_config, etf_snapshot=etf_snapshot,
         minute_source=minute_source, frequency=frequency, etf_minute_source=etf_minute_source)
+    recovery = []
+    if tdx_recovery_root is not None and etf_minute_source == 'yahoo':
+        from quant.data.shadow_tdx_recovery import recover
+        minutes, recovery = recover(orders=orders, minutes=minutes, known_through=known_through,
+            tdx_root=tdx_recovery_root, output=output)
+        (output/'minute_recovery.json').write_text(json.dumps(recovery, indent=2), encoding='utf-8')
     detail, monthly = calculate(orders=orders, daily=daily, minutes=minutes, known_through=known_through)
     detail.write_csv(output/'shadow_execution.csv')
     monthly.write_csv(output/'slippage_monthly.csv')
@@ -155,6 +161,7 @@ def run(*, accounts: list[dict], known_through: dt.date, output: Path,
         'price_basis': 'unadjusted signal reference, daily open, sum(amount CNY)/sum(volume shares)',
         'sign': 'positive adverse: BUY +1, SELL -1; price-only, excludes all fees',
         'minute_source': minute_source, 'frequency': frequency,
-        'etf_minute_source': etf_minute_source, 'etf_frequency': '1m', 'output': str(output)}
+        'etf_minute_source': etf_minute_source, 'etf_frequency': '1m', 'output': str(output),
+        'local_minute_recovery': recovery}
     (output/'summary.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2, default=str, allow_nan=False), encoding='utf-8')
     return summary
