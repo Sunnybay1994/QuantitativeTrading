@@ -1,5 +1,7 @@
 import datetime as dt
 import json
+import tomllib
+from pathlib import Path
 
 from quant.research import continuous_mining as mining
 
@@ -12,6 +14,26 @@ def config(tmp_path):
 
 def success():
     return {'steps': {step: {'ok': True} for step in ('N1', 'N2', 'N3', 'N4', 'N5')}}
+
+
+def test_registered_search_is_frozen_for_exactly_one_new_batch(tmp_path, monkeypatch):
+    path, root = config(tmp_path), tmp_path/'continuous'
+    recipe = tmp_path/'experiment.toml'
+    recipe.write_text('version="cross_stock_v1"\nmaximum_batches=1\n')
+    path.write_text(f'one_shot_search_config={json.dumps(str(recipe))}\n'+path.read_text())
+    observed = []
+    def execute(frozen, **kwargs):
+        saved = tomllib.loads(frozen.read_text())
+        observed.append(saved.get('cross_stock_config'))
+        if saved.get('cross_stock_config'):
+            assert Path(saved['cross_stock_config']).read_text() == recipe.read_text()
+        result = success()
+        (kwargs['run_path']/'summary.json').write_text(json.dumps(result))
+        return result
+    monkeypatch.setattr(mining.nightly, 'execute', execute)
+    mining.dispatch(path, root)
+    mining.dispatch(path, root)
+    assert observed[0] and observed[1] is None
 
 
 def test_weekly_candidates_run_before_local_research_without_blocking_on_failure(tmp_path, monkeypatch):

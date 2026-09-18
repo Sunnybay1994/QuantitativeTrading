@@ -128,6 +128,27 @@ def search(panel: pl.DataFrame, labels: pl.DataFrame, mapping: dict[str, str], s
     cached=json.loads(checkpoint.read_text(encoding='utf-8')) if checkpoint.exists() else None
     cache_path=output/'fitness_cache.json'
     records=cached['records'] if cached else (json.loads(cache_path.read_text(encoding='utf-8')) if cache_path.exists() else [])
+    cross_stock = settings.get('cross_stock')
+    assignments = {}
+    objective = cross_stock['version'] if cross_stock else 'pooled_mean_ic_v1'
+    if any(row.get('search_objective', 'pooled_mean_ic_v1') != objective for row in records):
+        raise ValueError('GP search objective changed; use a new run directory')
+    if cross_stock:
+        from quant.research.cross_stock_search import stock_groups
+        assignments = stock_groups(labels['symbol'].unique().to_list(), groups=cross_stock['sample_groups'],
+            per_group=cross_stock['symbols_per_group'], seed=cross_stock['sample_seed'])
+        contract = json.loads(json.dumps({'config': cross_stock, 'assignments': assignments,
+            'seed': settings['seed'], 'mapping': mapping}, default=str))
+        contract_path = output/'search_contract.json'
+        if contract_path.exists():
+            if json.loads(contract_path.read_text(encoding='utf-8')) != contract:
+                raise ValueError('Frozen cross-stock search contract changed')
+        elif cached or records:
+            raise ValueError('Cross-stock checkpoint lacks its frozen search contract')
+        else:
+            temporary = contract_path.with_suffix('.tmp')
+            temporary.write_text(json.dumps(contract, indent=2), encoding='utf-8')
+            temporary.replace(contract_path)
     if any(row.get('fitness_preprocessing') != _FITNESS_PREPROCESSING for row in records):
         raise ValueError('GP fitness preprocessing changed; preserve this checkpoint and use a new run directory')
     cache={r['terminal_expression']:r for r in records}
@@ -138,7 +159,7 @@ def search(panel: pl.DataFrame, labels: pl.DataFrame, mapping: dict[str, str], s
             return
         row = {'expression': expand_expression(expression, mapping), 'terminal_expression': expression,
                'complexity': len(ind), 'depth': ind.height, 'fitness': -1e9,
-               'fitness_preprocessing': _FITNESS_PREPROCESSING}
+               'fitness_preprocessing': _FITNESS_PREPROCESSING, 'search_objective': objective}
         try:
             if ind.height > settings['max_depth']:
                 raise ValueError('depth exceeded')
@@ -153,8 +174,13 @@ def search(panel: pl.DataFrame, labels: pl.DataFrame, mapping: dict[str, str], s
             if stats['months'] < 48 or stats['mean_ic'] is None:
                 raise ValueError('fewer than 48 valid training months')
             corr = maximum_correlation(scored, 'candidate', controls)
-            row.update(direction=1 if stats['mean_ic'] >= 0 else -1, train=stats, maximum_rank_correlation=corr,
-                       fitness=abs(stats['mean_ic']) - settings['complexity_penalty']*len(ind) - .5*corr)
+            measured = dict(direction=1 if stats['mean_ic'] >= 0 else -1, train=stats, maximum_rank_correlation=corr,
+                            fitness=abs(stats['mean_ic']) - settings['complexity_penalty']*len(ind) - .5*corr)
+            if cross_stock:
+                from quant.research.cross_stock_search import group_fitness
+                measured.update(group_fitness(scored, assignments, config=cross_stock, complexity=len(ind),
+                                        maximum_correlation=corr))
+            row.update(measured)
         except BaseException as exc:
             # Rust's PanicException inherits BaseException; preserve the offending
             # expression as an invalid trial without swallowing interrupts/exits.
@@ -264,13 +290,15 @@ def run(settings: dict, output: Path) -> dict:
         temporary.write_text(json.dumps(mapping,indent=2),encoding='utf-8')
         temporary.replace(mapping_path)
     end = settings['training_end']
+    cross_stock = json.loads(json.dumps(settings['cross_stock'], default=str)) if settings.get('cross_stock') else None
     sample,monthly_sample=output/'daily_sample.parquet',output/'monthly_sample.parquet'
     if sample.exists() and monthly_sample.exists():
         panel,labels=pl.read_parquet(sample),pl.read_parquet(monthly_sample)
     else:
         panel, labels = read_training_sample(data_root=Path(settings['data_root']),
             refresh_config=Path(settings['refresh_config']), statistics=[Path(p) for p in settings['statistics']],
-            factors=[d.id for d in definitions], end=end, symbols=300, months=72)
+            factors=[d.id for d in definitions], end=end, symbols=300, months=72,
+            **({'cross_stock': cross_stock} if cross_stock else {}))
         temporary=sample.with_suffix('.partial.parquet')
         panel.write_parquet(temporary)
         temporary.replace(sample)
@@ -279,6 +307,11 @@ def run(settings: dict, output: Path) -> dict:
         temporary.replace(monthly_sample)
     search_day=dt.date.fromisoformat(output.parent.name)
     search_settings=dict(settings['genetic'])
+    if cross_stock:
+        for field in ('population_size', 'generations', 'max_depth', 'complexity_penalty'):
+            if search_settings[field] != cross_stock[field]:
+                raise ValueError(f'Cross-stock preregistration differs: {field}')
+        search_settings['cross_stock'] = cross_stock
     search_settings['seed']+=search_day.toordinal()
     keywords={'price_volume':('alpha','price','liquidity','momentum'),
               'financial':('financial','pit','value','quality'),
@@ -302,6 +335,12 @@ def run(settings: dict, output: Path) -> dict:
                    'sample_last_signal':str(labels['trade_date'].max()),
                    'last_label_exit':str(labels['label_exit_date'].max()),'training_end':str(end),
                    'finite_terminal_months':coverage}
+    if cross_stock:
+        from quant.research.cross_stock_search import stock_groups
+        input_summary['cross_stock'] = cross_stock
+        input_summary['stock_groups'] = stock_groups(labels['symbol'].unique().to_list(),
+            groups=cross_stock['sample_groups'], per_group=cross_stock['symbols_per_group'],
+            seed=cross_stock['sample_seed'])
     temporary = summary_path.with_suffix('.tmp')
     temporary.write_text(json.dumps(input_summary,indent=2),encoding='utf-8')
     temporary.replace(summary_path)

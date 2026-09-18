@@ -182,7 +182,8 @@ def test_admitted_controls_keep_neutral_variant_and_direction(tmp_path: Path):
     assert frame[names[0]].to_list()==[-5.,7.]
 
 
-def test_gp_resume_reuses_fitness_without_recalculating(tmp_path: Path,monkeypatch):
+@pytest.mark.parametrize('cross_stock', [False, True, 'insufficient'])
+def test_gp_resume_reuses_fitness_without_recalculating(tmp_path: Path,monkeypatch, cross_stock):
     from quant.research import nightly_gp
     pset=gp.PrimitiveSet('DAILY',0)
     pset.addTerminal('gp_x')
@@ -193,14 +194,24 @@ def test_gp_resume_reuses_fitness_without_recalculating(tmp_path: Path,monkeypat
     rows=[]
     for year in range(2010,2014):
         for month in range(1,13):
-            for i in range(100):
+            for i in range(300 if cross_stock else 100):
                 x,y=rng.normal(size=2)
                 rows.append({'symbol':str(i),'trade_date':dt.date(year,month,15),
                              'gp_x':float(x),'gp_y':float(y),'label':float(x+y)})
     frame=pl.from_dicts(rows)
     settings={'seed':7,'population_size':10,'generations':1,'max_depth':5,'complexity_penalty':.0005}
+    if cross_stock:
+        settings['cross_stock'] = {'version': 'fixture_cross_stock', 'sample_groups': 3,
+            'symbols_per_group': 100, 'sample_seed': 42, 'minimum_symbols_per_month': 100,
+            'minimum_paired_coverage': .8, 'minimum_valid_months_per_group': 49 if cross_stock == 'insufficient' else 48,
+            'complexity_penalty': .0005}
     mapping={'gp_x':'adj_close','gp_y':'volume'}
     winners=nightly_gp.search(frame.drop('label'),frame.select('symbol','trade_date','label'),mapping,settings,tmp_path,family='fixture')
+    if cross_stock == 'insufficient':
+        assert not winners
+        records = json.loads((tmp_path/'search_checkpoint.json').read_text())['records']
+        assert records and all(row['fitness'] == -1e9 and row.get('error') for row in records)
+        return
     assert winners
     def forbidden(*args,**kwargs):
         raise AssertionError('completed fitness must come from checkpoint')
@@ -215,6 +226,11 @@ def test_gp_resume_reuses_fitness_without_recalculating(tmp_path: Path,monkeypat
     checkpoint.write_text(json.dumps(saved))
     again=nightly_gp.search(frame.drop('label'),frame.select('symbol','trade_date','label'),mapping,settings,tmp_path,family='fixture')
     assert again==winners
+    if cross_stock:
+        settings['cross_stock']['sample_seed'] += 1
+        with pytest.raises(ValueError, match='contract changed'):
+            nightly_gp.search(frame.drop('label'), frame.select('symbol','trade_date','label'),
+                              mapping, settings, tmp_path, family='fixture')
 
 
 def test_gp_training_scores_match_battery_and_reject_tiny_signal():

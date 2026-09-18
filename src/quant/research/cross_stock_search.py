@@ -1,20 +1,10 @@
 """Preregistered stock-group sampling and worst-group training objective."""
-import hashlib
 import math
 
 import polars as pl
 
 from quant.research.factor_battery_statistics import monthly_ic_summary, rank_ic_by_date
-
-
-def stock_groups(symbols: list[str], *, groups: int, per_group: int, seed: int) -> dict[str, int]:
-    if groups < 2 or per_group < 100:
-        raise ValueError('Cross-stock search requires multiple groups with at least 100 stocks each')
-    ordered = sorted(set(symbols), key=lambda symbol: (
-        hashlib.sha256(f'{seed}:{symbol}'.encode('utf-8')).hexdigest(), symbol))
-    if len(ordered) < groups*per_group:
-        raise ValueError('Insufficient distinct stocks for disjoint training groups')
-    return {symbol: index//per_group for index, symbol in enumerate(ordered[:groups*per_group])}
+from quant.data.cross_stock_sampling import stock_groups as stock_groups
 
 
 def group_fitness(scored: pl.DataFrame, assignments: dict[str, int], *, config: dict,

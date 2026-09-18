@@ -26,6 +26,8 @@ def candidate_diagnostic(row: dict, candidate: dict, inputs: dict) -> dict:
     delta = (full_ic-signed['mean_ic'] if compatible and signed['mean_ic'] is not None
              and isinstance(full_ic, (int, float)) and math.isfinite(full_ic) else None)
     return {'factor': row['factor'], 'variant': row.get('variant'), 'train': train,
+            'search_objective': candidate.get('search_objective', 'pooled_mean_ic_v1'),
+            'training_group_statistics': candidate.get('group_statistics'),
             'search_direction': direction, 'train_direction_adjusted': signed,
             'search_preprocessing': candidate.get('fitness_preprocessing'),
             'training_sample': {key: inputs.get(key) for key in ('sample_symbols', 'sample_months',

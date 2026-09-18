@@ -44,6 +44,9 @@ def resolve_settings(settings: dict, run: Path) -> dict:
         day=dt.date.fromisoformat(run.name)
         result['as_of']=latest_month_end(Path(settings['data_root']),day)
         result['training_end']=dt.date(day.year-1,12,31)
+        if settings.get('cross_stock_config'):
+            result['cross_stock'] = tomllib.loads(Path(settings['cross_stock_config']).read_text(encoding='utf-8'))
+            result['training_end'] = result['cross_stock']['training_end']
         choices=[]
         for completed in Path(settings['output_root']).glob('monthly/*/summary.json'):
             row=json.loads(completed.read_text(encoding='utf-8'))

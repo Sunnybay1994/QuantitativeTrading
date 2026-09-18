@@ -63,7 +63,7 @@ def admitted_controls(statistics: Path, scorecard: pl.DataFrame) -> tuple[pl.Dat
 
 def read_training_sample(*, data_root: Path, refresh_config: Path, statistics: list[Path],
                          factors: list[str], end: dt.date, symbols: int = 300,
-                         months: int = 72) -> tuple[pl.DataFrame, pl.DataFrame]:
+                         months: int = 72, cross_stock: dict | None = None) -> tuple[pl.DataFrame, pl.DataFrame]:
     # Sample by stable symbol hash, including historical delistings, never by returns.
     start = dt.date(end.year - 7, 1, 1)
     labels = read_genetic_panel(data_root=data_root, statistics=statistics, factors=[],
@@ -73,6 +73,11 @@ def read_training_sample(*, data_root: Path, refresh_config: Path, statistics: l
     labels = labels.filter(pl.col('trade_date').is_in(dates.implode()))
     cohort = labels.select('symbol').unique().with_columns(
         pl.col('symbol').hash(seed=20260913).alias('sample_order')).sort('sample_order').head(symbols)['symbol']
+    if cross_stock:
+        from quant.data.cross_stock_sampling import stock_groups
+        assignments = stock_groups(labels['symbol'].unique().to_list(), groups=cross_stock['sample_groups'],
+            per_group=cross_stock['symbols_per_group'], seed=cross_stock['sample_seed'])
+        cohort = pl.Series('symbol', list(assignments))
     labels = labels.filter(pl.col('symbol').is_in(cohort.implode()))
     sessions = available_sessions(data_root, end)
     # Five nested sixty-session operations require 300 preceding sessions.
