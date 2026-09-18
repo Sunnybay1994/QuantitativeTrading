@@ -1,0 +1,27 @@
+# Freeze before execution. This is a battery-level search experiment, not an admission rule.
+version = "cross_stock_min_ic_v1"
+registered_on = 2026-09-18
+objective = "Reduce selection specific to a single fixed stock sample"
+training_end = 2025-12-31
+training_months = 72
+sample_groups = 3
+symbols_per_group = 300
+sample_seed = 20260913
+sample_hash = "sha256(seed:symbol), ascending digest then symbol, contiguous groups"
+minimum_symbols_per_month = 100
+minimum_paired_coverage = 0.8
+minimum_valid_months_per_group = 48
+direction = "sign of equal-group mean IC, zero means positive"
+fitness = "minimum(direction * group_mean_ic) - complexity_penalty * nodes - 0.5 * max_control_rank_correlation"
+complexity_penalty = 0.0005
+maximum_batches = 1
+population_size = 200
+generations = 30
+max_depth = 5
+comparison = "Descriptive comparison with saved original runs; changed samples prevent causal attribution"
+stop = "Finish one registered battery; no additional seed or parameter grid to rescue a failed result"
+admission = "Existing full-history battery, all cost tiers and incremental checks unchanged"
+forward_start_not_before = 2026-09-21
+forward_rule = "Freeze candidate IDs and directions before forward observations; no retuning or reselection on forward outcomes"
+validation_note = "All three stock groups train the objective; historical outcomes through 2026-08 are already observed and are not independent validation"
+activation = "Explicit new run only; never reinterpret existing checkpoints"
