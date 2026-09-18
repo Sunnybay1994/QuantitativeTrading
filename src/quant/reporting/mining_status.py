@@ -41,12 +41,37 @@ def progress_snapshot(run: Path) -> dict:
                 candidates.append((path.stat().st_mtime, name, value))
         except (OSError, ValueError):
             pass
+    path = run/'N3/process.log'
+    try:
+        with path.open('rb') as stream:
+            stream.seek(0, 2)
+            offset = max(0, stream.tell()-65536)
+            stream.seek(offset)
+            lines = stream.read().decode('utf-8', errors='replace').splitlines()
+        # An offset may split a record. Never parse the first partial line.
+        for line in reversed(lines[1:] if offset else lines):
+            try:
+                row = json.loads(line)
+                if (isinstance(row, dict) and type(row.get('year')) is int
+                        and 2000 <= row['year'] <= 2100
+                        and type(row.get('factors_written')) is int and row['factors_written'] > 0
+                        and type(row.get('stock_days')) is int and row['stock_days'] > 0):
+                    candidates.append((path.stat().st_mtime, 'N3/process.log',
+                                       {'compute_year': row['year'], 'factors_written': row['factors_written'],
+                                        'stock_days': row['stock_days']}))
+                    break
+            except (ValueError, TypeError):
+                continue
+    except OSError:
+        pass
     if not candidates:
         return {}
     stamp, name, value = max(candidates, key=lambda row: row[0])
     return {'saved_at': dt.datetime.fromtimestamp(stamp, ZONE).isoformat(timespec='seconds'),
             'source': name, 'generation': value.get('generation'),
-            'unique_evaluations': value.get('unique_evaluations')}
+            'unique_evaluations': value.get('unique_evaluations'),
+            'compute_year': value.get('compute_year'), 'factors_written': value.get('factors_written'),
+            'stock_days': value.get('stock_days')}
 
 
 def describe(status: dict, scheduler: dict, processes: list[dict], process_error,

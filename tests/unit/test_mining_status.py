@@ -4,6 +4,26 @@ import pytest
 
 from quant.reporting.mining_status import ZONE, describe
 
+
+def test_progress_reads_latest_complete_compute_record(tmp_path):
+    from quant.reporting.mining_status import progress_snapshot
+    (tmp_path/'N3').mkdir()
+    (tmp_path/'N3/process.log').write_text(
+        '{"year": 2019, "factors_written": 20, "stock_days": 800000}\n'
+        '{"year": 2020, "factors_written": 20, "stock_days": 900000}\n'
+        '{"year":2021', encoding='utf-8')
+    result = progress_snapshot(tmp_path)
+    assert result['compute_year'] == 2020 and result['factors_written'] == 20
+    assert result['source'] == 'N3/process.log'
+
+
+def test_log_noise_does_not_claim_computation_progress(tmp_path):
+    from quant.reporting.mining_status import progress_snapshot
+    (tmp_path/'N3').mkdir()
+    (tmp_path/'N3/process.log').write_text(
+        '{"year": 2020, "factors_written": 0, "stock_days": 100}\n[]\nwarning\n', encoding='utf-8')
+    assert progress_snapshot(tmp_path) == {}
+
 NOW = dt.datetime(2026, 9, 18, 12, tzinfo=ZONE)
 
 
