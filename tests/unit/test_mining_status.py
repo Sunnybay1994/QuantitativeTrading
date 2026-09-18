@@ -27,6 +27,31 @@ def test_log_noise_does_not_claim_computation_progress(tmp_path):
 NOW = dt.datetime(2026, 9, 18, 12, tzinfo=ZONE)
 
 
+def test_statistics_progress_supersedes_computation_and_ignores_partial_line(tmp_path):
+    from quant.reporting.mining_status import progress_snapshot
+    (tmp_path/'N3').mkdir()
+    (tmp_path/'N3/process.log').write_text(
+        '{"year":2026,"factors_written":20,"stock_days":800000}\n'
+        '{"factor":"candidate_a","completed":2,"seconds":60}\n'
+        '{"factor":"unfinished"', encoding='utf-8')
+    result = progress_snapshot(tmp_path)
+    assert result['statistics_completed'] == 2
+    assert result['statistics_factor'] == 'candidate_a'
+    assert result['compute_year'] is None
+
+
+@pytest.mark.parametrize('record', [
+    '{"factor":"a","completed":true}',
+    '{"factor":"","completed":2}',
+    '{"factor":"a","completed":0}',
+])
+def test_invalid_statistics_record_is_not_progress(tmp_path, record):
+    from quant.reporting.mining_status import progress_snapshot
+    (tmp_path/'N3').mkdir()
+    (tmp_path/'N3/process.log').write_text(record+'\n', encoding='utf-8')
+    assert progress_snapshot(tmp_path) == {}
+
+
 def view(state='running', processes=None, scheduler=None, error=None, **status):
     return describe({'state': state, 'updated_at': '2026-09-18T11:00:00', **status},
                     scheduler or {}, processes or [], error,

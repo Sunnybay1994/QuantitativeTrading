@@ -52,6 +52,13 @@ def progress_snapshot(run: Path) -> dict:
         for line in reversed(lines[1:] if offset else lines):
             try:
                 row = json.loads(line)
+                if (isinstance(row, dict) and isinstance(row.get('factor'), str)
+                        and row['factor'].strip() and type(row.get('completed')) is int
+                        and row['completed'] > 0):
+                    candidates.append((path.stat().st_mtime, 'N3/process.log',
+                                       {'statistics_completed': row['completed'],
+                                        'statistics_factor': row['factor']}))
+                    break
                 if (isinstance(row, dict) and type(row.get('year')) is int
                         and 2000 <= row['year'] <= 2100
                         and type(row.get('factors_written')) is int and row['factors_written'] > 0
@@ -71,7 +78,9 @@ def progress_snapshot(run: Path) -> dict:
             'source': name, 'generation': value.get('generation'),
             'unique_evaluations': value.get('unique_evaluations'),
             'compute_year': value.get('compute_year'), 'factors_written': value.get('factors_written'),
-            'stock_days': value.get('stock_days')}
+            'stock_days': value.get('stock_days'),
+            'statistics_completed': value.get('statistics_completed'),
+            'statistics_factor': value.get('statistics_factor')}
 
 
 def describe(status: dict, scheduler: dict, processes: list[dict], process_error,
