@@ -52,6 +52,18 @@ def progress_snapshot(run: Path) -> dict:
         for line in reversed(lines[1:] if offset else lines):
             try:
                 row = json.loads(line)
+                # Cost-batch completion has the same factor/completed keys as
+                # statistics. Keep its failure count, including zero successes.
+                if isinstance(row, dict) and 'failed' in row:
+                    if (isinstance(row.get('factor'), str) and row['factor'].strip()
+                            and type(row.get('completed')) is int and row['completed'] >= 0
+                            and type(row.get('failed')) is int and row['failed'] >= 0):
+                        candidates.append((path.stat().st_mtime, 'N3/process.log',
+                                           {'cost_completed': row['completed'],
+                                            'cost_failed': row['failed'],
+                                            'cost_last_factor': row['factor']}))
+                        break
+                    continue
                 if (isinstance(row, dict) and isinstance(row.get('factor'), str) and row['factor'].strip()
                         and isinstance(row.get('variant'), str) and row['variant'].strip()
                         and type(row.get('year')) is int and 2000 <= row['year'] <= 2100
@@ -100,6 +112,8 @@ def progress_snapshot(run: Path) -> dict:
             'statistics_factor': value.get('statistics_factor'),
             'correlations_completed': value.get('correlations_completed'),
             'correlations_total': value.get('correlations_total'),
+            'cost_completed': value.get('cost_completed'), 'cost_failed': value.get('cost_failed'),
+            'cost_last_factor': value.get('cost_last_factor'),
             'replay_year': value.get('replay_year'), 'replay_factor': value.get('replay_factor'),
             'replay_variant': value.get('replay_variant'), 'replay_cost': value.get('replay_cost')}
 

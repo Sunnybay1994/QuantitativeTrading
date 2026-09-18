@@ -93,6 +93,24 @@ def test_correlation_progress_is_not_factor_statistics(tmp_path, total):
         assert result == {}
 
 
+@pytest.mark.parametrize('completed,failed,valid', [(2, 0, True), (0, 1, True),
+                                                   (2, True, False), (2, -1, False)])
+def test_cost_completion_is_not_statistics(tmp_path, completed, failed, valid):
+    import json
+    from quant.reporting.mining_status import progress_snapshot
+    (tmp_path/'N3').mkdir()
+    (tmp_path/'N3/process.log').write_text(json.dumps({
+        'factor': 'a', 'completed': completed, 'failed': failed, 'error': None})+'\n',
+        encoding='utf-8')
+    result = progress_snapshot(tmp_path)
+    if valid:
+        assert result['cost_completed'] == completed
+        assert result['cost_failed'] == failed
+        assert result['statistics_completed'] is None
+    else:
+        assert result == {}
+
+
 def view(state='running', processes=None, scheduler=None, error=None, **status):
     return describe({'state': state, 'updated_at': '2026-09-18T11:00:00', **status},
                     scheduler or {}, processes or [], error,
