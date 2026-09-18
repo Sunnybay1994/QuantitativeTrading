@@ -11,9 +11,16 @@ def attention(daily: dict) -> list[dict]:
         elif result.get('requires_review'):
             shadow = result.get('shadow', {})
             if name == 'forward_tracking' and shadow.get('missing_horizons'):
+                gaps = shadow.get('data_gaps', {})
+                unavailable = sum(row['affected_observations'] for row in gaps.get('by_class', [])
+                                  if row['gap_class'] == 'source_amount_unavailable')
+                action = ('你无需操作或下单。当前ETF分钟源缺少成交额，重复抓取同源数据不能补齐；'
+                          '需要有实际成交额的替代数据，缺口继续保留，不填零滑点。'
+                          if unavailable == shadow['missing_horizons'] else
+                          '你无需操作或下单。这是数据维护项：需核对并补齐可得分钟成交量/成交额后重算；不能把缺口当零滑点。')
                 items.append({'stage': name,
                     'reason': f"影子滑点缺少 {shadow['missing_horizons']} 个价格观察窗口（已观察 {shadow.get('observed_horizons', 0)} 个）；校准未完成。",
-                    'action': '你无需操作或下单。这是数据维护项：需核对并补齐可得分钟成交量/成交额后重算；不能把缺口当零滑点。'})
+                    'action': action})
                 if shadow.get('errors'):
                     items.append({'stage': name, 'reason': str(shadow['errors']), 'action': '检查影子滑点报告中的计算错误。'})
             elif name == 'risk':

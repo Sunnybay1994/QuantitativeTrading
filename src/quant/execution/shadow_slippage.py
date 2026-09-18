@@ -141,10 +141,13 @@ def run(*, accounts: list[dict], known_through: dt.date, output: Path,
     detail, monthly = calculate(orders=orders, daily=daily, minutes=minutes, known_through=known_through)
     detail.write_csv(output/'shadow_execution.csv')
     monthly.write_csv(output/'slippage_monthly.csv')
+    from quant.execution.shadow_data_gaps import summarize_gaps
+    gaps, gap_summary = summarize_gaps(detail)
+    gaps.write_csv(output/'data_gaps.csv')
     valid = detail.filter(pl.col('status') == 'observed').height
     summary = {'known_through': str(known_through), 'accounts': accounts, 'orders': orders.height,
         'observed_horizons': valid, 'missing_horizons': detail.filter(pl.col('status') == 'missing').height,
-        'pending_horizons': detail.filter(pl.col('status') == 'pending').height,
+        'pending_horizons': detail.filter(pl.col('status') == 'pending').height, 'data_gaps': gap_summary,
         'status': ('failed' if errors else 'no_samples') if detail.is_empty() else ('partial' if errors or input_errors or detail.filter(pl.col('status') != 'observed').height else 'recorded'),
         'errors': [*errors, *input_errors], 'requires_review': bool(errors or input_errors or detail.filter(pl.col('status') == 'missing').height), 'auto_trade': False, 'calibration_complete': False,
         'sample_basis': 'saved reference orders; hypothetical prices, not actual execution fills',
