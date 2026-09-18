@@ -62,6 +62,8 @@ D:\Miniforge3\python.exe -m quant report dashboard --port 8768
 
 看板当前流水线提供“重启投研 / 从断点恢复”按钮，通过现有计划任务恢复；不会重复启动运行中的任务，也不会清空断点。
 
+看板后台服务可通过 `scripts/register_research_dashboard.ps1` 注册为当前用户的登录启动任务 `QuantitativeTrading-ResearchDashboard`，只监听本机8768端口；启动器互斥和端口检查防止重复启动，异常退出每隔1分钟重试，最多3次。关机期间不运行，登录后恢复。日志位于 `artifacts/research/dashboard_service/`；`/api/health` 用于核对实际服务进程。
+
 运行卡片区分实际运行、时间片结束、每日观察避让、其他写入任务占用、重试冷却及故障；显示最近进度保存时间、Windows 计划任务下次触发时间和重试条件。进程或调度读取失败时明确标为未知，计划触发不保证立即开工。
 
 研究结果支持按策略标签搜索，并显示研究保留复核结论、原判定和风险原因。每日观察提示会区分数据维护、风险核对及流程错误，说明所需处理。

@@ -3,6 +3,7 @@ import argparse
 import datetime as dt
 import json
 import mimetypes
+import os
 import re
 import subprocess
 import time
@@ -177,6 +178,9 @@ def main() -> None:
                 except (ValueError, OSError, KeyError, pl.exceptions.PolarsError) as exc:
                     body = json.dumps({'error':str(exc)},ensure_ascii=False).encode('utf-8')
                     mime = 'application/json'
+            elif route.path == '/api/health':
+                body = json.dumps({'service': 'quant-research-dashboard', 'pid': os.getpid()}).encode('utf-8')
+                mime = 'application/json'
             elif route.path == '/curves.js':
                 body = Path(__file__).with_name('dashboard_curves.js').read_bytes()
                 mime = 'text/javascript'
