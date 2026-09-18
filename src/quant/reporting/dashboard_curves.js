@@ -23,7 +23,7 @@ async function draw(){
   current=d;render();
   const p=await(await fetch('/api/periods?'+q)).json();if(ticket!==request)return;if(p.error)throw Error(p.error);
   periods=p;periodQuery=q.toString();by('periodDescription').textContent=p.description+' · 原回测初始资金：'+(p.capital?Number(p.capital).toLocaleString()+' '+p.currency:'源记录未提供');
-  by('periodNote').textContent=p.note+' '+p.excluded.join('；');
+  by('periodNote').textContent=(p.sample?.lines||[]).join('；')+' '+p.note+' '+p.excluded.join('；');
   by('periodBenchmark').innerHTML=(p.rows[0]?.benchmark_results||[]).map(b=>`<option>${escape(b.benchmark)}</option>`).join('')||'<option>未选可比基准</option>';
   by('periodDownload').disabled=false;renderPeriods();
  }catch(e){if(ticket!==request)return;current=null;by('curvePlot').innerHTML='';by('curveLegend').innerHTML='';by('curveInfo').textContent=e.message;by('periodDescription').textContent='期间报告不可用：'+e.message;}

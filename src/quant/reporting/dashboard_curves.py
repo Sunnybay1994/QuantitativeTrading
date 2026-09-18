@@ -9,13 +9,14 @@ import polars as pl
 def catalog(root: Path) -> list[dict]:
     entries = {}
 
-    def add(label, paths, kind, currency='CNY', basis='成本后账户净值', code=None, description='', capital=None):
+    def add(label, paths, kind, currency='CNY', basis='成本后账户净值', code=None, description='', capital=None, sample_evidence=None):
         paths = [p.resolve() for p in paths if p.is_file()]
         if not paths or any(not p.is_relative_to(root.resolve()) for p in paths):
             return
         key = hashlib.sha256(('|'.join(map(str, paths))+'|'+str(code)).encode()).hexdigest()[:20]
         entries[key] = dict(id=key, label=label, kind=kind, currency=currency,
-                            basis=basis, code=code, description=description, capital=capital, paths=[str(p) for p in paths])
+                            basis=basis, code=code, description=description, capital=capital,
+                            sample_evidence=sample_evidence, paths=[str(p) for p in paths])
 
     registry = root/'artifacts/registry/experiments.parquet'
     if registry.exists():
@@ -27,13 +28,15 @@ def catalog(root: Path) -> list[dict]:
             from quant.reporting.strategy_description import describe
             import tomllib
             config = root/r['config_path'] if r.get('config_path') else None
+            from quant.reporting.sample_provenance import config_evidence
+            evidence = config_evidence(config, root)
             description = describe(config, r['variant']) if config is None or config.resolve().is_relative_to(root.resolve()) else '源配置不可访问'
             battery = base/'battery.toml'
             capital = tomllib.loads(battery.read_text(encoding='utf-8')).get('portfolio', {}).get('initial_cash') if battery.is_file() else None
             for cost in ('0.5', '1', '2'):
                 folder = base/r['variant']/f'cost_{cost}'
                 paths = sorted(folder.glob('????/nav.parquet')) or list(folder.glob('nav.parquet'))
-                add(f"{r['experiment_id']} / {r['variant']} · {cost}× · {run.parent.name if run.name.startswith('reports') else run.name}", paths, 'strategy', description=description, capital=capital)
+                add(f"{r['experiment_id']} / {r['variant']} · {cost}× · {run.parent.name if run.name.startswith('reports') else run.name}", paths, 'strategy', description=description, capital=capital, sample_evidence=evidence)
     for base in (root/'artifacts/forward/b20', root/'artifacts/forward/b32', root/'artifacts/paper'):
         if not base.exists():
             continue
@@ -110,6 +113,8 @@ def period_report(specs: list[dict], start: str = '', end: str = '') -> dict:
         frame = pl.read_csv(p, try_parse_dates=True) if p.suffix == '.csv' else pl.read_parquet(p)
         frames.append(frame.select([c for c in ('date', 'unit_nav', 'market_value') if c in frame.columns]))
     nav = pl.concat(frames, how='diagonal_relaxed').with_columns(pl.col('date').cast(pl.Date)).sort('date')
+    from quant.reporting.sample_provenance import describe_sample
+    sample = describe_sample(strategy, [str(nav['date'].min()), str(nav['date'].max())])
     benchmarks, excluded = {}, []
     for spec in specs:
         if spec['kind'] != 'benchmark':
@@ -125,5 +130,5 @@ def period_report(specs: list[dict], start: str = '', end: str = '') -> dict:
                           benchmark_initial_nav=None) if held.height else []
     return {'label': strategy['label'], 'description': strategy.get('description') or '模拟账户：跟踪已冻结策略的保存净值。',
             'capital': strategy.get('capital'), 'currency': strategy['currency'],
-            'rows': rows, 'note': NOTE, 'excluded': excluded,
-            'sources': [p for s in specs for p in s['paths']]}
+            'rows': rows, 'note': NOTE, 'excluded': excluded, 'sample': sample,
+            'sources': [p for s in specs for p in s['paths']]+sample['sources']}

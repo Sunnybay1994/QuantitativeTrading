@@ -80,6 +80,7 @@ def render_periods(rows: list[dict]) -> str:
     lines = ['\n## 年度与月度表现', '', NOTE, '']
     if not rows:
         return '\n'.join(lines+['无持仓期，期间指标不适用。', ''])
+    html.extend('<p>'+escape(line)+'</p>' for line in report.get('sample', {}).get('lines', []))
     for frequency, label in [('year', '年度'), ('month', '月度')]:
         lines += [f'### {label}', '', '|期间|首末日|日数|收益|基准|基准收益|超额|夏普 rf=0|夏普 rf=2%|最大回撤|范围|',
                   '|---|---|---:|---:|---|---:|---:|---:|---:|---:|---|']
