@@ -151,6 +151,15 @@ def run(config: Path, now: dt.datetime | None = None, client: Any = None,
     if summary_path.exists():
         previous = json.loads(summary_path.read_text(encoding='utf-8'))
         if previous.get('completed'):
+            feedback_path = summary_path.parent/'evaluation_feedback.json'
+            if feedback_path.exists():
+                feedback = json.loads(feedback_path.read_text(encoding='utf-8'))
+                expected = set(previous.get('queued_ids', []))
+                measured = {r['factor'] for r in feedback.get('factors', [])}
+                if expected and measured == expected and feedback.get('evaluation_status') == 'complete':
+                    previous = {**previous, 'evaluated': True, 'evaluation_status': 'complete',
+                                'maxcorr_lt_0_6_fraction': feedback.get('maxcorr_lt_0_6_fraction'),
+                                'evaluation_feedback': str(feedback_path)}
             return previous
     report: dict = {'week': week, 'completed': False, 'state': 'dry_run', 'evaluated': False,
                    'evaluation_status': 'pending', 'maxcorr_lt_0_6_fraction': None}

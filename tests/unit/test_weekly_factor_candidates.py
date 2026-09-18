@@ -118,6 +118,29 @@ def test_bad_schema_records_error_without_queue(setup):
     assert client.calls == 1
 
 
+@pytest.mark.parametrize('status,matching,expected', [
+    ('complete', True, True), ('pending', True, False), ('complete', False, False),
+])
+def test_completed_generation_reads_only_matching_complete_feedback(setup, status, matching, expected):
+    config, paths = setup
+    now = dt.datetime(2026, 9, 15, 12, tzinfo=weekly.SHANGHAI)
+    client = Client({'candidates': [candidate('adj_close/delay(adj_close,5)')]})
+    generated = weekly.run(config, now, client, execute=True)
+    folder = paths['output_root']/'2026-09-14'
+    original = (folder/'summary.json').read_bytes()
+    ids = generated['queued_ids'] if matching else ['unrelated_factor']
+    (folder/'evaluation_feedback.json').write_text(json.dumps({
+        'evaluation_status': status, 'factors': [{'factor': factor} for factor in ids],
+        'maxcorr_lt_0_6_fraction': 1.0,
+    }), encoding='utf-8')
+    resumed = weekly.run(config, now, client, execute=True)
+    assert resumed['evaluated'] is expected
+    assert resumed['evaluation_status'] == ('complete' if expected else 'pending')
+    assert resumed['maxcorr_lt_0_6_fraction'] == (1.0 if expected else None)
+    assert client.calls == 1
+    assert (folder/'summary.json').read_bytes() == original
+
+
 def test_unknown_charge_after_interruption_never_resubmits(setup):
     config, paths = setup
     now = dt.datetime(2026, 9, 15, 12, tzinfo=weekly.SHANGHAI)
