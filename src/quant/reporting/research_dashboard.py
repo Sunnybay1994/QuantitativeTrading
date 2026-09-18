@@ -40,6 +40,9 @@ def snapshot(root: Path = ROOT) -> dict:
     continuous = root/'artifacts/research/continuous'
     status = read(continuous/'status.json')
     run = root/status.get('run', 'artifacts/research/continuous/missing')
+    current = read(run/'summary.json')
+    if current.get('steps'):
+        status = {**status, 'steps': current['steps']}
     progress = read(run/'N4/admission_progress.json')
     batches = []
     for batch in sorted(continuous.glob('batch_*')):
@@ -98,8 +101,12 @@ def snapshot(root: Path = ROOT) -> dict:
         pass
     evaluation = read(run/'N3/result.json')
     costs = root/evaluation['batch']/'evaluation/costs' if evaluation.get('batch') else None
+    from quant.reporting.mining_status import describe, progress_snapshot, schedule_snapshot
+    scheduler = read(continuous/'scheduler.json')
+    mining = describe(status, scheduler, processes, process_error, schedule_snapshot())
+    mining['progress'] = progress_snapshot(run)
     return {'updated': dt.datetime.now().isoformat(timespec='seconds'), 'status': status,
-            'scheduler': read(continuous/'scheduler.json'), 'processes': processes,
+            'scheduler': scheduler, 'processes': processes, 'mining': mining,
             'process_error': process_error, 'gpu': gpu, 'device': runtime.get('device', 'cpu'),
             'gp': read(run/'N2/search_progress.json'), 'admission_done': len(progress.get('rows', [])),
             'admission_total': len(progress.get('candidates', [])), 'batches': batches,
