@@ -77,6 +77,22 @@ def test_invalid_statistics_record_is_not_progress(tmp_path, record):
     assert progress_snapshot(tmp_path) == {}
 
 
+@pytest.mark.parametrize('total', [19, 0, True])
+def test_correlation_progress_is_not_factor_statistics(tmp_path, total):
+    import json
+    from quant.reporting.mining_status import progress_snapshot
+    (tmp_path/'N3').mkdir()
+    (tmp_path/'N3/process.log').write_text(json.dumps({
+        'factor': 'a', 'completed': 12, 'total': total})+'\n', encoding='utf-8')
+    result = progress_snapshot(tmp_path)
+    if total == 19:
+        assert result['correlations_completed'] == 12
+        assert result['correlations_total'] == 19
+        assert result['statistics_completed'] is None
+    else:
+        assert result == {}
+
+
 def view(state='running', processes=None, scheduler=None, error=None, **status):
     return describe({'state': state, 'updated_at': '2026-09-18T11:00:00', **status},
                     scheduler or {}, processes or [], error,

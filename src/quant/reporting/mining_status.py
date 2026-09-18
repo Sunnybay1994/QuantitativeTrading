@@ -65,6 +65,13 @@ def progress_snapshot(run: Path) -> dict:
                 if (isinstance(row, dict) and isinstance(row.get('factor'), str)
                         and row['factor'].strip() and type(row.get('completed')) is int
                         and row['completed'] > 0):
+                    if 'total' in row:
+                        if type(row['total']) is not int or not row['completed'] <= row['total']:
+                            continue
+                        candidates.append((path.stat().st_mtime, 'N3/process.log',
+                                           {'correlations_completed': row['completed'],
+                                            'correlations_total': row['total']}))
+                        break
                     candidates.append((path.stat().st_mtime, 'N3/process.log',
                                        {'statistics_completed': row['completed'],
                                         'statistics_factor': row['factor']}))
@@ -91,6 +98,8 @@ def progress_snapshot(run: Path) -> dict:
             'stock_days': value.get('stock_days'),
             'statistics_completed': value.get('statistics_completed'),
             'statistics_factor': value.get('statistics_factor'),
+            'correlations_completed': value.get('correlations_completed'),
+            'correlations_total': value.get('correlations_total'),
             'replay_year': value.get('replay_year'), 'replay_factor': value.get('replay_factor'),
             'replay_variant': value.get('replay_variant'), 'replay_cost': value.get('replay_cost')}
 
