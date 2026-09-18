@@ -59,8 +59,24 @@ def test_html_download_escapes_description_and_contains_both_frequencies():
     frame = nav(['2026-01-02', '2026-01-05'], [.9, 1.])
     report = {'label': 'test', 'description': '<script>bad</script>', 'capital': 100000,
               'currency': 'CNY', 'note': 'rf=0', 'excluded': [], 'sources': ['saved/nav.parquet'],
-              'rows': period_metrics(frame, {'base': frame})}
+              'rows': period_metrics(frame, {'base': frame}),
+              'sample': {'lines': ['训练截至 <2025-12-31>']}}
     html = render_html(report, 'base')
     assert '<script>' not in html and '&lt;script&gt;' in html
     assert '<h2>年度</h2>' in html and '<h2>月度</h2>' in html
     assert 'saved/nav.parquet' in html and '100000 CNY' in html
+    assert '训练截至 &lt;2025-12-31&gt;' in html
+
+
+def test_write_nonempty_annual_and_monthly_reports(tmp_path):
+    import json
+    from quant.reporting.period_metrics import write_period_reports
+    frame = nav(['2026-01-02', '2026-01-05', '2026-02-02'], [.9, 1., 1.1])
+    rows = period_metrics(frame, {'base': frame})
+    write_period_reports(tmp_path, rows, '策略描述')
+    annual = (tmp_path/'report.md').read_text(encoding='utf-8')
+    monthly = (tmp_path/'monthly_2026.md').read_text(encoding='utf-8')
+    assert '|2026|' in annual and 'monthly_2026.md' in annual
+    assert '|2026-01|' in monthly and '|2026-02|' in monthly
+    assert '策略描述' in annual and '策略描述' in monthly
+    assert json.loads((tmp_path/'metrics.json').read_text(encoding='utf-8')) == rows

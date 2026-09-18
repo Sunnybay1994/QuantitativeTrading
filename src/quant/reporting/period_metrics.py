@@ -80,7 +80,6 @@ def render_periods(rows: list[dict]) -> str:
     lines = ['\n## 年度与月度表现', '', NOTE, '']
     if not rows:
         return '\n'.join(lines+['无持仓期，期间指标不适用。', ''])
-    html.extend('<p>'+escape(line)+'</p>' for line in report.get('sample', {}).get('lines', []))
     for frequency, label in [('year', '年度'), ('month', '月度')]:
         lines += [f'### {label}', '', '|期间|首末日|日数|收益|基准|基准收益|超额|夏普 rf=0|夏普 rf=2%|最大回撤|范围|',
                   '|---|---|---:|---:|---|---:|---:|---:|---:|---:|---|']
@@ -120,6 +119,7 @@ def render_html(report: dict, benchmark: str = '') -> str:
             '<p>原回测初始资金：'+escape(str(report.get('capital') or '未提供')+' '+report['currency'])+'</p>',
             '<p>'+escape(report['note']+' '+'；'.join(report['excluded']))+'</p>',
             '<p>基准：'+escape(benchmark or '未选可比基准')+'。期间诊断不改变原准入结论。</p>']
+    html.extend('<p>'+escape(line)+'</p>' for line in report.get('sample', {}).get('lines', []))
     for frequency, label in [('year', '年度'), ('month', '月度')]:
         html += ['<h2>'+label+'</h2><table><tr>'+''.join('<th>'+s+'</th>' for s in
                  ['期间', '首末日', '日数', '收益 %', '基准收益 %', '超额 pp', '夏普 rf=0', '夏普 rf=2%', '最大回撤 %', '范围'])+'</tr>']
