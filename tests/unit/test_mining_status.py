@@ -40,6 +40,31 @@ def test_statistics_progress_supersedes_computation_and_ignores_partial_line(tmp
     assert result['compute_year'] is None
 
 
+def test_cost_progress_supersedes_statistics(tmp_path):
+    from quant.reporting.mining_status import progress_snapshot
+    (tmp_path/'N3').mkdir()
+    (tmp_path/'N3/process.log').write_text(
+        '{"factor":"a","completed":20}\n'
+        '{"factor":"stock_benchmarks","year":2015,"variant":"all_market_equal_weight",'
+        '"multiplier":2.0,"sessions":244}\n', encoding='utf-8')
+    result = progress_snapshot(tmp_path)
+    assert result['replay_year'] == 2015
+    assert result['replay_cost'] == 2.0
+    assert result['replay_variant'] == 'all_market_equal_weight'
+    assert result['statistics_completed'] is None
+
+
+@pytest.mark.parametrize('cost,sessions', [(True, 244), (3, 244), (1, 0)])
+def test_invalid_cost_progress_is_ignored(tmp_path, cost, sessions):
+    import json
+    from quant.reporting.mining_status import progress_snapshot
+    (tmp_path/'N3').mkdir()
+    (tmp_path/'N3/process.log').write_text(json.dumps({
+        'factor': 'a', 'year': 2025, 'variant': 'raw', 'multiplier': cost,
+        'sessions': sessions})+'\n', encoding='utf-8')
+    assert progress_snapshot(tmp_path) == {}
+
+
 @pytest.mark.parametrize('record', [
     '{"factor":"a","completed":true}',
     '{"factor":"","completed":2}',

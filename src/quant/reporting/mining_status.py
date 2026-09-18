@@ -52,6 +52,16 @@ def progress_snapshot(run: Path) -> dict:
         for line in reversed(lines[1:] if offset else lines):
             try:
                 row = json.loads(line)
+                if (isinstance(row, dict) and isinstance(row.get('factor'), str) and row['factor'].strip()
+                        and isinstance(row.get('variant'), str) and row['variant'].strip()
+                        and type(row.get('year')) is int and 2000 <= row['year'] <= 2100
+                        and type(row.get('multiplier')) in (int, float) and row['multiplier'] in (.5, 1, 2)
+                        and type(row.get('sessions')) is int and row['sessions'] > 0):
+                    candidates.append((path.stat().st_mtime, 'N3/process.log',
+                                       {'replay_year': row['year'], 'replay_factor': row['factor'],
+                                        'replay_variant': row['variant'],
+                                        'replay_cost': row['multiplier']}))
+                    break
                 if (isinstance(row, dict) and isinstance(row.get('factor'), str)
                         and row['factor'].strip() and type(row.get('completed')) is int
                         and row['completed'] > 0):
@@ -80,7 +90,9 @@ def progress_snapshot(run: Path) -> dict:
             'compute_year': value.get('compute_year'), 'factors_written': value.get('factors_written'),
             'stock_days': value.get('stock_days'),
             'statistics_completed': value.get('statistics_completed'),
-            'statistics_factor': value.get('statistics_factor')}
+            'statistics_factor': value.get('statistics_factor'),
+            'replay_year': value.get('replay_year'), 'replay_factor': value.get('replay_factor'),
+            'replay_variant': value.get('replay_variant'), 'replay_cost': value.get('replay_cost')}
 
 
 def describe(status: dict, scheduler: dict, processes: list[dict], process_error,
