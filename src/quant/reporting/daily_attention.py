@@ -21,6 +21,21 @@ def attention(daily: dict) -> list[dict]:
                 items.append({'stage': name,
                     'reason': f"影子滑点缺少 {shadow['missing_horizons']} 个价格观察窗口（已观察 {shadow.get('observed_horizons', 0)} 个）；校准未完成。",
                     'action': action})
+                for recovery in shadow.get('local_minute_recovery', []):
+                    if recovery.get('status') == 'recovered':
+                        continue
+                    reason = recovery.get('reason', '未提供原因')
+                    if 'Turnover units inconsistent' in reason:
+                        reason = '本地分钟成交额／成交量的隐含价格超出该分钟高低价，数据校验未通过'
+                    elif 'Cross-source close mismatch' in reason:
+                        reason = '本地与参考源的分钟收盘价差异超过允许范围'
+                    elif 'Insufficient distinct reference bars' in reason:
+                        reason = '参考源分钟覆盖不足，无法完成跨源校验'
+                    elif '240 distinct' in reason:
+                        reason = '本地目标日分钟记录不完整'
+                    items.append({'stage': name,
+                        'reason': f"{recovery.get('symbol', '未知标的')} / {recovery.get('date', '未知日期')}：{reason}。",
+                        'action': '数据维护项，无需下单；核对 minute_recovery.json 的来源与失败原因，取得可验证数据后重算，不能放宽校验消除缺口。'})
                 if shadow.get('errors'):
                     items.append({'stage': name, 'reason': str(shadow['errors']), 'action': '检查影子滑点报告中的计算错误。'})
             elif name == 'risk':
