@@ -1,0 +1,6 @@
+# Frozen liquidity representatives; no historical strategy universe claim.
+selection_date = "2026-09-19"
+liquidity_as_of = "2026-09-10"
+market_cap_as_of = "2026-09-18"
+selection_evidence = "artifacts/realtime/selection_20260919/representatives.parquet"
+symbols = ["603986.SH", "600487.SH", "002384.SZ", "000725.SZ", "300308.SZ", "300502.SZ", "688256.SH", "688008.SH", "688797.SH", "300164.SZ", "301526.SZ", "600667.SH"]

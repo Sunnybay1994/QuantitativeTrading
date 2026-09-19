@@ -26,6 +26,7 @@ data = [
     "baostock>=0.8",
     "tushare>=1.2.10",
 ]
+realtime = ["futu-api>=10.10,<11"]
 # 研究面重依赖(M3 里程碑);不进入交易路径
 research = [
     "deap==1.4.4",

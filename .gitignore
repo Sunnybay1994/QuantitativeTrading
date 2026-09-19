@@ -15,6 +15,7 @@ data/factors/*
 data/qlib/*
 data/legacy/*
 data/run_state/*
+data/realtime/*
 !data/legacy/README.md
 artifacts/*
 !artifacts/legacy/

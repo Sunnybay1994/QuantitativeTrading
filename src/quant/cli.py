@@ -16,6 +16,7 @@ from quant.llm.budget import month_spend_usd, remaining_budget_usd
 # 组、命令 → 现有 __main__ 模块。未知参数原样转交。
 _DELEGATE: dict[tuple[str, str], str] = {
     ("data", "refresh"): "quant.data.refresh",
+    ("data", "realtime"): "quant.data.realtime",
     ("factors", "compute"): "quant.factors.compute",
     ("research", "daily"): "quant.research.scheduled_observation",
     ("research", "nightly"): "quant.research.nightly",
@@ -89,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     intel.add_argument("--no-extract", action="store_true")
 
     data = sub.add_parser("data", help="数据刷新")
-    data.add_argument("command", choices=["refresh"])
+    data.add_argument("command", choices=["refresh", "realtime"])
     factors = sub.add_parser("factors", help="因子计算")
     factors.add_argument("command", choices=["compute"])
     research = sub.add_parser("research", help="投研流水线")

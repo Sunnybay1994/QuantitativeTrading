@@ -1,0 +1,20 @@
+auto_trade = false
+host = "127.0.0.1"
+port = 11111
+data_root = "data"
+output = "artifacts/realtime/futu"
+database = "data/realtime/futu/market.sqlite"
+max_symbols = 40
+quota_reserve = 10
+quote_poll_seconds = 5
+bar_poll_seconds = 60
+confirmation_seconds = 63
+quote_max_age_seconds = 30
+heartbeat_max_age_seconds = 30
+# Minimum fallback also exercises both mainland markets. Positions/orders take priority.
+symbols = ["510300.SH", "511010.SH", "518880.SH", "159915.SZ"]
+representatives = "configs/universe/realtime_liquid_20260919.toml"
+account_roots = [
+  "artifacts/forward/b20/cost_1/strategy",
+  "artifacts/paper/q10_sue_v2",
+]
