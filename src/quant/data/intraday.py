@@ -172,7 +172,7 @@ def capture_yahoo(data_root: Path, member: dict[str, Any], frequency: str, end: 
 
 def refresh_intraday(*, data_root: Path, end: dt.date, stocks: bool = True,
                      yahoo: bool = True, workers: int = 1, limit: int | None = None,
-                     stock_from: dt.date | None = None) -> dict[str, Any]:
+                     stock_from: dt.date | None = None, progress=None) -> dict[str, Any]:
     if workers != 1 or (limit is not None and limit < 1):
         raise ValueError("BaoStock uses one connection; workers must be 1 and limit positive")
     if stock_from is not None and (not stocks or stock_from > end):
@@ -187,6 +187,8 @@ def refresh_intraday(*, data_root: Path, end: dt.date, stocks: bool = True,
                                 table="bar_1d", start=stock_from or dt.date(2020, 1, 1), end=end, symbols=symbols)
         expected = {symbol: group["trade_date"].to_list() for (symbol,), group in
                     daily.filter(pl.col("volume") > 0).group_by("symbol")}
+        if progress:
+            progress({'source': 'BaoStock', 'completed': 0, 'total': len(symbols), 'failed': 0})
         for index, symbol in enumerate(symbols, 1):
             try:
                 result = _stock_job((str(data_root), symbol, str(end), expected.get(symbol, [])),
@@ -196,11 +198,18 @@ def refresh_intraday(*, data_root: Path, end: dt.date, stocks: bool = True,
             except Exception as exc:
                 errors.append({"symbol": symbol, "error": str(exc)})
                 print(f"BaoStock {index}/{len(symbols)} {symbol}: {exc}", flush=True)
+            if progress:
+                progress({'source': 'BaoStock', 'completed': index, 'total': len(symbols),
+                          'failed': len(errors)})
     stock_changed_rows = sum(result['changed_rows'] for result in results)
     if yahoo:
         members = []
         for name in ("t0_etf_pool_v1", "hk_connect_watch_v1", "daily_etf_execution_watch_v1"):
             members += tomllib.loads(Path(f"configs/universe/{name}.toml").read_text(encoding="utf-8"))["members"]
+        yahoo_completed = 0
+        yahoo_failed = 0
+        if progress:
+            progress({'source': 'Yahoo', 'completed': 0, 'total': 3*len(members[:limit]), 'failed': 0})
         for member in members[:limit]:
             for frequency in ("1m", "5m", "60m"):
                 try:
@@ -209,6 +218,11 @@ def refresh_intraday(*, data_root: Path, end: dt.date, stocks: bool = True,
                     print(f"Yahoo {member['symbol']} {frequency}: {result['changed_rows']} rows", flush=True)
                 except Exception as exc:
                     errors.append({"symbol": member["symbol"], "frequency": frequency, "error": str(exc)})
+                    yahoo_failed += 1
+                yahoo_completed += 1
+                if progress:
+                    progress({'source': 'Yahoo', 'completed': yahoo_completed,
+                              'total': 3*len(members[:limit]), 'failed': yahoo_failed})
                 time.sleep(0.3)
     summary = {"through": str(end), "completed_requests": len(results),
                "stock_from": str(stock_from) if stock_from is not None else None,

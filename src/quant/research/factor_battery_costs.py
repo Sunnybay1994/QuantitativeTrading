@@ -17,6 +17,7 @@ from quant.research.classic_monthly_baseline import replay
 from quant.research.factor_battery_groups import assign_groups
 from quant.research.factor_cost_checkpoint import prepare_resume, read_year, save_year
 from quant.research.run_s1_walk_forward import metrics
+from quant.research.slice_budget import checkpoint
 
 
 class NoExecutableTopGroup(ValueError):
@@ -79,6 +80,7 @@ def run_factor_costs(*, statistics: Path, output: Path, data_root: Path,
                      execution_snapshot: str, factor: str, resume: bool = False,
                      share_exchanges_config: Path = Path('configs/data/share_exchanges_20260912.toml')) -> dict:
     """Replay both frozen variants and all cost multipliers without annual resets."""
+    checkpoint()
     settings = tomllib.loads((statistics / "battery.toml").read_text(encoding="utf-8"))
     from quant.backtest.share_exchanges import validate_exchanges
     event_content = share_exchanges_config.read_text(encoding='utf-8')
@@ -178,6 +180,7 @@ def run_cost_plans(*, settings: dict, plans: dict, sessions: tuple[dt.date, ...]
                 pending.add(key)
         if not pending:
             continue
+        checkpoint()
         annual_targets = {variant: targets.filter(pl.col("execution_date").is_between(low, high))
                           for variant, (_, targets) in plans.items()}
         symbols = set().union(*(set(frame["symbol"]) for frame in annual_targets.values()),
@@ -225,6 +228,7 @@ def run_cost_plans(*, settings: dict, plans: dict, sessions: tuple[dt.date, ...]
             for variant, (name, targets) in plans.items():
                 if (variant, multiplier) not in pending:
                     continue
+                checkpoint()
                 inception = start if start is not None else targets["execution_date"].min()
                 dates = [date for date in active_sessions if date >= inception]
                 if not dates:

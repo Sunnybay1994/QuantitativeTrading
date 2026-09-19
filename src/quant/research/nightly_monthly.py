@@ -21,9 +21,11 @@ def due_period(settings: dict, day: dt.date) -> str | None:
     return month.strftime('%Y-%m') if day >= saturday else None
 
 
-def pending_month(settings: dict, run: Path) -> str | None:
+def pending_month(settings: dict, run: Path, *, day: dt.date | None = None) -> str | None:
     """Cheap scheduler hint: an eligible missing/unfinished month takes priority."""
-    day = dt.date.fromisoformat(run.name)
+    if 'monthly_first_period' not in settings:
+        return None
+    day = day or dt.date.fromisoformat(settings.get('scheduler_day', run.name))
     root = Path(settings['output_root'])/'monthly'
     # Finish an earlier interrupted month before opening a newer one.
     pending = sorted(p for p in root.glob('????-??') if p.is_dir()
@@ -42,7 +44,7 @@ def pending_month(settings: dict, run: Path) -> str | None:
 
 
 def monthly_models(settings: dict, run: Path) -> dict:
-    day = dt.date.fromisoformat(run.name)
+    day = dt.date.fromisoformat(settings.get('scheduler_day', run.name))
     period = pending_month(settings, run)
     root = Path(settings['output_root'])/'monthly'
     if period is None:
@@ -55,12 +57,11 @@ def monthly_models(settings: dict, run: Path) -> dict:
     if (output/'summary.json').is_file():
         return json.loads((output/'summary.json').read_text(encoding='utf-8'))
     cutoff = dt.date.fromisoformat(period+'-01')-dt.timedelta(days=1)
-    as_of = settings['as_of']
-    if isinstance(as_of, str):
-        as_of = dt.date.fromisoformat(as_of)
-    if as_of > cutoff:
-        from quant.data.factor_panels import available_sessions
-        as_of = available_sessions(Path(settings['data_root']), cutoff)[-1]
+    # A resumed September batch must not train October with its August cutoff.
+    # _freeze retains any already published monthly request and inputs.
+    from quant.data.refresh import latest_session
+    as_of = latest_session(data_root=Path(settings['data_root']), through=cutoff,
+                           refresh_calendar=False)
     return _run_month({**settings, 'as_of': as_of}, output)
 
 

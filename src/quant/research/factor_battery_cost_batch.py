@@ -10,6 +10,7 @@ import polars as pl
 
 from quant.research.factor_battery_costs import NoExecutableTopGroup, run_factor_costs
 from quant.research.factor_cost_reuse import prepare_plan, publish_alias, validate_published
+from quant.research.slice_budget import SliceYield, checkpoint
 
 
 def terminal_cost_rejection(error: Exception, table: pl.DataFrame, factor: str) -> bool:
@@ -97,6 +98,8 @@ def run_cost_batch(*, statistics: Path, screen: Path, output: Path, data_root: P
     deferred_aliases = {factor: aliases[factor] for factor in todo if factor in aliases}
     todo = [factor for factor in todo if factor not in deferred_aliases]
     os.environ['POLARS_MAX_THREADS'] = '4'
+    checkpoint()
+    yielded = False
     with ProcessPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(run_factor_costs, statistics=statistics, output=output/factor,
                                data_root=data_root, execution_snapshot=execution_snapshot, factor=factor,
@@ -107,6 +110,8 @@ def run_cost_batch(*, statistics: Path, screen: Path, output: Path, data_root: P
             try:
                 future.result()
                 completed[factor] = str(output/factor)
+            except SliceYield:
+                yielded = True
             except Exception as exc:
                 if terminal_cost_rejection(exc, table, factor):
                     rejected[factor] = str(exc)
@@ -114,6 +119,8 @@ def run_cost_batch(*, statistics: Path, screen: Path, output: Path, data_root: P
                     failures[factor] = str(exc)
             print(json.dumps({'factor': factor, 'completed': len(completed), 'failed': len(failures),
                               'error': failures.get(factor)}), flush=True)
+    if yielded:
+        raise SliceYield('Time slice yielded; completed annual cost checkpoints retained')
     # External runs may have completed while the queued work ran.
     for factor, external_folder in list(pending_external.items()):
         if (Path(external_folder)/'summary.json').is_file():

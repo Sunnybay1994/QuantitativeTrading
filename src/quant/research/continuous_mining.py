@@ -88,10 +88,14 @@ def dispatch(config: Path, root: Path, *, now: dt.datetime | None = None,
               'weekly_candidates': weekly,
               'steps': read(run/'summary.json').get('steps', {}),
               'pid': os.getpid(), 'seed': tomllib.loads((run/'config.toml').read_text(encoding='utf-8'))['genetic']['seed']}
-    if previous.get('consecutive_failures', 0) >= max_failures:
+    from quant.research.nightly_monthly import pending_month
+    monthly_due = pending_month(tomllib.loads((run/'config.toml').read_text(encoding='utf-8')),
+                                run, day=now.date())
+    new_month = monthly_due is not None and monthly_due != previous.get('monthly_period')
+    if previous.get('consecutive_failures', 0) >= max_failures and not new_month:
         status.update(state='needs_attention', reason='Repeated batch failure; inspect process logs before retry',
                       error=previous.get('error'))
-    elif previous.get('retry_after') and now < dt.datetime.fromisoformat(previous['retry_after']):
+    elif previous.get('retry_after') and now < dt.datetime.fromisoformat(previous['retry_after']) and not new_month:
         status.update(state='cooldown', retry_after=previous['retry_after'], error=previous.get('error'))
     else:
         status['state'] = 'running'
@@ -109,10 +113,10 @@ def dispatch(config: Path, root: Path, *, now: dt.datetime | None = None,
         resumable = bool(primary_errors) and all(
             bool(re.search(r'Time/disk guard: -?\d+s,', error))
             and float(error.split('Time/disk guard: ')[1].split('s,')[0]) <= 0
-            or 'Worker exceeded ' in error for error in primary_errors)
+            or 'Worker exceeded ' in error or error.startswith('Time slice yielded') for error in primary_errors)
         failures = 0 if success or resumable else previous.get('consecutive_failures', 0)+1
         finished = now if supplied_now else dt.datetime.now()
-        attempt = {'finished_at': finished.isoformat(), 'consecutive_failures': failures,
+        attempt = {'monthly_period': monthly_due, 'finished_at': finished.isoformat(), 'consecutive_failures': failures,
                    'error': errors, 'retry_after': (finished+dt.timedelta(hours=retry_hours)).isoformat()
                    if failures else None}
         save(batch/'attempt.json', attempt)

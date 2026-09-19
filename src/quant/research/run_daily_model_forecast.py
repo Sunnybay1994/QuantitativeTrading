@@ -135,7 +135,7 @@ def run_daily(*, to: str, selection: Path, output: Path, data_root: Path,
                 end=end, output=output/'input_quality')}
     else:
         refresh = run_refresh(to=to, data_root=data_root, artifact_root=artifact_root,
-            config=refresh_config, now=clock, intraday=intraday)
+            config=refresh_config, now=clock, intraday=intraday, progress_path=output/'refresh_progress.json')
     (output/'refresh.json').write_text(json.dumps(refresh, ensure_ascii=False, indent=2), encoding='utf-8')
     if refresh['latest_session'] != str(end):
         raise ValueError('Refresh and forecast must use the same completed session')

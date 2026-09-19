@@ -41,7 +41,8 @@ def equal_weight_targets(universe: pl.DataFrame, *, members: pl.DataFrame | None
                                          'execution_date', 'symbol')
 
 
-def run_benchmarks(*, statistics: Path, output: Path, data_root: Path, execution_snapshot: str) -> dict:
+def run_benchmarks(*, statistics: Path, output: Path, data_root: Path, execution_snapshot: str,
+                   reuse_root: Path | None = None, resume: bool = False) -> dict:
     config_bytes = (statistics/'battery.toml').read_bytes()
     settings = tomllib.loads(config_bytes.decode('utf-8'))
     end = settings['run']['as_of']
@@ -60,12 +61,39 @@ def run_benchmarks(*, statistics: Path, output: Path, data_root: Path, execution
         name = f'battery_{label}'
         plans[label] = (name, equal_weight_targets(universe, members=membership, signals=sorted(signals),
                                                   sessions=sessions, end=end, name=name))
-    output.mkdir(parents=True, exist_ok=False)
-    (output/'battery.toml').write_bytes(config_bytes + (
+    from quant.research import benchmark_reuse
+    from quant.research.slice_budget import checkpoint
+    checkpoint()
+    reuse_context = None
+    if reuse_root is not None:
+        reuse_context = benchmark_reuse.context(settings=settings, plans=plans, sessions=sessions,
+                                               data_root=data_root, snapshot=execution_snapshot)
+        reused = benchmark_reuse.lookup(reuse_root, reuse_context, output)
+        if reused is not None:
+            return reused
+    output.mkdir(parents=True, exist_ok=resume)
+    if reuse_context is not None:
+        inputs = output/'benchmark_inputs.json'
+        if inputs.exists() and json.loads(inputs.read_text(encoding='utf-8')) != reuse_context:
+            raise ValueError('Frozen benchmark execution content changed')
+        if not inputs.exists():
+            inputs.write_text(json.dumps(reuse_context, indent=2), encoding='utf-8')
+    frozen_bytes = config_bytes + (
         '\n[benchmark_replay]\nstock_universe = "same_signal_day_eligible_universe_as_factors"\n'
-        f'execution_snapshot = {json.dumps(execution_snapshot)}\n').encode('utf-8'))
-    return run_cost_plans(settings=settings, plans=plans, sessions=sessions, output=output,
-                          data_root=data_root, execution_snapshot=execution_snapshot, factor='stock_benchmarks')
+        f'execution_snapshot = {json.dumps(execution_snapshot)}\n').encode('utf-8')
+    if resume and (output/'battery.toml').read_bytes() != frozen_bytes:
+        raise ValueError('Resumed benchmark settings changed')
+    if not resume:
+        (output/'battery.toml').write_bytes(frozen_bytes)
+    result = run_cost_plans(settings=settings, plans=plans, sessions=sessions, output=output,
+                          data_root=data_root, execution_snapshot=execution_snapshot, factor='stock_benchmarks', resume=resume)
+    if reuse_context is not None:
+        after = benchmark_reuse.context(settings=settings, plans=plans, sessions=sessions,
+                                        data_root=data_root, snapshot=execution_snapshot)
+        if after != reuse_context:
+            raise ValueError('Benchmark inputs changed during replay; result not cached')
+        benchmark_reuse.publish(reuse_root, reuse_context, output, plans, settings)
+    return result
 
 
 def main() -> None:

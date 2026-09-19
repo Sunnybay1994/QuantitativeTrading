@@ -1,0 +1,40 @@
+# Preregistered design only. Not wired into nightly configuration or the queue.
+version = "predictive_priority_v2"
+registered_on = 2026-09-19
+stage = "preregistered_design"
+enqueue = false
+auto_trade = false
+maximum_batches = 1
+population_size = 200
+generations = 30
+maximum_candidates = 20
+seed = 20260919
+training_end = 2025-12-31
+training_months = 72
+sample_groups = 3
+symbols_per_group = 300
+sample_seed = 20260913
+minimum_valid_months_per_group = 48
+minimum_symbols_per_month = 100
+minimum_paired_coverage = 0.8
+max_depth = 5
+
+[selection]
+# Lexicographic selection avoids a large arbitrary novelty penalty dominating IC.
+direction = "sign of equal-group mean training IC; zero means positive"
+eligible = "all groups meet coverage, directional group mean IC strictly positive"
+primary = "maximize minimum directional group mean IC across the three training groups"
+secondary = "only among candidates within 0.001 IC of the current best primary value, minimize maximum absolute control rank correlation"
+tertiary = "among equal secondary values prefer fewer expression nodes, then expression lexical order"
+required_mechanism = "Each candidate must actually reference a predeclared financial or industry-relative reversal terminal; a family sampling label is insufficient"
+mechanism_manifest = "Freeze the exact terminal IDs, input versions, availability and candidate limit before generation; no manifest means no activation"
+controls = "Existing frozen admitted controls at the same evaluation cutoff"
+
+[validation]
+historical = "Already observed 2010-2026 history is development evidence only; three sampled groups all train selection and none is an independent test set"
+full_battery = "Unchanged complete history, multiple testing, 0.5x/1x/2x costs, benchmark, turnover and incremental admission checks"
+capital_tiers = [100000, 1000000]
+forward = "Freeze candidate IDs and direction first; forward starts on the next exchange session after freeze, never before 2026-09-21"
+stop = "Finish one registered batch and report all trials and rejects; do not add seeds, weights or thresholds to rescue rejection"
+comparison = "Descriptive against saved batches 9/10; changed search objective does not establish causal improvement"
+activation_requires = "Implementation and replay tests plus full-history mechanism input coverage; new run only, never reinterpret saved checkpoints"

@@ -174,6 +174,10 @@ def evaluate(settings: dict, run: Path) -> dict:
     batch.mkdir(parents=True, exist_ok=True)
     frozen = batch/'library'
     if not frozen.exists():
+        if settings.get('prepare_month_inputs', False):
+            from quant.data.nightly_month_inputs import ensure_nightly_month_inputs
+            settings = ensure_nightly_month_inputs(settings=settings, as_of=settings['as_of'],
+                                                   output=run/'inputs')
         shutil.copytree(library, frozen)
         dump(batch/'settings.json',settings)
     # Finish the oldest interrupted battery before beginning another candidate batch.
@@ -228,6 +232,20 @@ def incremental_statistics(panel: pl.DataFrame, candidate: str, controls: list[s
     return result
 
 
+def admission_reference(settings: dict) -> dict:
+    if 'output_root' not in settings:
+        return settings
+    for path in sorted((Path(settings['output_root'])/'monthly').glob('*/summary.json'), reverse=True):
+        row = json.loads(path.read_text(encoding='utf-8'))
+        if row.get('completed') and row.get('as_of') == str(settings['as_of']):
+            source, scorecard = row.get('reference_statistics'), row.get('reference_scorecard')
+            if source and scorecard and Path(scorecard).is_file():
+                known = tomllib.loads((Path(source)/'battery.toml').read_text(encoding='utf-8'))['run']['as_of']
+                if str(known) == str(settings['as_of']):
+                    return {**settings, 'reference_statistics': source, 'reference_scorecard': scorecard}
+    return settings
+
+
 def admit(settings: dict, run: Path) -> dict:
     from quant.data.nightly_genetic_inputs import read_raw_monthly,admitted_controls
     evaluation = json.loads((run/'N3'/'result.json').read_text(encoding='utf-8'))
@@ -238,6 +256,9 @@ def admit(settings: dict, run: Path) -> dict:
         settings=json.loads((batch/'settings.json').read_text(encoding='utf-8'))
         for field in ('as_of','training_end','history_start'):
             settings[field]=dt.date.fromisoformat(settings[field])
+    # Only a completed reference at the identical cutoff can replace a stale
+    # reference. A later month would leak future outcomes into this admission.
+    settings = admission_reference(settings)
     definitions = {d.id:d for d in load_library(batch/'library')}
     library = load_library(Path(settings['library']))
     reference_ids = [d.id for d in library if d.id not in definitions]
@@ -274,6 +295,8 @@ def admit(settings: dict, run: Path) -> dict:
     for identifier, definition in definitions.items():
         if identifier in completed:
             continue
+        from quant.research.slice_budget import checkpoint as slice_checkpoint
+        slice_checkpoint()
         variants=scorecard.filter(pl.col('factor')==identifier).sort('factor_admitted',descending=True)
         variant=variants['variant'][0]
         values=pl.read_parquet(batch/'evaluation'/'statistics'/'factors'/identifier/'monthly_scores.parquet').select(

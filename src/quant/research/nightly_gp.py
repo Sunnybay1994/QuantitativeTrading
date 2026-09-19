@@ -223,6 +223,8 @@ def search(panel: pl.DataFrame, labels: pl.DataFrame, mapping: dict[str, str], s
             key=lambda r:-r['fitness'])[:20],indent=2),encoding='utf-8')
         if generation == settings['generations']:
             break
+        from quant.research.slice_budget import checkpoint as slice_checkpoint
+        slice_checkpoint()
         children = [copy.deepcopy(i) for i in toolbox.select(population, len(population))]
         for index, ind in enumerate(children):
             if random.random() < .7:

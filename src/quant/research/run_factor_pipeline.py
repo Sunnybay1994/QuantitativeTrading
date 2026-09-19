@@ -39,6 +39,10 @@ def run_pipeline(*, config: Path, library: Path, as_of: dt.date, output: Path,
     # Existing frozen pipelines retain their original execution mode on resume.
     deduplicate = (json.loads(saved_config.read_text(encoding='utf-8')).get('cost_deduplication', False)
                    if resume and saved_config.is_file() else True)
+    reuse_benchmarks = (json.loads(saved_config.read_text(encoding='utf-8')).get('benchmark_reuse', False)
+                        if resume and saved_config.is_file() else True)
+    if reuse_benchmarks:
+        configuration['benchmark_reuse'] = True
     if deduplicate:
         configuration['cost_deduplication'] = True
     return_text = return_benchmark_config.read_text(encoding='utf-8') if return_benchmark_config is not None else None
@@ -59,9 +63,11 @@ def run_pipeline(*, config: Path, library: Path, as_of: dt.date, output: Path,
         return_benchmark_config = output/'return_benchmarks.toml'
         return_benchmark_config.write_text(return_text, encoding='utf-8')
 
-    def stage(folder: Path, action, *, resumable: bool = False):
-        if resume and (folder/'summary.json').is_file():
+    def stage(folder: Path, action, *, resumable: bool = False, required: tuple[str, ...] = ()):
+        if resume and (folder/'summary.json').is_file() and all((folder/name).is_file() for name in required):
             return json.loads((folder/'summary.json').read_text(encoding='utf-8'))
+        from quant.research.slice_budget import checkpoint
+        checkpoint()
         if folder.exists() and not resumable:
             preserved = folder.with_name(f'{folder.name}_partial_{uuid.uuid4().hex[:8]}')
             if not folder.resolve().is_relative_to(output.resolve()) or not preserved.resolve().is_relative_to(output.resolve()):
@@ -77,8 +83,12 @@ def run_pipeline(*, config: Path, library: Path, as_of: dt.date, output: Path,
     print('Screening the complete multiple-testing family', flush=True)
     stage(screen, lambda: run_screen(statistics=statistics, output=screen, library=library))
     print('Replaying both stock benchmarks at all cost levels', flush=True)
+    benchmark_options = ({'reuse_root': output.parent.parent/'benchmark_cache',
+                          'resume': (benchmarks/'replay_config.json').is_file()} if reuse_benchmarks else {})
     stage(benchmarks, lambda: run_benchmarks(statistics=statistics, output=benchmarks, data_root=data_root,
-                   execution_snapshot=execution_snapshot))
+                   execution_snapshot=execution_snapshot, **benchmark_options),
+          resumable=reuse_benchmarks and (benchmarks/'replay_config.json').is_file(),
+          required=('benchmark_reuse.json',) if reuse_benchmarks else ())
     print('Computing full-library historical correlations', flush=True)
     stage(redundancy, lambda: run_redundancy(statistics=statistics, output=redundancy, library=library,
                                            workers=workers), resumable=True)

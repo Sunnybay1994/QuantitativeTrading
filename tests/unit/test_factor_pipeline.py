@@ -161,6 +161,8 @@ def test_resume_reuses_heavy_stages_continues_costs_and_preserves_old_scorecard(
             calls.append(name)
             kwargs['output'].mkdir()
             (kwargs['output']/'summary.json').write_text('{}')
+            if name == 'benchmarks':
+                (kwargs['output']/'benchmark_reuse.json').write_text('{"reused":false}')
         return run
 
     for name in ('statistics', 'screen', 'benchmarks', 'redundancy'):
@@ -186,16 +188,46 @@ def test_resume_reuses_heavy_stages_continues_costs_and_preserves_old_scorecard(
         path = args['output']/'pipeline_config.json'
         config = json.loads(path.read_text())
         config.pop('cost_deduplication')
+        config.pop('benchmark_reuse')
         path.write_text(json.dumps(config))
+        (args['output']/'benchmarks/benchmark_reuse.json').unlink()
     second = pipeline.run_pipeline(**args, resume=True)
     assert first['cost_failures'] and not second['cost_failures']
     assert calls == ['statistics', 'screen', 'benchmarks', 'redundancy']
     assert cost_calls == [False, True]
+
     assert first['scorecard_path'] != second['scorecard_path']
     assert (args['output']/'scorecard/factor_scorecard.parquet').is_file()
     assert (args['output']/'scorecard_002/factor_scorecard.parquet').is_file()
     assert pipeline.run_pipeline(**args, resume=True) == second
     assert cost_calls == [False, True]
+
+
+def test_benchmark_summary_before_reuse_validation_is_not_stage_completion(tmp_path, monkeypatch):
+    args = arguments(tmp_path)
+    attempts = []
+    def stage(**kwargs):
+        kwargs['output'].mkdir()
+        (kwargs['output']/'summary.json').write_text('{}')
+    for name in ('statistics', 'screen', 'redundancy'):
+        monkeypatch.setattr(pipeline, 'run_'+name, stage)
+    def benchmarks(**kwargs):
+        folder = kwargs['output']
+        attempts.append(kwargs['resume'])
+        folder.mkdir(exist_ok=True)
+        if len(attempts) == 1:
+            (folder/'summary.json').write_text('{}')
+            (folder/'replay_config.json').write_text('{"retained_account":true}')
+            raise RuntimeError('interruption before reuse validation')
+        assert (folder/'replay_config.json').read_text() == '{"retained_account":true}'
+        (folder/'benchmark_reuse.json').write_text('{"reused":false}')
+        raise RuntimeError('validation was revisited')
+    monkeypatch.setattr(pipeline, 'run_benchmarks', benchmarks)
+    with pytest.raises(RuntimeError, match='before reuse validation'):
+        pipeline.run_pipeline(**args)
+    with pytest.raises(RuntimeError, match='validation was revisited'):
+        pipeline.run_pipeline(**args, resume=True)
+    assert attempts == [False, True]
 
 
 @pytest.mark.parametrize('change', ['config', 'library', 'snapshot', 'external'])

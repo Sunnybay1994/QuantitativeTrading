@@ -2,6 +2,7 @@
 import argparse
 import datetime as dt
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -178,6 +179,10 @@ def execute(config: Path, *, now: dt.datetime|None=None, run_path: Path|None=Non
         folder=run/step
         folder.mkdir(exist_ok=True)
         result=folder/'result.json'
+        if step == 'N5' and result.exists():
+            from quant.research.nightly_monthly import pending_month
+            if pending_month(settings, run, day=now.date()) is not None:
+                result.rename(folder/f'result_before_month_{now:%Y%m%d_%H%M%S_%f}.json')
         if result.exists():
             summary['steps'][step]={'ok':True,'result':json.loads(result.read_text(encoding='utf-8'))}
             if step == 'N2':
@@ -196,13 +201,24 @@ def execute(config: Path, *, now: dt.datetime|None=None, run_path: Path|None=Non
         if free<settings['minimum_free_gb'] or remaining<=0:
             summary['steps'][step]={'ok':False,'error':f'Time/disk guard: {remaining:.0f}s, {free:.1f} GiB'}
             continue
+        grace = settings.get('slice_checkpoint_seconds', 0)
+        if grace and remaining <= grace:
+            summary['steps'][step] = {'ok': False, 'error': 'Time slice yielded before starting another worker'}
+            continue
         timeout=min(remaining,settings['step_timeout_seconds'][step])
+        worker_env = {**os.environ, 'QUANT_SCHEDULER_DAY': now.date().isoformat()}
+        worker_env.pop('QUANT_SLICE_SOFT_DEADLINE', None)
+        if grace:
+            worker_env['QUANT_SLICE_SOFT_DEADLINE'] = str(time.time()+timeout-min(grace, timeout/2))
         try:
             with (folder/'process.log').open('a',encoding='utf-8') as log:
                 process=subprocess.Popen([sys.executable,'-m','quant.research.nightly','--config',str(frozen),
-                    '--worker',step,'--run',str(run)],stdout=log,stderr=subprocess.STDOUT)
+                    '--worker',step,'--run',str(run)],stdout=log,stderr=subprocess.STDOUT,
+                    env=worker_env)
                 code=wait_bounded(process, run=run, timeout=timeout,
                                   minimum_free_gb=settings['minimum_free_gb'])
+            if code == 75:
+                raise RuntimeError('Time slice yielded; resume retained checkpoints')
             if code or not result.exists():
                 raise RuntimeError(f'{step} exit={code}; see {folder}/process.log')
             summary['steps'][step]={'ok':True,'result':json.loads(result.read_text(encoding='utf-8'))}
@@ -234,9 +250,15 @@ def main() -> None:
             parser.error('--worker requires --run')
         settings=tomllib.loads(args.config.read_text(encoding='utf-8'))
         settings=nightly_steps.resolve_settings(settings,args.run)
+        settings['scheduler_day'] = os.environ.get('QUANT_SCHEDULER_DAY', args.run.name)
         functions={'N1':nightly_steps.ingest,'N2':lambda s,r:run_nightly(s,r/'N2'),
                    'N3':nightly_steps.evaluate,'N4':nightly_steps.admit,'N5':nightly_steps.monthly_models}
-        result=functions[args.worker](settings,args.run)
+        from quant.research.slice_budget import SliceYield
+        try:
+            result=functions[args.worker](settings,args.run)
+        except SliceYield as exc:
+            print(str(exc), flush=True)
+            raise SystemExit(75) from exc
         dump(args.run/args.worker/'result.json',result)
     else:
         summary = execute(args.config)

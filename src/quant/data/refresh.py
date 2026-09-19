@@ -62,40 +62,44 @@ def latest_session(*, data_root: Path, through: dt.date, refresh_calendar: bool 
 
 def run_refresh(
     *, to: str, data_root: Path, artifact_root: Path, config: Path,
-    now: dt.datetime | None = None, intraday: bool = True,
+    now: dt.datetime | None = None, intraday: bool = True, progress_path: Path | None = None,
 ) -> dict[str, Any]:
+    from quant.data.refresh_progress import RefreshProgress
+    progress = RefreshProgress(progress_path)
     through = completed_date(to, now or dt.datetime.now(SHANGHAI))
-    end = latest_session(data_root=data_root, through=through)
+    end = progress.run('calendar', latest_session, data_root=data_root, through=through)
     settings = tomllib.loads(config.read_text(encoding="utf-8"))
     # A failed stage raises immediately; the next invocation reuses complete daily partitions.
     with contextlib.redirect_stdout(io.StringIO()):
-        stocks = refresh_stocks(end=end, data_root=data_root, artifact_root=artifact_root, config=config)
-        etfs = refresh_etfs(end=end, data_root=data_root, artifact_root=artifact_root,
+        stocks = progress.run('stocks', refresh_stocks, end=end, data_root=data_root, artifact_root=artifact_root, config=config)
+        etfs = progress.run('etfs', refresh_etfs, end=end, data_root=data_root, artifact_root=artifact_root,
                             config=Path(settings["etf_config"]))
     universe = tomllib.loads(Path(settings["etf_config"]).read_text(encoding="utf-8"))["universe"]
     symbols = sorted({s for value in universe.values() if isinstance(value, list) for s in value})
-    limit_rows = refresh_limits(data_root=data_root, symbols=symbols, end=end)
+    limit_rows = progress.run('limits', refresh_limits, data_root=data_root, symbols=symbols, end=end)
     minute_options: dict[str, Any] = {}
     minute_days = settings.get('intraday', {}).get('stock_lookback_days')
     if minute_days is not None:
         if type(minute_days) is not int or minute_days < 1:
             raise ValueError('Stock minute lookback must be a positive number of calendar days')
         minute_options['stock_from'] = through - dt.timedelta(days=minute_days-1)
-    minutes = refresh_intraday(data_root=data_root, end=through, **minute_options) if intraday else {}
-    benchmark = (refresh_factor_benchmark(data_root=data_root, config=config, end=end)
+    if progress_path is not None:
+        minute_options['progress'] = progress.update
+    minutes = progress.run('minutes', refresh_intraday, data_root=data_root, end=through, **minute_options) if intraday else {}
+    benchmark = (progress.run('benchmark', refresh_factor_benchmark, data_root=data_root, config=config, end=end)
                  if settings.get("factor_benchmark_snapshot") else {"new_rows": 0})
     financials = {"message": "disabled", "new_rows": 0}
     if settings.get('financials', {}).get('enabled', False):
         with contextlib.redirect_stdout(io.StringIO()):
-            financials = refresh_disclosed_financials(end=through, config=config, data_root=data_root,
+            financials = progress.run('financials', refresh_disclosed_financials, end=through, config=config, data_root=data_root,
                 artifact_root=artifact_root, lookback_days=settings['financials']['lookback_days'])
     factors = {"years": [], "message": "disabled"}
     industry: dict[str, Any] = {'message': 'disabled', 'new_intervals': 0}
     if settings.get('industry', {}).get('enabled', False):
         with contextlib.redirect_stdout(io.StringIO()):
-            industry = refresh_industry(data_root=data_root, end=end)
+            industry = progress.run('industry', refresh_industry, data_root=data_root, end=end)
     if settings.get("factors", {}).get("enabled", False):
-        factors = refresh_factors(data_root=data_root, artifact_root=artifact_root,
+        factors = progress.run('factors', refresh_factors, data_root=data_root, artifact_root=artifact_root,
                                       config=config, end=end, settings=settings["factors"],
                                       minute_available=not bool(minutes.get('errors')),
                                       minute_start=(minute_options.get('stock_from', dt.date(2020, 1, 1))
@@ -110,7 +114,7 @@ def run_refresh(
         definitions = load_library(Path(settings['factors']['library']), refresh_factor_selection(settings['factors']))
         battery = tomllib.loads(Path(settings['quality']['battery_config']).read_text(encoding='utf-8'))
         stamp = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S%f')
-        quality = run_quality(data_root=data_root, config=config, end=end,
+        quality = progress.run('quality', run_quality, data_root=data_root, config=config, end=end,
             factors=[{'id': row.id, 'family': row.family} for row in definitions], financials=financials,
             output=artifact_root/'data'/'input_quality'/stamp,
             lookback_sessions=settings['quality'].get('lookback_sessions', 5), minimum_symbols=battery['minimum_symbols'])

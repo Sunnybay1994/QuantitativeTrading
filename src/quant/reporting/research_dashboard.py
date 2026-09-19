@@ -6,8 +6,7 @@ import mimetypes
 import os
 import re
 import subprocess
-import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse, parse_qs
 
@@ -57,6 +56,7 @@ def snapshot(root: Path = ROOT) -> dict:
                             'report': str(summary.parent.relative_to(root)/'report.md')})
     reports = sorted((root/'artifacts/daily/sue_v2').glob('*/summary.json'))
     daily = read(reports[-1]) if reports else {}
+    daily['input_progress'] = read(reports[-1].parent/'model/refresh_progress.json') if reports else {}
     registry = root/'artifacts/registry/experiments.parquet'
     results = []
     registry_error = None
@@ -125,11 +125,9 @@ def artifact_path(root: Path, requested: str) -> Path | None:
     return path if path.is_relative_to(allowed) and path.is_file() and path.suffix in {'.md', '.json', '.csv', '.html'} else None
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--port', type=int, default=8768)
-    args = parser.parse_args()
-    cache = {'at': 0., 'body': b''}
+def create_server(port: int) -> ThreadingHTTPServer:
+    from quant.reporting.dashboard_cache import SnapshotCache
+    cache = SnapshotCache(snapshot)
     import secrets
     mining_token = secrets.token_urlsafe(32)
 
@@ -139,12 +137,12 @@ def main() -> None:
             if self.path != '/api/mining/restart':
                 self.send_error(404)
                 return
-            if not authorized(self.headers, mining_token, args.port):
+            if not authorized(self.headers, mining_token, port):
                 self.send_error(403)
                 return
             try:
                 payload, status = resume(), 200
-                cache['at'] = 0.
+                cache.invalidate()
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
                 payload, status = {'state': 'error', 'message': f'恢复请求失败（{type(exc).__name__}），请检查计划任务及权限'}, 503
             body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
@@ -187,13 +185,14 @@ def main() -> None:
                 body = Path(__file__).with_name('dashboard_curves.js').read_bytes()
                 mime = 'text/javascript'
             elif route.path == '/api/status':
-                if route.query == 'refresh=1' or time.monotonic() - cache['at'] > 15:
-                    payload = snapshot()
-                    # Dates and non-finite experimental values must remain valid JSON.
-                    body = json.dumps(payload, ensure_ascii=False, default=str)
-                    body = body.replace(': NaN', ': null').replace(': Infinity', ': null').replace(': -Infinity', ': null')
-                    cache.update(at=time.monotonic(), body=body.encode('utf-8'))
-                body, mime = cache['body'], 'application/json'
+                try:
+                    payload = cache.get(force=route.query == 'refresh=1')
+                except Exception:
+                    self.send_error(503, 'Status refresh unavailable')
+                    return
+                body = json.dumps(payload, ensure_ascii=False, default=str)
+                body = body.replace(': NaN', ': null').replace(': Infinity', ': null').replace(': -Infinity', ': null')
+                body, mime = body.encode('utf-8'), 'application/json'
             elif route.path == '/':
                 body = Path(__file__).with_name('research_dashboard.html').read_text(encoding='utf-8').replace('__MINING_TOKEN__', mining_token).encode('utf-8')
                 mime = 'text/html'
@@ -215,8 +214,15 @@ def main() -> None:
             self.end_headers()
             self.wfile.write(body)
 
+    return ThreadingHTTPServer(('127.0.0.1', port), Handler)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--port', type=int, default=8768)
+    args = parser.parse_args()
     print(f'Research dashboard: http://127.0.0.1:{args.port}', flush=True)
-    HTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
+    create_server(args.port).serve_forever()
 
 
 if __name__ == '__main__':
