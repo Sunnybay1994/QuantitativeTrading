@@ -123,8 +123,20 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=Path("configs/research/pressure_reversal_v1.toml"))
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--full-history", action="store_true")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--battery-reference", type=Path,
+                        default=Path("artifacts/factors/battery_statistics_20260831_20260911"))
+    parser.add_argument("--battery-config", type=Path, default=Path("configs/factors/battery.toml"))
     args = parser.parse_args()
-    result = run(args.config, args.output)
+    if args.full_history:
+        from quant.research.pressure_reversal_history import run_history
+        result = run_history(args.config, args.output, reference=args.battery_reference,
+                             battery_config=args.battery_config, resume=args.resume)
+    else:
+        if args.resume:
+            parser.error("--resume requires --full-history")
+        result = run(args.config, args.output)
     print(json.dumps({"output": str(args.output), "conclusion": result["conclusion"]}))
 
 

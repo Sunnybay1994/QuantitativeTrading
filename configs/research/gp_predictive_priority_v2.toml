@@ -25,9 +25,10 @@ direction = "sign of equal-group mean training IC; zero means positive"
 eligible = "all groups meet coverage, directional group mean IC strictly positive"
 primary = "maximize minimum directional group mean IC across the three training groups"
 secondary = "only among candidates within 0.001 IC of the current best primary value, minimize maximum absolute control rank correlation"
+band_algorithm = "At each selection step find the highest remaining primary, form its inclusive 0.001 band, select one by secondary then tertiary, remove it and rebuild the band"
 tertiary = "among equal secondary values prefer fewer expression nodes, then expression lexical order"
 required_mechanism = "Each candidate must actually reference a predeclared financial or industry-relative reversal terminal; a family sampling label is insufficient"
-mechanism_manifest = "Freeze the exact terminal IDs, input versions, availability and candidate limit before generation; no manifest means no activation"
+mechanism_manifest = "Freeze exact terminal IDs, input versions and availability in the mechanism manifest, and candidate limit in this config before generation; no manifest means no activation"
 controls = "Existing frozen admitted controls at the same evaluation cutoff"
 
 [validation]

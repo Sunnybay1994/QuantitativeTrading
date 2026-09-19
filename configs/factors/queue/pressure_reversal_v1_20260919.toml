@@ -1,0 +1,37 @@
+# Generated after full-history input and rank-equivalence checks.
+# Evaluation remains the existing complete battery, including all three cost tiers.
+
+[[factors]]
+id = "pressure_reversal_high_amount_v1"
+expr = "(0.5 - rank(ind_neutralize(adj_close / delay(adj_close, 5) - 1, industry_l1))) * rank(where(amount > 0, where(delay(ts_mean(amount, 20), 1) > 0, amount / delay(ts_mean(amount, 20), 1), 0 / 0), 0 / 0))"
+family = "pressure_reversal"
+direction = 1
+source_ref = "registered_battery:configs/research/pressure_reversal_v1.toml; role=candidate; evidence=artifacts/research/pressure_reversal_full_history_20260919_02/equivalence/summary.json"
+
+[[factors]]
+id = "pressure_reversal_low_amount_v1"
+expr = "(0.5 - rank(ind_neutralize(adj_close / delay(adj_close, 5) - 1, industry_l1))) * (1 - rank(where(amount > 0, where(delay(ts_mean(amount, 20), 1) > 0, amount / delay(ts_mean(amount, 20), 1), 0 / 0), 0 / 0)))"
+family = "pressure_reversal"
+direction = 1
+source_ref = "registered_battery:configs/research/pressure_reversal_v1.toml; role=candidate; evidence=artifacts/research/pressure_reversal_full_history_20260919_02/equivalence/summary.json"
+
+[[factors]]
+id = "industry_relative_reversal_5"
+expr = "(0.5 - rank(ind_neutralize(adj_close / delay(adj_close, 5) - 1, industry_l1)))"
+family = "pressure_reversal_control"
+direction = 1
+source_ref = "registered_battery:configs/research/pressure_reversal_v1.toml; role=control; evidence=artifacts/research/pressure_reversal_full_history_20260919_02/equivalence/summary.json"
+
+[[factors]]
+id = "raw_reversal_5"
+expr = "-rank(adj_close / delay(adj_close, 5) - 1)"
+family = "pressure_reversal_control"
+direction = 1
+source_ref = "registered_battery:configs/research/pressure_reversal_v1.toml; role=control; evidence=artifacts/research/pressure_reversal_full_history_20260919_02/equivalence/summary.json"
+
+[[factors]]
+id = "abnormal_amount_20"
+expr = "rank(where(amount > 0, where(delay(ts_mean(amount, 20), 1) > 0, amount / delay(ts_mean(amount, 20), 1), 0 / 0), 0 / 0))"
+family = "pressure_reversal_control"
+direction = 1
+source_ref = "registered_battery:configs/research/pressure_reversal_v1.toml; role=control; evidence=artifacts/research/pressure_reversal_full_history_20260919_02/equivalence/summary.json"

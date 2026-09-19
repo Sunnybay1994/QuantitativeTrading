@@ -246,6 +246,17 @@ def admission_reference(settings: dict) -> dict:
     return settings
 
 
+def candidate_source(identifier: str, source_ref: str) -> str:
+    """Classify explicit provenance without treating unknown queued factors as GP."""
+    if identifier.startswith('llm_dsl_'):
+        return 'weekly_llm'
+    if identifier.startswith(('ngp_', 'gp_')):
+        return 'nightly_gp'
+    if source_ref.startswith('registered_battery:'):
+        return 'registered_battery'
+    return 'factor_queue'
+
+
 def admit(settings: dict, run: Path) -> dict:
     from quant.data.nightly_genetic_inputs import read_raw_monthly,admitted_controls
     evaluation = json.loads((run/'N3'/'result.json').read_text(encoding='utf-8'))
@@ -307,7 +318,7 @@ def admit(settings: dict, run: Path) -> dict:
         battery_pass = bool(variants['factor_admitted'][0])
         passed = (battery_pass and incremental['months']>=96 and
                   incremental['newey_west_t'] is not None and incremental['newey_west_t']>=2.5 and corr<.6)
-        source = 'weekly_llm' if identifier.startswith('llm_dsl_') else 'nightly_gp'
+        source = candidate_source(identifier, definition.source_ref)
         rows.append({'factor':identifier,'variant':variant,'battery_pass':battery_pass,'incremental_months':incremental['months'],
                      'incremental_nw_t':incremental['newey_west_t'],'maximum_rank_correlation':corr,
                      'complete_control_fraction':incremental['complete_control_fraction'],
