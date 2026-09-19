@@ -86,6 +86,8 @@ python -m quant gpu-check
 
 新电池的 `pipeline_config.json` 记录 `benchmark_reuse=true`；跨批基准缓存按目标、会话日期、执行数据内容、费用和回放代码校验，仅复用完整三档成本结果。缓存索引在电池集合的 `benchmark_cache/`，每批 `benchmarks/benchmark_reuse.json` 记录来源及节省数量；损坏/不匹配缓存不命中，旧冻结流水线不切换模式。代码改动或输入变更可能导致保守失效，不能把测试复用数当作生产节省量。
 
-`configs/research/gp_predictive_priority_v2.toml` 的纯选择器已实现并通过边界测试、保存表达式节点/深度核对；尚未接入调度或入队。每选一个候选，按剩余最高主指标重建0.001带，再比较相关性及复杂度。启用前仍须冻结具体机制终端及完整输入覆盖；一次批次上限、未来验证与原准入门槛保持有效。
+`configs/research/gp_predictive_priority_v2.toml` 已接入后续新批次，一次后恢复原默认搜索；当前冻结批次不改。候选须实际引用清单中的机制终端，按三组最弱方向调整IC排序，每选一个候选重建剩余最高值的0.001带，再比较相关性及复杂度。此规则同时用于父代、精英与最终输出；报告分别展示主指标及相关性，不虚构单一适应度。原电池、三档成本及准入门槛不变，三组均属训练，已观察历史仅作开发证据。
+
+机制清单在 `configs/research/gp_predictive_priority_v2_inputs/manifest.json`，来源按哈希分片冻结。`python -m quant research predictive-inputs --manifest configs/research/gp_predictive_priority_v2_inputs/manifest.json --output <新目录>` 只准备和校验训练输入，不启动搜索。当前配方复用 `artifacts/research/gp_predictive_priority_v2_preflight_20260919/`；须保留其中 `prepared_inputs.json` 和其列出的全部文件。新N2复制冻结数据，恢复时核对数据、标签、控制、分组、表达式及目标，变化则拒绝混用；日线预热值和行业亦纳入断点指纹。完整历史覆盖见 `artifacts/research/gp_predictive_priority_v2_inputs_20260919/`，真实复制/恢复及测试见 `artifacts/maintenance/gp_predictive_priority_20260919/`。旧财务分区缺少逐分区原始快照沿革，当前刷新配置仅作背景，不冒充历史修订版本审计；冻结缓存不是对历史PIT准确性的独立证明。
 
 看板已验证的净值分组缓存保存在 `artifacts/reports/dashboard/result_groups.json`，包括版本、注册表键及所有来源文件身份、大小、修改时间。服务重启可复用；来源变化、缺失或缓存损坏触发完整重算，写缓存失败不阻断已核验结果。此为已完成且不应改写的报告派生缓存，不用于回测或准入；首次无缓存全量核验仍较慢，后续状态刷新仍展示真实缓存时间。

@@ -1,4 +1,4 @@
-"""Synthetic boundary checks for an inactive, preregistered selection helper."""
+"""Synthetic boundary checks for the preregistered pure selection helper."""
 import itertools
 from dataclasses import replace
 from pathlib import Path
@@ -37,13 +37,15 @@ def rank(rows, rules=RULES):
     return rank_candidates(rows, manifest=MANIFEST, control_ids=CONTROLS, rules=rules)
 
 
-def test_settings_come_from_registration_without_activating_it():
+def test_settings_come_from_registration_without_mutating_it():
+    import copy
     import tomllib
 
     path = Path(__file__).parents[1] / "configs/research/gp_predictive_priority_v2.toml"
     config = tomllib.loads(path.read_text(encoding="utf-8"))
+    before = copy.deepcopy(config)
     assert SelectionRules.from_config(config) == RULES
-    assert config["enqueue"] is False
+    assert config == before
     assert config["auto_trade"] is False
     assert config["maximum_batches"] == 1
     with pytest.raises(ValueError, match="registration"):

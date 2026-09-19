@@ -105,6 +105,9 @@ def maximum_correlation(frame: pl.DataFrame, score: str, controls: list[str], mi
 
 def search(panel: pl.DataFrame, labels: pl.DataFrame, mapping: dict[str, str], settings: dict,
            output: Path, *, family: str) -> list[dict]:
+    if 'predictive_priority' in settings:
+        from quant.research.predictive_priority_search import search_predictive
+        return search_predictive(panel, labels, mapping, settings, output, family=family)
     random.seed(settings['seed'])
     controls = list(mapping)
     basics: list[str] = [c for c in ('adj_open', 'adj_high', 'adj_low', 'adj_close', 'volume', 'amount',
@@ -275,6 +278,9 @@ def select_family(groups: dict[str, list[str]], coverage: dict[str, int], seed: 
 
 
 def run(settings: dict, output: Path) -> dict:
+    if settings.get('predictive_priority'):
+        from quant.research.predictive_priority_inputs import run_predictive
+        return run_predictive(settings, output)
     from quant.data.nightly_genetic_inputs import read_training_sample
     definitions = load_library(Path(settings['library']))
     diagnostics=recovery_diagnostics(output)

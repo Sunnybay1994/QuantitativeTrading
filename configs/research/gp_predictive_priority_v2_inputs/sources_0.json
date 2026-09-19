@@ -1,0 +1,1245 @@
+{
+  "schema_version": "gp_mechanism_sources_v1",
+  "terminal_sources": {
+    "gp_pit_annual_cash_profitability": {
+      "factor_id": "pit_annual_cash_profitability",
+      "expression": "pit_annual_cash_profitability",
+      "direction": 1,
+      "family": "pit_financial",
+      "source_ref": "src/quant/research/monthly_annual_cash_profitability.py",
+      "cached_definition": {
+        "path": "data\\factors\\pit_annual_cash_profitability\\definition.json",
+        "exists": true,
+        "bytes": 214,
+        "sha256": "71b23573ffc91d1b5d1b2fc755a7a56d282c93acd75a963ad17b72276866a4bf",
+        "hash_scope": "entire_file"
+      },
+      "partitions": [
+        {
+          "year": 2010,
+          "path": "data\\factors\\pit_annual_cash_profitability\\year=2010\\data.parquet",
+          "exists": true,
+          "bytes": 307515,
+          "sha256": "b2f401b7c17d37278e22ff37aec5904e7ab5577bd45543f14c8aa6262881fce3",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2011,
+          "path": "data\\factors\\pit_annual_cash_profitability\\year=2011\\data.parquet",
+          "exists": true,
+          "bytes": 313545,
+          "sha256": "112c2323648ca8c87ecb42a547043f9f0eafa5951729c2745222be4b13a89f80",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2012,
+          "path": "data\\factors\\pit_annual_cash_profitability\\year=2012\\data.parquet",
+          "exists": true,
+          "bytes": 294800,
+          "sha256": "900aa49a20392e1f5c2e4a51e774d7f2ecbbc98d98ff11c47dfaa75ab24309c8",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2013,
+          "path": "data\\factors\\pit_annual_cash_profitability\\year=2013\\data.parquet",
+          "exists": true,
+          "bytes": 257949,
+          "sha256": "728fcdc66e406ac1a3f0a93acb4bb60e79068886fd96848648c449acb639c963",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2014,
+          "path": "data\\factors\\pit_annual_cash_profitability\\year=2014\\data.parquet",
+          "exists": true,
+          "bytes": 296658,
+          "sha256": "1910f865d81aaab359ff8e7def917cb61b240862efb3c775fe0cd928549f2436",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2015,
+          "path": "data\\factors\\pit_annual_cash_profitability\\year=2015\\data.parquet",
+          "exists": true,
+          "bytes": 346751,
+          "sha256": "3b5dc278331489437c43f7d1db45004b3733fd93e194f963d7ef70a26394e1d6",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2016,
+          "path": "data\\factors\\pit_annual_cash_profitability\\year=2016\\data.parquet",
+          "exists": true,
+          "bytes": 370663,
+          "sha256": "4b23a7baae0b4e08a5a2c9fac54b928d5b04fbdd27eebbf7c559e6e430168d63",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2017,
+          "path": "data\\factors\\pit_annual_cash_profitability\\year=2017\\data.parquet",
+          "exists": true,
+          "bytes": 438857,
+          "sha256": "c2cd83d9d017aa4edb8e33cd02d7884b0fed74205d3905491597c5aea7ad959a",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2018,
+          "path": "data\\factors\\pit_annual_cash_profitability\\year=2018\\data.parquet",
+          "exists": true,
+          "bytes": 435956,
+          "sha256": "90d7e10f63654a1075a797b1b82825fc0cea2fe24d5f3016c3b60984a06856ee",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2019,
+          "path": "data\\factors\\pit_annual_cash_profitability\\year=2019\\data.parquet",
+          "exists": true,
+          "bytes": 483026,
+          "sha256": "1ce15262c8f68a01263e0e283108724fce7b6844f29366883f1aec80468a693f",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2020,
+          "path": "data\\factors\\pit_annual_cash_profitability\\year=2020\\data.parquet",
+          "exists": true,
+          "bytes": 561504,
+          "sha256": "7cc43909cb254fa7249496a537922fc7c36e5bf7926b7a3a913e4e399004bc5d",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2021,
+          "path": "data\\factors\\pit_annual_cash_profitability\\year=2021\\data.parquet",
+          "exists": true,
+          "bytes": 1040798,
+          "sha256": "987869af24674048b4306c185e5851616aace75a2b8726c33d9ea2a9009d6356",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2022,
+          "path": "data\\factors\\pit_annual_cash_profitability\\year=2022\\data.parquet",
+          "exists": true,
+          "bytes": 1228261,
+          "sha256": "d185d9320b86ea6d61f06f195bf1afe80abde9238873f11cc9d6ab755d79dfc6",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2023,
+          "path": "data\\factors\\pit_annual_cash_profitability\\year=2023\\data.parquet",
+          "exists": true,
+          "bytes": 1341415,
+          "sha256": "fc1a57075e1c3a50f22d1658f3513858eb6b0cc7074a1d0a82ed89f5e5181e6e",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2024,
+          "path": "data\\factors\\pit_annual_cash_profitability\\year=2024\\data.parquet",
+          "exists": true,
+          "bytes": 1380990,
+          "sha256": "28808542330cb2a842f96bab42db4d0ada6a5b3b4034020ae430b067d6411129",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2025,
+          "path": "data\\factors\\pit_annual_cash_profitability\\year=2025\\data.parquet",
+          "exists": true,
+          "bytes": 1472956,
+          "sha256": "56d7914c3f6f09305c00882a0f1bf6a813984a37f05f6af3e3d624f88a336019",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2026,
+          "path": "data\\factors\\pit_annual_cash_profitability\\year=2026\\data.parquet",
+          "exists": true,
+          "bytes": 1091608,
+          "sha256": "7c0a3062bdb0f3ea684aa3d186d9dab51bf973eee7588911b2ee5ca327041b08",
+          "hash_scope": "entire_file"
+        }
+      ],
+      "upstream_evidence": "financial_publication_context",
+      "partition_upstream_snapshot": null,
+      "limitation": "Cached definition/coverage and compute receipts do not identify the upstream financial snapshot for each historical partition. Freeze values, not reconstructed lineage."
+    },
+    "gp_pit_annual_debt_ebitda": {
+      "factor_id": "pit_annual_debt_ebitda",
+      "expression": "pit_annual_debt_ebitda",
+      "direction": -1,
+      "family": "pit_financial",
+      "source_ref": "src/quant/research/monthly_debt_ebitda.py",
+      "cached_definition": {
+        "path": "data\\factors\\pit_annual_debt_ebitda\\definition.json",
+        "exists": true,
+        "bytes": 187,
+        "sha256": "db67854baedb8ef1aaf59027d5bb7513eb8dc3a5b8efbfd8648d24028188704e",
+        "hash_scope": "entire_file"
+      },
+      "partitions": [
+        {
+          "year": 2010,
+          "path": "data\\factors\\pit_annual_debt_ebitda\\year=2010\\data.parquet",
+          "exists": true,
+          "bytes": 308975,
+          "sha256": "fc39d443bc8a4f5c713e5b9709a7202fb8922e40889ddecb8052f506cc7679e4",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2011,
+          "path": "data\\factors\\pit_annual_debt_ebitda\\year=2011\\data.parquet",
+          "exists": true,
+          "bytes": 325849,
+          "sha256": "488a3569bd040dae017d3985ff3dcaa10c71356e9cf7708aeb932ad5310594e6",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2012,
+          "path": "data\\factors\\pit_annual_debt_ebitda\\year=2012\\data.parquet",
+          "exists": true,
+          "bytes": 311196,
+          "sha256": "126743dbadc4cf4c499ea04f20d03298e8d4e240d049de80d01e218448324198",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2013,
+          "path": "data\\factors\\pit_annual_debt_ebitda\\year=2013\\data.parquet",
+          "exists": true,
+          "bytes": 272911,
+          "sha256": "19aabd68d98142844efdaa61ecc8834021bbe3d9e42cfc7b3cebd05aa062dea1",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2014,
+          "path": "data\\factors\\pit_annual_debt_ebitda\\year=2014\\data.parquet",
+          "exists": true,
+          "bytes": 306476,
+          "sha256": "3420fde71626a9e06e56b4f0e61200cff2a7456d7736c1dec496ddbac3f635df",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2015,
+          "path": "data\\factors\\pit_annual_debt_ebitda\\year=2015\\data.parquet",
+          "exists": true,
+          "bytes": 358969,
+          "sha256": "7cf8c21b6190a3b3a56a6bd5870252620247ee8a505910bf63fe9d39569c0e2b",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2016,
+          "path": "data\\factors\\pit_annual_debt_ebitda\\year=2016\\data.parquet",
+          "exists": true,
+          "bytes": 384659,
+          "sha256": "e1857c440c16ffdd0fbcccdd024e0b33754dfcd8e0b4410692db7f4b325789f9",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2017,
+          "path": "data\\factors\\pit_annual_debt_ebitda\\year=2017\\data.parquet",
+          "exists": true,
+          "bytes": 466350,
+          "sha256": "541598070b1b3158c25a5b56dc0088b67c5699865072d0019d3ecc25834c11a5",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2018,
+          "path": "data\\factors\\pit_annual_debt_ebitda\\year=2018\\data.parquet",
+          "exists": true,
+          "bytes": 468787,
+          "sha256": "670e15225686214042aed806b7100a4ef9c5a3f0553c510ad329dc28b12bf07b",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2019,
+          "path": "data\\factors\\pit_annual_debt_ebitda\\year=2019\\data.parquet",
+          "exists": true,
+          "bytes": 521142,
+          "sha256": "b24b73f4063c6fba189cfef03fd11c944fe037e874e696dafa358d51b5c17819",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2020,
+          "path": "data\\factors\\pit_annual_debt_ebitda\\year=2020\\data.parquet",
+          "exists": true,
+          "bytes": 591357,
+          "sha256": "7389406ec11d1b02ddfe7c4b804b85dbc8b319789bc33a18eef2bc2fedde7ae1",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2021,
+          "path": "data\\factors\\pit_annual_debt_ebitda\\year=2021\\data.parquet",
+          "exists": true,
+          "bytes": 1075130,
+          "sha256": "296508eb3b92e727b9b10cd5fee485f3bb856a7998aae10cd55de42208c6a77a",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2022,
+          "path": "data\\factors\\pit_annual_debt_ebitda\\year=2022\\data.parquet",
+          "exists": true,
+          "bytes": 1327798,
+          "sha256": "6b988c393d1791dbf3b07ccc834fe16501c5dde83333896697c1e2506d8d1afb",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2023,
+          "path": "data\\factors\\pit_annual_debt_ebitda\\year=2023\\data.parquet",
+          "exists": true,
+          "bytes": 1451936,
+          "sha256": "d1f526b2ea742b779c705da887cb5b0905d74b64cbad04756b7d39abb1fe434a",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2024,
+          "path": "data\\factors\\pit_annual_debt_ebitda\\year=2024\\data.parquet",
+          "exists": true,
+          "bytes": 1493037,
+          "sha256": "ded3ff8e0dda27ed4ad02d18bbc9b3002e3f7e9af2ba846caa97f23e4661cb49",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2025,
+          "path": "data\\factors\\pit_annual_debt_ebitda\\year=2025\\data.parquet",
+          "exists": true,
+          "bytes": 1551779,
+          "sha256": "13b948a4bd3a827c2ef7653790d4c7c196a3641a3247017a4b6b7ee68f86094e",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2026,
+          "path": "data\\factors\\pit_annual_debt_ebitda\\year=2026\\data.parquet",
+          "exists": true,
+          "bytes": 1139231,
+          "sha256": "046679fdde0fccce97ea5e7a81e90053c3650b6b5522cb6e66bb3481717afbc5",
+          "hash_scope": "entire_file"
+        }
+      ],
+      "upstream_evidence": "financial_publication_context",
+      "partition_upstream_snapshot": null,
+      "limitation": "Cached definition/coverage and compute receipts do not identify the upstream financial snapshot for each historical partition. Freeze values, not reconstructed lineage."
+    },
+    "gp_pit_annual_fscore": {
+      "factor_id": "pit_annual_fscore",
+      "expression": "pit_annual_fscore",
+      "direction": 1,
+      "family": "pit_financial",
+      "source_ref": "src/quant/factors/annual_fscore.py",
+      "cached_definition": {
+        "path": "data\\factors\\pit_annual_fscore\\definition.json",
+        "exists": true,
+        "bytes": 169,
+        "sha256": "50974cb6c7d68f91a7317c00e67e1b1088638564b5b0847a9ce0f37c6dfc64be",
+        "hash_scope": "entire_file"
+      },
+      "partitions": [
+        {
+          "year": 2010,
+          "path": "data\\factors\\pit_annual_fscore\\year=2010\\data.parquet",
+          "exists": true,
+          "bytes": 140302,
+          "sha256": "2907d7c3ab550cbb2dabc709b91d3cf2d002553a60cebd2e5d37cf326a6e2eca",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2011,
+          "path": "data\\factors\\pit_annual_fscore\\year=2011\\data.parquet",
+          "exists": true,
+          "bytes": 116347,
+          "sha256": "b56854446bb5ed221b8f81c9751cb2b9e0bea0b49fc8f512ec02143d5e4f7152",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2012,
+          "path": "data\\factors\\pit_annual_fscore\\year=2012\\data.parquet",
+          "exists": true,
+          "bytes": 111574,
+          "sha256": "743941f206e0bb1961bfd3dbae5ab0102b5c22ab45349b2e1ac12ec2e9746ec0",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2013,
+          "path": "data\\factors\\pit_annual_fscore\\year=2013\\data.parquet",
+          "exists": true,
+          "bytes": 101922,
+          "sha256": "e5b412016ebd6a3967f119e79811d812e7d4ded94cb2011b086713345356c4d0",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2014,
+          "path": "data\\factors\\pit_annual_fscore\\year=2014\\data.parquet",
+          "exists": true,
+          "bytes": 126345,
+          "sha256": "9eb4025195a37e560359d3f071698972e65528af96329624be12fbf0f43e8e1a",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2015,
+          "path": "data\\factors\\pit_annual_fscore\\year=2015\\data.parquet",
+          "exists": true,
+          "bytes": 153458,
+          "sha256": "4958315cf0dee330e3276c7d95fc6c7340088a79814e4d054104a6ed80b6c83c",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2016,
+          "path": "data\\factors\\pit_annual_fscore\\year=2016\\data.parquet",
+          "exists": true,
+          "bytes": 154885,
+          "sha256": "be56d44f64ef6ec3188535777c86aa7144bfefaafd0cc315514d313d1054e37b",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2017,
+          "path": "data\\factors\\pit_annual_fscore\\year=2017\\data.parquet",
+          "exists": true,
+          "bytes": 172513,
+          "sha256": "81b7de7de0e611e28401fa64822dcaf6f00be1eaee3ad1e88a506d2aadbfcb52",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2018,
+          "path": "data\\factors\\pit_annual_fscore\\year=2018\\data.parquet",
+          "exists": true,
+          "bytes": 163655,
+          "sha256": "0a3a4f91247aa239089726af4369912c0ffefdd4b4ada83adea06f025134bc59",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2019,
+          "path": "data\\factors\\pit_annual_fscore\\year=2019\\data.parquet",
+          "exists": true,
+          "bytes": 162757,
+          "sha256": "831e4ccff265145c408f921c5ee0c144a2d0c537731522f114a3b3a07b2b2ebd",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2020,
+          "path": "data\\factors\\pit_annual_fscore\\year=2020\\data.parquet",
+          "exists": true,
+          "bytes": 212113,
+          "sha256": "87933070b1c29bae604957d899c82424a754a3c07fb1838623d2d10777e8e6ef",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2021,
+          "path": "data\\factors\\pit_annual_fscore\\year=2021\\data.parquet",
+          "exists": true,
+          "bytes": 609970,
+          "sha256": "8c637fbc5ac29428dfa44b0be22bc95a65636c78ec26c1ab94fc5ee9672ed866",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2022,
+          "path": "data\\factors\\pit_annual_fscore\\year=2022\\data.parquet",
+          "exists": true,
+          "bytes": 719348,
+          "sha256": "9fb081808cbd6d3b4271a8416db6f75a7a8b562787493b8bcb9e2ea4e2472f91",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2023,
+          "path": "data\\factors\\pit_annual_fscore\\year=2023\\data.parquet",
+          "exists": true,
+          "bytes": 815186,
+          "sha256": "99f372ca2c93756de3c2415674115892663d29529610f9402e872b62738ac237",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2024,
+          "path": "data\\factors\\pit_annual_fscore\\year=2024\\data.parquet",
+          "exists": true,
+          "bytes": 779972,
+          "sha256": "6e322c38c57a2837a497c66f60d6b46783a4fd3fc144b406ff37432acbc31dbe",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2025,
+          "path": "data\\factors\\pit_annual_fscore\\year=2025\\data.parquet",
+          "exists": true,
+          "bytes": 835861,
+          "sha256": "6feb3a06ffb05305627c36216931f6193a8eaddc47de1cdf2c9f8e44ace6f4b0",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2026,
+          "path": "data\\factors\\pit_annual_fscore\\year=2026\\data.parquet",
+          "exists": true,
+          "bytes": 612264,
+          "sha256": "058a7228bd9a1b8b94c104e0bfa588f56efc804ac427f0819e678b3663996d8b",
+          "hash_scope": "entire_file"
+        }
+      ],
+      "upstream_evidence": "financial_publication_context",
+      "partition_upstream_snapshot": null,
+      "limitation": "Cached definition/coverage and compute receipts do not identify the upstream financial snapshot for each historical partition. Freeze values, not reconstructed lineage."
+    },
+    "gp_pit_annual_gmar": {
+      "factor_id": "pit_annual_gmar",
+      "expression": "pit_annual_gmar",
+      "direction": 1,
+      "family": "pit_financial",
+      "source_ref": "src/quant/factors/annual_profitability.py",
+      "cached_definition": {
+        "path": "data\\factors\\pit_annual_gmar\\definition.json",
+        "exists": true,
+        "bytes": 172,
+        "sha256": "fc04a79bf8197046dbbcf2c81550b444764e7744267d40dc49db6fcd65f983ac",
+        "hash_scope": "entire_file"
+      },
+      "partitions": [
+        {
+          "year": 2010,
+          "path": "data\\factors\\pit_annual_gmar\\year=2010\\data.parquet",
+          "exists": true,
+          "bytes": 320301,
+          "sha256": "329b8c46daab1dc491869e4084857145221b668dcc4a4d0cb95f4cb1a6533867",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2011,
+          "path": "data\\factors\\pit_annual_gmar\\year=2011\\data.parquet",
+          "exists": true,
+          "bytes": 344087,
+          "sha256": "d8009b35f3f17ebef89e05b1e72c4f8874251d762955128fe8b46d3c8f9955b6",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2012,
+          "path": "data\\factors\\pit_annual_gmar\\year=2012\\data.parquet",
+          "exists": true,
+          "bytes": 334851,
+          "sha256": "7e3f0f756489e8fc610a8fc1f182446e6eb9c267df14c10a3e5dd3015f51172f",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2013,
+          "path": "data\\factors\\pit_annual_gmar\\year=2013\\data.parquet",
+          "exists": true,
+          "bytes": 298014,
+          "sha256": "84367d5badcbaa8b3ce57f5a1587757d5c1483ac80ca4f97ec0dbf0a8f394808",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2014,
+          "path": "data\\factors\\pit_annual_gmar\\year=2014\\data.parquet",
+          "exists": true,
+          "bytes": 329060,
+          "sha256": "7e2ab10475fbebff629b479ca9c41cce98155976997a4df02eb68e4544ace86c",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2015,
+          "path": "data\\factors\\pit_annual_gmar\\year=2015\\data.parquet",
+          "exists": true,
+          "bytes": 378805,
+          "sha256": "0ed4290c9d2afb7f54efc25bafa53f5b35d136bb0bf1e7c883b0cfbf90fb654c",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2016,
+          "path": "data\\factors\\pit_annual_gmar\\year=2016\\data.parquet",
+          "exists": true,
+          "bytes": 415504,
+          "sha256": "a093bdb7f9f5dd4b2c0b406b1931a061423a531352ae22603acd3fc13d5814f8",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2017,
+          "path": "data\\factors\\pit_annual_gmar\\year=2017\\data.parquet",
+          "exists": true,
+          "bytes": 511227,
+          "sha256": "0caa82280d13c6450b6d1893aaf9ffa14f498db12bd597adb794a38a2c3ac8cd",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2018,
+          "path": "data\\factors\\pit_annual_gmar\\year=2018\\data.parquet",
+          "exists": true,
+          "bytes": 523773,
+          "sha256": "df9d56a3ed2e0f870490edade44fdda7edfa034f36b09d2e124df46d0ed4704a",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2019,
+          "path": "data\\factors\\pit_annual_gmar\\year=2019\\data.parquet",
+          "exists": true,
+          "bytes": 595963,
+          "sha256": "267363a32ca135e67e2fd2ce8acc58e7f3000482ff86cdbba732927afb448310",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2020,
+          "path": "data\\factors\\pit_annual_gmar\\year=2020\\data.parquet",
+          "exists": true,
+          "bytes": 677447,
+          "sha256": "9cae67fb446ad29366e4f60b36ec9aea49d1739ec9715f7c82f7a52a3b5de2f5",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2021,
+          "path": "data\\factors\\pit_annual_gmar\\year=2021\\data.parquet",
+          "exists": true,
+          "bytes": 1189717,
+          "sha256": "c517de3c329f39144157fd0d53003133583e12a5f0561dc1adc78701c098f7a8",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2022,
+          "path": "data\\factors\\pit_annual_gmar\\year=2022\\data.parquet",
+          "exists": true,
+          "bytes": 1421590,
+          "sha256": "77bc49ba3303320426cda4e160f3201cd6a322594617074a3fd047b871e5c74e",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2023,
+          "path": "data\\factors\\pit_annual_gmar\\year=2023\\data.parquet",
+          "exists": true,
+          "bytes": 1545154,
+          "sha256": "53e348a1e60d6a97d8a5272d8c21c9dba8ae7a8917b3ea228ca29216a7b34fbc",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2024,
+          "path": "data\\factors\\pit_annual_gmar\\year=2024\\data.parquet",
+          "exists": true,
+          "bytes": 1596586,
+          "sha256": "dabd3facdbf2c18629704591f289ff8bbfa70df5eb9a9b434bef1787c42a1a91",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2025,
+          "path": "data\\factors\\pit_annual_gmar\\year=2025\\data.parquet",
+          "exists": true,
+          "bytes": 1673536,
+          "sha256": "60b67bf63cc579ea36a1662b37ab93e3d8534235a2de64f5bbcc3d0f2935ce84",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2026,
+          "path": "data\\factors\\pit_annual_gmar\\year=2026\\data.parquet",
+          "exists": true,
+          "bytes": 1228795,
+          "sha256": "e0a2ee8db6055920d4ea0dd12fd03dd256c664f36a9a6b1c2f20792cf2aee89b",
+          "hash_scope": "entire_file"
+        }
+      ],
+      "upstream_evidence": "financial_publication_context",
+      "partition_upstream_snapshot": null,
+      "limitation": "Cached definition/coverage and compute receipts do not identify the upstream financial snapshot for each historical partition. Freeze values, not reconstructed lineage."
+    },
+    "gp_pit_annual_gpoa": {
+      "factor_id": "pit_annual_gpoa",
+      "expression": "pit_annual_gpoa",
+      "direction": 1,
+      "family": "pit_financial",
+      "source_ref": "src/quant/factors/annual_profitability.py",
+      "cached_definition": {
+        "path": "data\\factors\\pit_annual_gpoa\\definition.json",
+        "exists": true,
+        "bytes": 172,
+        "sha256": "7f58d084b8f816aeac2b244ad3095cf41a2d2d79b06ec1dc6bf67863e38227eb",
+        "hash_scope": "entire_file"
+      },
+      "partitions": [
+        {
+          "year": 2010,
+          "path": "data\\factors\\pit_annual_gpoa\\year=2010\\data.parquet",
+          "exists": true,
+          "bytes": 320861,
+          "sha256": "e9d5da68ac53a4e8c1ef05367e13ef27a293ae1cfe5c7cdd51b3a0d270d9ed86",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2011,
+          "path": "data\\factors\\pit_annual_gpoa\\year=2011\\data.parquet",
+          "exists": true,
+          "bytes": 342792,
+          "sha256": "211773ea77578a507b67d06cce30f8fd0cd9a203352135fa2a502a28199bec84",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2012,
+          "path": "data\\factors\\pit_annual_gpoa\\year=2012\\data.parquet",
+          "exists": true,
+          "bytes": 334871,
+          "sha256": "ec4c62c8aae619b40a8fa069a15e640b08770cb15d58175352f97ea5db688cdd",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2013,
+          "path": "data\\factors\\pit_annual_gpoa\\year=2013\\data.parquet",
+          "exists": true,
+          "bytes": 297107,
+          "sha256": "0fbc2a39007b9b44a0338866741a2500902c5cdec515b7f4a7c7ba7f984d6db5",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2014,
+          "path": "data\\factors\\pit_annual_gpoa\\year=2014\\data.parquet",
+          "exists": true,
+          "bytes": 329479,
+          "sha256": "53a2f0b5a86d681a4690e0089eee8a6c2c4c51b88d039374ec5002be2e86a596",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2015,
+          "path": "data\\factors\\pit_annual_gpoa\\year=2015\\data.parquet",
+          "exists": true,
+          "bytes": 378224,
+          "sha256": "415d669cac0119bfd304b00ca35e319563f1d6dea0b38e49de8145312286bf5f",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2016,
+          "path": "data\\factors\\pit_annual_gpoa\\year=2016\\data.parquet",
+          "exists": true,
+          "bytes": 416101,
+          "sha256": "a4c64a63cbc684c062421e5752c5581cf0734cee3deb4e97a70ab9c26ea3b9a4",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2017,
+          "path": "data\\factors\\pit_annual_gpoa\\year=2017\\data.parquet",
+          "exists": true,
+          "bytes": 510289,
+          "sha256": "590678227c557c3709975eb02dfa5480ca7bda47d196f8f88e6f5e50bd513864",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2018,
+          "path": "data\\factors\\pit_annual_gpoa\\year=2018\\data.parquet",
+          "exists": true,
+          "bytes": 522619,
+          "sha256": "368a7e211cd97a53ecbdad8fb216725250b996a9c44cf703be825e5152aacdfa",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2019,
+          "path": "data\\factors\\pit_annual_gpoa\\year=2019\\data.parquet",
+          "exists": true,
+          "bytes": 594502,
+          "sha256": "50e31200a779180b9fe408a7f277c688d2b12c251b7dfe0ca01b611c4d4b513d",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2020,
+          "path": "data\\factors\\pit_annual_gpoa\\year=2020\\data.parquet",
+          "exists": true,
+          "bytes": 676327,
+          "sha256": "b77580ced0bc47f58983cc499c532ddfdaaf1330f189b5059ee684a765846cfa",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2021,
+          "path": "data\\factors\\pit_annual_gpoa\\year=2021\\data.parquet",
+          "exists": true,
+          "bytes": 1188220,
+          "sha256": "6ad3c1c8cb4aed6907b3fa50e835176a6dccabb4f92b10f1f83505c8f2ac4a01",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2022,
+          "path": "data\\factors\\pit_annual_gpoa\\year=2022\\data.parquet",
+          "exists": true,
+          "bytes": 1416845,
+          "sha256": "39d5330ad6bdbe102c18e310042aea43db7128f69fe5d6de974330f52a2aec97",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2023,
+          "path": "data\\factors\\pit_annual_gpoa\\year=2023\\data.parquet",
+          "exists": true,
+          "bytes": 1543427,
+          "sha256": "efe6610a39250aa46acbd118b0e8a22ff1eee1966a4bb7241f480e610a7d972d",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2024,
+          "path": "data\\factors\\pit_annual_gpoa\\year=2024\\data.parquet",
+          "exists": true,
+          "bytes": 1596524,
+          "sha256": "ad90be30c448ab19b96f3b560cdfce04e96ee12a539100acffd69ef9284c97cf",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2025,
+          "path": "data\\factors\\pit_annual_gpoa\\year=2025\\data.parquet",
+          "exists": true,
+          "bytes": 1673781,
+          "sha256": "f98fb063cef8e8daeab290c6d92a85a73554cddf380ed7f8b74403cf6007f313",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2026,
+          "path": "data\\factors\\pit_annual_gpoa\\year=2026\\data.parquet",
+          "exists": true,
+          "bytes": 1228216,
+          "sha256": "1f1aca141db31ed416d21c0a87dbc8717859861f063985fa5ec4d20a5fb88583",
+          "hash_scope": "entire_file"
+        }
+      ],
+      "upstream_evidence": "financial_publication_context",
+      "partition_upstream_snapshot": null,
+      "limitation": "Cached definition/coverage and compute receipts do not identify the upstream financial snapshot for each historical partition. Freeze values, not reconstructed lineage."
+    },
+    "gp_pit_annual_low_accruals": {
+      "factor_id": "pit_annual_low_accruals",
+      "expression": "pit_annual_low_accruals",
+      "direction": 1,
+      "family": "pit_financial",
+      "source_ref": "src/quant/factors/annual_profitability.py",
+      "cached_definition": {
+        "path": "data\\factors\\pit_annual_low_accruals\\definition.json",
+        "exists": true,
+        "bytes": 188,
+        "sha256": "75a587ea8ea4921987f618c43b018e52937480f022ea2257516b2d3cd3bbd55b",
+        "hash_scope": "entire_file"
+      },
+      "partitions": [
+        {
+          "year": 2010,
+          "path": "data\\factors\\pit_annual_low_accruals\\year=2010\\data.parquet",
+          "exists": true,
+          "bytes": 308335,
+          "sha256": "a48ccac76da12286a93a03a11e7fa5e4591df29905dca9595ca2b87d5d8ec8e1",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2011,
+          "path": "data\\factors\\pit_annual_low_accruals\\year=2011\\data.parquet",
+          "exists": true,
+          "bytes": 313449,
+          "sha256": "d9740ac955262b6656b335db9d69dcc946cadbd4cc00d3398101a26d26be3701",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2012,
+          "path": "data\\factors\\pit_annual_low_accruals\\year=2012\\data.parquet",
+          "exists": true,
+          "bytes": 294847,
+          "sha256": "2de8b6654eb4d78126b9447d3693a7ba8e6036b4158b5b54d59c55b150ad9090",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2013,
+          "path": "data\\factors\\pit_annual_low_accruals\\year=2013\\data.parquet",
+          "exists": true,
+          "bytes": 258198,
+          "sha256": "0014dfd5cc944734dae1cf47e6c42cd9c9e23541ec242acb3ef7c6d2523ab473",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2014,
+          "path": "data\\factors\\pit_annual_low_accruals\\year=2014\\data.parquet",
+          "exists": true,
+          "bytes": 297068,
+          "sha256": "5802e39266d726fc616f3ed195ce06449016cff49245d227258d968c81ffd045",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2015,
+          "path": "data\\factors\\pit_annual_low_accruals\\year=2015\\data.parquet",
+          "exists": true,
+          "bytes": 347284,
+          "sha256": "c3bc6911524a5d0a8be9984e636686e03abccc85da5e3e6f1604e87de5aebdcf",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2016,
+          "path": "data\\factors\\pit_annual_low_accruals\\year=2016\\data.parquet",
+          "exists": true,
+          "bytes": 371502,
+          "sha256": "26ebc39bd24e7acfe61994efefed15451b298290b8cc77b06687c2f0b1d0b1b7",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2017,
+          "path": "data\\factors\\pit_annual_low_accruals\\year=2017\\data.parquet",
+          "exists": true,
+          "bytes": 439740,
+          "sha256": "251185c82914978aa9f7e42f99d0101c9bf8944a1272aec1fa7531ae7756733e",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2018,
+          "path": "data\\factors\\pit_annual_low_accruals\\year=2018\\data.parquet",
+          "exists": true,
+          "bytes": 436182,
+          "sha256": "5ff40b69624d4d42fda0dfc9277ea14b8abf97ceb340d513fa0cf1ba4ee26a1b",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2019,
+          "path": "data\\factors\\pit_annual_low_accruals\\year=2019\\data.parquet",
+          "exists": true,
+          "bytes": 483381,
+          "sha256": "7268f729fe0b1e737634d9cd4f5ba7db47c5ba8daaa0dc2b24f898f6c15075cd",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2020,
+          "path": "data\\factors\\pit_annual_low_accruals\\year=2020\\data.parquet",
+          "exists": true,
+          "bytes": 562183,
+          "sha256": "7af9460bc76989fae582b759c81e5c2c9f424c5f2fee626ec47411be74f5ca03",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2021,
+          "path": "data\\factors\\pit_annual_low_accruals\\year=2021\\data.parquet",
+          "exists": true,
+          "bytes": 1041220,
+          "sha256": "6b3b9970865e6b3770aab7cdd7010d9eabea58167cddf7f3a0d50f4febd0e34d",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2022,
+          "path": "data\\factors\\pit_annual_low_accruals\\year=2022\\data.parquet",
+          "exists": true,
+          "bytes": 1228451,
+          "sha256": "ed6f4edf70b4a0f709b6617e864f516fb90bf4adf523f9aeebe370d4118c1c2e",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2023,
+          "path": "data\\factors\\pit_annual_low_accruals\\year=2023\\data.parquet",
+          "exists": true,
+          "bytes": 1341398,
+          "sha256": "76c9697c2c99fae9973b1e740e7c63a3b41133152fc47002f3fdea7ad6a2113e",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2024,
+          "path": "data\\factors\\pit_annual_low_accruals\\year=2024\\data.parquet",
+          "exists": true,
+          "bytes": 1381217,
+          "sha256": "62180c4d9038e7086973781a81a8754d1c2af944f194cbb7387f60291166a3a1",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2025,
+          "path": "data\\factors\\pit_annual_low_accruals\\year=2025\\data.parquet",
+          "exists": true,
+          "bytes": 1473078,
+          "sha256": "9c1da7789ff926fb08ef6c7553844c77ea556f3130448bde15b99fcd0acf6671",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2026,
+          "path": "data\\factors\\pit_annual_low_accruals\\year=2026\\data.parquet",
+          "exists": true,
+          "bytes": 1091575,
+          "sha256": "7e4a8a764e6ba999afd88e9c35d71fa524de7231e72a2c5c6c2eb2cf3b59450f",
+          "hash_scope": "entire_file"
+        }
+      ],
+      "upstream_evidence": "financial_publication_context",
+      "partition_upstream_snapshot": null,
+      "limitation": "Cached definition/coverage and compute receipts do not identify the upstream financial snapshot for each historical partition. Freeze values, not reconstructed lineage."
+    },
+    "gp_pit_annual_profitability": {
+      "factor_id": "pit_annual_profitability",
+      "expression": "pit_annual_profitability",
+      "direction": 1,
+      "family": "pit_financial",
+      "source_ref": "src/quant/factors/annual_profitability.py",
+      "cached_definition": {
+        "path": "data\\factors\\pit_annual_profitability\\definition.json",
+        "exists": true,
+        "bytes": 190,
+        "sha256": "edbda6838bcd5b4e64f9b1cd9084b0f92d0a3fb13501e3a93f5c811e5330efb2",
+        "hash_scope": "entire_file"
+      },
+      "partitions": [
+        {
+          "year": 2010,
+          "path": "data\\factors\\pit_annual_profitability\\year=2010\\data.parquet",
+          "exists": true,
+          "bytes": 1857546,
+          "sha256": "321644fbfcbde4d7d6f06dbed5de4726570eef1f9acb638a49d8405b91c0a626",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2011,
+          "path": "data\\factors\\pit_annual_profitability\\year=2011\\data.parquet",
+          "exists": true,
+          "bytes": 2151630,
+          "sha256": "c0a31646902a24fca259d4a4d99bc40fec3e371b8ce98162fd029db807b1cb5d",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2012,
+          "path": "data\\factors\\pit_annual_profitability\\year=2012\\data.parquet",
+          "exists": true,
+          "bytes": 2241953,
+          "sha256": "4226f8fc0f069ce0c2d8b56fecc8044ce4d7278571788e52be1bb0c6eb948cdb",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2013,
+          "path": "data\\factors\\pit_annual_profitability\\year=2013\\data.parquet",
+          "exists": true,
+          "bytes": 2164454,
+          "sha256": "a7cf7af29a48ef3c85b52282c7ac6a1ec106db2dd8a9981ff9bc23d537d9f2a2",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2014,
+          "path": "data\\factors\\pit_annual_profitability\\year=2014\\data.parquet",
+          "exists": true,
+          "bytes": 2250811,
+          "sha256": "f4ef96c1407c8a8d5bde39fcb20d9b30f7d026e6f3ccd6d486dadef94103229e",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2015,
+          "path": "data\\factors\\pit_annual_profitability\\year=2015\\data.parquet",
+          "exists": true,
+          "bytes": 2446250,
+          "sha256": "bf416af0ee1024a8cf2fcdbcea37aa1aff21b8be831dd9fae6df885a8b1666d1",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2016,
+          "path": "data\\factors\\pit_annual_profitability\\year=2016\\data.parquet",
+          "exists": true,
+          "bytes": 2676150,
+          "sha256": "7106b0a9e02264498483183292be67d3f43207195e61d954d55f5dbd4d3f6893",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2017,
+          "path": "data\\factors\\pit_annual_profitability\\year=2017\\data.parquet",
+          "exists": true,
+          "bytes": 3128557,
+          "sha256": "88a0499dbe3519e3851dfd4db21d37ee8c9b44d7a9972dcb60d3b3953633564d",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2018,
+          "path": "data\\factors\\pit_annual_profitability\\year=2018\\data.parquet",
+          "exists": true,
+          "bytes": 3415431,
+          "sha256": "4b58e0e461f7495bba3ec5d5b2cf31718d9d17b9537394cd1fa390b9bde7a17a",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2019,
+          "path": "data\\factors\\pit_annual_profitability\\year=2019\\data.parquet",
+          "exists": true,
+          "bytes": 3412420,
+          "sha256": "0966671c0a62847399a826b984d42837a15dccde5ee727d67ea06768070878cd",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2020,
+          "path": "data\\factors\\pit_annual_profitability\\year=2020\\data.parquet",
+          "exists": true,
+          "bytes": 3971725,
+          "sha256": "20b111c3625c67400189abab974758a0855e85fa6d63701d5f94c4febc9f8f2e",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2021,
+          "path": "data\\factors\\pit_annual_profitability\\year=2021\\data.parquet",
+          "exists": true,
+          "bytes": 5039506,
+          "sha256": "bb51c821e44038125f16f5e3a0e39b4e26f8b15b7113d91b8baf2685eb2fde71",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2022,
+          "path": "data\\factors\\pit_annual_profitability\\year=2022\\data.parquet",
+          "exists": true,
+          "bytes": 5385139,
+          "sha256": "e9e0b8ff4c0616f752adc10f44a88c39302d7aee59373fa4b99c116b4d2e090a",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2023,
+          "path": "data\\factors\\pit_annual_profitability\\year=2023\\data.parquet",
+          "exists": true,
+          "bytes": 5491148,
+          "sha256": "36a6315a548feab31b70577e97afd299dd3f6f30f8d461f9e5aee2e0f166b538",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2024,
+          "path": "data\\factors\\pit_annual_profitability\\year=2024\\data.parquet",
+          "exists": true,
+          "bytes": 4986347,
+          "sha256": "da4f3b11fa1c307a4b5226e6ea589ed6feef522ab007313facf1b06036954848",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2025,
+          "path": "data\\factors\\pit_annual_profitability\\year=2025\\data.parquet",
+          "exists": true,
+          "bytes": 5559915,
+          "sha256": "b1ead638a408b7387037235c81fb1fe10a773cfbf9c9cbcf492a8c1ef42d2192",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2026,
+          "path": "data\\factors\\pit_annual_profitability\\year=2026\\data.parquet",
+          "exists": true,
+          "bytes": 4001044,
+          "sha256": "a4121ed059d9501ca89a32d95802c639a962aeed21fd8d843b19eca1d1a0c3e9",
+          "hash_scope": "entire_file"
+        }
+      ],
+      "upstream_evidence": "financial_publication_context",
+      "partition_upstream_snapshot": null,
+      "limitation": "Cached definition/coverage and compute receipts do not identify the upstream financial snapshot for each historical partition. Freeze values, not reconstructed lineage."
+    },
+    "gp_pit_annual_roa": {
+      "factor_id": "pit_annual_roa",
+      "expression": "pit_annual_roa",
+      "direction": 1,
+      "family": "pit_financial",
+      "source_ref": "src/quant/factors/annual_profitability.py",
+      "cached_definition": {
+        "path": "data\\factors\\pit_annual_roa\\definition.json",
+        "exists": true,
+        "bytes": 170,
+        "sha256": "2e712792d530bb340c9a6f6c7b27a5145826d175b197a87e903a0855f320d85c",
+        "hash_scope": "entire_file"
+      },
+      "partitions": [
+        {
+          "year": 2010,
+          "path": "data\\factors\\pit_annual_roa\\year=2010\\data.parquet",
+          "exists": true,
+          "bytes": 322703,
+          "sha256": "81ded50f6d9f7c54f8298f0100b00d4727b707117dc85f2493814a3dc6f22cee",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2011,
+          "path": "data\\factors\\pit_annual_roa\\year=2011\\data.parquet",
+          "exists": true,
+          "bytes": 344723,
+          "sha256": "8e009980bc336ae29f292c15b09e899f78a83208085ceb6e4b11988e6ad2a633",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2012,
+          "path": "data\\factors\\pit_annual_roa\\year=2012\\data.parquet",
+          "exists": true,
+          "bytes": 336390,
+          "sha256": "ab6170a793c272d1df38096bfd5ed6eea4c27e44735378df9827bd69e34c1f31",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2013,
+          "path": "data\\factors\\pit_annual_roa\\year=2013\\data.parquet",
+          "exists": true,
+          "bytes": 299076,
+          "sha256": "81f20d4ecfc3aeea654074555c3a45e83fafe5bb690430b90c1b9fc3c353bb96",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2014,
+          "path": "data\\factors\\pit_annual_roa\\year=2014\\data.parquet",
+          "exists": true,
+          "bytes": 331648,
+          "sha256": "22840bdc051b1120dc404e9dae709256546e8c1bb4235338077ff15fc02ba201",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2015,
+          "path": "data\\factors\\pit_annual_roa\\year=2015\\data.parquet",
+          "exists": true,
+          "bytes": 380752,
+          "sha256": "a44c2512b9b07e3a44cd5a839e5d5d1cf5fec4b5663e451ab4247b11cc987370",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2016,
+          "path": "data\\factors\\pit_annual_roa\\year=2016\\data.parquet",
+          "exists": true,
+          "bytes": 418082,
+          "sha256": "f7a528633626f83bf04e07e05ac5d97f7210a7be74e596a56aea2f3780b87db5",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2017,
+          "path": "data\\factors\\pit_annual_roa\\year=2017\\data.parquet",
+          "exists": true,
+          "bytes": 512827,
+          "sha256": "4cbc2cbbd013dac4470b51dfdc3adaaedd82df59d44745286b8880313d251502",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2018,
+          "path": "data\\factors\\pit_annual_roa\\year=2018\\data.parquet",
+          "exists": true,
+          "bytes": 524736,
+          "sha256": "5461a6251cb108f3a14c201b8d7fc5a24ab243884555b5d2a63f9c4392eb24cd",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2019,
+          "path": "data\\factors\\pit_annual_roa\\year=2019\\data.parquet",
+          "exists": true,
+          "bytes": 598774,
+          "sha256": "b0815130841fa293d0dc8e4a515630e0145069845a3236ad89dcae9e89852581",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2020,
+          "path": "data\\factors\\pit_annual_roa\\year=2020\\data.parquet",
+          "exists": true,
+          "bytes": 681139,
+          "sha256": "7efe234816502506f10a584839f5e2eba08373b5f3e213dae5e4fd506e31f89b",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2021,
+          "path": "data\\factors\\pit_annual_roa\\year=2021\\data.parquet",
+          "exists": true,
+          "bytes": 1194260,
+          "sha256": "0d1696be0a24b56de809237a7c04319d055b3bef06e3df544534e0d255166ae0",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2022,
+          "path": "data\\factors\\pit_annual_roa\\year=2022\\data.parquet",
+          "exists": true,
+          "bytes": 1424778,
+          "sha256": "0e8ab60600e0d8f65e73d066de36a502064c51965412fed29a2c02b5cde27858",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2023,
+          "path": "data\\factors\\pit_annual_roa\\year=2023\\data.parquet",
+          "exists": true,
+          "bytes": 1552378,
+          "sha256": "f1cb9aa180a831f7306562545d5d5cd03c14b64abf1b0e66f49e3524bbe673d6",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2024,
+          "path": "data\\factors\\pit_annual_roa\\year=2024\\data.parquet",
+          "exists": true,
+          "bytes": 1607228,
+          "sha256": "be46c933e0229510aae4f59f6d2cc876b9c335aa3c6aac83ae1007076a9d0605",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2025,
+          "path": "data\\factors\\pit_annual_roa\\year=2025\\data.parquet",
+          "exists": true,
+          "bytes": 1684996,
+          "sha256": "9be6ca890eb50a641ed3ffb3a4b544d2a0141268d5b62e3ae351fb1908b9ea91",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2026,
+          "path": "data\\factors\\pit_annual_roa\\year=2026\\data.parquet",
+          "exists": true,
+          "bytes": 1237635,
+          "sha256": "3f2327b10061617ec85de2bbf9a622da714e9bb47d1e9dc7a9c31a26034abc18",
+          "hash_scope": "entire_file"
+        }
+      ],
+      "upstream_evidence": "financial_publication_context",
+      "partition_upstream_snapshot": null,
+      "limitation": "Cached definition/coverage and compute receipts do not identify the upstream financial snapshot for each historical partition. Freeze values, not reconstructed lineage."
+    }
+  }
+}

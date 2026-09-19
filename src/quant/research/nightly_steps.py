@@ -47,6 +47,12 @@ def resolve_settings(settings: dict, run: Path) -> dict:
         if settings.get('cross_stock_config'):
             result['cross_stock'] = tomllib.loads(Path(settings['cross_stock_config']).read_text(encoding='utf-8'))
             result['training_end'] = result['cross_stock']['training_end']
+        if settings.get('predictive_priority_config'):
+            if settings.get('cross_stock_config'):
+                raise ValueError('A batch cannot combine two registered GP objectives')
+            result['predictive_priority'] = tomllib.loads(
+                Path(settings['predictive_priority_config']).read_text(encoding='utf-8'))
+            result['training_end'] = result['predictive_priority']['training_end']
         choices=[]
         for completed in Path(settings['output_root']).glob('monthly/*/summary.json'):
             row=json.loads(completed.read_text(encoding='utf-8'))

@@ -12,6 +12,67 @@ import tomllib
 import polars as pl
 
 
+def search_objective_components(candidate: dict) -> dict:
+    """Describe saved selection evidence without inventing a scalar fitness."""
+    def finite(value):
+        return value if type(value) in (int, float) and math.isfinite(value) else None
+
+    objective = candidate.get('search_objective', 'pooled_mean_ic_v1')
+    correlation = finite(candidate.get('maximum_rank_correlation'))
+    predictive = objective == 'predictive_priority_v2'
+    if predictive:
+        primary = finite(candidate.get('selection_primary'))
+    elif objective == 'cross_stock_min_ic_v1':
+        primary = finite(candidate.get('worst_directional_mean_ic'))
+    else:
+        pooled = finite((candidate.get('train') or {}).get('mean_ic'))
+        primary = abs(pooled) if pooled is not None else None
+    fitness = None if predictive else finite(candidate.get('fitness'))
+    penalty = .5*correlation if not predictive and correlation is not None else None
+    return {'search_objective': objective,
+            'primary_metric': ('worst_directional_group_mean_ic' if predictive or objective == 'cross_stock_min_ic_v1'
+                               else 'absolute_pooled_mean_ic'),
+            'signal_component': primary, 'selection_primary': primary,
+            'maximum_rank_correlation': correlation,
+            'correlation_role': 'secondary_within_registered_ic_band' if predictive else 'scalar_fitness_penalty',
+            'selection_eligible': candidate.get('selection_eligible') if predictive else None,
+            'selection_reasons': candidate.get('selection_reasons') if predictive else None,
+            'fitness': fitness, 'correlation_penalty': penalty,
+            'nodes': candidate.get('complexity'),
+            'residual_complexity_penalty': (primary-penalty-fitness
+                if all(value is not None for value in (primary, penalty, fitness)) else None)}
+
+
+def search_selection_summary(candidates: list[dict]) -> dict:
+    """Keep objective-specific primary and secondary measures in compact feedback."""
+    def measured(values):
+        finite = [v for v in values if v is not None]
+        return {'available': len(finite), 'missing': len(values)-len(finite),
+                'median': descriptive.median(finite) if finite else None}
+
+    components = [search_objective_components(row) for row in candidates]
+    result = {}
+    for objective in sorted({row['search_objective'] for row in components}):
+        rows = [row for row in components if row['search_objective'] == objective]
+        result[objective] = {'candidates': len(rows), 'primary_metric': rows[0]['primary_metric'],
+                            'primary': measured([row['selection_primary'] for row in rows]),
+                            'secondary_correlation': measured([row['maximum_rank_correlation'] for row in rows]),
+                            'correlation_role': rows[0]['correlation_role'],
+                            'eligible': sum(row['selection_eligible'] is True for row in rows),
+                            'ineligible': sum(row['selection_eligible'] is False for row in rows),
+                            'eligibility_unavailable': sum(row['selection_eligible'] is None for row in rows)}
+    return result
+
+
+def training_sample_description(inputs: dict) -> dict:
+    result = {key: inputs.get(key) for key in ('sample_symbols', 'sample_months',
+              'sample_first_signal', 'sample_last_signal', 'last_label_exit', 'training_end', 'cross_stock')}
+    for key, alternate in [('sample_first_signal', 'first_signal'), ('sample_last_signal', 'last_signal')]:
+        if result[key] is None:
+            result[key] = inputs.get(alternate)
+    return result
+
+
 def candidate_diagnostic(row: dict, candidate: dict, inputs: dict) -> dict:
     """Align signed search statistics; full history remains descriptive evidence."""
     train = candidate.get('train')
@@ -27,15 +88,16 @@ def candidate_diagnostic(row: dict, candidate: dict, inputs: dict) -> dict:
              and isinstance(full_ic, (int, float)) and math.isfinite(full_ic) else None)
     return {'factor': row['factor'], 'variant': row.get('variant'), 'train': train,
             'search_objective': candidate.get('search_objective', 'pooled_mean_ic_v1'),
+            'search_selection': search_objective_components(candidate),
             'training_group_statistics': candidate.get('group_statistics'),
             'search_direction': direction, 'train_direction_adjusted': signed,
             'search_preprocessing': candidate.get('fitness_preprocessing'),
-            'training_sample': {key: inputs.get(key) for key in ('sample_symbols', 'sample_months',
-                'sample_first_signal', 'sample_last_signal', 'last_label_exit', 'training_end')},
+            'training_sample': training_sample_description(inputs),
             'full_history': {key: row.get(key) for key in ('months', 'first_valid_month', 'last_valid_month',
                 'median_paired_stocks', 'mean_ic', 'icir', 'newey_west_t', 'decay', 'annual_ic',
                 'yearly_positive_fraction', 'long_short_sharpe', 'statistical_failures')},
             'same_score_preprocessing': compatible, 'full_minus_training_mean_ic': delta,
+            'training_comparison_basis': 'Direction-adjusted pooled training IC; not the worst-group selection primary.',
             'comparison_note': 'Different date windows and stock samples; difference is not causal attribution or independent validation.',
             'costs': {key: value for key, value in row.items() if key.startswith('cost_')},
             'validation': None, 'validation_note': 'Full-history battery is not independent validation'}
@@ -70,6 +132,7 @@ def sample_summary(diagnostics: list[dict]) -> dict:
         distributions[key] = {'available': len(values), 'median': descriptive.median(values) if values else None,
                               'nonpositive': sum(v <= 0 for v in values)}
     return {'candidate_records': len(rows), 'independent_factors': False,
+            'reported_training_basis': 'Direction-adjusted pooled training IC; search objectives are reported separately.',
             'label_disagreement_rows': sum(r['sample_comparison']['label_difference_over_1e_12_rows'] for r in rows),
             'mean_ic_distribution': distributions}
 
@@ -105,9 +168,11 @@ def build(config: Path) -> dict:
                 diagnostic['sample_comparison'] = {'status': 'unavailable', 'error': str(exc)}
         comparable = [row for row in diagnostics if row['full_minus_training_mean_ic'] is not None]
         batches.append({'run': str(path.parent), 'source': scorecard, **summarize(rows),
+                        'search_selection': search_selection_summary(search.get('candidates', [])),
                         'families': {f: summarize([r for r in rows if r.get('family', 'unknown') == f])
                                      for f in families},
                         'search_alignment': {'comparable_raw_candidates': len(comparable),
+                            'comparison_basis': 'direction_adjusted_pooled_training_ic_not_worst_group_selection_primary',
                             'full_ic_below_training': sum(r['full_minus_training_mean_ic'] < 0 for r in comparable),
                             'full_directional_ic_nonpositive': sum(r['full_history']['mean_ic'] <= 0 for r in comparable),
                             'independent_validation': False},

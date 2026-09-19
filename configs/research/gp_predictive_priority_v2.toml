@@ -1,8 +1,10 @@
-# Preregistered design only. Not wired into nightly configuration or the queue.
+# One registered batch; subsequent batches retain the existing default search.
 version = "predictive_priority_v2"
 registered_on = 2026-09-19
-stage = "preregistered_design"
-enqueue = false
+stage = "scheduled_one_shot"
+mechanism_manifest_file = "configs/research/gp_predictive_priority_v2_inputs/manifest.json"
+prepared_inputs = "artifacts/research/gp_predictive_priority_v2_preflight_20260919"
+enqueue = true
 auto_trade = false
 maximum_batches = 1
 population_size = 200
@@ -30,6 +32,7 @@ tertiary = "among equal secondary values prefer fewer expression nodes, then exp
 required_mechanism = "Each candidate must actually reference a predeclared financial or industry-relative reversal terminal; a family sampling label is insufficient"
 mechanism_manifest = "Freeze exact terminal IDs, input versions and availability in the mechanism manifest, and candidate limit in this config before generation; no manifest means no activation"
 controls = "Existing frozen admitted controls at the same evaluation cutoff"
+correlation_aggregation = "For each frozen control, mean absolute monthly common-stock Spearman over valid months; then maximum across controls. A wholly unmeasured control rejects the candidate."
 
 [validation]
 historical = "Already observed 2010-2026 history is development evidence only; three sampled groups all train selection and none is an independent test set"

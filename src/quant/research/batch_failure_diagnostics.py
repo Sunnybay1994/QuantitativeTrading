@@ -13,7 +13,10 @@ import tomllib
 
 import polars as pl
 
-from quant.research.research_feedback import candidate_diagnostic, summarize
+from quant.research.research_feedback import (
+    candidate_diagnostic, search_objective_components, search_selection_summary, summarize,
+    training_sample_description,
+)
 from quant.research.search_sample_diagnostics import batch_diagnostics
 
 
@@ -93,14 +96,7 @@ def aggregate(rows: list[dict], diagnostics: list[dict], candidates: list[dict],
         terminals = {n.id for n in ast.walk(ast.parse(c['terminal_expression'], mode='eval'))
                      if isinstance(n, ast.Name) and n.id.startswith('gp_')}
         favored_counts.append(len(terminals & favored))
-        objective = c.get('search_objective', 'pooled_mean_ic_v1')
-        signal = (c.get('worst_directional_mean_ic') if objective == 'cross_stock_min_ic_v1'
-                  else abs(c['train']['mean_ic']))
-        correlation_penalty = .5*c['maximum_rank_correlation']
-        components.append({'factor': c['factor_id'], 'signal_component': signal,
-                           'correlation_penalty': correlation_penalty,
-                           'fitness': c['fitness'], 'nodes': c['complexity'],
-                           'residual_complexity_penalty': signal-correlation_penalty-c['fitness']})
+        components.append({'factor': c['factor_id'], **search_objective_components(c)})
     benchmark_columns = [k for r in rows for k in r
                          if k.startswith('cost_') and k.endswith('_cagr_excess')]
     return {
@@ -131,8 +127,11 @@ def aggregate(rows: list[dict], diagnostics: list[dict], candidates: list[dict],
         'training_objectives': dict(Counter(c.get('search_objective', 'pooled_mean_ic_v1')
                                            for c in candidates)),
         'objective_components': components,
+        'search_selection': search_selection_summary(candidates),
+        'scalar_objective_candidates': sum(c['search_objective'] != 'predictive_priority_v2' for c in components),
         'correlation_penalty_exceeds_signal_candidates': sum(
-            c['correlation_penalty'] > c['signal_component'] for c in components),
+            c['correlation_penalty'] > c['signal_component'] for c in components
+            if c['correlation_penalty'] is not None and c['signal_component'] is not None),
         'declared_family': inputs.get('family'),
         'candidates_using_favored_family_terminals':
             sum(n > 0 for n in favored_counts) if favored else None,
@@ -176,8 +175,7 @@ def diagnose_run(run: Path) -> dict:
         'run': str(run), 'as_of': str(settings['run']['as_of']),
         'search_trials': len(search['trials']),
         'trial_error_counts': dict(Counter(c['error'] for c in search['trials'] if c.get('error'))),
-        'training_sample': {k: inputs.get(k) for k in ('sample_symbols', 'sample_months',
-            'sample_first_signal', 'sample_last_signal', 'last_label_exit', 'training_end', 'cross_stock')},
+        'training_sample': training_sample_description(inputs),
         'summary': aggregate(rows, diagnostics, candidates, inputs, settings),
         'candidate_diagnostics': diagnostics,
         'sources': [_source(p) for p in source_paths],
@@ -219,7 +217,7 @@ def render_report(result: dict) -> str:
                          f"{d['available']}/{d['nonpositive']} |")
         lines += ['', '### 训练与全历史的描述性比较', '',
             '| 原始分数候选的月度 RankIC | 中位数 | 有效/非正 |', '|---|---:|---:|']
-        stage_labels = {'reported_training': '方向调整后的合池训练IC（非第9批最弱组目标）',
+        stage_labels = {'reported_training': '方向调整后的合池训练IC（描述统计，不是最弱组目标）',
             'saved_sample_battery_labels': '相同股票样本，电池分数与标签',
             'full_pool_search_dates': '相同日期窗口，全股票池',
             'full_pool_before_search': '搜索日期之前，全股票池',
@@ -234,22 +232,38 @@ def render_report(result: dict) -> str:
             f"完成原始分数样本对齐 {s['aligned_raw_candidates']} 个候选。"
             '同日期窗口仍可能有不同有效月份，股票覆盖及全池预处理也不同；'
             '这些差额不构成因果分解，不能直接归因为过拟合或时间衰减。', '',
-            '### 搜索目标与准入条件', '',
-            '适应度IC项：第9批使用三个训练组中最弱组的方向调整IC；'
-            '普通搜索使用合池IC绝对值。上表的 reported_training 是合池统计，'
-            '不能充当第9批的冻结优化目标。'
-            '本批实际适应度IC项中位数='
-            f"{_format(distribution([c['signal_component'] for c in s['objective_components']])['median'], decimals=5)}。",
-            f"{s['correlation_penalty_exceeds_signal_candidates']}/{s['candidates']} 个候选的"
-            '相关性惩罚大于适应度中的IC项；低相关可提高相对排序，但不能证明有预测力。'
-            '当前目标不直接包含全历史稳定性、可执行收益或成本。',
+            '### 搜索目标与准入条件', '']
+        for objective, selection in s.get('search_selection', {}).items():
+            primary = _format(selection['primary']['median'], decimals=5)
+            correlation = _format(selection['secondary_correlation']['median'], decimals=5)
+            if objective == 'predictive_priority_v2':
+                lines += [f"`{objective}`：主指标为三个训练组中最弱组的方向调整IC，"
+                          f"中位数={primary}；次级最大相关性中位数={correlation}。"
+                          '相关性只在已注册的 IC 接近区间内参与排序，不构造标量适应度，'
+                          '也不从主指标扣除相关性或复杂度惩罚。'
+                          f"保存的选择资格：有效 {selection['eligible']}、无效 {selection['ineligible']}、"
+                          f"未提供 {selection['eligibility_unavailable']}；选择资格不等于因子准入。"]
+            else:
+                label = '三个训练组中最弱组的方向调整IC' if objective == 'cross_stock_min_ic_v1' else '合池IC绝对值'
+                lines += [f"`{objective}` 的适应度IC项为{label}，中位数={primary}；"
+                          f"最大相关性中位数={correlation}。"]
+        if not s.get('search_selection'):
+            lines += ['旧标量目标的适应度IC项：跨股票目标使用最弱组方向调整IC，普通搜索使用合池IC绝对值；'
+                      '本批中位数='
+                      f"{_format(distribution([c['signal_component'] for c in s['objective_components']])['median'], decimals=5)}。"]
+        scalar_count = s.get('scalar_objective_candidates', s['candidates'])
+        if scalar_count:
+            lines += [f"{s['correlation_penalty_exceeds_signal_candidates']}/{scalar_count} 个旧标量目标候选的"
+                      '相关性惩罚大于适应度中的IC项；低相关可提高相对排序，但不能证明有预测力。']
+        lines += ['上表的 reported_training 是合池描述统计，不能充当最弱组优化目标。'
+                  '搜索目标不直接包含全历史稳定性、可执行收益或成本。',
             f"本批名义家族 `{s['declared_family']}`；包含偏好家族终端的候选数="
             f"{s['candidates_using_favored_family_terminals']}。家族名是生成偏好，不是候选经济机制鉴定。",
             'BH 调整 p 值仅按冻结设置报告；本批是否要求 FDR 准入：'
             f"{s['fdr_is_required_for_admission']}。不把未启用的条件说成拒绝原因。"]
     lines += ['', '## 解释边界与后续', '',
-        '已验证的是历史样本表现差异和实际准入失败。第9批三组股票都进入训练目标；'
-        '搜索期后的既有历史已被查看，不能称为独立样本外验证。两个批次同时改变了股票样本和搜索目标，'
+        '已验证的是历史样本表现差异和实际准入失败。使用分组目标时，三组股票都进入训练目标；'
+        '搜索期后的既有历史已被查看，不能称为独立样本外验证。不同批次可能同时改变股票样本和搜索目标，'
         '不能从批间中位数差异推出新目标的因果效果。', '',
         '成本档的差额包含成交、仓位及现金路径变化，不能全归为手续费；未运行零成本反事实。'
         '现有证据支持优先补充不同经济来源的输入、保持已注册跨股票试验一次停止条件，'

@@ -11,3 +11,6 @@ scripts/run_m1_daily_streak_20260810_20260814.sh text eol=lf
 # Formal PAPER trading SSOT: loaders require LF-only canonical text bytes.
 configs/trading/policies/paper_a_share_v1.toml text eol=lf
 configs/trading/accounts/formal_paper_a_share_v1.toml text eol=lf
+
+# Frozen mechanism manifests and shards contain physical SHA-256 references.
+configs/research/gp_predictive_priority_v2_inputs/*.json text eol=lf

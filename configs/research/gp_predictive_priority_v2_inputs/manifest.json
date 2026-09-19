@@ -1,0 +1,506 @@
+{
+  "schema_version": "gp_mechanism_inputs_v2",
+  "frozen_at_utc": "2026-09-19T15:34:40.075975+00:00",
+  "selection": {
+    "family": "pit_financial",
+    "library_count_at_freeze": 383,
+    "terminal_count": 32,
+    "all_matching_terminals_retained": true,
+    "uses_ic_returns_or_backtests": false,
+    "declaration_precedes_monthly_coverage_audit": true
+  },
+  "audit_window": {
+    "start": "2010-01-01",
+    "end": "2026-08-31",
+    "hash_scope": "Entire data.parquet files for every intersecting year; may contain dates outside audit window",
+    "coverage_scope": "Calendar-derived month-end dates inside the audit window only"
+  },
+  "terminals": [
+    {
+      "terminal_id": "gp_pit_annual_cash_profitability",
+      "mechanism": "financial",
+      "input_version": "sha256:d4ede154596989b507db0e41868c07995cda1ce2ef84060c011e91caeaa10e16",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_annual_debt_ebitda",
+      "mechanism": "financial",
+      "input_version": "sha256:da6f02595b7a3b45654857c99284e37a041d9adb919e1f11922a6bfbfeb93fe6",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_annual_fscore",
+      "mechanism": "financial",
+      "input_version": "sha256:040eff270fa6914f5ea83814b8f0415442ad0d8b24288f773bfc02a80109506e",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_annual_gmar",
+      "mechanism": "financial",
+      "input_version": "sha256:d74c6e848374901b3a74a621aba9ce1d5ad1f76aca6ac11a531b37702b725842",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_annual_gpoa",
+      "mechanism": "financial",
+      "input_version": "sha256:b2794e9f4923144e4b631fc3aabd0c5d323d56c165347403201e1e4b75049c71",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_annual_low_accruals",
+      "mechanism": "financial",
+      "input_version": "sha256:0ed5f9daac4110caa9d74596353f438ef09b49b4be88c530eaf4e835b5eb236d",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_annual_profitability",
+      "mechanism": "financial",
+      "input_version": "sha256:c4082117a60f98359e1a5da185f704fc8ea55f4798187e5b6db8e9856c7ea43c",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_annual_roa",
+      "mechanism": "financial",
+      "input_version": "sha256:37a722578f6328f401814047b3fbd8b3a74d04af303eb9958f4b4bcd011cc333",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_annual_roe",
+      "mechanism": "financial",
+      "input_version": "sha256:c5ffb1fd121b995dc8a58ebf1ef2280b951dbc73bb6762eae7376be8a2f2d1ae",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_annual_zscore",
+      "mechanism": "financial",
+      "input_version": "sha256:f8286529cdbb2a8351c7c5a56f34062c8b9461e8ad3e7d6a4658555085d39a2e",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_asset_growth_yoy",
+      "mechanism": "financial",
+      "input_version": "sha256:78493693645304749542af24d8ff2e17e1d712fbe1ae8316dfc98167e63b0d14",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_asset_turnover_ttm",
+      "mechanism": "financial",
+      "input_version": "sha256:4d404f68810303551002acf76c5697284ca27f3dd5219ba72996d40350c75fed",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_cash_profit_quality_ttm",
+      "mechanism": "financial",
+      "input_version": "sha256:70f5331bbe0cdeabd2a0c0802feef03e281a36e2ecfd48318a538f34c44e4a92",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_cash_roa_ttm",
+      "mechanism": "financial",
+      "input_version": "sha256:d392b4bc248b76d71275263e06821d5dc6361b88d56f0e0a6b55e8b0375e581d",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_cash_to_liabilities_ttm",
+      "mechanism": "financial",
+      "input_version": "sha256:fdb9214d7dcc50b8978e8644fdd550bc74a0763d7e4a4889702f7e9719581ff9",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_cash_yield_ttm",
+      "mechanism": "financial",
+      "input_version": "sha256:1d100e09a09f28b1ab9b02898f3d65cdb532e4a269af64874c99eabc6a9ddea3",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_current_ratio",
+      "mechanism": "financial",
+      "input_version": "sha256:5a43722d9e7ed4abe874a47ef8f9005a8ded03e1cf5860aa9581ea0ea2937f08",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_gross_margin_ttm",
+      "mechanism": "financial",
+      "input_version": "sha256:ff81a692b4360bc1472360e0e8cf9e28a93396d76029d7e29c74a61394083e6a",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_gross_profitability_ttm",
+      "mechanism": "financial",
+      "input_version": "sha256:a03556978258ecf4bb4ebacb545f671b00ec25842a3661d05edbb8179479e8b9",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_inventory_expansion_yoy",
+      "mechanism": "financial",
+      "input_version": "sha256:af207ab28adbd8a7b155b96fb01399de17d3381e6e3814b3848d70377d4106b9",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_liabilities_to_assets",
+      "mechanism": "financial",
+      "input_version": "sha256:2434b8f5d70b71bec3c582aa4bc3200625f88e46de204f555ebe70097ddf08a4",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_net_margin_ttm",
+      "mechanism": "financial",
+      "input_version": "sha256:e92d27c854c2444f29e208819fcc6081275c6da6eca98aaca0f5ae8eda909502",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_profit_acceleration",
+      "mechanism": "financial",
+      "input_version": "sha256:71faccae789f922dcd12027f82ed4f1955abd478a616a07d65f02fcdb007b172",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_profit_growth_ttm",
+      "mechanism": "financial",
+      "input_version": "sha256:d669babb34473f58dc497d114471f44058b1d3e37a28386424eb0be5cdc05135",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_quarterly_roe_volatility",
+      "mechanism": "financial",
+      "input_version": "sha256:659c650107af5427891eb364d0298097e537befe4842abd1dce61ff612007cab",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_revenue_acceleration",
+      "mechanism": "financial",
+      "input_version": "sha256:c34d44cd556990dcb2705f8d70f5429a64979a3d3a07228672617d0808569b58",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_revenue_growth_ttm",
+      "mechanism": "financial",
+      "input_version": "sha256:86b2b49b3ec40f7c1aba6a72ea51e057a15b74ae394f057b5ba7b557f4e6c061",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_roa_ttm",
+      "mechanism": "financial",
+      "input_version": "sha256:efd271f4f0814070d1d62b3fbf0cdc56e84dee2bd1eeb820694ef036f66c726a",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_roe_ttm",
+      "mechanism": "financial",
+      "input_version": "sha256:0fc60bd74c4de43afe96570c17133e0c851fe5c725dd68c0ecc0cc971233d441",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_sue8",
+      "mechanism": "financial",
+      "input_version": "sha256:73a98dfadb967dc4369390be060e52bf1e55322aa36d471b75bad147b11b238a",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_sue8_context_v2",
+      "mechanism": "financial",
+      "input_version": "sha256:1d66a72150b2f5f4ea6fac847cacc3e188623f85bcd29ff50b2bd619d48039c5",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    },
+    {
+      "terminal_id": "gp_pit_total_accruals_ttm",
+      "mechanism": "financial",
+      "input_version": "sha256:f5e3e417fa4b608086b71c90acafebdf3c6ca35a50d12ebb15a15a71ccec28b1",
+      "availability": "Existing compute/PIT contract: statement available_date=max(ann_date,f_ann_date), indicator available_date=ann_date; only available_date strictly before the signal session is known. Latest known revisions are selected and conflicting economics quarantined; event updates carry invalid new values rather than filling through them. Recent incremental publications also delay newly observed economic rows to observation date. This freezes existing materialized factor values, not an independent audit of historical provider revision completeness or proof of each partition upstream snapshot."
+    }
+  ],
+  "manifest_sha256": "a494560cdc1f6fec90f7db0dd30e7df791a6425056892929938fc1a0376947d4",
+  "financial_publication_context": [
+    {
+      "context": "battery_refresh_configuration_observed_now",
+      "refresh_config": {
+        "path": "configs\\data\\refresh.toml",
+        "exists": true,
+        "bytes": 1217,
+        "sha256": "2c999d78d830f92340638ecc9d09d87d3d8e8136c23ff78006b01647d726aded",
+        "hash_scope": "entire_file"
+      },
+      "financial_snapshot": "financial_updates_v3_20260911_004",
+      "snapshot_summary": {
+        "path": "data\\clean\\tushare_financials\\financial_updates_v3_20260911_004\\summary.json",
+        "exists": true,
+        "bytes": 2002,
+        "sha256": "4209cbcbab6628a8cbf9e227f03cbaefd91b9fea63c6d8396c5063d2dc26b12b",
+        "hash_scope": "entire_file"
+      },
+      "snapshot_metadata": {
+        "name": "financial_updates_v3_20260911_004",
+        "base_version": "financial_updates_v3_20260911_003",
+        "period": "2026-06-30",
+        "pit_rule": "new economic rows available no earlier than observation date; strictly before signal session"
+      },
+      "financial_share_changes_snapshot": "20260910_cycle2013",
+      "partition_upstream_identity_proven": false,
+      "scope": "Observed configuration/publication context, not cached-partition upstream lineage"
+    },
+    {
+      "context": "current_daily_refresh_configuration_observed_now",
+      "refresh_config": {
+        "path": "configs\\data\\refresh_q2_sue_v2_model_20260912.toml",
+        "exists": true,
+        "bytes": 1338,
+        "sha256": "f1d58fe37ffa5b6b5ee18c027a6e342522c978cebcf4d94fa39a4289affae735",
+        "hash_scope": "entire_file"
+      },
+      "financial_snapshot": "financial_updates_v3_20260918_003",
+      "snapshot_summary": {
+        "path": "data\\clean\\tushare_financials\\financial_updates_v3_20260918_003\\summary.json",
+        "exists": true,
+        "bytes": 1876,
+        "sha256": "8154d274408789a8390acee98082c72029e5e55135c03e29aa03b60a79d47933",
+        "hash_scope": "entire_file"
+      },
+      "snapshot_metadata": {
+        "name": "financial_updates_v3_20260918_003",
+        "base_version": "financial_updates_v3_20260918_002",
+        "period": "2026-06-30",
+        "pit_rule": "new economic rows available no earlier than observation date; strictly before signal session"
+      },
+      "financial_share_changes_snapshot": "20260910_cycle2013",
+      "partition_upstream_identity_proven": false,
+      "scope": "Observed configuration/publication context, not cached-partition upstream lineage"
+    }
+  ],
+  "availability_code": [
+    {
+      "path": "F:\\AI_Coding\\QuantitativeTrading\\src\\quant\\data\\financial_clean.py",
+      "exists": true,
+      "bytes": 12603,
+      "sha256": "2a5a6c29d2790fca6c28f7740e13454f52276be73579e3699bd5d98d4db9729e",
+      "hash_scope": "entire_file"
+    },
+    {
+      "path": "F:\\AI_Coding\\QuantitativeTrading\\src\\quant\\data\\financial_pit.py",
+      "exists": true,
+      "bytes": 17153,
+      "sha256": "d089c3bdf040fb9a46ad51944e904454b4f09a18599fbcddb15b6744adb9931c",
+      "hash_scope": "entire_file"
+    },
+    {
+      "path": "F:\\AI_Coding\\QuantitativeTrading\\src\\quant\\data\\financial_repository.py",
+      "exists": true,
+      "bytes": 3340,
+      "sha256": "af714e9ed425f3c527a3aedd5fd89d21db2b777f2bd10b5cd6c7c35f3bbefe81",
+      "hash_scope": "entire_file"
+    },
+    {
+      "path": "F:\\AI_Coding\\QuantitativeTrading\\src\\quant\\data\\factor_panels.py",
+      "exists": true,
+      "bytes": 8435,
+      "sha256": "4eb9cd431babc884addea61cec5bb555ead0e8ff9a4060e55c908d6b7f0126af",
+      "hash_scope": "entire_file"
+    },
+    {
+      "path": "F:\\AI_Coding\\QuantitativeTrading\\src\\quant\\factors\\compute.py",
+      "exists": true,
+      "bytes": 10263,
+      "sha256": "5db77c8e4f12fce0909eda2e7b3ba9a39d71528de5a68ac0d1b626eee1d16f2e",
+      "hash_scope": "entire_file"
+    },
+    {
+      "path": "F:\\AI_Coding\\QuantitativeTrading\\src\\quant\\research\\factor_financials.py",
+      "exists": true,
+      "bytes": 9672,
+      "sha256": "18a43e6c386a4c145679196c0b7789952e1070d925160fa9ae0809e9272dba46",
+      "hash_scope": "entire_file"
+    },
+    {
+      "path": "F:\\AI_Coding\\QuantitativeTrading\\src\\quant\\research\\factor_battery_evaluation.py",
+      "exists": true,
+      "bytes": 7547,
+      "sha256": "6d5acb15e1eb0cca9606147b8e66e3de4b32c81295deb4d3f4fec0a5e804f229",
+      "hash_scope": "entire_file"
+    },
+    {
+      "path": "F:\\AI_Coding\\QuantitativeTrading\\src\\quant\\research\\factor_battery_statistics.py",
+      "exists": true,
+      "bytes": 7627,
+      "sha256": "7ec191638e626e1cd5d310e8ef8c3187b35df779872c009a187ff5b83e931340",
+      "hash_scope": "entire_file"
+    },
+    {
+      "path": "F:\\AI_Coding\\QuantitativeTrading\\src\\quant\\research\\gp_mechanism_inputs.py",
+      "exists": true,
+      "bytes": 18624,
+      "sha256": "7d263ea21e6f47228927e0c93307605d711e94891618e17c478d1095f5dde927",
+      "hash_scope": "entire_file"
+    }
+  ],
+  "coverage_inputs": {
+    "battery": {
+      "path": "artifacts\\factors\\battery_statistics_20260831_20260911\\battery.toml",
+      "exists": true,
+      "bytes": 3063,
+      "sha256": "d56e2f1ecb9ee60f8326b9103a376f9c530df3e3f6485cdffe84f2d6852cbf19",
+      "hash_scope": "entire_file"
+    },
+    "calendars": [
+      {
+        "path": "data\\clean\\trade_calendar\\market=SH\\data.parquet",
+        "exists": true,
+        "bytes": 33381,
+        "sha256": "20ccd6fb5a36b48c7b53012f0e78307d4e8b4896441ddccb97e3b79091593cc9",
+        "hash_scope": "entire_file"
+      },
+      {
+        "path": "data\\clean\\trade_calendar\\market=SZ\\data.parquet",
+        "exists": true,
+        "bytes": 32898,
+        "sha256": "89664fb82216113e67da0a0f0981d291f75a9c04fe834ecc35b8e26bb9951e62",
+        "hash_scope": "entire_file"
+      }
+    ],
+    "universes": [
+      {
+        "path": "artifacts\\factors\\battery_statistics_20260831_20260911\\inputs\\2010\\universe.parquet",
+        "exists": true,
+        "bytes": 13764446,
+        "sha256": "1e4c9dd74fcaaf2925c2b64224364ce0e507e6cf9ce56e8553af1c25a3025d23",
+        "hash_scope": "entire_file"
+      },
+      {
+        "path": "artifacts\\factors\\battery_statistics_20260831_20260911\\inputs\\2011\\universe.parquet",
+        "exists": true,
+        "bytes": 16195469,
+        "sha256": "d775497ec79b61e2b7b1a78bfd2a0434d44cf5c69a3905694cf0e2804d24cfb4",
+        "hash_scope": "entire_file"
+      },
+      {
+        "path": "artifacts\\factors\\battery_statistics_20260831_20260911\\inputs\\2012\\universe.parquet",
+        "exists": true,
+        "bytes": 17344232,
+        "sha256": "14bc53f8ea4c46d6405f5078d260702884a847406268b0e9c048028e75bc19ea",
+        "hash_scope": "entire_file"
+      },
+      {
+        "path": "artifacts\\factors\\battery_statistics_20260831_20260911\\inputs\\2013\\universe.parquet",
+        "exists": true,
+        "bytes": 17826394,
+        "sha256": "6433d5634f01e98732e85d4e4fb7288a24207c630a63d3e7a1e9be90f5a7b38d",
+        "hash_scope": "entire_file"
+      },
+      {
+        "path": "artifacts\\factors\\battery_statistics_20260831_20260911\\inputs\\2014\\universe.parquet",
+        "exists": true,
+        "bytes": 18439289,
+        "sha256": "e1bea198fe31181fead241625c35a6ed185fdce5f860ffd82b5130daa09940e7",
+        "hash_scope": "entire_file"
+      },
+      {
+        "path": "artifacts\\factors\\battery_statistics_20260831_20260911\\inputs\\2015\\universe.parquet",
+        "exists": true,
+        "bytes": 20150221,
+        "sha256": "24ba7e2904157c38a4363737f97a7e9270e7827d072e30601ebd7bba04d3470d",
+        "hash_scope": "entire_file"
+      },
+      {
+        "path": "artifacts\\factors\\battery_statistics_20260831_20260911\\inputs\\2016\\universe.parquet",
+        "exists": true,
+        "bytes": 21650931,
+        "sha256": "e710f64e1d2dbb49d8cdabd2c433e2a20865997473007f899d886e43da90c9f4",
+        "hash_scope": "entire_file"
+      },
+      {
+        "path": "artifacts\\factors\\battery_statistics_20260831_20260911\\inputs\\2017\\universe.parquet",
+        "exists": true,
+        "bytes": 23710068,
+        "sha256": "4c3a42515bca779235ae5aabe56c961b7d9c8d45368ddea8e44e83757ff92df6",
+        "hash_scope": "entire_file"
+      },
+      {
+        "path": "artifacts\\factors\\battery_statistics_20260831_20260911\\inputs\\2018\\universe.parquet",
+        "exists": true,
+        "bytes": 25673693,
+        "sha256": "c56dcd0f0e6b8e9f3a71a2c7fdff4c1e9d6fba04b22d88bfbf119546fea1b514",
+        "hash_scope": "entire_file"
+      },
+      {
+        "path": "artifacts\\factors\\battery_statistics_20260831_20260911\\inputs\\2019\\universe.parquet",
+        "exists": true,
+        "bytes": 27602523,
+        "sha256": "7cbacfdcae1cad780e6f392030b92fec9d49374de009a8e0a46623d1700735c1",
+        "hash_scope": "entire_file"
+      },
+      {
+        "path": "artifacts\\factors\\battery_statistics_20260831_20260911\\inputs\\2020\\universe.parquet",
+        "exists": true,
+        "bytes": 30459529,
+        "sha256": "77530856069314d93034e25083ee82bb16ca8337cfc5a0e0ebdfc07a6dfd2dd5",
+        "hash_scope": "entire_file"
+      },
+      {
+        "path": "artifacts\\factors\\battery_statistics_20260831_20260911\\inputs\\2021\\universe.parquet",
+        "exists": true,
+        "bytes": 34381070,
+        "sha256": "184b8f8cf99319c4c62f1b2feb8324eceee965b4a15faea2ef8cfad35f9355ea",
+        "hash_scope": "entire_file"
+      },
+      {
+        "path": "artifacts\\factors\\battery_statistics_20260831_20260911\\inputs\\2022\\universe.parquet",
+        "exists": true,
+        "bytes": 37350692,
+        "sha256": "30b20e65ba84742d491396da15564c6fbe1a010610380cc60202f36fe22e6544",
+        "hash_scope": "entire_file"
+      },
+      {
+        "path": "artifacts\\factors\\battery_statistics_20260831_20260911\\inputs\\2023\\universe.parquet",
+        "exists": true,
+        "bytes": 38720198,
+        "sha256": "c108f7e679a5779ec82a866b47a89d21ba99b687caf483cde0c4f01751c36000",
+        "hash_scope": "entire_file"
+      },
+      {
+        "path": "artifacts\\factors\\battery_statistics_20260831_20260911\\inputs\\2024\\universe.parquet",
+        "exists": true,
+        "bytes": 40087523,
+        "sha256": "1a78cf9a656a8ba763ba843fb4601ae345145e2620b5404d798f789850635cce",
+        "hash_scope": "entire_file"
+      },
+      {
+        "path": "artifacts\\factors\\battery_statistics_20260831_20260911\\inputs\\2025\\universe.parquet",
+        "exists": true,
+        "bytes": 41056706,
+        "sha256": "36330c5ad5db13de6a1b9b09234304088b502079b015a271b2de579038bca90f",
+        "hash_scope": "entire_file"
+      },
+      {
+        "path": "artifacts\\factors\\battery_statistics_20260831_20260911\\inputs\\2026\\universe.parquet",
+        "exists": true,
+        "bytes": 29241932,
+        "sha256": "cdd59a85f6976cce5ed6ac5fed10715ae473dbe7572d22d07d03ff25395f9ba4",
+        "hash_scope": "entire_file"
+      }
+    ]
+  },
+  "coverage_artifact": "artifacts\\research\\gp_predictive_priority_v2_inputs_20260919\\coverage.json",
+  "limitations": [
+    "No independent reconstruction or validation of historical financial revision vintages.",
+    "F-score additionally depends on share-change event coverage; insufficient terminals remain declared.",
+    "Industry history before 2014 is not backfilled; neutral input coverage is reported separately.",
+    "Finite fraction of eligible stocks is not finite-label paired coverage.",
+    "The 48-month/100-stock/0.8 criteria apply later to each frozen training group with labels; no label-free pass is asserted."
+  ],
+  "source_shards": [
+    {
+      "path": "sources_0.json",
+      "sha256": "e0a8d0895995456c16f30fe88fe8a681c51ab0680560e937560884206d271d98"
+    },
+    {
+      "path": "sources_1.json",
+      "sha256": "1fbac7a7b2b4d1101593129626440dba7c7d39c6e575032428a8e27e1937ef41"
+    },
+    {
+      "path": "sources_2.json",
+      "sha256": "00b99f2457cbe4472942a490ef22f8792a1f79a8b523830f94334cd70e76975f"
+    },
+    {
+      "path": "sources_3.json",
+      "sha256": "11acff6f4433486a79060d8370f872165c0b42b91dfc0c69821919b89276c67f"
+    }
+  ]
+}

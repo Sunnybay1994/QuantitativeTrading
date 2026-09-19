@@ -1,0 +1,1245 @@
+{
+  "schema_version": "gp_mechanism_sources_v1",
+  "terminal_sources": {
+    "gp_pit_annual_roe": {
+      "factor_id": "pit_annual_roe",
+      "expression": "pit_annual_roe",
+      "direction": 1,
+      "family": "pit_financial",
+      "source_ref": "src/quant/factors/annual_profitability.py",
+      "cached_definition": {
+        "path": "data\\factors\\pit_annual_roe\\definition.json",
+        "exists": true,
+        "bytes": 170,
+        "sha256": "8cb0365a7804162118773a29d752b7de7d6bb0426574f714e4eaef35ba48ce14",
+        "hash_scope": "entire_file"
+      },
+      "partitions": [
+        {
+          "year": 2010,
+          "path": "data\\factors\\pit_annual_roe\\year=2010\\data.parquet",
+          "exists": true,
+          "bytes": 321099,
+          "sha256": "990f1b77802a6edac459dc34cc8dc3e6e83189d856e3730975cdce5d9b389bed",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2011,
+          "path": "data\\factors\\pit_annual_roe\\year=2011\\data.parquet",
+          "exists": true,
+          "bytes": 344620,
+          "sha256": "52b0aeeef63ed6e6a05fdb86373d9d6a96dac23913806394287f351b8450a3a7",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2012,
+          "path": "data\\factors\\pit_annual_roe\\year=2012\\data.parquet",
+          "exists": true,
+          "bytes": 335580,
+          "sha256": "952c8f4aff6e81248584772a21de80a5375eb53faca0ee3040a6b9b5f8a2711f",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2013,
+          "path": "data\\factors\\pit_annual_roe\\year=2013\\data.parquet",
+          "exists": true,
+          "bytes": 297701,
+          "sha256": "a371739a920493a677f0ccbec5a28e1f2bbb74bc79af94e259aca7382cdbff2f",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2014,
+          "path": "data\\factors\\pit_annual_roe\\year=2014\\data.parquet",
+          "exists": true,
+          "bytes": 331386,
+          "sha256": "9831f9dfa9f4427c78b1e70143e83fb031086f8fbc3b64490715be6682acb91f",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2015,
+          "path": "data\\factors\\pit_annual_roe\\year=2015\\data.parquet",
+          "exists": true,
+          "bytes": 380076,
+          "sha256": "042bbcf81e39784f4b813ff6029ae1be57e9e972e4d1ce6820888585a953c356",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2016,
+          "path": "data\\factors\\pit_annual_roe\\year=2016\\data.parquet",
+          "exists": true,
+          "bytes": 417904,
+          "sha256": "2269068103cf21d0d1ca224e67d159dacfddc683e2e790f02b00349601b5bc64",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2017,
+          "path": "data\\factors\\pit_annual_roe\\year=2017\\data.parquet",
+          "exists": true,
+          "bytes": 511553,
+          "sha256": "58c4f72413bdffe4d13efc4529a856ebd7bea1ae2fd8b665fb2aa9f6ea4d1fa5",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2018,
+          "path": "data\\factors\\pit_annual_roe\\year=2018\\data.parquet",
+          "exists": true,
+          "bytes": 523772,
+          "sha256": "d76cb727009fa8434288195551cea81b25dd1fe06fbaada592fa1f3c5ea9aff4",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2019,
+          "path": "data\\factors\\pit_annual_roe\\year=2019\\data.parquet",
+          "exists": true,
+          "bytes": 597240,
+          "sha256": "e1f955f57aa4bb70540f6cf9a255aa0d26c4274da5e1b720d97dc6f8f0a26465",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2020,
+          "path": "data\\factors\\pit_annual_roe\\year=2020\\data.parquet",
+          "exists": true,
+          "bytes": 679009,
+          "sha256": "83bea50debb626ca33160dff02a92f8f42beacd690bc6baf247c681ef19ed317",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2021,
+          "path": "data\\factors\\pit_annual_roe\\year=2021\\data.parquet",
+          "exists": true,
+          "bytes": 1191082,
+          "sha256": "39566850eee8430c6d10a8e5f25986d213a898b39090e0e73ad17ff5ec99e9df",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2022,
+          "path": "data\\factors\\pit_annual_roe\\year=2022\\data.parquet",
+          "exists": true,
+          "bytes": 1420934,
+          "sha256": "79588efc260963e0377f71074de9e425265c49b6fe098c30d8aaf42b97a3da91",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2023,
+          "path": "data\\factors\\pit_annual_roe\\year=2023\\data.parquet",
+          "exists": true,
+          "bytes": 1549177,
+          "sha256": "621e301139dec90a0776c72497d672194f401e4735176d92942cae7a115d8611",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2024,
+          "path": "data\\factors\\pit_annual_roe\\year=2024\\data.parquet",
+          "exists": true,
+          "bytes": 1604833,
+          "sha256": "6aa266ed2dba057ce8b9a880326a44f46fba3349729577ac8ead5e54c799f0e9",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2025,
+          "path": "data\\factors\\pit_annual_roe\\year=2025\\data.parquet",
+          "exists": true,
+          "bytes": 1682895,
+          "sha256": "81e15d230cec5b391bdd9d14870762c2c2382c421d8819e7babb6f7a26537b0a",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2026,
+          "path": "data\\factors\\pit_annual_roe\\year=2026\\data.parquet",
+          "exists": true,
+          "bytes": 1236431,
+          "sha256": "45622cfc953b869a2a541674303a3b572544c2161c842509c5143f50825f011c",
+          "hash_scope": "entire_file"
+        }
+      ],
+      "upstream_evidence": "financial_publication_context",
+      "partition_upstream_snapshot": null,
+      "limitation": "Cached definition/coverage and compute receipts do not identify the upstream financial snapshot for each historical partition. Freeze values, not reconstructed lineage."
+    },
+    "gp_pit_annual_zscore": {
+      "factor_id": "pit_annual_zscore",
+      "expression": "pit_annual_zscore",
+      "direction": 1,
+      "family": "pit_financial",
+      "source_ref": "src/quant/factors/annual_zscore.py",
+      "cached_definition": {
+        "path": "data\\factors\\pit_annual_zscore\\definition.json",
+        "exists": true,
+        "bytes": 169,
+        "sha256": "82dad13783dd9859ae71212f205d719584763f929e13edb6edfbe3e9b63175b6",
+        "hash_scope": "entire_file"
+      },
+      "partitions": [
+        {
+          "year": 2010,
+          "path": "data\\factors\\pit_annual_zscore\\year=2010\\data.parquet",
+          "exists": true,
+          "bytes": 3080835,
+          "sha256": "f510bb8b9e2aaf636fb9aa325b59eab8a4c5070fb642387c44e48e40b887545c",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2011,
+          "path": "data\\factors\\pit_annual_zscore\\year=2011\\data.parquet",
+          "exists": true,
+          "bytes": 3621866,
+          "sha256": "d90d4d5121a1e7fa17f48e05cb1edf97fb17cfad2ad2159fa542c15633bd2b88",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2012,
+          "path": "data\\factors\\pit_annual_zscore\\year=2012\\data.parquet",
+          "exists": true,
+          "bytes": 3919652,
+          "sha256": "1eb98ef27fe05937463340b6de478954182f6649be64a125a0507345426c54dd",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2013,
+          "path": "data\\factors\\pit_annual_zscore\\year=2013\\data.parquet",
+          "exists": true,
+          "bytes": 3868111,
+          "sha256": "4fc643779b123b5d3f54947d1311252002703cca1ea3117fbd0758d41f785f3e",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2014,
+          "path": "data\\factors\\pit_annual_zscore\\year=2014\\data.parquet",
+          "exists": true,
+          "bytes": 3959860,
+          "sha256": "97062635ea921181d569c021a2827ef8c29e80ffcef526688af55eb9aaa91695",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2015,
+          "path": "data\\factors\\pit_annual_zscore\\year=2015\\data.parquet",
+          "exists": true,
+          "bytes": 4214669,
+          "sha256": "b5528e30282b689c056f5bedd163f057a384d5a05adbc7b16602f5885f52d66f",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2016,
+          "path": "data\\factors\\pit_annual_zscore\\year=2016\\data.parquet",
+          "exists": true,
+          "bytes": 4600206,
+          "sha256": "3d7b63d6c25a60d5bb7b2ff6f27f068933e36fe9f8c926c5baaa7e938def4bbd",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2017,
+          "path": "data\\factors\\pit_annual_zscore\\year=2017\\data.parquet",
+          "exists": true,
+          "bytes": 5242295,
+          "sha256": "a5f8316962b0a5b8b86523a9f1e3359cf8e05d6e3db3ca7fdcf66af030a03957",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2018,
+          "path": "data\\factors\\pit_annual_zscore\\year=2018\\data.parquet",
+          "exists": true,
+          "bytes": 5716670,
+          "sha256": "ec92ef517fc5310ad29bfd78ec9574183753ac5cc088be89e3aab16f6aa4c6c1",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2019,
+          "path": "data\\factors\\pit_annual_zscore\\year=2019\\data.parquet",
+          "exists": true,
+          "bytes": 5969342,
+          "sha256": "da3888671bade651b6d74bfd5eeb8c0c3266576fdf446da163a7a73bb5912536",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2020,
+          "path": "data\\factors\\pit_annual_zscore\\year=2020\\data.parquet",
+          "exists": true,
+          "bytes": 6546657,
+          "sha256": "6c9543744965aa629c15b669aa9396a8138afff8dfd0c909c65db83bb1b78445",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2021,
+          "path": "data\\factors\\pit_annual_zscore\\year=2021\\data.parquet",
+          "exists": true,
+          "bytes": 7841892,
+          "sha256": "dfddf50e6dca6f6d901e5b540767a3ce52c15c252fe329c42edebaa3fe21f70d",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2022,
+          "path": "data\\factors\\pit_annual_zscore\\year=2022\\data.parquet",
+          "exists": true,
+          "bytes": 8653513,
+          "sha256": "bb5cd2fda0a2249a6322a6b83cf3e2efc9b0949ebff9dc4e3064868d265a0ea4",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2023,
+          "path": "data\\factors\\pit_annual_zscore\\year=2023\\data.parquet",
+          "exists": true,
+          "bytes": 9013309,
+          "sha256": "e56d25f5222316f71c9dbe6044676e3859f06606ae976f30c0a8b111ae77122d",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2024,
+          "path": "data\\factors\\pit_annual_zscore\\year=2024\\data.parquet",
+          "exists": true,
+          "bytes": 9214158,
+          "sha256": "bac426a0944bd85e1d131e3ea4daf4ba7921417dbf72125b6cdc692611cfda98",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2025,
+          "path": "data\\factors\\pit_annual_zscore\\year=2025\\data.parquet",
+          "exists": true,
+          "bytes": 9361498,
+          "sha256": "aaed5446130c0c620fe7d191e997a25f4f1c4a53dafff11caff92f6b2c3b3de8",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2026,
+          "path": "data\\factors\\pit_annual_zscore\\year=2026\\data.parquet",
+          "exists": true,
+          "bytes": 6668868,
+          "sha256": "4003c7ed470ac729ad603978f4b212d56af596d08d461433886d064dc6de9a7f",
+          "hash_scope": "entire_file"
+        }
+      ],
+      "upstream_evidence": "financial_publication_context",
+      "partition_upstream_snapshot": null,
+      "limitation": "Cached definition/coverage and compute receipts do not identify the upstream financial snapshot for each historical partition. Freeze values, not reconstructed lineage."
+    },
+    "gp_pit_asset_growth_yoy": {
+      "factor_id": "pit_asset_growth_yoy",
+      "expression": "pit_asset_growth_yoy",
+      "direction": -1,
+      "family": "pit_financial",
+      "source_ref": "src/quant/research/monthly_asset_growth.py",
+      "cached_definition": {
+        "path": "data\\factors\\pit_asset_growth_yoy\\definition.json",
+        "exists": true,
+        "bytes": 184,
+        "sha256": "2df8407ec657eecb1131d0bd6741fffd3428efab403776395e1b64bb748420da",
+        "hash_scope": "entire_file"
+      },
+      "partitions": [
+        {
+          "year": 2010,
+          "path": "data\\factors\\pit_asset_growth_yoy\\year=2010\\data.parquet",
+          "exists": true,
+          "bytes": 340830,
+          "sha256": "1888ab512af5ae1bb020f765870e89a75490e7a980e320a677040ed87a1bab2d",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2011,
+          "path": "data\\factors\\pit_asset_growth_yoy\\year=2011\\data.parquet",
+          "exists": true,
+          "bytes": 369580,
+          "sha256": "f0af8ddaa5c74265167daeedbac94c73dcea3449fad4cbfed0c2415ea5fc9d93",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2012,
+          "path": "data\\factors\\pit_asset_growth_yoy\\year=2012\\data.parquet",
+          "exists": true,
+          "bytes": 373658,
+          "sha256": "3209991014221088fa04ca00bb0156a0928bfdcf70dae4bc5fb25dfc7b24a444",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2013,
+          "path": "data\\factors\\pit_asset_growth_yoy\\year=2013\\data.parquet",
+          "exists": true,
+          "bytes": 345419,
+          "sha256": "91770f0cfc65bf38e069c8b6c7eab517dac8a2a6b9889f2d18addb4f8ad857a0",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2014,
+          "path": "data\\factors\\pit_asset_growth_yoy\\year=2014\\data.parquet",
+          "exists": true,
+          "bytes": 372156,
+          "sha256": "74b75de25d3aab05bafcd7080feeae687dfebf2dc03071bc0c6794e5733b3c84",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2015,
+          "path": "data\\factors\\pit_asset_growth_yoy\\year=2015\\data.parquet",
+          "exists": true,
+          "bytes": 414324,
+          "sha256": "375c4ca5c3a277459f984119ecda803c7d5bfdc76ee197fd99ba90c2d31578bb",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2016,
+          "path": "data\\factors\\pit_asset_growth_yoy\\year=2016\\data.parquet",
+          "exists": true,
+          "bytes": 466871,
+          "sha256": "35e7e436fed04d9b0b083858e7811b1ff9bc5d87e0cfedb5e3d49bd5d873a15b",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2017,
+          "path": "data\\factors\\pit_asset_growth_yoy\\year=2017\\data.parquet",
+          "exists": true,
+          "bytes": 550521,
+          "sha256": "fe1155ebaa9749dc44f0821982de5984a065b8cc371f66fd6c8e7b7bd7c3026a",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2018,
+          "path": "data\\factors\\pit_asset_growth_yoy\\year=2018\\data.parquet",
+          "exists": true,
+          "bytes": 587196,
+          "sha256": "ccd9d8a3086b45cf36ce2ceb83021b0d30c54e5a307d404176da968deb04306b",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2019,
+          "path": "data\\factors\\pit_asset_growth_yoy\\year=2019\\data.parquet",
+          "exists": true,
+          "bytes": 670520,
+          "sha256": "0a19644d8285e5d92aef903ba300f16b31c7bd605cbc542abd628a189e9c3d13",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2020,
+          "path": "data\\factors\\pit_asset_growth_yoy\\year=2020\\data.parquet",
+          "exists": true,
+          "bytes": 737954,
+          "sha256": "647931b166f27984864d7ac9536acfd5f261ec86990234b001f02a4dad415ea1",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2021,
+          "path": "data\\factors\\pit_asset_growth_yoy\\year=2021\\data.parquet",
+          "exists": true,
+          "bytes": 1239008,
+          "sha256": "5cc9eb80855db1b17a5d2a7f846ec3b9ef01fa254cb2994089b26ab5d749a5c2",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2022,
+          "path": "data\\factors\\pit_asset_growth_yoy\\year=2022\\data.parquet",
+          "exists": true,
+          "bytes": 1480840,
+          "sha256": "578204342481e6ae9ec8f8dd0ba351d5d736e45e4b4f8dd6d3edc7e949f7d43c",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2023,
+          "path": "data\\factors\\pit_asset_growth_yoy\\year=2023\\data.parquet",
+          "exists": true,
+          "bytes": 1605514,
+          "sha256": "de293bd8dd918cefaf133f123ebc9bb6bb30bd94c7896e4aeade3975d3b5bd5e",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2024,
+          "path": "data\\factors\\pit_asset_growth_yoy\\year=2024\\data.parquet",
+          "exists": true,
+          "bytes": 1694222,
+          "sha256": "7f56a349295d3219e66728489debbcd4aff3bc5c52eb4183e338f553b389c421",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2025,
+          "path": "data\\factors\\pit_asset_growth_yoy\\year=2025\\data.parquet",
+          "exists": true,
+          "bytes": 1767212,
+          "sha256": "dd924dcf5bef925af217652d0bf4abb4002314b3b74659f7bba785eb561511cc",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2026,
+          "path": "data\\factors\\pit_asset_growth_yoy\\year=2026\\data.parquet",
+          "exists": true,
+          "bytes": 1253950,
+          "sha256": "326f71cae11f07eda1e206bb0aa58fd7f7e95621f4ba5cc032baf9725d9fdcb8",
+          "hash_scope": "entire_file"
+        }
+      ],
+      "upstream_evidence": "financial_publication_context",
+      "partition_upstream_snapshot": null,
+      "limitation": "Cached definition/coverage and compute receipts do not identify the upstream financial snapshot for each historical partition. Freeze values, not reconstructed lineage."
+    },
+    "gp_pit_asset_turnover_ttm": {
+      "factor_id": "pit_asset_turnover_ttm",
+      "expression": "pit_asset_turnover_ttm",
+      "direction": 1,
+      "family": "pit_financial",
+      "source_ref": "configs/factors/pit_financial_expansion_20260911.toml",
+      "cached_definition": {
+        "path": "data\\factors\\pit_asset_turnover_ttm\\definition.json",
+        "exists": true,
+        "bytes": 198,
+        "sha256": "c35ba856dfbf031bbb7198a0c4b3001fb1cff1c7c0ac8bb81dd9dd2c030d1116",
+        "hash_scope": "entire_file"
+      },
+      "partitions": [
+        {
+          "year": 2010,
+          "path": "data\\factors\\pit_asset_turnover_ttm\\year=2010\\data.parquet",
+          "exists": true,
+          "bytes": 330120,
+          "sha256": "ed0a117f3db09e176adc8b819f44313013f5c512e8801e55dc1b5dd0913dddc4",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2011,
+          "path": "data\\factors\\pit_asset_turnover_ttm\\year=2011\\data.parquet",
+          "exists": true,
+          "bytes": 356629,
+          "sha256": "f3d4c1979ffdb2de416f4733f5038efca21acd4f576788e948d797247d837c74",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2012,
+          "path": "data\\factors\\pit_asset_turnover_ttm\\year=2012\\data.parquet",
+          "exists": true,
+          "bytes": 363982,
+          "sha256": "a67b96bb40c15fd9a3395a6c5af5fbf854fb1d964c2177cbd4d714d065467c37",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2013,
+          "path": "data\\factors\\pit_asset_turnover_ttm\\year=2013\\data.parquet",
+          "exists": true,
+          "bytes": 340698,
+          "sha256": "e669efe45ac0a58795dea1ee61270388d9389517b1efcefe0f7b872995b49894",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2014,
+          "path": "data\\factors\\pit_asset_turnover_ttm\\year=2014\\data.parquet",
+          "exists": true,
+          "bytes": 370031,
+          "sha256": "a917394ad8be614a4966376cc8c225803529b5e37f520f6af085b64af379cab4",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2015,
+          "path": "data\\factors\\pit_asset_turnover_ttm\\year=2015\\data.parquet",
+          "exists": true,
+          "bytes": 408596,
+          "sha256": "6b8c0a308ce882b863eedb1568c464fe7d620fda6a427ba3544c811729eed16d",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2016,
+          "path": "data\\factors\\pit_asset_turnover_ttm\\year=2016\\data.parquet",
+          "exists": true,
+          "bytes": 455154,
+          "sha256": "0bd7be893d71afc0f639711f62554aa5af1f4d69dcf2487d474cc65616ed9e53",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2017,
+          "path": "data\\factors\\pit_asset_turnover_ttm\\year=2017\\data.parquet",
+          "exists": true,
+          "bytes": 532781,
+          "sha256": "71c36d4b13a19a1fa702d77f8766ed14ed83efe38f9fe041afb6d06a57fbc841",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2018,
+          "path": "data\\factors\\pit_asset_turnover_ttm\\year=2018\\data.parquet",
+          "exists": true,
+          "bytes": 567468,
+          "sha256": "3f200f764177d42acedb2dee0af34d4b6eaef91882cc16b674898df4f2bc46db",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2019,
+          "path": "data\\factors\\pit_asset_turnover_ttm\\year=2019\\data.parquet",
+          "exists": true,
+          "bytes": 649889,
+          "sha256": "c09f99373958f3d4f8ca9751e99251af0d82d4f8e0b3eead695bc877fcab35cd",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2020,
+          "path": "data\\factors\\pit_asset_turnover_ttm\\year=2020\\data.parquet",
+          "exists": true,
+          "bytes": 702426,
+          "sha256": "06b6d09e02943dcf84237b855c0f82ab4f659b6bfbafa189068494f6444fd554",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2021,
+          "path": "data\\factors\\pit_asset_turnover_ttm\\year=2021\\data.parquet",
+          "exists": true,
+          "bytes": 1196207,
+          "sha256": "7ef45f35d70e1261ad0ebe4845d505940af41a5859673719100b6ef7fd07bf8d",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2022,
+          "path": "data\\factors\\pit_asset_turnover_ttm\\year=2022\\data.parquet",
+          "exists": true,
+          "bytes": 1451997,
+          "sha256": "4e3b7ad04dad64a3b37368e140baa6c880b8686d5b9c8632686a5b1be8200ba4",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2023,
+          "path": "data\\factors\\pit_asset_turnover_ttm\\year=2023\\data.parquet",
+          "exists": true,
+          "bytes": 1581560,
+          "sha256": "48f12f80158d4759b2b20750933d9922b81e61df12c1560ec2a11535e180cde6",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2024,
+          "path": "data\\factors\\pit_asset_turnover_ttm\\year=2024\\data.parquet",
+          "exists": true,
+          "bytes": 1673616,
+          "sha256": "9ef5d99804322b297322d712c542ba750077a0b4b44a203ee43e3d0c7fbf8324",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2025,
+          "path": "data\\factors\\pit_asset_turnover_ttm\\year=2025\\data.parquet",
+          "exists": true,
+          "bytes": 1758361,
+          "sha256": "6a12f3a095957c290df9ba40b65d78c38d394d3c50d624e87a15fbafa3063970",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2026,
+          "path": "data\\factors\\pit_asset_turnover_ttm\\year=2026\\data.parquet",
+          "exists": true,
+          "bytes": 1249991,
+          "sha256": "18379fd64ec989d9eef8a25f3311537e0f559b83ebc6c527c2009e9c3b3edf81",
+          "hash_scope": "entire_file"
+        }
+      ],
+      "upstream_evidence": "financial_publication_context",
+      "partition_upstream_snapshot": null,
+      "limitation": "Cached definition/coverage and compute receipts do not identify the upstream financial snapshot for each historical partition. Freeze values, not reconstructed lineage."
+    },
+    "gp_pit_cash_profit_quality_ttm": {
+      "factor_id": "pit_cash_profit_quality_ttm",
+      "expression": "pit_cash_profit_quality_ttm",
+      "direction": 1,
+      "family": "pit_financial",
+      "source_ref": "src/quant/factors/pit_quality.py",
+      "cached_definition": {
+        "path": "data\\factors\\pit_cash_profit_quality_ttm\\definition.json",
+        "exists": true,
+        "bytes": 187,
+        "sha256": "f015284c5702551a700f6fc59ae68445f321224ffcbedc533fd17366cb856267",
+        "hash_scope": "entire_file"
+      },
+      "partitions": [
+        {
+          "year": 2010,
+          "path": "data\\factors\\pit_cash_profit_quality_ttm\\year=2010\\data.parquet",
+          "exists": true,
+          "bytes": 319411,
+          "sha256": "f93f94a84654ad6b1be5d3acf15d4e822b8a2ae3ca856a2d194b17d704ffab40",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2011,
+          "path": "data\\factors\\pit_cash_profit_quality_ttm\\year=2011\\data.parquet",
+          "exists": true,
+          "bytes": 353628,
+          "sha256": "fd53baf01aa327f4699c377951ff585ef52ea957193f79812d34835b581b97ec",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2012,
+          "path": "data\\factors\\pit_cash_profit_quality_ttm\\year=2012\\data.parquet",
+          "exists": true,
+          "bytes": 353056,
+          "sha256": "475a39bfcb1cd45b507906fbc1c77239d57b2ef4d14a67dbf9239db31779bc1a",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2013,
+          "path": "data\\factors\\pit_cash_profit_quality_ttm\\year=2013\\data.parquet",
+          "exists": true,
+          "bytes": 324015,
+          "sha256": "b8d3f7c995672f1264a0d18449c4f3a240385c88ee25683112e3ac3cee210126",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2014,
+          "path": "data\\factors\\pit_cash_profit_quality_ttm\\year=2014\\data.parquet",
+          "exists": true,
+          "bytes": 356256,
+          "sha256": "24a848f1a3a17010f8608f59d3afb022744ca612a8cbd8ab3da637d798807d67",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2015,
+          "path": "data\\factors\\pit_cash_profit_quality_ttm\\year=2015\\data.parquet",
+          "exists": true,
+          "bytes": 392776,
+          "sha256": "189dc1c3a2c237c9c9e860dabfa282706139cace22e3ca585fee5e3ea16a2060",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2016,
+          "path": "data\\factors\\pit_cash_profit_quality_ttm\\year=2016\\data.parquet",
+          "exists": true,
+          "bytes": 429913,
+          "sha256": "ef628094e1d670a2f396705e77839f0279f3cd58bb3b4af6d4a984ab14fdc7d0",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2017,
+          "path": "data\\factors\\pit_cash_profit_quality_ttm\\year=2017\\data.parquet",
+          "exists": true,
+          "bytes": 513820,
+          "sha256": "b68a3cc36f35d0fc821ad594061a3b8b9b211c3b6416f840fbd9bddb3c250f67",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2018,
+          "path": "data\\factors\\pit_cash_profit_quality_ttm\\year=2018\\data.parquet",
+          "exists": true,
+          "bytes": 548056,
+          "sha256": "7e79df71875dc5631ec9b136ae7d5e4deb9a6fdfabdcb031f06042903c6dfa91",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2019,
+          "path": "data\\factors\\pit_cash_profit_quality_ttm\\year=2019\\data.parquet",
+          "exists": true,
+          "bytes": 602085,
+          "sha256": "b7d2feb8f2fc6c97086a3e4b91dcee08e68b1bfe0c5a850d10d95293f20ca8f4",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2020,
+          "path": "data\\factors\\pit_cash_profit_quality_ttm\\year=2020\\data.parquet",
+          "exists": true,
+          "bytes": 635923,
+          "sha256": "31daaf2416922deb02232c24b8cd3e0d2028f38770107150ccbf163a0de75c81",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2021,
+          "path": "data\\factors\\pit_cash_profit_quality_ttm\\year=2021\\data.parquet",
+          "exists": true,
+          "bytes": 1123929,
+          "sha256": "c82adf20861c86446690067992bf4e439c66e0ee128ee8840e18b733f597b453",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2022,
+          "path": "data\\factors\\pit_cash_profit_quality_ttm\\year=2022\\data.parquet",
+          "exists": true,
+          "bytes": 1342010,
+          "sha256": "1349bbbc1e72de7aed7e64042a7803592c55cf2515f9d2d013e64df3543e68e1",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2023,
+          "path": "data\\factors\\pit_cash_profit_quality_ttm\\year=2023\\data.parquet",
+          "exists": true,
+          "bytes": 1436947,
+          "sha256": "51eca3ad3e8e9ffa5087bca59e6b8e6c6baa4cf07f718cf48023de16224e898e",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2024,
+          "path": "data\\factors\\pit_cash_profit_quality_ttm\\year=2024\\data.parquet",
+          "exists": true,
+          "bytes": 1484402,
+          "sha256": "d6e41bf7b8d5635fa7d7b8b597829c0c542a40d84106ed18341ab25649639c2a",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2025,
+          "path": "data\\factors\\pit_cash_profit_quality_ttm\\year=2025\\data.parquet",
+          "exists": true,
+          "bytes": 1538328,
+          "sha256": "3387778b00a2c2f5f0c892605b9023991a2aa4214db1baefb61d58f68483eee0",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2026,
+          "path": "data\\factors\\pit_cash_profit_quality_ttm\\year=2026\\data.parquet",
+          "exists": true,
+          "bytes": 1092670,
+          "sha256": "42cf6df3eabfa1217f791c0d4b98de2fda7decc7bc8614d95de785d2c3ee125a",
+          "hash_scope": "entire_file"
+        }
+      ],
+      "upstream_evidence": "financial_publication_context",
+      "partition_upstream_snapshot": null,
+      "limitation": "Cached definition/coverage and compute receipts do not identify the upstream financial snapshot for each historical partition. Freeze values, not reconstructed lineage."
+    },
+    "gp_pit_cash_roa_ttm": {
+      "factor_id": "pit_cash_roa_ttm",
+      "expression": "pit_cash_roa_ttm",
+      "direction": 1,
+      "family": "pit_financial",
+      "source_ref": "src/quant/research/monthly_cash_roa.py",
+      "cached_definition": {
+        "path": "data\\factors\\pit_cash_roa_ttm\\definition.json",
+        "exists": true,
+        "bytes": 171,
+        "sha256": "9936bb18a1bf77edf82764d2171001047081c1cca2597aa2f0c195b2c80cbedd",
+        "hash_scope": "entire_file"
+      },
+      "partitions": [
+        {
+          "year": 2010,
+          "path": "data\\factors\\pit_cash_roa_ttm\\year=2010\\data.parquet",
+          "exists": true,
+          "bytes": 335608,
+          "sha256": "673f43af44cfcb1fe754d678a62f4a26249503f21ab07803b71d3cee849d3537",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2011,
+          "path": "data\\factors\\pit_cash_roa_ttm\\year=2011\\data.parquet",
+          "exists": true,
+          "bytes": 363329,
+          "sha256": "acc3519d56dc262e1597b2ca916bd8fcfc3f6ca1f7171df92187e3fb5ee1b97e",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2012,
+          "path": "data\\factors\\pit_cash_roa_ttm\\year=2012\\data.parquet",
+          "exists": true,
+          "bytes": 371229,
+          "sha256": "b4cccfd88c519cb63021658df8e9ae421692d2059e0e373b117cb8ed7f5b0d49",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2013,
+          "path": "data\\factors\\pit_cash_roa_ttm\\year=2013\\data.parquet",
+          "exists": true,
+          "bytes": 348625,
+          "sha256": "59ccb6a3e874e2a24f23b05c01b1b534647fa5b751298439bc6f64824d6d6044",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2014,
+          "path": "data\\factors\\pit_cash_roa_ttm\\year=2014\\data.parquet",
+          "exists": true,
+          "bytes": 378477,
+          "sha256": "e677c4b8973ffea2d3a41f210d55b0b14576fb7c8b25115ea2de10ff69902757",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2015,
+          "path": "data\\factors\\pit_cash_roa_ttm\\year=2015\\data.parquet",
+          "exists": true,
+          "bytes": 414072,
+          "sha256": "f063ae12aeb271dd33d527841cdcdec71a50789fe4223932f5b91edd189ecf4d",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2016,
+          "path": "data\\factors\\pit_cash_roa_ttm\\year=2016\\data.parquet",
+          "exists": true,
+          "bytes": 463800,
+          "sha256": "75b8d4fa50bbefd015de4000d95ebe41cfb89882179e67ad0efe019897be2b29",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2017,
+          "path": "data\\factors\\pit_cash_roa_ttm\\year=2017\\data.parquet",
+          "exists": true,
+          "bytes": 540972,
+          "sha256": "d21801c7e2ff252997ac5803267e65a6384fe77129a6e79ad03e816782ed7540",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2018,
+          "path": "data\\factors\\pit_cash_roa_ttm\\year=2018\\data.parquet",
+          "exists": true,
+          "bytes": 577669,
+          "sha256": "aaf848cfa109f1dd1e0abca83a324c3b419525854a22a8c8f9e026dfb8c10bba",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2019,
+          "path": "data\\factors\\pit_cash_roa_ttm\\year=2019\\data.parquet",
+          "exists": true,
+          "bytes": 661060,
+          "sha256": "7bbc55f51d4be9f494dae2af8b854cd6a621c75b419554790e331a849ff8b673",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2020,
+          "path": "data\\factors\\pit_cash_roa_ttm\\year=2020\\data.parquet",
+          "exists": true,
+          "bytes": 711432,
+          "sha256": "7ece9b255ce63f1cf1d34027a41891cb8750013e0252ea860f037bde49dae611",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2021,
+          "path": "data\\factors\\pit_cash_roa_ttm\\year=2021\\data.parquet",
+          "exists": true,
+          "bytes": 1212085,
+          "sha256": "d635192390c0ded723d957966b87368ae9036990e767249ca750402945dfdc6f",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2022,
+          "path": "data\\factors\\pit_cash_roa_ttm\\year=2022\\data.parquet",
+          "exists": true,
+          "bytes": 1469592,
+          "sha256": "6cc28cdcd76b455f93d0286fbb5101d488fb163500fc642ecc90b64aa408e0e3",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2023,
+          "path": "data\\factors\\pit_cash_roa_ttm\\year=2023\\data.parquet",
+          "exists": true,
+          "bytes": 1600801,
+          "sha256": "6ffc34c71c859a9c2960487c87e6891d377eaca215fa4266052301d734f0e4ac",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2024,
+          "path": "data\\factors\\pit_cash_roa_ttm\\year=2024\\data.parquet",
+          "exists": true,
+          "bytes": 1688370,
+          "sha256": "7ef8898022e52a312072f57f64fb78694a722bf21e1e7869a04fdda61e1b728e",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2025,
+          "path": "data\\factors\\pit_cash_roa_ttm\\year=2025\\data.parquet",
+          "exists": true,
+          "bytes": 1767652,
+          "sha256": "dc868178f4b37a9967ae55a767ba6860568cfb49c2559b688c493c4140b83ac8",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2026,
+          "path": "data\\factors\\pit_cash_roa_ttm\\year=2026\\data.parquet",
+          "exists": true,
+          "bytes": 1256006,
+          "sha256": "01675c229f6aefd4065b6e1c6c81dee195983515066e733cdd1db84c2bd23b48",
+          "hash_scope": "entire_file"
+        }
+      ],
+      "upstream_evidence": "financial_publication_context",
+      "partition_upstream_snapshot": null,
+      "limitation": "Cached definition/coverage and compute receipts do not identify the upstream financial snapshot for each historical partition. Freeze values, not reconstructed lineage."
+    },
+    "gp_pit_cash_to_liabilities_ttm": {
+      "factor_id": "pit_cash_to_liabilities_ttm",
+      "expression": "pit_cash_to_liabilities_ttm",
+      "direction": 1,
+      "family": "pit_financial",
+      "source_ref": "configs/factors/pit_financial_expansion_20260911.toml",
+      "cached_definition": {
+        "path": "data\\factors\\pit_cash_to_liabilities_ttm\\definition.json",
+        "exists": true,
+        "bytes": 208,
+        "sha256": "a46a0c4022629b673ed8c6c96118ef079bdbd43165bd29125593ebd6834fb8bc",
+        "hash_scope": "entire_file"
+      },
+      "partitions": [
+        {
+          "year": 2010,
+          "path": "data\\factors\\pit_cash_to_liabilities_ttm\\year=2010\\data.parquet",
+          "exists": true,
+          "bytes": 336148,
+          "sha256": "70e29914fbd18837c9f3d4d82438b50ab97126f0690db17cb041608175c9a01e",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2011,
+          "path": "data\\factors\\pit_cash_to_liabilities_ttm\\year=2011\\data.parquet",
+          "exists": true,
+          "bytes": 364734,
+          "sha256": "9e1e0627622fe4328da809b496eba0dedc0b4e64ba30788dc58b672e93feac9f",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2012,
+          "path": "data\\factors\\pit_cash_to_liabilities_ttm\\year=2012\\data.parquet",
+          "exists": true,
+          "bytes": 370803,
+          "sha256": "0f53cc4c645389b459efde9d2180e40dbb65d352fd98570bbb9269717fd0cbb2",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2013,
+          "path": "data\\factors\\pit_cash_to_liabilities_ttm\\year=2013\\data.parquet",
+          "exists": true,
+          "bytes": 348990,
+          "sha256": "418d0e61bda760cbba5df99d9ca3b9d50856986634a0677554cfab8708b6b257",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2014,
+          "path": "data\\factors\\pit_cash_to_liabilities_ttm\\year=2014\\data.parquet",
+          "exists": true,
+          "bytes": 378703,
+          "sha256": "7d58e004917b902f8976ff0b684527d5155a3296a9b58bb561beb9b569de2a99",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2015,
+          "path": "data\\factors\\pit_cash_to_liabilities_ttm\\year=2015\\data.parquet",
+          "exists": true,
+          "bytes": 414964,
+          "sha256": "ff68a389fb8782d0b07b203d5fd4b9b948b427f9dc9b1cb3e0e0582e06192031",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2016,
+          "path": "data\\factors\\pit_cash_to_liabilities_ttm\\year=2016\\data.parquet",
+          "exists": true,
+          "bytes": 463530,
+          "sha256": "857ecd2a6712d268e0622b11ed2d0dbdc37595663efffb6c22b1c2e41d178930",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2017,
+          "path": "data\\factors\\pit_cash_to_liabilities_ttm\\year=2017\\data.parquet",
+          "exists": true,
+          "bytes": 541700,
+          "sha256": "f6f2ed58236747e49f8a6b974c0a0610be51f0bec564636fbcbeab50e515787a",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2018,
+          "path": "data\\factors\\pit_cash_to_liabilities_ttm\\year=2018\\data.parquet",
+          "exists": true,
+          "bytes": 577777,
+          "sha256": "416c7293d7ce0c359e4b274265af92b4ea84ea14c6cc68623e19b95ddda08158",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2019,
+          "path": "data\\factors\\pit_cash_to_liabilities_ttm\\year=2019\\data.parquet",
+          "exists": true,
+          "bytes": 662457,
+          "sha256": "d8f0b7689cebe8b53f45b4b96ec4c16eea0887545eaad9791bda5c914ce9f9f8",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2020,
+          "path": "data\\factors\\pit_cash_to_liabilities_ttm\\year=2020\\data.parquet",
+          "exists": true,
+          "bytes": 713147,
+          "sha256": "cc5bc1caf47e5c86aa7c32a3b3d0e509d34a9af0dd6ccbac5af91731d465067c",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2021,
+          "path": "data\\factors\\pit_cash_to_liabilities_ttm\\year=2021\\data.parquet",
+          "exists": true,
+          "bytes": 1212536,
+          "sha256": "2934b94456b9d3c67d82ee40e9ee798133d1b340a256150b449c10f333f3941c",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2022,
+          "path": "data\\factors\\pit_cash_to_liabilities_ttm\\year=2022\\data.parquet",
+          "exists": true,
+          "bytes": 1470991,
+          "sha256": "61ed9189b2ffdfee37eb28fadfcc3e8170f934d09ea73c548b81ec7a32fe7747",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2023,
+          "path": "data\\factors\\pit_cash_to_liabilities_ttm\\year=2023\\data.parquet",
+          "exists": true,
+          "bytes": 1602221,
+          "sha256": "ce0740344f71995dd47735b19e79847f4264b6aba6630ddab0fd5bc2f5c1348d",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2024,
+          "path": "data\\factors\\pit_cash_to_liabilities_ttm\\year=2024\\data.parquet",
+          "exists": true,
+          "bytes": 1689702,
+          "sha256": "fd77d77f7f66fa16ea93ca134e4f1a3f81dea005476e0a74aa3724ac6aada10c",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2025,
+          "path": "data\\factors\\pit_cash_to_liabilities_ttm\\year=2025\\data.parquet",
+          "exists": true,
+          "bytes": 1770398,
+          "sha256": "845e6f2959b12723c248021abd2528f154683aa71972d2330706f784b4cdc303",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2026,
+          "path": "data\\factors\\pit_cash_to_liabilities_ttm\\year=2026\\data.parquet",
+          "exists": true,
+          "bytes": 1256898,
+          "sha256": "9bb8f2201e583b5d1b5c491da429e56bec06c0c2c5ae657129fda8b216ba47db",
+          "hash_scope": "entire_file"
+        }
+      ],
+      "upstream_evidence": "financial_publication_context",
+      "partition_upstream_snapshot": null,
+      "limitation": "Cached definition/coverage and compute receipts do not identify the upstream financial snapshot for each historical partition. Freeze values, not reconstructed lineage."
+    },
+    "gp_pit_cash_yield_ttm": {
+      "factor_id": "pit_cash_yield_ttm",
+      "expression": "pit_cash_yield_ttm",
+      "direction": 1,
+      "family": "pit_financial",
+      "source_ref": "src/quant/factors/cash_yield.py",
+      "cached_definition": {
+        "path": "data\\factors\\pit_cash_yield_ttm\\definition.json",
+        "exists": true,
+        "bytes": 168,
+        "sha256": "696d42574324a9dcad5f6456a03a315ba5d704cd0539069d0f5f5925a127cbbe",
+        "hash_scope": "entire_file"
+      },
+      "partitions": [
+        {
+          "year": 2010,
+          "path": "data\\factors\\pit_cash_yield_ttm\\year=2010\\data.parquet",
+          "exists": true,
+          "bytes": 2846157,
+          "sha256": "ce0a71c778b720638e5a02e8cc505114a41d8acb16111667b082126ec4f1aaca",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2011,
+          "path": "data\\factors\\pit_cash_yield_ttm\\year=2011\\data.parquet",
+          "exists": true,
+          "bytes": 3311547,
+          "sha256": "86cf400744dfeaa8dbac57b1247a35791c781fb09a67354889eb6dc33ae434a7",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2012,
+          "path": "data\\factors\\pit_cash_yield_ttm\\year=2012\\data.parquet",
+          "exists": true,
+          "bytes": 3728346,
+          "sha256": "1ff1714d41aee522e1867956a08182009f7911d6fd024dcd7fc919791c196efe",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2013,
+          "path": "data\\factors\\pit_cash_yield_ttm\\year=2013\\data.parquet",
+          "exists": true,
+          "bytes": 3929292,
+          "sha256": "ad0d5faf000b4b853ee4cb0c552693025ec743ce61952d86e1e0c32977339705",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2014,
+          "path": "data\\factors\\pit_cash_yield_ttm\\year=2014\\data.parquet",
+          "exists": true,
+          "bytes": 4013721,
+          "sha256": "56a4e8d764537566a6d3bf1cc75b9d56ea6def82fe654db720cbb45dceaf276f",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2015,
+          "path": "data\\factors\\pit_cash_yield_ttm\\year=2015\\data.parquet",
+          "exists": true,
+          "bytes": 4034720,
+          "sha256": "458868b700f6e091edbf063e031c75ba99d5660d24594332430be752bf476951",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2016,
+          "path": "data\\factors\\pit_cash_yield_ttm\\year=2016\\data.parquet",
+          "exists": true,
+          "bytes": 4461664,
+          "sha256": "069ad82a98ea23ad0b242819489eb28ea6aa19965caab43bbbc7868a3c10cc76",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2017,
+          "path": "data\\factors\\pit_cash_yield_ttm\\year=2017\\data.parquet",
+          "exists": true,
+          "bytes": 4765898,
+          "sha256": "0915e29b9f1452cf8c30872d3c6597c4e671cc3430d20939b3aea8267d438c9e",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2018,
+          "path": "data\\factors\\pit_cash_yield_ttm\\year=2018\\data.parquet",
+          "exists": true,
+          "bytes": 5449058,
+          "sha256": "f98f3de2fa68ab2e2408299207f6236cee50dd7a8e6f3a10c47760429afe7cb8",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2019,
+          "path": "data\\factors\\pit_cash_yield_ttm\\year=2019\\data.parquet",
+          "exists": true,
+          "bytes": 6032774,
+          "sha256": "7cdd0823c3002b046ec6340b914438b0291403d052d346ac32082edba29d4d61",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2020,
+          "path": "data\\factors\\pit_cash_yield_ttm\\year=2020\\data.parquet",
+          "exists": true,
+          "bytes": 6262667,
+          "sha256": "b0fd5ad961b15d72cff283ab9e3f94374131ce12eac338282ffeddc72d358ba7",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2021,
+          "path": "data\\factors\\pit_cash_yield_ttm\\year=2021\\data.parquet",
+          "exists": true,
+          "bytes": 7294080,
+          "sha256": "78000ca94aaab0bedc785d6e6a32ea5b26323352ef5a9a7a49006b48163a921e",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2022,
+          "path": "data\\factors\\pit_cash_yield_ttm\\year=2022\\data.parquet",
+          "exists": true,
+          "bytes": 8343668,
+          "sha256": "a8d4c876ea8d02730ba44dc4b6459a1fdc1fd5014e9cdca9bffd192bed751eca",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2023,
+          "path": "data\\factors\\pit_cash_yield_ttm\\year=2023\\data.parquet",
+          "exists": true,
+          "bytes": 8971553,
+          "sha256": "4428669238fe6ee96164da408680ab5f3323fbbdb9461e7c57175ae9af9587da",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2024,
+          "path": "data\\factors\\pit_cash_yield_ttm\\year=2024\\data.parquet",
+          "exists": true,
+          "bytes": 9402108,
+          "sha256": "3dbdda225a9b9a7d70c6b319e3821be809caab3e576e8c42796dbad4fe30d97e",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2025,
+          "path": "data\\factors\\pit_cash_yield_ttm\\year=2025\\data.parquet",
+          "exists": true,
+          "bytes": 9621772,
+          "sha256": "c7c64ed1f333d908dee00ebf90281fe388debd8bd9050b363c6420b0e3812a15",
+          "hash_scope": "entire_file"
+        },
+        {
+          "year": 2026,
+          "path": "data\\factors\\pit_cash_yield_ttm\\year=2026\\data.parquet",
+          "exists": true,
+          "bytes": 7070120,
+          "sha256": "54525f09a6d90bbc97685ac2f1acf8aa88af28a95224e9c6fceac128e1249e81",
+          "hash_scope": "entire_file"
+        }
+      ],
+      "upstream_evidence": "financial_publication_context",
+      "partition_upstream_snapshot": null,
+      "limitation": "Cached definition/coverage and compute receipts do not identify the upstream financial snapshot for each historical partition. Freeze values, not reconstructed lineage."
+    }
+  }
+}

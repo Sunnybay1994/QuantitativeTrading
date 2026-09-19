@@ -64,18 +64,8 @@ def dispatch(config: Path, root: Path, *, now: dt.datetime | None = None,
         if count != 1:
             raise ValueError('Expected exactly one genetic seed in config')
         run.mkdir(parents=True, exist_ok=True)
-        experiment = tomllib.loads(source).get('one_shot_search_config')
-        if experiment:
-            recipe_text = Path(experiment).read_text(encoding='utf-8')
-            recipe = tomllib.loads(recipe_text)
-            if recipe['maximum_batches'] != 1:
-                raise ValueError('One-shot search requires exactly one registered batch')
-            consumed = any(tomllib.loads(p.read_text(encoding='utf-8')).get('version') == recipe['version']
-                           for prior in batches for p in prior.glob('????-??-??/cross_stock.toml'))
-            if not consumed:
-                (run/'cross_stock.toml').write_text(recipe_text, encoding='utf-8')
-                frozen_recipe = batch/now.date().isoformat()/'cross_stock.toml'
-                source = f'cross_stock_config = {json.dumps(str(frozen_recipe))}\n'+source
+        from quant.research.nightly_search_recipe import freeze_recipe
+        source = freeze_recipe(source, run, batch / now.date().isoformat(), batches)
         temporary = run/'config.tmp'
         temporary.write_text(source, encoding='utf-8')
         temporary.replace(run/'config.toml')
