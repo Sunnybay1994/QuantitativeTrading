@@ -216,6 +216,8 @@ def evaluate(settings: dict, run: Path) -> dict:
 
 def incremental_statistics(panel: pl.DataFrame, candidate: str, controls: list[str], direction: int) -> dict:
     """Project contemporaneous ranks on admitted ranks; future returns are response only."""
+    # Raw-library reference columns belong to the separate correlation calculation.
+    panel = panel.select(list(dict.fromkeys(['symbol', 'trade_date', 'label', candidate, *controls])))
     rows = []
     for section in panel.partition_by('trade_date'):
         paired = section.filter(pl.all_horizontal(pl.col(c).is_finite() for c in [candidate, 'label', *controls]))
