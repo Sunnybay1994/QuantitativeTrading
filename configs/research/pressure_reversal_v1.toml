@@ -1,0 +1,43 @@
+version = "pressure_reversal_v1"
+stage = "input_readiness_only"
+mechanism = "Daily industry-relative reversal conditioned on abnormal amount; a liquidity-pressure proxy, not proof of absence of news"
+data_root = "data"
+refresh_config = "configs/data/refresh_q2_sue_v2_model_20260912.toml"
+library = "configs/factors/library"
+sample_months = ["2010-08", "2014-08", "2018-08", "2022-08", "2026-08"]
+history_start = "2010-01-01"
+history_end = "2026-08-31"
+direction = 1
+auto_trade = false
+enqueue = false
+
+[measurement]
+industry = "Dated SW level 1 membership; equal-weight mean of finite five-session adjusted returns among supplied historical stocks; unknown membership stays null"
+rank = "Average ties on [0,1] within session among finite values; fewer than two values stays null; reversal is centered as 0.5-rank before multiplying amount conditions"
+amount = "CNY; current amount divided by previous 20 exchange-session mean, excluding current session; nonpositive current amount or denominator stays null"
+execution = "After close information; next-session executable entry; A-share T+1; existing suspensions, price limits, lots and fees"
+decay_sessions = [5, 10, 20]
+cost_multipliers = [0.5, 1.0, 2.0]
+account_capitals_cny = [100000]
+validation = "All saved history is descriptive; future evidence begins only after candidate and direction freeze; no account replay in readiness"
+stop_conditions = ["No queue insertion before complete-history input coverage and signal equivalence checks", "No parameter grid or sign reversal to rescue failed battery", "No non-information claim without independently available event/news evidence", "No strategy promotion without existing full battery and execution criteria"]
+
+[[candidates]]
+id = "pressure_reversal_high_amount_v1"
+expr = "(0.5 - rank(ind_neutralize(adj_close / delay(adj_close, 5) - 1, industry_l1))) * rank(where(amount > 0, where(delay(ts_mean(amount, 20), 1) > 0, amount / delay(ts_mean(amount, 20), 1), 0 / 0), 0 / 0))"
+
+[[candidates]]
+id = "pressure_reversal_low_amount_v1"
+expr = "(0.5 - rank(ind_neutralize(adj_close / delay(adj_close, 5) - 1, industry_l1))) * (1 - rank(where(amount > 0, where(delay(ts_mean(amount, 20), 1) > 0, amount / delay(ts_mean(amount, 20), 1), 0 / 0), 0 / 0)))"
+
+[[controls]]
+id = "industry_relative_reversal_5"
+expr = "(0.5 - rank(ind_neutralize(adj_close / delay(adj_close, 5) - 1, industry_l1)))"
+
+[[controls]]
+id = "raw_reversal_5"
+expr = "-rank(adj_close / delay(adj_close, 5) - 1)"
+
+[[controls]]
+id = "abnormal_amount_20"
+expr = "rank(where(amount > 0, where(delay(ts_mean(amount, 20), 1) > 0, amount / delay(ts_mean(amount, 20), 1), 0 / 0), 0 / 0))"

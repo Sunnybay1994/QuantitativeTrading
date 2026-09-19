@@ -20,6 +20,8 @@ _DELEGATE: dict[tuple[str, str], str] = {
     ("research", "daily"): "quant.research.scheduled_observation",
     ("research", "nightly"): "quant.research.nightly",
     ("research", "feedback"): "quant.research.research_feedback",
+    ("research", "reversal-readiness"): "quant.research.pressure_reversal_readiness",
+    ("research", "batch-diagnosis"): "quant.research.batch_failure_diagnostics",
     ("research", "mining"): "quant.research.continuous_mining",
     ("research", "recovery-audit"): "quant.research.mining_recovery_audit",
     ("research", "cycle"): "quant.research.run_research_cycle",
@@ -91,7 +93,10 @@ def main(argv: list[str] | None = None) -> int:
     factors = sub.add_parser("factors", help="因子计算")
     factors.add_argument("command", choices=["compute"])
     research = sub.add_parser("research", help="投研流水线")
-    research.add_argument("command", choices=["daily", "nightly", "mining", "cycle", "gp", "feedback", "recovery-audit"])
+    research.add_argument("command", choices=[
+        "daily", "nightly", "mining", "cycle", "gp", "feedback", "recovery-audit",
+        "reversal-readiness", "batch-diagnosis",
+    ])
     paper = sub.add_parser("paper", help="模拟盘与人工订单")
     paper.add_argument("command", choices=["q10", "orders"])
     report = sub.add_parser("report", help="机器报告")

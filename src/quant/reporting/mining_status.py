@@ -16,6 +16,75 @@ def instant(value) -> dt.datetime | None:
         return None
 
 
+def step_snapshot(status: dict, summary: dict, attempt: dict, processes: list[dict],
+                  process_error, run: Path) -> dict:
+    """Separate saved failures from evidence for the current execution slice.
+
+    The runner intentionally retains old step rows until a retry finishes. An
+    unchanged error alone cannot prove either a new failure or a successful retry.
+    Keep the original summary untouched and expose ambiguous rows explicitly.
+    """
+    session = instant(status.get('updated_at') if status.get('state') == 'running'
+                      else summary.get('session_started_at', summary.get('started_at')))
+    summary_session = instant(summary.get('session_started_at', summary.get('started_at')))
+    finished = instant(summary.get('finished_at'))
+    previous_finished = instant(attempt.get('finished_at'))
+    previous = (attempt.get('error') or {}) if (
+        session and previous_finished and previous_finished < session) else {}
+    finalized = bool(session and finished and finished >= session)
+    active = set()
+    if not process_error:
+        for process in processes:
+            command = process.get('command') or ''
+            worker = re.search(r'-m\s+quant\.research\.nightly\s.*?--worker\s+(N[1-5])\b', command)
+            target = re.search(r'--run(?:=|\s+)(?:"([^"]+)"|\'([^\']+)\'|(\S+))', command)
+            if worker and target:
+                path = next(value for value in target.groups() if value is not None)
+                if Path(path).resolve() == run.resolve():
+                    active.add(worker[1])
+    views, current_errors, unconfirmed_errors = {}, {}, {}
+    rows = summary.get('steps') or status.get('steps') or {}
+    for step in ('N1', 'N2', 'N3', 'N4', 'N5'):
+        row = rows.get(step, {})
+        error = row.get('error')
+        old = bool(error and previous.get(step) == error)
+        if error:
+            if finalized:
+                scope = 'current'
+            elif old and (step in active or step == 'N4' and 'N3' in active):
+                scope = 'previous_attempt'
+            elif old or summary_session != session:
+                scope = 'unconfirmed'
+            else:
+                scope = 'current'
+        else:
+            scope = None
+        if step in active:
+            code, label = 'running', '正在续跑' if old else '正在运行'
+        elif row.get('ok'):
+            code, label = ('skipped', '本期跳过') if row.get('result', {}).get('skipped') else ('complete', '已完成')
+        elif step == 'N4' and 'N3' in active and scope != 'current':
+            code, label = 'waiting', '等待 N3 完成'
+        elif error and scope == 'current':
+            code, label = ('waiting', '等待下个时间片') if status.get('state') == 'resumable' else ('failed', '本次未完成')
+        elif error:
+            code, label = 'unknown', '等待本片结果' if active else '记录待确认'
+        else:
+            code, label = 'waiting', '待开始'
+        if error and scope == 'current':
+            current_errors[step] = error
+        elif error and scope == 'unconfirmed':
+            unconfirmed_errors[step] = error
+        views[step] = {'code': code, 'label': label, 'error': error, 'error_scope': scope}
+    # Exceptions above the nightly runner have no corresponding step row.
+    if status.get('state') != 'running' and isinstance(status.get('error'), dict):
+        current_errors.update({key: value for key, value in status['error'].items() if key not in rows})
+    return {'steps': views, 'current_errors': current_errors,
+            'unconfirmed_errors': unconfirmed_errors,
+            'previous_attempt': {'finished_at': attempt.get('finished_at'), 'errors': previous} if previous else None,
+            'session_started_at': session.isoformat(timespec='seconds') if session else None}
+
+
 def schedule_snapshot() -> dict:
     script = ("$ErrorActionPreference='Stop'; $t=Get-ScheduledTask -TaskName 'QuantitativeTrading-ContinuousMining'; "
               "$i=$t | Get-ScheduledTaskInfo; [pscustomobject]@{state=[string]$t.State; "

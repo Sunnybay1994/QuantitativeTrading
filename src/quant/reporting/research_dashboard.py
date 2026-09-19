@@ -102,10 +102,12 @@ def snapshot(root: Path = ROOT) -> dict:
         pass
     evaluation = read(run/'N3/result.json')
     costs = root/evaluation['batch']/'evaluation/costs' if evaluation.get('batch') else None
-    from quant.reporting.mining_status import describe, progress_snapshot, schedule_snapshot
+    from quant.reporting.mining_status import describe, progress_snapshot, schedule_snapshot, step_snapshot
     scheduler = read(continuous/'scheduler.json')
     mining = describe(status, scheduler, processes, process_error, schedule_snapshot())
     mining['progress'] = progress_snapshot(run)
+    mining.update(step_snapshot(status, current, read(run.parent/'attempt.json'),
+                                processes, process_error, run))
     return {'updated': dt.datetime.now().isoformat(timespec='seconds'), 'status': status,
             'scheduler': scheduler, 'processes': processes, 'mining': mining,
             'process_error': process_error, 'gpu': gpu, 'device': runtime.get('device', 'cpu'),
