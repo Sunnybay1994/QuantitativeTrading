@@ -79,3 +79,5 @@ D:\Miniforge3\python.exe -m quant report dashboard --port 8768
 已注册的一轮跨股票样本搜索见 `configs/research/gp_cross_stock_v1.toml`：当前未完成批次之后，调度只创建一个采用三组各300只股票的新批次，以最弱组IC评分；恢复时使用原样本及冻结目标。三组都用于训练，历史对照不冒充独立验证；正式准入仍走原电池与三档成本。
 
 研究结果中的“报告 · 年/月表现”直接打开完整 HTML：保留原报告结论，并展示该变体 1× 成本的策略说明、年度与月度收益、夏普和回撤；默认对照中证500全收益指数，与曲线面板默认口径一致。无净值的结果继续链接原报告。R8 容量回放曲线按实际保存资金档显示，历史大资金敏感性结果不代表10万元账户。
+
+飞书人工交易演练：`python -m quant paper manual demo --output artifacts/manual/demo_new`。支持固定格式回报、部分成交、费用确认、重复去重和重启恢复；真实飞书需绑定后联调，当前不是实盘服务。详见[运行说明](docs/MANUAL_EXECUTION_OPERATIONS.md)。

@@ -1,0 +1,11 @@
+# Rehearsal only. No broker credentials or live order submission.
+broker = "银河证券"
+planned_capital = 100000
+mode = "rehearsal"
+auto_trade = false
+live_notifications = false
+enabled = false
+# Bind stable Feishu IDs explicitly after creating the self-built application.
+sender_id = ""
+chat_id = ""
+# FEISHU_APP_ID and FEISHU_APP_SECRET belong in the environment, never here.
