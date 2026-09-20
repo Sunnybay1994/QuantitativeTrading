@@ -5,6 +5,7 @@ import datetime as dt
 import json
 import time
 import tomllib
+import uuid
 from pathlib import Path
 from typing import Any, cast
 
@@ -33,7 +34,12 @@ def merge_bars(directory: Path, incoming: pl.DataFrame) -> int:
     validate_bars(result)
     directory.mkdir(parents=True, exist_ok=True)
     if changed or not path.exists():
-        result.write_parquet(path)
+        temporary = path.with_name(f'.{uuid.uuid4().hex}.parquet')
+        try:
+            result.write_parquet(temporary)
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
     return changed
 
 

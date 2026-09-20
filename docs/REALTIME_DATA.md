@@ -2,7 +2,7 @@
 
 `python -m quant data realtime run` 在沪深交易日 09:20—15:05 采集。日历复用已保存的交易所日历，缺覆盖时调用现有 Tushare 日历更新；不按星期猜交易日。午休保留连接并更新心跳，恢复后重新拉取当前 K 线。
 
-首次运行依赖本机已登录的 Futu OpenD（127.0.0.1:11111）及对应行情权限。安装可选依赖 `pip install -e ".[realtime]"`。调度安装入口 `scripts/install_realtime_quotes.ps1`，工作日 09:20 和用户登录时触发；电脑须开机且用户登录。程序有独占文件锁，不与日更共享写入目标。
+主源依赖本机已登录的 Futu OpenD（127.0.0.1:11111）及对应行情权限；OpenD 不可用时仍尝试下述公共备用源。安装可选依赖 `pip install -e ".[realtime]"`。调度安装入口 `scripts/install_realtime_quotes.ps1`，工作日 09:20 和用户登录时触发；电脑须开机且用户登录。程序有独占文件锁，不与日更共享写入目标。
 
 ## 采集范围
 
@@ -21,6 +21,14 @@ OpenD 订阅 QUOTE 和 K_1M 并持续接收供应商推送，采集器每 5 秒�
 使用 `python -m quant data realtime read --symbol 510300.SH --count 20`，或调用 `quant.data.realtime_store.read_for_strategy`。读取器要求交易时段、健康心跳、30 秒内供应商报价、非停牌、连续的已完成分钟，并只选读取时已可知的版本。失联、缺分钟、延迟报价、未来时间、午休或休市均拒绝提供可执行输入。早盘不足所需窗口时同样拒绝，不填零、不前向填充。它提供数据，不产生实盘订单，`auto_trade=false`。
 
 ## 检查和故障
+
+`public_fallback=true` 时，Futu 断线、报价过期或分钟缺口会触发后台备用请求：Tushare `realtime_quote(src='sina')` 批量报价，以及 AKShare 东财单标的报价/一分钟线。子进程有硬超时，失败退避；主循环继续心跳和 Futu 重连。公共源不会消耗 Futu 历史额度。
+
+Tushare 使用既有本地 token，并保留 SDK 权限校验，不自动购买权限。2000 积分不等于独立的历史/实时分钟权限，详见[官方权限表](https://tushare.pro/document/1?doc_id=290)。报价与分钟权限分别判断。
+
+备用数据保留 source、供应商时间、received_at/available_at；raw 按来源隔离。AKShare 报价保留 SDK 投影前的东财 f86 时间字段，不以本机请求时刻冒充行情时刻。读取器拒绝过期报价、缺分钟、无成交额的分钟，以及混合来源的分钟窗口。这里的自动降级只表示尝试恢复；状态为 running 也不保证某个标的满足策略输入条件。盘中延迟仍需首个交易时段验证。
+
+全市场盘后分钟补全及慢速历史队列见 [MINUTE_REFRESH.md](MINUTE_REFRESH.md)。
 
 - `python -m quant data realtime status`：本地状态、心跳年龄、逐标的请求异常及订阅额度。
 - `python -m quant data realtime probe --max-seconds 90`：有限的连接、订阅、报价与当前 K 线读取探测，结果放在独立 probes 目录；不会让生产读取器变成 ready。

@@ -19,7 +19,7 @@ def read_stock_intraday_bars(
         or symbol[6:] not in (".SH", ".SZ", ".BJ")
         or start > end):
         raise ValueError("Invalid A-share minute history query")
-    if frequency not in {"1m", "5m"} or source not in {"baostock", "tdx"}:
+    if frequency not in {"1m", "5m"} or source not in {"baostock", "tdx", "akshare_sina", "akshare_eastmoney"}:
         raise ValueError("Unsupported minute history frequency or source")
     path = (data_root / f"clean/bar_intraday/freq={frequency}/source={source}"
             / f"symbol={symbol}" / "data.parquet")

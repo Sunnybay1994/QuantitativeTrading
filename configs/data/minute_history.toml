@@ -1,0 +1,10 @@
+auto_trade = false
+data_root = "data"
+output = "artifacts/minute_history"
+recent_output = "artifacts/minute_refresh"
+# Continue the existing historical research horizon; daily recent capture owns new sessions.
+start = "2023-01-01"
+end = "2026-09-18"
+quota_reserve = 5
+max_new_symbols = 5
+max_seconds = 3600

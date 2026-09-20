@@ -1,0 +1,6 @@
+auto_trade = false
+data_root = "data"
+output = "artifacts/minute_refresh"
+tdx_root = "D:/new_tdx/vipdoc"
+sources = ["akshare_sina", "akshare_eastmoney"]
+request_spacing_seconds = 0.5

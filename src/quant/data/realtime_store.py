@@ -21,8 +21,10 @@ def atomic_json(path: Path, value: dict) -> None:
     tmp.replace(path)
 
 
-def raw_packet(root: Path, kind: str, rows: list[dict], now: dt.datetime) -> str:
-    folder = root / 'raw/futu/realtime' / f'date={now.date()}' / kind
+def raw_packet(root: Path, kind: str, rows: list[dict], now: dt.datetime, *, source: str = 'futu') -> str:
+    if source not in ('futu', 'tushare_sina', 'akshare_eastmoney', 'akshare_sina'):
+        raise ValueError('Unknown feed source')
+    folder = root / 'raw' / source / 'realtime' / f'date={now.date()}' / kind
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f'{now:%H%M%S%f}_{uuid.uuid4().hex}.json.gz'
     with path.open('xb') as stream, gzip.GzipFile(fileobj=stream, mode='wb') as zipped:
@@ -74,7 +76,12 @@ class FeedStore:
                     value = {'symbol': symbol, 'last_price': finite(row['last_price'], True),
                              'volume': finite(row['volume']), 'amount': finite(row['turnover']),
                              'suspension': bool(row.get('suspension', False)),
-                             'provider_time': stamp.isoformat(), 'received_at': now.isoformat()}
+                             'provider_time': stamp.isoformat(), 'received_at': now.isoformat(),
+                             'source': row.get('source', 'futu')}
+                    previous = self.db.execute('SELECT provider_time FROM quotes WHERE symbol=? '
+                                               'ORDER BY id DESC LIMIT 1', (symbol,)).fetchone()
+                    if previous and previous[0] > stamp.isoformat():
+                        continue
                     self.db.execute('INSERT INTO quotes VALUES(NULL,?,?,?,?,?)',
                                     (symbol, stamp.isoformat(), now.isoformat(),
                                      json.dumps(value), raw))
@@ -110,7 +117,7 @@ class FeedStore:
                         raise ValueError('Invalid OHLC ordering')
                     value.update(symbol=symbol, provider_time=stamp.isoformat(),
                                  is_opening_row=stamp.time() == dt.time(9, 30),
-                                 source='futu', adjustment='none')
+                                 source=row.get('source', 'futu'), adjustment='none')
                     payload = json.dumps(value, sort_keys=True)
                     digest = hashlib.sha256(payload.encode()).hexdigest()
                     old = self.db.execute('SELECT digest FROM bars WHERE symbol=? AND '
@@ -171,5 +178,7 @@ def read_for_strategy(database: Path, status_path: Path, symbol: str, *,
              for row in rows}
     if any(t not in found for t in required):
         raise ValueError('Missing completed minute; no fill-forward or silent substitution')
+    if len({found[t]['source'] for t in required}) != 1:
+        raise ValueError('Mixed minute sources; wait for a complete provider window')
     return {'symbol': symbol, 'as_of': stamp, 'quote': quote,
             'bars': [found[t] for t in required], 'auto_trade': False}

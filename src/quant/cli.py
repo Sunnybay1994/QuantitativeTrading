@@ -17,6 +17,8 @@ from quant.llm.budget import month_spend_usd, remaining_budget_usd
 _DELEGATE: dict[tuple[str, str], str] = {
     ("data", "refresh"): "quant.data.refresh",
     ("data", "realtime"): "quant.data.realtime",
+    ("data", "minutes"): "quant.data.recent_minutes",
+    ("data", "minute-history"): "quant.data.minute_history",
     ("factors", "compute"): "quant.factors.compute",
     ("research", "daily"): "quant.research.scheduled_observation",
     ("research", "nightly"): "quant.research.nightly",
@@ -91,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
     intel.add_argument("--no-extract", action="store_true")
 
     data = sub.add_parser("data", help="数据刷新")
-    data.add_argument("command", choices=["refresh", "realtime"])
+    data.add_argument("command", choices=["refresh", "realtime", "minutes", "minute-history"])
     factors = sub.add_parser("factors", help="因子计算")
     factors.add_argument("command", choices=["compute"])
     research = sub.add_parser("research", help="投研流水线")

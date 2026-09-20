@@ -87,6 +87,10 @@ def run(config: Path, *, probe: bool = False, max_seconds: float | None = None,
             publish(status='failed', error=f'{type(exc).__name__}: {exc}')
             raise
         store = FeedStore(database)
+        fallback = None
+        if settings.get('public_fallback', False):
+            from quant.data.realtime_fallback import FallbackFeed
+            fallback = FallbackFeed(settings, store)
         client = None
         start = time.monotonic()
         due_bars: dict[str, float] = {}
@@ -103,9 +107,11 @@ def run(config: Path, *, probe: bool = False, max_seconds: float | None = None,
                     publish(status='running')
                     time.sleep(5)
                     continue
+                if fallback is not None:
+                    fallback.tick(state['symbols'], now, state, probe=probe)
                 if tick < retry_at:
-                    publish(status='reconnecting')
-                    time.sleep(min(5, retry_at - tick))
+                    publish(status='running' if fallback else 'reconnecting', primary_available=False)
+                    time.sleep(min(1, retry_at - tick))
                     continue
                 try:
                     if client is None:
@@ -166,7 +172,7 @@ def run(config: Path, *, probe: bool = False, max_seconds: float | None = None,
                             state['symbol_errors'][symbol] = f'{type(exc).__name__}: {exc}'
                         due_bars[symbol] = tick + settings['bar_poll_seconds']
                     failure_streak = 0
-                    publish(status='probe' if probe else 'running', error=None)
+                    publish(status='probe' if probe else 'running', error=None, primary_available=True)
                     if probe and len(probed | set(state['symbol_errors'])) == len(state['symbols']):
                         break
                     time.sleep(1)
@@ -182,6 +188,8 @@ def run(config: Path, *, probe: bool = False, max_seconds: float | None = None,
                     if probe:
                         break
         finally:
+            if fallback is not None:
+                fallback.close()
             if client is not None:
                 client.close()
             store.close()
