@@ -78,6 +78,11 @@ def snapshot(root: Path = ROOT) -> dict:
         results = enrich(results, root)
         from quant.reporting.result_groups import cached_annotations
         results = cached_annotations(results, root)
+        from quant.reporting.dashboard_curves import catalog
+        available = {(str(Path(e['run_path']).resolve()), e['variant']) for e in catalog(root)
+                     if e['kind'] == 'strategy' and e.get('cost_multiplier') == 1.}
+        for row in results:
+            row['has_period_report'] = (str((root/row['run_path']).resolve()), row['variant']) in available
     runtime = {}
     import tomllib
     runtime_path = root/'configs/runtime.toml'
@@ -177,6 +182,15 @@ def create_server(port: int) -> ThreadingHTTPServer:
                         mime = 'application/json'
                 except (ValueError, OSError, KeyError, pl.exceptions.PolarsError) as exc:
                     body = json.dumps({'error':str(exc)},ensure_ascii=False).encode('utf-8')
+                    mime = 'application/json'
+            elif route.path == '/api/strategy-report':
+                from quant.reporting.strategy_report import render
+                try:
+                    query = parse_qs(route.query)
+                    body = render(ROOT, query.get('run', [''])[0], query.get('variant', [''])[0]).encode('utf-8')
+                    mime = 'text/html'
+                except (ValueError, OSError, KeyError, pl.exceptions.PolarsError) as exc:
+                    body = json.dumps({'error': str(exc)}, ensure_ascii=False).encode('utf-8')
                     mime = 'application/json'
             elif route.path == '/api/health':
                 body = json.dumps({'service': 'quant-research-dashboard', 'pid': os.getpid()}).encode('utf-8')

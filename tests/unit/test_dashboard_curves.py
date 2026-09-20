@@ -44,3 +44,77 @@ def test_period_report_keeps_cross_currency_comparison_unavailable(tmp_path):
     assert result['rows'][0]['total_return'] == pytest.approx(-.01)
     assert result['rows'][0]['benchmark_results'] == []
     assert result['excluded']
+
+
+def test_capacity_catalog_uses_replay_nav_and_preserves_report_metadata(tmp_path):
+    from quant.reporting.dashboard_curves import catalog
+    run = tmp_path/'artifacts/research/r8'
+    run.mkdir(parents=True)
+    (run/'battery.toml').write_text('[portfolio]\ninitial_cash = 42\n')
+    (run/'config.toml').write_text(
+        'initial_capitals = [1000000, 5000000]\nparticipation_limit = 0.05\n'
+        'monthly_turnover_budget = 0.5\n'
+        'interpretation = "capacity_constrained_fixed_slippage_sensitivity_not_calibrated_market_impact"\n')
+    records = []
+    for capital in (1000000, 5000000):
+        variant = f'capital_{capital}'
+        records.append(dict(variant=variant, run_path=str(run), source_run='artifacts/source',
+                            experiment_id='r8', config_path=str(run/'config.toml'),
+                            report_path=str(run/'report.md'), result_time='2026-09-15'))
+        for cost in ('0.5', '1', '2'):
+            folder = run/variant/'budgeted'/f'cost_{cost}'/'2025'
+            folder.mkdir(parents=True)
+            pl.DataFrame({'date':['2025-01-02','2025-01-03'], 'unit_nav':[1.,1.1]}).write_parquet(folder/'nav.parquet')
+    registry = tmp_path/'artifacts/registry'
+    registry.mkdir()
+    pl.DataFrame(records).write_parquet(registry/'experiments.parquet')
+    curves = catalog(tmp_path)
+    assert len(curves) == 6
+    for curve in curves:
+        assert curve['capital'] == int(curve['variant'][8:])
+        assert f"{curve['capital'] / 10000:g}万元" in curve['label']
+        assert curve['run_path'] == str(run.resolve())
+        assert curve['report_path'] == str((run/'report.md').resolve())
+        assert curve['cost_multiplier'] in (.5, 1., 2.)
+        assert '/budgeted/' in curve['paths'][0].replace('\\', '/')
+        assert '容量敏感性回放' in curve['description']
+        assert read_curve(curve)[-1]['value'] == 1.1
+
+
+def test_missing_capacity_replay_does_not_fall_back_to_source(tmp_path):
+    from quant.reporting.dashboard_curves import catalog
+    run = tmp_path/'artifacts/research/r8'
+    run.mkdir(parents=True)
+    source = tmp_path/'artifacts/source/capital_1000000/cost_1/2025'
+    source.mkdir(parents=True)
+    pl.DataFrame({'date':['2025-01-02'], 'unit_nav':[2.]}).write_parquet(source/'nav.parquet')
+    registry = tmp_path/'artifacts/registry'
+    registry.mkdir()
+    pl.DataFrame([dict(variant='capital_1000000', run_path=str(run), source_run='artifacts/source',
+                       experiment_id='r8', config_path=None, report_path=str(run/'report.md'),
+                       result_time='2026-09-15')]).write_parquet(registry/'experiments.parquet')
+    assert catalog(tmp_path) == []
+
+
+def test_report_identity_survives_shared_nav_and_explicit_control_fallback(tmp_path):
+    from quant.reporting.dashboard_curves import catalog
+    source = tmp_path/'artifacts/source'
+    folder = source/'budgeted/cost_1/2025'
+    folder.mkdir(parents=True)
+    pl.DataFrame({'date':['2025-01-02'], 'unit_nav':[1.]}).write_parquet(folder/'nav.parquet')
+    records = []
+    for name in ('original', 'remeasured', 'control_reference'):
+        run = tmp_path/'artifacts'/name
+        run.mkdir()
+        (run/'config.toml').write_text('[research]\ncontrol = "artifacts/source"\n')
+        records.append(dict(variant='budgeted', run_path=str(run),
+                            source_run='artifacts/source' if name != 'control_reference' else '',
+                            experiment_id=name, config_path=str(run/'config.toml'),
+                            report_path=str(run/'report.md'), result_time='2026-09-15'))
+    registry = tmp_path/'artifacts/registry'
+    registry.mkdir()
+    pl.DataFrame(records).write_parquet(registry/'experiments.parquet')
+    curves = catalog(tmp_path)
+    assert len(curves) == len({s['id'] for s in curves}) == 3
+    assert len({s['report_path'] for s in curves}) == 3
+    assert len({tuple(s['paths']) for s in curves}) == 1

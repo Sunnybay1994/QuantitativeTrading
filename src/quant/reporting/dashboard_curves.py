@@ -9,14 +9,15 @@ import polars as pl
 def catalog(root: Path) -> list[dict]:
     entries = {}
 
-    def add(label, paths, kind, currency='CNY', basis='成本后账户净值', code=None, description='', capital=None, sample_evidence=None):
+    def add(label, paths, kind, currency='CNY', basis='成本后账户净值', code=None, description='', capital=None, sample_evidence=None, **metadata):
         paths = [p.resolve() for p in paths if p.is_file()]
         if not paths or any(not p.is_relative_to(root.resolve()) for p in paths):
             return
-        key = hashlib.sha256(('|'.join(map(str, paths))+'|'+str(code)).encode()).hexdigest()[:20]
+        identity = '|'.join(str(metadata.get(k, '')) for k in ('run_path', 'variant')) if kind == 'strategy' else ''
+        key = hashlib.sha256(('|'.join(map(str, paths))+'|'+str(code)+'|'+identity).encode()).hexdigest()[:20]
         entries[key] = dict(id=key, label=label, kind=kind, currency=currency,
                             basis=basis, code=code, description=description, capital=capital,
-                            sample_evidence=sample_evidence, paths=[str(p) for p in paths])
+                            sample_evidence=sample_evidence, paths=[str(p) for p in paths], **metadata)
 
     registry = root/'artifacts/registry/experiments.parquet'
     if registry.exists():
@@ -33,10 +34,29 @@ def catalog(root: Path) -> list[dict]:
             description = describe(config, r['variant']) if config is None or config.resolve().is_relative_to(root.resolve()) else '源配置不可访问'
             battery = base/'battery.toml'
             capital = tomllib.loads(battery.read_text(encoding='utf-8')).get('portfolio', {}).get('initial_cash') if battery.is_file() else None
+            capacity = r['variant'].startswith('capital_') and r['variant'][8:].isdigit()
+            if capacity:
+                capital = int(r['variant'][8:])
             for cost in ('0.5', '1', '2'):
-                folder = base/r['variant']/f'cost_{cost}'
+                # Capacity replay owns its saved account NAV. Never substitute the
+                # unconstrained source model when a replay is missing or incomplete.
+                folder = (run/r['variant']/'budgeted' if capacity else base/r['variant'])/f'cost_{cost}'
                 paths = sorted(folder.glob('????/nav.parquet')) or list(folder.glob('nav.parquet'))
-                add(f"{r['experiment_id']} / {r['variant']} · {cost}× · {run.parent.name if run.name.startswith('reports') else run.name}", paths, 'strategy', description=description, capital=capital, sample_evidence=evidence)
+                if not paths and not capacity and r.get('source_run'):
+                    # Report-only reruns explicitly identify their original NAV.
+                    folder = root/r['source_run']/r['variant']/f'cost_{cost}'
+                    paths = sorted(folder.glob('????/nav.parquet')) or list(folder.glob('nav.parquet'))
+                if not paths and not capacity and r['variant'] in ('control', 'budgeted') and config and config.is_file():
+                    control = tomllib.loads(config.read_text(encoding='utf-8')).get('research', {}).get('control')
+                    if control:
+                        folder = root/control/r['variant']/f'cost_{cost}'
+                        paths = sorted(folder.glob('????/nav.parquet')) or list(folder.glob('nav.parquet'))
+                capital_label = f' · {capital / 10000:g}万元' if capacity else ''
+                add(f"{r['experiment_id']} / {r['variant']}{capital_label} · {cost}× · {run.parent.name if run.name.startswith('reports') else run.name}", paths, 'strategy', description=description, capital=capital, sample_evidence=evidence,
+                    run_path=str(run.resolve()), variant=r['variant'], cost_multiplier=float(cost),
+                    report_path=str((root/r['report_path']).resolve()) if r.get('report_path') else None,
+                    experiment_id=r['experiment_id'], config_path=str(config.resolve()) if config else None,
+                    source_run=r.get('source_run'))
     for base in (root/'artifacts/forward/b20', root/'artifacts/forward/b32', root/'artifacts/paper'):
         if not base.exists():
             continue
