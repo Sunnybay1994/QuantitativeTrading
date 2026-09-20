@@ -6,7 +6,7 @@ def attention(daily: dict) -> list[dict]:
     for name, stage in daily.get('stages', {}).items():
         result = stage.get('result', {})
         if stage.get('status') not in ('complete', 'skipped'):
-            items.append({'stage': name, 'reason': stage.get('error') or stage.get('reason') or '阶段未完成',
+            items.append({'stage': name, 'reason': stage.get('error') or stage.get('reason') or result.get('reason') or '阶段未完成',
                           'action': '检查该阶段报告并修复输入或运行错误；不是下单通知。'})
         elif result.get('requires_review'):
             shadow = result.get('shadow', {})

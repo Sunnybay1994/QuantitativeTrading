@@ -108,6 +108,38 @@ def test_frozen_candidate_capture_is_connected_without_blocking_accounts(env, mo
         assert '20 个冻结候选' in (args['output']/'report.md').read_text(encoding='utf-8')
 
 
+@pytest.mark.parametrize('status', ['pending', 'observed', 'partial', 'exception', 'rehearsal'])
+def test_candidate_scoring_continues_old_captures_when_current_capture_fails(env, monkeypatch, status):
+    from quant.research import candidate_forward
+    from quant.reporting import candidate_forward_monitor
+    args, _, b20, b32, monthly = env
+    args['rehearsal'] = status == 'rehearsal'
+    with args['config'].open('a', encoding='utf-8') as stream:
+        stream.write('\n[candidate_forward]\nenabled=true\nsearch_output="search"\n'
+            'receipt="receipt"\nbattery_config="battery"\n'
+            '[candidate_forward.scoring]\nenabled=true\nroots=["saved_daily"]\n')
+    capture = Mock(side_effect=ValueError('today candidate data missing'))
+    score = Mock(return_value={'status': status, 'scored_months': 2,
+        'requires_review': status == 'partial', 'output': 'scores'})
+    if status == 'exception':
+        score.side_effect = ValueError('corrupt capture')
+    monkeypatch.setattr(candidate_forward, 'run', capture)
+    monkeypatch.setattr(candidate_forward_monitor, 'run', score)
+    result = daily.run(**args)
+    assert b20.called and b32.called and monthly.called
+    scoring = result['stages']['candidate_scoring']
+    if status == 'rehearsal':
+        assert not capture.called and not score.called
+        assert scoring['status'] == 'complete'
+    else:
+        assert score.called and score.call_args.kwargs['current'] is None
+        assert score.call_args.kwargs['roots'] == [Path('saved_daily')]
+        assert scoring['status'] == ('complete' if status in ('pending', 'observed')
+                                     else 'failed' if status == 'exception' else 'incomplete')
+        assert result['requires_review'] is True
+        assert '候选成熟月度评分' in (args['output']/'report.md').read_text(encoding='utf-8')
+
+
 def test_q10_monthly_runs_independently_of_b32_monthly_failure(env, monkeypatch):
     from quant.execution import q10_paper
     from quant.reporting import q10_monthly

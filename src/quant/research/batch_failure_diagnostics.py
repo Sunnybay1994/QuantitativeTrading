@@ -46,6 +46,64 @@ def _source(path: Path) -> dict:
     return {'path': str(path), 'bytes': path.stat().st_size, 'sha256': digest}
 
 
+def battery_scope(run: Path, result: dict, candidates: list[dict], rows: list[dict],
+                  steps: dict, variants: list[str]) -> tuple[dict, dict, list[Path]]:
+    """Require the exact frozen battery and explicit N1 provenance for non-GP entries."""
+    frozen_root = Path(result['batch'])/'library'
+    paths = sorted(frozen_root.glob('*.toml'))
+    definitions = {}
+    for path in paths:
+        definition = tomllib.loads(path.read_text(encoding='utf-8'))
+        identifier = definition.get('id')
+        if (identifier != path.stem or identifier in definitions
+                or any(not isinstance(definition.get(key), str) or not definition[key].strip()
+                       for key in ('expr', 'family', 'source_ref'))
+                or type(definition.get('direction')) is not int
+                or definition['direction'] not in (-1, 1)):
+            raise ValueError('Invalid or duplicate frozen N3 definition')
+        definitions[identifier] = definition
+    if not definitions or set(definitions) != {row['factor'] for row in rows}:
+        raise ValueError('Complete scorecard does not match the frozen N3 definition set')
+    expected = {(identifier, variant) for identifier in definitions for variant in variants}
+    observed = [(row['factor'], row['variant']) for row in rows]
+    if len(observed) != len(expected) or set(observed) != expected:
+        raise ValueError('Complete scorecard does not contain every frozen factor/variant exactly once')
+    if any(result.get(key) != len(definitions) for key in ('candidates', 'evaluated')):
+        raise ValueError('N3 candidate/evaluated counts differ from frozen definitions')
+    indexed = {row['factor_id']: row for row in candidates}
+    if len(indexed) != len(candidates) or not set(indexed) <= set(definitions):
+        raise ValueError('Selected N2 candidates are missing or duplicated in the frozen battery')
+    for identifier, candidate in indexed.items():
+        definition = definitions[identifier]
+        if (candidate.get('expression') != definition['expr']
+                or candidate.get('direction') != definition['direction']
+                or Path(definition['source_ref']).resolve() != (run/'N2/search.json').resolve()):
+            raise ValueError('N2 candidate differs from its frozen N3 definition/source')
+    queued = sorted(set(definitions)-set(indexed))
+    queue_sources = []
+    if queued:
+        n1 = steps.get('N1', {})
+        if not n1.get('ok') or n1.get('result', {}).get('queued_candidates') != len(queued):
+            raise ValueError('N1 queue count does not establish every additional frozen candidate')
+        for identifier in queued:
+            path = run/'candidates'/f'{identifier}.toml'
+            original = tomllib.loads(path.read_text(encoding='utf-8'))
+            if original != definitions[identifier]:
+                raise ValueError('Queued candidate differs from its frozen N3 definition/source')
+            if Path(original['source_ref']).resolve() == (run/'N2/search.json').resolve():
+                raise ValueError('Additional candidate claims N2 provenance but is absent from N2')
+            paths.append(path)
+            queue_sources.append({'factor': identifier, 'family': original['family'],
+                                  'source_ref': original['source_ref'],
+                                  'training_comparison': 'not_applicable'})
+    return ({'mode': 'mixed_battery' if queued else 'N2_only',
+             'complete_battery': summarize(rows),
+             'N2_search': summarize([row for row in rows if row['factor'] in indexed]),
+             'fixed_queue': summarize([row for row in rows if row['factor'] in queued]),
+             'training_comparison_candidates': len(candidates), 'queued_sources': queue_sources},
+            definitions, paths)
+
+
 def aggregate(rows: list[dict], diagnostics: list[dict], candidates: list[dict],
               inputs: dict, settings: dict) -> dict:
     """Count variant rows separately from the selected, dependent candidate expressions."""
@@ -146,6 +204,12 @@ def diagnose_run(run: Path) -> dict:
     summary_path = run/'summary.json'
     saved = json.loads(summary_path.read_text(encoding='utf-8'))
     n3 = saved.get('steps', {}).get('N3', {})
+    n4 = saved.get('steps', {}).get('N4', {})
+    n4_result = n4.get('result', {})
+    admission = {'status': 'not_confirmed_complete'}
+    if n4.get('ok') and all(type(n4_result.get(key)) is int for key in ('admitted', 'rejected')):
+        admission = {'status': 'complete', 'admitted': n4_result['admitted'],
+                     'rejected': n4_result['rejected']}
     if not n3.get('ok') or not n3.get('result', {}).get('scorecard'):
         raise ValueError(f'Battery not completed: {run}')
     scorecard = Path(n3['result']['scorecard'])
@@ -157,16 +221,27 @@ def diagnose_run(run: Path) -> dict:
     rows = pl.read_parquet(scorecard).to_dicts()
     candidates = search['candidates']
     indexed = {c['factor_id']: c for c in candidates}
-    if len(indexed) != len(candidates) or set(indexed) != {r['factor'] for r in rows}:
-        raise ValueError('Selected candidates do not match the complete scorecard')
+    scope, definitions, definition_paths = battery_scope(run, n3['result'], candidates, rows,
+                                                        saved.get('steps', {}), settings['variants'])
     statistics_root = scorecard.parent.parent/'statistics'
     samples = batch_diagnostics(run, statistics_root)
-    diagnostics = [candidate_diagnostic(r, indexed[r['factor']], inputs) for r in rows]
+    diagnostics = []
+    for row in rows:
+        if row['factor'] in indexed:
+            diagnostic = candidate_diagnostic(row, indexed[row['factor']], inputs)
+            diagnostic['origin'] = 'N2_search'
+        else:
+            diagnostic = candidate_diagnostic(row, {'search_objective': 'not_applicable'}, {})
+            diagnostic.update(origin='fixed_queue', training_comparison_status='not_applicable',
+                training_sample=None, search_selection=None,
+                source_ref=definitions[row['factor']]['source_ref'],
+                sample_comparison={'status': 'not_applicable', 'reason': 'No N2 training source'})
+        diagnostics.append(diagnostic)
     for d in diagnostics:
         if d['same_score_preprocessing']:
             d['sample_comparison'] = samples.get(d['factor'])
     source_paths = [summary_path, scorecard, settings_path, search_path, input_path,
-                    run/'N2/monthly_sample.parquet']
+                    run/'N2/monthly_sample.parquet', *definition_paths]
     source_paths.extend(sorted((statistics_root/'inputs').glob('*/monthly_labels.parquet')))
     for factor in sorted(indexed):
         source_paths.extend(statistics_root/'factors'/factor/name
@@ -176,7 +251,8 @@ def diagnose_run(run: Path) -> dict:
         'search_trials': len(search['trials']),
         'trial_error_counts': dict(Counter(c['error'] for c in search['trials'] if c.get('error'))),
         'training_sample': training_sample_description(inputs),
-        'summary': aggregate(rows, diagnostics, candidates, inputs, settings),
+        'admission_observation': admission,
+        'summary': {**aggregate(rows, diagnostics, candidates, inputs, settings), 'population_scope': scope},
         'candidate_diagnostics': diagnostics,
         'sources': [_source(p) for p in source_paths],
     }
@@ -197,12 +273,14 @@ def render_report(result: dict) -> str:
                      f"{_format(excess, 100)} pp | {_format(turnover)}× |")
     for b in result['batches']:
         s = b['summary']
+        scope = s.get('population_scope', {})
+        search_count = scope.get('training_comparison_candidates', s['candidates'])
         lines += ['', f"## {Path(b['run']).parent.name}", '',
             f"搜索目标：`{', '.join(s['training_objectives'])}`；"
-            f"共评估 {b['search_trials']} 个表达式，选出 {s['candidates']} 个候选。"
+            f"共评估 {b['search_trials']} 个表达式，选出 {search_count} 个 N2 候选。"
             f"训练信号日期 {b['training_sample']['sample_first_signal']}—"
             f"{b['training_sample']['sample_last_signal']}，评分表截至 {b['as_of']}。", '',
-            '### 已验证的拒绝原因', '',
+            '### 筛选结果与未通过原因', '',
             '统计失败次数（可重叠）：' + '；'.join(
                 f'{k}={v}/{s["variants"]}' for k, v in s['statistical_failure_counts'].items()) + '。',
             f"三档成本齐全 {s['costs_complete']}/{s['variants']}；"
@@ -215,6 +293,17 @@ def render_report(result: dict) -> str:
             lines.append(f"| {label} | {_format(d['minimum'], 100)} pp | "
                          f"{_format(d['median'], 100)} pp | {_format(d['maximum'], 100)} pp | "
                          f"{d['available']}/{d['nonpositive']} |")
+        if scope.get('mode') == 'mixed_battery':
+            lines += ['', f"混合电池完整分母：{s['candidates']} 因子/{s['variants']} 变体；"
+                f"N2 搜索 {scope['N2_search']['candidates']} 因子/{scope['N2_search']['variants']} 变体，"
+                f"N1 固定队列 {scope['fixed_queue']['candidates']} 因子/{scope['fixed_queue']['variants']} 变体。"
+                '仅 N2 来源参加训练差异比较；固定队列明确记为 not_applicable。']
+        admission = b.get('admission_observation', {})
+        if admission.get('status') == 'complete':
+            lines += ['', f"最终 N4 已完成：{admission['admitted']} 个因子入库、"
+                      f"{admission['rejected']} 个拒绝；统计通过变体数不等于最终入库因子数。"]
+        else:
+            lines += ['', '本诊断保存范围未确认 N4 完成，不能据此认定零入库。']
         lines += ['', '### 训练与全历史的描述性比较', '',
             '| 原始分数候选的月度 RankIC | 中位数 | 有效/非正 |', '|---|---:|---:|']
         stage_labels = {'reported_training': '方向调整后的合池训练IC（描述统计，不是最弱组目标）',
@@ -256,13 +345,16 @@ def render_report(result: dict) -> str:
             lines += [f"{s['correlation_penalty_exceeds_signal_candidates']}/{scalar_count} 个旧标量目标候选的"
                       '相关性惩罚大于适应度中的IC项；低相关可提高相对排序，但不能证明有预测力。']
         lines += ['上表的 reported_training 是合池描述统计，不能充当最弱组优化目标。'
-                  '搜索目标不直接包含全历史稳定性、可执行收益或成本。',
-            f"本批名义家族 `{s['declared_family']}`；包含偏好家族终端的候选数="
-            f"{s['candidates_using_favored_family_terminals']}。家族名是生成偏好，不是候选经济机制鉴定。",
+                  '搜索目标不直接包含全历史稳定性、可执行收益或成本。']
+        if s['declared_family'] is not None:
+            lines += [f"本批名义家族 `{s['declared_family']}`。家族名是生成偏好，不是候选经济机制鉴定。"]
+        if s['candidates_using_favored_family_terminals'] is not None:
+            lines += [f"包含偏好家族终端的候选数={s['candidates_using_favored_family_terminals']}。"]
+        lines += [
             'BH 调整 p 值仅按冻结设置报告；本批是否要求 FDR 准入：'
             f"{s['fdr_is_required_for_admission']}。不把未启用的条件说成拒绝原因。"]
     lines += ['', '## 解释边界与后续', '',
-        '已验证的是历史样本表现差异和实际准入失败。使用分组目标时，三组股票都进入训练目标；'
+        '已验证的是历史样本表现差异和所列筛选结果。使用分组目标时，三组股票都进入训练目标；'
         '搜索期后的既有历史已被查看，不能称为独立样本外验证。不同批次可能同时改变股票样本和搜索目标，'
         '不能从批间中位数差异推出新目标的因果效果。', '',
         '成本档的差额包含成交、仓位及现金路径变化，不能全归为手续费；未运行零成本反事实。'

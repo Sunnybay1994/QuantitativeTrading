@@ -38,7 +38,8 @@ def write_daily_report(record: dict[str, Any], output: Path) -> None:
     names = {'calendar': '交易日历', 'model': '模型预测', 'refresh': '输入质量',
         'b20': 'B20六账户', 'b32': 'B32双账户', 'monthly': '月报',
         'risk': '订单风险', 'signal_monitor': '滚动信号监控', 'forward_tracking': '前向账户与影子滑点',
-        'q10_monthly': 'Q10月度记录', 'candidate_forward': '冻结候选前向信号'}
+        'q10_monthly': 'Q10月度记录', 'candidate_forward': '冻结候选前向信号',
+        'candidate_scoring': '候选成熟月度评分'}
     statuses = {'complete': '完成', 'incomplete': '未完成', 'failed': '失败',
                 'running': '进行中', 'skipped': '跳过'}
     lines = [f"# 日更记录：{record['as_of'] or record['requested_to']}", '',
@@ -89,6 +90,12 @@ def write_daily_report(record: dict[str, Any], output: Path) -> None:
                 '[候选信号、输入与缺失值记录](candidate_forward/summary.json)']
         else:
             lines += ['', '冻结候选前向信号：'+str(candidates.get('reason', candidates['status']))+'。']
+    scoring = record['stages'].get('candidate_scoring', {}).get('result', {})
+    if scoring:
+        lines += ['', f"候选月度评分：{scoring.get('reason', scoring['status'])}；"
+            f"已评分信号月份 {scoring.get('scored_months', 0)}（按日期去重）。不代表策略成本后收益或准入。"]
+        if scoring.get('output'):
+            lines += ['[成熟标签与逐候选评分](candidate_scoring/report.md)']
     health = record.get('factor_health')
     if health:
         lines += ['', '## 因子健康日志', '']
@@ -266,6 +273,23 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
                 as_of=end, output=output/'candidate_forward')
         stage('candidate_forward', capture_candidates,
               lambda value: value['status'] in ('captured', 'pending', 'rehearsal_skipped'))
+    if settings.get('candidate_forward', {}).get('scoring', {}).get('enabled'):
+        def score_candidates() -> dict:
+            if rehearsal:
+                return {'status': 'rehearsal_skipped', 'requires_review': False,
+                        'reason': '历史演练不扫描生产前向信号'}
+            if result['as_of'] is None:
+                return {'status': 'input_unavailable', 'requires_review': True,
+                        'reason': '交易日历未能给出已知截止日'}
+            from quant.reporting.candidate_forward_monitor import run as score
+            spec = settings['candidate_forward']
+            current = output/'candidate_forward'
+            return score(search_output=Path(spec['search_output']), receipt_path=Path(spec['receipt']),
+                roots=[Path(path) for path in spec['scoring']['roots']], known_through=end,
+                output=output/'candidate_scoring', data_root=data_root,
+                current=current if (current/'summary.json').is_file() else None)
+        stage('candidate_scoring', score_candidates,
+              lambda value: value['status'] in ('pending', 'observed', 'rehearsal_skipped'))
     if settings.get('q10', {}).get('monthly_backtest') and not rehearsal and 'q10' in stages:
         if stages['q10']['status'] == 'complete':
             from quant.reporting.q10_monthly import run as q10_monthly
@@ -297,6 +321,9 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
         or stages['signal_monitor'].get('result', {}).get('requires_review', True)
         or (settings.get('candidate_forward', {}).get('enabled', False)
             and stages.get('candidate_forward', {}).get('status') != 'complete')
+        or (settings.get('candidate_forward', {}).get('scoring', {}).get('enabled', False)
+            and (stages.get('candidate_scoring', {}).get('status') != 'complete'
+                 or stages.get('candidate_scoring', {}).get('result', {}).get('requires_review', False)))
         or stages.get('forward_tracking', {}).get('result', {}).get('requires_review', False))
     result['status'] = ('complete' if stages and all(
         s['status'] == 'complete' for s in stages.values()) else 'incomplete')
