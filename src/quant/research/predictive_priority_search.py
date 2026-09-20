@@ -376,4 +376,7 @@ RNG, records and selection trace under an identical frozen search contract.
     _write(output/'search.json', {'candidates': winners, 'trials': records, 'selection_trace': trace,
                                  'correlation_method': _CORRELATION_METHOD,
                                  'selection_method': _SELECTION_METHOD})
+    if winners:
+        from quant.research.candidate_freeze import freeze_completed_search
+        freeze_completed_search(output)
     return winners

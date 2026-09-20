@@ -78,6 +78,36 @@ def test_saved_isolated_and_controls_not_overridden(env):
     assert monthly.call_count == 1
 
 
+@pytest.mark.parametrize('status', ['captured', 'pending', 'missed_window', 'exception', 'refresh_failed', 'rehearsal'])
+def test_frozen_candidate_capture_is_connected_without_blocking_accounts(env, monkeypatch, status):
+    from quant.research import candidate_forward
+    args, model, b20, b32, monthly = env
+    with args['config'].open('a', encoding='utf-8') as stream:
+        stream.write('\n[candidate_forward]\nenabled=true\nsearch_output="search"\n'
+                     'receipt="receipt"\nbattery_config="battery"\n')
+    args['rehearsal'] = status == 'rehearsal'
+    capture = Mock(return_value={'status': status, 'candidate_count': 20, 'eligible_symbols': 3000,
+                                 'requires_review': status == 'missed_window'})
+    if status == 'exception':
+        capture.side_effect = ValueError('stale candidate source')
+    if status == 'refresh_failed':
+        model.side_effect = ValueError('input refresh failure')
+    monkeypatch.setattr(candidate_forward, 'run', capture)
+    result = daily.run(**args)
+    assert b20.called and b32.called and monthly.called
+    stage = result['stages']['candidate_forward']
+    if status in ('refresh_failed', 'rehearsal'):
+        assert not capture.called
+    else:
+        assert capture.call_args.kwargs['refresh_evidence'] == args['output']/'model/refresh.json'
+    if status in ('captured', 'pending', 'rehearsal'):
+        assert stage['status'] == 'complete'
+    else:
+        assert stage['status'] in ('failed', 'incomplete') and result['requires_review'] is True
+    if status == 'captured':
+        assert '20 个冻结候选' in (args['output']/'report.md').read_text(encoding='utf-8')
+
+
 def test_q10_monthly_runs_independently_of_b32_monthly_failure(env, monkeypatch):
     from quant.execution import q10_paper
     from quant.reporting import q10_monthly

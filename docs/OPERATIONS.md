@@ -92,4 +92,8 @@ N4增量检验仅向分组与回归传递键、标签、候选及已准入控制
 
 机制清单在 `configs/research/gp_predictive_priority_v2_inputs/manifest.json`，来源按哈希分片冻结。`python -m quant research predictive-inputs --manifest configs/research/gp_predictive_priority_v2_inputs/manifest.json --output <新目录>` 只准备和校验训练输入，不启动搜索。当前配方复用 `artifacts/research/gp_predictive_priority_v2_preflight_20260919/`；须保留其中 `prepared_inputs.json` 和其列出的全部文件。新N2复制冻结数据，恢复时核对数据、标签、控制、分组、表达式及目标，变化则拒绝混用；日线预热值和行业亦纳入断点指纹。完整历史覆盖见 `artifacts/research/gp_predictive_priority_v2_inputs_20260919/`，真实复制/恢复及测试见 `artifacts/maintenance/gp_predictive_priority_20260919/`。旧财务分区缺少逐分区原始快照沿革，当前刷新配置仅作背景，不冒充历史修订版本审计；冻结缓存不是对历史PIT准确性的独立证明。
 
+预测优先搜索完成后保存 `candidate_freeze.json`：记录实际UTC时间、候选表达式/方向及源文件哈希；相同结果恢复沿用原时间，来源变化报错。第12批的实际冻结凭据另存于 `artifacts/research/predictive_priority_batch12_20260920/`，现有N2产物不改写。日更配置的 `[candidate_forward]` 已接入这20个候选，首个合格信号日由交易日历判定为2026-09-21；从此日期的17点后、下一交易日9:30前保存当时可见的原始信号。错过开盘的补跑明确标记 `missed_window`，不冒充前向证据；日更其他账户仍独立执行。
+
+每次日更的 `candidate_forward/` 保存输入切片、原始值、同日合格股票池、冻结方向、刷新及财务披露记录和文件哈希，沿用既有原始terminal与电池股票池，不增加抓取、交易或准入门槛。缺失和非有限值不填零，财务未解决披露仍保留；输入质量通过不证明全部财务修订完整。`captured` 仅表示按时留存信号，尚不是收益或准入结论。当前未采到首日前向数据；收益标签成熟后的自动评分仍待接入。验证见 `artifacts/maintenance/candidate_forward_20260920/`。
+
 看板已验证的净值分组缓存保存在 `artifacts/reports/dashboard/result_groups.json`，包括版本、注册表键及所有来源文件身份、大小、修改时间。服务重启可复用；来源变化、缺失或缓存损坏触发完整重算，写缓存失败不阻断已核验结果。此为已完成且不应改写的报告派生缓存，不用于回测或准入；首次无缓存全量核验仍较慢，后续状态刷新仍展示真实缓存时间。
