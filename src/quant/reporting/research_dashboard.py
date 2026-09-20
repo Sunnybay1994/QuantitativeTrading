@@ -132,24 +132,34 @@ def artifact_path(root: Path, requested: str) -> Path | None:
 
 def create_server(port: int) -> ThreadingHTTPServer:
     from quant.reporting.dashboard_cache import SnapshotCache
+    from quant.reporting.data_inventory import DataInventory, collection_status
+    from quant.reporting.data_sync import task_status
     cache = SnapshotCache(snapshot)
+    inventory = DataInventory(ROOT)
+    inventory.get()
+    data_tasks = SnapshotCache(task_status, ttl=15)
     import secrets
     mining_token = secrets.token_urlsafe(32)
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             from quant.reporting.mining_control import authorized, resume
-            if self.path != '/api/mining/restart':
+            if self.path != '/api/mining/restart' and not self.path.startswith('/api/data/sync/'):
                 self.send_error(404)
                 return
             if not authorized(self.headers, mining_token, port):
                 self.send_error(403)
                 return
             try:
-                payload, status = resume(), 200
-                cache.invalidate()
+                if self.path.startswith('/api/data/sync/'):
+                    from quant.reporting.data_sync import sync
+                    payload, status = sync(self.path.removeprefix('/api/data/sync/')), 200
+                    data_tasks.invalidate()
+                else:
+                    payload, status = resume(), 200
+                    cache.invalidate()
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
-                payload, status = {'state': 'error', 'message': f'恢复请求失败（{type(exc).__name__}），请检查计划任务及权限'}, 503
+                payload, status = {'state': 'error', 'message': f'请求未确认（{type(exc).__name__}），请检查计划任务及权限'}, 503
             body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
             self.send_response(status)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
@@ -159,7 +169,19 @@ def create_server(port: int) -> ThreadingHTTPServer:
 
         def do_GET(self):
             route = urlparse(self.path)
-            if route.path in ('/api/curves', '/api/curve', '/api/periods', '/api/period-report'):
+            if route.path == '/api/data/inventory':
+                payload = {**inventory.get(force=route.query == 'refresh=1'), 'collection': collection_status(ROOT)}
+                body, mime = json.dumps(payload, ensure_ascii=False).encode('utf-8'), 'application/json'
+            elif route.path == '/api/data/tasks':
+                try:
+                    payload = data_tasks.get()
+                except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                    payload = {'tasks': [], 'error': type(exc).__name__}
+                body, mime = json.dumps(payload, ensure_ascii=False).encode('utf-8'), 'application/json'
+            elif route.path == '/data.js':
+                body = Path(__file__).with_name('dashboard_data.js').read_bytes()
+                mime = 'text/javascript'
+            elif route.path in ('/api/curves', '/api/curve', '/api/periods', '/api/period-report'):
                 from quant.reporting.dashboard_curves import catalog, compare, period_report
                 try:
                     entries = catalog(ROOT)

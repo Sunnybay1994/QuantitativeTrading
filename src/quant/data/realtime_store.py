@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import sqlite3
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,18 @@ def atomic_json(path: Path, value: dict) -> None:
     tmp = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
     tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False),
                    encoding='utf-8')
-    tmp.replace(path)
+    # Windows readers may briefly prevent replacing a progress snapshot.
+    try:
+        for attempt in range(11):
+            try:
+                tmp.replace(path)
+                break
+            except PermissionError:
+                if attempt == 10:
+                    raise
+                time.sleep(0.1)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def raw_packet(root: Path, kind: str, rows: list[dict], now: dt.datetime, *, source: str = 'futu') -> str:
