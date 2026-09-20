@@ -163,3 +163,60 @@ def test_history_plan_reuses_old_plans_and_lists_beijing(tmp_path, monkeypatch):
     plan = json.loads((tmp_path/'out/plan.json').read_text())
     assert result['unsupported_symbols'] == ['920001.BJ']
     assert plan['queue'][0]['years'] == [2025, 2024, 2023]
+
+
+def test_history_earliest_mode_preserves_oldest_first(tmp_path, monkeypatch):
+    from quant.data import minute_history
+    config = tmp_path/'config.toml'
+    config.write_text(f'auto_trade=false\nearliest_available=true\ndata_root="{tmp_path.as_posix()}"\n'
+        f'output="{(tmp_path/"out").as_posix()}"\nrecent_output="{(tmp_path/"recent").as_posix()}"\n'
+        'start="1990-01-01"\nend="2026-09-18"\n')
+    monkeypatch.setattr(minute_history, 'universe', lambda *args: [dict(symbol='000001.SZ', list_date='19910403')])
+    atomic_json(tmp_path/'out/earliest_bounds.json', {'000001.SZ': dict(
+        requested_start='1991-04-03', requested_end='2026-09-18', first_date='2018-09-17')})
+    minute_history.run(config, check_only=True)
+    plan = json.loads((tmp_path/'out/plan.json').read_text())
+    assert plan['queue'][0]['years'] == list(range(2018, 2027))
+    assert plan['queue'][0]['start'] == '2018-09-17'
+
+
+def test_earliest_probe_uses_actual_response_and_cache(tmp_path, monkeypatch):
+    import pandas as pd
+    from quant.data import minute_history
+    calls = []
+    def page(*args):
+        calls.append(args)
+        return pd.DataFrame(dict(code=['SZ.000001'], time_key=['2018-09-17 09:30:00'])), b'next'
+    monkeypatch.setattr(minute_history, 'history_page', page)
+    monkeypatch.setattr(minute_history.time, 'sleep', lambda _: None)
+    cache = {}
+    for _ in range(2):
+        assert minute_history.earliest_available(None, '000001.SZ', '1990-01-01', '2026-09-18', tmp_path, cache) == '2018-09-17'
+    assert len(calls) == 1
+    assert cache['000001.SZ']['has_more'] is True
+    assert list((tmp_path/'raw/futu/earliest_bounds').rglob('*.parquet'))
+
+
+def test_charged_history_continues_past_empty_year_without_new_quota(tmp_path, monkeypatch):
+    from quant.data import minute_history
+    config = tmp_path/'config.toml'
+    config.write_text(f'auto_trade=false\nearliest_available=true\ndata_root="{tmp_path.as_posix()}"\n'
+        f'output="{(tmp_path/"out").as_posix()}"\nrecent_output="{(tmp_path/"recent").as_posix()}"\n'
+        'start="1990-01-01"\nend="2020-12-31"\nquota_reserve=5\nmax_new_symbols=5\nmax_seconds=3600\n')
+    class Client:
+        context = None
+        def close(self):
+            pass
+    monkeypatch.setattr(minute_history, 'FutuRealtime', Client)
+    monkeypatch.setattr(minute_history, 'universe', lambda *args: [dict(symbol='000001.SZ', list_date='19910403')])
+    monkeypatch.setattr(minute_history, 'history_quota', lambda _: (95, 5, {'000001.SZ'}))
+    monkeypatch.setattr(minute_history, 'earliest_available', lambda *args: '2018-09-17')
+    requested = []
+    def download(context, symbol, begin, finish, raw, clean):
+        requested.append(begin)
+        return dict(symbol=symbol, empty=begin.startswith('2019'), rows=0 if begin.startswith('2019') else 241)
+    monkeypatch.setattr(minute_history, 'download_year', download)
+    result = minute_history.run(config)
+    assert requested == ['2018-09-17', '2019-01-01', '2020-01-01']
+    assert result['newly_charged_attempts'] == 0
+    assert '2019' in json.loads((tmp_path/'out/progress.json').read_text())['000001.SZ']['empty_years']
