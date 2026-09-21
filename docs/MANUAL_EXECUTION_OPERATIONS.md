@@ -52,3 +52,11 @@ python -m quant paper manual --database artifacts/manual/galaxy_100k_rehearsal/s
 export生成opening.json/events.json，可直接给现有 `python -m quant.execution.manual_nav --opening ... --events ... --to YYYY-MM-DD --output 新目录 --rehearsal` 估值，读取现有行情、交易日历及公司行动输入。必须逐交易日收盘，下一日使用上次收盘state和当日新增events；发生补报或费用修订时从原始opening重算受影响日期。不能把持仓现金快照当作净值收益。当前后台未自动调度收盘任务；券商独立对账、公司行动同步与账本回写尚需连接，因而summary明确cash_and_nav_final=false。
 
 尚未完成真实飞书双向联调、实盘策略选择与2分钟延迟验证、行情/停牌/涨跌停/权限的订单前检查、真实券商期初及日终对账、自动接入冻结策略订单、收盘调度、开机常驻部署。不得仅凭本轮测试开启真实操作。ETF与科创/创业板尚未纳入本版建议规则。
+
+## 本地保存 App ID / Secret（Windows）
+
+在项目根目录运行 `.\scripts\configure_feishu.ps1`，按提示输入App ID和Secret；Secret隐藏输入。同一命令可更新，留空保留原值；更换App ID时必须同时输入Secret。查看是否已配置：`.\scripts\configure_feishu.ps1 -Status`，不会显示密钥。
+
+凭据以Windows当前用户DPAPI加密保存在 `configs/feishu.local.dpapi`，位于项目内并由Git忽略。同一Windows用户重启后仍能读取；换电脑或换运行账户需重新配置。它不是防范同一用户恶意程序的隔离机制。
+
+飞书后台服务已自动读取本地凭据，无需每次设置环境变量。完整的FEISHU_APP_ID/FEISHU_APP_SECRET环境变量仍优先；只设置其中一个会报错，避免混用新旧凭据。更新后重启飞书服务生效。脚本仅保存凭据，不启用服务、不发消息，sender_id/chat_id和演练账户仍按上文配置。

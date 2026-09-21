@@ -42,3 +42,7 @@ AGENTS.md.orig
 
 # 绿地重建前旧代码/上游仓库仅本地归档，不参与当前代码库
 archive/legacy_pre_greenfield/
+
+# Windows-user encrypted Feishu credentials and temporary files
+configs/feishu.local.dpapi
+configs/feishu-*.tmp

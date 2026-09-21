@@ -107,3 +107,11 @@ O001等必须是本账户已登记建议；成交数量为本次增量。漏回�
 ### 如何判断通知是否成功
 
 查看命令输出的每个`channel/ok/detail`，并在目标端核实。统一webhook接口目前只检查HTTP状态，未校验平台响应体业务码；HTTP成功不保证平台接受或用户收到。所有通道失败时也会写入`outbox`并可能返回退出码0，不能仅凭退出码判定送达；部分通道成功时，不会为其余失败通道自动补发。飞书双向适配另外校验业务码和message_id，但平台接受仍不等于用户已读，发送结果不明时不会盲目重发。
+
+## 本地保存 App ID / Secret（Windows）
+
+在项目根目录运行 `.\scripts\configure_feishu.ps1`，按提示输入App ID和Secret；Secret隐藏输入。同一命令可更新，留空保留原值；更换App ID时必须同时输入Secret。查看是否已配置：`.\scripts\configure_feishu.ps1 -Status`，不会显示密钥。
+
+凭据以Windows当前用户DPAPI加密保存在 `configs/feishu.local.dpapi`，位于项目内并由Git忽略。同一Windows用户重启后仍能读取；换电脑或换运行账户需重新配置。它不是防范同一用户恶意程序的隔离机制。
+
+飞书后台服务已自动读取本地凭据，无需每次设置环境变量。完整的FEISHU_APP_ID/FEISHU_APP_SECRET环境变量仍优先；只设置其中一个会报错，避免混用新旧凭据。更新后重启飞书服务生效。脚本仅保存凭据，不启用服务、不发消息，sender_id/chat_id和演练账户仍按上文配置。

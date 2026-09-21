@@ -49,9 +49,8 @@ def serve(database: Path, config_path: Path, *, send_rehearsal: bool):
     sender, chat = config.get('sender_id', ''), config.get('chat_id', '')
     if not sender or not chat or not database.is_file():
         raise ValueError('Initialize the rehearsal and bind the intended sender/chat first')
-    app_id, secret = os.environ.get('FEISHU_APP_ID', ''), os.environ.get('FEISHU_APP_SECRET', '')
-    if not app_id or not secret:
-        raise ValueError('Configure FEISHU_APP_ID and FEISHU_APP_SECRET outside Git')
+    from quant.notify.feishu_credentials import credentials
+    app_id, secret = credentials()
     from quant.notify.feishu_manual import FeishuManualTransport, run_long_connection
     import importlib
     importlib.import_module("lark_oapi")  # Fail before any outbound work if SDK is absent.
