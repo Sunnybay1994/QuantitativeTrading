@@ -1,11 +1,11 @@
 /* Saved NAV comparison, no external libraries or network data sources. */
 (()=>{
 const by=id=>document.getElementById(id), colors=['#5ee1bd','#ffbe70','#7dafff','#df9fff','#ff8397','#c4db77','#72d7ef','#c6c9d2'];
-let current,periods,periodQuery,request=0;
+let current,periods,periodQuery,periodBenchmarkName='',entries=[],request=0,periodRequest=0;
 const escape=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function load(){
  try{
-  const entries=await (await fetch('/api/curves')).json();
+  entries=await (await fetch('/api/curves')).json();
   if(!Array.isArray(entries))throw Error(entries.error||'曲线目录读取失败');
   by('curveStrategy').innerHTML=entries.filter(x=>x.kind!=='benchmark').map(x=>`<option value="${x.id}">${escape(x.label)}</option>`).join('');
   by('curveBenchmarks').innerHTML=entries.filter(x=>x.kind==='benchmark').map(x=>`<label style="display:inline-flex;align-items:center;gap:6px;margin:5px 14px 5px 0"><input style="min-width:0" type="checkbox" value="${x.id}" ${x.label.includes('H00905')?'checked':''}>${escape(x.label)} <small>${escape(x.currency+' · '+x.basis)}</small></label>`).join('');
@@ -15,6 +15,13 @@ async function load(){
 }
 async function draw(){
  const ticket=++request;
+ ++periodRequest;current=null;
+ const previous=by('periodBenchmark').value;
+ const strategy=entries.find(x=>x.id===by('curveStrategy').value);
+ const benchmarks=entries.filter(x=>x.kind==='benchmark'&&x.currency===strategy?.currency);
+ by('periodBenchmark').innerHTML=benchmarks.map(x=>`<option value="${escape(x.id)}">${escape(x.label+' / '+x.basis)}</option>`).join('')||'<option value="">无同币种可比基准</option>';
+ by('periodBenchmark').value=(benchmarks.find(x=>x.id===previous)||benchmarks.find(x=>x.label.includes('H00905'))||benchmarks[0])?.id||'';
+ by('periodBenchmark').disabled=true;
  const ids=[by('curveStrategy').value,...Array.from(by('curveBenchmarks').querySelectorAll('input:checked'),x=>x.value)].filter(Boolean);
  const range=by('curveRange').value;
  const q=new URLSearchParams();ids.forEach(id=>q.append('id',id));
@@ -28,12 +35,25 @@ async function draw(){
    q.delete('months');q.set('start',d.start);q.set('end',d.end);
   }
   current=d;render();
-  const p=await(await fetch('/api/periods?'+q)).json();if(ticket!==request)return;if(p.error)throw Error(p.error);
+  by('periodBenchmark').disabled=!benchmarks.length;
+  await loadPeriods();
+ }catch(e){if(ticket!==request)return;current=null;by('curvePlot').innerHTML='';by('curveLegend').innerHTML='';by('curveInfo').textContent=e.message;by('periodDescription').textContent='期间报告不可用：'+e.message;}
+}
+async function loadPeriods(){
+ if(!current)return;
+ const ticket=++periodRequest,chartTicket=request;
+ const benchmark=entries.find(x=>x.id===by('periodBenchmark').value);
+ const q=new URLSearchParams({id:by('curveStrategy').value,start:current.start,end:current.end});
+ if(benchmark)q.append('id',benchmark.id);
+ periods=null;by('periodRows').innerHTML='';by('periodDownload').disabled=true;
+ by('periodDescription').textContent='正在计算期间表现…';by('periodNote').textContent='';
+ try{
+  const p=await(await fetch('/api/periods?'+q)).json();if(ticket!==periodRequest||chartTicket!==request)return;if(p.error)throw Error(p.error);
+  periodBenchmarkName=benchmark?benchmark.label+' / '+benchmark.basis:'';
   periods=p;periodQuery=q.toString();by('periodDescription').textContent=p.description+' · 原回测初始资金：'+(p.capital?Number(p.capital).toLocaleString()+' '+p.currency:'源记录未提供');
   by('periodNote').textContent=(p.sample?.lines||[]).join('；')+' '+p.note+' '+p.excluded.join('；');
-  by('periodBenchmark').innerHTML=(p.rows[0]?.benchmark_results||[]).map(b=>`<option>${escape(b.benchmark)}</option>`).join('')||'<option>未选可比基准</option>';
   by('periodDownload').disabled=false;renderPeriods();
- }catch(e){if(ticket!==request)return;current=null;by('curvePlot').innerHTML='';by('curveLegend').innerHTML='';by('curveInfo').textContent=e.message;by('periodDescription').textContent='期间报告不可用：'+e.message;}
+ }catch(e){if(ticket!==periodRequest||chartTicket!==request)return;by('periodDescription').textContent='期间报告不可用：'+e.message;}
 }
 function render(){
  const d=current;if(!d)return;
@@ -56,10 +76,10 @@ function render(){
  by('curvePlot').onpointermove=e=>{const rect=by('curvePlot').getBoundingClientRect();const t=minDate+Math.max(0,Math.min(1,((e.clientX-rect.left)/rect.width*W-L)/(W-L-R)))*(maxDate-minDate);let best=0;allDates.forEach((v,i)=>{if(Math.abs(Date.parse(v)-t)<Math.abs(Date.parse(allDates[best])-t))best=i;});slider.value=best;inspect();};
 }
 const metric=(v,percent=true)=>v===null||v===undefined?'—':(v*(percent?100:1)).toFixed(percent?2:3)+(percent?'%':'');
-function tableRows(rows){return rows.map(r=>{const b=r.benchmark_results.find(b=>b.benchmark===by('periodBenchmark').value);return `<tr><td>${escape(r.period)}</td><td title="${r.start} — ${r.end}">${r.sessions}</td><td>${metric(r.total_return)}</td><td>${metric(b?.total_return)}</td><td>${b?.excess_return==null?'—':(b.excess_return*100).toFixed(2)}</td><td>${metric(r.sharpe,false)}</td><td>${metric(r.sharpe_rf2,false)}</td><td>${metric(r.max_drawdown)}</td><td>${r.boundary_period?'边界期间':'区间内'}${r.sessions<20?' / 短样本':''}${b&&b.status!=='complete'?' / 基准缺口':''}</td></tr>`;}).join('');}
+function tableRows(rows){return rows.map(r=>{const b=r.benchmark_results.find(b=>b.benchmark===periodBenchmarkName);return `<tr><td>${escape(r.period)}</td><td title="${r.start} — ${r.end}">${r.sessions}</td><td>${metric(r.total_return)}</td><td>${metric(b?.total_return)}</td><td>${b?.excess_return==null?'—':(b.excess_return*100).toFixed(2)}</td><td>${metric(r.sharpe,false)}</td><td>${metric(r.sharpe_rf2,false)}</td><td>${metric(r.max_drawdown)}</td><td>${r.boundary_period?'边界期间':'区间内'}${r.sessions<20?' / 短样本':''}${b&&b.status!=='complete'?' / 基准缺口':''}</td></tr>`;}).join('');}
 function renderPeriods(){if(!periods)return;by('periodRows').innerHTML=tableRows(periods.rows.filter(r=>r.frequency===by('periodFrequency').value))||'<tr><td colspan="9">无持仓期指标</td></tr>';}
-by('periodFrequency').onchange=renderPeriods;by('periodBenchmark').onchange=renderPeriods;
-by('periodDownload').onclick=()=>{if(!periods)return;const q=new URLSearchParams(periodQuery);q.set('benchmark',by('periodBenchmark').value);const a=document.createElement('a');a.href='/api/period-report?'+q;a.download='strategy-period-report.html';document.body.appendChild(a);a.click();a.remove();};
+by('periodFrequency').onchange=renderPeriods;by('periodBenchmark').onchange=loadPeriods;
+by('periodDownload').onclick=()=>{if(!periods)return;const q=new URLSearchParams(periodQuery);q.set('benchmark',periodBenchmarkName);const a=document.createElement('a');a.href='/api/period-report?'+q;a.download='strategy-period-report.html';document.body.appendChild(a);a.click();a.remove();};
 by('curveDraw').onclick=draw;by('curveStrategy').onchange=draw;by('curveBenchmarks').onchange=draw;
 by('curveRange').onchange=draw;
 by('curveStart').onchange=by('curveEnd').onchange=()=>{by('curveRange').value='custom';};
