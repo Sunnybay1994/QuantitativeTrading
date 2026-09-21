@@ -110,7 +110,11 @@ def check_definition(data_root: Path, panel_id: str, definition: dict[str, Any])
     """Prevent mixing different expressions in one incrementally updated column."""
     path = data_root / "factors" / panel_id / "definition.json"
     if path.exists():
-        if json.loads(path.read_text(encoding="utf-8")) != definition:
+        previous = json.loads(path.read_text(encoding="utf-8"))
+        # Run provenance can change when an identical expression is rediscovered.
+        # Keep the original record; only source_ref is excluded from compatibility.
+        if ({key: value for key, value in previous.items() if key != "source_ref"}
+                != {key: value for key, value in definition.items() if key != "source_ref"}):
             raise ValueError(f"Definition changed for {panel_id}; use a new factor ID")
     else:
         path.parent.mkdir(parents=True, exist_ok=True)

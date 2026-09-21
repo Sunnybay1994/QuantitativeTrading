@@ -48,6 +48,8 @@ def test_incremental_matches_full_batch_and_second_call_is_noop(tmp_path, monkey
         financial_root = tmp_path / name / "clean/tushare_financials/fixture"
         financial_root.mkdir(parents=True)
         for table, frame in _expanded_histories().items():
+            if table == "balancesheet" and "inventories" not in frame.columns:
+                frame = frame.with_columns(pl.lit(None, dtype=pl.Float64).alias("inventories"))
             frame.write_parquet(financial_root / f"{table}.parquet")
         pl.DataFrame(schema={"symbol": pl.String, "ann_date": pl.Date, "available_date": pl.Date,
             "end_date": pl.Date, "interestdebt": pl.Float64, "ebitda": pl.Float64,
