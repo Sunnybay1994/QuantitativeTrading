@@ -31,7 +31,7 @@
     const runStates={running:'采集中',completed:'本轮结束',failed:'采集失败',paused:'已暂停'};
     el('dataProgress').textContent = `近期分钟：${runStates[r.status]||r.status||'状态未知'}，${r.completed??'—'} / ${r.universe_total??r.total??'—'} 标的，本轮新增/修订 ${r.changed_rows??'—'} 行；历史：${runStates[h.status]||h.status||'状态未知'}，本轮已保存 ${h.saved_partitions_this_run??0} 个年度分区${quota?'，额度已用 '+quota.used+' / 剩余 '+quota.remaining:''}${h.pause_reason?'，暂停原因 '+({quota_or_daily_budget:'额度或本轮预算',time_budget:'本轮时间预算'}[h.pause_reason]||h.pause_reason):''}。保存记录不等于进程存活，以任务状态为准。`;
     el('minuteDetailsTitle').textContent = `1 分钟标的列表 · 已补齐计划年份 ${inventory.plan_years_complete??'—'} 只`;
-    drawList();
+    if(el('minuteDetails').open)drawList();
   }
   async function refresh(force=false) {
     if (loading) return; loading=true;
@@ -60,5 +60,10 @@
     const rows=[['代码','名称','来源','最早已存','最新已存','富途最早可取','已存富途年份','待补年份','计划年份齐全（非逐日验证）'],...filtered().map(r=>[r.symbol,r.name,r.sources.join('/'),r.first,r.last,r.earliest_available,r.years.join('/'),r.missing_years.join('/'),r.plan_years_complete?'是':'否'])];
     const url=URL.createObjectURL(new Blob(['\ufeff'+rows.map(r=>r.map(cell).join(',')).join('\r\n')],{type:'text/csv;charset=utf-8'})); const a=document.createElement('a');a.href=url;a.download='minute-data-coverage.csv';a.click();URL.revokeObjectURL(url);
   };
-  refresh(); tasks(); setInterval(()=>refresh(),15000); setInterval(tasks,30000);
+  const visible=()=>window.dashboardPage==='dataAcquisition'&&!document.hidden;
+  el('minuteDetails').addEventListener('toggle',()=>{if(el('minuteDetails').open)drawList();});
+  window.addEventListener('dashboard:page',()=>{if(visible()){refresh();tasks();}});
+  window.addEventListener('dashboard:refresh',()=>{if(visible()){refresh(true);tasks();}});
+  setInterval(()=>{if(visible())refresh();},15000);
+  setInterval(()=>{if(visible())tasks();},30000);
 })();

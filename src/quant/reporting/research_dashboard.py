@@ -36,7 +36,7 @@ def read(path: Path) -> dict:
         return {}
 
 
-def snapshot(root: Path = ROOT) -> dict:
+def snapshot(root: Path = ROOT, *, include_results: bool = True) -> dict:
     continuous = root/'artifacts/research/continuous'
     status = read(continuous/'status.json')
     run = root/status.get('run', 'artifacts/research/continuous/missing')
@@ -59,10 +59,13 @@ def snapshot(root: Path = ROOT) -> dict:
     daily['input_progress'] = read(reports[-1].parent/'model/refresh_progress.json') if reports else {}
     registry = root/'artifacts/registry/experiments.parquet'
     results = []
+    result_count = 0
     registry_error = None
     if registry.exists():
         try:
-            results = pl.read_parquet(registry).sort('result_time', descending=True).to_dicts()
+            result_count = pl.scan_parquet(registry).select(pl.len()).collect().item()
+            if include_results:
+                results = pl.read_parquet(registry).sort('result_time', descending=True).to_dicts()
             for row in results:
                 target = Path(row.get('report_path') or '')
                 if target.is_absolute():
@@ -119,7 +122,7 @@ def snapshot(root: Path = ROOT) -> dict:
             'gp': read(run/'N2/search_progress.json'), 'admission_done': len(progress.get('rows', [])),
             'admission_total': len(progress.get('candidates', [])), 'batches': batches,
             'daily': daily, 'daily_attention': attention(daily), 'daily_report': str(reports[-1].parent.relative_to(root)/'report.md') if reports else '',
-            'results': results, 'registry_error': registry_error,
+            'results': results, 'result_count': result_count, 'registry_error': registry_error,
             'queue_files': len(list((root/'configs/factors/queue').glob('*.toml'))),
             'completed_costs': len(list(costs.glob('*/summary.json'))) if costs else None}
 
@@ -135,8 +138,8 @@ def create_server(port: int) -> ThreadingHTTPServer:
     from quant.reporting.data_inventory import DataInventory, collection_status
     from quant.reporting.data_sync import task_status
     cache = SnapshotCache(snapshot)
+    overview_cache = SnapshotCache(lambda: snapshot(include_results=False))
     inventory = DataInventory(ROOT)
-    inventory.get()
     data_tasks = SnapshotCache(task_status, ttl=15)
     import secrets
     mining_token = secrets.token_urlsafe(32)
@@ -158,6 +161,7 @@ def create_server(port: int) -> ThreadingHTTPServer:
                 else:
                     payload, status = resume(), 200
                     cache.invalidate()
+                    overview_cache.invalidate()
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
                 payload, status = {'state': 'error', 'message': f'请求未确认（{type(exc).__name__}），请检查计划任务及权限'}, 503
             body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
@@ -220,9 +224,14 @@ def create_server(port: int) -> ThreadingHTTPServer:
             elif route.path == '/curves.js':
                 body = Path(__file__).with_name('dashboard_curves.js').read_bytes()
                 mime = 'text/javascript'
+            elif route.path == '/navigation.js':
+                body = Path(__file__).with_name('dashboard_navigation.js').read_bytes()
+                mime = 'text/javascript'
             elif route.path == '/api/status':
                 try:
-                    payload = cache.get(force=route.query == 'refresh=1')
+                    query = parse_qs(route.query)
+                    selected_cache = overview_cache if query.get('view') == ['overview'] else cache
+                    payload = selected_cache.get(force=query.get('refresh') == ['1'])
                 except Exception:
                     self.send_error(503, 'Status refresh unavailable')
                     return

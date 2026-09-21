@@ -26,6 +26,8 @@ python -m quant gpu-check
 
 计划任务安装：`.\scripts\install_daily_observation.ps1`、`.\scripts\register_continuous_mining.ps1`、`.\scripts\register_research_dashboard.ps1`。电脑须开机且用户登录；看板地址 `http://127.0.0.1:8768`。
 
+看板顶部导航分为运行总览、数据获取、策略曲线、模拟账户、研究结果，支持链接直达和浏览器前进/后退。行情覆盖和曲线在首次进入对应页时加载；总览使用独立轻量缓存，不等待研究结果分组。研究结果每页 30 组，搜索、结论筛选及排序作用于全部记录，切页保留筛选。定时刷新仅在当前标签可见时执行：总览/账户 20 秒、结果 60 秒；顶部按钮只刷新当前页。
+
 ## 凭据
 
 全部 `*.local.toml` / 环境变量，不进 Git。

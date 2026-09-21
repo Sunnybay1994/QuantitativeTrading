@@ -55,5 +55,6 @@ by('periodFrequency').onchange=renderPeriods;by('periodBenchmark').onchange=rend
 by('periodDownload').onclick=()=>{if(!periods)return;const q=new URLSearchParams(periodQuery);q.set('benchmark',by('periodBenchmark').value);const a=document.createElement('a');a.href='/api/period-report?'+q;a.download='strategy-period-report.html';document.body.appendChild(a);a.click();a.remove();};
 by('curveDraw').onclick=draw;by('curveStrategy').onchange=draw;by('curveBenchmarks').onchange=draw;
 by('curveReset').onclick=()=>{by('curveStart').value='';by('curveEnd').value='';draw();};
+window.addEventListener('dashboard:refresh',()=>{if(window.dashboardPage==='curves')draw();});
 load();
 })();
