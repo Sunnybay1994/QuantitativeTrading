@@ -35,6 +35,26 @@ def test_nonfinite_nav_is_rejected(tmp_path):
         read_curve(a)
 
 
+@pytest.mark.parametrize('months,start', [(1,'2026-07-31'), (3,'2026-05-31'),
+    (6,'2026-02-28'), (12,'2025-08-31'), (36,'2023-08-31')])
+def test_shortcuts_use_latest_common_date_and_calendar_months(tmp_path, months, start):
+    dates = ['2023-08-30','2023-08-31','2025-08-31','2026-02-28',
+             '2026-05-31','2026-07-31','2026-08-31','2026-09-01']
+    a = spec(tmp_path, 'a', dates, [1.]*len(dates))
+    b = spec(tmp_path, 'b', dates[:-1], [1.]*(len(dates)-1))
+    result = compare([a,b], months=months)
+    assert (result['start'], result['end']) == (start, '2026-08-31')
+
+
+def test_short_history_and_leap_year_shortcuts(tmp_path):
+    a = spec(tmp_path, 'a', ['2024-02-28','2024-02-29','2024-03-31'], [1.,1.1,1.2])
+    assert compare([a], months=1)['start'] == '2024-02-29'
+    assert compare([a], months=12)['start'] == '2024-02-28'
+    assert compare([a])['start'] == '2024-02-28'
+    with pytest.raises(ValueError, match='时间范围'):
+        compare([a], months=2)
+
+
 def test_period_report_keeps_cross_currency_comparison_unavailable(tmp_path):
     from quant.reporting.dashboard_curves import period_report
     a = spec(tmp_path, 'a', ['2025-12-31', '2026-01-02', '2026-01-05'], [1., .9, .99])

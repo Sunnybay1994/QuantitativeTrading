@@ -198,7 +198,9 @@ def create_server(port: int) -> ThreadingHTTPServer:
                         if len(selected) != len(set(ids)):
                             raise ValueError('曲线不存在，请刷新列表')
                         reader = period_report if route.path in ('/api/periods', '/api/period-report') else compare
-                        payload = reader(selected,query.get('start',[''])[0],query.get('end',[''])[0])
+                        range_args = ({'months': int(query['months'][0])}
+                                      if route.path == '/api/curve' and 'months' in query else {})
+                        payload = reader(selected,query.get('start',[''])[0],query.get('end',[''])[0], **range_args)
                     if route.path == '/api/period-report':
                         from quant.reporting.period_metrics import render_html
                         body = render_html(payload, query.get('benchmark', [''])[0]).encode('utf-8')

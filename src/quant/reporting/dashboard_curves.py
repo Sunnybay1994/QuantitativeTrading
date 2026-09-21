@@ -102,11 +102,21 @@ def read_curve(spec: dict) -> list[dict]:
     return [{'date':str(r['date']),'value':r['value']} for r in d.to_dicts()]
 
 
-def compare(specs: list[dict], start: str='', end: str='') -> dict:
+def compare(specs: list[dict], start: str='', end: str='', *, months: int | None = None) -> dict:
     if not specs or len(specs)>8:
         raise ValueError('请选择 1–8 条曲线')
     loaded = [(s,read_curve(s)) for s in specs]
     common = set.intersection(*(set(r['date'] for r in rows if (not start or r['date']>=start) and (not end or r['date']<=end)) for _,rows in loaded))
+    if months is not None:
+        import calendar
+        import datetime as dt
+        if months not in (1, 3, 6, 12, 36):
+            raise ValueError('请选择支持的时间范围')
+        if common:
+            last_date = dt.date.fromisoformat(max(common))
+            year, month = divmod(last_date.year*12+last_date.month-1-months, 12)
+            first_date = dt.date(year, month+1, min(last_date.day, calendar.monthrange(year, month+1)[1]))
+            common = {day for day in common if day >= str(first_date)}
     if len(common)<2:
         raise ValueError('所选曲线在此区间不足两个共同交易日，请调整日期或基准')
     first,last = min(common),max(common)

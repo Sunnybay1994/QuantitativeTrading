@@ -16,10 +16,17 @@ async function load(){
 async function draw(){
  const ticket=++request;
  const ids=[by('curveStrategy').value,...Array.from(by('curveBenchmarks').querySelectorAll('input:checked'),x=>x.value)].filter(Boolean);
- const q=new URLSearchParams();ids.forEach(id=>q.append('id',id));q.set('start',by('curveStart').value);q.set('end',by('curveEnd').value);
+ const range=by('curveRange').value;
+ const q=new URLSearchParams();ids.forEach(id=>q.append('id',id));
+ if(range==='custom'){q.set('start',by('curveStart').value);q.set('end',by('curveEnd').value);}
+ else if(range!=='all')q.set('months',range);
  by('curveInfo').textContent='正在读取净值…';periods=null;by('periodRows').innerHTML='';by('periodDescription').textContent='正在计算期间表现…';by('periodNote').textContent='';by('periodDownload').disabled=true;
  try{
   const d=await(await fetch('/api/curve?'+q)).json();if(ticket!==request)return;if(d.error)throw Error(d.error);
+  if(range!=='custom'){
+   by('curveStart').value=d.start;by('curveEnd').value=d.end;
+   q.delete('months');q.set('start',d.start);q.set('end',d.end);
+  }
   current=d;render();
   const p=await(await fetch('/api/periods?'+q)).json();if(ticket!==request)return;if(p.error)throw Error(p.error);
   periods=p;periodQuery=q.toString();by('periodDescription').textContent=p.description+' · 原回测初始资金：'+(p.capital?Number(p.capital).toLocaleString()+' '+p.currency:'源记录未提供');
@@ -54,7 +61,9 @@ function renderPeriods(){if(!periods)return;by('periodRows').innerHTML=tableRows
 by('periodFrequency').onchange=renderPeriods;by('periodBenchmark').onchange=renderPeriods;
 by('periodDownload').onclick=()=>{if(!periods)return;const q=new URLSearchParams(periodQuery);q.set('benchmark',by('periodBenchmark').value);const a=document.createElement('a');a.href='/api/period-report?'+q;a.download='strategy-period-report.html';document.body.appendChild(a);a.click();a.remove();};
 by('curveDraw').onclick=draw;by('curveStrategy').onchange=draw;by('curveBenchmarks').onchange=draw;
-by('curveReset').onclick=()=>{by('curveStart').value='';by('curveEnd').value='';draw();};
+by('curveRange').onchange=draw;
+by('curveStart').onchange=by('curveEnd').onchange=()=>{by('curveRange').value='custom';};
+by('curveReset').onclick=()=>{by('curveRange').value='all';draw();};
 window.addEventListener('dashboard:refresh',()=>{if(window.dashboardPage==='curves')draw();});
 load();
 })();
