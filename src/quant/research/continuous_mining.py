@@ -9,6 +9,7 @@ import tomllib
 from pathlib import Path
 
 from quant.research import nightly
+from quant.research.mining_retry import code_fingerprint, failure_kind
 
 
 def read(path: Path) -> dict:
@@ -16,9 +17,8 @@ def read(path: Path) -> dict:
 
 
 def save(path: Path, value: dict) -> None:
-    temporary = path.with_suffix('.tmp')
-    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8')
-    temporary.replace(path)
+    from quant.data.realtime_store import atomic_json
+    atomic_json(path, value)
 
 
 def completed(summary: dict) -> bool:
@@ -74,7 +74,20 @@ def dispatch(config: Path, root: Path, *, now: dt.datetime | None = None,
     else:
         run = next(batch.glob('????-??-??'))
     previous = read(batch/'attempt.json')
+    fingerprint = code_fingerprint()
+    limit = 8 if previous.get('failure_kind') == 'transient' else max_failures
+    if (previous.get('consecutive_failures',0)>=limit
+            and previous.get('code_fingerprint')!=fingerprint):
+        # Exactly one probe per changed code version, including legacy attempt metadata.
+        archive=batch/'recovery'
+        archive.mkdir(exist_ok=True)
+        with (archive/f'auto_{now:%Y%m%dT%H%M%S%f}.json').open('x',encoding='utf-8') as stream:
+            json.dump(previous,stream,ensure_ascii=False,indent=2)
+        previous={**previous,'consecutive_failures':limit-1,'retry_after':None,
+                  'code_fingerprint':fingerprint,'recovery_reason':'one probe after code change'}
+        save(batch/'attempt.json',previous)
     status = {'batch': batch.name, 'run': str(run), 'updated_at': now.isoformat(),
+              'failure_kind':previous.get('failure_kind'), 'retry_limit':limit,
               'weekly_candidates': weekly,
               'steps': read(run/'summary.json').get('steps', {}),
               'pid': os.getpid(), 'seed': tomllib.loads((run/'config.toml').read_text(encoding='utf-8'))['genetic']['seed']}
@@ -82,7 +95,7 @@ def dispatch(config: Path, root: Path, *, now: dt.datetime | None = None,
     monthly_due = pending_month(tomllib.loads((run/'config.toml').read_text(encoding='utf-8')),
                                 run, day=now.date())
     new_month = monthly_due is not None and monthly_due != previous.get('monthly_period')
-    if previous.get('consecutive_failures', 0) >= max_failures and not new_month:
+    if previous.get('consecutive_failures', 0) >= limit and not new_month:
         status.update(state='needs_attention', reason='Repeated batch failure; inspect process logs before retry',
                       error=previous.get('error'))
     elif previous.get('retry_after') and now < dt.datetime.fromisoformat(previous['retry_after']) and not new_month:
@@ -105,14 +118,19 @@ def dispatch(config: Path, root: Path, *, now: dt.datetime | None = None,
             and float(error.split('Time/disk guard: ')[1].split('s,')[0]) <= 0
             or 'Worker exceeded ' in error or error.startswith('Time slice yielded') for error in primary_errors)
         failures = 0 if success or resumable else previous.get('consecutive_failures', 0)+1
+        kind=failure_kind(errors,run)
+        limit=8 if kind=='transient' else max_failures
+        backoff=min(retry_hours*2**min(max(failures-1,0),5),24) if kind=='transient' else retry_hours
         finished = now if supplied_now else dt.datetime.now()
         attempt = {'monthly_period': monthly_due, 'finished_at': finished.isoformat(), 'consecutive_failures': failures,
-                   'error': errors, 'retry_after': (finished+dt.timedelta(hours=retry_hours)).isoformat()
+                   'error': errors, 'failure_kind':kind, 'code_fingerprint':fingerprint,
+                   'retry_after': (finished+dt.timedelta(hours=backoff)).isoformat()
                    if failures else None}
         save(batch/'attempt.json', attempt)
         status.update(state='completed' if success else 'resumable' if resumable else
-                      'needs_attention' if failures >= max_failures else 'cooldown',
-                      error=errors, retry_after=attempt['retry_after'], updated_at=finished.isoformat())
+                      'needs_attention' if failures >= limit else 'cooldown',
+                      error=errors, failure_kind=kind, retry_limit=limit,
+                      retry_after=attempt['retry_after'], updated_at=finished.isoformat())
     save(root/'status.json', status)
     policy = tomllib.loads(config.read_text(encoding='utf-8')).get('research_policy')
     if policy:
