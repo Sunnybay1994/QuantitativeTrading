@@ -25,6 +25,21 @@ def execution_bar(rows, at, delay, confirmation):
     return next((r for r in rows if r['bar_start'] >= ready), None)
 
 
+def conservative_window(rows, at, delay, confirmation):
+    """Worst full 5m bar containing readiness; extrema are pricing stress only."""
+    ready = at + dt.timedelta(seconds=delay+confirmation)
+    start = at + dt.timedelta(minutes=5*int((ready-at).total_seconds()//300))
+    matches = [r for r in rows if r['bar_start'] == start
+               and r['bar_end'] == start+dt.timedelta(minutes=5)]
+    return matches[0] if len(matches) == 1 and matches[0]['volume'] > 0 else None
+
+
+def sellable_quantity(held, bought_today, *, t_plus_one):
+    if not 0 <= bought_today <= held:
+        raise ValueError('Invalid share inventory')
+    return held-bought_today if t_plus_one else held
+
+
 def valid_day(rows, minutes):
     expected = [(h,m) for h in (9,10,11,13,14) for m in range(0,60,minutes)
                 if (h != 9 or m >= 30) and (h != 11 or m < 30)]
@@ -81,6 +96,14 @@ def run(config, output, *, data_root=Path('data')):
     cfg = tomllib.loads(config.read_text(encoding='utf-8'))
     if cfg['auto_trade'] is not False or cfg['capital'] not in (100000,1000000):
         raise ValueError('Invalid safety or capital configuration')
+    stress = cfg.get('execution_model') == 'next_5m_worst'
+    if stress:
+        # Explicitly verified secondary-market ETFs only. Never infer T+0 from ETF suffix.
+        rules = {'510300.SH': True, '511010.SH': False, '518880.SH': False}
+        if cfg['symbol'] not in rules:
+            raise ValueError('Instrument-specific trading rule has not been verified')
+        if rules[cfg['symbol']]:
+            raise ValueError('This same-day round-trip strategy cannot trade newly bought T+1 shares')
     output.mkdir(parents=True,exist_ok=False)
     shutil.copyfile(config,output/'config.toml')
     sources, by_frequency = {}, {}
@@ -123,12 +146,15 @@ def run(config, output, *, data_root=Path('data')):
                 before = cash
                 trade = dict(date=str(date),manual_delay_seconds=delay,cost=cost,signal=signal(five,at),quantity=0,reason='no_signal')
                 if trade['signal']:
-                    buy = execution_bar(one,at,delay,cfg['confirmation_seconds'])
-                    sell = execution_bar(one,exit_at,delay,cfg['confirmation_seconds'])
+                    choose = conservative_window if stress else execution_bar
+                    rows = five if stress else one
+                    buy = choose(rows,at,delay,cfg['confirmation_seconds'])
+                    sell = choose(rows,exit_at,delay,cfg['confirmation_seconds'])
                     if buy and sell and sell['bar_start']-buy['bar_start'] >= dt.timedelta(minutes=5):
                         slip = cfg['tick']*(cfg['slippage_ticks']+cfg['half_spread_ticks'])*cost
-                        bp,sp = buy['open']+slip,sell['open']-slip
-                        qty = int(cash/bp/100)*100
+                        bp,sp = (buy['high'] if stress else buy['open'])+slip,(sell['low'] if stress else sell['open'])-slip
+                        sizing_price = next(r['close'] for r in five if r['bar_end'] == at) if stress else bp
+                        qty = int(cash/sizing_price/100)*100
                         def fee(n):
                             return max(cfg['commission_min'],n*cfg['commission_rate'])*cost
                         while qty>0 and qty*bp+fee(qty*bp)>cash:
@@ -139,6 +165,9 @@ def run(config, output, *, data_root=Path('data')):
                         if qty>0:
                             cash += qty*(sp-bp)-fee(qty*bp)-fee(qty*sp)
                             trade.update(quantity=qty,entry=str(buy['bar_start']),exit=str(sell['bar_start']),reason='filled',buy_price=bp,sell_price=sp,exit_capacity_unverified=qty>sell['volume']*cfg['maximum_participation'])
+                            if stress:
+                                trade.update(timestamp_meaning='stress_window_start_not_exact_fill',
+                                             entry_window_end=str(buy['bar_end']), exit_window_end=str(sell['bar_end']))
                         else:
                             trade['reason']='participation_or_cash'
                     else:
@@ -163,6 +192,13 @@ def run(config, output, *, data_root=Path('data')):
     (output/'diagnosis.json').write_text(json.dumps(diagnosis,ensure_ascii=False,indent=2),encoding='utf-8')
     result = dict(classification='RESEARCH_ONLY',auto_trade=False,description=cfg['description'],valid_days=len(valid),excluded_present_days=rejected,missing_or_invalid_calendar_days=missing,summaries=summaries,exit_capacity_unverified=sum(bool(r.get('exit_capacity_unverified')) for r in records),limitations=['Observed valid sessions only; gaps are not zero-return days.', 'Historical development replay, not independent out-of-sample evidence.', 'No total-return benchmark validated; excess/annualized Sharpe/admission not asserted.', 'Entry participation checked ex post; exit capacity flags invalidate executability, never retroactively cancel entries.'])
     result['diagnosis']=diagnosis
+    result['execution_model'] = cfg.get('execution_model', 'delayed_1m_open')
+    if stress:
+        result['limitations'].extend([
+            'Full next 5m high/low is ex-post adverse pricing, never signal information or an exact fill timestamp.',
+            'Readiness inside a bar uses its entire range; readiness at/after its end moves to the next exact window. Missing windows never jump forward.',
+            'T+0 verified only for this gold ETF secondary-market trade. T+1 same-day round-trip configurations rejected.',
+            'Worst bar price is not a guaranteed loss bound: later fills, unfilled orders and price-limit queues can be worse.'])
     (output/'report.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
     (output/'report.md').write_text('# 分钟策略开发回放\n\n'+cfg['description']+'\n\n```json\n'+json.dumps(result,ensure_ascii=False,indent=2)+'\n```\n',encoding='utf-8')
     print(json.dumps(result,ensure_ascii=False))

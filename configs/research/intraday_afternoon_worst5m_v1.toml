@@ -1,0 +1,24 @@
+auto_trade = false
+description = "黄金ETF午后趋势延续：13:30已完成5分钟收盘同时高于上午开盘和当日已知VWAP时做多，14:50发出退出信号，每日最多一次往返。"
+symbol = "518880.SH"
+source = "tdx"
+signal_time = "13:30"
+exit_signal_time = "14:50"
+capital = 100000
+commission_rate = 0.00025
+commission_min = 5.0
+tick = 0.001
+slippage_ticks = 1.0
+half_spread_ticks = 0.5
+cost_multipliers = [0.5, 1.0, 2.0]
+confirmation_seconds = 63
+manual_delays_seconds = [120, 180]
+maximum_participation = 0.01
+design_end = "2026-06-30"
+evaluation_start = "2026-07-01"
+classification = "RESEARCH_ONLY"
+# Freeze before replay; no grid search, no retrospective independent-OOS claim.
+# Paired complete 1m/5m days only; missing days excluded and explicitly listed.
+# No benchmark excess or promotion until continuous history and total-return benchmark validated.
+
+execution_model = "next_5m_worst"

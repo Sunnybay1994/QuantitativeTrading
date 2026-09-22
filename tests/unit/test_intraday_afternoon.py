@@ -1,6 +1,23 @@
 import datetime as dt
 
 from quant.research.intraday_afternoon import execution_bar, signal, valid_day, quality_issues
+from quant.research.intraday_afternoon import conservative_window, sellable_quantity
+
+
+def test_worst_window_delay_boundary_and_missing_bar():
+    at = dt.datetime(2026, 9, 21, 13, 30)
+    rows = [dict(bar_start=at+dt.timedelta(minutes=i),
+                 bar_end=at+dt.timedelta(minutes=i+5), volume=100)
+            for i in (0, 5)]
+    assert conservative_window(rows, at, 120, 63) == rows[0]
+    assert conservative_window(rows, at, 300, 0) == rows[1]
+    assert conservative_window(rows[1:], at, 120, 63) is None
+    assert conservative_window(rows+rows[:1], at, 120, 63) is None
+
+
+def test_t_plus_one_keeps_old_shares_sellable():
+    assert sellable_quantity(1000, 400, t_plus_one=True) == 600
+    assert sellable_quantity(1000, 400, t_plus_one=False) == 1000
 
 
 def test_signal_cannot_read_future_bars():
