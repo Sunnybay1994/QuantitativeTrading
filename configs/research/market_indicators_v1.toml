@@ -1,0 +1,18 @@
+version = "market_indicators_v1"
+auto_trade = false
+refresh_config = "configs/data/refresh_q2_sue_v2_model_20260912.toml"
+benchmark_snapshot = "from_refresh_config"
+start = 2014-01-01
+end = 2026-09-21
+scope = "Observed historical Shanghai/Shenzhen A shares; excludes Beijing and funds"
+minimum_stocks = 500
+minimum_coverage = 0.8
+normalization_window = 252
+minimum_history = 126
+low_percentile = 20.0
+high_percentile = 80.0
+quote_max_age_seconds = 120
+realtime_database = "data/realtime/futu/market.sqlite"
+# Rules chosen for descriptive research, never fitted to strategy profits.
+# End-of-day features become eligible on the next exchange session.
+# Live scores are separate from final-close scores; no automatic strategy switch.
