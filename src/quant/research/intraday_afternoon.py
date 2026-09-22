@@ -12,12 +12,26 @@ from pathlib import Path
 import polars as pl
 
 
-def signal(bars, at):
+def signal(bars, at, kind='afternoon_trend'):
     known = [r for r in bars if r['bar_end'] <= at]
     if not known or known[-1]['bar_end'] != at:
         return False
     volume = sum(r['volume'] for r in known)
-    return volume > 0 and known[-1]['close'] > max(known[0]['open'], sum(r['amount'] for r in known)/volume)
+    if volume <= 0:
+        return False
+    vwap = sum(r['amount'] for r in known)/volume
+    if kind == 'opening_range_breakout':
+        opening = [r for r in known if r['bar_end'].time() <= dt.time(10)]
+        return len(opening) == 6 and known[-1]['close'] > max(vwap, max(r['high'] for r in opening))
+    if kind == 'vwap_reclaim':
+        prior = known[:-1]
+        prior_volume = sum(r['volume'] for r in prior)
+        return (bool(prior) and prior_volume > 0
+                and prior[-1]['close'] < sum(r['amount'] for r in prior)/prior_volume
+                and known[-1]['close'] > vwap)
+    if kind != 'afternoon_trend':
+        raise ValueError('Unknown signal mechanism')
+    return known[-1]['close'] > max(known[0]['open'], vwap)
 
 
 def execution_bar(rows, at, delay, confirmation):
@@ -144,7 +158,7 @@ def run(config, output, *, data_root=Path('data')):
                 at = dt.datetime.combine(date,dt.time.fromisoformat(cfg['signal_time']),one[0]['bar_start'].tzinfo)
                 exit_at = at.replace(hour=int(cfg['exit_signal_time'][:2]),minute=int(cfg['exit_signal_time'][3:]))
                 before = cash
-                trade = dict(date=str(date),manual_delay_seconds=delay,cost=cost,signal=signal(five,at),quantity=0,reason='no_signal')
+                trade = dict(date=str(date),manual_delay_seconds=delay,cost=cost,signal=signal(five,at,cfg.get('signal_kind','afternoon_trend')),quantity=0,reason='no_signal')
                 if trade['signal']:
                     choose = conservative_window if stress else execution_bar
                     rows = five if stress else one
@@ -175,7 +189,7 @@ def run(config, output, *, data_root=Path('data')):
                 trade.update(pnl=cash-before,return_value=cash/before-1,nav=cash/cfg['capital'],split='design' if str(date)<=cfg['design_end'] else 'later_seen_history')
                 local.append(trade)
             records.extend(local)
-            summaries.append(dict(delay=delay,cost=cost,observed_days=len(local),trades=sum(r['quantity']>0 for r in local),observed_day_return=cash/cfg['capital']-1))
+            summaries.append(dict(delay=delay,cost=cost,observed_days=len(local),trades=sum(r['quantity']>0 for r in local),observed_day_return=cash/cfg['capital']-1 if local else None))
     if records:
         pl.DataFrame(records,infer_schema_length=None).write_csv(output/'daily_replay.csv')
     pl.DataFrame(quality).write_csv(output/'daily_quality.csv')
@@ -193,6 +207,15 @@ def run(config, output, *, data_root=Path('data')):
     result = dict(classification='RESEARCH_ONLY',auto_trade=False,description=cfg['description'],valid_days=len(valid),excluded_present_days=rejected,missing_or_invalid_calendar_days=missing,summaries=summaries,exit_capacity_unverified=sum(bool(r.get('exit_capacity_unverified')) for r in records),limitations=['Observed valid sessions only; gaps are not zero-return days.', 'Historical development replay, not independent out-of-sample evidence.', 'No total-return benchmark validated; excess/annualized Sharpe/admission not asserted.', 'Entry participation checked ex post; exit capacity flags invalidate executability, never retroactively cancel entries.'])
     result['diagnosis']=diagnosis
     result['execution_model'] = cfg.get('execution_model', 'delayed_1m_open')
+    if 'forward_start' in cfg:
+        result['forward_start'] = cfg['forward_start']
+        result['periods'] = [dict(delay=delay, cost=cost, period=label,
+             sessions=len(group), trades=sum(r['quantity']>0 for r in group),
+             observed_day_return=math.prod(1+r['return_value'] for r in group)-1 if group else None)
+             for delay in cfg['manual_delays_seconds'] for cost in cfg['cost_multipliers']
+             for label in ('development', 'prospective')
+             for group in [[r for r in records if r['manual_delay_seconds']==delay and r['cost']==cost
+                            and (r['date']>=cfg['forward_start']) == (label=='prospective')]]]
     if stress:
         result['limitations'].extend([
             'Full next 5m high/low is ex-post adverse pricing, never signal information or an exact fill timestamp.',

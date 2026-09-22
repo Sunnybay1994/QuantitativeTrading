@@ -95,13 +95,19 @@ def research_one(config, data_root, root):
         flags.append('history_gaps_or_invalid_days')
     if result['exit_capacity_unverified']:
         flags.append('exit_capacity_unverified')
-    if any(r['observed_day_return']<=0 for r in result['summaries'] if r['cost']==2):
+    if any(r['observed_day_return'] is not None and r['observed_day_return']<=0 for r in result['summaries'] if r['cost']==2):
         flags.append('nonpositive_stressed_return')
+    if result['valid_days']==0:
+        flags.append('no_valid_data')
     state=dict(state='complete',strategy=config.stem,fingerprint=key,reused=False,
                report=str(attempt/'report.md'),classification='RESEARCH_ONLY',auto_trade=False,
                latest_input_date=last_input,latest_valid_date=good['date'].max(),
                consecutive_valid_sessions=streak,valid_days=result['valid_days'],attention=flags,
                outputs={str(p.relative_to(directory)):digest(p.read_bytes()) for p in attempt.iterdir() if p.is_file()})
+    state['results'] = result['summaries']
+    state['periods'] = result.get('periods', [])
+    if all(r.get('trades', 0)==0 for r in result['summaries']):
+        state['attention'].append('no_trades')
     atomic_json(checkpoint,state)
     return state
 
@@ -115,7 +121,11 @@ def run(config):
     with instance_lock(root/'pipeline.lock'):
         state=dict(state='running',auto_trade=False,updated_at=dt.datetime.now().astimezone().isoformat(),strategies=[])
         atomic_json(root/'status.json',state)
-        for name in settings['strategies']:
+        candidates = list(settings['strategies'])
+        if settings.get('search'):
+            from quant.research.minute_candidates import generate
+            candidates.extend(generate(Path(settings['search']), root))
+        for name in candidates:
             try:
                 item=research_one(Path(name),Path(settings['data_root']),root)
             except Exception as exc:
@@ -134,8 +144,14 @@ def run(config):
         state['updated_at']=dt.datetime.now().astimezone().isoformat()
         atomic_json(root/'status.json',state)
         lines=['# 分钟研究自动流程','', 'complete 表示检查和开发回放完成，不代表策略可交易。所有结果为 RESEARCH_ONLY。','']
+        rows=[]
         for item in state['strategies']:
             lines.append(f"- {item['strategy']}: {item['state']}; report={item.get('report','无')}; attention={item.get('attention',item.get('error'))}")
+            rows.extend(dict(strategy=item['strategy'],report=item['report'],**result)
+                        for result in item.get('results',[]))
+        if rows:
+            pl.DataFrame(rows,infer_schema_length=None).write_csv(root/'results.csv')
+            lines.extend(['', '[全部候选、延迟及三档成本结果](results.csv)'])
         (root/'report.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
         return state
 

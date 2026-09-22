@@ -13,6 +13,15 @@ python -m quant gpu-check
 
 ## 日常命令
 
+分钟候选电池通过 `python -m quant research minutes` 执行，搜索定义在
+`configs/research/minute_search_v1.toml`。按预注册机制与已核实T+0的标的生成候选，
+保存全部候选的三档成本、延迟和最不利5分钟价格结果，不按历史排名自动晋级。
+已有分钟更新任务和持续挖掘任务会调用同一入口；断点与逐候选报告在
+`artifacts/research/minute_pipeline/`。输入不变复用结果，输入变化新建冻结运行，
+中断后仅重跑未完成候选。没有有效样本显示缺失，不把零交易当作零风险策略。
+新候选前向起点不早于注册次日，旧历史均为开发资料；市场数据缺失时保留提示，
+不靠放宽数据检查制造研究结果。此电池有限，不无限生成同源参数网格，也不调用LLM。
+
 ETF 人工延迟研究现金账户初始化：`python -m quant research etf-manual-init`。
 冻结配置为 `configs/research/b16_manual_forward_v1.toml`，账户位于
 `artifacts/paper/b16_manual_v1/`。120 秒主账、60 秒影子及三档成本各自隔离；
