@@ -13,6 +13,14 @@ python -m quant gpu-check
 
 ## 日常命令
 
+ETF 人工延迟研究现金账户初始化：`python -m quant research etf-manual-init`。
+冻结配置为 `configs/research/b16_manual_forward_v1.toml`，账户位于
+`artifacts/paper/b16_manual_v1/`。120 秒主账、60 秒影子及三档成本各自隔离；
+重复执行不会重置账户。这只是现金初始化，不会发送交易消息、产生模拟成交或
+自动接入日更。首期月末信号前还需完成提交后报价撮合、部分成交费用、顺序现金
+校验和端到端验收；`bootstrap.json` 明确列出未完成项。不得将现金期零收益用作
+策略表现，也不得把现有 B20 开盘成交净值当作人工延迟账户。
+
 | 做什么 | 命令 |
 |---|---|
 | 日更只读检查 | `python -m quant research daily --check-only` |

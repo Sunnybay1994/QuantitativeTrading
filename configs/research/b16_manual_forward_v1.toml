@@ -1,0 +1,24 @@
+auto_trade = false
+classification = "RESEARCH_ONLY"
+capital = 100000
+symbols = ["510300.SH", "511010.SH", "518880.SH"]
+lookback_sessions = 60
+initialization_date = 2026-09-22
+first_signal_date = 2026-09-30
+first_execution_date = 2026-10-08
+rebalance = "month_end_close_next_session"
+observation_rebalances = 3
+main_delay_seconds = 120
+shadow_delay_seconds = 60
+delay_definition = "total_from_open_or_actual_later_ready_time"
+cancel_time = "09:40"
+cost_multipliers = [0.5, 1.0, 2.0]
+commission_rate = 0.00025
+commission_min_per_order = 5.0
+slippage_per_share = 0.001
+lot_size = 100
+tick_size = 0.001
+missing_quote = "unfilled"
+execution = "requires_verified_post_submission_quotes_and_execution_tests"
+# Research cash initialization is permitted; this config does not enable fills.
+# The B20 account and its assessment date remain unchanged.
