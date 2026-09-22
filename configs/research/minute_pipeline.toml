@@ -3,4 +3,5 @@ strategies = ["configs/research/intraday_afternoon_v1.toml", "configs/research/i
 output = "artifacts/research/minute_pipeline"
 data_root = "data"
 search = "configs/research/minute_search_v1.toml"
+additional_searches = ["configs/research/minute_search_gap_v1.toml"]
 # Existing frozen strategy only; no automatic parameter search or promotion.

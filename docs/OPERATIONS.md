@@ -22,6 +22,15 @@ python -m quant gpu-check
 新候选前向起点不早于注册次日，旧历史均为开发资料；市场数据缺失时保留提示，
 不靠放宽数据检查制造研究结果。此电池有限，不无限生成同源参数网格，也不调用LLM。
 
+后续独立机制批次通过 `minute_pipeline.toml` 的 `additional_searches` 接入；
+当前包含固定隔夜跳空信息电池。每次回放同时输出 `pnl_diagnosis.json/md`，
+按保存的成交份额分解区间价格变动、不利成交价与滑点、手续费，逐笔核对净盈亏；
+此分解不是零成本账户，也不用于选择历史最优参数。无有效数据的候选保留为空。
+日内成本不合算时同步推进低频执行验证：
+`python -m quant research etf-execution-stress --output artifacts/research/<新目录>`
+读取B16固定历史委托和已覆盖开盘5分钟窗口，报告缺失、容量提示和价格压力差额，
+不将不完整窗口诊断当作完整延迟净值或正式策略准入。
+
 ETF 人工延迟研究现金账户初始化：`python -m quant research etf-manual-init`。
 冻结配置为 `configs/research/b16_manual_forward_v1.toml`，账户位于
 `artifacts/paper/b16_manual_v1/`。120 秒主账、60 秒影子及三档成本各自隔离；

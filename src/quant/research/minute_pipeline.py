@@ -12,6 +12,7 @@ import polars as pl
 from quant.data.realtime_store import atomic_json
 from quant.execution.manual_session_service import instance_lock
 from quant.research import intraday_afternoon
+from quant.research import minute_failure_diagnostics
 
 
 def digest(raw):
@@ -30,6 +31,7 @@ def inputs(config, data_root):
     files['data/clean/trade_calendar/market=SH/data.parquet']=(data_root/'clean/trade_calendar/market=SH/data.parquet').read_bytes()
     files['replay.py']=Path(intraday_afternoon.__file__).read_bytes()
     files['pipeline.py']=Path(__file__).read_bytes()
+    files['diagnostics.py']=Path(minute_failure_diagnostics.__file__).read_bytes()
     return files
 
 
@@ -79,6 +81,7 @@ def research_one(config, data_root, root):
     atomic_json(checkpoint,dict(state='running',attempt=str(attempt),fingerprint=key))
     with (directory/f'attempt_{number:03d}.log').open('w',encoding='utf-8') as log,contextlib.redirect_stdout(log):
         result=intraday_afternoon.run(directory/'snapshot/config.toml',attempt,data_root=directory/'snapshot/data')
+    minute_failure_diagnostics.diagnose(attempt,directory/'snapshot')
     quality=pl.read_csv(attempt/'daily_quality.csv')
     good=quality.filter(pl.all_horizontal('one_minute_valid','five_minute_valid','cross_frequency_matched'))
     last_input=quality['date'].max()
@@ -125,6 +128,9 @@ def run(config):
         if settings.get('search'):
             from quant.research.minute_candidates import generate
             candidates.extend(generate(Path(settings['search']), root))
+        for search in settings.get('additional_searches', []):
+            from quant.research.minute_candidates import generate
+            candidates.extend(generate(Path(search), root))
         for name in candidates:
             try:
                 item=research_one(Path(name),Path(settings['data_root']),root)

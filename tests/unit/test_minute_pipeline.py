@@ -21,6 +21,7 @@ def setup(monkeypatch,tmp_path):
         (output/'report.md').write_text('test',encoding='utf-8')
         return dict(missing_or_invalid_calendar_days=[],exit_capacity_unverified=0,valid_days=1,summaries=[dict(cost=2,observed_day_return=-.01)])
     monkeypatch.setattr(pipeline.intraday_afternoon,'run',replay)
+    monkeypatch.setattr(pipeline.minute_failure_diagnostics,'diagnose',lambda *args: {})
     return blobs,calls
 
 

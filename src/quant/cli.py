@@ -24,6 +24,7 @@ _DELEGATE: dict[tuple[str, str], str] = {
     ("research", "allocation-attribution"): "quant.research.etf_allocation_attribution",
     ("research", "mechanism-detail"): "quant.research.mechanism_followthrough",
     ("research", "etf-manual-init"): "quant.execution.etf_manual_bootstrap",
+    ("research", "etf-execution-stress"): "quant.research.etf_execution_stress",
     ("data", "minutes"): "quant.data.recent_minutes",
     ("data", "minute-history"): "quant.data.minute_history",
     ("factors", "compute"): "quant.factors.compute",
@@ -108,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
     research.add_argument("command", choices=[
         "daily", "nightly", "mining", "cycle", "gp", "feedback", "recovery-audit",
         "reversal-readiness", "batch-diagnosis", "predictive-inputs", "intraday-afternoon", "minutes", "mechanisms",
-        "allocation-attribution", "mechanism-detail", "etf-manual-init",
+        "allocation-attribution", "mechanism-detail", "etf-manual-init", "etf-execution-stress",
     ])
     paper = sub.add_parser("paper", help="模拟盘与人工订单")
     paper.add_argument("command", choices=["q10", "orders", "manual"])

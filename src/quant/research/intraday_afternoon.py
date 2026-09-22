@@ -12,7 +12,7 @@ from pathlib import Path
 import polars as pl
 
 
-def signal(bars, at, kind='afternoon_trend'):
+def signal(bars, at, kind='afternoon_trend', previous_close=None):
     known = [r for r in bars if r['bar_end'] <= at]
     if not known or known[-1]['bar_end'] != at:
         return False
@@ -20,6 +20,13 @@ def signal(bars, at, kind='afternoon_trend'):
     if volume <= 0:
         return False
     vwap = sum(r['amount'] for r in known)/volume
+    if kind in ('overnight_gap_recovery', 'overnight_gap_acceptance'):
+        if previous_close is None or previous_close <= 0:
+            return False
+        opening, last = known[0]['open'], known[-1]['close']
+        if kind == 'overnight_gap_recovery':
+            return opening < last < previous_close
+        return previous_close < opening < last
     if kind == 'opening_range_breakout':
         opening = [r for r in known if r['bar_end'].time() <= dt.time(10)]
         return len(opening) == 6 and known[-1]['close'] > max(vwap, max(r['high'] for r in opening))
@@ -147,6 +154,8 @@ def run(config, output, *, data_root=Path('data')):
             rejected.append(str(date))
     calendar = pl.read_parquet(data_root/'clean/trade_calendar/market=SH/data.parquet')
     expected = calendar.filter(pl.col('is_open') & pl.col('date').is_between(all_dates[0],all_dates[-1]))['date'].to_list()
+    sessions = sorted(calendar.filter(pl.col('is_open'))['date'].unique().to_list())
+    preceding = dict(zip(sessions[1:],sessions[:-1]))
     missing = [str(d) for d in expected if d not in valid]
     records, summaries = [], []
     for delay in cfg['manual_delays_seconds']:
@@ -158,7 +167,11 @@ def run(config, output, *, data_root=Path('data')):
                 at = dt.datetime.combine(date,dt.time.fromisoformat(cfg['signal_time']),one[0]['bar_start'].tzinfo)
                 exit_at = at.replace(hour=int(cfg['exit_signal_time'][:2]),minute=int(cfg['exit_signal_time'][3:]))
                 before = cash
-                trade = dict(date=str(date),manual_delay_seconds=delay,cost=cost,signal=signal(five,at,cfg.get('signal_kind','afternoon_trend')),quantity=0,reason='no_signal')
+                prior_date = preceding.get(date)
+                previous_close = by_frequency['5m'][prior_date][-1]['close'] if prior_date in valid else None
+                trade = dict(date=str(date),manual_delay_seconds=delay,cost=cost,signal=signal(five,at,cfg.get('signal_kind','afternoon_trend'),previous_close),quantity=0,reason='no_signal')
+                if cfg.get('signal_kind','').startswith('overnight_gap') and previous_close is None:
+                    trade['reason'] = 'missing_previous_session'
                 if trade['signal']:
                     choose = conservative_window if stress else execution_bar
                     rows = five if stress else one

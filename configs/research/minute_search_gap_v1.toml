@@ -1,0 +1,9 @@
+auto_trade = false
+version = "minute_search_gap_v1"
+template = "configs/research/intraday_afternoon_worst5m_v1.toml"
+symbols = ["518880.SH"]
+families = ["overnight_gap_recovery", "overnight_gap_acceptance"]
+forward_start = "2026-09-23"
+# Distinct overnight information, fixed 10:00 signal and 14:50 exit.
+# Immediate prior exchange session required; no window/threshold optimization.
+# Historical prices are development data; all candidates reported, not selected by rank.
