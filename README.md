@@ -56,6 +56,8 @@ D:\Miniforge3\python.exe -m quant report dashboard --port 8768
 
 ## 消息通知与人工交易演练
 
+看板新增“消息通知”页，可配置各通道、启停自动通知、绑定飞书应用、启动/停止消息监听，并查看发送与回执状态。
+
 单向通知支持 **邮件、企业微信群机器人、飞书群机器人、个人微信**。选择通道后，按[通知接入指南](docs/NOTIFICATIONS.md)配置账号或环境变量，并在 `configs/notify.toml` 设置默认通道。
 
 ```powershell

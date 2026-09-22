@@ -40,7 +40,9 @@ def load_notify_config(path: Path | None = None) -> dict[str, Any]:
     if not config_path.exists():
         return {"notify": {"enabled": True, "channels": []}}
     with config_path.open("rb") as stream:
-        return tomllib.load(stream)
+        config = tomllib.load(stream)
+    from quant.notify.channel_settings import overlay
+    return overlay(config)
 
 
 def _outbox_path() -> Path:
@@ -70,7 +72,7 @@ def _send_email(title: str, body: str, config: dict[str, Any]) -> SendResult:
     recipients = list(section.get("to_addrs") or [])
     if os.environ.get("SMTP_TO"):
         recipients = [item.strip() for item in os.environ["SMTP_TO"].split(",") if item.strip()]
-    password = os.environ.get("SMTP_PASSWORD", "").strip()
+    password = str(section.get("password") or os.environ.get("SMTP_PASSWORD", "")).strip()
     user = str(section.get("username") or os.environ.get("SMTP_USERNAME") or sender).strip()
     if not host or not sender or not recipients:
         return SendResult("email", False, "缺少 SMTP_HOST / from / to")
@@ -94,19 +96,26 @@ def _post_webhook(channel: str, url: str, payload: dict[str, Any]) -> SendResult
     response = httpx.post(url, json=payload, timeout=20, trust_env=False)
     if response.status_code >= 300:
         return SendResult(channel, False, f"http_{response.status_code}")
-    return SendResult(channel, True, f"http_{response.status_code}")
+    try:
+        result = response.json()
+        code = result.get("errcode") if channel == "wecom" else result.get("code", result.get("StatusCode"))
+    except (ValueError, AttributeError):
+        return SendResult(channel, False, "invalid_business_response")
+    if type(code) is not int or code != 0:
+        return SendResult(channel, False, "platform_rejected_or_unknown")
+    return SendResult(channel, True, "platform_accepted")
 
 
-def _send_wecom(title: str, body: str) -> SendResult:
-    url = os.environ.get("WECOM_WEBHOOK", "").strip()
+def _send_wecom(title: str, body: str, config=None) -> SendResult:
+    url = str(((config or {}).get("wecom") or {}).get("webhook") or os.environ.get("WECOM_WEBHOOK", "")).strip()
     if not url:
         return SendResult("wecom", False, "未设置 WECOM_WEBHOOK")
     text = f"{title}\n{body}"[:2000]
     return _post_webhook("wecom", url, {"msgtype": "text", "text": {"content": text}})
 
 
-def _send_feishu(title: str, body: str) -> SendResult:
-    url = os.environ.get("FEISHU_WEBHOOK", "").strip()
+def _send_feishu(title: str, body: str, config=None) -> SendResult:
+    url = str(((config or {}).get("feishu") or {}).get("webhook") or os.environ.get("FEISHU_WEBHOOK", "")).strip()
     if not url:
         return SendResult("feishu", False, "未设置 FEISHU_WEBHOOK")
     return _post_webhook(
@@ -133,8 +142,8 @@ def _send_wxauto(title: str, body: str, config: dict[str, Any]) -> SendResult:
 
 _SENDERS = {
     "email": lambda title, body, config: _send_email(title, body, config),
-    "wecom": lambda title, body, config: _send_wecom(title, body),
-    "feishu": lambda title, body, config: _send_feishu(title, body),
+    "wecom": lambda title, body, config: _send_wecom(title, body, config),
+    "feishu": lambda title, body, config: _send_feishu(title, body, config),
     "wxauto": lambda title, body, config: _send_wxauto(title, body, config),
 }
 

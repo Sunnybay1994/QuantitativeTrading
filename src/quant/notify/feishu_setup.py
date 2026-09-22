@@ -62,8 +62,8 @@ def listener():
     Client(row["app_id"], row["app_secret"], event_handler=handler, auto_reconnect=False).start()
 
 
-def discover(app_id, secret, timeout=180):
-    code = "".join(secrets.choice("23456789ABCDEFGHJKLMNPQRSTUVWXYZ") for _ in range(5))
+def discover(app_id, secret, timeout=180, *, code=None, on_connected=None):
+    code = code or "".join(secrets.choice("23456789ABCDEFGHJKLMNPQRSTUVWXYZ") for _ in range(5))
     process = subprocess.Popen([sys.executable, "-u", "-m", "quant.notify.feishu_setup", "--listen"],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         text=True, encoding="utf-8", creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
@@ -89,6 +89,8 @@ def discover(app_id, secret, timeout=180):
                 continue
             if event.get("connected") and not connected:
                 connected, deadline = True, time.monotonic()+timeout
+                if on_connected:
+                    on_connected()
                 print("连接成功。请现在给机器人发送以下口令（群聊请 @机器人）：\n"+code, flush=True)
             if connected and event.get("binding"):
                 return event["binding"]

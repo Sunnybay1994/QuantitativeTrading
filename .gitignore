@@ -46,3 +46,6 @@ archive/legacy_pre_greenfield/
 # Windows-user encrypted Feishu credentials and temporary files
 configs/feishu.local.dpapi
 configs/feishu-*.tmp
+
+configs/notify.local.dpapi
+configs/notify-*.tmp

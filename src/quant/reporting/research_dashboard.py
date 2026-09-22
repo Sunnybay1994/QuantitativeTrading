@@ -146,6 +146,36 @@ def create_server(port: int) -> ThreadingHTTPServer:
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
+            if self.path.startswith('/api/notifications/'):
+                from quant.reporting.notification_control import action
+                valid_hosts = {f'127.0.0.1:{self.server.server_port}', f'localhost:{self.server.server_port}'}
+                if (self.headers.get('Host') not in valid_hosts
+                        or self.headers.get('Origin') not in {'http://'+h for h in valid_hosts}
+                        or not secrets.compare_digest(self.headers.get('X-Mining-Token',''), mining_token)
+                        or self.headers.get('Transfer-Encoding')
+                        or self.headers.get('Content-Type') != 'application/json'):
+                    self.send_error(403)
+                    return
+                try:
+                    size = int(self.headers.get('Content-Length','0'))
+                    if not 0 < size <= 16384:
+                        raise ValueError('请求大小无效')
+                    request = json.loads(self.rfile.read(size))
+                    if not isinstance(request, dict):
+                        raise ValueError('请求格式无效')
+                    result = action(self.path.removeprefix('/api/notifications/'), request)
+                    status = 200
+                except ValueError as exc:
+                    result, status = {'message':str(exc)}, 400
+                except Exception:
+                    result, status = {'message':'操作未完成，请检查凭据、网络或本机权限'}, 503
+                data = json.dumps(result,ensure_ascii=False).encode('utf-8')
+                self.send_response(status)
+                self.send_header('Content-Type','application/json; charset=utf-8')
+                self.send_header('Cache-Control','no-store')
+                self.end_headers()
+                self.wfile.write(data)
+                return
             from quant.reporting.mining_control import authorized, resume
             if self.path != '/api/mining/restart' and not self.path.startswith('/api/data/sync/'):
                 self.send_error(404)
@@ -173,7 +203,20 @@ def create_server(port: int) -> ThreadingHTTPServer:
 
         def do_GET(self):
             route = urlparse(self.path)
-            if route.path == '/api/data/inventory':
+            if route.path == '/api/notifications':
+                if self.headers.get('Host') not in {f'127.0.0.1:{self.server.server_port}', f'localhost:{self.server.server_port}'}:
+                    self.send_error(403)
+                    return
+                from quant.reporting.notification_control import status as notification_status
+                try:
+                    payload = notification_status()
+                except Exception:
+                    payload = {'error':'无法读取本地通知配置，请使用保存凭据的Windows用户运行看板'}
+                body, mime = json.dumps(payload,ensure_ascii=False).encode('utf-8'), 'application/json'
+            elif route.path == '/notifications.js':
+                body = Path(__file__).with_name('dashboard_notifications.js').read_bytes()
+                mime = 'text/javascript'
+            elif route.path == '/api/data/inventory':
                 payload = {**inventory.get(force=route.query == 'refresh=1'), 'collection': collection_status(ROOT)}
                 body, mime = json.dumps(payload, ensure_ascii=False).encode('utf-8'), 'application/json'
             elif route.path == '/api/data/tasks':

@@ -1,7 +1,7 @@
 /* Small hash routes: only the selected view starts its expensive readers. */
 (() => {
   const names = {overview:'运行总览', dataAcquisition:'数据获取', curves:'策略曲线',
-    accountsView:'模拟账户', researchResults:'研究结果'};
+    accountsView:'模拟账户', researchResults:'研究结果', notifications:'消息通知'};
   const loaded = new Map();
   window.dashboardPage = 'overview';
   function load(src) {
@@ -33,6 +33,7 @@
     document.title = names[page]+' · 投研工作台';
     window.scrollTo({top:0, behavior:'instant'});
     try {
+      if (page === 'notifications') await load('/notifications.js');
       if (page === 'curves') await load('/curves.js');
       if (page === 'dataAcquisition') await load('/data.js');
       if (window.dashboardPage === page) window.dispatchEvent(new CustomEvent('dashboard:page', {detail:page}));
