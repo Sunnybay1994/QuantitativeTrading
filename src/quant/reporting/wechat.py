@@ -6,7 +6,7 @@ Run from an unlocked Windows desktop. No broker or order execution is connected.
 from __future__ import annotations
 
 import argparse
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 from dataclasses import asdict, dataclass
 import io
 import json
@@ -21,6 +21,8 @@ class ChatMessage:
     content: str
     kind: str
     source: str
+    message_id: str = ''
+    sender: str = ''
 
 
 class WeChatNotifier:
@@ -52,6 +54,8 @@ class WeChatNotifier:
                 content=str(getattr(message, "content", "")),
                 kind=str(getattr(message, "type", "")),
                 source=str(getattr(message, "attr", "unknown")),
+                message_id=str(getattr(message, 'id', '')),
+                sender=str(getattr(message, 'sender', '')),
             )
             for message in messages
         ]
@@ -66,6 +70,33 @@ class WeChatNotifier:
         if not isinstance(result, dict) or result.get("status") != "成功":
             raise RuntimeError("wxauto 未确认发送成功；请检查群聊后再决定是否重试")
         return {"group": self.group, "submitted": True, "recipient_acknowledged": False}
+
+
+@contextmanager
+def desktop_lock():
+    """Serialize desktop selection/read/send across dashboard and listener."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel.CreateMutexW.restype = wintypes.HANDLE
+    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.ReleaseMutex.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel.CreateMutexW(None, False, 'Local\\QuantitativeTrading-WeChatDesktop')
+    if not handle:
+        raise RuntimeError('无法创建微信桌面锁')
+    acquired = False
+    try:
+        acquired = kernel.WaitForSingleObject(handle, 15000) in (0, 0x80)
+        if not acquired:
+            raise RuntimeError('微信桌面忙，请稍后重试')
+        yield
+    finally:
+        if acquired:
+            kernel.ReleaseMutex(handle)
+        kernel.CloseHandle(handle)
 
 
 def connect(group: str) -> WeChatNotifier:

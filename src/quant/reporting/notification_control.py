@@ -64,7 +64,7 @@ def status():
         row = settings.get(name, {})
         public = {k:v for k,v in row.items() if k not in ('password','webhook')}
         rows.append(dict(channel=name, values=public, enabled=row.get('enabled',False),
-                         secret_saved=bool(row.get('password') or row.get('webhook')), listener_supported=False))
+                         secret_saved=bool(row.get('password') or row.get('webhook')), listener_supported=name in ('wxauto','feishu_app')))
     service = read('listener.json', {})
     service['process_alive'] = alive(service.get('pid'))
     service['connected'] = bool(service.get('connected') and service['process_alive'] and time.time()-service.get('heartbeat',0)<15)
@@ -72,9 +72,14 @@ def status():
     receipts = Receipts(root())
     try:
         received = receipts.recent()
+        latest_replies = receipts.latest_replies()
     finally:
         receipts.close()
+    wxservice = read('wxauto-listener.json', {})
+    wxservice['process_alive'] = alive(wxservice.get('pid'))
+    wxservice['connected'] = bool(wxservice.get('connected') and wxservice['process_alive'] and time.time()-wxservice.get('heartbeat',0)<15)
     return dict(channels=rows, app_configured=bool(local), binding=(local or {}).get('binding'),
+                wxauto_listener=wxservice, latest_replies=latest_replies,
                 binding_progress=dict(BINDING), listener=service, received=received,
                 last_send=read('send.json'), auto_trade=False)
 
@@ -105,6 +110,30 @@ def stop():
 
 def action(command, body):
     with LOCK:
+        if command in ('wxauto-start', 'wxauto-stop'):
+            previous = read('wxauto-listener.json', {})
+            if command == 'wxauto-stop':
+                if previous.get('run') and alive(previous.get('pid')):
+                    (root()/(previous['run']+'.stop')).touch()
+                return {'message':'已请求停止微信监听'}
+            if alive(previous.get('pid')):
+                return {'message':'微信监听已在运行'}
+            from quant.notify import load_notify_config
+            if not load_notify_config().get('wxauto', {}).get('group', '').strip():
+                raise ValueError('请先保存微信精确群名')
+            run = uuid.uuid4().hex
+            with (root()/'wxauto-listener.log').open('ab') as log:
+                child = subprocess.Popen([sys.executable,'-m','quant.notify.wechat_worker',run],
+                    cwd=project_paths().root, stdout=log, stderr=log,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0)
+            (root()/'wxauto-listener.json').write_text(json.dumps(dict(run=run,pid=child.pid,state='starting',heartbeat=time.time())),encoding='utf-8')
+            return {'message':'微信监听已启动；启动前可见消息作为基线，不作为新回复'}
+        if command == 'test-all':
+            from quant.notify import send
+            results = [vars(r) for r in send('双渠道通知测试', '仅验证消息收发，不包含交易指令。可从微信或飞书回复，最后收到的回复优先。')]
+            result = dict(results=results,at=time.strftime('%Y-%m-%d %H:%M:%S'))
+            (root()/'send.json').write_text(json.dumps(result,ensure_ascii=False),encoding='utf-8')
+            return {'message':'已逐渠道执行，请查看各渠道结果；本地待发不代表送达', 'result':result}
         if command == 'save':
             channel_settings.save(body['channel'],body.get('values',{}),body['enabled'])
             return {'message':'通道配置已加密保存；留空项保留原值'}

@@ -7,7 +7,7 @@ from quant.core.paths import project_paths
 from quant.notify.feishu_credentials import protect
 
 FIELDS = {"email": {"smtp_host", "smtp_port", "from_addr", "to_addrs", "username", "password"},
-          "wecom": {"webhook"}, "feishu": {"webhook"}, "wxauto": {"group"}}
+          "wecom": {"webhook"}, "feishu": {"webhook"}, "wxauto": {"group"}, "feishu_app": set()}
 
 
 def load():

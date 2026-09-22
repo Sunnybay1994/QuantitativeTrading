@@ -80,7 +80,7 @@ def main():
                 while not (ROOT/(run+'.stop')).exists():
                     try:
                         await asyncio.wait_for(client._connect(), 30)
-                        state.update(state='listening', connected=True)
+                        state.update(state='listening', connected=True, error='')
                         ping = asyncio.create_task(client._ping_loop())
                         try:
                             while client._conn is not None and not (ROOT/(run+'.stop')).exists():

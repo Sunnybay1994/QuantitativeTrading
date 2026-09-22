@@ -129,7 +129,7 @@ def _send_wxauto(title: str, body: str, config: dict[str, Any]) -> SendResult:
     group = str((config.get("wxauto") or {}).get("group") or os.environ.get("WXAUTO_GROUP") or "")
     if not group.strip():
         return SendResult("wxauto", False, "未设置群名")
-    from quant.reporting.wechat import connect
+    from quant.reporting.wechat import connect, desktop_lock
 
     text = f"{title}\n{body}"
     if len(text) > 2000:
@@ -139,15 +139,34 @@ def _send_wxauto(title: str, body: str, config: dict[str, Any]) -> SendResult:
 
     pythoncom.CoInitialize()
     try:
-        client = connect(group)
-        client.select()
-        client.send(text)
+        with desktop_lock():
+            client = connect(group)
+            client.select()
+            client.send(text)
     finally:
         pythoncom.CoUninitialize()
     return SendResult("wxauto", True, group)
 
 
+def _send_feishu_app(title: str, body: str, config: dict[str, Any]) -> SendResult:
+    import uuid
+    from quant.notify.feishu_credentials import load_local
+    from quant.notify.feishu_manual import FeishuManualTransport
+
+    local = load_local() or {}
+    binding = local.get('binding') or {}
+    if not binding.get('chat_id'):
+        return SendResult('feishu_app', False, '请先绑定飞书应用会话')
+    transport = FeishuManualTransport(local['app_id'], local['app_secret'], [binding['chat_id']])
+    try:
+        transport.send_text(binding['chat_id'], title+'\n'+body, uuid.uuid4().hex)
+    finally:
+        transport.close()
+    return SendResult('feishu_app', True, '平台已接受')
+
+
 _SENDERS = {
+    'feishu_app': _send_feishu_app,
     "email": lambda title, body, config: _send_email(title, body, config),
     "wecom": lambda title, body, config: _send_wecom(title, body, config),
     "feishu": lambda title, body, config: _send_feishu(title, body, config),

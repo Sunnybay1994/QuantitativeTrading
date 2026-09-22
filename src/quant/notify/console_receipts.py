@@ -29,6 +29,8 @@ class Receipts:
         row={k:msg[k] for k in ('message_id','text','sent_at')}
         row['text']=row['text'][:4000]
         row['received_at']=dt.datetime.now().isoformat()
+        row['channel']=msg.get('channel', 'feishu_app')
+        row['sender']=msg.get('sender', '')
         try:
             row['parsed']=parse_reply(text)
             parsed=row['parsed']
@@ -42,7 +44,8 @@ class Receipts:
             ack='【消息已收到】当前为通信演练监听，未执行交易或记账。成交回报请使用测试消息中的固定格式。'
         with self.db:
             inserted=self.db.execute('INSERT OR IGNORE INTO receipts VALUES (?,?,?,?,?)',
-                (msg['message_id'],json.dumps(row,ensure_ascii=False),ack,'queued',None)).rowcount
+                (msg['message_id'],json.dumps(row,ensure_ascii=False),ack,
+                 'received' if row['channel']=='wxauto' else 'queued',None)).rowcount
         return bool(inserted)
 
     def dispatch(self,send):
@@ -63,3 +66,13 @@ class Receipts:
 
     def recent(self):
         return [{**json.loads(row['payload']),'ack_status':row['status']} for row in reversed(list(self.db.execute('SELECT * FROM receipts ORDER BY rowid DESC LIMIT 30')))]
+
+    def latest_replies(self):
+        """Latest committed arrival wins per order, across both channels."""
+        latest = {}
+        for record in self.db.execute('SELECT payload FROM receipts ORDER BY rowid DESC'):
+            row = json.loads(record['payload'])
+            parsed = row.get('parsed')
+            if parsed:
+                latest.setdefault(parsed['order_id'], row)
+        return latest
