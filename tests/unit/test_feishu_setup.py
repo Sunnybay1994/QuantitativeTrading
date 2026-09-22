@@ -3,9 +3,9 @@ from quant.notify import feishu_setup as s
 
 
 def test_code_matches_mentions_but_not_similar_token():
-    msg = dict(sender_id="ou_test", chat_id="oc_test", text="@_user_1 QT-A1B2C3D4")
-    assert s.match_binding(msg, "QT-A1B2C3D4") == dict(sender_id="ou_test", chat_id="oc_test")
-    assert s.match_binding({**msg, "text": "QT-A1B2C3D4X"}, "QT-A1B2C3D4") is None
+    msg = dict(sender_id="ou_test", chat_id="oc_test", text="@_user_1 A2B3C")
+    assert s.match_binding(msg, "A2B3C") == dict(sender_id="ou_test", chat_id="oc_test")
+    assert s.match_binding({**msg, "text": "A2B3CX"}, "A2B3C") is None
 
 
 @pytest.mark.parametrize("confirm", ["y", "n"])

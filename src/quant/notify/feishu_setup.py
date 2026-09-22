@@ -63,7 +63,7 @@ def listener():
 
 
 def discover(app_id, secret, timeout=180):
-    code = "QT-" + secrets.token_hex(4).upper()
+    code = "".join(secrets.choice("23456789ABCDEFGHJKLMNPQRSTUVWXYZ") for _ in range(5))
     process = subprocess.Popen([sys.executable, "-u", "-m", "quant.notify.feishu_setup", "--listen"],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         text=True, encoding="utf-8", creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
