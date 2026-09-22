@@ -51,7 +51,7 @@ def matched(five, one):
     return True
 
 
-def run(config, output):
+def run(config, output, *, data_root=Path('data')):
     cfg = tomllib.loads(config.read_text(encoding='utf-8'))
     if cfg['auto_trade'] is not False or cfg['capital'] not in (100000,1000000):
         raise ValueError('Invalid safety or capital configuration')
@@ -59,7 +59,7 @@ def run(config, output):
     shutil.copyfile(config,output/'config.toml')
     sources, by_frequency = {}, {}
     for freq in ('1m','5m'):
-        path = Path(f"data/clean/bar_intraday/freq={freq}/source={cfg['source']}/symbol={cfg['symbol']}/data.parquet")
+        path = data_root / f"clean/bar_intraday/freq={freq}/source={cfg['source']}/symbol={cfg['symbol']}/data.parquet"
         raw = path.read_bytes()
         sources[freq] = dict(path=str(path),sha256=hashlib.sha256(raw).hexdigest())
         import io
@@ -67,6 +67,8 @@ def run(config, output):
         by_frequency[freq] = {key[0]:f.to_dicts() for key,f in frame.partition_by('trade_date',as_dict=True).items()}
     (output/'freeze.json').write_text(json.dumps(dict(created_at=dt.datetime.now().astimezone().isoformat(),sources=sources,config_sha256=hashlib.sha256(config.read_bytes()).hexdigest()),indent=2),encoding='utf-8')
     all_dates = sorted(set(by_frequency['1m'])|set(by_frequency['5m']))
+    if not all_dates:
+        raise ValueError('No minute history available')
     valid, rejected, quality = [], [], []
     for date in all_dates:
         one,five = by_frequency['1m'].get(date,[]),by_frequency['5m'].get(date,[])
@@ -76,7 +78,7 @@ def run(config, output):
             valid.append(date)
         else:
             rejected.append(str(date))
-    calendar = pl.read_parquet('data/clean/trade_calendar/market=SH/data.parquet')
+    calendar = pl.read_parquet(data_root/'clean/trade_calendar/market=SH/data.parquet')
     expected = calendar.filter(pl.col('is_open') & pl.col('date').is_between(all_dates[0],all_dates[-1]))['date'].to_list()
     missing = [str(d) for d in expected if d not in valid]
     records, summaries = [], []

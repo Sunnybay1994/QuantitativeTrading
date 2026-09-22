@@ -136,3 +136,11 @@ N4增量检验仅向分组与回归传递键、标签、候选及已准入控制
 |7|准入计算内存|增量检验只搬运所需列，数值、缺失掩码及恢复行为不变；全部参考相关性仍计算|入口投影及39项回归通过，证据 `artifacts/maintenance/n4_projection_20260920/`；生产提速待观察|
 
 首批优化208项测试见 `artifacts/maintenance/automation_optimization_20260919/`；并行推进137项测试及5定义隔离摄取见 `artifacts/maintenance/parallel_delivery_20260919/verification.json`。运行说明同步 `docs/OPERATIONS.md`；第11批完整结束，新开关仅用于后续批次。测试节省量不能算作生产收益或准入证据。
+
+## 分钟策略自动研究
+
+`python -m quant research minutes` 按 `configs/research/minute_pipeline.toml` 执行已注册策略。既有分钟补数任务结束后、持续挖掘领取新时间片前会自动调用；不另建调度任务，不启动重复因子批次。机器须开机且原计划任务可运行；恢复后从下一次原任务调用接续。
+
+当前接入黄金ETF午后趋势原型。先冻结配置、1m/5m数据、日历和代码哈希，再完成逐日质量、跨频率核对、三档成本和两档人工延迟回放。数据或代码不变且产物完整则复用；变化则创建新快照。中断只重做未完成的小回放，已完成策略跳过；不覆盖旧尝试。运行文件锁防止两个入口同时回放。
+
+状态 `artifacts/research/minute_pipeline/status.json`；汇总 `report.md`，每个策略有独立冻结输入、质量CSV和逐日回放。`complete`只表示运行完成，另看 `data_stale`、连续有效交易日及 `attention`。缺失不填零，不自动调参、晋级、发送交易信号或改变模拟账户。连续数据、收益指数基准、退出容量与独立前向仍须验证。分钟研究失败记录状态和日志，不阻断原因子挖掘；补数失败仍保留原退出码。

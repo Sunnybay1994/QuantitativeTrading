@@ -1,0 +1,5 @@
+auto_trade = false
+strategies = ["configs/research/intraday_afternoon_v1.toml"]
+output = "artifacts/research/minute_pipeline"
+data_root = "data"
+# Existing frozen strategy only; no automatic parameter search or promotion.

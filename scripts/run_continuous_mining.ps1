@@ -35,6 +35,8 @@ $log = Join-Path $logRoot ($clock.ToString('yyyy-MM-dd_HHmmss_fffffff') + '.log'
 @{status='started'; updated_at=$clock.ToString('o'); log=$log; slice_hours=$hours} |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'scheduler.json') -Encoding utf8
 $hoursText = $hours.ToString('0.######',[Globalization.CultureInfo]::InvariantCulture)
+& $python -m quant research minutes *> ($log + '.minutes.log')
+# Minute failures remain in their status/log; they must not stop the factor queue.
 & $python -m quant research mining --config configs/research/nightly.toml --output-root artifacts/research/continuous --slice-hours $hoursText *> $log
 $code = $LASTEXITCODE
 if ($code -notin 0, 2) {

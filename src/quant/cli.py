@@ -19,6 +19,7 @@ _DELEGATE: dict[tuple[str, str], str] = {
     ("data", "realtime"): "quant.data.realtime",
     ("data", "latency"): "quant.data.market_latency",
     ("research", "intraday-afternoon"): "quant.research.intraday_afternoon",
+    ("research", "minutes"): "quant.research.minute_pipeline",
     ("data", "minutes"): "quant.data.recent_minutes",
     ("data", "minute-history"): "quant.data.minute_history",
     ("factors", "compute"): "quant.factors.compute",
@@ -102,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
     research = sub.add_parser("research", help="投研流水线")
     research.add_argument("command", choices=[
         "daily", "nightly", "mining", "cycle", "gp", "feedback", "recovery-audit",
-        "reversal-readiness", "batch-diagnosis", "predictive-inputs", "intraday-afternoon",
+        "reversal-readiness", "batch-diagnosis", "predictive-inputs", "intraday-afternoon", "minutes",
     ])
     paper = sub.add_parser("paper", help="模拟盘与人工订单")
     paper.add_argument("command", choices=["q10", "orders", "manual"])
