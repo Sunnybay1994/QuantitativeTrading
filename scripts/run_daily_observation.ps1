@@ -1,4 +1,4 @@
-param([switch]$CheckOnly)
+﻿param([switch]$CheckOnly)
 $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $workspace
@@ -9,8 +9,8 @@ $python = 'D:\Miniforge3\python.exe'
 $logRoot = Join-Path $workspace 'artifacts\daily\scheduler'
 New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
 $logFile = Join-Path $logRoot ((Get-Date -Format 'yyyy-MM-dd_HHmmss_fffffff') + '.log')
-function Notify-Failure([string]$title, [string]$body) {
-    & $python -m quant notify send --title $title --body $body *>> $logFile
+function Notify-Failure([int]$code) {
+    if (-not $CheckOnly) { & $python -m quant.notify.automation_alert --task '日更流程' --code $code --log $logFile *>> $logFile }
 }
 try {
     if (-not $CheckOnly) {
@@ -25,12 +25,10 @@ try {
     if ($CheckOnly) { $runArgs += '--check-only' }
     & $python @runArgs *> $logFile
     $code = $LASTEXITCODE
-    if ($code -notin 0, 2) {
-        Notify-Failure '日更失败' "exit=$code log=$logFile"
-    }
+    if ($code -ne 2) { Notify-Failure $code }
     exit $code
 } catch {
     $_.Exception.Message | Out-File $logFile -Append -Encoding utf8
-    Notify-Failure '日更异常' $_.Exception.Message
+    Notify-Failure 1
     exit 1
 }

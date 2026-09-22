@@ -35,11 +35,17 @@ $log = Join-Path $logRoot ($clock.ToString('yyyy-MM-dd_HHmmss_fffffff') + '.log'
 @{status='started'; updated_at=$clock.ToString('o'); log=$log; slice_hours=$hours} |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'scheduler.json') -Encoding utf8
 $hoursText = $hours.ToString('0.######',[Globalization.CultureInfo]::InvariantCulture)
-& $python -m quant research minutes *> ($log + '.minutes.log')
-# Minute failures remain in their status/log; they must not stop the factor queue.
-& $python -m quant research mining --config configs/research/nightly.toml --output-root artifacts/research/continuous --slice-hours $hoursText *> $log
-$code = $LASTEXITCODE
-if ($code -notin 0, 2) {
-    & $python -m quant notify send --title '持续挖掘失败' --body "exit=$code log=$log" *>> $log
+try {
+    & $python -m quant research minutes *> ($log + '.minutes.log')
+    $minuteCode = $LASTEXITCODE
+    & $python -m quant.notify.automation_alert --task '分钟策略研究' --code $minuteCode --log ($log + '.minutes.log') *>> $log
+    # Minute failure must not stop the factor queue.
+    & $python -m quant research mining --config configs/research/nightly.toml --output-root artifacts/research/continuous --slice-hours $hoursText *>> $log
+    $code = $LASTEXITCODE
+    if ($code -ne 2) { & $python -m quant.notify.automation_alert --task '持续挖掘' --code $code --log $log *>> $log }
+    exit $code
+} catch {
+    $_.Exception.Message | Out-File $log -Append -Encoding utf8
+    & $python -m quant.notify.automation_alert --task '持续挖掘' --code 1 --log $log *>> $log
+    exit 1
 }
-exit $code

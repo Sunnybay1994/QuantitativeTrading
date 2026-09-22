@@ -1,4 +1,4 @@
-param([switch]$CheckOnly)
+﻿param([switch]$CheckOnly)
 $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $workspace
@@ -24,13 +24,14 @@ try {
         exit 0
     }
     & $python -m quant intel scan --no-extract *>> $logFile
-    & $python -m quant research nightly --config configs/research/nightly.toml *> $logFile
+    $intelCode = $LASTEXITCODE
+    & $python -m quant.notify.automation_alert --task '夜间文本采集' --code $intelCode --log $logFile *>> $logFile
+    & $python -m quant research nightly --config configs/research/nightly.toml *>> $logFile
     $code = $LASTEXITCODE
-    if ($code -notin 0, 2) {
-        & $python -m quant notify send --title '夜间研究失败' --body "exit=$code log=$logFile" *>> $logFile
-    }
+    if ($code -ne 2) { & $python -m quant.notify.automation_alert --task '夜间研究' --code $code --log $logFile *>> $logFile }
     exit $code
 } catch {
     $_.Exception.Message | Out-File $logFile -Append -Encoding utf8
+    if (-not $CheckOnly) { & $python -m quant.notify.automation_alert --task '夜间研究' --code 1 --log $logFile *>> $logFile }
     exit 1
 }
