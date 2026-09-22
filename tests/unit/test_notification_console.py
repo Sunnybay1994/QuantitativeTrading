@@ -103,3 +103,15 @@ def test_receipts_deduplicate_and_recover_without_repeating_uncertain_ack(tmp_pa
     r.dispatch(lambda text,identifier:{'provider_accepted':True,'message_id':'ack2'})
     assert r.recent()[-1]['ack_status']=='accepted'
     r.close()
+
+
+def test_failed_channel_outbox_is_not_reported_as_delivery(monkeypatch, tmp_path):
+    import quant.notify as notify
+    monkeypatch.setattr(control, 'root', lambda: tmp_path)
+    monkeypatch.setattr(notify, 'send', lambda *a, **k: [
+        notify.SendResult('wxauto', False, 'missing runtime'),
+        notify.SendResult('outbox', True, 'local file'),
+    ])
+    result = control.action('test', {'channel': 'wxauto'})
+    assert '测试未送达' in result['message']
+    assert 'missing runtime' in result['message']

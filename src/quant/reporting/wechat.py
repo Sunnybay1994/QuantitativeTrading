@@ -10,7 +10,9 @@ from contextlib import redirect_stdout
 from dataclasses import asdict, dataclass
 import io
 import json
+import importlib.util
 from pathlib import Path
+import sys
 from typing import Any
 
 
@@ -67,6 +69,13 @@ class WeChatNotifier:
 
 
 def connect(group: str) -> WeChatNotifier:
+    if importlib.util.find_spec('wxauto4') is None:
+        from quant.core.paths import project_paths
+
+        runtime = project_paths().artifacts / 'wechat/runtime'
+        if not (runtime / 'wxauto4/__init__.py').is_file():
+            raise RuntimeError('未找到 wxauto4；请配置微信运行环境后再测试')
+        sys.path.insert(0, str(runtime))
     from wxauto4 import WeChat, WxParam  # type: ignore[import-not-found]
 
     WxParam.ENABLE_FILE_LOGGER = False

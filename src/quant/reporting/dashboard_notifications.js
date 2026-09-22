@@ -1,6 +1,6 @@
 (() => {
   const el=id=>document.getElementById(id);
-  const names={email:'邮件 SMTP',wecom:'企业微信群机器人',feishu:'飞书群机器人',wxauto:'个人微信'};
+  const names={email:'邮件 SMTP',wecom:'企业微信群机器人',feishu:'飞书群机器人',wxauto:'个人微信（wxauto）'};
   const fields={email:[['smtp_host','SMTP服务器'],['smtp_port','端口（STARTTLS）'],['from_addr','发件人'],['to_addrs','收件人（逗号分隔）'],['username','登录名'],['password','SMTP授权码']],wecom:[['webhook','机器人HTTPS地址']],feishu:[['webhook','机器人HTTPS地址']],wxauto:[['group','精确群名（需微信登录、桌面解锁）']]};
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   let built=false, loading=false, busy=false;

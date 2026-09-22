@@ -134,9 +134,16 @@ def _send_wxauto(title: str, body: str, config: dict[str, Any]) -> SendResult:
     text = f"{title}\n{body}"
     if len(text) > 2000:
         text = text[:1997] + "..."
-    client = connect(group)
-    client.select()
-    client.send(text)
+    # HTTP requests run on fresh threads; each needs its own COM apartment.
+    import pythoncom
+
+    pythoncom.CoInitialize()
+    try:
+        client = connect(group)
+        client.select()
+        client.send(text)
+    finally:
+        pythoncom.CoUninitialize()
     return SendResult("wxauto", True, group)
 
 
@@ -172,7 +179,10 @@ def send(
         try:
             results.append(sender(title, body, config))
         except Exception as exc:  # noqa: BLE001 — 通道失败不影响其他通道
-            results.append(SendResult(name, False, type(exc).__name__))
+            detail = type(exc).__name__
+            if name == 'wxauto':
+                detail += ': ' + str(exc)[:300]
+            results.append(SendResult(name, False, detail))
     if not any(item.ok for item in results):
         results.append(_write_outbox(title, body, chosen))
     return results

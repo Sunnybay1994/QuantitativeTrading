@@ -174,5 +174,10 @@ def action(command, body):
                 result = {'channel':channel,'results':[vars(r) for r in send('通知通道测试','仅测试消息送达，不包含交易指令。',channels=[channel])]}
             result['at'] = time.strftime('%Y-%m-%d %H:%M:%S')
             (root()/'send.json').write_text(json.dumps(result,ensure_ascii=False),encoding='utf-8')
-            return {'message':'测试已执行，请核对平台接受状态及实际收信', 'result':result}
+            if channel != 'feishu_app':
+                sent = next((r for r in result['results'] if r['channel'] == channel), None)
+                if not sent or not sent['ok']:
+                    detail = sent['detail'] if sent else '未调用发送渠道，请检查通知总开关'
+                    return {'message':'测试未送达：'+detail+'。本地待发记录不代表已发送。', 'result':result}
+            return {'message':'测试已提交，请核对实际收信', 'result':result}
         raise ValueError('未知操作')
