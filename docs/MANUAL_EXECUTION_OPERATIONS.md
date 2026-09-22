@@ -53,10 +53,21 @@ export生成opening.json/events.json，可直接给现有 `python -m quant.execu
 
 尚未完成真实飞书双向联调、实盘策略选择与2分钟延迟验证、行情/停牌/涨跌停/权限的订单前检查、真实券商期初及日终对账、自动接入冻结策略订单、收盘调度、开机常驻部署。不得仅凭本轮测试开启真实操作。ETF与科创/创业板尚未纳入本版建议规则。
 
-## 本地保存 App ID / Secret（Windows）
+## 交互式接入向导（Windows）
 
-在项目根目录运行 `.\scripts\configure_feishu.ps1`，按提示输入App ID和Secret；Secret隐藏输入。同一命令可更新，留空保留原值；更换App ID时必须同时输入Secret。查看是否已配置：`.\scripts\configure_feishu.ps1 -Status`，不会显示密钥。
+在项目根目录运行：
 
-凭据以Windows当前用户DPAPI加密保存在 `configs/feishu.local.dpapi`，位于项目内并由Git忽略。同一Windows用户重启后仍能读取；换电脑或换运行账户需重新配置。它不是防范同一用户恶意程序的隔离机制。
+```powershell
+.\scripts\configure_feishu.ps1
+```
 
-飞书后台服务已自动读取本地凭据，无需每次设置环境变量。完整的FEISHU_APP_ID/FEISHU_APP_SECRET环境变量仍优先；只设置其中一个会报错，避免混用新旧凭据。更新后重启飞书服务生效。脚本仅保存凭据，不启用服务、不发消息，sender_id/chat_id和演练账户仍按上文配置。
+1. 输入App ID和Secret；Secret隐藏输入，已有同一应用可留空保留。
+2. 向导验证应用身份。按提示在飞书后台配置长连接、订阅`im.message.receive_v1`、开启消息接收权限并发布应用，再按回车。
+3. 等待显示“连接成功”和随机口令，再将口令发给机器人；群聊需 @机器人。
+4. 向导自动读取sender_id/chat_id，核对后输入`y`保存。失败、超时或取消不覆盖原配置，可重新运行。
+
+查看状态：`.\scripts\configure_feishu.ps1 -Status`。也可执行 `python -m quant.notify.feishu_setup`。配置状态不代表服务在线。
+
+凭据和绑定一起以当前Windows用户DPAPI加密保存到项目内 `configs/feishu.local.dpapi`，Git忽略。同一用户重启后可读取，换电脑或账户需重新配置。启动向导前清除FEISHU_APP_ID/FEISHU_APP_SECRET临时变量，避免服务优先读取旧环境凭据。
+
+向导不发送消息、不初始化假定余额、不启用交易。服务配置sender_id/chat_id都为空时，会自动读取加密绑定；显式配置仍优先，不能只填一个。初始化演练账户仍需将向导显示的两个ID传入init；已初始化账户不自动更换绑定。服务凭据必须与本地绑定属于同一应用，更新后重启服务。其他启动步骤见上文。

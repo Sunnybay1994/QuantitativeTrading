@@ -13,7 +13,8 @@ def test_encrypted_roundtrip_update_and_fresh_process(tmp_path):
     c.save_local("cli_test", "fake_secret_123", path)
     assert b"fake_secret_123" not in path.read_bytes()
     assert c.load_local(path)["app_secret"] == "fake_secret_123"
-    c.save_local("cli_new", "fake_new_456", path)
+    c.save_local("cli_new", "fake_new_456", path, binding={"sender_id": "ou_test", "chat_id": "oc_test"})
+    assert c.load_local(path)["binding"]["sender_id"] == "ou_test"
     code = "from pathlib import Path; from quant.notify.feishu_credentials import load_local; import sys; assert load_local(Path(sys.argv[1]))['app_secret']=='fake_new_456'"
     subprocess.run([sys.executable, "-c", code, str(path)], check=True)
     path.write_bytes(b"corrupt")

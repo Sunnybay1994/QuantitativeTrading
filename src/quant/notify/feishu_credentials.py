@@ -53,10 +53,13 @@ def load_local(path=None):
         raise RuntimeError("Cannot read local Feishu credentials; run setup again as the same Windows user") from None
 
 
-def save_local(app_id, app_secret, path=None):
+def save_local(app_id, app_secret, path=None, *, binding=None):
     if not app_id.strip() or not app_secret.strip():
         raise ValueError("App ID and Secret must not be empty")
-    encrypted = protect(json.dumps(dict(app_id=app_id.strip(), app_secret=app_secret.strip())).encode())
+    row = dict(app_id=app_id.strip(), app_secret=app_secret.strip())
+    if binding:
+        row["binding"] = binding
+    encrypted = protect(json.dumps(row).encode())
     path = path or credential_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix="feishu-", suffix=".tmp", dir=path.parent)

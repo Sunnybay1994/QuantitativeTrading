@@ -39,6 +39,18 @@ def load_settings(path):
         raise ValueError('enabled must be a boolean')
     if config.get('broker') != '银河证券' or config.get('planned_capital') != 100000:
         raise ValueError('Require the agreed Galaxy 100k rehearsal profile')
+    from quant.notify.feishu_credentials import load_local
+    if config.get('enabled') and (not config.get('sender_id') or not config.get('chat_id')):
+        # Explicit config always wins as a pair. Never mix identities.
+        if config.get('sender_id') or config.get('chat_id'):
+            raise ValueError('Configure both sender_id and chat_id, or leave both empty')
+        local = load_local()
+        binding = (local or {}).get('binding', {})
+        if binding:
+            from quant.notify.feishu_credentials import credentials
+            if credentials() != (local['app_id'], local['app_secret']):
+                raise ValueError('Local binding belongs to different application credentials')
+            config.update(sender_id=binding['sender_id'], chat_id=binding['chat_id'])
     return config
 
 

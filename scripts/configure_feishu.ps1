@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 $env:PYTHONPATH = Join-Path $workspace 'src'
 $env:PYTHONUTF8 = '1'
-$argsList = @('-m', 'quant.notify.feishu_credentials')
+$argsList = @('-m', 'quant.notify.feishu_setup')
 if ($Status) { $argsList += '--status' }
 & 'D:\Miniforge3\python.exe' @argsList
 exit $LASTEXITCODE

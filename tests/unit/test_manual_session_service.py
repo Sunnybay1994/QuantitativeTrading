@@ -100,6 +100,8 @@ def test_enabled_requires_initialized_database_before_network(tmp_path, prohibit
 
 
 def test_enabled_requires_credentials_before_network(tmp_path, monkeypatch, prohibit_network):
+    from quant.notify import feishu_credentials
+    monkeypatch.setattr(feishu_credentials, 'load_local', lambda: None)
     folder = tmp_path / 'demo'
     demo(folder)
     config = write_config(tmp_path, CONFIG.replace('enabled = false', 'enabled = true'))

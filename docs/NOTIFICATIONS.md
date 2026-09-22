@@ -108,10 +108,21 @@ O001等必须是本账户已登记建议；成交数量为本次增量。漏回�
 
 查看命令输出的每个`channel/ok/detail`，并在目标端核实。统一webhook接口目前只检查HTTP状态，未校验平台响应体业务码；HTTP成功不保证平台接受或用户收到。所有通道失败时也会写入`outbox`并可能返回退出码0，不能仅凭退出码判定送达；部分通道成功时，不会为其余失败通道自动补发。飞书双向适配另外校验业务码和message_id，但平台接受仍不等于用户已读，发送结果不明时不会盲目重发。
 
-## 本地保存 App ID / Secret（Windows）
+## 交互式接入向导（Windows）
 
-在项目根目录运行 `.\scripts\configure_feishu.ps1`，按提示输入App ID和Secret；Secret隐藏输入。同一命令可更新，留空保留原值；更换App ID时必须同时输入Secret。查看是否已配置：`.\scripts\configure_feishu.ps1 -Status`，不会显示密钥。
+在项目根目录运行：
 
-凭据以Windows当前用户DPAPI加密保存在 `configs/feishu.local.dpapi`，位于项目内并由Git忽略。同一Windows用户重启后仍能读取；换电脑或换运行账户需重新配置。它不是防范同一用户恶意程序的隔离机制。
+```powershell
+.\scripts\configure_feishu.ps1
+```
 
-飞书后台服务已自动读取本地凭据，无需每次设置环境变量。完整的FEISHU_APP_ID/FEISHU_APP_SECRET环境变量仍优先；只设置其中一个会报错，避免混用新旧凭据。更新后重启飞书服务生效。脚本仅保存凭据，不启用服务、不发消息，sender_id/chat_id和演练账户仍按上文配置。
+1. 输入App ID和Secret；Secret隐藏输入，已有同一应用可留空保留。
+2. 向导验证应用身份。按提示在飞书后台配置长连接、订阅`im.message.receive_v1`、开启消息接收权限并发布应用，再按回车。
+3. 等待显示“连接成功”和随机口令，再将口令发给机器人；群聊需 @机器人。
+4. 向导自动读取sender_id/chat_id，核对后输入`y`保存。失败、超时或取消不覆盖原配置，可重新运行。
+
+查看状态：`.\scripts\configure_feishu.ps1 -Status`。也可执行 `python -m quant.notify.feishu_setup`。配置状态不代表服务在线。
+
+凭据和绑定一起以当前Windows用户DPAPI加密保存到项目内 `configs/feishu.local.dpapi`，Git忽略。同一用户重启后可读取，换电脑或账户需重新配置。启动向导前清除FEISHU_APP_ID/FEISHU_APP_SECRET临时变量，避免服务优先读取旧环境凭据。
+
+向导不发送消息、不初始化假定余额、不启用交易。服务配置sender_id/chat_id都为空时，会自动读取加密绑定；显式配置仍优先，不能只填一个。初始化演练账户仍需将向导显示的两个ID传入init；已初始化账户不自动更换绑定。服务凭据必须与本地绑定属于同一应用，更新后重启服务。其他启动步骤见上文。
