@@ -17,6 +17,8 @@ from quant.llm.budget import month_spend_usd, remaining_budget_usd
 _DELEGATE: dict[tuple[str, str], str] = {
     ("data", "refresh"): "quant.data.refresh",
     ("data", "realtime"): "quant.data.realtime",
+    ("data", "latency"): "quant.data.market_latency",
+    ("research", "intraday-afternoon"): "quant.research.intraday_afternoon",
     ("data", "minutes"): "quant.data.recent_minutes",
     ("data", "minute-history"): "quant.data.minute_history",
     ("factors", "compute"): "quant.factors.compute",
@@ -94,13 +96,13 @@ def main(argv: list[str] | None = None) -> int:
     intel.add_argument("--no-extract", action="store_true")
 
     data = sub.add_parser("data", help="数据刷新")
-    data.add_argument("command", choices=["refresh", "realtime", "minutes", "minute-history"])
+    data.add_argument("command", choices=["refresh", "realtime", "minutes", "minute-history", "latency"])
     factors = sub.add_parser("factors", help="因子计算")
     factors.add_argument("command", choices=["compute"])
     research = sub.add_parser("research", help="投研流水线")
     research.add_argument("command", choices=[
         "daily", "nightly", "mining", "cycle", "gp", "feedback", "recovery-audit",
-        "reversal-readiness", "batch-diagnosis", "predictive-inputs",
+        "reversal-readiness", "batch-diagnosis", "predictive-inputs", "intraday-afternoon",
     ])
     paper = sub.add_parser("paper", help="模拟盘与人工订单")
     paper.add_argument("command", choices=["q10", "orders", "manual"])

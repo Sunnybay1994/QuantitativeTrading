@@ -23,6 +23,8 @@ python -m quant gpu-check
 | 排行榜 | `python -m quant report leaderboard` |
 | 本地投研看板 | `python -m quant report dashboard --port 8768`；已安装登录任务时自动恢复，不要重复启动 |
 | 挖掘状态 | `.\scripts\show_factor_mining_status.ps1` |
+| 盘中行情延时小样本复测 | `python -m quant data latency`；只读请求，结果在 `artifacts/realtime/latency_*/`，分开显示冷启动、热调用和供应商时间戳年龄 |
+| 分钟策略开发回放 | `python -m quant research intraday-afternoon --output artifacts/research/<新目录>`；冻结配置、输入哈希、逐日质量及三档成本/人工延迟回放，不发实盘订单 |
 
 计划任务安装：`.\scripts\install_daily_observation.ps1`、`.\scripts\register_continuous_mining.ps1`、`.\scripts\register_research_dashboard.ps1`。电脑须开机且用户登录；看板地址 `http://127.0.0.1:8768`。
 
