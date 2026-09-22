@@ -1,0 +1,11 @@
+auto_trade = false
+source_config = "configs/research/b16_cross_asset_inverse_volatility60_20260909.toml"
+start = 2024-01-02
+end = 2026-09-08
+capital = 100000
+cost_multipliers = [0.5, 1.0, 2.0]
+fixed_rule = "Freeze inverse-volatility weights computed from the last completed month before start; rebalance monthly to this fixed vector"
+dynamic_rule = "Unchanged B16 60-session inverse volatility; monthly close signal, next open execution"
+classification = "RESEARCH_ONLY"
+# One explanatory rule comparison, not a Q10/ETF portfolio search or new OOS test.
+# Preserve original B16 rejection and B20 November 30 forward endpoint.

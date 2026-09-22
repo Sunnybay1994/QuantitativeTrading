@@ -146,3 +146,5 @@ N4增量检验仅向分组与回归传递键、标签、候选及已准入控制
 状态 `artifacts/research/minute_pipeline/status.json`；汇总 `report.md`，每个策略有独立冻结输入、质量CSV和逐日回放。`complete`只表示运行完成，另看 `data_stale`、连续有效交易日及 `attention`。缺失不填零，不自动调参、晋级、发送交易信号或改变模拟账户。连续数据、收益指数基准、退出容量与独立前向仍须验证。分钟研究失败记录状态和日志，不阻断原因子挖掘；补数失败仍保留原退出码。
 
 `python -m quant research mechanisms --output artifacts/research/<新目录>` 消费已受理压力反转电池与B13/B16/B48冻结产物，复算逐折交易换手、共同日期相关性和B20最新账户对账。保留原准入判定；扣除初始建仓的换手仅作解释，不拼接折间收益。分钟自动报告另输出 `quality_issues.csv`、`diagnosis.json`，定位非正成交量、量额隐含价、时段与跨频率问题，并按人工延迟统计退出容量警告；不自动放宽校验。
+
+`python -m quant research allocation-attribution --output <新目录>` 执行已冻结的B16动态规则与起点前固定权重连续账户对照（10万元、三档成本）；`python -m quant research mechanism-detail --allocation <该回放目录> --output <新目录>` 输出反转失效拆解、财务机制已保存前向覆盖、同日期Q10降仓解释性基线及年/月指标。降仓基线不是合并订单账户，不计未模拟的再平衡成本；历史对照不改原B16拒绝和B20前向终点。
