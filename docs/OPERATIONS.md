@@ -13,6 +13,14 @@ python -m quant gpu-check
 
 ## 日常命令
 
+B16保存报价撮合核心：`python -m quant.execution.etf_quote_paper --input <研究输入.json> --output <新目录>`。
+输入须声明 `auto_trade=false` 和 `classification=RESEARCH_ONLY`，包含期初账、固定委托、
+带供应商/接收时刻的盘口、交易日历及不早于撤单截止的 `as_of`。输出保存输入、模拟成交、
+余单及现金持仓；只消费提交后新鲜报价，盘口容量上限1%，同一委托累计最低佣金。
+这是模型撮合，不提交真实委托，不代表已接入实时采集或B16定时执行；收盘净值继续使用
+既有 `manual_nav` 核验行情和公司行动。股票ETF默认T+1；账本显式配置的黄金/国债ETF
+支持T+0，不把所有ETF或港股统一视为同一规则。
+
 市场状态已接到现有日更成功节点，只测算上一完整交易日，结果入口为
 `artifacts/daily/market_context/latest.json`，包含日期、覆盖率、状态和报告路径。
 重复执行校验并复用已完成产物；失败尝试保留。指标计算失败会出现在日更返回值

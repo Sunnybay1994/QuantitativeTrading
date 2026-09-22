@@ -43,9 +43,14 @@ def import_events(*, state: dict[str, Any], events: list[dict[str, Any]],
     """Return a new cash/share book; repeated IDs are no-op, conflicting IDs fail."""
     if tuple(sorted(set(sessions))) != sessions:
         raise ValueError('Require a sorted unique exchange calendar')
+    t0 = state.get('t_plus_zero_symbols', [])
+    if not isinstance(t0, list) or not set(t0) <= {'518880.SH', '511010.SH'}:
+        raise ValueError('Unverified T+0 instrument')
     book: dict[str, Any] = {key: copy.deepcopy(state.get(key, default)) for key, default in (
         ('date', None), ('cash', 0.0), ('holdings', {}), ('receivables', []),
         ('restricted_shares', []), ('imported_events', {}), ('last_event_timestamp', None))}
+    if t0:
+        book['t_plus_zero_symbols'] = list(t0)
     opening_date = dt.date.fromisoformat(book['date'])
     if not math.isfinite(book['cash']) or book['cash'] < 0:
         raise ValueError('Invalid opening cash')
@@ -82,12 +87,13 @@ def import_events(*, state: dict[str, Any], events: list[dict[str, Any]],
                 remaining = held - quantity
             else:
                 index = sessions.index(day)
-                if index + 1 >= len(sessions):
+                if symbol not in t0 and index + 1 >= len(sessions):
                     raise ValueError('Missing next session for T+1 availability')
                 book['cash'] -= notional + fee
                 remaining = held + quantity
-                book['restricted_shares'].append({'symbol': symbol, 'quantity': quantity,
-                                                 'list_date': str(sessions[index+1])})
+                if symbol not in t0:
+                    book['restricted_shares'].append({'symbol': symbol, 'quantity': quantity,
+                                                     'list_date': str(sessions[index+1])})
             if remaining:
                 book['holdings'][symbol] = {'quantity': remaining, 'mark_price': event['price']}
             else:

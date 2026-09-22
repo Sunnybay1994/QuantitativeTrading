@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import tomllib
 from pathlib import Path
@@ -111,10 +112,17 @@ def check_definition(data_root: Path, panel_id: str, definition: dict[str, Any])
     path = data_root / "factors" / panel_id / "definition.json"
     if path.exists():
         previous = json.loads(path.read_text(encoding="utf-8"))
-        # Run provenance can change when an identical expression is rediscovered.
-        # Keep the original record; only source_ref is excluded from compatibility.
-        if ({key: value for key, value in previous.items() if key != "source_ref"}
-                != {key: value for key, value in definition.items() if key != "source_ref"}):
+        # GP family describes the search terminal pool, not the computed column.
+        # Permit that provenance change only for a verified content-addressed GP ID.
+        ignored = {'source_ref'}
+        expr = definition.get('expr', '')
+        expected_id = 'ngp_' + hashlib.sha256(expr.encode()).hexdigest()[:16]
+        if (panel_id == expected_id and previous.get('expr') == expr
+                and all(str(row.get('family','')).startswith('nightly_')
+                        for row in (previous,definition))):
+            ignored.add('family')
+        if ({key: value for key, value in previous.items() if key not in ignored}
+                != {key: value for key, value in definition.items() if key not in ignored}):
             raise ValueError(f"Definition changed for {panel_id}; use a new factor ID")
     else:
         path.parent.mkdir(parents=True, exist_ok=True)
