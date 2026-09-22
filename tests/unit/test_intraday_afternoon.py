@@ -1,6 +1,6 @@
 import datetime as dt
 
-from quant.research.intraday_afternoon import execution_bar, signal, valid_day
+from quant.research.intraday_afternoon import execution_bar, signal, valid_day, quality_issues
 
 
 def test_signal_cannot_read_future_bars():
@@ -29,7 +29,12 @@ def test_missing_duplicate_or_invalid_sessions_rejected():
             start=dt.datetime(2026,9,21,hour,minute)
             rows.append(dict(bar_start=start,bar_end=start+dt.timedelta(minutes=5),open=10,high=11,low=9,close=10,volume=100,amount=1000))
     assert valid_day(rows,5)
+    assert quality_issues(rows,5,'2026-09-21')==[]
     assert not valid_day(rows[:-1],5)
     assert not valid_day(rows+[rows[-1]],5)
     rows[0]['amount']=2000
     assert not valid_day(rows,5)
+    issues=quality_issues(rows,5,'2026-09-21')
+    assert [r['reason'] for r in issues]==['amount_implied_price_outside_bar']
+    rows[1]['volume']=0
+    assert 'nonpositive_volume' in [r['reason'] for r in quality_issues(rows,5,'2026-09-21')]

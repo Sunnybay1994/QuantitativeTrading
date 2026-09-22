@@ -6,6 +6,7 @@ import json
 import math
 import shutil
 import tomllib
+from collections import Counter
 from pathlib import Path
 
 import polars as pl
@@ -51,6 +52,31 @@ def matched(five, one):
     return True
 
 
+def quality_issues(rows, minutes, date):
+    """Explain the existing rejection rules without relaxing any threshold."""
+    issues=[]
+    expected = [(h,m) for h in (9,10,11,13,14) for m in range(0,60,minutes)
+                if (h != 9 or m >= 30) and (h != 11 or m < 30)]
+    if [(r['bar_start'].hour,r['bar_start'].minute) for r in rows]!=expected:
+        issues.append(dict(date=str(date),frequency=f'{minutes}m',time='',reason='missing_duplicate_or_off_session',value=len(rows)))
+    for r in rows:
+        reasons=[]
+        if r['bar_end']-r['bar_start']!=dt.timedelta(minutes=minutes):
+            reasons.append(('bar_duration',None))
+        finite=all(r[k] is not None and math.isfinite(r[k]) for k in ('open','high','low','close','volume','amount'))
+        if not finite:
+            reasons.append(('nonfinite',None))
+        else:
+            if not 0<r['low']<=min(r['open'],r['close'])<=max(r['open'],r['close'])<=r['high']:
+                reasons.append(('ohlc_invalid',None))
+            if r['volume']<=0:
+                reasons.append(('nonpositive_volume',r['volume']))
+            elif not r['low']-.0011<=r['amount']/r['volume']<=r['high']+.0011:
+                reasons.append(('amount_implied_price_outside_bar',r['amount']/r['volume']))
+        issues.extend(dict(date=str(date),frequency=f'{minutes}m',time=str(r['bar_start']),reason=reason,value=value) for reason,value in reasons)
+    return issues
+
+
 def run(config, output, *, data_root=Path('data')):
     cfg = tomllib.loads(config.read_text(encoding='utf-8'))
     if cfg['auto_trade'] is not False or cfg['capital'] not in (100000,1000000):
@@ -69,11 +95,15 @@ def run(config, output, *, data_root=Path('data')):
     all_dates = sorted(set(by_frequency['1m'])|set(by_frequency['5m']))
     if not all_dates:
         raise ValueError('No minute history available')
-    valid, rejected, quality = [], [], []
+    valid, rejected, quality, issues = [], [], [], []
     for date in all_dates:
         one,five = by_frequency['1m'].get(date,[]),by_frequency['5m'].get(date,[])
         checks = dict(one_minute_valid=valid_day(one,1),five_minute_valid=valid_day(five,5),cross_frequency_matched=matched(five,one))
         quality.append(dict(date=str(date),**checks))
+        issues.extend(quality_issues(one,1,date))
+        issues.extend(quality_issues(five,5,date))
+        if not checks['cross_frequency_matched']:
+            issues.append(dict(date=str(date),frequency='1m_vs_5m',time='',reason='cross_frequency_price_volume_mismatch',value=None))
         if all(checks.values()):
             valid.append(date)
         else:
@@ -120,7 +150,19 @@ def run(config, output, *, data_root=Path('data')):
     if records:
         pl.DataFrame(records,infer_schema_length=None).write_csv(output/'daily_replay.csv')
     pl.DataFrame(quality).write_csv(output/'daily_quality.csv')
+    if issues:
+        pl.DataFrame(issues,infer_schema_length=None).write_csv(output/'quality_issues.csv')
+    diagnosis=dict(
+        input_days=len(all_dates),valid_days=len(valid),
+        issue_counts=dict(Counter(r['reason'] for r in issues)),
+        affected_days={reason:len({r['date'] for r in issues if r['reason']==reason}) for reason in sorted({r['reason'] for r in issues})},
+        execution=[dict(delay=delay,signals=sum(r['signal'] for r in records if r['cost']==1 and r['manual_delay_seconds']==delay),
+                        trades=sum(r['quantity']>0 for r in records if r['cost']==1 and r['manual_delay_seconds']==delay),
+                        exit_capacity_flags=sum(bool(r.get('exit_capacity_unverified')) for r in records if r['cost']==1 and r['manual_delay_seconds']==delay)) for delay in cfg['manual_delays_seconds']],
+        interpretation='Counts may overlap. Failed bars remain excluded. Suspected rounding or no-trade bars are not automatically repaired.')
+    (output/'diagnosis.json').write_text(json.dumps(diagnosis,ensure_ascii=False,indent=2),encoding='utf-8')
     result = dict(classification='RESEARCH_ONLY',auto_trade=False,description=cfg['description'],valid_days=len(valid),excluded_present_days=rejected,missing_or_invalid_calendar_days=missing,summaries=summaries,exit_capacity_unverified=sum(bool(r.get('exit_capacity_unverified')) for r in records),limitations=['Observed valid sessions only; gaps are not zero-return days.', 'Historical development replay, not independent out-of-sample evidence.', 'No total-return benchmark validated; excess/annualized Sharpe/admission not asserted.', 'Entry participation checked ex post; exit capacity flags invalidate executability, never retroactively cancel entries.'])
+    result['diagnosis']=diagnosis
     (output/'report.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
     (output/'report.md').write_text('# 分钟策略开发回放\n\n'+cfg['description']+'\n\n```json\n'+json.dumps(result,ensure_ascii=False,indent=2)+'\n```\n',encoding='utf-8')
     print(json.dumps(result,ensure_ascii=False))
