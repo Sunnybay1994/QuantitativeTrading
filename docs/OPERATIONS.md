@@ -13,6 +13,12 @@ python -m quant gpu-check
 
 ## 日常命令
 
+市场状态已接到现有日更成功节点，只测算上一完整交易日，结果入口为
+`artifacts/daily/market_context/latest.json`，包含日期、覆盖率、状态和报告路径。
+重复执行校验并复用已完成产物；失败尝试保留。指标计算失败会出现在日更返回值
+`market_context` 中，不撤销既有账户产物，不修改仓位。此处是历史收盘状态接入，
+不是完整盘中情绪服务，也没有放开当日收盘数据的发布时间要求。
+
 分钟候选电池通过 `python -m quant research minutes` 执行，搜索定义在
 `configs/research/minute_search_v1.toml`。按预注册机制与已核实T+0的标的生成候选，
 保存全部候选的三档成本、延迟和最不利5分钟价格结果，不按历史排名自动晋级。

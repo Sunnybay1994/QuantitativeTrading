@@ -118,6 +118,14 @@ def run(
                 ).returncode
             s0_status.write_text(json.dumps({"date": date, "exit_code": s0_code}), encoding="utf-8")
     complete = observation_code == 0 and value.get("status") == "complete" and s0_code == 0
+    market_context = {"status": "skipped", "reason": "Daily observation not complete"}
+    if complete:
+        try:
+            from quant.research.daily_market_context import run as market_context_run
+            market_context = market_context_run(data_root=Path(settings['data_root']), now=clock)
+        except Exception as exc:
+            # Context failure is visible but must not invalidate existing account output.
+            market_context = {"status": "failed", "error": type(exc).__name__+": "+str(exc)}
     return {
         "status": "complete" if complete else "incomplete",
         "as_of": date,
@@ -125,6 +133,7 @@ def run(
         "observation_exit_code": observation_code,
         "s0_exit_code": s0_code,
         "requires_review": value.get("requires_review", True),
+        "market_context": market_context,
     }
 
 
