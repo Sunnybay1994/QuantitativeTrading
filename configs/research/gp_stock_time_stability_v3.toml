@@ -1,0 +1,26 @@
+# One new objective, not a new seed retry of a previously rejected battery.
+version = "stock_time_stability_v3"
+registered_on = 2026-09-23
+objective = "Address weak IC and yearly consistency in completed batches 22-26; require positive predictive signal in all three stock cohorts and both chronological training halves"
+training_end = 2025-12-31
+training_months = 72
+sample_groups = 3
+symbols_per_group = 300
+sample_seed = 20260913
+minimum_symbols_per_month = 100
+minimum_paired_coverage = 0.8
+minimum_valid_months_per_group = 48
+minimum_valid_months_per_block = 24
+maximum_control_correlation = 0.7
+complexity_penalty = 0.0005
+maximum_batches = 1
+population_size = 200
+generations = 30
+max_depth = 5
+direction = "One sign from equal-group full training mean IC, fixed across all six blocks"
+fitness = "minimum directional IC across three stock groups x two fixed calendar halves minus node complexity; correlation is a ceiling, not a scalar penalty"
+stop = "One battery, report all failed trials; no seed or parameter grid to rescue failure"
+admission = "Unchanged full-history battery, incremental evidence and all three cost tiers"
+validation_note = "Every block trains selection. All already observed history is development evidence, not independent validation"
+forward_rule = "Only observations after candidate IDs and direction freeze count as forward evidence"
+auto_trade = false

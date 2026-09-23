@@ -20,7 +20,10 @@ def search_objective_components(candidate: dict) -> dict:
     objective = candidate.get('search_objective', 'pooled_mean_ic_v1')
     correlation = finite(candidate.get('maximum_rank_correlation'))
     predictive = objective == 'predictive_priority_v2'
-    if predictive:
+    stable = objective == 'stock_time_stability_v3'
+    if stable:
+        primary = finite(candidate.get('worst_stock_time_mean_ic'))
+    elif predictive:
         primary = finite(candidate.get('selection_primary'))
     elif objective == 'cross_stock_min_ic_v1':
         primary = finite(candidate.get('worst_directional_mean_ic'))
@@ -28,13 +31,13 @@ def search_objective_components(candidate: dict) -> dict:
         pooled = finite((candidate.get('train') or {}).get('mean_ic'))
         primary = abs(pooled) if pooled is not None else None
     fitness = None if predictive else finite(candidate.get('fitness'))
-    penalty = .5*correlation if not predictive and correlation is not None else None
+    penalty = (0. if stable else .5*correlation) if not predictive and correlation is not None else None
     return {'search_objective': objective,
-            'primary_metric': ('worst_directional_group_mean_ic' if predictive or objective == 'cross_stock_min_ic_v1'
+            'primary_metric': ('worst_directional_stock_time_mean_ic' if stable else 'worst_directional_group_mean_ic' if predictive or objective == 'cross_stock_min_ic_v1'
                                else 'absolute_pooled_mean_ic'),
             'signal_component': primary, 'selection_primary': primary,
             'maximum_rank_correlation': correlation,
-            'correlation_role': 'secondary_within_registered_ic_band' if predictive else 'scalar_fitness_penalty',
+            'correlation_role': 'training_redundancy_ceiling' if stable else 'secondary_within_registered_ic_band' if predictive else 'scalar_fitness_penalty',
             'selection_eligible': candidate.get('selection_eligible') if predictive else None,
             'selection_reasons': candidate.get('selection_reasons') if predictive else None,
             'fitness': fitness, 'correlation_penalty': penalty,
