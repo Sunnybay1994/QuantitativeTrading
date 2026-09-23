@@ -3,7 +3,7 @@
   const el = id => document.getElementById(id);
   const escape = x => String(x ?? '—').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const names = {futu:'Futu',tdx:'通达信',tushare:'Tushare',yahoo:'Yahoo',akshare:'AKShare',akshare_sina:'AKShare · 新浪',akshare_eastmoney:'AKShare · 东财'};
-  const taskNames = {'QuantitativeTrading-MinutesRecent':'全市场近期分钟','QuantitativeTrading-MinutesHistory':'Futu 长期历史','QuantitativeTrading-DailyObservation':'原有日更','QuantitativeTrading-RealtimeQuotes':'盘中行情'};
+  const taskNames = {'QuantitativeTrading-BaostockHistory':'BaoStock 全市场 5 分钟','QuantitativeTrading-MinutesRecent':'全市场近期分钟','QuantitativeTrading-MinutesHistory':'Futu 长期历史','QuantitativeTrading-DailyObservation':'原有日更','QuantitativeTrading-RealtimeQuotes':'盘中行情'};
   const states = {Running:'运行中',Ready:'待机',Disabled:'已停用',Missing:'未安装',requested:'已提交',already_running:'已在运行',error:'未能启动'};
   let inventory = {}, page = 0, loading = false, tasksLoading = false;
   function filtered() {
@@ -31,6 +31,8 @@
     const runStates={running:'采集中',completed:'本轮结束',failed:'采集失败',paused:'已暂停'};
     el('dataProgress').textContent = `近期分钟：${runStates[r.status]||r.status||'状态未知'}，${r.completed??'—'} / ${r.universe_total??r.total??'—'} 标的，本轮新增/修订 ${r.changed_rows??'—'} 行；历史：${runStates[h.status]||h.status||'状态未知'}，本轮已保存 ${h.saved_partitions_this_run??0} 个年度分区${quota?'，额度已用 '+quota.used+' / 剩余 '+quota.remaining:''}${h.pause_reason?'，暂停原因 '+({quota_or_daily_budget:'额度或本轮预算',time_budget:'本轮时间预算'}[h.pause_reason]||h.pause_reason):''}。保存记录不等于进程存活，以任务状态为准。`;
     el('minuteDetailsTitle').textContent = `1 分钟标的列表 · 已补齐计划年份 ${inventory.plan_years_complete??'—'} 只`;
+    const b=c.baostock||{};
+    el('baoProgress').textContent=`BaoStock 全市场 5 分钟：${runStates[b.status]||b.status||'尚无记录'} · 名单 ${b.total_symbols??'—'} 只 · 本轮已检查 ${b.requests??0} 个标的年度 · 新增/修订 ${b.changed_rows??0} 行 · 错误 ${b.errors??0} · 当前 ${b.symbol||'—'} / ${b.year||'—'}。空返回与缺口单独留存，不代表历史完整。`;
     if(el('minuteDetails').open)drawList();
   }
   async function refresh(force=false) {

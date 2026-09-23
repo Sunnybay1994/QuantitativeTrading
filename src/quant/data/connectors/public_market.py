@@ -9,6 +9,9 @@ from unittest.mock import patch
 
 
 def _call(operation: str, symbols: list[str], source: str) -> list[dict]:
+    if operation == 'baostock_catalog':
+        from quant.data.connectors.baostock import BaostockConnector
+        return BaostockConnector().fetch_instruments('SH').to_dicts()
     import requests
 
     captured = []

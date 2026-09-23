@@ -152,7 +152,8 @@ def collection_status(root):
     recent = read(root/'artifacts/minute_refresh/status.json')
     history = read(root/'artifacts/minute_history/status.json')
     realtime = read(root/'artifacts/realtime/futu/status.json')
-    return dict(recent={k: recent.get(k) for k in ('status', 'stage', 'as_of', 'completed', 'total', 'universe_total', 'changed_rows', 'heartbeat', 'source_errors')},
+    return dict(baostock=read(root/'artifacts/baostock_history/status.json'),
+        recent={k: recent.get(k) for k in ('status', 'stage', 'as_of', 'completed', 'total', 'universe_total', 'changed_rows', 'heartbeat', 'source_errors')},
         history={**{k: history.get(k) for k in ('status', 'start', 'end', 'pending_symbols', 'pause_reason', 'quota_before', 'quota_after')},
                  'saved_partitions_this_run': len(history.get('results', [])), 'errors': len(history.get('errors', []))},
         realtime={k: realtime.get(k) for k in ('status', 'heartbeat', 'phase', 'primary_available')})

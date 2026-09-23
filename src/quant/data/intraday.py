@@ -76,6 +76,13 @@ def _complete_stock_dates(frame: pl.DataFrame) -> set[dt.date]:
 
 def _stock_job(args: tuple[str, str, str, list[dt.date]], *,
                start_date: dt.date | None = None) -> dict[str, Any]:
+    from quant.data.realtime import single_writer
+    with single_writer(Path(args[0])/'clean/bar_intraday/freq=5m/source=baostock'/f'symbol={args[1]}'/'writer.lock'):
+        return _stock_job_locked(args, start_date=start_date)
+
+
+def _stock_job_locked(args: tuple[str, str, str, list[dt.date]], *,
+                      start_date: dt.date | None = None) -> dict[str, Any]:
     data_root_text, symbol, end_text, expected_dates = args
     data_root, end = Path(data_root_text), dt.date.fromisoformat(end_text)
     directory = _directory(data_root, "baostock", symbol, "5m")
@@ -187,8 +194,8 @@ def refresh_intraday(*, data_root: Path, end: dt.date, stocks: bool = True,
     if stocks:
         from quant.data.refresh_stocks import read_stock_data
 
-        config = tomllib.loads(Path("configs/universe/stock_top800_5m.toml").read_text(encoding="utf-8"))
-        symbols = config["symbols"][:limit]
+        from quant.data.market_universe import bao_members
+        symbols = [row['symbol'] for row in bao_members(data_root)][:limit]
         daily = read_stock_data(data_root=data_root, config=Path("configs/data/refresh.toml"),
                                 table="bar_1d", start=stock_from or dt.date(2020, 1, 1), end=end, symbols=symbols)
         expected = {symbol: group["trade_date"].to_list() for (symbol,), group in

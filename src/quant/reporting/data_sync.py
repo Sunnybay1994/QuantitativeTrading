@@ -4,6 +4,7 @@ import subprocess
 import threading
 
 TASKS = {'recent': 'QuantitativeTrading-MinutesRecent', 'history': 'QuantitativeTrading-MinutesHistory',
+         'baostock': 'QuantitativeTrading-BaostockHistory',
          'daily': 'QuantitativeTrading-DailyObservation', 'realtime': 'QuantitativeTrading-RealtimeQuotes'}
 _lock = threading.Lock()
 
@@ -28,7 +29,7 @@ def task_status():
 def sync(mode):
     if mode != 'all' and mode not in TASKS:
         raise ValueError('Unsupported data synchronization action')
-    keys = ('daily', 'recent', 'history') if mode == 'all' else (mode,)
+    keys = ('daily', 'recent', 'history', 'baostock') if mode == 'all' else (mode,)
     names = ','.join("'"+TASKS[key]+"'" for key in keys)
     with _lock:
         rows = powershell(f'''$rows = @({names} | ForEach-Object {{

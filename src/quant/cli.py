@@ -28,6 +28,7 @@ _DELEGATE: dict[tuple[str, str], str] = {
     ("research", "etf-execution-stress"): "quant.research.etf_execution_stress",
     ("data", "minutes"): "quant.data.recent_minutes",
     ("data", "minute-history"): "quant.data.minute_history",
+    ("data", "baostock-history"): "quant.data.baostock_history",
     ("factors", "compute"): "quant.factors.compute",
     ("research", "daily"): "quant.research.scheduled_observation",
     ("research", "nightly"): "quant.research.nightly",
@@ -103,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
     intel.add_argument("--no-extract", action="store_true")
 
     data = sub.add_parser("data", help="数据刷新")
-    data.add_argument("command", choices=["refresh", "realtime", "minutes", "minute-history", "latency"])
+    data.add_argument("command", choices=["refresh", "realtime", "minutes", "minute-history", "baostock-history", "latency"])
     factors = sub.add_parser("factors", help="因子计算")
     factors.add_argument("command", choices=["compute"])
     research = sub.add_parser("research", help="投研流水线")
