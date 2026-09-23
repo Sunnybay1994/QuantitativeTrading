@@ -7,6 +7,7 @@ $arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -File "' + $script 
 if ($CheckOnlyTask) { $arguments += ' -CheckOnly' }
 $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument $arguments -WorkingDirectory $workspace
 $triggers = @(
+    New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At ([datetime]::Today.AddHours(8).AddMinutes(30))
     New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At ([datetime]::Today.AddHours(17).AddMinutes(30))
     New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At ([datetime]::Today.AddHours(21).AddMinutes(30))
 )
