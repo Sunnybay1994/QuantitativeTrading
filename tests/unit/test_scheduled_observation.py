@@ -38,6 +38,27 @@ def record(root, *, status="complete", rehearsal=False, saved_data=False):
 NOW = dt.datetime(2026, 9, 14, 21, 30, tzinfo=scheduled.SHANGHAI)
 
 
+def test_q10_early_trigger_defers_without_recomputing_or_false_failure(tmp_path,monkeypatch):
+    config=setup_config(tmp_path,monkeypatch)
+    config.write_text(config.read_text()+'\n[q10]\nconfig="q10.toml"\n')
+    def forbidden(*args,**kwargs):
+        raise AssertionError('Cannot start full observation before Q10 inputs are available')
+    monkeypatch.setattr(scheduled.subprocess,'run',forbidden)
+    result=scheduled.run(config=config,root=Path('records'),now=NOW.replace(hour=17))
+    assert result['status']=='deferred'
+    assert result['not_before'].endswith('21:00:00+08:00')
+    assert scheduled.completed_record(Path('records'),'2026-09-14') is None
+
+
+def test_q10_evening_trigger_can_complete(tmp_path,monkeypatch):
+    config=setup_config(tmp_path,monkeypatch)
+    config.write_text(config.read_text()+'\n[q10]\nconfig="q10.toml"\n')
+    root=Path('records')
+    record(root)
+    monkeypatch.setattr(scheduled.subprocess,'run',lambda *args,**kwargs:SimpleNamespace(returncode=0))
+    assert scheduled.run(config=config,root=root,now=NOW)['status']=='complete'
+
+
 def test_probe_does_not_run_calendar_or_subprocess(tmp_path, monkeypatch):
     config = setup_config(tmp_path, monkeypatch)
 

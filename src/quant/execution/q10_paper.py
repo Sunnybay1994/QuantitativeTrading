@@ -16,6 +16,7 @@ from quant.execution.stock_paper import (
 from quant.portfolio.turnover_budget import budget_targets
 
 DEFAULT_CONFIG = Path('configs/paper/q10_sue_v2_20260913.toml')
+EXECUTION_READY_HOUR = 21
 
 
 def signal_targets(scores: pl.DataFrame, state: dict, following: dt.date) -> pl.DataFrame:
@@ -62,7 +63,7 @@ def run(*, config_path: Path = DEFAULT_CONFIG, data_root: Path = Path('data'),
     if paper['auto_trade'] is not False or end > dt.datetime.now(SHANGHAI).date():
         raise ValueError('Paper only; no future snapshots')
     clock = dt.datetime.now(SHANGHAI)
-    if end == clock.date() and end != paper['inception_date'] and clock.hour < 21:
+    if end == clock.date() and end != paper['inception_date'] and clock.hour < EXECUTION_READY_HOUR:
         raise ValueError('Wait for completed daily execution inputs after 21:00 Shanghai')
     assessment = json.loads(Path(config['research']['assessment']).read_text(encoding='utf-8'))['assessments']['budgeted']
     if assessment['conclusion'] != 'PAPER_CANDIDATE' or not all(assessment['checks'].values()):

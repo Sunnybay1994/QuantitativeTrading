@@ -63,6 +63,16 @@ def run(
     if end != clock.date():
         return {"status": "skipped", "reason": "No completed exchange session today"}
     date = str(end)
+    if settings.get('q10'):
+        from quant.execution.q10_paper import EXECUTION_READY_HOUR
+        if clock.hour < EXECUTION_READY_HOUR:
+            from quant.data.realtime_store import atomic_json
+            result = dict(status='deferred', as_of=date,
+                          reason='Q10 requires completed same-session execution inputs; full observation waits for the evening trigger',
+                          not_before=clock.replace(hour=EXECUTION_READY_HOUR,minute=0,second=0,microsecond=0).isoformat(),
+                          next_scheduled_run='21:30 Asia/Shanghai', auto_trade=False)
+            atomic_json(root / f'{date}_waiting_inputs.json', result)
+            return result
     record = completed_record(root, date)
     observation_code = 0
     if record is None:

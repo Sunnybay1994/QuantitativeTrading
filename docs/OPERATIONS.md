@@ -13,6 +13,11 @@ python -m quant gpu-check
 
 ## 日常命令
 
+含 Q10 的完整日更与其数据可得时间保持一致：21:00 前的触发只记录
+`deferred` 和最早可运行时刻，不启动整套日更、不误报失败；由既有21:30触发执行。
+因此该配置下17:30不再生成全套模型/账户日更。独立数据更新任务不受影响。
+历史失败记录不改写，等待状态不算完成；21:00后仍检查当日执行输入是否完整。
+
 B16保存报价撮合核心：`python -m quant.execution.etf_quote_paper --input <研究输入.json> --output <新目录>`。
 输入须声明 `auto_trade=false` 和 `classification=RESEARCH_ONLY`，包含期初账、固定委托、
 带供应商/接收时刻的盘口、交易日历及不早于撤单截止的 `as_of`。输出保存输入、模拟成交、
