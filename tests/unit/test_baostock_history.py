@@ -36,3 +36,26 @@ def test_universe_keeps_historical_names_and_ignores_research_pool(tmp_path, mon
     monkeypatch.setattr(PublicMarket, 'fetch', lambda *args: [
         {'code': 'sh.600001', 'code_name': 'old', 'ipoDate': '19990101', 'outDate': '2020-01-03'}])
     assert {m['symbol'] for m in market_universe.bao_members(tmp_path)} == {'600001.SH', '688999.SH'}
+
+
+def test_source_outage_stops_after_five_errors_and_preserves_retry_queue(tmp_path, monkeypatch):
+    import polars as pl
+    from quant.data import baostock_history as history, refresh, refresh_stocks
+    monkeypatch.setattr(history, 'bao_members', lambda root: [
+        {'symbol': f'{i:06d}.SZ', 'list_date': '20260101'} for i in range(10)])
+    monkeypatch.setattr(refresh, 'latest_session', lambda **kwargs: dt.date(2026, 9, 23))
+    monkeypatch.setattr(refresh_stocks, 'read_stock_data', lambda **kwargs: pl.DataFrame(
+        schema={'symbol': pl.String, 'trade_date': pl.Date, 'volume': pl.Float64}))
+    def unavailable(*args):
+        raise ConnectionError('source unavailable')
+    monkeypatch.setattr(history, 'capture', unavailable)
+    monkeypatch.setattr(history.time, 'sleep', lambda seconds: None)
+    result = history.run(root=tmp_path/'data', output=tmp_path/'out')
+    assert result['pause_reason'] == 'consecutive_source_errors'
+    assert result['requests'] == result['errors'] == 5
+    checkpoints = list((tmp_path/'out/checkpoints').glob('*/*.json'))
+    assert len(checkpoints) == 5
+    import json
+    for path in checkpoints:
+        saved = json.loads(path.read_text())
+        assert saved['status'] == 'error' and saved['retry_after']

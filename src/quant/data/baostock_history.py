@@ -62,6 +62,7 @@ def run(root=Path('data'), output=Path('artifacts/baostock_history'), max_second
             state['heartbeat'] = dt.datetime.now(TZ).isoformat()
             atomic_json(output/'status.json', state)
         publish()
+        consecutive_errors = 0
         # First broaden current-year coverage, then walk backwards to each listing.
         # Past empty/partial responses have a cooldown, never a completed marker.
         for year in range(end.year, 1989, -1):
@@ -101,6 +102,12 @@ def run(root=Path('data'), output=Path('artifacts/baostock_history'), max_second
                 atomic_json(checkpoint, result)
                 state['requests'] += 1
                 state['changed_rows'] += result['changed_rows']
+                consecutive_errors = consecutive_errors + 1 if result['status'] == 'error' else 0
+                if consecutive_errors >= 5:
+                    state.update(status='paused', pause_reason='consecutive_source_errors',
+                                 consecutive_errors=consecutive_errors)
+                    publish()
+                    return state
                 publish()
                 time.sleep(0.3)
         state['status'] = 'pass_finished'  # Not a claim that every source returned complete data.
