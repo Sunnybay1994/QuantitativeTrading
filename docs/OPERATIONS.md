@@ -38,7 +38,9 @@ B16保存报价撮合核心：`python -m quant.execution.etf_quote_paper --input
 
 `python -m quant.research.market_state_adaptation --output <新目录>` 只读冻结Q10、
 压力反转、ETF固定/动态账户，输出新流动性/情绪等滞后状态下的年度切片、完整连续
-事件、现金/交易额/费用、市场及等权减大盘暴露代理，并复用Q7月度增量IC。
+事件、现金/交易额/费用、市场beta，并复用Q7月度增量IC。
+首次持仓由原持仓与BUY成交交叉确认，剔除其前现金期；之后现金保留，纯空仓
+事件标不适用。规模代理无已核实收益指数时留空，禁止用低仓位整手账户替代。
 不重跑策略、不按状态挑赢家；固定组合净订单回放及全市场实时字段仍须另行完成。
 
 分钟候选电池通过 `python -m quant research minutes` 执行，搜索定义在
