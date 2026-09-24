@@ -4,9 +4,14 @@ continuous_root = "artifacts/research/continuous"
 sharpe_objective = 1.5
 risk_free_sensitivity = [0.0, 0.02]
 representative_account_cny = 100000
+personal_account_experiment = "configs/research/personal_top5_fee1_v1.toml"
+personal_account_commission_min_cny = 1.0
+personal_account_target_holdings = 5
+# User instruction 2026-09-24: applies to new personal-account research only;
+# existing frozen batteries and observation accounts retain their input identity.
 maximum_account_validations = 2
 allowed_account_capitals_cny = [100000, 1000000]
-priorities = ["Finish the accepted pressure-reversal batch and diagnose incremental information, decay and net trading costs; do not duplicate runs", "Reconcile existing cross-asset ETF results and identify independent return mechanisms complementary to SUE before expanding GP", "Test one preregistered fixed combination only when distinct mechanisms have usable evidence; recompute merged orders and three cost tiers before considering lagged regime scaling", "Continue the existing intraday pipeline when point-in-time coverage, manual latency and exit capacity permit; otherwise advance daily research", "Advance validated candidates into executable paper orders and reconciled NAV; continue evidence-led research without waiting for another user prompt"]
+priorities = ["Run the user-authorized personal_top5_fee1_v1 experiment: CNY100000, frozen multifactor Top5 and CNY1 minimum commission, paired with Top50/CNY5 controls over the same full available history and three cost tiers; preserve active batteries and frozen observations", "Finish the accepted pressure-reversal batch and diagnose incremental information, decay and net trading costs; do not duplicate runs", "Reconcile existing cross-asset ETF results and identify independent return mechanisms complementary to SUE before expanding GP", "Test one preregistered fixed combination only when distinct mechanisms have usable evidence; recompute merged orders and three cost tiers before considering lagged regime scaling", "Continue the existing intraday pipeline when point-in-time coverage, manual latency and exit capacity permit; otherwise advance daily research", "Advance validated candidates into executable paper orders and reconciled NAV; continue evidence-led research without waiting for another user prompt"]
 constraints = ["Low correlation is not predictive evidence", "No repeated Q1-Q9/P7/Q6 variants without a distinct preregistered mechanism", "At most one preregistered portfolio hypothesis; at most CNY 100000 and 1000000 account tiers", "Do not tune to observed validation/test results; independent future evidence remains necessary"]
 risk_attribution = "artifacts/risk/r3_lightweight_20260914_03/report.md"
 sharpe_diagnostic = "artifacts/research/sharpe_diagnostic_20260916_01/diagnostic.json"

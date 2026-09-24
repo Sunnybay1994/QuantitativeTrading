@@ -21,6 +21,7 @@ _DELEGATE: dict[tuple[str, str], str] = {
     ("research", "factor-family-states"): "quant.research.factor_family_states",
     ("research", "joint-account"): "quant.research.joint_account",
     ("research", "joint-integer"): "quant.research.joint_integer",
+    ("research", "personal-top5"): "quant.research.personal_top5",
     ("research", "etf-measurement"): "quant.research.etf_measurement",
     ("research", "etf-delayed-replay"): "quant.research.etf_delayed_replay",
     ("research", "etf-envelope-report"): "quant.research.etf_envelope_report",
@@ -117,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     factors.add_argument("command", choices=["compute"])
     research = sub.add_parser("research", help="投研流水线")
     research.add_argument("command", choices=[
-        "daily", "nightly", "mining", "cycle", "gp", "feedback", "recovery-audit",
+        "daily", "nightly", "mining", "cycle", "gp", "feedback", "recovery-audit", "personal-top5",
         "reversal-readiness", "batch-diagnosis", "predictive-inputs", "intraday-afternoon", "minutes", "mechanisms",
         "allocation-attribution", "mechanism-detail", "etf-manual-init", "etf-execution-stress", "market-indicators", "factor-family-states", "joint-account", "joint-integer", "etf-measurement", "etf-delayed-replay", "etf-envelope-report",
     ])

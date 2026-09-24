@@ -1,0 +1,48 @@
+# User-authorized small-account experiment; freeze before the first replay.
+id = "personal_top5_fee1_v1"
+registered_on = 2026-09-24
+auto_trade = false
+capital = 100000
+primary_top_k = 5
+primary_commission_min = 1.0
+control_top_k = 50
+control_commission_min = 5.0
+cost_multipliers = [0.5, 1.0, 2.0]
+fee_basis = "User-specified personal-account assumption, not a verified broker tariff; each logical order pays max(notional * commission_rate, commission_min)."
+scope = "New stock-only cross-sectional portfolio experiment; do not mutate historical runs, active factor batteries or existing frozen observation accounts."
+hypothesis = "At CNY100000, five high-ranked stocks and a CNY1 minimum commission reduce lot underinvestment and small-order friction; test net benefit against concentration, turnover and drawdown."
+
+[inputs]
+predictions = "artifacts/models/q2_sue_context_v2_causal48_20260912_02/predictions"
+source_account = "artifacts/models/q10_sue_v2_turnover_budget_05_20260912_01"
+return_benchmark_config = "configs/data/return_benchmarks_q1b_20260912.toml"
+ranking = "Reuse point-in-time frozen multifactor predictions and original eligibility; no refit, factor cherry-picking or ranking by future return."
+period = "Use the full available common prediction/execution history, report actual holding periods and common windows; do not truncate to the previous 645-day joint ETF window."
+
+[construction]
+rebalance = "month_end_signal_next_session_execution"
+weighting = "equal_weight_within_selected_names"
+cash_buffer = 0.02
+primary_single_stock_target_cap = 0.20
+selection = "Descending signal-date score, symbol ascending for ties; primary Top5 and control Top50 share all other selection and execution rules."
+quantity = "Fix requested shares from signal-close equity and prices using each security's actual lot/minimum-buy rules; no future execution price in ranking or requested quantity."
+exits = "Build exits from actual holdings, including names leaving the selection; sell before buying, enforce sellable quantities and cash."
+missing_or_unaffordable = "Keep documented residual cash or actual unsellable holdings; do not substitute cheaper/later winning names or fabricate fills."
+turnover = "Full monthly target rebalance for all four paired cases; do not inherit Q10 target blending or the failed joint optimizer. Original annual turnover admission tests still apply."
+risk = "Preserve original ST/new-listing/suspension/price-limit/liquidity eligibility and execution checks. Report industry, size, single-name and stress exposure; do not impose old Top50 single-name 3% or joint-account 25% turnover caps on Top5."
+
+[costs]
+commission_rate = 0.00025
+primary_commission_min = 1.0
+reference_commission_min = 5.0
+remaining_costs = "Keep original source-account historical statutory taxes/transfer fees and slippage. CNY1 changes the commission floor only, not all-in cost or the commission rate."
+partial_fills = "Aggregate partial fills of one logical order for minimum commission; do not charge the floor per fragment."
+stress_scaling = "Use the existing engine's 0.5x/1x/2x convention consistently, including scaling the base commission floor; statutory fees follow existing policy."
+
+[evaluation]
+paired_cases = ["top50_fee5", "top50_fee1", "top5_fee5", "top5_fee1"]
+controls = "Four prespecified cases identify holding-count effect, commission-floor effect and their interaction; all start with the same CNY100000 on the same timeline."
+required_outputs = ["signal rankings and requested shares", "actual holdings and cash exposure", "unfilled orders and lot loss", "commission floor binding and fee decomposition", "annual/monthly returns and matched return-index excess", "Sharpe rf0/rf2 and maximum drawdown", "turnover", "single-name/industry/size exposure", "continuous stress events and liquidity constraints"]
+decision = "Keep existing model admission thresholds. No verdict from <=3-year Top-K return differences; short or previously observed history remains development evidence."
+stop = "No K/window/threshold/seed rescue grid. If concentration or costs erase the improvement, record the failed portfolio hypothesis without declaring all cross-sectional factors invalid."
+next = "Only after adequate net-return and risk evidence consider a separate fixed combination with ETF; no immediate regime switching or deployment."

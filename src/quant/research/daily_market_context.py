@@ -34,7 +34,15 @@ def run(*, data_root=Path('data'), root=Path('artifacts/daily/market_context'), 
     date = cal.filter(pl.col('is_open') & (pl.col('date')<today))['date'].max()
     if date is None:
         raise ValueError('No preceding exchange session')
-    receipt = completed_observation(date, now, daily_root) if require_daily_receipt else None
+    try:
+        receipt = completed_observation(date, now, daily_root) if require_daily_receipt else None
+    except (OSError, ValueError) as exc:
+        # Keep the immutable historical reports, but never show an old successful
+        # session as the current pre-open context when its receipt is absent.
+        atomic_json(root/'latest.json', dict(status='incomplete', observed_at=now.isoformat(),
+            date=str(date), effective_date=str(today), daily_completion=None,
+            market_state='unknown', reason=str(exc), auto_trade=False, changes_positions=False))
+        raise
     config = Path('configs/research/market_indicators_v1.toml')
     version = hashlib.sha256(config.read_bytes()+Path(__file__).read_bytes()
         +Path('src/quant/research/market_indicators.py').read_bytes()
