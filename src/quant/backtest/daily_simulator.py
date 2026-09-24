@@ -76,6 +76,7 @@ def simulate_daily_targets(
     scheduled_orders: pl.DataFrame | None = None,
     target_permissions: Mapping[str, tuple[bool, bool]] | None = None,
     execution_notional_caps: Mapping[str, float] | None = None,
+    target_share_deltas: Mapping[str, int] | None = None,
 ) -> DailySimulationResult:
     """按权威 session 模拟股票/ETF 目标权重，显式保留拒单证据。"""
     if execution_notional_caps is not None and any(
@@ -110,6 +111,12 @@ def simulate_daily_targets(
     clean_instruments = InstrumentSchema.validate(instruments).sort("symbol")
     clean_targets = _validate_targets(scheduled_targets, strategy=strategy)
     clean_orders = _validate_orders(scheduled_orders)
+    if target_share_deltas is not None and (
+        scheduled_orders is not None or clean_targets['execution_date'].n_unique() != 1
+        or not set(target_share_deltas) <= set(clean_targets['symbol'])
+        or any(type(q) is not int for q in target_share_deltas.values())
+    ):
+        raise ValueError('Fixed target deltas require one dated target batch and integer quantities')
     if clean_orders.height and clean_targets.height:
         raise ValueError("Use either target weights or fixed share orders")
 
@@ -292,6 +299,13 @@ def simulate_daily_targets(
                 )
                 for symbol in relevant_symbols
             }
+            if target_share_deltas is not None:
+                for symbol, delta in target_share_deltas.items():
+                    lot = int(instrument_rows[symbol]['board_lot'])
+                    if delta < -positions[symbol].quantity or (abs(delta) % lot and
+                            not (delta < 0 and -delta == positions[symbol].quantity)):
+                        raise ValueError('Invalid fixed target delta lot or sell quantity')
+                    desired[symbol] = positions[symbol].quantity + delta
             if target_permissions is not None:
                 for symbol, (can_buy, can_sell) in target_permissions.items():
                     if symbol not in desired:
@@ -421,7 +435,8 @@ def simulate_daily_targets(
                     etf_costs=etf_costs,
                     stock_costs=stock_costs,
                 )
-                if order_frame is not None and quantity < wanted:
+                if (order_frame is not None or (target_share_deltas is not None and
+                        symbol in target_share_deltas)) and quantity < wanted:
                     _append_rejection(rows=rejection_rows, strategy=strategy, date=date,
                         symbol=symbol, side=OrderSide.BUY, reason=ExecutionRejectReason.CASH_CONSTRAINT,
                         quantity=wanted, reference_price=references[symbol]['open'])

@@ -63,6 +63,13 @@ Q7之外的已保存电池月度IC可用 `python -m quant research factor-family
 不做全样本实现波动匹配。报告包含年度/月度、连续状态事件、实际资产仓位及成本分解。
 这是短历史开发回放，不替代正式收益指数准入、人工延迟验证或既有前向账户。
 
+10万元整手/费用构建实验：`python -m quant research joint-integer --output <新目录>`，
+固定规则见 `configs/research/joint_integer_v1.toml`。只复用原Q10候选和预测，
+不扫持股数量、费用门槛或股债比例；股票按信号收盘固定净股数，ETF保留原执行口径。
+输出逐笔 `loss_trace.parquet`、逐信号损耗、价格/行业偏移及三档成本对照，
+对照账户必须与冻结旧净值和成交完全一致。缺价格不补零，约束不可行则记录并持有，
+不自动降低限制或修改前向账户；股票实际暴露提升不代表新增alpha。
+
 分钟候选电池通过 `python -m quant research minutes` 执行，搜索定义在
 `configs/research/minute_search_v1.toml`。按预注册机制与已核实T+0的标的生成候选，
 保存全部候选的三档成本、延迟和最不利5分钟价格结果，不按历史排名自动晋级。

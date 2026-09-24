@@ -229,6 +229,7 @@ def replay(
                         'signal_equity': equity})
         execution_permissions = None
         execution_notional_caps = None
+        target_share_deltas = None
         if batch is not None and target_constraints is not None:
             desired = dict(batch.select('symbol', 'weight').iter_rows())
             try:
@@ -267,6 +268,7 @@ def replay(
                 state['constraint_nominees'] = constraint_info['nominee_symbols']
             execution_permissions = constraint_info.get('execution_direction_permissions')
             execution_notional_caps = constraint_info.get('execution_notional_caps')
+            target_share_deltas = constraint_info.get('target_share_deltas')
         if batch is not None and small_adjustment_floor is not None:
             from quant.portfolio.turnover_budget import small_adjustment_permissions
             blocked = small_adjustment_permissions(batch, state, floor=small_adjustment_floor)
@@ -320,6 +322,7 @@ def replay(
                     config=account_config,
                     target_permissions=execution_permissions,
                     execution_notional_caps=execution_notional_caps,
+                    target_share_deltas=target_share_deltas,
                     scheduled_orders=scheduled_exits,
                 )
                 if prior_nominees is not None:
