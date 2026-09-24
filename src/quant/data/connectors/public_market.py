@@ -59,6 +59,9 @@ def _call(operation: str, symbols: list[str], source: str) -> list[dict]:
                 rows.append(dict(code=f'{market}.{code}', data_date=str(day),
                     data_time=str(r['TIME']), last_price=r['PRICE'], volume=r['VOLUME'],
                     prev_close=r.get('PRE_CLOSE'), bid=r.get('BID'), ask=r.get('ASK'),
+                    bid1_price=r.get('B1_P'), ask1_price=r.get('A1_P'),
+                    bid1_lots=r.get('B1_V'), ask1_lots=r.get('A1_V'),
+                    depth_unit='lots_100_sdk_truncated',
                     turnover=r['AMOUNT'], suspension=float(r['PRICE']) <= 0, source=source))
             return rows
         import akshare as ak  # type: ignore[import-untyped]

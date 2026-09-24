@@ -78,6 +78,21 @@ def test_saved_isolated_and_controls_not_overridden(env):
     assert monthly.call_count == 1
 
 
+@pytest.mark.parametrize('failed', [False, True])
+def test_b16_daily_hook_isolates_failure(env, monkeypatch, failed):
+    from quant.execution import b16_forward
+    args, model, b20, b32, monthly = env
+    args.update(rehearsal=False, saved_data=False)
+    hook = Mock(return_value={'status': 'pending_first_signal'})
+    if failed:
+        hook.side_effect = ValueError('B16 closing inputs missing')
+    monkeypatch.setattr(b16_forward, 'daily', hook)
+    result = daily.run(**args)
+    assert hook.called and b20.called and b32.called and monthly.called
+    assert result['stages']['b16_manual']['status'] == ('failed' if failed else 'complete')
+    assert result['stages']['risk']['status'] == 'complete'
+
+
 @pytest.mark.parametrize('status', ['captured', 'pending', 'missed_window', 'exception', 'refresh_failed', 'rehearsal'])
 def test_frozen_candidate_capture_is_connected_without_blocking_accounts(env, monkeypatch, status):
     from quant.research import candidate_forward

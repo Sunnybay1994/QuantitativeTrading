@@ -12,6 +12,7 @@ $action = if ($Probe) { 'probe' } else { 'run' }
 $python = 'D:\Miniforge3\python.exe'
 try {
     if (-not $Probe) {
+        Start-Process -FilePath $python -ArgumentList @('-m','quant','paper','b16-forward') -WorkingDirectory $workspace -WindowStyle Hidden -RedirectStandardOutput ($logFile + '.b16.out') -RedirectStandardError ($logFile + '.b16.err') | Out-Null
         # Companion is read-only, bounded, and single-instance; core holdings feed stays independent.
         Start-Process -FilePath $python -ArgumentList @('-m','quant.data.market_snapshot','--session','--output','artifacts/realtime/market_snapshots') -WorkingDirectory $workspace -WindowStyle Hidden -RedirectStandardOutput ($logFile + '.market.out') -RedirectStandardError ($logFile + '.market.err') | Out-Null
     }

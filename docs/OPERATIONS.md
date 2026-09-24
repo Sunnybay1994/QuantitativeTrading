@@ -22,8 +22,8 @@ B16保存报价撮合核心：`python -m quant.execution.etf_quote_paper --input
 输入须声明 `auto_trade=false` 和 `classification=RESEARCH_ONLY`，包含期初账、固定委托、
 带供应商/接收时刻的盘口、交易日历及不早于撤单截止的 `as_of`。输出保存输入、模拟成交、
 余单及现金持仓；只消费提交后新鲜报价，盘口容量上限1%，同一委托累计最低佣金。
-这是模型撮合，不提交真实委托，不代表已接入实时采集或B16定时执行；收盘净值继续使用
-既有 `manual_nav` 核验行情和公司行动。股票ETF默认T+1；账本显式配置的黄金/国债ETF
+这是模型撮合，不提交真实委托；B16自动接入及验收边界见 [B16前向模拟](B16_FORWARD.md)。
+收盘净值复用 `manual_nav` 核验行情和公司行动。股票ETF默认T+1；黄金/国债ETF
 支持T+0，不把所有ETF或港股统一视为同一规则。
 
 市场状态已接到现有日更成功节点及原任务08:30盘前触发，只测算上一完整交易日，结果入口为
@@ -104,13 +104,10 @@ ETF测量复核：`python -m quant research etf-measurement --output <新目录>
 读取B16固定历史委托和已覆盖开盘5分钟窗口，报告缺失、容量提示和价格压力差额，
 不将不完整窗口诊断当作完整延迟净值或正式策略准入。
 
-ETF 人工延迟研究现金账户初始化：`python -m quant research etf-manual-init`。
-冻结配置为 `configs/research/b16_manual_forward_v1.toml`，账户位于
-`artifacts/paper/b16_manual_v1/`。120 秒主账、60 秒影子及三档成本各自隔离；
-重复执行不会重置账户。这只是现金初始化，不会发送交易消息、产生模拟成交或
-自动接入日更。首期月末信号前还需完成提交后报价撮合、部分成交费用、顺序现金
-校验和端到端验收；`bootstrap.json` 明确列出未完成项。不得将现金期零收益用作
-策略表现，也不得把现有 B20 开盘成交净值当作人工延迟账户。
+ETF 人工延迟账户：初始化 `python -m quant research etf-manual-init`；
+运行、报价探测、收盘恢复和证据入口见 [B16前向模拟](B16_FORWARD.md)。
+历史 `bootstrap.json` 保留初始化事实，当前进度读取 `service_status.json`、
+`daily_status.json` 及逐日成交/对账文件；现金初始化不算策略表现。
 
 | 做什么 | 命令 |
 |---|---|

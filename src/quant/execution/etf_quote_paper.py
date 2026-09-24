@@ -41,6 +41,7 @@ def simulate(opening, orders, quotes, sessions, *, as_of, cost=1.0, participatio
         states.append(dict(order=order,remaining=order['quantity'],notional=0.,fees=0.))
     events=[]
     seen={}
+    observations=set()
     for quote in sorted(quotes,key=lambda q:stamp(q['received_at'])):
         identity=quote['quote_id']
         if identity in seen:
@@ -49,6 +50,9 @@ def simulate(opening, orders, quotes, sessions, *, as_of, cost=1.0, participatio
             continue
         seen[identity]=quote
         received,provider=stamp(quote['received_at']),stamp(quote['provider_time'])
+        observation=(quote['symbol'],provider)
+        if observation in observations:
+            continue
         if received>completed_at:
             continue
         numeric=('bid','ask','bid_size','ask_size','up_limit','down_limit')
@@ -57,13 +61,14 @@ def simulate(opening, orders, quotes, sessions, *, as_of, cost=1.0, participatio
         if (not quote['down_limit']<=quote['bid']<=quote['ask']<=quote['up_limit'] or
                 quote['suspended'] or not 0<=(received-provider).total_seconds()<=10):
             continue
+        observations.add(observation)
         capacity={side:int(quote[key]*participation/100)*100
                   for side,key in [('BUY','ask_size'),('SELL','bid_size')]}
         for state in sorted(states,key=lambda s:(stamp(s['order']['submitted_at']),s['order']['side']!='SELL')):
             order=state['order']
             side=order['side']
             if (not state['remaining'] or order['symbol']!=quote['symbol'] or
-                    not stamp(order['submitted_at'])<=provider<=received<stamp(order['deadline'])):
+                    not stamp(order['submitted_at'])<provider<=received<stamp(order['deadline'])):
                 continue
             # Bid/ask already contains the spread; residual one-tick slippage only.
             price=quote['ask']+.001*cost if side=='BUY' else quote['bid']-.001*cost

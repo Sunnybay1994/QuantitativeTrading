@@ -36,7 +36,7 @@ def _replace_report(temporary: Path, target: Path) -> None:
 def write_daily_report(record: dict[str, Any], output: Path) -> None:
     """Keep one readable summary beside the detailed stage artifacts."""
     names = {'calendar': '交易日历', 'model': '模型预测', 'refresh': '输入质量',
-        'b20': 'B20六账户', 'b32': 'B32双账户', 'monthly': '月报',
+        'b20': 'B20六账户', 'b16_manual': 'B16人工延迟模拟', 'b32': 'B32双账户', 'monthly': '月报',
         'risk': '订单风险', 'signal_monitor': '滚动信号监控', 'forward_tracking': '前向账户与影子滑点',
         'q10_monthly': 'Q10月度记录', 'candidate_forward': '冻结候选前向信号',
         'candidate_scoring': '候选成熟月度评分'}
@@ -241,6 +241,10 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
             stage('monthly', monthly, lambda value: value.get('as_of') == date)
         else:
             stages['monthly'] = {'status': 'skipped', 'reason': 'B32 did not complete'}
+    if not rehearsal and not saved_data and result['as_of'] is not None:
+        from quant.execution.b16_forward import daily as b16_daily
+        stage('b16_manual', lambda: b16_daily(end=end, data_root=data_root),
+              lambda value: value.get('status') in ('complete', 'pending_first_signal'))
     stage('risk', lambda: run_risk(record=result, output=output/'risk', data_root=data_root,
         config=Path(settings.get('risk_config', DEFAULT_CONFIG))),
         lambda value: value.get('status') == 'complete')

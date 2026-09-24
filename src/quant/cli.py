@@ -50,6 +50,7 @@ _DELEGATE: dict[tuple[str, str], str] = {
     ("paper", "q10"): "quant.execution.q10_paper",
     ("paper", "orders"): "quant.execution.manual_orders",
     ("paper", "manual"): "quant.execution.manual_session_cli",
+    ("paper", "b16-forward"): "quant.execution.b16_forward_service",
     ("report", "leaderboard"): "quant.reporting.leaderboard",
     ("report", "review"): "quant.reporting.strategy_review",
     ("report", "periods"): "quant.reporting.registered_periods",
@@ -121,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
         "allocation-attribution", "mechanism-detail", "etf-manual-init", "etf-execution-stress", "market-indicators", "factor-family-states", "joint-account", "joint-integer", "etf-measurement", "etf-delayed-replay", "etf-envelope-report",
     ])
     paper = sub.add_parser("paper", help="模拟盘与人工订单")
-    paper.add_argument("command", choices=["q10", "orders", "manual"])
+    paper.add_argument("command", choices=["q10", "orders", "manual", "b16-forward"])
     report = sub.add_parser("report", help="机器报告")
     report.add_argument("command", choices=["leaderboard", "dashboard", "review", "periods"])
 
