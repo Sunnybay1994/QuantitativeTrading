@@ -49,7 +49,8 @@ B16保存报价撮合核心：`python -m quant.execution.etf_quote_paper --input
 采一轮，盘后退出、单实例锁防重复；原实时行情启动脚本同时启动这一只读伴随进程，
 不挤占持仓订阅额度，产物在 `artifacts/realtime/market_snapshots/`。
 以每轮 `diagnostic/snapshot.json` 的新鲜覆盖率为准，过期/缺失/无效字段不填造；
-尚无同钟历史成交额基线时，盘中状态仍unknown，收盘状态与盘中指标分开显示。
+同钟点历史基线的生成、缓存及缺失口径见 [盘中基线](MARKET_CLOCK_BASELINE.md)。
+盘中分类映射尚未实现，与输入不足分开报告；日频状态不变。
 这不是连续逐笔报价或订单执行行情，缺失逐项记入 `capture_errors.json`。
 
 Q7之外的已保存电池月度IC可用 `python -m quant research factor-family-states --output <新目录>`

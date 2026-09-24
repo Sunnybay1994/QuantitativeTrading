@@ -193,7 +193,21 @@ def live(config, history_root, output, *, now=None, quotes_path=None):
                 '(SELECT MAX(id) FROM quotes WHERE received_at<=? AND provider_time<=? GROUP BY symbol)',
                 (now.isoformat(), now.isoformat())).fetchall()
         quotes = [json.loads(row[0]) for row in rows]
+    output.mkdir(parents=True, exist_ok=False)
+    baseline_summary = None
+    if cfg.get('intraday_baseline_config'):
+        from quant.data.market_clock_baseline import enrich, load as baseline_config
+        try:
+            quotes, baseline_summary = enrich(quotes, reference, now=now, calendar=calendar,
+                output=output/'same_clock_baseline', cfg=baseline_config(Path(cfg['intraday_baseline_config'])))
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            quotes = [{k:v for k,v in q.items() if not k.startswith('baseline_')
+                       and k!='past_same_time_amount'} for q in quotes]
+            baseline_summary = dict(status='failed', error=f'{type(exc).__name__}: {exc}',
+                                    classification_status='not_implemented')
     result = realtime_snapshot(quotes, reference, now=now, settings=cfg)
+    result['same_clock_baseline'] = ({k:v for k,v in baseline_summary.items() if k!='day_receipts'}
+                                     if baseline_summary is not None else {'status':'not_configured'})
     result['reference_date'] = str(previous)
     open_today = calendar.filter((pl.col('date') == now.date()) & pl.col('is_open')).height == 1
     result['exchange_open_day'] = open_today
@@ -205,7 +219,6 @@ def live(config, history_root, output, *, now=None, quotes_path=None):
     result['history_root'] = str(history_root.resolve())
     result['history_manifest_sha256'] = hashlib.sha256((history_root / 'source_manifest.json').read_bytes()).hexdigest()
     result['config_sha256'] = hashlib.sha256(config.read_bytes()).hexdigest()
-    output.mkdir(parents=True, exist_ok=False)
     write_json(output / 'snapshot.json', result)
     write_json(output / 'quotes_consumed.json', quotes)
     (output / 'report.md').write_text('# 盘中市场指标\n\n' + json.dumps(

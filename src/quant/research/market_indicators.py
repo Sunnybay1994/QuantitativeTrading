@@ -258,7 +258,12 @@ def realtime_snapshot(quotes: list[dict], reference: pl.DataFrame, *,
         same_time_amount_stocks=len(time_ratios),
         same_time_amount_ratio=float(np.median(time_ratios)) if sufficient(time_ratios) else None,
         market_state='unknown', liquidity_score=None, sentiment_proxy_score=None,
-        reason='Intraday components are not EOD scores; insufficient breadth or same-clock calibration blocks market classification.',
+        classification_status='not_implemented',
+        component_input_status='ready' if ready and enough_returns and sufficient(spreads)
+            and sufficient(breadth) and sufficient(time_ratios) else 'incomplete',
+        missing_components=[name for name,ok in [('fresh_coverage',ready),('returns',enough_returns),
+            ('spread',sufficient(spreads)),('breadth',sufficient(breadth)),('same_clock_amount',sufficient(time_ratios))] if not ok],
+        reason='Intraday classification mapping is not implemented; continuous component availability is reported separately. EOD states remain separate.',
         interpretation='Missing quotes are not flat returns; observed amount is not full-market turnover.')
 
 

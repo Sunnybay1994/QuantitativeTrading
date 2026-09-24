@@ -13,6 +13,7 @@ low_percentile = 20.0
 high_percentile = 80.0
 quote_max_age_seconds = 120
 realtime_database = "data/realtime/futu/market.sqlite"
+intraday_baseline_config = "configs/research/market_intraday_baseline_v1.toml"
 # Rules chosen for descriptive research, never fitted to strategy profits.
 # End-of-day features become eligible on the next exchange session.
 # Live scores are separate from final-close scores; no automatic strategy switch.

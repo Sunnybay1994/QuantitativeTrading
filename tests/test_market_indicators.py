@@ -132,5 +132,11 @@ def test_live_runner_serializes_dates_and_rejects_stale_reference(tmp_path, monk
     result = live(config, root, tmp_path / 'out', now=now, quotes_path=quotes)
     assert result['previous_close_state'][0]['market_state'] == 'mixed'
     assert not result['coverage_ok'] and (tmp_path / 'out/report.md').is_file()
+    with config.open('a') as stream:
+        stream.write('\nintraday_baseline_config="missing_baseline_policy.toml"\n')
+    isolated = live(config, root, tmp_path/'baseline_failure', now=now, quotes_path=quotes)
+    assert isolated['same_clock_baseline']['status'] == 'failed'
+    assert isolated['classification_status'] == 'not_implemented'
+    assert (tmp_path/'baseline_failure/snapshot.json').is_file()
     with pytest.raises(ValueError, match='preceding exchange session'):
         live(config, root, tmp_path / 'out2', now=now+dt.timedelta(days=1), quotes_path=quotes)

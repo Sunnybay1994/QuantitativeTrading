@@ -67,6 +67,7 @@ def capture(output, *, batch_size=100, workers=3):
         scope='prior-session observed Shanghai/Shenzhen stock reference; excludes Beijing and ETFs',
         reference=str(reference), reference_sha256=digest,
         fields_present={key:sum(row.get(key) is not None for row in quotes) for key in ('prev_close','bid','ask')},
+        amount_definition='cumulative_session_turnover_cny',
         errors=errors, diagnostic=json.loads((output/'diagnostic/snapshot.json').read_text(encoding='utf-8')),
         auto_trade=False)
     atomic_json(output/'summary.json', result)

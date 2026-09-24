@@ -1,0 +1,14 @@
+auto_trade = false
+version = "same_clock_amount_v1"
+snapshot_root = "artifacts/realtime/market_snapshots"
+lookback_sessions = 20
+minimum_days = 5
+max_snapshots_per_day = 64
+max_quote_file_bytes = 12000000
+maximum_receipt_age_seconds = 120
+maximum_clock_gap_seconds = 30
+source = "tushare_sina"
+amount_definition = "cumulative_session_turnover_cny"
+scope = "prior-session observed Shanghai/Shenzhen stock reference; excludes Beijing and ETFs"
+# Descriptive input quality policy, not a market-state classifier or trading rule.
+# Same provider minute, nearest earlier/equal second within 30s, one observation per day.
