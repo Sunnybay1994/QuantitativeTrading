@@ -11,6 +11,10 @@ $logFile = Join-Path $logRoot ((Get-Date -Format 'yyyy-MM-dd_HHmmss_fffffff') + 
 $action = if ($Probe) { 'probe' } else { 'run' }
 $python = 'D:\Miniforge3\python.exe'
 try {
+    if (-not $Probe) {
+        # Companion is read-only, bounded, and single-instance; core holdings feed stays independent.
+        Start-Process -FilePath $python -ArgumentList @('-m','quant.data.market_snapshot','--session','--output','artifacts/realtime/market_snapshots') -WorkingDirectory $workspace -WindowStyle Hidden -RedirectStandardOutput ($logFile + '.market.out') -RedirectStandardError ($logFile + '.market.err') | Out-Null
+    }
     & $python -m quant data realtime $action *> $logFile
     $code = $LASTEXITCODE
     & $python -m quant.notify.automation_alert --task '实时行情采集' --code $code --log $logFile *>> $logFile

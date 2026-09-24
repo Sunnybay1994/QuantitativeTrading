@@ -54,6 +54,21 @@ def test_stale_primary_cannot_replace_newer_fallback(tmp_path):
     store.close()
 
 
+def test_quote_fields_preserved_without_inventing_missing_book(tmp_path):
+    store = FeedStore(tmp_path/'market.sqlite')
+    try:
+        q = dict(quote(), prev_close=9.8, bid=9.99, ask=10.01)
+        assert store.quotes([q], at('09:33:06'), 'raw', ['000001.SZ']) == []
+        saved = json.loads(store.db.execute('SELECT payload FROM quotes ORDER BY id DESC').fetchone()[0])
+        assert [saved[k] for k in ('prev_close','bid','ask')] == [9.8, 9.99, 10.01]
+        q.update(prev_close=None, bid=0, ask=float('nan'))
+        assert store.quotes([q], at('09:33:07'), 'raw2', ['000001.SZ']) == []
+        saved = json.loads(store.db.execute('SELECT payload FROM quotes ORDER BY id DESC').fetchone()[0])
+        assert all(saved[k] is None for k in ('prev_close','bid','ask'))
+    finally:
+        store.close()
+
+
 def test_reader_accepts_fallback_but_rejects_mixed_minute_sources(tmp_path):
     database, status = tmp_path / 'market.sqlite', tmp_path / 'status.json'
     store = FeedStore(database)

@@ -58,6 +58,7 @@ def _call(operation: str, symbols: list[str], source: str) -> list[dict]:
                 day = dt.datetime.strptime(str(r['DATE']), '%Y%m%d').date()
                 rows.append(dict(code=f'{market}.{code}', data_date=str(day),
                     data_time=str(r['TIME']), last_price=r['PRICE'], volume=r['VOLUME'],
+                    prev_close=r.get('PRE_CLOSE'), bid=r.get('BID'), ask=r.get('ASK'),
                     turnover=r['AMOUNT'], suspension=float(r['PRICE']) <= 0, source=source))
             return rows
         import akshare as ak  # type: ignore[import-untyped]

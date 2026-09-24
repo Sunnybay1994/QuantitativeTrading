@@ -90,6 +90,14 @@ class FeedStore:
                              'suspension': bool(row.get('suspension', False)),
                              'provider_time': stamp.isoformat(), 'received_at': now.isoformat(),
                              'source': row.get('source', 'futu')}
+                    # Preserve upstream fields; never infer previous close or a book
+                    # from last trade. A zero/absent quote side remains unavailable.
+                    for key, source_key in [('prev_close', 'prev_close_price'), ('bid', 'bid_price'), ('ask', 'ask_price')]:
+                        supplied = row.get(key, row.get(source_key))
+                        try:
+                            value[key] = finite(supplied, True)
+                        except (ValueError, TypeError):
+                            value[key] = None
                     previous = self.db.execute('SELECT provider_time FROM quotes WHERE symbol=? '
                                                'ORDER BY id DESC LIMIT 1', (symbol,)).fetchone()
                     if previous and previous[0] > stamp.isoformat():

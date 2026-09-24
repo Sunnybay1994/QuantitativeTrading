@@ -43,6 +43,19 @@ B16保存报价撮合核心：`python -m quant.execution.etf_quote_paper --input
 事件标不适用。规模代理无已核实收益指数时留空，禁止用低仓位整手账户替代。
 不重跑策略、不按状态挑赢家；固定组合净订单回放及全市场实时字段仍须另行完成。
 
+沪深市场参考池盘中快照：`python -m quant data market-snapshot --output <新目录>`。
+复用公共行情传输与标准化存储，分批保留昨收、买一、卖一；范围为上一交易日
+观察股票池，不含北交所/ETF，不当作已核实上市全量。`--session` 在交易时段每5分钟
+采一轮，盘后退出、单实例锁防重复；原实时行情启动脚本同时启动这一只读伴随进程，
+不挤占持仓订阅额度，产物在 `artifacts/realtime/market_snapshots/`。
+以每轮 `diagnostic/snapshot.json` 的新鲜覆盖率为准，过期/缺失/无效字段不填造；
+尚无同钟历史成交额基线时，盘中状态仍unknown，收盘状态与盘中指标分开显示。
+这不是连续逐笔报价或订单执行行情，缺失逐项记入 `capture_errors.json`。
+
+Q7之外的已保存电池月度IC可用 `python -m quant research factor-family-states --output <新目录>`
+生成新状态的因子/族系年度对照。族内先按月平均，不能把相关因子数量当独立样本；
+原始和中性化RankIC分别报告，不冒充Q7 partial IC，不重新筛选或改准入。
+
 分钟候选电池通过 `python -m quant research minutes` 执行，搜索定义在
 `configs/research/minute_search_v1.toml`。按预注册机制与已核实T+0的标的生成候选，
 保存全部候选的三档成本、延迟和最不利5分钟价格结果，不按历史排名自动晋级。
