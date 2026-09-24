@@ -23,6 +23,7 @@ _DELEGATE: dict[tuple[str, str], str] = {
     ("research", "joint-integer"): "quant.research.joint_integer",
     ("research", "etf-measurement"): "quant.research.etf_measurement",
     ("research", "etf-delayed-replay"): "quant.research.etf_delayed_replay",
+    ("research", "etf-envelope-report"): "quant.research.etf_envelope_report",
     ("data", "latency"): "quant.data.market_latency",
     ("research", "intraday-afternoon"): "quant.research.intraday_afternoon",
     ("research", "minutes"): "quant.research.minute_pipeline",
@@ -117,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     research.add_argument("command", choices=[
         "daily", "nightly", "mining", "cycle", "gp", "feedback", "recovery-audit",
         "reversal-readiness", "batch-diagnosis", "predictive-inputs", "intraday-afternoon", "minutes", "mechanisms",
-        "allocation-attribution", "mechanism-detail", "etf-manual-init", "etf-execution-stress", "market-indicators", "factor-family-states", "joint-account", "joint-integer", "etf-measurement", "etf-delayed-replay",
+        "allocation-attribution", "mechanism-detail", "etf-manual-init", "etf-execution-stress", "market-indicators", "factor-family-states", "joint-account", "joint-integer", "etf-measurement", "etf-delayed-replay", "etf-envelope-report",
     ])
     paper = sub.add_parser("paper", help="模拟盘与人工订单")
     paper.add_argument("command", choices=["q10", "orders", "manual"])

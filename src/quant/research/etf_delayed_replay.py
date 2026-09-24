@@ -28,14 +28,21 @@ def planned_orders(batch,state,close,lot):
     return pl.from_dicts(rows,schema={'as_of':pl.Date,'execution_date':pl.Date,'symbol':pl.String,'side':pl.String,'quantity':pl.Int64})
 
 
-def run(measurement,output):
+def run(measurement,output,envelope_config=None):
     spec=tomllib.loads((measurement/'config.toml').read_text());source=Path(spec['source'])
     output.mkdir(parents=True,exist_ok=False);hashes={}
+    if envelope_config is not None:
+        stress=tomllib.loads(envelope_config.read_text())
+        if stress['auto_trade'] is not False or stress['capital']!=spec['capital'] or stress['cost_multipliers']!=spec['cost_multipliers']:
+            raise ValueError('Envelope policy differs from frozen account')
+        (output/'envelope_config.toml').write_bytes(envelope_config.read_bytes())
+        hashes[str(envelope_config)]=hashlib.sha256(envelope_config.read_bytes()).hexdigest()
     def read(p):hashes[str(p)]=hashlib.sha256(p.read_bytes()).hexdigest();return pl.read_parquet(p)
     bars,calendar,instruments,dividends=[read(source/f'{n}.parquet') for n in ['bars','calendar','instruments','dividends']]
     policy=Path('configs/research/b16_cross_asset_inverse_volatility60_20260909.toml')
     base=tomllib.loads(policy.read_text());hashes[str(policy)]=hashlib.sha256(policy.read_bytes()).hexdigest()
-    coverage_path=measurement/'required_windows.csv';hashes[str(coverage_path)]=hashlib.sha256(coverage_path.read_bytes()).hexdigest()
+    coverage_path=measurement/('envelope_windows.csv' if envelope_config is not None else 'required_windows.csv')
+    hashes[str(coverage_path)]=hashlib.sha256(coverage_path.read_bytes()).hexdigest()
     windows={(r['date'],r['symbol']):r for r in pl.read_csv(coverage_path,try_parse_dates=True).to_dicts()}
     lots=dict(instruments.select('symbol','board_lot').iter_rows());results=[]
     for rule in ['dynamic','fixed']:
@@ -58,7 +65,7 @@ def run(measurement,output):
                     references={}
                     for order in orders.to_dicts():
                         w=windows.get((date,order['symbol']))
-                        if w is None or not w['covered']:
+                        if w is None or not w['envelope_eligible' if envelope_config is not None else 'covered']:
                             block=dict(date=str(date),symbol=order['symbol'],side=order['side'],quantity=order['quantity'],
                                 reason=w['reason'] if w else 'missing_window');break
                         p=w['high'] if order['side']=='BUY' else w['low']
@@ -68,6 +75,9 @@ def run(measurement,output):
                         references[order['symbol']]=p
                     if block:break
                     today=today.with_columns(pl.Series('open',[references.get(r['symbol'],r['open']) for r in today.to_dicts()]))
+                    prior=bars.filter(pl.col('trade_date')<date)['trade_date'].max()
+                    states.update(etf_session_states(pl.concat([bars.filter(pl.col('trade_date')==prior),today]),
+                        dividends,slippage=0.,slippage_per_share=.001*cost))
                 with config_context(validation_enabled=False):
                     state,result=advance(date=date,state=state,bars=today,calendar=calendar,instruments=instruments,
                         market_states=states,dividends=dividends,config=dict(paper=dict(name=rule,auto_trade=False,initial_cash=100000.),costs=costs),
@@ -84,14 +94,17 @@ def run(measurement,output):
     for p in [Path(__file__),measurement/'config.toml',Path('src/quant/backtest/daily_account.py'),Path('src/quant/backtest/daily_simulator.py')]:
         hashes[str(p)]=hashlib.sha256(p.read_bytes()).hexdigest()
     summary=dict(auto_trade=False,classification='RESEARCH_ONLY',results=results,
+        scenario='valid_source_price_envelope' if envelope_config is not None else 'strict_source_agreement',
         quantity_basis='signal-close targets, actual holdings and equity, frozen before execution extrema',
         price_stress='next 5m high BUY/low SELL plus original 0.5/1/2 fees and slippage; 1/3min share same bound',
         limitations=['Incomplete runs are not full-period NAV or profitability evidence.',
             'Price stress does not verify post-submission quote depth, capacity or real fills.',
             'Actual-order coverage is checked: missing windows for zero-net-order securities do not stop the account.'])
+    if envelope_config is not None:summary['limitations'].append(stress['interpretation'])
     (output/'summary.json').write_text(json.dumps(summary,indent=2));(output/'manifest.json').write_text(json.dumps(hashes,indent=2))
 
 
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--measurement',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
-    a=p.parse_args();run(a.measurement,a.output)
+    p.add_argument('--envelope-config',type=Path)
+    a=p.parse_args();run(a.measurement,a.output,a.envelope_config)

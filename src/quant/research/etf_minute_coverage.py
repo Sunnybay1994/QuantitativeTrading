@@ -83,7 +83,11 @@ def inspect(output, source, symbols, dates, end):
     gaps=[r for r in required if not r['covered']]
     pl.from_dicts(gaps,infer_schema_length=None).write_csv(output/'minute_gaps.csv')
     complete=[date for date in dates if all(r['covered'] for r in required if r['date']==date)]
+    from quant.research.etf_window_envelope import build
+    decomposition,extra_hashes=build(output,source,symbols,dates)
+    hashes.update(extra_hashes)
     return dict(required_windows=len(required),covered_windows=len(required)-len(gaps),
+        window_decomposition=decomposition,
         signal_dates=len(dates),complete_dates=len(complete),complete_dates_list=[str(d) for d in complete],
         full_period_execution_measurable=not gaps,delay_minutes=[1,3],
         delay_interpretation='both use full 09:30-09:35 worst-price window; not exact latency fills',
@@ -99,6 +103,8 @@ def refresh_registered(config,root):
     if spec['auto_trade'] is not False:raise ValueError('Require read-only research coverage')
     targets=pl.read_parquet(source/'dynamic_1/targets.parquet').filter(pl.col('execution_date')<=spec['end'])
     names=sorted(targets['symbol'].unique());paths=[config,source/'dynamic_1/targets.parquet',Path(__file__)]
+    from quant.research import etf_window_envelope
+    paths.extend([Path(etf_window_envelope.__file__),source/'bars.parquet',source/'instruments.parquet'])
     for s in names:
         paths.extend(Path('data/clean/bar_intraday').glob(f'freq=*m/source=*/symbol={s}/data.parquet'))
         paths.extend(Path('data/clean/futu_minute').glob(f'*/symbol={s}/year=*/data.parquet'))

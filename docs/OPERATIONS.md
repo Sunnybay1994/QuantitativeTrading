@@ -80,6 +80,11 @@ ETF测量复核：`python -m quant research etf-measurement --output <新目录>
 连续执行检验用 `python -m quant research etf-delayed-replay --measurement <测量目录> --output <新目录>`：
 数量在信号收盘冻结，极值只用于成交压力；1/3分钟共用首个5分钟最不利价格边界。
 遇到真正需要交易的缺失/冲突窗口时保存 `partial_nav` 和首个阻塞订单，不把部分净值当完整结果。
+原复查流程另存 `source_window_components.csv`（开盘行、常规首5分钟、含开盘首5分钟）、
+`source_first_minutes.csv` 和残余冲突，不改严格覆盖标记。经济压力情景可在上条命令加
+`--envelope-config configs/research/etf_envelope_stress_v1.toml`，固定取合格源最大买价/最小卖价，
+从初始现金重算；报告命令为 `python -m quant research etf-envelope-report --output <压力目录> --windows <窗口目录>`。
+包络不代表延迟后能在竞价成交，也不是所有财富路径的严格下界；真正无效窗口仍不可用。
 
 分钟候选电池通过 `python -m quant research minutes` 执行，搜索定义在
 `configs/research/minute_search_v1.toml`。按预注册机制与已核实T+0的标的生成候选，
