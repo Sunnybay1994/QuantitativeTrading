@@ -13,12 +13,7 @@ python -m quant gpu-check
 
 ## 日常命令
 
-个人账户固定配对实验：`python -m quant research personal-top5 --output artifacts/research/<新目录>`。
-按 `configs/research/personal_top5_fee1_v1.toml` 同跑Top5/Top50、最低佣金1元/5元与三档成本，
-先冻结完整预测、执行输入和代码指纹，再保存逐年账户断点。中断后同命令加 `--resume`；
-输入或执行代码变化时拒绝混接。进度见 `progress.json`，只有全期完成才生成 `summary.json` 和
-`report.md`，各账户 `periods/report.md` 链接年度及逐年月度明细。科创板最低申报量在新实验内处理，
-不改旧账户和冻结挖掘；历史回放不等于人工延迟执行验收，1元下限仅为用户指定研究假设。
+个人账户固定Top5/Top50与佣金配对实验：[运行和断点恢复](PERSONAL_ACCOUNT_REPLAY.md)。
 
 含 Q10 的完整日更与其数据可得时间保持一致：21:00 前的触发只记录
 `deferred` 和最早可运行时刻，不启动整套日更、不误报失败；由既有21:30触发执行。
