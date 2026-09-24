@@ -74,8 +74,8 @@ def run_benchmarks(*, statistics: Path, output: Path, data_root: Path, execution
     output.mkdir(parents=True, exist_ok=resume)
     if reuse_context is not None:
         inputs = output/'benchmark_inputs.json'
-        if inputs.exists() and json.loads(inputs.read_text(encoding='utf-8')) != reuse_context:
-            raise ValueError('Frozen benchmark execution content changed')
+        if inputs.exists():
+            benchmark_reuse.require_compatible_resume(inputs, reuse_context)
         if not inputs.exists():
             inputs.write_text(json.dumps(reuse_context, indent=2), encoding='utf-8')
     frozen_bytes = config_bytes + (

@@ -1,4 +1,5 @@
 """Content-addressed reuse of complete equal-weight benchmark accounts."""
+import ast
 import hashlib
 import io
 import json
@@ -6,6 +7,49 @@ import shutil
 import tomllib
 import uuid
 from pathlib import Path
+
+# These independent read-only market / ETF paper entry points are not imported
+# by the stock cost replay. Retain the full remaining account/data packages.
+INDEPENDENT_MODULES = {
+    'execution/b16_forward.py', 'execution/b16_forward_service.py',
+    'execution/etf_quote_paper.py', 'data/market_snapshot.py',
+    'data/market_clock_baseline.py',
+}
+
+
+def stock_replay_sources(code_root: Path) -> set[Path]:
+    """Conservative import closure, including function-local imports and packages."""
+    pending = ['quant.research.factor_battery_costs', 'quant.research.factor_battery_benchmarks']
+    seen, paths = set(), set()
+    while pending:
+        module = pending.pop()
+        if module in seen or not module.startswith('quant'):
+            continue
+        seen.add(module)
+        relative = module.split('.')[1:]
+        path = code_root.joinpath(*relative).with_suffix('.py') if relative else code_root/'__init__.py'
+        if not path.is_file():
+            path = code_root.joinpath(*relative)/'__init__.py'
+        if not path.is_file():
+            continue  # a symbol imported from its parent module, not a submodule
+        paths.add(path)
+        pending += ['.'.join(module.split('.')[:n]) for n in range(1,len(module.split('.')))]
+        for node in ast.walk(ast.parse(path.read_text(encoding='utf-8-sig'))):
+            if isinstance(node, ast.Import):
+                pending += [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                base = node.module or ''
+                if node.level:
+                    package = module.split('.') if path.name=='__init__.py' else module.split('.')[:-1]
+                    base = '.'.join(package[:len(package)-node.level+1] + ([base] if base else []))
+                pending.append(base)
+                pending += [base+'.'+alias.name for alias in node.names if alias.name!='*']
+            elif isinstance(node, ast.Call) and node.args and (
+                isinstance(node.func,ast.Name) and node.func.id=='__import__' or
+                isinstance(node.func,ast.Attribute) and node.func.attr=='import_module'):
+                if isinstance(node.args[0],ast.Constant) and isinstance(node.args[0].value,str):
+                    pending.append(node.args[0].value)
+    return paths
 
 
 def digest(path: Path) -> str:
@@ -53,8 +97,12 @@ def context(*, settings: dict, plans: dict, sessions: tuple, data_root: Path, sn
     # Invalidate execution code, without making a dashboard edit invalidate an
     # interrupted account. This deliberately covers entire account packages.
     code_root = Path(__file__).resolve().parents[1]
+    dependencies = stock_replay_sources(code_root)
+    if any((code_root/name) in dependencies for name in INDEPENDENT_MODULES):
+        raise ValueError('An excluded independent module became a stock replay dependency')
     for package in ('backtest', 'core', 'portfolio', 'execution', 'data'):
-        files.extend(sorted((code_root/package).rglob('*.py')))
+        files.extend(p for p in sorted((code_root/package).rglob('*.py'))
+                     if p.relative_to(code_root).as_posix() not in INDEPENDENT_MODULES)
     for name in ('classic_monthly_baseline', 'run_s1_walk_forward', 'factor_cost_checkpoint',
                  'factor_battery_costs', 'factor_battery_benchmarks', 'benchmark_reuse'):
         files.append(code_root/'research'/f'{name}.py')
@@ -63,13 +111,32 @@ def context(*, settings: dict, plans: dict, sessions: tuple, data_root: Path, sn
         buffer = io.BytesIO()
         frame.write_ipc(buffer)
         targets[key] = {'name': name, 'sha256': hashlib.sha256(buffer.getvalue()).hexdigest()}
-    return {'version': 1, 'settings': json.loads(json.dumps(settings, default=str)),
+    return {'version': 2, 'settings': json.loads(json.dumps(settings, default=str)),
             'sessions': [str(day) for day in sessions], 'targets': targets,
             'files': {str(p.resolve()): digest(p) for p in sorted(set(files))}}
 
 
 def key(context: dict) -> str:
     return hashlib.sha256(json.dumps(context, sort_keys=True).encode()).hexdigest()
+
+
+def require_compatible_resume(inputs: Path, current: dict) -> None:
+    """A scoped migration receipt binds the preserved old manifest to this context.
+
+    Never mint a receipt implicitly or accept changed data/targets by replacing
+    the old manifest. A changed retained dependency also changes the bound key.
+    """
+    original = json.loads(inputs.read_text(encoding='utf-8'))
+    if original == current:
+        return
+    receipt = inputs.with_name('benchmark_scope_compatibility.json')
+    if receipt.exists():
+        proof = json.loads(receipt.read_text(encoding='utf-8'))
+        if (proof.get('original_manifest_sha256') == digest(inputs)
+                and proof.get('compatible_context_key') == key(current)
+                and proof.get('all_retained_data_settings_sessions_targets_equal') is True):
+            return
+    raise ValueError('Frozen benchmark execution content changed; compatible scope receipt absent or stale')
 
 
 def lookup(root: Path, context: dict, output: Path) -> dict | None:

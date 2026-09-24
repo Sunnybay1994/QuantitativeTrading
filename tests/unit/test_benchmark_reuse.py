@@ -75,6 +75,54 @@ def test_partial_run_is_never_available(tmp_path):
     assert not (tmp_path/'output').exists()
 
 
+def test_independent_b16_edit_does_not_invalidate_but_engine_edit_does(tmp_path, monkeypatch):
+    kwargs=setup_context(tmp_path)
+    before=reuse.context(**kwargs)
+    original=reuse.digest
+    def unrelated(path):
+        if path.name in ('b16_forward.py','etf_quote_paper.py','market_clock_baseline.py'):
+            return 'changed-independent-code'
+        return original(path)
+    monkeypatch.setattr(reuse,'digest',unrelated)
+    assert reuse.context(**kwargs)==before
+    def engine(path):
+        return 'changed-fill-engine' if path.name=='daily_simulator.py' else original(path)
+    monkeypatch.setattr(reuse,'digest',engine)
+    assert reuse.context(**kwargs)!=before
+
+
+@pytest.mark.parametrize('change',['none','data','targets','sessions','settings','engine','original_manifest'])
+def test_scoped_migration_keeps_original_and_refuses_material_change(tmp_path,change):
+    current={'version':2,'settings':{'cost':1},'sessions':['2026-09-01'],
+             'targets':{'a':'frozen'},'files':{'data':'abc','engine':'def'}}
+    old={**copy.deepcopy(current),'version':1}
+    old['files']['b16_forward.py']='old-independent'
+    path=tmp_path/'benchmark_inputs.json';path.write_text(json.dumps(old))
+    before=path.read_bytes()
+    with pytest.raises(ValueError,match='receipt'):
+        reuse.require_compatible_resume(path,current)
+    (tmp_path/'benchmark_scope_compatibility.json').write_text(json.dumps(dict(
+        original_manifest_sha256=reuse.digest(path),compatible_context_key=reuse.key(current),
+        all_retained_data_settings_sessions_targets_equal=True)))
+    if change in ('data','engine'):current['files'][change]='changed'
+    elif change=='targets':current['targets']['a']='changed'
+    elif change=='sessions':current['sessions'].append('2026-09-02')
+    elif change=='settings':current['settings']['cost']=2
+    elif change=='original_manifest':path.write_text(json.dumps({**old,'version':0}))
+    if change=='none':reuse.require_compatible_resume(path,current)
+    else:
+        with pytest.raises(ValueError,match='receipt'):reuse.require_compatible_resume(path,current)
+    if change!='original_manifest':assert path.read_bytes()==before
+
+
+def test_new_dependency_on_excluded_module_refuses_scope(tmp_path,monkeypatch):
+    from pathlib import Path
+    root=Path(reuse.__file__).resolve().parents[1]
+    monkeypatch.setattr(reuse,'stock_replay_sources',lambda _:{root/'execution/b16_forward.py'})
+    with pytest.raises(ValueError,match='became a stock replay dependency'):
+        reuse.context(**setup_context(tmp_path))
+
+
 @pytest.mark.parametrize('contents', ['{interrupted publication', '{"context":{"fixture":1}}'])
 def test_broken_cache_index_is_a_miss_not_a_research_failure(tmp_path, contents):
     root = tmp_path/'cache'
