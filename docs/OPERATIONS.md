@@ -70,6 +70,17 @@ Q7之外的已保存电池月度IC可用 `python -m quant research factor-family
 对照账户必须与冻结旧净值和成交完全一致。缺价格不补零，约束不可行则记录并持有，
 不自动降低限制或修改前向账户；股票实际暴露提升不代表新增alpha。
 
+ETF测量复核：`python -m quant research etf-measurement --output <新目录>`，固定配置
+`configs/research/etf_measurement_execution_v1.toml`。复用冻结日线账户，核对现金分红总收益、
+资产损益与净值，补充年度/月度及连续压力段，并按已有合格历史机械扩展原规则。
+读取现有1/5分钟覆盖，逐窗口保存缺失、量额异常及源冲突；不满足全期覆盖时不生成
+冒充完整回测的人工延迟净值。`minute_gaps.csv` 为现有补数流程的明确缺口，不自动新建采集任务。
+原分钟流水线在数据刷新后同步复查这些ETF窗口，来源不变则复用结果；入口为
+`artifacts/research/minute_pipeline/etf_execution/latest.json`，只读存量数据，不消耗新历史采集额度。
+连续执行检验用 `python -m quant research etf-delayed-replay --measurement <测量目录> --output <新目录>`：
+数量在信号收盘冻结，极值只用于成交压力；1/3分钟共用首个5分钟最不利价格边界。
+遇到真正需要交易的缺失/冲突窗口时保存 `partial_nav` 和首个阻塞订单，不把部分净值当完整结果。
+
 分钟候选电池通过 `python -m quant research minutes` 执行，搜索定义在
 `configs/research/minute_search_v1.toml`。按预注册机制与已核实T+0的标的生成候选，
 保存全部候选的三档成本、延迟和最不利5分钟价格结果，不按历史排名自动晋级。

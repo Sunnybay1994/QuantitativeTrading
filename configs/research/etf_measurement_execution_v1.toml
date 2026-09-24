@@ -1,0 +1,16 @@
+auto_trade = false
+registered_on = 2026-09-24
+capital = 100000
+source = "artifacts/research/etf_allocation_attribution_20260922_03"
+common_start = 2024-01-02
+end = 2026-08-31
+cost_multipliers = [0.5, 1.0, 2.0]
+extension = "Earliest next-month execution with 61 completed daily total-return prices for all original three ETFs in the published frozen snapshot; no start-date performance selection"
+fixed_extension = "Original static rule: freeze the first pre-start inverse-volatility vector; not the 2024 vector backfilled into 2023"
+delay_minutes = [1, 3]
+window = "Conservative full 09:30-09:35 high BUY / low SELL; both delays lie inside this same window"
+quantity = "Must be fixed from signal information, never use the future window extreme to size orders"
+minute_sources = ["tdx", "baostock", "yahoo", "futu_saved_unadjusted_year_partitions"]
+minute_quality = "Exact five-minute window or five contiguous 1m bars, positive volume and amount, valid OHLC and VWAP within OHLC plus 0.0011; compare independent sources without averaging conflicts"
+missing = "No full-period execution NAV without all required rebalance symbol windows; missing stays unverified; no daily-price substitutes"
+classification = "RESEARCH_ONLY; observed history, no new holdout, unchanged B16 forward schedule"

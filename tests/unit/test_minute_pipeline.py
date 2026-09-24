@@ -74,3 +74,16 @@ def test_second_writer_cannot_enter(tmp_path):
         with pytest.raises(OSError):
             with pipeline.instance_lock(lock):
                 pytest.fail('second writer admitted')
+
+
+def test_etf_coverage_failure_is_visible_without_interrupting_other_research(monkeypatch,tmp_path):
+    from quant.research import etf_minute_coverage
+    def fail(*args):raise ValueError('window source mismatch')
+    monkeypatch.setattr(etf_minute_coverage,'refresh_registered',fail)
+    config=tmp_path/'pipeline.toml'
+    config.write_text(f'auto_trade=false\noutput={json.dumps(tmp_path.as_posix())}\n'
+                      'data_root="unused"\nstrategies=[]\netf_execution_coverage="registered.toml"')
+    result=pipeline.run(config)
+    assert result['state']=='complete'
+    assert result['etf_execution_coverage']['state']=='failed'
+    assert 'window source mismatch' in (tmp_path/'report.md').read_text(encoding='utf-8')

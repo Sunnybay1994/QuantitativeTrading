@@ -147,10 +147,20 @@ def run(config):
             state['strategies'].append(item)
             atomic_json(root/'status.json',state)
         state['state']='failed' if any(r['state']=='failed' for r in state['strategies']) else 'complete'
+        if settings.get('etf_execution_coverage'):
+            try:
+                from quant.research.etf_minute_coverage import refresh_registered
+                state['etf_execution_coverage']=refresh_registered(Path(settings['etf_execution_coverage']),root/'etf_execution')
+            except Exception as exc:
+                state['etf_execution_coverage']=dict(state='failed',error=f'{type(exc).__name__}: {exc}')
         state['updated_at']=dt.datetime.now().astimezone().isoformat()
         atomic_json(root/'status.json',state)
         lines=['# 分钟研究自动流程','', 'complete 表示检查和开发回放完成，不代表策略可交易。所有结果为 RESEARCH_ONLY。','']
         rows=[]
+        if 'etf_execution_coverage' in state:
+            coverage=state['etf_execution_coverage']
+            lines.append(f"- ETF人工执行覆盖: {coverage['state']}; gaps={coverage.get('gaps')}; "
+                         f"result={coverage.get('result',coverage.get('error'))}")
         for item in state['strategies']:
             lines.append(f"- {item['strategy']}: {item['state']}; report={item.get('report','无')}; attention={item.get('attention',item.get('error'))}")
             rows.extend(dict(strategy=item['strategy'],report=item['report'],**result)
