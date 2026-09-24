@@ -56,6 +56,13 @@ Q7之外的已保存电池月度IC可用 `python -m quant research factor-family
 生成新状态的因子/族系年度对照。族内先按月平均，不能把相关因子数量当独立样本；
 原始和中性化RankIC分别报告，不冒充Q7 partial IC，不重新筛选或改准入。
 
+固定联合账户：`python -m quant research joint-account --output <新目录>`，配置
+`configs/research/joint_q10_etf_v1.toml`，复用冻结Q10意向与ETF目标。联合政策将股票预算
+限定到股票持仓；每档根据该新账户实际持仓重算，ETF不被当作股票退出。
+只用一个事前资本比例，静态ETF、股票加现金及纯股票对照使用相同日期与资金；
+不做全样本实现波动匹配。报告包含年度/月度、连续状态事件、实际资产仓位及成本分解。
+这是短历史开发回放，不替代正式收益指数准入、人工延迟验证或既有前向账户。
+
 分钟候选电池通过 `python -m quant research minutes` 执行，搜索定义在
 `configs/research/minute_search_v1.toml`。按预注册机制与已核实T+0的标的生成候选，
 保存全部候选的三档成本、延迟和最不利5分钟价格结果，不按历史排名自动晋级。

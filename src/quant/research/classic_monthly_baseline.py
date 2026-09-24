@@ -158,6 +158,7 @@ def replay(
     target_constraints: Callable[[pl.DataFrame, dict], tuple[pl.DataFrame, dict]] | None = None,
     constraint_records: list[dict] | None = None,
     constraint_diagnostics: list[dict] | None = None,
+    daily_observer: Callable[[dt.date, dict], None] | None = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """Replay a chunk; update optional account_state only after a successful run.
 
@@ -344,6 +345,8 @@ def replay(
             if batch is not None else None
         )
         trades.append(result.trades)
+        if daily_observer is not None:
+            daily_observer(date, state)
         rejections.append(result.rejections)
         if validate_once:
             checked_nav.append(result.nav)
