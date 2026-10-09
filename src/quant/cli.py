@@ -82,6 +82,7 @@ _DELEGATE: dict[tuple[str, str], str] = {
     ("report", "q10-rolling"): "quant.reporting.q10_rolling_reassess",
     ("report", "q10-forward-demo"): "quant.reporting.q10_forward_rules_demo",
     ("report", "funnel"): "quant.reporting.reject_funnel",
+    ("report", "brief"): "quant.reporting.research_brief",
 }
 
 
@@ -103,6 +104,12 @@ def _status() -> dict[str, Any]:
     gpu = detect_device()
     daily = sorted((root.artifacts / "daily" / "scheduler").glob("*.log")) if (root.artifacts / "daily" / "scheduler").exists() else []
     mining = root.artifacts / "research" / "continuous" / "status.json"
+    monthly = sorted((root.artifacts / "research" / "nightly" / "monthly").glob("*/summary.json"))
+    n5 = json.loads(monthly[-1].read_text(encoding="utf-8")) if monthly else None
+    brief = sorted((root.artifacts / "research" / "brief").glob("*.md"))
+    intel = sorted((root.artifacts / "intel").glob("**/digest.md")) if (root.artifacts / "intel").exists() else []
+    from quant.reporting.sample_scope import months_between, q10_oos_defaults
+    q10 = q10_oos_defaults()
     return {
         "root": str(root.root),
         "device": gpu.to_dict(),
@@ -110,6 +117,14 @@ def _status() -> dict[str, Any]:
         "llm_remaining_usd": remaining_budget_usd(runtime.llm_monthly_budget_usd),
         "latest_scheduler_log": None if not daily else str(daily[-1]),
         "mining_status": json.loads(mining.read_text(encoding="utf-8")) if mining.exists() else None,
+        "n5_latest": None if not n5 else {
+            "period": n5.get("period"),
+            "methods": {k: (v.get("conclusions") or {}).get("budgeted") for k, v in (n5.get("methods") or {}).items()},
+        },
+        "q10_oos_start": q10["oos_start"],
+        "q10_oos_months": months_between(q10["oos_start"], __import__("datetime").date.today()),
+        "latest_brief": None if not brief else str(brief[-1]),
+        "latest_intel_digest": None if not intel else str(intel[-1]),
         "notify_config": str(Path(runtime.notify_config)),
     }
 
@@ -152,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
     paper = sub.add_parser("paper", help="模拟盘与人工订单")
     paper.add_argument("command", choices=["q10", "orders", "manual", "b16-forward"])
     report = sub.add_parser("report", help="机器报告")
-    report.add_argument("command", choices=["leaderboard", "dashboard", "review", "periods"])
+    report.add_argument("command", choices=["leaderboard", "dashboard", "review", "periods", "funnel", "brief", "q10-rolling", "q10-forward-demo"])
 
     args, rest = parser.parse_known_args(argv)
     if args.group is None:

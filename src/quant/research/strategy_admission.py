@@ -578,6 +578,27 @@ def compare_strategy_candidates(
     )
 
 
+def assess(
+    *,
+    nav: object,
+    one: dict,
+    two: dict,
+    benchmarks: dict,
+    model: dict,
+    windows: list[dict],
+) -> dict:
+    """D1 unified portfolio assessment entry — wraps multifactor_assessment.
+
+    M4 evidence-compare APIs above remain unchanged. Callers of portfolio
+    admission should prefer this function over importing assess_model directly.
+    """
+    from quant.domain.assessment_schema import validate_assessment
+    from quant.reporting.multifactor_assessment import assess_model
+
+    result = assess_model(nav=nav, one=one, two=two, benchmarks=benchmarks, model=model, windows=windows)
+    return validate_assessment(result)
+
+
 __all__ = [
     "AdmissionContext",
     "AdmissionDecision",
@@ -589,6 +610,7 @@ __all__ = [
     "ScenarioEvidence",
     "StrategyAdmissionError",
     "StrategyCandidate",
+    "assess",
     "build_admission_context",
     "build_admission_thresholds",
     "build_strategy_candidate",

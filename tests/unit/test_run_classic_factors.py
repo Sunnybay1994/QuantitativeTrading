@@ -427,10 +427,13 @@ def test_candidate_candidate_pair_constrains_both_sides_and_rejected_stays_rejec
 
 
 def test_all_four_classic_redundancy_call_sites_use_one_private_helper() -> None:
-    source = (PROJECT_ROOT / "src/quant/research/run_classic_factors.py").read_text(
-        encoding="utf-8"
+    root = PROJECT_ROOT / "src/quant/research"
+    source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(root.glob("run_classic_factors*.py"))
     )
-
+    # One definition + four call sites across the split modules.
+    assert source.count("def _aggregate_redundancy_by_factor(") == 1
     assert source.count("_aggregate_redundancy_by_factor(") == 5
     assert 'group_by("factor_a")' not in source
 
