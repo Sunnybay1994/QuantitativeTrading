@@ -56,18 +56,30 @@ def _render(rows: list[dict], *, title: str, intro: str, limit: int | None) -> l
         preferred = next(
             (r for r in chosen
              if r.get('conclusion') == 'PAPER_CANDIDATE' and r.get('variant') == 'budgeted'
-             and 'q10' in r['run_path'].replace('\\', '/').lower()),
+             and 'q10_sue_v2_turnover' in r['run_path'].replace('\\', '/').lower()),
             None,
         )
+        if preferred is None:
+            preferred = next(
+                (r for r in chosen
+                 if r.get('variant') == 'budgeted'
+                 and 'q10_sue_v2_turnover' in r['run_path'].replace('\\', '/').lower()),
+                None,
+            )
         if preferred is not None:
             chosen = [preferred] + [r for r in chosen if r is not preferred]
     lines = [f'# {title}', '', MARKER, '', intro, '',
              '年化/回撤/超额为百分比；三档按 0.5× / 1× / 2× 成本排列，换手为单边年化倍数。缺失字段显示 —。',
-             '结论沿用各运行原判定；不同测量口径与历史版本不混作新的准入证据。', '',
-             '|实验 / 变体|持股区间|CAGR 三档|Sharpe 三档|最大回撤三档|换手三档|超额最强基准三档|结论|产物|',
-             '|---|---|---|---|---|---|---|---|---|']
+             '结论沿用各运行原判定；不同测量口径与历史版本不混作新的准入证据。',
+             'IS/OOS：设计日 / 数据截止 / 样本外起点月 / 样本外月数 / 范围（D2）。', '',
+             '|实验 / 变体|持股区间|设计日|数据截止|OOS起点|OOS月数|范围|CAGR 三档|Sharpe 三档|最大回撤三档|换手三档|超额最强基准三档|结论|产物|',
+             '|---|---|---|---|---|---:|---|---|---|---|---|---|---|---|']
     for row in chosen:
-        cells = [f"{_label(row)} / {row['variant']}", f"{row['start']}—{row['end']}"]
+        cells = [f"{_label(row)} / {row['variant']}", f"{row['start']}—{row['end']}",
+                 str(row.get('design_date') or '—'), str(row.get('data_end') or '—'),
+                 str(row.get('oos_start') or '—'),
+                 '—' if row.get('oos_months') is None else str(row.get('oos_months')),
+                 str(row.get('sample_scope') or '—')]
         for metric in ('cagr', 'sharpe', 'mdd', 'turnover', 'excess'):
             cells.append(' / '.join(_fmt(row.get(f'{metric}_{suffix}'), metric in ('cagr', 'mdd', 'excess'))
                                    for suffix in ('0_5x', '1x', '2x')))
@@ -82,8 +94,17 @@ def write_leaderboard(registry: Path = DEFAULT_REGISTRY, output: Path = DEFAULT_
     if 'level' not in frame.columns:
         frame = frame.with_columns(pl.lit(None).cast(pl.Utf8).alias('level'))
     rows = frame.to_dicts()
+    from quant.reporting.sample_scope import months_between, q10_oos_defaults
     for row in rows:
         row['level'] = infer_level(row['run_path'], row.get('level'))
+        path = row['run_path'].replace('\\', '/').lower()
+        if 'q10' in path or 'q10' in str(row.get('experiment_id', '')).lower():
+            defaults = q10_oos_defaults()
+            row['design_date'] = row.get('design_date') or defaults['design_date']
+            row['oos_start'] = defaults['oos_start']
+            row['oos_months'] = months_between(defaults['oos_start'], dt.date.today())
+            row['sample_scope'] = defaults['sample_scope']
+            row['data_end'] = row.get('data_end') or row.get('end')
     if output.exists() and MARKER not in output.read_text(encoding='utf-8'):
         stamp = dt.datetime.now().strftime('%Y%m%dT%H%M%S%f')
         (registry.parent / f'leaderboard_before_machine_{stamp}.md').write_bytes(output.read_bytes())

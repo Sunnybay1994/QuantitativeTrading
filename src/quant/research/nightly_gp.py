@@ -422,12 +422,18 @@ def run(settings: dict, output: Path) -> dict:
     selection = select_family(groups, coverage, search_settings['seed'], frozen)
     family = selection['family']
     search_settings['favored_terminals'] = selection['favored_terminals']
+    from quant.research.gp_hints import apply_soft_constraints, latest_hint, load_hint
+    hint_path = latest_hint()
+    hint = load_hint(hint_path)
+    search_settings = apply_soft_constraints(search_settings, hint)
     input_summary={'sample_symbols':labels['symbol'].n_unique(),'sample_months':labels['trade_date'].n_unique(),
                    **selection,'terminal_count':len(mapping),
                    'sample_first_signal':str(labels['trade_date'].min()),
                    'sample_last_signal':str(labels['trade_date'].max()),
                    'last_label_exit':str(labels['label_exit_date'].max()),'training_end':str(end),
-                   'finite_terminal_months':coverage}
+                   'finite_terminal_months':coverage,
+                   'gp_hints_path': str(hint_path) if hint_path else None,
+                   'gp_hints': search_settings.get('gp_hints')}
     # Version fields are opt-in on a newly frozen config. Missing fields preserve
     # legacy sampling/cache behavior, including recovery of batches 64--67.
     for key in ('calculation_context', 'expression_identity', 'context_max_subtrees',

@@ -147,6 +147,8 @@ def dispatch(config: Path, root: Path, *, now: dt.datetime | None = None,
         try:
             feedback = update_research_feedback(Path(policy))
             status['research_feedback'] = feedback['policy']['output_root']
+            from quant.research.gp_hints import update_from_feedback
+            status['gp_hints'] = update_from_feedback(feedback)
         except (OSError, ValueError, RuntimeError) as exc:
             status['research_feedback_error'] = f'{type(exc).__name__}: {exc}'
         save(root/'status.json', status)

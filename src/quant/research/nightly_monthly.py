@@ -95,6 +95,9 @@ def _run_month(settings: dict, output: Path) -> dict:
     reports = {}
     for method in ('equal_z', 'positive_mean_ic', 'lightgbm'):
         reports[method] = _constructions(output, method, data_root)
+    from quant.research.q10_plus_admitted import DEFAULT_CONFIG, run_for_month
+    reports['q10_plus_admitted'] = run_for_month(
+        month_output=output, data_root=data_root, config=DEFAULT_CONFIG)
     result = {'skipped': False, 'period': output.name, 'completed': True,
         'as_of': str(as_of),
         'output': str(output), 'methods': reports,
@@ -103,10 +106,11 @@ def _run_month(settings: dict, output: Path) -> dict:
         'selection_basis': 'entire_frozen_family_annual_known_outcomes_and_prefix_costs',
         'evidence': 'retrospective_adaptive_family_not_new_holdout'}
     lines = [f'# 月度模型 {output.name}', '',
-        '整库候选按每次年度拟合前已知结果重新准入；三个权重模型比较0.5预算与R4约束。', '',
+        '整库候选按每次年度拟合前已知结果重新准入；三个权重模型比较0.5预算与R4约束；另含 Q10+准入因子增量模型。', '',
         '|模型|0.5预算结论|R4结论|报告|', '|---|---|---|---|']
     for method, item in reports.items():
-        lines.append(f"|{method}|{item['conclusions']['budgeted']}|{item['conclusions']['constrained']}|"
+        constrained = item['conclusions'].get('constrained', 'n/a')
+        lines.append(f"|{method}|{item['conclusions']['budgeted']}|{constrained}|"
                      f"[{method}]({method}/report.md)|")
     (output/'report.md').write_text('\n'.join(lines)+'\n', encoding='utf-8')
     _dump(output/'summary.json', result)

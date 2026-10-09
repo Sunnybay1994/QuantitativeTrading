@@ -100,8 +100,27 @@ def records_from_run(run: Path) -> list[dict]:
         for key in ('rolling12_excess_min', 'rolling24_excess', 'best_month_share', 'monthly_hit_rate'):
             record[key] = _number(registry_diag.get(key))
         record['level'] = 'strategy'
+        from quant.reporting.sample_scope import attach_sample_fields, q10_oos_defaults
+        end = _parse_end(record.get('end'))
+        attach_sample_fields(record, settings=settings, config=config, data_end=end)
+        if 'q10' in record['experiment_id'].lower() or 'q10' in run.as_posix().lower():
+            defaults = q10_oos_defaults()
+            record['design_date'] = record.get('design_date') or defaults['design_date']
+            record['oos_start'] = defaults['oos_start']
+            from quant.reporting.sample_scope import months_between
+            record['oos_months'] = months_between(defaults['oos_start'], dt.date.today())
+            record['sample_scope'] = defaults['sample_scope']
         records.append(record)
     return records
+
+
+def _parse_end(value: object) -> dt.date | None:
+    if not value:
+        return None
+    try:
+        return dt.date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
 
 
 def factor_records_from_run(run: Path) -> list[dict]:
@@ -138,6 +157,8 @@ def factor_records_from_run(run: Path) -> list[dict]:
         for key in ('rolling12_excess_min', 'rolling24_excess', 'best_month_share', 'monthly_hit_rate'):
             record[key] = None
         record['level'] = 'factor'
+        from quant.reporting.sample_scope import attach_sample_fields
+        attach_sample_fields(record, settings={}, config=config, data_end=None)
         records.append(record)
     return records
 
