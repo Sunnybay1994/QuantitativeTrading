@@ -89,6 +89,7 @@ def extract_candidates(
                 "direction": direction,
                 "source_ref": source_id,
                 "rationale": rationale,
+                "feasibility": float(row.get("feasibility") or 0.8),
             })
         except Exception as exc:  # noqa: BLE001
             rejected.append({"index": index, "reason": str(exc)[:200]})

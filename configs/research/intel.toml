@@ -9,8 +9,10 @@ arxiv = true
 arxiv_limit = 20
 github = true
 github_limit = 10
+github_query = "quant OR quantitative factor language:Python stars:>10"
 rss_limit = 10
 rss = [
     "https://rss.arxiv.org/rss/q-fin.ST",
     "https://rss.arxiv.org/rss/q-fin.PM",
 ]
+# SSRN FEN: add a working Atom/RSS URL here when available; HTML browse pages are not feeds.

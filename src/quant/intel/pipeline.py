@@ -62,14 +62,25 @@ def _digest(week: str, items: list[dict[str, Any]], accepted: list[dict[str, Any
         "",
         f"扫描 {len(items)} 条，合法候选 {len(accepted)}，表达式拒绝 {len(rejected)}。",
         "",
-        "## 条目",
+        "|标题|来源|机制一句话|可实现性|是否入队|",
+        "|---|---|---|---:|---|",
     ]
     for row in items:
-        lines.append(f"- [{row['source']}] [{row['title']}]({row['url']})")
+        linked = next((a for a in accepted if row["id"] in str(a.get("source_ref", ""))), None)
+        mechanism = (linked or {}).get("rationale") or (row.get("summary") or "")[:80]
+        feasibility = (linked or {}).get("feasibility", 1.0 if linked else 0.0)
+        queued = "是" if linked else "否"
+        lines.append(
+            f"|[{row['title'][:60]}]({row['url']})|{row['source']}|{mechanism.replace('|', '/')}|"
+            f"{feasibility:.2f}|{queued}|"
+        )
     if accepted:
         lines += ["", "## 写入队列的候选"]
         for row in accepted:
-            lines.append(f"- `{row['id']}` `{row['expr']}` dir={row['direction']}")
+            lines.append(
+                f"- `{row['id']}` `{row['expr']}` dir={row['direction']} "
+                f"mechanism={(row.get('rationale') or '')[:80]}"
+            )
     if queue_path:
         lines += ["", f"队列文件：`{queue_path.as_posix()}`"]
     path = root / "digest.md"
@@ -84,6 +95,7 @@ def _digest(week: str, items: list[dict[str, Any]], accepted: list[dict[str, Any
         }, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    (root / "items.json").write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
 
 
@@ -91,12 +103,17 @@ def run_intel(
     *,
     config_path: Path | None = None,
     extract: bool = True,
+    dry_run: bool = False,
     getter: Callable[[str], str] | None = None,
     complete: Callable | None = None,
 ) -> dict[str, Any]:
     root = project_paths().root
     config = _load_toml(root / (config_path or DEFAULT_CONFIG))
     week = iso_week()
+    if dry_run:
+        digest = _digest(week, [], [], [], None)
+        return {"week": week, "items": 0, "accepted": 0, "rejected": 0,
+                "digest": str(digest), "queue": None, "dry_run": True}
     items = collect(config, getter=getter)
     seen = _load_seen(week)
     fresh = [row for row in items if row["id"] not in seen]
@@ -142,8 +159,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="quant intel", description="扫描公开研究并写入因子队列")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--no-extract", action="store_true", help="只抓取摘要，不调用 LLM")
+    parser.add_argument("--dry-run", action="store_true", help="不抓取、不调用 LLM，只写空 digest 骨架")
     args = parser.parse_args(argv)
-    result = run_intel(config_path=args.config, extract=not args.no_extract)
+    result = run_intel(config_path=args.config, extract=not args.no_extract, dry_run=args.dry_run)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 

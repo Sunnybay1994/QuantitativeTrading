@@ -131,7 +131,11 @@ def collect(config: dict[str, Any], *, getter: Fetcher | None = None) -> list[di
     if sources.get("arxiv", True):
         items.extend(fetch_arxiv(limit=int(sources.get("arxiv_limit", 20)), getter=getter))
     if sources.get("github", True):
-        items.extend(fetch_github(limit=int(sources.get("github_limit", 10)), getter=getter))
+        items.extend(fetch_github(
+            query=str(sources.get("github_query", "quantitative factor investing language:Python stars:>20")),
+            limit=int(sources.get("github_limit", 10)),
+            getter=getter,
+        ))
     for feed in list(sources.get("rss") or []):
         items.extend(fetch_rss(str(feed), getter=getter, limit=int(sources.get("rss_limit", 10))) )
     seen: set[str] = set()

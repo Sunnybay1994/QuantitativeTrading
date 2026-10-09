@@ -137,6 +137,7 @@ def main(argv: list[str] | None = None) -> int:
     intel.add_argument("action", choices=["scan"], nargs="?", default="scan")
     intel.add_argument("--config")
     intel.add_argument("--no-extract", action="store_true")
+    intel.add_argument("--dry-run", action="store_true")
 
     data = sub.add_parser("data", help="数据刷新")
     data.add_argument("command", choices=["refresh", "realtime", "market-snapshot", "minutes", "minute-history", "minute-factors", "baostock-history", "latency", "stock-execution-open", "monthly-execution-open"])
@@ -178,6 +179,8 @@ def main(argv: list[str] | None = None) -> int:
             extra.extend(["--config", args.config])
         if args.no_extract:
             extra.append("--no-extract")
+        if getattr(args, "dry_run", False):
+            extra.append("--dry-run")
         return intel_main(extra)
     key = (args.group, args.command)
     module = _DELEGATE.get(key)
