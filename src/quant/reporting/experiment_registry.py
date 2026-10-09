@@ -96,6 +96,10 @@ def records_from_run(run: Path) -> list[dict]:
             elif row['cost_multiplier'] == 1.:
                 excess = assessment.get('net_cagr_excess')
             record[f'excess_{suffix}'] = _number(excess)
+        registry_diag = (result.get('diagnostics') or {}).get('registry') or {}
+        for key in ('rolling12_excess_min', 'rolling24_excess', 'best_month_share', 'monthly_hit_rate'):
+            record[key] = _number(registry_diag.get(key))
+        record['level'] = 'strategy'
         records.append(record)
     return records
 
@@ -131,6 +135,9 @@ def factor_records_from_run(run: Path) -> list[dict]:
                       if key.startswith(prefix+'_') and key.endswith('_cagr_excess')]
             observed = [value for value in excess if value is not None]
             record[f'excess_{suffix}'] = min(observed) if observed else None
+        for key in ('rolling12_excess_min', 'rolling24_excess', 'best_month_share', 'monthly_hit_rate'):
+            record[key] = None
+        record['level'] = 'factor'
         records.append(record)
     return records
 

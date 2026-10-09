@@ -1,0 +1,28 @@
+# Frozen Q10 paper forward demotion / attention rules (A3). Do not edit after registration.
+id = "q10-sue-v2-forward-rules-20261010"
+registered_on = 2026-10-10
+account = "artifacts/paper/q10_sue_v2"
+benchmarks = ["all_market_equal_weight", "csi800_equal_weight", "510300"]
+primary_benchmark = "all_market_equal_weight"
+oos_start = 2026-10-08
+backtest_mdd = -0.316
+auto_trade = false
+
+[demote_to_research_only]
+# After 12 complete OOS months: rolling 12m 1x excess vs strongest listed benchmark < 0
+# and 2x excess < 0 for 3 consecutive month-ends.
+minimum_complete_oos_months = 12
+rolling_months = 12
+consecutive_negative_month_ends = 3
+require_both_cost_legs_negative = true
+
+[attention]
+# Notify only; no account action.
+cumulative_oos_excess_below = -0.05
+single_month_excess_below = -0.04
+
+[halt_review]
+# Requires explicit user confirmation before controls.json sell_only=true.
+mdd_multiple_of_backtest = 1.2
+backtest_mdd = -0.316
+threshold_mdd = -0.3792

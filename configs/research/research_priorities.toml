@@ -1,4 +1,5 @@
 # Research objectives are not admission thresholds.
+# Structured [[priority]] tables (B5). Consumers must prefer status=open only.
 output_root = "artifacts/research/feedback"
 continuous_root = "artifacts/research/continuous"
 sharpe_objective = 1.5
@@ -11,23 +12,179 @@ personal_account_target_holdings = 5
 # existing frozen batteries and observation accounts retain their input identity.
 maximum_account_validations = 2
 allowed_account_capitals_cny = [100000, 1000000]
-priorities = [
-  "Price-delay D1/D2/D3 is the next whole-family mechanism, preregistered in configs/research/price_delay_family_v1.toml and queued together in price_delay_family_v1_20261005.toml. Consume the original N1/N3/N4 outputs without an independent manual battery. Kernel and N3 integration receipts are in artifacts/research/price_delay_kernel_20261004_01/results and artifacts/research/price_delay_integration_20261005_01. Computable signal months do not establish formal statistical months: retain the original eligible universe, missing-signal selection effect, size/industry-neutral variant and fixed liquidity/turnover/reversal/momentum/beta/IVOL controls. Stop the family after statistical or incremental failure; do not change signs, windows, universe, Top-K or costs to rescue it. Only an original admission survivor can justify at most one CNY100000 few-holdings, minimum-CNY1-commission account with all three costs. GP context and verified corr/cov symmetry fixes apply only to newly frozen batches; preserve original batches, one-shot recipe consumption and search/admission budgets",
-  "After price delay, consume the fixed ANN/NANN/AMN return-seasonality family through the same N1/N3/N4 queue: configs/research/return_seasonality_family_v1.toml. Integration evidence is artifacts/research/return_seasonality_integration_20261005_01/report.md. Keep the shared complete 48-month cohort and next-target-month lags 13 through 60; expose the original eligible-universe coverage and selection effect. N3 saves matching arithmetic-mean and compounded long-term-return controls, and N4 requires these together with existing admitted, reversal, momentum, liquidity, beta and IVOL controls. Do not interpret signal coverage as paired statistical months or treat algebraically related signals as independent mechanisms. Preserve original thresholds and cost pruning; close failed mechanisms without window/sign/Top-K rescue. Only an admission survivor can motivate one registered CNY100000 personal account; none is started by this intake",
-  "The full-library market-state/mechanism diagnosis is complete at artifacts/research/market_mechanism_20261004_01/summary.json and report.md: all 386 factors, both variants, all 32 financial factors, frozen economic grouping, exact signal-close/next-open state alignment, annual and sparse-state coverage, saved size correlations, old model partial-IC identity checks and all three saved costs. Stop state-timing extension: no switching, threshold search or new personal account hypothesis follows from these descriptive slices. Value/dividend retains independent cross-year neutralized IC clues; cash-quality saved two-cost-multiple excess is negative and investment/accrual yearly evidence is weak. The bounded five-factor saved-account diagnosis is now complete at artifacts/research/value_family_holdings_20261004_01/summary.json and report.md: all 30 factor paths and 12 model references, common-window risk/three costs, actual year-end holdings, market covariation, quantity-qualified security cash-flow bridges and explicit unknown distributions/rejection profit drag. Close this value-family account extension without a new personal hypothesis, another same-family diagnosis, state/window/Top-K search or fee rescue; retain original factor admissions. Return candidate research to independent whole-family economic mechanisms through the existing battery. The corrected net shareholder cash payout/capital-allocation inventory is complete at artifacts/research/net_payout_feasibility_20261004_02/results/summary.json and report.md; version 01 is preserved but its incomplete dividend inventory is superseded. The existing m3_g1 dividend receipts do contain positive base_share and implementation/payment-date fields. Field presence does not establish eligible bases, unique events, revision-safe PIT or full-market coverage. Close the current whole-family data route because actual repurchase cash and parent common-share issuance cash histories remain unestablished, together with PIT/coverage gaps; official repurchase examples are cumulative and have different fee bases. D + R - I remains the definition, but no usable full-family historical panel, statistical/incremental result or three-cost result is established. Do not launch broad collection, substitute the existing dividend/issuance-boolean factors, or start a new account for this route. Continue the existing independent-family mining and battery. Legacy CNY1m/fee5 costs and original benchmark identities do not establish CNY100k/few-holdings/fee1 suitability. Preserve existing admissions, ongoing mining and auto_trade=false",
-  "The PEAD40 continuous account, security attribution, state slices and candidate-to-fill audit are complete. Consume artifacts/research/pead_account_verification_20260930_01/selection_funnel/report.md, summary.json and output_verification.json alongside attribution, results and existing_overlap in that parent directory. Most excluded candidates arrive when prior-close slots are full, and fills systematically favor earlier announcements; fixed hash nomination matches the registration. Filled SUE is not systematically weaker, so stop the proposed same-day rank/hash rescue. Slot-excluded candidates were not fully checked for same-day tradability: neither missed profits nor profitable larger portfolios or shorter holding periods are established. Do not turn descriptive arrival bias into another parameter search or account replay. Retain PEAD's paired development gain and its failed standalone Sharpe/underwater decision, with no promotion, combination, state switch or new-OOS claim. The versioned corporate-action benchmark repair and frozen PEAD re-evaluation are complete at artifacts/research/benchmark_corporate_repair_20261004_02/summary.json and evaluation_complete/report.md, using battery_monthly_gross_ca_20261004_v2. Retain the declared stale-book pending-claim valuation; do not treat it as observed fair value. Original inputs and accounts were preserved. Reuse actual daily/window differences and synchronization proofs; other consumers require an explicit dependency/hash match before any re-evaluation. Benchmark repair cannot reverse PEAD's standalone risk failures or a factor's statistical failure. Suspension coverage and reconstructed financial/industry vintages remain limitations",
-  "Consume the completed monthly battery stage at artifacts/research/residual_momentum_family_20260930_01. The fixed positive residual-momentum family improved relative IC against matched raw/scaled momentum but neither registered residual signal passed the unchanged primary statistical screen. Stop this local-proxy family without sign reversal, formation-window search or Top5 rescue; it has no cost/account validation or admission. Check verification/statistical_checks.json for the missing-month explanation before interpreting the full calendar span as complete neutralized history",
-  "The admitted-family personal-model comparison is complete at artifacts/research/admitted_model_pair_20260929_02. Its registered additive model hypothesis failed across all three costs; use summary.json, paired_signal_diagnostic.json and independent_account_check.json. Keep original factor admissions and frozen forward accounts, but stop this model extension without seed/window/weight rescue. Diagnose portfolio-relevant prediction and concentration from saved evidence before registering another distinct mechanism",
-  "Consume completed corrected calendar_allocation_20260929_03 (02 invalidated for calendar lookahead) and cross_asset_long_cycle_20260929_01 under artifacts/research. Stop the failed fixed turn-of-month hypothesis without date/sleeve tuning. Original B13 long-cycle return is not a risk-adjusted improvement: inspect its 2015 equity drawdown and risk_diagnostic.json; low correlation with Top5 is not crash protection. Retain B16 as defensive research and preserve original admission decisions",
-  "Batches through 63 formally completed with no new admissions; the original scheduler naturally resumed after sleep. Do not repeat completed batches. Low correlation alone had no positive incremental t and cannot rescue statistical rejection. Preserve ongoing mining, checkpoints and frozen configuration; do not modify batch64 or repeat N3/monthly accounts for this benchmark repair. The bounded R4 missing-held-controls diagnosis is complete at artifacts/research/r4_missing_controls_20261003/summary.json and report.md: two absent bar/basic rows with execution-date suspension evidence, and one deliberately exclusive industry-exit gap, causing five whole-account freezes. No join defect is established; keep unknowns and original decisions, stop R4 parameter rescue. Actual frozen-window returns are descriptive, not the causal cost of freezing. Corporate-action facts, bounded versioned correction and frozen PEAD comparisons are complete at artifacts/research/benchmark_corporate_repair_20261004_02/summary.json; use evaluation_complete, retain all standalone risk failures and do not repeat accounts.",
-  "New factor pipelines now freeze cost_statistical_gate: preserve the complete statistics/BH family, then retain two-version/three-cost evaluation for factors with any statistical pass. A fully rejected complete family may skip account benchmarks, factor costs and correlations, explicitly leaving costs unknown. Old frozen pipelines retain legacy execution. Actual admission-equivalence verification is artifacts/research/cost_statistical_gate_20260930_01/summary.json; this saves unnecessary computation, not evidence of profitability or permission to increase search/tune thresholds. N4 diagnostics are unchanged",
-  "October N5 actually completed at artifacts/research/nightly/monthly/2026-10/summary.json: 20 missing early-prefix cost factors were added with 141 existing histories reused, annual selection is complete, and 18 model/construction/cost paths passed continuous-account validation. Cash-exit repair evidence is artifacts/research/r4_cash_exit_fix_20261003/verification.json. Keep the legacy 96-month/Top50/CNY1m identity and REJECTED judgments; this is known-history development evidence, not a personal CNY100k strategy or new holdout. Distinguish missing stress-window holding evidence from failed active windows. The separate causal48/CNY100k/Top5 additive-factor model experiment remains completed and failed.",
-  "Consume artifacts/research/etf_history_extension_20260929_03/summary.json. The specific gold evidence gap and original three-ETF long-history replay are complete; distinguish defensive allocation from independent alpha. Retain the static control and do not sweep assets, ratios or lookbacks",
-  "Reuse completed pressure_reversal_high_amount_v1 and joint_q10_etf_20260924_03 evidence; neither is pending development or justification for tuning. Preserve the closed generic Top5 holding-buffer and V3 D1 tail-filter routes; retain original Top5 REJECTED and B16 forward observation",
-  "The 2026-09-30 scheduled daily genuinely completed with month-end forecasts and nine-account NAV/reference orders; source artifacts/daily/sue_v2/2026-09-30_213004_308087/summary.json. The pre-open route has published its real daily receipt with 2026-10-08 effectiveness and reused it during the holiday. On 2026-10-02 the intervention thread repaired evening publication to bind the exact completed-session daily receipt and actual finish clock, validate the next exchange date, and clear invalid receipts to incomplete/unknown. Code, regression tests and isolated publication checks on saved real daily/market artifacts are recorded in artifacts/research/followup_20261002_1530/summary.json. The original production pointer, market history, daily receipt and frozen batch statistics were preserved; no collection, account replay or indicator recomputation was started. This completes the local publication repair, not the next actual evening scheduler receipt: verify that when an eligible session completes. Pre-open semantics remain unchanged. This is not real-time classification, historical point-in-time availability, mature forward outcomes or evidence of cost-after regime gain; intraday same-clock coverage and strategy adaptation remain separate gaps. Do not tune state thresholds or enable switching to claim success",
-  "Continue existing intraday research only when point-in-time coverage, manual latency and exit capacity permit. Weekly 2026-09-28 generation completed with invalid formulas and no battery evaluation; preserve it rather than calling it zero admissions or retrying to manufacture success",
-  "Advance validated candidates into executable paper orders and reconciled NAV; continue evidence-led research without waiting for another user prompt"
+constraints = [
+  "Low correlation is not predictive evidence",
+  "No repeated Q1-Q9/P7/Q6 variants without a distinct preregistered mechanism",
+  "At most one preregistered portfolio hypothesis; at most CNY 100000 and 1000000 account tiers",
+  "Do not tune to observed validation/test results; independent future evidence remains necessary",
 ]
-constraints = ["Low correlation is not predictive evidence", "No repeated Q1-Q9/P7/Q6 variants without a distinct preregistered mechanism", "At most one preregistered portfolio hypothesis; at most CNY 100000 and 1000000 account tiers", "Do not tune to observed validation/test results; independent future evidence remains necessary"]
 risk_attribution = "artifacts/risk/r3_lightweight_20260914_03/report.md"
 sharpe_diagnostic = "artifacts/research/sharpe_diagnostic_20260916_01/diagnostic.json"
+q10_july_attribution = "artifacts/risk/q10_2026_07_attribution_20261009/report.md"
+
+[[priority]]
+id = "price_delay_family_v1"
+status = "open"
+mechanism = "Price-delay D1/D2/D3 whole-family mechanism via N1/N3/N4; no independent manual battery"
+evidence_paths = [
+  "configs/research/price_delay_family_v1.toml",
+  "configs/factors/queue/price_delay_family_v1_20261005.toml",
+  "artifacts/research/price_delay_kernel_20261004_01/results",
+  "artifacts/research/price_delay_integration_20261005_01",
+]
+stop_condition = "Statistical or incremental failure closes the family; no sign/window/universe/Top-K/cost rescue"
+next_action = "Consume original N1/N3/N4 outputs; only an admission survivor may justify one CNY100000 few-holdings fee1 account"
+updated = 2026-10-09
+
+[[priority]]
+id = "return_seasonality_family_v1"
+status = "open"
+mechanism = "ANN/NANN/AMN return-seasonality family through the same N1/N3/N4 queue after price delay"
+evidence_paths = [
+  "configs/research/return_seasonality_family_v1.toml",
+  "artifacts/research/return_seasonality_integration_20261005_01/report.md",
+]
+stop_condition = "Close failed mechanisms without window/sign/Top-K rescue; do not treat algebraically related signals as independent"
+next_action = "Keep shared complete 48-month cohort and lags 13-60; N4 requires long-term-return controls with admitted/reversal/momentum/liquidity/beta/IVOL"
+updated = 2026-10-09
+
+[[priority]]
+id = "market_mechanism_value_family"
+status = "closed"
+mechanism = "Full-library market-state diagnosis and value-family holdings/account extension"
+evidence_paths = [
+  "artifacts/research/market_mechanism_20261004_01/summary.json",
+  "artifacts/research/value_family_holdings_20261004_01/summary.json",
+  "artifacts/research/net_payout_feasibility_20261004_02/results/summary.json",
+]
+stop_condition = "Closed: no state-timing extension, no new value-family personal hypothesis, no D+R-I full-family panel"
+next_action = "none"
+updated = 2026-10-04
+
+[[priority]]
+id = "pead40_account"
+status = "closed"
+mechanism = "PEAD40 continuous account, attribution, state slices and candidate-to-fill audit"
+evidence_paths = [
+  "artifacts/research/pead_account_verification_20260930_01/selection_funnel/report.md",
+  "artifacts/research/benchmark_corporate_repair_20261004_02/summary.json",
+]
+stop_condition = "Closed: retain paired development gain and failed standalone Sharpe/underwater; no promotion or parameter rescue"
+next_action = "none"
+updated = 2026-10-04
+
+[[priority]]
+id = "residual_momentum_family"
+status = "closed"
+mechanism = "Fixed positive residual-momentum family vs matched raw/scaled momentum"
+evidence_paths = ["artifacts/research/residual_momentum_family_20260930_01"]
+stop_condition = "Closed: neither registered residual signal passed primary statistical screen"
+next_action = "none"
+updated = 2026-09-30
+
+[[priority]]
+id = "admitted_model_pair"
+status = "closed"
+mechanism = "Admitted-family personal-model additive comparison"
+evidence_paths = ["artifacts/research/admitted_model_pair_20260929_02"]
+stop_condition = "Closed: additive model failed all three costs; no seed/window/weight rescue"
+next_action = "none"
+updated = 2026-09-29
+
+[[priority]]
+id = "calendar_cross_asset"
+status = "closed"
+mechanism = "Turn-of-month calendar allocation and cross-asset long-cycle"
+evidence_paths = [
+  "artifacts/research/calendar_allocation_20260929_03",
+  "artifacts/research/cross_asset_long_cycle_20260929_01",
+]
+stop_condition = "Closed: failed fixed turn-of-month; B13 not risk-adjusted improvement; retain B16 defensive research"
+next_action = "none"
+updated = 2026-09-29
+
+[[priority]]
+id = "mining_and_r4_controls"
+status = "closed"
+mechanism = "Continuous mining batches through 63 and R4 missing-held-controls diagnosis"
+evidence_paths = [
+  "artifacts/research/r4_missing_controls_20261003/summary.json",
+  "artifacts/research/benchmark_corporate_repair_20261004_02/summary.json",
+]
+stop_condition = "Closed local diagnoses; do not modify completed batches or repeat N3/monthly for benchmark repair"
+next_action = "none"
+updated = 2026-10-04
+
+[[priority]]
+id = "cost_statistical_gate"
+status = "closed"
+mechanism = "cost_statistical_gate freeze: complete stats/BH then two-version/three-cost only if any statistical pass"
+evidence_paths = ["artifacts/research/cost_statistical_gate_20260930_01/summary.json"]
+stop_condition = "Closed: saves computation; not evidence of profitability"
+next_action = "none"
+updated = 2026-09-30
+
+[[priority]]
+id = "n5_2026_10"
+status = "closed"
+mechanism = "October N5 monthly models equal_z / positive_mean_ic / lightgbm"
+evidence_paths = [
+  "artifacts/research/nightly/monthly/2026-10/summary.json",
+  "artifacts/research/r4_cash_exit_fix_20261003/verification.json",
+]
+stop_condition = "Closed: REJECTED under legacy 96-month/Top50/CNY1m identity; not a personal CNY100k strategy"
+next_action = "Wait for B2 q10_plus_admitted in a later N5 month"
+updated = 2026-10-09
+
+[[priority]]
+id = "etf_history_extension"
+status = "closed"
+mechanism = "ETF history extension and gold evidence gap"
+evidence_paths = ["artifacts/research/etf_history_extension_20260929_03/summary.json"]
+stop_condition = "Closed: distinguish defensive allocation from independent alpha; no asset/ratio/lookback sweep"
+next_action = "none"
+updated = 2026-09-29
+
+[[priority]]
+id = "pressure_reversal_joint_q10"
+status = "closed"
+mechanism = "pressure_reversal_high_amount_v1 and joint_q10_etf evidence"
+evidence_paths = ["artifacts/research/joint_q10_etf_20260924_03"]
+stop_condition = "Closed: neither pending development; retain Top5 REJECTED and B16 forward observation"
+next_action = "none"
+updated = 2026-09-24
+
+[[priority]]
+id = "daily_publication_repair"
+status = "closed"
+mechanism = "Evening publication binds completed-session daily receipt; pre-open semantics unchanged"
+evidence_paths = [
+  "artifacts/daily/sue_v2/2026-09-30_213004_308087/summary.json",
+  "artifacts/research/followup_20261002_1530/summary.json",
+]
+stop_condition = "Local publication repair complete; not real-time classification or cost-after regime gain"
+next_action = "none"
+updated = 2026-10-02
+
+[[priority]]
+id = "llm_weekly_candidates"
+status = "open"
+mechanism = "Weekly LLM factor candidates with DSL validation retry (C2); intraday only when PIT/latency/capacity permit"
+evidence_paths = ["artifacts/research/weekly_candidates/"]
+stop_condition = "Illegal formula rate must fall below 20%; do not retry solely to manufacture admissions"
+next_action = "Attach operator table + library examples; compile() validate with <=2 retries; write raw/validated/rejected"
+updated = 2026-10-09
+
+[[priority]]
+id = "q10_paper_and_next_candidate"
+status = "open"
+mechanism = "Q10 paper forward evidence plus next independent family/strategy candidate toward a second PAPER_CANDIDATE"
+evidence_paths = [
+  "artifacts/paper/q10_sue_v2/",
+  "artifacts/risk/q10_2026_07_attribution_20261009/report.md",
+  "artifacts/models/r1_q10_rolling_20261010_01/",
+  "docs/优化工作清单_20261009.md",
+]
+stop_condition = "A3 demote/attention/halt rules once preregistered; do not start real-money without user confirmation"
+next_action = "Track monthly excess vs equal-weight; advance SUE family / GP incremental / q10_plus_admitted queues"
+updated = 2026-10-09

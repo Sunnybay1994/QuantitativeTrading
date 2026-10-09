@@ -1,0 +1,11 @@
+[research]
+id = "r1-q10-rolling-20261010"
+source = "artifacts/models/q10_sue_v2_turnover_budget_05_20260912_01"
+assessment_source = "artifacts/models/r1_q10_calendar_turnover_20260913_01"
+variant = "budgeted"
+benchmark = "all_market_equal_weight"
+benchmark_config = "configs/data/p8_return_benchmarks_20260912.toml"
+benchmark_start = 2018-01-01
+report_end = 2026-08-31
+rule = "roadmap_1.2_advisory_rolling_diagnostics_20261010"
+auto_trade = false

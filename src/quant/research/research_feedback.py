@@ -203,12 +203,43 @@ def update(config: Path) -> dict:
     return result
 
 
+def open_priorities(policy: dict) -> list[dict]:
+    """Return structured open priorities only (B5). Legacy string lists are rejected."""
+    rows = policy.get('priority')
+    if rows is None and 'priorities' in policy:
+        raise ValueError('research_priorities.toml must use [[priority]] tables; legacy priorities= strings removed')
+    if not isinstance(rows, list):
+        raise ValueError('missing [[priority]] tables')
+    required = ('id', 'status', 'mechanism', 'evidence_paths', 'stop_condition', 'next_action', 'updated')
+    open_rows = []
+    for row in rows:
+        if not all(key in row for key in required):
+            raise ValueError(f'priority missing fields: {row.get("id")}')
+        if row['status'] not in ('open', 'closed'):
+            raise ValueError(f'invalid priority status: {row.get("id")}')
+        if row['status'] == 'open':
+            open_rows.append({key: row[key] for key in required})
+    return open_rows
+
+
 def prompt_context(config: Path) -> dict:
     # A new request needs the recent batches, not a full report regeneration.
     result = build(config, maximum_completed=3)
-    return {**result, 'completed_comparison_scope': 'last_3_completed_batteries', 'completed_batteries': [
-        {k: v for k, v in batch.items() if k != 'candidate_diagnostics'}
-        for batch in result['completed_batteries']]}
+    policy = result['policy']
+    opens = open_priorities(policy)
+    # Drop bulky closed narrative from the LLM-facing policy payload.
+    compact_policy = {k: v for k, v in policy.items() if k != 'priority'}
+    compact_policy['open_priorities'] = opens
+    return {
+        **result,
+        'policy': compact_policy,
+        'open_priorities': opens,
+        'completed_comparison_scope': 'last_3_completed_batteries',
+        'completed_batteries': [
+            {k: v for k, v in batch.items() if k != 'candidate_diagnostics'}
+            for batch in result['completed_batteries']
+        ],
+    }
 
 
 def main() -> None:
