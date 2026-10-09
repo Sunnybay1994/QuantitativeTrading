@@ -81,6 +81,7 @@ _DELEGATE: dict[tuple[str, str], str] = {
     ("report", "dashboard"): "quant.reporting.research_dashboard",
     ("report", "q10-rolling"): "quant.reporting.q10_rolling_reassess",
     ("report", "q10-forward-demo"): "quant.reporting.q10_forward_rules_demo",
+    ("report", "funnel"): "quant.reporting.reject_funnel",
 }
 
 
