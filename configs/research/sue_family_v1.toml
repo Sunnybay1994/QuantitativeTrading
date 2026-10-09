@@ -1,0 +1,36 @@
+family = "sue_family_v1"
+registered_on = 2026-10-10
+source = "Q10 SUE v2 follow-on; PEAD40 arrival bias; Q7 state IC"
+kernel = "src/quant/factors/sue_family.py"
+signals = ["sue_decay_tau20", "sue_decay_tau40", "sue_mad8", "rsue8", "sue_prelim"]
+directions = [1, 1, 1, 1, 1]
+# S5 is diagnostic stratification in N3 (not a switchable overlay). S6 is N4 control set.
+s5_state_ic = "report_only_by_market_indicators_bull_bear; not a timing overlay"
+s6_incremental_controls = [
+  "pit_sue8_context_v2",
+  "ngp_804a131ba8cb5a88",
+  "ngp_bbcc07585bc35fbe",
+  "ngp_c8f096c17cdb7e19",
+  "reversal_20",
+  "report01_skip_month_momentum_n252",
+  "amihud_illiquidity_monthly_calendar80_v1",
+  "free_float_turnover_level_monthly_calendar80_v1",
+  "market_beta_60_vs_510300",
+  "ivol_ff3_60",
+]
+control_policy = "size_industry_neutral candidate plus fixed Q10 holding factor, three admitted ngp_*, reversal/momentum/liquidity/beta/IVOL"
+pipeline = "existing N1 queue, N3 full-market computation and battery, N4 incremental admission"
+battery_config = "configs/factors/battery.toml"
+minimum_formal_months = 96
+incremental_minimum_nw_t = 2.5
+stop_rule = "Statistical or incremental failure closes family; no sign flip, window sweep, tau grid, or Top-K rescue"
+account_policy = "no standalone account; any incremental survivor enters B2 q10_plus_admitted only"
+definitions = [
+  "S1 sue_decay_tau{20,40}: pit_sue8 * exp(-days_since_available/tau); two fixed columns",
+  "S2 sue_mad8: seasonal surprise with 8q MAD*1.4826 denominator",
+  "S3 rsue8: isomorphic surprise on revenue",
+  "S4 sue_prelim: SAMPLE_INSUFFICIENT until statement_event prelim surprise is uniquely defined",
+  "S5 state-stratified IC in N3 reports only",
+  "S6 N4 incremental vs Q10 + ngp controls",
+]
+auto_trade = false

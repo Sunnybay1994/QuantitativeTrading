@@ -1,0 +1,34 @@
+[[factors]]
+id = "sue_decay_tau20"
+expr = "sue_decay_tau20"
+direction = 1
+family = "sue_family_v1"
+source_ref = "registered_battery:configs/research/sue_family_v1.toml"
+
+[[factors]]
+id = "sue_decay_tau40"
+expr = "sue_decay_tau40"
+direction = 1
+family = "sue_family_v1"
+source_ref = "registered_battery:configs/research/sue_family_v1.toml"
+
+[[factors]]
+id = "sue_mad8"
+expr = "sue_mad8"
+direction = 1
+family = "sue_family_v1"
+source_ref = "registered_battery:configs/research/sue_family_v1.toml"
+
+[[factors]]
+id = "rsue8"
+expr = "rsue8"
+direction = 1
+family = "sue_family_v1"
+source_ref = "registered_battery:configs/research/sue_family_v1.toml"
+
+[[factors]]
+id = "sue_prelim"
+expr = "sue_prelim"
+direction = 1
+family = "sue_family_v1"
+source_ref = "registered_battery:configs/research/sue_family_v1.toml"

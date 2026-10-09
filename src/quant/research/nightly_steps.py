@@ -416,6 +416,14 @@ def admit(settings: dict, run: Path) -> dict:
                 industry_controls,on=['symbol','trade_date'],how='left',validate='1:1')
             family_result = check_industry_information_controls(controlled,admitted,incremental_statistics,identifier)
             passed = passed and family_result['passed']
+        if definition.family == 'sue_family_v1':
+            from quant.research.sue_family_controls import check_sue_family_controls
+            neutral = pl.read_parquet(batch/'evaluation'/'statistics'/'factors'/identifier/'monthly_scores.parquet').select(
+                'symbol', 'trade_date', pl.col('size_industry_neutral').alias('candidate'))
+            family_result = check_sue_family_controls(
+                panel.join(neutral, on=['symbol', 'trade_date'], how='left', validate='1:1'),
+                admitted, incremental_statistics)
+            passed = passed and family_result['passed']
         source = candidate_source(identifier, definition.source_ref)
         rows.append({'factor':identifier,'variant':variant,'battery_pass':battery_pass,'incremental_months':incremental['months'],
                      'incremental_nw_t':incremental['newey_west_t'],'maximum_rank_correlation':corr,

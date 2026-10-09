@@ -21,6 +21,13 @@ from quant.research.monthly_revenue_acceleration import build_monthly_revenue_ac
 from quant.research.monthly_revenue_growth import build_monthly_revenue_growth
 from quant.research.monthly_sue import build_monthly_sue
 from quant.research.monthly_sue_context_v2 import build_monthly_sue_context_v2
+from quant.research.monthly_sue_family import (
+    build_monthly_rsue8,
+    build_monthly_sue_decay_tau20,
+    build_monthly_sue_decay_tau40,
+    build_monthly_sue_mad8,
+    build_monthly_sue_prelim,
+)
 from quant.research.pit_quality_research import PITQualitySignalResult
 
 
@@ -50,6 +57,12 @@ DIRECT: dict[str, tuple[Callable[..., PITQualitySignalResult], dict[str, tuple[s
     "pit_revenue_acceleration": (build_monthly_revenue_acceleration, {"income": ("revenue",)}, None),
     "pit_sue8": (build_monthly_sue, {"income": ()}, None),
     "pit_sue8_context_v2": (build_monthly_sue_context_v2, {"income": ()}, None),
+    # A4 SUE family (configs/research/sue_family_v1.toml)
+    "sue_decay_tau20": (build_monthly_sue_decay_tau20, {"income": ()}, None),
+    "sue_decay_tau40": (build_monthly_sue_decay_tau40, {"income": ()}, None),
+    "sue_mad8": (build_monthly_sue_mad8, {"income": ()}, None),
+    "rsue8": (build_monthly_rsue8, {"income": ("revenue",)}, None),
+    "sue_prelim": (build_monthly_sue_prelim, {"income": ()}, None),
     "pit_annual_cash_profitability": (build_monthly_annual_cash_profitability, ANNUAL_CASH_FIELDS, 18),
     "pit_quarterly_roe_volatility": (build_monthly_quarterly_roe_stability,
                                      {"income": (), "balancesheet": ()}, 6),
