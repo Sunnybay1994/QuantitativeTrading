@@ -21,6 +21,13 @@ from quant.factors.library import FactorDefinition, load_library
 from quant.factors.search import canonical
 from quant.research.deepseek_batch_window import request_window
 from quant.research.deepseek_diagnostics import DiagnosticClient
+from quant.research.dsl_candidate_validate import (
+    illegal_rate,
+    legal_examples,
+    operator_table,
+    partition_candidates,
+    retry_messages,
+)
 from quant.research.generate_factor_candidates import Candidate, _envelope, validate_candidates
 from quant.research.score_forecast_text import cost_for, load_settings, score_one
 from quant.research.weekly_generation_feedback import generation_feedback, mechanism_shape
@@ -247,9 +254,12 @@ def run(config: Path, now: dt.datetime | None = None, client: Any = None,
         if not 1 <= maximum <= 50:
             raise ValueError('Invalid candidate count')
         search = design['search']
+        library_rows = [{'id': d.id, 'expression': d.expr, 'direction': d.direction} for d in definitions]
         request = {'scope': cfg.get('scope', 'Complement existing factor families'),
                    'proposal_policy': 'one_structure_v1',
-                   'library': [{'id': d.id, 'expression': d.expr} for d in definitions],
+                   'library': library_rows,
+                   'dsl_whitelist': operator_table(search['operators'], search['fields']),
+                   'legal_examples': legal_examples(library_rows, limit=3),
                    'family_gaps': gap_summary(Path(cfg['scorecard']), definitions),
                    'fields': search['fields'], 'operators': search['operators'],
                    'maximum_candidates': maximum, 'maximum_depth': search['maximum_depth'],
@@ -329,11 +339,56 @@ def run(config: Path, now: dt.datetime | None = None, client: Any = None,
             return finish(result['state'], error=result.get('error'), error_details=result.get('error_details_json'))
         payload = strict_json(result['scores_json'])
         atomic_json(output/'candidates.json', payload)
+        # C2: compile-partition + up to 2 repair retries when illegal rate is high.
+        existing = known_definitions(library, queue, root)
+        existing_keys = {canonical(d.expr) for d in existing}
+        fields = design['search']['fields']
+        operators = design['search']['operators']
+        examples = legal_examples(
+            [{'id': d.id, 'expression': d.expr, 'direction': d.direction} for d in existing],
+            limit=3,
+        )
+        raw, validated_compile, rejected_compile = partition_candidates(
+            payload, fields=fields, existing_keys=existing_keys)
+        attempts = 0
+        while illegal_rate(len(raw), len(rejected_compile)) > 0.2 and attempts < 2 and execute:
+            attempts += 1
+            repair = retry_messages(
+                frozen['messages'], rejected_compile,
+                operators=operators, fields=fields, examples=examples,
+            )
+            repair_key = hashlib.sha256(
+                (frozen['cache_key'] + f':repair{attempts}').encode()
+                + json.dumps(repair, ensure_ascii=False).encode()
+            ).hexdigest()
+            totals = budget_totals(cache, now)
+            bound_repair = cost_for(frozen['token_bound'], settings['max_tokens'], settings)
+            if totals['week_usd'] + bound_repair > weekly or totals['month_usd'] + bound_repair > monthly:
+                break
+            repaired = score_one(
+                '', settings=settings, cache=cache,
+                client=DiagnosticClient(client, repair),
+                max_requests=cache.totals()['requests'] + settings['max_attempts'],
+                max_usd=cache.totals()['charged_or_reserved_usd'] + bound_repair,
+                request_key=repair_key, token_bound=frozen['token_bound'],
+                parse=parse,
+            )
+            if repaired['state'] != 'success':
+                break
+            payload = strict_json(repaired['scores_json'])
+            raw, validated_compile, rejected_compile = partition_candidates(
+                payload, fields=fields, existing_keys=existing_keys)
+        ledger = Path('artifacts/research/weekly_candidates') / week
+        ledger.mkdir(parents=True, exist_ok=True)
+        atomic_json(ledger / 'raw.json', {'candidates': raw, 'repair_attempts': attempts})
+        atomic_json(ledger / 'validated.json', validated_compile)
+        atomic_json(ledger / 'rejected.json', rejected_compile)
+        report['dsl_illegal_rate'] = illegal_rate(len(raw), len(rejected_compile))
+        report['dsl_repair_attempts'] = attempts
         accepted_path = output/'accepted.json'
         if accepted_path.exists():
             accepted = json.loads(accepted_path.read_text(encoding='utf-8'))
         else:
-            existing = known_definitions(library, queue, root)
             accepted, trials = validate_candidates(payload, design=design,
                 existing=existing, idea_ids={'weekly_gap'},
                 source_ref=str((output/'candidates.json').resolve()), synthetic=False)
