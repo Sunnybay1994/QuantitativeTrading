@@ -37,5 +37,11 @@ def freeze_recipe(source: str, run: Path, final_run: Path, batches: list[Path]) 
             (run / shard.name).write_bytes(shard.read_bytes())
         return (f'predictive_priority_config = {json.dumps(str(final_run / "predictive_priority.toml"))}\n'
                 f'predictive_priority_manifest = {json.dumps(str(final_run / "predictive_manifest.json"))}\n' + source)
+    if recipe['version'] == 'incremental_residual_ic_v1':
+        if recipe.get('auto_trade') is not False:
+            raise ValueError('Incremental residual recipe requires auto_trade=false')
+        (run / 'incremental_residual.toml').write_text(recipe_text, encoding='utf-8')
+        return (f'incremental_residual_config = {json.dumps(str(final_run / "incremental_residual.toml"))}\n'
+                + source)
     (run / 'cross_stock.toml').write_text(recipe_text, encoding='utf-8')
     return f'cross_stock_config = {json.dumps(str(final_run / "cross_stock.toml"))}\n' + source

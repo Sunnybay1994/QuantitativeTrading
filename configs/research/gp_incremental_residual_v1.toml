@@ -1,0 +1,37 @@
+# B1: GP search objective = residual IC vs Q10 + admitted ngp controls (new runs only).
+version = "incremental_residual_ic_v1"
+registered_on = 2026-10-10
+objective = "Search factors orthogonal to Q10 scores and admitted ngp_* controls after size/industry residualization"
+training_end = 2025-12-31
+training_months = 72
+sample_groups = 3
+symbols_per_group = 300
+sample_seed = 20260913
+minimum_symbols_per_month = 100
+minimum_paired_coverage = 0.8
+minimum_valid_months_per_group = 48
+complexity_penalty = 0.0005
+maximum_batches = 1
+population_size = 200
+generations = 30
+max_depth = 5
+fitness = "mean residual-label IC - complexity_penalty * nodes - 0.5 * max_control_rank_correlation; cross_stock group_fitness retained"
+admission = "N3/N4 still use original labels and unchanged §1.2 / battery gates"
+activation = "Explicit new run only; never reinterpret existing checkpoints"
+stop_condition = "After 10 consecutive batches with 0 N4 admissions, revert one_shot_search_config to cross_stock_min_ic_v1 and record the switch"
+auto_trade = false
+# Reuse the registered cross-stock sampling contract for cohort grouping.
+cross_stock_groups = 3
+cross_stock_symbols_per_group = 300
+cross_stock_sample_seed = 20260913
+
+[residual]
+label_column = "label"
+# Controls are cross-sectionally regressed out of the label each month before GP IC.
+# q10_score + three admitted ngp factors + log_size + industry dummies (via demean within industry).
+control_columns = ["q10_score", "ngp_804a131ba8cb5a88", "ngp_bbcc07585bc35fbe", "ngp_c8f096c17cdb7e19", "log_size"]
+industry_column = "industry_l1"
+q10_predictions = "artifacts/models/q2_sue_context_v2_causal48_20260912_02/predictions/monthly_predictions.parquet"
+q10_score_column = "lightgbm"
+ngp_library = "configs/factors/library/auto"
+statistics = "artifacts/factors/battery_statistics_20260831_20260911"

@@ -2,11 +2,68 @@
 import datetime as dt
 from pathlib import Path
 
+import numpy as np
 import polars as pl
 
 from quant.data.factor_panels import available_sessions
 from quant.data.refresh_stocks import read_stock_data
 from quant.research.factor_labels import build_next_rebalance_open_labels
+
+
+def residual_labels(
+    labels: pl.DataFrame,
+    controls: pl.DataFrame,
+    *,
+    label_column: str = "label",
+    control_columns: list[str],
+    industry_column: str | None = "industry_l1",
+    minimum_symbols: int = 50,
+) -> pl.DataFrame:
+    """Cross-sectional OLS residual of ``label`` on controls (+ industry dummies) each month.
+
+    Used only as a GP search target (B1). Admission batteries keep the original label.
+    """
+    if labels.select("symbol", "trade_date").is_duplicated().any():
+        raise ValueError("duplicate label keys")
+    if controls.select("symbol", "trade_date").is_duplicated().any():
+        raise ValueError("duplicate control keys")
+    needed = ["symbol", "trade_date", *control_columns]
+    if industry_column:
+        needed.append(industry_column)
+    missing = [c for c in needed if c not in controls.columns]
+    if missing:
+        raise ValueError(f"controls missing columns: {missing}")
+    joined = labels.select("symbol", "trade_date", label_column).join(
+        controls.select(needed), on=["symbol", "trade_date"], how="inner", validate="1:1"
+    )
+    frames = []
+    for (day,), section in joined.partition_by("trade_date", as_dict=True).items():
+        valid = section.filter(pl.col(label_column).is_finite())
+        for col in control_columns:
+            valid = valid.filter(pl.col(col).is_finite())
+        if industry_column:
+            valid = valid.filter(pl.col(industry_column).is_not_null())
+        if valid.height < minimum_symbols:
+            continue
+        y = valid[label_column].to_numpy().astype(float)
+        x_cols = [np.ones((valid.height, 1)), valid.select(control_columns).to_numpy().astype(float)]
+        if industry_column:
+            industries = valid[industry_column].to_list()
+            levels = sorted(set(industries))
+            for level in levels[1:]:
+                x_cols.append(np.array([[1.0] if ind == level else [0.0] for ind in industries], dtype=float))
+        x = np.concatenate(x_cols, axis=1)
+        beta, *_ = np.linalg.lstsq(x, y, rcond=None)
+        resid = y - x @ beta
+        frames.append(valid.select("symbol", "trade_date").with_columns(pl.Series(label_column, resid)))
+    if not frames:
+        raise ValueError("no months produced residual labels")
+    out = pl.concat(frames).sort("trade_date", "symbol")
+    # Preserve extra label metadata columns when present.
+    meta = [c for c in labels.columns if c not in ("symbol", "trade_date", label_column)]
+    if meta:
+        out = out.join(labels.select("symbol", "trade_date", *meta), on=["symbol", "trade_date"], how="left")
+    return out
 
 
 def monthly_schedule(sessions: tuple[dt.date, ...], day: dt.date) -> tuple[dt.date, dt.date] | None:

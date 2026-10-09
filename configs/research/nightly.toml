@@ -2,7 +2,7 @@ prepare_month_inputs = true
 n4_correlation_engine = "pairwise_sorted_counts_v1"
 slice_checkpoint_seconds = 180
 research_policy = "configs/research/research_priorities.toml"
-one_shot_search_config = "configs/research/gp_stock_time_stability_v3.toml"
+one_shot_search_config = "configs/research/gp_incremental_residual_v1.toml"
 # Frozen search/admission rules; optional weekly LLM generation has independent budgets.
 weekly_candidates_config = "configs/research/weekly_factor_candidates.toml"
 output_root = "artifacts/research/nightly"

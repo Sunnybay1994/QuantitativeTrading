@@ -164,7 +164,8 @@ def search(panel: pl.DataFrame, labels: pl.DataFrame, mapping: dict[str, str], s
         context_evaluator.verify_sources()
     cross_stock = settings.get('cross_stock')
     assignments = {}
-    objective = cross_stock['version'] if cross_stock else 'pooled_mean_ic_v1'
+    objective = (settings.get('search_objective')
+                 or (cross_stock['version'] if cross_stock else 'pooled_mean_ic_v1'))
     if any(row.get('search_objective', 'pooled_mean_ic_v1') != objective for row in records):
         raise ValueError('GP search objective changed; use a new run directory')
     if cross_stock:
@@ -452,7 +453,22 @@ def run(settings: dict, output: Path) -> dict:
         input_summary['input_identity'] = evaluator.identity
         from quant.data.gp_context_inputs import dump
         dump(summary_path, input_summary)
-    winners = search(panel, labels, mapping, search_settings, output, family=family, **context_options)
+    residual_cfg = settings.get('incremental_residual')
+    search_labels = labels
+    if residual_cfg:
+        from quant.research.gp_residual_labels import apply_residual_search_labels
+        # Search uses residual labels; N3/N4 keep original saved monthly_sample.parquet.
+        search_labels = apply_residual_search_labels(
+            labels=labels, panel=panel, residual_cfg=residual_cfg, output=output/'residual')
+        search_settings = {**search_settings, 'search_objective': residual_cfg.get('version', 'incremental_residual_ic_v1')}
+        input_summary['search_objective'] = search_settings['search_objective']
+        input_summary['residual_controls'] = list(residual_cfg.get('control_columns', []))
+        dump_summary = summary_path.with_suffix('.tmp')
+        dump_summary.write_text(json.dumps(input_summary, indent=2), encoding='utf-8')
+        dump_summary.replace(summary_path)
+    winners = search(panel, search_labels, mapping, search_settings, output, family=family, **context_options)
     return {'candidates':len(winners), 'terminal_count':len(mapping), 'family':family,
             'sample_symbols':labels['symbol'].n_unique(), 'sample_months':labels['trade_date'].n_unique(),
+            'search_objective': search_settings.get('cross_stock', {}).get('version')
+                or search_settings.get('search_objective', 'pooled_mean_ic_v1'),
             'recovery_diagnostics':diagnostics}

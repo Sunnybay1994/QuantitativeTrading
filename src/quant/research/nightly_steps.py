@@ -48,11 +48,22 @@ def resolve_settings(settings: dict, run: Path) -> dict:
             result['cross_stock'] = tomllib.loads(Path(settings['cross_stock_config']).read_text(encoding='utf-8'))
             result['training_end'] = result['cross_stock']['training_end']
         if settings.get('predictive_priority_config'):
-            if settings.get('cross_stock_config'):
+            if settings.get('cross_stock_config') or settings.get('incremental_residual_config'):
                 raise ValueError('A batch cannot combine two registered GP objectives')
             result['predictive_priority'] = tomllib.loads(
                 Path(settings['predictive_priority_config']).read_text(encoding='utf-8'))
             result['training_end'] = result['predictive_priority']['training_end']
+        if settings.get('incremental_residual_config'):
+            if settings.get('cross_stock_config') or settings.get('predictive_priority_config'):
+                raise ValueError('A batch cannot combine two registered GP objectives')
+            residual = tomllib.loads(Path(settings['incremental_residual_config']).read_text(encoding='utf-8'))
+            result['incremental_residual'] = residual.get('residual', {})
+            result['incremental_residual']['version'] = residual['version']
+            for key in ('q10_predictions', 'q10_score_column', 'ngp_library', 'statistics',
+                        'label_column', 'control_columns', 'industry_column'):
+                if key in residual.get('residual', {}):
+                    result['incremental_residual'][key] = residual['residual'][key]
+            result['training_end'] = residual['training_end']
         choices=[]
         for completed in Path(settings['output_root']).glob('monthly/*/summary.json'):
             row=json.loads(completed.read_text(encoding='utf-8'))
