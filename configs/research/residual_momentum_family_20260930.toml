@@ -1,0 +1,44 @@
+[research]
+id = "residual_momentum_family_20260930"
+registered_on = 2026-09-29
+auto_trade = false
+hypothesis = "Firm-specific continuation after removing contemporaneously estimated market, size and value exposures differs from raw momentum and simple volatility scaling. Evaluate the fixed literature family together, never reverse its direction or choose a formation window from results."
+source = "https://repub.eur.nl/pub/22252/ResidualMomentum-2011.pdf"
+china_source = "https://doi.org/10.1016/j.frl.2018.07.009"
+evidence = "Retrospective historical reconstruction, not a new holdout or paper-trading result."
+
+[data]
+refresh_config = "configs/data/refresh.toml"
+statistics_source = "artifacts/factors/battery_statistics_20260831_20260911"
+battery_config = "configs/factors/battery.toml"
+warmup_start = 2006-01-01
+start = 2010-01-01
+as_of = 2026-08-31
+universe = "all observed historical SH/SZ A-share symbols, including delisted; never the 2019 Top800"
+monthly_price = "exact exchange month-end close times adjustment factor; adjacent complete calendar months only; not a separately audited cash-dividend wealth index"
+missing_month = "null, never last available close or zero return"
+
+[signal]
+regression_months = 36
+regression = "OLS with intercept on m-35..m; residual excludes alpha"
+primary = "residual_momentum_12_1_ff3_36"
+secondary = "residual_momentum_6_skip1_ff3_36"
+primary_formation = "sum residuals m-11..m-1 divided by their sample standard deviation, 11 observations"
+secondary_formation = "sum residuals m-6..m-1 divided by their sample standard deviation, 6 observations"
+controls = ["raw_momentum_12_1", "raw_momentum_6_skip1", "vol_scaled_momentum_12_1", "vol_scaled_momentum_6_skip1"]
+direction = 1
+risk_free_monthly = 0.0
+risk_free_caveat = "Local zero-rf factor proxy, not historical Chinese Treasury returns; portfolio reporting still includes rf0/rf2."
+factor_proxy = "Monthly 2x3 lagged-size and positive inverse-PB sorts; preceding month-end cap weights; 30/70 value breakpoints, median size, minimum 10 per bucket; missing bucket remains null. This local proxy is not an official FF3 series."
+effective_time = "signal after month-end close, earliest execution next exchange open"
+
+[evaluation]
+first_stage = "Existing battery monthly preprocessing, next-open rebalance labels, annual IC, NW-HAC, groups, persistence and BH over all six signals/both variants. Common finite universe for paired residual/raw/scaled comparisons."
+primary_variant = "size_industry_neutral"
+gates = "Unchanged configs/factors/battery.toml. Monthly stage alone is not factor admission."
+stop = "If neither residual signal passes the unchanged primary statistical screen, stop this fixed positive-momentum family; no sign flip, window scan or Top-K rescue."
+continue = "Only an unchanged statistical survivor can proceed through remaining full battery decay, redundancy, executable three-cost comparison and one CNY100k fee1 account; keep historical and future evidence separate."
+cost_multipliers = [0.5, 1.0, 2.0]
+account_initial_cash = 100000
+account_commission_min = 1.0
+account_target_holdings = 5

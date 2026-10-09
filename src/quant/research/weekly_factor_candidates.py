@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import datetime as dt
 import hashlib
 import json
@@ -22,6 +23,7 @@ from quant.research.deepseek_batch_window import request_window
 from quant.research.deepseek_diagnostics import DiagnosticClient
 from quant.research.generate_factor_candidates import Candidate, _envelope, validate_candidates
 from quant.research.score_forecast_text import cost_for, load_settings, score_one
+from quant.research.weekly_generation_feedback import generation_feedback, mechanism_shape
 
 SHANGHAI = ZoneInfo('Asia/Shanghai')
 PROMPT = '''Generate only a JSON object with a candidates array. Each candidate has exactly
@@ -32,7 +34,68 @@ Propose complementary mechanisms for underrepresented factor families. Target ma
 correlation below 0.6 against the existing library, but correlation MUST be measured locally:
 do not claim this target, profitability, Sharpe, or admission has been achieved. No tuning on
 observed test performance. Respect maximum_candidates, maximum_history and maximum_depth.
-The complete library is supplied for deduplication. An empty candidates array is allowed.'''
+The complete library is supplied for deduplication. Library expressions are examples of
+existing work, not extensions to the allowed operator list (for example, never use rank
+unless rank is explicitly allowed). Submit at most one expression per economic mechanism;
+changing only numeric windows or coefficients is not a new mechanism. Do not infer actual
+small-order investor flow from daily volume proxies. Fewer distinct candidates are better
+than a parameter grid. Recent generation_feedback records local definition failures, not
+failed return tests. Use it to avoid repeating invalid operators and numeric variants;
+do not relax the current whitelist or infer that syntax acceptance proves predictive value.
+An empty candidates array is allowed.'''
+
+
+def distinct_mechanisms(accepted: list[dict], existing: list[FactorDefinition]) -> tuple[list[dict], list[dict]]:
+    seen = {mechanism_shape(row.expr) for row in existing}
+    retained, rejected = [], []
+    for row in accepted:
+        shape = mechanism_shape(row['expr'])
+        if shape in seen:
+            rejected.append({'id': row['id'], 'expression': row['expr'],
+                             'reason': 'parameter_only_variant_of_existing_or_same_batch_structure'})
+        else:
+            retained.append(row)
+            seen.add(shape)
+    return retained, rejected
+
+
+def request_messages(request: dict, maximum_bytes: int) -> tuple[list[dict], bytes]:
+    """Pack new prompts without altering full evidence or the factor library."""
+    request = deepcopy(request)
+    # Benchmark identity lists repeat at batch and family level. Keep exact
+    # variant counts and source scorecards before dropping useful DSL examples.
+    research = request.get('research_feedback', {})
+    for batch in research.get('completed_batteries', []):
+        for summary in [batch, *batch.get('families', {}).values()]:
+            missing = summary.get('benchmark_incomplete')
+            if isinstance(missing, list) and len(missing) > 2 and batch.get('source'):
+                summary['benchmark_incomplete_summary'] = {
+                    'variant_count': len(missing), 'examples': missing[:2],
+                    'omitted_variant_count': len(missing)-2, 'source': batch['source']}
+                del summary['benchmark_incomplete']
+                research['prompt_detail_policy'] = (
+                    'Benchmark-incomplete lists are summarized with exact variant counts, '
+                    'non-exhaustive examples and source scorecards. Missing benchmark '
+                    'is not prediction failure. All other evidence is retained.')
+
+    def encode():
+        messages = [{'role': 'system', 'content': PROMPT},
+                    {'role': 'user', 'content': json.dumps(request, ensure_ascii=False)}]
+        return messages, json.dumps(messages, ensure_ascii=False).encode()
+    messages, encoded = encode()
+    feedback = request.get('generation_feedback', {})
+    for week in reversed(feedback.get('weeks', [])):
+        if len(encoded) <= maximum_bytes:
+            break
+        feedback['detail_truncated'] = True
+        week.pop('rejected_examples', None)
+        week.pop('previously_accepted_examples', None)
+        messages, encoded = encode()
+    while len(encoded) > maximum_bytes and feedback.get('weeks'):
+        feedback['detail_truncated'] = True
+        feedback['weeks'].pop()
+        messages, encoded = encode()
+    return messages, encoded
 
 
 def atomic_json(path: Path, value: Any) -> None:
@@ -151,6 +214,12 @@ def run(config: Path, now: dt.datetime | None = None, client: Any = None,
     if summary_path.exists():
         previous = json.loads(summary_path.read_text(encoding='utf-8'))
         if previous.get('completed'):
+            if previous.get('accepted_count') == 0 and previous.get('queued_ids') == []:
+                # Completed generation with no admissible expressions has no
+                # pending battery. Preserve the original frozen receipt on disk.
+                return {**previous, 'evaluated': False,
+                        'evaluation_status': 'not_applicable_no_candidates',
+                        'maxcorr_lt_0_6_fraction': None}
             feedback_path = summary_path.parent/'evaluation_feedback.json'
             if feedback_path.exists():
                 feedback = json.loads(feedback_path.read_text(encoding='utf-8'))
@@ -179,17 +248,17 @@ def run(config: Path, now: dt.datetime | None = None, client: Any = None,
             raise ValueError('Invalid candidate count')
         search = design['search']
         request = {'scope': cfg.get('scope', 'Complement existing factor families'),
+                   'proposal_policy': 'one_structure_v1',
                    'library': [{'id': d.id, 'expression': d.expr} for d in definitions],
                    'family_gaps': gap_summary(Path(cfg['scorecard']), definitions),
                    'fields': search['fields'], 'operators': search['operators'],
                    'maximum_candidates': maximum, 'maximum_depth': search['maximum_depth'],
-                   'maximum_history': search['maximum_history']}
+                   'maximum_history': search['maximum_history'],
+                   'generation_feedback': generation_feedback(root, before_week=week)}
         if cfg.get('research_policy'):
             from quant.research.research_feedback import prompt_context
             request['research_feedback'] = prompt_context(Path(cfg['research_policy']))
-        messages = [{'role': 'system', 'content': PROMPT},
-                    {'role': 'user', 'content': json.dumps(request, ensure_ascii=False)}]
-        encoded = json.dumps(messages, ensure_ascii=False).encode()
+        messages, encoded = request_messages(request, settings['max_input_bytes'])
         key = hashlib.sha256(week.encode()+encoded+json.dumps(request_key_settings(settings), sort_keys=True).encode()).hexdigest()
         # Publish the request last, so an interrupted freeze is safely rebuilt.
         for source, frozen_name in ((cfg['design'], 'design.toml'), (cfg['scoring_config'], 'scoring.toml')):
@@ -198,11 +267,28 @@ def run(config: Path, now: dt.datetime | None = None, client: Any = None,
             temporary.replace(output/frozen_name)
         atomic_json(request_path, {'messages': messages, 'cache_key': key, 'token_bound': len(encoded)+1024,
                                   'input_bytes': len(encoded), 'maximum': maximum,
-                                  'cache': str(Path(cfg['cache']).resolve())})
+                                  'cache': str(Path(cfg['cache']).resolve()), 'proposal_policy': 'one_structure_v1'})
     frozen = json.loads(request_path.read_text(encoding='utf-8'))
     if frozen['cache'] != str(Path(cfg['cache']).resolve()):
         raise ValueError('Resume must use the original shared cache')
     settings = load_settings(output/'scoring.toml')
+    # A frozen request must not become permanently unresumable solely because
+    # its pricing-check date ages. Accept a freshly checked *identical* tariff
+    # and request configuration, preserving the original prompt/cache identity.
+    if (local.date()-settings['pricing_checked']).days not in range(8):
+        current_path = Path(cfg['scoring_config'])
+        current = load_settings(current_path)
+        same = all(current[key] == value for key, value in settings.items() if key != 'pricing_checked')
+        if same and (local.date()-current['pricing_checked']).days in range(8):
+            receipt = output/f"pricing_revalidation_{current['pricing_checked']}.toml"
+            payload = current_path.read_bytes()
+            if receipt.exists() and receipt.read_bytes() != payload:
+                raise ValueError('Conflicting pricing revalidation receipt')
+            if not receipt.exists():
+                receipt.write_bytes(payload)
+            report['pricing_revalidation'] = {'source': str(receipt),
+                'sha256': hashlib.sha256(payload).hexdigest(), 'checked': str(current['pricing_checked'])}
+            settings = {**settings, 'pricing_checked': current['pricing_checked']}
     design = tomllib.loads((output/'design.toml').read_text(encoding='utf-8'))
     report.update(cache_key=frozen['cache_key'], input_bytes=frozen['input_bytes'],
                   maximum_candidates=frozen['maximum'])
@@ -247,9 +333,13 @@ def run(config: Path, now: dt.datetime | None = None, client: Any = None,
         if accepted_path.exists():
             accepted = json.loads(accepted_path.read_text(encoding='utf-8'))
         else:
+            existing = known_definitions(library, queue, root)
             accepted, trials = validate_candidates(payload, design=design,
-                existing=known_definitions(library, queue, root), idea_ids={'weekly_gap'},
+                existing=existing, idea_ids={'weekly_gap'},
                 source_ref=str((output/'candidates.json').resolve()), synthetic=False)
+            if frozen.get('proposal_policy') == 'one_structure_v1':
+                accepted, parameter_variants = distinct_mechanisms(accepted, existing)
+                atomic_json(output/'mechanism_deduplication.json', parameter_variants)
             atomic_json(output/'validation.json', trials)
             atomic_json(accepted_path, accepted)
         queue.mkdir(parents=True, exist_ok=True)
@@ -274,7 +364,8 @@ def run(config: Path, now: dt.datetime | None = None, client: Any = None,
                     temporary.write_text(content, encoding='utf-8')
                     temporary.rename(target)
             published.append(row['id'])
-        return finish('completed', completed=True, accepted_count=len(accepted), queued_ids=published)
+        return finish('completed', completed=True, accepted_count=len(accepted), queued_ids=published,
+                      evaluation_status='pending' if published else 'not_applicable_no_candidates')
     except (ValueError, RuntimeError, OSError) as exc:
         finish('error', error=f'{type(exc).__name__}: {exc}')
         raise

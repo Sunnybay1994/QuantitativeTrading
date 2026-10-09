@@ -19,10 +19,32 @@ _DELEGATE: dict[tuple[str, str], str] = {
     ("data", "realtime"): "quant.data.realtime",
     ("data", "market-snapshot"): "quant.data.market_snapshot",
     ("research", "factor-family-states"): "quant.research.factor_family_states",
+    ("research", "market-mechanism"): "quant.research.market_mechanism",
+    ("research", "value-family-holdings"): "quant.research.value_family_holdings",
+    ("research", "net-payout-feasibility"): "quant.research.net_payout_feasibility",
+    ("research", "statement-event-family"): "quant.research.statement_event_family",
+    ("research", "turnover-reference-family"): "quant.research.turnover_reference_family",
+    ("research", "turnover-reference-verify"): "quant.research.turnover_reference_verify",
+    ("research", "suspension-execution-audit"): "quant.research.suspension_execution_audit",
+    ("data", "stock-execution-open"): "quant.data.publish_stock_open_inputs",
+    ("data", "monthly-execution-open"): "quant.research.monthly_open_activation",
+    ("research", "monthly-execution-open-verify"): "quant.research.monthly_open_verify",
+    ("research", "industry-information-coverage"): "quant.research.industry_information_coverage",
+    ("research", "industry-information-verify"): "quant.research.industry_information_verify",
     ("research", "joint-account"): "quant.research.joint_account",
     ("research", "joint-integer"): "quant.research.joint_integer",
     ("research", "personal-top5"): "quant.research.personal_top5",
+    ("research", "admitted-model-pair"): "quant.research.admitted_model_pair",
+    ("research", "residual-momentum"): "quant.research.residual_momentum_research",
+    ("research", "pead-event-inputs"): "quant.research.pead_event_inputs",
+    ("research", "pead-event-market-inputs"): "quant.research.pead_event_market_inputs",
+    ("research", "pead-account"): "quant.research.pead_account",
+    ("research", "benchmark-repair"): "quant.research.benchmark_corporate_repair",
+    ("research", "benchmark-repair-evaluate"): "quant.research.benchmark_repair_evaluation",
     ("research", "etf-measurement"): "quant.research.etf_measurement",
+    ("research", "etf-history-extension"): "quant.research.etf_history_extension",
+    ("research", "calendar-allocation"): "quant.research.calendar_allocation",
+    ("research", "cross-asset-long-cycle"): "quant.research.cross_asset_long_cycle",
     ("research", "etf-delayed-replay"): "quant.research.etf_delayed_replay",
     ("research", "etf-envelope-report"): "quant.research.etf_envelope_report",
     ("data", "latency"): "quant.data.market_latency",
@@ -36,6 +58,7 @@ _DELEGATE: dict[tuple[str, str], str] = {
     ("research", "etf-execution-stress"): "quant.research.etf_execution_stress",
     ("data", "minutes"): "quant.data.recent_minutes",
     ("data", "minute-history"): "quant.data.minute_history",
+    ("data", "minute-factors"): "quant.data.refresh_minute_factors",
     ("data", "baostock-history"): "quant.data.baostock_history",
     ("factors", "compute"): "quant.factors.compute",
     ("research", "daily"): "quant.research.scheduled_observation",
@@ -113,14 +136,14 @@ def main(argv: list[str] | None = None) -> int:
     intel.add_argument("--no-extract", action="store_true")
 
     data = sub.add_parser("data", help="数据刷新")
-    data.add_argument("command", choices=["refresh", "realtime", "market-snapshot", "minutes", "minute-history", "baostock-history", "latency"])
+    data.add_argument("command", choices=["refresh", "realtime", "market-snapshot", "minutes", "minute-history", "minute-factors", "baostock-history", "latency", "stock-execution-open", "monthly-execution-open"])
     factors = sub.add_parser("factors", help="因子计算")
     factors.add_argument("command", choices=["compute"])
     research = sub.add_parser("research", help="投研流水线")
     research.add_argument("command", choices=[
-        "daily", "nightly", "mining", "cycle", "gp", "feedback", "recovery-audit", "personal-top5",
-        "reversal-readiness", "batch-diagnosis", "predictive-inputs", "intraday-afternoon", "minutes", "mechanisms",
-        "allocation-attribution", "mechanism-detail", "etf-manual-init", "etf-execution-stress", "market-indicators", "factor-family-states", "joint-account", "joint-integer", "etf-measurement", "etf-delayed-replay", "etf-envelope-report",
+        "daily", "nightly", "mining", "cycle", "gp", "feedback", "recovery-audit", "personal-top5", "admitted-model-pair", "residual-momentum", "pead-event-inputs", "pead-event-market-inputs", "pead-account", "benchmark-repair", "benchmark-repair-evaluate",
+        "reversal-readiness", "batch-diagnosis", "predictive-inputs", "intraday-afternoon", "minutes", "mechanisms", "statement-event-family", "suspension-execution-audit", "turnover-reference-family", "turnover-reference-verify", "monthly-execution-open-verify", "industry-information-coverage", "industry-information-verify",
+        "allocation-attribution", "mechanism-detail", "etf-manual-init", "etf-execution-stress", "market-indicators", "factor-family-states", "market-mechanism", "value-family-holdings", "net-payout-feasibility", "joint-account", "joint-integer", "etf-measurement", "etf-history-extension", "calendar-allocation", "cross-asset-long-cycle", "etf-delayed-replay", "etf-envelope-report",
     ])
     paper = sub.add_parser("paper", help="模拟盘与人工订单")
     paper.add_argument("command", choices=["q10", "orders", "manual", "b16-forward"])

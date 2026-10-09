@@ -106,9 +106,22 @@ def run(config,output,reuse_daily=None):
     output.mkdir(parents=True,exist_ok=False);(output/'config.toml').write_bytes(config.read_bytes());hashes={}
     def capture(p):hashes[str(p)]=hashlib.sha256(p.read_bytes()).hexdigest();return p
     def read(p):return pl.read_parquet(capture(p))
-    frames={name:read(source/f'{name}.parquet') for name in ['bars','prices','calendar','instruments','dividends']}
+    history = Path(spec['history_inputs']) if spec.get('history_inputs') else source
+    history_receipt = None
+    if history != source:
+        history_receipt = json.loads(capture(history/'receipt.json').read_text(encoding='utf-8'))
+        if history_receipt.get('auto_trade') is not False or history_receipt.get('classification') != 'RESEARCH_ONLY':
+            raise ValueError('Invalid extended history receipt')
+        for filename, digest in history_receipt['source_hashes'].items():
+            if hashlib.sha256(Path(filename).read_bytes()).hexdigest() != digest:
+                raise ValueError(f'Extended history source changed: {filename}')
+    frames={name:read(history/f'{name}.parquet') for name in ['bars','prices','calendar','instruments','dividends']}
     bars,prices,calendar,dividends=[frames[n] for n in ['bars','prices','calendar','dividends']]
     quality_rows,cross=quality(bars,prices,dividends,output,read)
+    if history_receipt:
+        for row in cross:
+            row['earlier_total_return_status'] = 'action_evidence_reconciled_early_bond_gold_daily_price_independence_unverified'
+        pd.DataFrame(cross).to_csv(output/'daily_source_comparison.csv',index=False)
     names=tuple(sorted(bars['symbol'].unique()));strategy=InverseVolatilityStrategy(names,60,name='dynamic')
     # Verify saved dynamic targets from the immutable daily total-return input.
     regenerated=monthly_targets(prices,calendar,start=spec['common_start'],end=spec['end'],candidates=names,name='dynamic',strategy=strategy)
@@ -120,10 +133,16 @@ def run(config,output,reuse_daily=None):
     hashes.update(minute_hashes)
     settings=tomllib.loads(capture(Path('configs/research/b16_cross_asset_inverse_volatility60_20260909.toml')).read_text())
     settings['portfolio']['initial_cash']=spec['capital']
+    if history_receipt:
+        if spec.get('historical_cost_policy') != 'unchanged_fixed_cost_sensitivity_not_verified_historical_broker_fees':
+            raise ValueError('Earlier ETF history requires an explicit fixed-cost assumption')
+        # Extend the *same assumed fee amounts* in all three cost scenarios.
+        # This does not claim a historical broker tariff or change live costs.
+        settings['costs']['etf']['effective_from'] = bars['trade_date'].min()
     if reuse_daily is not None:
         previous=tomllib.loads((reuse_daily/'config.toml').read_text())
-        for field in ['capital','source','common_start','end','cost_multipliers','extension','fixed_extension']:
-            if previous[field]!=spec[field]:raise ValueError('Cannot reuse different daily experiment')
+        for field in ['capital','source','common_start','end','cost_multipliers','extension','fixed_extension','history_inputs','historical_cost_policy']:
+            if previous.get(field)!=spec.get(field):raise ValueError('Cannot reuse different daily experiment')
         prior_manifest=json.loads((reuse_daily/'manifest.json').read_text())
     sessions=calendar.filter((pl.col('market')=='SH')&pl.col('is_open'))['date'].sort().to_list()
     available=sorted(set(bars['trade_date']))
@@ -191,7 +210,8 @@ def run(config,output,reuse_daily=None):
                            ('annual_monthly',periods),('continuous_events',events)]:pd.DataFrame(rows).to_csv(output/f'{filename}.csv',index=False)
     result=dict(classification='RESEARCH_ONLY',auto_trade=False,results=summaries,quality=quality_rows,
         minute_execution=minute,target_reconstruction_error=error,
-        longer_history='Published validated inputs extend from 2023; older TDX closes exist but total-return/corporate-action reconciliation not established',
+        historical_cost_policy=spec.get('historical_cost_policy'),
+        longer_history=history_receipt or 'Published validated inputs extend from 2023; older TDX closes exist but total-return/corporate-action reconciliation not established',
         B16_forward_unchanged=True,limitations=['Already seen development history, not independent OOS.',
             'Low close-return volatility alone does not prove liquid executable prices.',
             'No full-window price extremes used to generate signals or quantities.',
@@ -205,7 +225,8 @@ def run(config,output,reuse_daily=None):
         'asset_attribution.csv将股票ETF、债券ETF、黄金ETF的实际价格损益、成交至收盘损益、分红和费用逐日相加，与账户净值变动核对。'
         '它是会计贡献，不是独立alpha；动态减静态也包含真实仓位、整手和费用交互。\n\n'
         'daily_quality.csv、total_return_reconstruction.csv核对现金分红总收益、重复/缺失/零成交、平价和自相关；daily_source_comparison.csv比较已有TDX日线。'
-        '旧TDX日线更长，但2023年前复权/公司行动未与合格总收益序列核对，未把裸价格当总收益。\n\n'
+        + ('本次机械延伸已消费独立公司行动证据，来源、哈希和剩余限制见输入receipt.json；债券及黄金ETF早期日价尚无逐日独立报价复核。\n\n' if history_receipt else
+        '旧TDX日线更长，但2023年前复权/公司行动未与合格总收益序列核对，未把裸价格当总收益。\n\n') +
         '年度/月度及静态基准超额见annual_monthly.csv，完整连续压力段见continuous_events.csv。rf2为年有效2%逐日扣除。\n\n'
         '## 人工延迟覆盖\n\n'+json.dumps(minute,ensure_ascii=False,indent=2)+'\n\n'
         '1/3分钟均在同一09:30–09:35窗口内，保守极值法不能分辨二者，不声称精确成交。'

@@ -24,14 +24,16 @@ from quant.data.refresh_etf_prices import refresh as refresh_etfs
 from quant.data.refresh_stocks import read_stock_data, refresh as refresh_stocks
 from quant.data.stock_execution_inputs import restore_historical_instruments
 from quant.data.stock_paper_inputs import capture_stock_paper_day
-from quant.data.storage import CleanInstrumentStore, RawStore
+from quant.data.storage import RawStore
+from quant.data.monthly_open_inputs import daily_open_facts, digest, extension_version, policy_of, validate_binding
+from quant.data.stock_open_suspensions import POLICY
 
 
 def _toml(path: Path) -> dict:
     return tomllib.loads(path.read_text(encoding='utf-8'))
 
 
-def _write_toml(path: Path, settings: dict) -> None:
+def _toml_text(settings: dict) -> str:
     """The existing runtime has tomllib only; serialize the small configuration subset."""
     def value(item: Any) -> str:
         if isinstance(item, dt.date):
@@ -55,8 +57,12 @@ def _write_toml(path: Path, settings: dict) -> None:
             if isinstance(item, dict):
                 section(item, f'{prefix}.{key}' if prefix else key)
     section(settings)
+    return '\n'.join(lines)
+
+
+def _write_toml(path: Path, settings: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text('\n'.join(lines), encoding='utf-8')
+    path.write_text(_toml_text(settings), encoding='utf-8')
 
 
 def _execution_end(settings: dict, data_root: Path) -> dt.date:
@@ -162,6 +168,7 @@ def inspect_month_inputs(*, settings: dict, as_of: dt.date) -> dict[str, str]:
     except (OSError, ValueError, KeyError, pl.exceptions.PolarsError) as error:
         missing['execution'] = str(error)
     try:
+        validate_binding(settings, root)
         load_return_benchmarks(config=Path(settings['return_benchmark_config']), data_root=root,
             start=dt.date(2015, 1, 5), end=as_of)
     except (OSError, ValueError, pl.exceptions.PolarsError) as error:
@@ -180,6 +187,10 @@ def inspect_month_inputs(*, settings: dict, as_of: dt.date) -> dict[str, str]:
 def _daily_extensions(settings: dict, as_of: dt.date, output: Path, version: str) -> dict:
     root = Path(settings.get('data_root', 'data'))
     original = root/'clean/stock_execution'/settings['execution_snapshot']
+    target = root/'clean/stock_execution'/version
+    limit_target = root/'clean/factor_execution'/version
+    if target.exists() or limit_target.exists():
+        raise ValueError('Execution extension target already exists; frozen inputs cannot be overwritten')
     old_end = _execution_end(settings, root)
     sessions = available_sessions(root, as_of)
     # Per-ex-date captures use fresh stock_basic requests and dated dividend
@@ -203,31 +214,64 @@ def _daily_extensions(settings: dict, as_of: dt.date, output: Path, version: str
                 kinds.add(raw_path.parent.parent.name)
         if kinds != {'dividend', 'stock_basic'}:
             raise ValueError('Daily capture lacks fresh dividend or stock_basic provenance')
-    target = root/'clean/stock_execution'/version
-    target.mkdir(parents=True, exist_ok=True)
+    target.mkdir(parents=True, exist_ok=False)
+    opening = policy_of(original) == POLICY
+    open_facts, open_receipts = [], []
+    source_hashes = {}
+    if opening:
+        source_paths = [p for p in original.glob('*') if p.is_file()]
+        for day, path in zip(dates, daily, strict=True):
+            source_paths.extend(p for p in path.glob('*') if p.is_file())
+            provenance = json.loads((path/'sources.json').read_text(encoding='utf-8'))
+            for name in provenance['raw']:
+                raw = Path(name)
+                if raw.parent.parent.name in ('dividend', 'stock_basic'):
+                    meta = raw.with_suffix('.json')
+                    if digest(raw) != json.loads(meta.read_text(encoding='utf-8'))['checksum_sha256']:
+                        raise ValueError('Mutable monthly execution receipt checksum differs')
+                    source_paths.extend([raw, meta])
+            bars = read_stock_data(data_root=root, config=Path(settings['refresh_config']),
+                table='bar_1d', start=day, end=day).select('symbol', 'trade_date', 'volume')
+            facts, receipt = daily_open_facts(path, day, bars)
+            open_facts.append(facts)
+            open_receipts.append(receipt)
+        source_hashes = {str(p): digest(p) for p in sorted(set(source_paths))}
+        for receipt in open_receipts:
+            source_hashes.update(receipt['raw_hashes'])
     for name, key in [('limits', 'trade_date'), ('suspensions', 'trade_date'), ('dividends', 'ex_date')]:
         old = pl.read_parquet(original/f'{name}.parquet').filter(~pl.col(key).is_in(dates))
         extras = [pl.read_parquet(path/f'{name}.parquet').filter(
             pl.col('symbol').str.contains(r'^[0-9]{6}\.(SH|SZ)$')) for path in daily]
+        if name == 'suspensions' and opening:
+            extras = [frame.filter(pl.col('open_status') != 'clear_at_open') for frame in open_facts]
         if name == 'dividends':
             extras = [frame.with_columns(pl.lit(True).alias('adjust_share_price')) for frame in extras]
-        combined = pl.concat([old, *extras], how='diagonal_relaxed')
+        combined = pl.concat([old, *extras], how='vertical_relaxed' if name == 'suspensions' and opening else 'diagonal_relaxed')
         if combined.select('symbol', key).is_duplicated().any():
             raise ValueError(f'Duplicate extended {name}')
         combined.write_parquet(target/f'{name}.parquet')
+    if opening:
+        old_facts = pl.read_parquet(original/'suspension_open_facts.parquet').filter(~pl.col('trade_date').is_in(dates))
+        pl.concat([old_facts, *open_facts], how='vertical_relaxed').write_parquet(target/'suspension_open_facts.parquet')
+        (target/'suspension_receipts.json').write_text(json.dumps(open_receipts, indent=2), encoding='utf-8')
+        policy_of(target)
     instruments = restore_historical_instruments(pl.read_parquet(daily[-1]/'instruments.parquet'))
     old_instruments = pl.read_parquet(original/'instruments.parquet')
     instruments = pl.concat([old_instruments.join(instruments.select('symbol'), on='symbol', how='anti'), instruments], how='vertical_relaxed')
     instruments.write_parquet(target/'instruments.parquet')
-    CleanInstrumentStore(root/'clean/instrument').upsert(instruments)
-    names = pl.read_parquet(daily[-1]/'names.parquet')
-    names.write_parquet(root/'clean/stock_name_history/data.parquet')
     (target/'sources.json').write_text(json.dumps({'previous': str(original), 'daily': [str(p) for p in daily],
         'captured_through': str(as_of)}, indent=2), encoding='utf-8')
-    (target/'coverage.json').write_text(json.dumps({'as_of': str(as_of), 'start': str(settings.get('history_start', '2010-01-01'))}), encoding='utf-8')
+    coverage = {'as_of': str(as_of), 'start': str(settings.get('history_start', '2010-01-01'))}
+    if opening:
+        coverage.update(suspension_policy=POLICY, previous_snapshot=original.name,
+            corporate_action_dates=[str(d) for d in dates], instrument_capture=str(daily[-1]),
+            dated_mutable_receipts_verified=True)
+        if any(digest(Path(name)) != expected for name, expected in source_hashes.items()):
+            raise ValueError('Execution extension sources changed')
+        (target/'source_manifest.json').write_text(json.dumps(source_hashes, indent=2), encoding='utf-8')
+    (target/'coverage.json').write_text(json.dumps(coverage), encoding='utf-8')
     battery = _toml(Path(settings['battery_config']))
     old_limits = root/'clean/factor_execution'/battery['data']['limits_snapshot']
-    limit_target = root/'clean/factor_execution'/version
     old_years = {int(p.name[5:]): p for p in old_limits.glob('year=*')}
     for year in range(battery['start'].year, as_of.year+1):
         frames = [pl.read_parquet(old_years[year]/'limits.parquet')] if year in old_years else []
@@ -306,7 +350,8 @@ def _extend_returns(settings: dict, as_of: dt.date, output: Path, version: str) 
     stats.mkdir(parents=True, exist_ok=True)
     original_stats = Path(settings.get('reference_statistics', settings['statistics'][0]))
     previous_battery = _toml(original_stats/'battery.toml')
-    battery['run']['as_of'] = as_of
+    # Base battery configs have no run metadata until an evaluation is prepared.
+    battery.setdefault('run', {})['as_of'] = as_of
     _write_toml(stats/'battery.toml', battery)
     for year in range(battery['start'].year, as_of.year+1):
         dest = stats/f'inputs/{year}'
@@ -346,15 +391,42 @@ def _extend_returns(settings: dict, as_of: dt.date, output: Path, version: str) 
     return {**settings, 'battery_config': str(output/'battery.toml'), 'return_benchmark_config': str(output/'return_benchmarks.toml')}
 
 
+def _bind_price_delay_index(settings: dict, output: Path) -> dict:
+    """Bind opt-in monthly factors to this run's verified official-index version."""
+    refresh = _toml(Path(settings['refresh_config']))
+    keys = [key for key in ('price_delay_index_version', 'statement_event_index_version') if key in refresh]
+    if not keys:
+        return settings
+    version = _toml(Path(settings['measurement_config']))['index_version']
+    if all(refresh[key] == version for key in keys):
+        return settings
+    for key in keys:
+        refresh[key] = version
+    path = output/'refresh_price_delay.toml'
+    _write_toml(path, refresh)
+    return {**settings, 'refresh_config': str(path)}
+
+
 def ensure_nightly_month_inputs(*, settings: dict, as_of: dt.date, output: Path) -> dict:
     """Prepare full SH/SZ monthly inputs; resume same cutoff, or fail explicitly."""
     current = copy.deepcopy(settings)
     root = Path(current.get('data_root', 'data'))
     output.mkdir(parents=True, exist_ok=True)
     request = output/'request.json'
-    if request.exists() and json.loads(request.read_text())['as_of'] != str(as_of):
-        raise ValueError('Monthly input checkpoint belongs to another as_of')
-    request.write_text(json.dumps({'as_of': str(as_of)}), encoding='utf-8')
+    identity = {key: str(current[key]) for key in ('execution_snapshot', 'battery_config',
+        'return_benchmark_config', 'measurement_config')}
+    if request.exists():
+        previous_request = json.loads(request.read_text())
+        if previous_request['as_of'] != str(as_of):
+            raise ValueError('Monthly input checkpoint belongs to another as_of')
+        if 'sources' in previous_request and previous_request['sources'] != identity:
+            raise ValueError('Monthly input checkpoint belongs to another source/policy')
+        if 'sources' not in previous_request:
+            original = root/'clean/stock_execution'/current['execution_snapshot']
+            if original.exists() and policy_of(original) == POLICY:
+                raise ValueError('Legacy checkpoint cannot be reused for opening-policy inputs')
+    else:
+        request.write_text(json.dumps({'as_of': str(as_of), 'sources': identity}), encoding='utf-8')
     saved = output/'settings.json'
     if saved.exists():
         current.update(json.loads(saved.read_text(encoding='utf-8')))
@@ -362,18 +434,28 @@ def ensure_nightly_month_inputs(*, settings: dict, as_of: dt.date, output: Path)
         raise ValueError('Monthly as_of is not a completed exchange session')
     missing = inspect_month_inputs(settings=current, as_of=as_of)
     if not missing:
+        current = _bind_price_delay_index(current, output)
+        saved.write_text(json.dumps({k: current[k] for k in ('execution_snapshot','battery_config','refresh_config','return_benchmark_config','measurement_config')}, indent=2), encoding='utf-8')
         (output/'coverage.json').write_text(json.dumps({'as_of': str(as_of), 'missing': {}, 'network_required': False}), encoding='utf-8')
         return current
-    version = f'nightly_month_{as_of:%Y%m%d}'
+    version = extension_version(current, as_of)
+    # Interrupted publications remain intact; a new attempt gets a new directory.
+    while (root/'clean/stock_execution'/version).exists() or (root/'clean/factor_execution'/version).exists():
+        version += '_retry'
     refresh_stocks(end=as_of, data_root=root, artifact_root=output, config=Path(current['refresh_config']))
-    if any(key in missing for key in ('execution', 'factor_limits', 'returns')):
+    if any(key in missing for key in ('execution', 'factor_limits')):
         current = _daily_extensions(current, as_of, output, version)
         refresh_industry(data_root=root, end=as_of)
         saved.write_text(json.dumps({k: current[k] for k in ('execution_snapshot','battery_config','refresh_config','return_benchmark_config','measurement_config')}, indent=2), encoding='utf-8')
+        if policy_of(root/'clean/stock_execution'/current['execution_snapshot']) == POLICY:
+            # The former compatibility proof identifies the former execution
+            # snapshot. Publish an explicitly bound index for this extension.
+            missing['returns'] = 'Opening-policy execution source changed'
     if 'returns' in missing:
         current = _extend_returns(current, as_of, output, version)
     if 'official_indexes' in missing:
         current = _extend_official(current, as_of, output, version)
+    current = _bind_price_delay_index(current, output)
     paths = {k: current[k] for k in ('execution_snapshot','battery_config','refresh_config','return_benchmark_config','measurement_config')}
     saved.write_text(json.dumps(paths, indent=2), encoding='utf-8')
     remaining = inspect_month_inputs(settings=current, as_of=as_of)

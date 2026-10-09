@@ -703,7 +703,7 @@ def _build_references(
                 "close": float(bar["close"]),
             }
             continue
-        if not state.suspended:
+        if not state.suspended and not state.open_unknown:
             raise ValueError("BACKTEST_TRADABLE_BAR_MISSING")
         position = positions.get(symbol)
         carried_mark = (

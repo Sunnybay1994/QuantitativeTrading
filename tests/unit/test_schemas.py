@@ -698,11 +698,12 @@ class TestBacktestAccountEvidenceSchemas:
             )
 
     @pytest.mark.parametrize("side", ["BUY", "SELL"])
-    def test_suspension_rejection_is_valid_for_both_sides(self, side: str) -> None:
+    @pytest.mark.parametrize("reason", ["SUSPENDED", "OPEN_UNKNOWN"])
+    def test_no_bar_rejection_is_valid_for_both_sides(self, side: str, reason: str) -> None:
         BacktestRejectionSchema.validate(
             self.rejection().with_columns(
                 pl.lit(side).alias("side"),
-                pl.lit("SUSPENDED").alias("reason"),
+                pl.lit(reason).alias("reason"),
             )
         )
 

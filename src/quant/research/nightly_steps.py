@@ -175,7 +175,9 @@ def evaluate(settings: dict, run: Path) -> dict:
             shutil.copyfile(path, destination)
     if not list(library.glob('*.toml')):
         return {'candidates':0, 'evaluated':0, 'reason':'No queued or completed GP candidates'}
-    batch_id = hashlib.sha256(str(settings['as_of']).encode()+b''.join(p.read_bytes() for p in sorted(library.glob('*.toml')))).hexdigest()[:16]
+    from quant.data.monthly_open_inputs import evaluation_source_identity
+    batch_id = hashlib.sha256(str(settings['as_of']).encode()+b''.join(p.read_bytes() for p in sorted(library.glob('*.toml')))
+        + evaluation_source_identity(settings)).hexdigest()[:16]
     batch = Path(settings['batch_root'])/batch_id
     batch.mkdir(parents=True, exist_ok=True)
     frozen = batch/'library'
@@ -203,6 +205,9 @@ def evaluate(settings: dict, run: Path) -> dict:
     compute(data_root=Path(settings['data_root']), refresh_config=Path(settings['refresh_config']),
             library=frozen, selected='all', start=settings['history_start'], end=settings['as_of'],
             artifact_root=batch/'compute')
+    from quant.research.gp_context_alignment import verify_new_gp_values
+    verify_new_gp_values(definitions, data_root=Path(settings['data_root']),
+                         output=batch/'gp_context_alignment.json')
     result = run_pipeline(config=Path(settings['battery_config']), library=frozen,
         as_of=settings['as_of'], output=batch/'evaluation', data_root=Path(settings['data_root']),
         execution_snapshot=settings['execution_snapshot'], workers=settings['workers'],
@@ -311,6 +316,36 @@ def admit(settings: dict, run: Path) -> dict:
         raise ValueError('Invalid completed admission candidates')
     destination = Path(settings['library'])/'auto'
     destination.mkdir(exist_ok=True)
+    seasonality_controls=None
+    if any(d.family == 'return_seasonality_calendar_y2_5_v1' for d in definitions.values()):
+        paths=sorted((batch/'compute'/'seasonality_controls').glob('year=*.parquet'))
+        if not paths:
+            raise ValueError('Seasonality N3 long-term control receipt missing')
+        seasonality_controls=pl.concat([pl.read_parquet(path) for path in paths])
+    turnover_controls = None
+    if any(d.family == 'turnover_reference_adjusted_price_v1' for d in definitions.values()):
+        from quant.data.factor_control_receipts import pending_control_start
+        from quant.factors.turnover_reference import CONTROLS as turnover_columns
+        paths = []
+        for year in range(settings['history_start'].year, settings['as_of'].year+1):
+            path = batch/'compute/turnover_reference_controls'/f'year={year}.parquet'
+            if pending_control_start(path, start=max(settings['history_start'], dt.date(year, 1, 1)),
+                    end=min(settings['as_of'], dt.date(year, 12, 31)), columns=turnover_columns) is not None:
+                raise ValueError('Turnover-reference N3 matched control receipt missing or incomplete')
+            paths.append(path)
+        turnover_controls = pl.concat([pl.read_parquet(path) for path in paths])
+    industry_controls = None
+    if any(d.family == 'industry_return_information_v1' for d in definitions.values()):
+        from quant.data.factor_control_receipts import pending_control_start
+        from quant.factors.industry_information import CONTROL
+        paths = []
+        for year in range(settings['history_start'].year,settings['as_of'].year+1):
+            path = batch/'compute/industry_information_controls'/f'year={year}.parquet'
+            if pending_control_start(path,start=max(settings['history_start'],dt.date(year,1,1)),
+                    end=min(settings['as_of'],dt.date(year,12,31)),columns=(CONTROL,)) is not None:
+                raise ValueError('Industry-information N3 matched control receipt missing or incomplete')
+            paths.append(path)
+        industry_controls = pl.concat([pl.read_parquet(path) for path in paths])
     for identifier, definition in definitions.items():
         if identifier in completed:
             continue
@@ -322,15 +357,59 @@ def admit(settings: dict, run: Path) -> dict:
             'symbol','trade_date',pl.col(variant).alias('candidate'))
         scored=panel.join(values,on=['symbol','trade_date'],how='left',validate='1:1')
         incremental = incremental_statistics(scored,'candidate',admitted,1)
-        corr = maximum_correlation(scored,'candidate',reference_ids)
+        from quant.research.n4_correlation import admission_correlation
+        corr = admission_correlation(scored, 'candidate', reference_ids,
+            engine=settings.get('n4_correlation_engine', 'legacy'), legacy=maximum_correlation)
         battery_pass = bool(variants['factor_admitted'][0])
         passed = (battery_pass and incremental['months']>=96 and
                   incremental['newey_west_t'] is not None and incremental['newey_west_t']>=2.5 and corr<.6)
+        family_result = {}
+        if definition.family == 'price_delay_hou_moskowitz_2005_v1':
+            # Fixed whole-family controls, evaluated within the original N4.
+            # Neutral scores retain the original battery's size/industry adjustment.
+            from quant.research.price_delay_controls import check_price_delay_controls
+            neutral = pl.read_parquet(batch/'evaluation'/'statistics'/'factors'/identifier/'monthly_scores.parquet').select(
+                'symbol', 'trade_date', pl.col('size_industry_neutral').alias('candidate'))
+            family_result = check_price_delay_controls(panel.join(neutral, on=['symbol','trade_date'],
+                how='left', validate='1:1'), admitted, incremental_statistics)
+            passed = passed and family_result['passed']
+        if definition.family == 'return_seasonality_calendar_y2_5_v1':
+            from quant.research.seasonality_controls import check_seasonality_controls
+            neutral=pl.read_parquet(batch/'evaluation'/'statistics'/'factors'/identifier/'monthly_scores.parquet').select(
+                'symbol','trade_date',pl.col('size_industry_neutral').alias('candidate'))
+            controlled=panel.join(neutral,on=['symbol','trade_date'],how='left',validate='1:1').join(
+                seasonality_controls,on=['symbol','trade_date'],how='left',validate='1:1')
+            family_result=check_seasonality_controls(controlled,admitted,incremental_statistics)
+            passed=passed and family_result['passed']
+        if definition.family == 'statement_event_reaction_v1':
+            from quant.research.statement_event_controls import check_statement_controls
+            neutral = pl.read_parquet(batch/'evaluation'/'statistics'/'factors'/identifier/'monthly_scores.parquet').select(
+                'symbol', 'trade_date', pl.col('size_industry_neutral').alias('candidate'))
+            family_result = check_statement_controls(panel.join(neutral, on=['symbol', 'trade_date'],
+                how='left', validate='1:1'), admitted, incremental_statistics)
+            passed = passed and family_result['passed']
+        if definition.family == 'turnover_reference_adjusted_price_v1':
+            from quant.research.turnover_reference_controls import check_turnover_reference_controls
+            neutral = pl.read_parquet(batch/'evaluation/statistics/factors'/identifier/'monthly_scores.parquet').select(
+                'symbol', 'trade_date', pl.col('size_industry_neutral').alias('candidate'))
+            controlled = panel.join(neutral, on=['symbol', 'trade_date'], how='left', validate='1:1').join(
+                turnover_controls, on=['symbol', 'trade_date'], how='left', validate='1:1')
+            family_result = check_turnover_reference_controls(controlled, admitted, incremental_statistics)
+            passed = passed and family_result['passed']
+        if definition.family == 'industry_return_information_v1':
+            from quant.research.industry_information_controls import check_industry_information_controls
+            raw = pl.read_parquet(batch/'evaluation/statistics/factors'/identifier/'monthly_scores.parquet').select(
+                'symbol','trade_date',pl.col('raw').alias('candidate'),
+                pl.col('size_industry_neutral').alias('industry_neutral'))
+            controlled = panel.join(raw,on=['symbol','trade_date'],how='left',validate='1:1').join(
+                industry_controls,on=['symbol','trade_date'],how='left',validate='1:1')
+            family_result = check_industry_information_controls(controlled,admitted,incremental_statistics,identifier)
+            passed = passed and family_result['passed']
         source = candidate_source(identifier, definition.source_ref)
         rows.append({'factor':identifier,'variant':variant,'battery_pass':battery_pass,'incremental_months':incremental['months'],
                      'incremental_nw_t':incremental['newey_west_t'],'maximum_rank_correlation':corr,
                      'complete_control_fraction':incremental['complete_control_fraction'],
-                     'factor_admitted':passed,'source':source})
+                     'factor_admitted':passed,'source':source, **({'family_controls': family_result} if family_result else {})})
         if passed:
             text = (batch/'library'/f'{identifier}.toml').read_text(encoding='utf-8')+f'source = "{source}"\n'
             target = destination/f'{identifier}.toml'

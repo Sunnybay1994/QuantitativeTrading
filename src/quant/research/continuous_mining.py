@@ -9,7 +9,7 @@ import tomllib
 from pathlib import Path
 
 from quant.research import nightly
-from quant.research.mining_retry import code_fingerprint, failure_kind
+from quant.research.mining_retry import code_fingerprint, failure_kind, admission_dependency
 
 
 def read(path: Path) -> dict:
@@ -95,10 +95,15 @@ def dispatch(config: Path, root: Path, *, now: dt.datetime | None = None,
     monthly_due = pending_month(tomllib.loads((run/'config.toml').read_text(encoding='utf-8')),
                                 run, day=now.date())
     new_month = monthly_due is not None and monthly_due != previous.get('monthly_period')
-    if previous.get('consecutive_failures', 0) >= limit and not new_month:
+    dependency = admission_dependency(run, status['steps'])
+    dependency_ready = bool(dependency and dependency['ready'])
+    if dependency and not dependency_ready and monthly_due is None:
+        status.update(state='waiting_dependency', dependency=dependency,
+                      reason='Waiting for same-cutoff monthly admission controls; checkpoints retained')
+    elif previous.get('consecutive_failures', 0) >= limit and not new_month and not dependency_ready:
         status.update(state='needs_attention', reason='Repeated batch failure; inspect process logs before retry',
                       error=previous.get('error'))
-    elif previous.get('retry_after') and now < dt.datetime.fromisoformat(previous['retry_after']) and not new_month:
+    elif previous.get('retry_after') and now < dt.datetime.fromisoformat(previous['retry_after']) and not new_month and not dependency_ready:
         status.update(state='cooldown', retry_after=previous['retry_after'], error=previous.get('error'))
     else:
         status['state'] = 'running'
@@ -117,7 +122,9 @@ def dispatch(config: Path, root: Path, *, now: dt.datetime | None = None,
             bool(re.search(r'Time/disk guard: -?\d+s,', error))
             and float(error.split('Time/disk guard: ')[1].split('s,')[0]) <= 0
             or 'Worker exceeded ' in error or error.startswith('Time slice yielded') for error in primary_errors)
-        failures = 0 if success or resumable else previous.get('consecutive_failures', 0)+1
+        dependency = admission_dependency(run, status['steps'])
+        waiting = bool(dependency and not dependency['ready'] and monthly_due is None)
+        failures = 0 if success or resumable or waiting else previous.get('consecutive_failures', 0)+1
         kind=failure_kind(errors,run)
         limit=8 if kind=='transient' else max_failures
         backoff=min(retry_hours*2**min(max(failures-1,0),5),24) if kind=='transient' else retry_hours
@@ -127,10 +134,12 @@ def dispatch(config: Path, root: Path, *, now: dt.datetime | None = None,
                    'retry_after': (finished+dt.timedelta(hours=backoff)).isoformat()
                    if failures else None}
         save(batch/'attempt.json', attempt)
-        status.update(state='completed' if success else 'resumable' if resumable else
+        status.update(state='completed' if success else 'waiting_dependency' if waiting else 'resumable' if resumable else
                       'needs_attention' if failures >= limit else 'cooldown',
                       error=errors, failure_kind=kind, retry_limit=limit,
                       retry_after=attempt['retry_after'], updated_at=finished.isoformat())
+        if waiting:
+            status.update(dependency=dependency, reason='Waiting for same-cutoff monthly admission controls; checkpoints retained')
     save(root/'status.json', status)
     policy = tomllib.loads(config.read_text(encoding='utf-8')).get('research_policy')
     if policy:

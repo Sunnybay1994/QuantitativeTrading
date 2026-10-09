@@ -154,3 +154,24 @@ def test_interrupted_s0_hint_recovers_through_ledger(tmp_path, monkeypatch):
     monkeypatch.setattr(scheduled.subprocess, "run", execute)
     assert scheduled.run(config=config, root=root, now=NOW)["status"] == "complete"
     assert json.loads((root / "2026-09-14_s0.json").read_text())["exit_code"] == 0
+
+
+def test_evening_context_binds_completed_record_and_uses_finish_clock(tmp_path, monkeypatch):
+    from quant.research import daily_market_context
+    config = setup_config(tmp_path, monkeypatch)
+    root = Path('records')
+    record(root)
+    (root/'2026-09-14_s0.json').write_text('{"exit_code":0}')
+    seen = {}
+
+    def publish(**kwargs):
+        seen.update(kwargs)
+        return {'status': 'complete'}
+
+    monkeypatch.setattr(daily_market_context, 'run', publish)
+    before = dt.datetime.now(scheduled.SHANGHAI)
+    assert scheduled.run(config=config, root=root, now=NOW)['market_context']['status'] == 'complete'
+    assert seen['now'] >= before and seen['now'] != NOW
+    assert seen['completed_session'] == NOW.date()
+    assert seen['daily_record'] == root/'previous/summary.json'
+    assert seen['daily_root'] == root and seen['require_daily_receipt'] is True

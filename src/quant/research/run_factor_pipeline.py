@@ -7,12 +7,52 @@ import tomllib
 import uuid
 from pathlib import Path
 
+import polars as pl
+
+from quant.factors.library import load_library
 from quant.research.factor_battery_batch import run_statistics
 from quant.research.factor_battery_benchmarks import run_benchmarks
 from quant.research.factor_battery_cost_batch import run_cost_batch
 from quant.research.factor_battery_redundancy import run_redundancy
 from quant.research.factor_battery_scorecard import run_scorecard
 from quant.research.factor_battery_screen import run_screen
+
+
+def _statistical_cost_plan(*, statistics: Path, screen: Path, library: Path) -> tuple[list[str], list[str]]:
+    """Skip work only after a complete, non-null registered-family screen."""
+    config = (statistics/'battery.toml').read_bytes()
+    if config != (screen/'battery.toml').read_bytes():
+        raise ValueError('Statistical cost gate requires identical statistics and screen settings')
+    settings = tomllib.loads(config.decode('utf-8'))
+    variants = settings.get('variants', [])
+    if (settings.get('run', {}).get('selected') != 'all' or not variants
+            or any(not isinstance(variant, str) or not variant for variant in variants)
+            or len(set(variants)) != len(variants)):
+        raise ValueError('Statistical cost gate requires the complete registered variant family')
+    factors = [definition.id for definition in load_library(library, 'all')]
+    expected = {(factor, variant) for factor in factors for variant in variants}
+    tables = [pl.read_parquet(statistics/'statistics.parquet'),
+              pl.read_parquet(screen/'statistical_screen.parquet')]
+    for table in tables:
+        if not {'factor', 'variant'}.issubset(table.columns):
+            raise ValueError('Statistical cost gate requires factor/variant columns')
+        keys = table.select('factor', 'variant').rows()
+        if not expected or len(keys) != len(set(keys)) or set(keys) != expected:
+            raise ValueError('Statistical cost gate requires the complete unique factor/variant family')
+    table = tables[1]
+    if ('statistical_pass' not in table.columns or table.schema['statistical_pass'] != pl.Boolean
+            or table['statistical_pass'].null_count()):
+        raise ValueError('Statistical cost gate requires non-null Boolean statistical_pass for every version')
+    statistics_summary = json.loads((statistics/'summary.json').read_text(encoding='utf-8'))
+    screen_summary = json.loads((screen/'summary.json').read_text(encoding='utf-8'))
+    if (statistics_summary.get('factors') != len(factors)
+            or statistics_summary.get('variant_rows') != len(expected)
+            or screen_summary.get('factors') != len(factors)
+            or screen_summary.get('tests') != len(expected)
+            or screen_summary.get('statistical_pass_rows') != table['statistical_pass'].sum()):
+        raise ValueError('Statistical cost gate requires consistent completed statistics and screen summaries')
+    passing = set(table.filter(pl.col('statistical_pass'))['factor'])
+    return sorted(passing), sorted(set(factors) - passing)
 
 
 def run_pipeline(*, config: Path, library: Path, as_of: dt.date, output: Path,
@@ -37,10 +77,14 @@ def run_pipeline(*, config: Path, library: Path, as_of: dt.date, output: Path,
         'existing_runs': sorted(str(path.resolve()) for path in existing_runs or [])}
     saved_config = output/'pipeline_config.json'
     # Existing frozen pipelines retain their original execution mode on resume.
-    deduplicate = (json.loads(saved_config.read_text(encoding='utf-8')).get('cost_deduplication', False)
-                   if resume and saved_config.is_file() else True)
-    reuse_benchmarks = (json.loads(saved_config.read_text(encoding='utf-8')).get('benchmark_reuse', False)
-                        if resume and saved_config.is_file() else True)
+    saved = json.loads(saved_config.read_text(encoding='utf-8')) if resume and saved_config.is_file() else None
+    deduplicate = saved.get('cost_deduplication', False) if saved is not None else True
+    reuse_benchmarks = saved.get('benchmark_reuse', False) if saved is not None else True
+    cost_statistical_gate = saved.get('cost_statistical_gate', False) if saved is not None else not bool(existing_runs)
+    if type(cost_statistical_gate) is not bool:
+        raise ValueError('cost_statistical_gate must be Boolean')
+    if saved is None or 'cost_statistical_gate' in saved:
+        configuration['cost_statistical_gate'] = cost_statistical_gate
     if reuse_benchmarks:
         configuration['benchmark_reuse'] = True
     if deduplicate:
@@ -50,8 +94,10 @@ def run_pipeline(*, config: Path, library: Path, as_of: dt.date, output: Path,
         configuration['return_benchmarks'] = return_text
         tomllib.loads(return_text)['benchmarks']
     if resume:
-        if not saved_config.is_file() or json.loads(saved_config.read_text(encoding='utf-8')) != configuration:
+        if saved != configuration:
             raise ValueError('Resume requires unchanged pipeline settings, library and input locations')
+        if cost_statistical_gate and existing_runs:
+            raise ValueError('Statistical cost gating cannot discard explicit existing cost runs')
         if (output/'summary.json').is_file():
             previous = json.loads((output/'summary.json').read_text(encoding='utf-8'))
             if not previous['cost_failures'] and not previous['pending_external_runs']:
@@ -82,20 +128,30 @@ def run_pipeline(*, config: Path, library: Path, as_of: dt.date, output: Path,
                    output=statistics, selected='all', workers=workers), resumable=True)
     print('Screening the complete multiple-testing family', flush=True)
     stage(screen, lambda: run_screen(statistics=statistics, output=screen, library=library))
-    print('Replaying both stock benchmarks at all cost levels', flush=True)
-    benchmark_options = ({'reuse_root': output.parent.parent/'benchmark_cache',
-                          'resume': (benchmarks/'replay_config.json').is_file()} if reuse_benchmarks else {})
-    stage(benchmarks, lambda: run_benchmarks(statistics=statistics, output=benchmarks, data_root=data_root,
-                   execution_snapshot=execution_snapshot, **benchmark_options),
-          resumable=reuse_benchmarks and (benchmarks/'replay_config.json').is_file(),
-          required=('benchmark_reuse.json',) if reuse_benchmarks else ())
-    print('Computing full-library historical correlations', flush=True)
-    stage(redundancy, lambda: run_redundancy(statistics=statistics, output=redundancy, library=library,
-                                           workers=workers), resumable=True)
-    print('Replaying all factor portfolios at all cost levels', flush=True)
-    batch = run_cost_batch(statistics=statistics, screen=screen, output=costs, data_root=data_root,
-                          execution_snapshot=execution_snapshot, existing_runs=existing_runs or [], workers=workers,
-                          resume=resume, deduplicate=deduplicate)
+    passing, rejected = _statistical_cost_plan(statistics=statistics, screen=screen, library=library) if cost_statistical_gate else ([], [])
+    skip_costs = cost_statistical_gate and not passing
+    skipped_work = ['factor_cost_replays', 'stock_account_benchmarks', 'historical_correlations'] if skip_costs else []
+    if skip_costs:
+        print('Complete statistical family rejected; costs remain not evaluated', flush=True)
+        batch = {'status': 'skipped_not_evaluated', 'factors': 0, 'completed_runs': {},
+                 'failures': {}, 'pending_external_runs': {}, 'statistically_rejected_factors': rejected}
+        costs.mkdir(parents=True, exist_ok=True)
+        (costs/'batch_summary.json').write_text(json.dumps(batch, indent=2), encoding='utf-8')
+    else:
+        print('Replaying both stock benchmarks at all cost levels', flush=True)
+        benchmark_options = ({'reuse_root': output.parent.parent/'benchmark_cache',
+                              'resume': (benchmarks/'replay_config.json').is_file()} if reuse_benchmarks else {})
+        stage(benchmarks, lambda: run_benchmarks(statistics=statistics, output=benchmarks, data_root=data_root,
+                       execution_snapshot=execution_snapshot, **benchmark_options),
+              resumable=reuse_benchmarks and (benchmarks/'replay_config.json').is_file(),
+              required=('benchmark_reuse.json',) if reuse_benchmarks else ())
+        print('Computing full-library historical correlations', flush=True)
+        stage(redundancy, lambda: run_redundancy(statistics=statistics, output=redundancy, library=library,
+                                               workers=workers), resumable=True)
+        print('Replaying selected factor portfolios at all cost levels', flush=True)
+        batch = run_cost_batch(statistics=statistics, screen=screen, output=costs, data_root=data_root,
+                              execution_snapshot=execution_snapshot, existing_runs=existing_runs or [], workers=workers,
+                              resume=resume, deduplicate=deduplicate, only_statistical_pass=cost_statistical_gate)
     print('Writing scorecard and outstanding cost failures', flush=True)
     scorecard_output = output/'scorecard'
     number = 2
@@ -104,9 +160,14 @@ def run_pipeline(*, config: Path, library: Path, as_of: dt.date, output: Path,
         number += 1
     scorecard = run_scorecard(screen=screen, output=scorecard_output,
                              cost_runs=[Path(path) for path in batch['completed_runs'].values()], cost_root=None,
-                             benchmarks=benchmarks, redundancy=redundancy, data_root=data_root,
+                             benchmarks=None if skip_costs else benchmarks,
+                             redundancy=None if skip_costs else redundancy, data_root=data_root,
                              return_benchmark_config=return_benchmark_config)
     result = {'as_of': str(as_of), 'scorecard': scorecard, 'cost_failures': batch['failures'],
+              'cost_statistical_gate': cost_statistical_gate,
+              'cost_evaluation_status': 'skipped_not_evaluated' if skip_costs else 'evaluated',
+              'statistically_rejected_factors': batch.get('statistically_rejected_factors', rejected),
+              'skipped_work': skipped_work,
               'reused_factors': batch.get('reused_factors', {}),
               'saved_variant_cost_replays': batch.get('saved_variant_cost_replays', 0),
               'non_executable_rejections': batch.get('non_executable_rejections', {}),
@@ -122,7 +183,8 @@ def run_pipeline(*, config: Path, library: Path, as_of: dt.date, output: Path,
         f"评分表：`{scorecard_output.name}/factor_scorecard.parquet`。\n\n"
         + f"等价信号复用{len(batch.get('reused_factors', {}))}个因子，节省{batch.get('saved_variant_cost_replays', 0)}组版本×成本回放；独立统计检验保留。\n\n"
         + f"统计未通过且无可执行组合的终态拒绝：{len(batch.get('non_executable_rejections', {}))}项；原因保留于summary.json。\n\n"
-        + ('成本回放失败明细：\n\n'+failures+'\n' if failures else '成本批处理无失败项。\n')
+        + ('完整统计族全部拒绝；成本账户、股票账户基准和历史相关性未评估，成本指标保持未知。\n' if skip_costs
+           else ('成本回放失败明细：\n\n'+failures+'\n' if failures else '成本批处理无失败项。\n'))
         + ('\n外部成本回放尚未完成：\n\n'+pending+'\n' if pending else ''),
         encoding='utf-8')
     return result

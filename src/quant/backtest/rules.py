@@ -12,6 +12,7 @@ class DailyMarketState:
     suspended: bool = False
     at_upper_limit: bool = False
     at_lower_limit: bool = False
+    open_unknown: bool = False
 
     def __post_init__(self) -> None:
         if self.at_upper_limit and self.at_lower_limit:
@@ -31,6 +32,8 @@ def execution_reject_reason(
         raise ValueError("委托数量必须大于 0")
     if settled_quantity < 0:
         raise ValueError("可卖数量不得为负")
+    if state.open_unknown:
+        return ExecutionRejectReason.OPEN_UNKNOWN
     if state.suspended:
         return ExecutionRejectReason.SUSPENDED
     if side is OrderSide.BUY and state.at_upper_limit:

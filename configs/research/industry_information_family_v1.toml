@@ -1,0 +1,36 @@
+family = "industry_return_information_v1"
+sources = [
+  "https://onlinelibrary.wiley.com/doi/10.1111/0022-1082.00146",
+  "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=1151155",
+  "https://carey.jhu.edu/sites/default/files/2023-01/finance-conference-june-2019-lu-zhang-paper-min.pdf",
+  "https://www.accessecon.com/Pubs/EB/2017/Volume37/EB-17-V37-I1-P1.pdf",
+]
+kernel = "src/quant/factors/industry_information.py"
+signals = ["industry_momentum_6m", "industry_leader_return_1m"]
+directions = [1, 1]
+formation_months = [6, 1]
+leader_fraction = 0.30
+minimum_formation_members = 10
+required_endpoint_weight_coverage = 1.0
+industry_level = "SW dated L1; SW2014 and SW2021 kept distinct, no backcast or taxonomy seam splice"
+initial_industry_snapshot = "20260930T220202528098"
+industry_snapshot_policy = "Explicit frozen snapshot, dated valid_from inclusive/valid_to exclusive; original arrival vintages unestablished"
+formation_universe = "Observed Shanghai/Shenzhen stocks with valid positive-volume exact prior-month-end quotes and a dated industry; not current survivor list or future eligible pool"
+weight_policy = "Prior-month-end total market value, all valid formation members; missing/nonpositive capital invalidates the group; leaders are ceil(0.30*N) sorted by capital descending and symbol ascending"
+return_policy = "Exact consecutive calendar-month-end adjusted close ratio; positive-volume endpoints; require every frozen member (or every frozen leader) to have an endpoint; no drop/reweight, zero fill or stale-price carry"
+industry_momentum_policy = "Compound six consecutive complete monthly value-weighted industry returns, including the just-completed month; each month uses its own start-of-month frozen membership and weights"
+leader_policy = "One completed month value-weighted return of the frozen top-30-percent market-value industry members"
+output_policy = "After completed month close map the industry score to current classified, valid-quote symbols; next exchange open is earliest execution"
+adaptation = "A-share observed-market SW proxy and stock-level battery mapping, not original US Fama-French industries, nine industry portfolios or six-month overlapping holdings"
+interpretation = "Industry allocation information; within-industry identical values must become missing after industry neutralization, not amplified numerical residuals or independent stock-selection alpha"
+pipeline = "Original two-variant full-family factor battery and N4; no evaluation before input/kernel validation; no new account in this registration"
+controls = ["existing admitted variants", "own-stock reversal and momentum", "size, liquidity, turnover, beta and IVOL exposures"]
+fixed_control_ids = ["log_total_market_value", "amihud_illiquidity_monthly_calendar80_v1", "free_float_turnover_level_monthly_calendar80_v1", "reversal_20", "report01_skip_month_momentum_n252", "market_beta_60_vs_510300", "ivol_ff3_60"]
+control_ids_clarification = "Existing control names fixed before any target-return read or statistical evaluation; signal formulas, direction, coverage and thresholds unchanged. Original definition preserved with the computation-only feasibility receipt."
+control_policy = "Retain original raw and neutral reporting; inspect exact raw identity and industry concentration. Leader signal must also show increment beyond the matched full-industry one-month return. Industry-neutral variant is algebraically unidentifiable, not a reason to change thresholds or fabricate a residual signal"
+matched_controls = ["industry_return_1m"]
+minimum_formal_months = 96
+incremental_minimum_nw_t = 2.5
+stop_rule = "Insufficient input months leaves mechanism untested; original statistical/incremental failure closes this fixed family. No smaller leader cutoff, window/taxonomy/sign search or Top-K rescue"
+account_policy = "Only after original admission and a separate portfolio-level registration; at most one CNY100000 few-holdings account, CNY1 minimum commission and all three costs; concentrated stocks do not replicate diversified sector portfolios"
+auto_trade = false

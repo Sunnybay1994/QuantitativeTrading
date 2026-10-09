@@ -16,6 +16,62 @@ def success():
     return {'steps': {step: {'ok': True} for step in ('N1', 'N2', 'N3', 'N4', 'N5')}}
 
 
+def test_stale_controls_wait_then_resume_when_ready_or_month_due(tmp_path, monkeypatch):
+    from quant.research import nightly_monthly
+    path, root = config(tmp_path), tmp_path/'continuous'
+    run = root/'batch_000001'/'2026-10-01'
+    run.mkdir(parents=True)
+    (run/'config.toml').write_text(path.read_text())
+    summary = success()
+    summary['steps']['N4'] = {'ok': False, 'error': 'N4 exit=1'}
+    (run/'summary.json').write_text(json.dumps(summary))
+    mining.save(run.parent/'attempt.json', {'consecutive_failures': 3,
+        'code_fingerprint': mining.code_fingerprint()})
+    dependency = {'ready': False, 'required_as_of': '2026-09-30'}
+    monkeypatch.setattr(mining, 'admission_dependency', lambda *a: dependency)
+    monkeypatch.setattr(nightly_monthly, 'pending_month', lambda *a, **k: None)
+    calls = []
+    def execute(*a, **k):
+        calls.append(k['run_path'])
+        return success()
+    monkeypatch.setattr(mining.nightly, 'execute', execute)
+    for _ in range(2):
+        assert mining.dispatch(path, root)['state'] == 'waiting_dependency'
+    assert calls == []
+    dependency['ready'] = True
+    assert mining.dispatch(path, root)['state'] == 'completed'
+    dependency['ready'] = False
+    mining.save(run.parent/'attempt.json', {'consecutive_failures': 3,
+        'code_fingerprint': mining.code_fingerprint()})
+    monkeypatch.setattr(nightly_monthly, 'pending_month', lambda *a, **k: '2026-10')
+    assert mining.dispatch(path, root)['state'] == 'completed'
+    assert calls == [run, run]
+
+
+def test_admission_dependency_requires_exact_error_and_live_reference(tmp_path):
+    from quant.research.mining_retry import admission_dependency
+    run, batch, reference = tmp_path/'run', tmp_path/'batch', tmp_path/'reference'
+    for folder in (run/'N3', run/'N4', batch, reference):
+        folder.mkdir(parents=True)
+    (run/'N3/result.json').write_text(json.dumps({'batch': str(batch)}))
+    (batch/'settings.json').write_text(json.dumps({'as_of': '2026-09-30',
+        'reference_statistics': str(reference)}))
+    (reference/'battery.toml').write_text('[run]\nas_of=2026-08-31\n')
+    log = run/'N4/process.log'
+    log.write_text('ValueError: ADMITTED controls end 2026-08-31, required 2026-09-30; complete monthly full-library battery before retry\n')
+    steps = success()['steps']
+    steps['N4'] = {'ok': False}
+    assert admission_dependency(run, steps)['ready'] is False
+    (reference/'battery.toml').write_text('[run]\nas_of=2026-09-30\n')
+    assert admission_dependency(run, steps)['ready'] is True
+    (reference/'battery.toml').write_text('[run]\nas_of=2026-10-31\n')
+    assert admission_dependency(run, steps) is None
+    log.write_text(log.read_text()+'ValueError: unrelated corruption\n')
+    assert admission_dependency(run, steps) is None
+    steps['N5'] = {'ok': False}
+    assert admission_dependency(run, steps) is None
+
+
 def test_registered_search_is_frozen_for_exactly_one_new_batch(tmp_path, monkeypatch):
     path, root = config(tmp_path), tmp_path/'continuous'
     recipe = tmp_path/'experiment.toml'

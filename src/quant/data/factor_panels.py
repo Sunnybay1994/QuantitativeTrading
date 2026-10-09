@@ -142,9 +142,27 @@ def panel_complete(data_root: Path, panel_id: str, year: int, start: dt.date, en
     return bool(record and record["start"] <= str(start) and record["end"] >= str(end))
 
 
+def panel_ready(
+    data_root: Path, panel_id: str, year: int, start: dt.date, end: dt.date,
+    *, calculation: str | None = None,
+) -> bool:
+    """Date coverage is enough for ordinary factors.
+
+    A versioned GP panel also has to record the calculation that produced it.
+    Panels written before that stamp are treated as missing so N3 rebuilds them
+    instead of comparing a stale column with the frozen N2 receipt.
+    """
+    if not panel_complete(data_root, panel_id, year, start, end):
+        return False
+    if calculation is None:
+        return True
+    return read_coverage(data_root, panel_id, year).get("calculation") == calculation
+
+
 def write_panel(
     data_root: Path, panel_id: str, year: int, frame: pl.DataFrame,
     start: dt.date, end: dt.date, *, known_through: dt.date | None = None,
+    calculation: str | None = None,
 ) -> int:
     """Upsert a requested interval; retain earlier/later records in this year."""
     folder = _folder(data_root, panel_id, year)
@@ -168,7 +186,12 @@ def write_panel(
     temporary = folder / "data.tmp.parquet"
     frame.write_parquet(temporary, compression="zstd")
     temporary.replace(output)
-    info.write_text(json.dumps({"start": str(coverage_start), "end": str(coverage_end),
-                                "rows": frame.height, "known_through": str(known_through)
-                                if known_through else None}), encoding="utf-8")
+    stored = calculation
+    if stored is None and info.exists():
+        stored = json.loads(info.read_text(encoding="utf-8")).get("calculation")
+    payload = {"start": str(coverage_start), "end": str(coverage_end),
+               "rows": frame.height, "known_through": str(known_through) if known_through else None}
+    if stored:
+        payload["calculation"] = stored
+    info.write_text(json.dumps(payload), encoding="utf-8")
     return frame.height

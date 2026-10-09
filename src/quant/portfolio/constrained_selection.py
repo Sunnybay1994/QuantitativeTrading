@@ -32,6 +32,32 @@ def constrained_targets(*, targets: pl.DataFrame, state: dict, market: pl.DataFr
     template = targets.row(0, named=True)
     observations = {r['symbol']: r for r in market.to_dicts()}
     base = {'as_of': str(day), 'applied': True, 'auto_trade': False}
+    if targets['weight'].null_count() or not targets['weight'].is_finite().all() or (targets['weight'] < 0).any():
+        raise ValueError('Invalid long-only target weights')
+    if (targets['weight'] == 0).all():
+        # The model's registered cash instruction overrides investment exposure
+        # floors, never execution restrictions. Include the R4 account's actual
+        # holdings, which need not coincide with the model's Top-K exit list.
+        names = sorted(set(held) | set(targets['symbol']))
+        restricted = {r['symbol'] for r in state.get('restricted_shares', [])
+                      if r['quantity'] > 0 and str(r['list_date']) > str(day)}
+        permissions, caps, remaining = {}, {}, {}
+        for symbol in names:
+            row = observations.get(symbol, {})
+            adv = row.get('adv20')
+            cap = float(adv)*policy['adv_participation'] if adv is not None and math.isfinite(adv) and adv > 0 else 0.
+            can_sell = bool(row.get('can_sell')) and symbol not in restricted
+            permissions[symbol] = (False, can_sell)
+            caps[symbol] = cap
+            remaining[symbol] = max(0., held.get(symbol, 0.)-cap/equity) if can_sell else held.get(symbol, 0.)
+        out = pl.from_dicts([{**template, 'symbol': s, 'weight': 0.} for s in names], schema=targets.schema)
+        return out, {**base, 'feasible': True,
+            'constraints_satisfied': all(w <= policy['tolerance'] for w in remaining.values()),
+            'action': 'cash_exit', 'exposure_constraints_applicable': False,
+            'nominee_symbols': [], 'requested_cash_weight': 1.,
+            'signal_capacity_residual_weights': remaining,
+            'execution_direction_permissions': permissions, 'execution_notional_caps': caps,
+            'execution_rules': 'shared replay retains settlement, suspension, price bands and lot checks'}
 
     def freeze(reason: str, detail: dict) -> tuple[pl.DataFrame, dict]:
         names = sorted(set(held) | set(targets['symbol']))

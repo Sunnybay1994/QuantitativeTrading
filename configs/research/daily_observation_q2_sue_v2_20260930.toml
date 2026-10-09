@@ -1,0 +1,50 @@
+# Explicit research forecast version; existing B20/B32 account strategies are unchanged.
+auto_trade = false
+data_root = "data"
+artifact_root = "artifacts"
+refresh_config = "configs/data/refresh_q2_sue_v2_model_20260912.toml"
+intraday = true
+# Resolve the full consumer union; only its actual minute dependencies block forecasts.
+dependency_refresh = true
+
+[forward_tracking]
+enabled = true
+tdx_recovery_root = "D:/new_tdx/vipdoc"
+
+# Capture the already frozen one-shot search without changing account targets.
+[candidate_forward]
+enabled = true
+search_output = "artifacts/research/continuous/batch_000012/2026-09-20/N2"
+receipt = "artifacts/research/predictive_priority_batch12_20260920/candidate_freeze.json"
+battery_config = "configs/factors/battery.toml"
+
+[candidate_forward.scoring]
+enabled = true
+roots = ["artifacts/daily/sue_v2"]
+
+[model]
+selection = "artifacts/models/q2_sue_v2_frozen_forward_20260912_01"
+
+[b20]
+config = "configs/research/b20_three_asset_forward_20260909.toml"
+output = "artifacts/forward/b20"
+
+[b32]
+config = "configs/paper/b32_stock_observation_20260909.toml"
+output = "artifacts/paper/b32_stock_observation"
+
+
+[forecast_monitor]
+auto_trade = false
+selection = "artifacts/models/q2_sue_v2_frozen_forward_20260912_01"
+roots = ["artifacts"]
+patterns = [
+  "daily/sue_v2/**/model/forecast/summary.json",
+  "daily_recovery/20260929_dependency_fix/model/forecast/summary.json",
+]
+rolling_config = "configs/research/rolling_signal_monitor_v1.toml"
+
+[q10]
+monthly_backtest = "artifacts/models/q10_sue_v2_turnover_budget_05_20260912_01"
+config = "configs/paper/q10_sue_v2_20260913.toml"
+output = "artifacts/paper/q10_sue_v2"

@@ -1,0 +1,22 @@
+id = "net_payout_feasibility_20261004_02"
+output = "artifacts/research/net_payout_feasibility_20261004_02/results"
+financial = "data/clean/tushare_financials/financial_updates_v3_20260930_008/cashflow.parquet"
+share_changes = "data/clean/cninfo_share_changes/20260910_cycle2013"
+dividend_sample = "data/raw/tushare/dividend/date=2026-09-09/004541.851204Z-c1f0b4289fe1.parquet"
+source_extract = "artifacts/research/net_payout_feasibility_20261004_01/sources/extracted.json"
+dividend_directory = "data/raw/m3_g1/tushare/dividend"
+supersedes = "artifacts/research/net_payout_feasibility_20261004_01/results/summary.json"
+as_of = 2026-09-30
+formula = "(realized common cash dividends + actual common share repurchase cash - common share issuance cash) / same-date market capitalization"
+family = ["actual_repurchase_cash_yield", "negative_common_issuance_cash_yield", "net_shareholder_cash_payout_yield"]
+directions = [1, 1, 1]
+controls = ["daily_dividend_yield_ttm", "existing_no_common_equity_issue_boolean"]
+window = "Trailing 365 calendar days; completed cash events only, with source availability strictly before signal date; no retrospective revision backfill"
+zero_rule = "No event is zero only with complete source and plan coverage over the window; all missing or ambiguous components remain null"
+issuance_rule = "Parent common-share cash actually received, net of disclosed issuance expenses; exclude asset consideration, debt conversion and subsidiary minority cash; disclose gross/net and receipt date"
+repurchase_rule = "Actual parent common-share cash paid including separately reconciled fees; plan ceiling is not cash; cumulative updates require stable plan identity, consistent fee basis and revision history; cancellation date is not payment date"
+dividend_rule = "Common cash dividends actually paid, before shareholder withholding; implementation announcement plus payment date and eligible base shares, excluding preferred and subsidiary minority distributions"
+battery_config = "configs/factors/battery.toml"
+costs = [0.5, 1.0, 2.0]
+account_replay = false
+auto_trade = false

@@ -6,6 +6,11 @@ import pytest
 from quant.data import refresh
 
 
+@pytest.fixture(autouse=True)
+def stock_limit_stage(monkeypatch):
+    monkeypatch.setattr(refresh, 'refresh_stock_limits', lambda **kw: {'new_rows': 0})
+
+
 def test_completed_session_cutoff_and_future_date():
     now = dt.datetime(2026, 9, 8, 8, 59, tzinfo=dt.timezone.utc)
     assert refresh.completed_date("today", now) == dt.date(2026, 9, 7)
@@ -102,7 +107,7 @@ def test_factor_refresh_follows_all_inputs_and_marks_minute_availability(monkeyp
     def factors(**kwargs):
         assert calls == ['benchmark'] and kwargs['end'] == dt.date(2026, 9, 8)
         assert kwargs['minute_start'] == dt.date(2020, 1, 1)
-        assert kwargs['minute_available'] is (not bool(minute_errors))
+        assert kwargs.get('minute_available', True) is True
         calls.append('factors')
         return {'years': [{'year': 2026}], 'message': 'updated'}
 

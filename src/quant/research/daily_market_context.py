@@ -1,4 +1,4 @@
-"""Attach prior-session market context to existing daily observation, without trading."""
+"""Publish completed-session market context with a verifiable daily receipt."""
 import datetime as dt
 import hashlib
 import json
@@ -11,36 +11,58 @@ from quant.execution.manual_session_service import instance_lock
 from quant.research.market_indicators_run import history
 
 
-def completed_observation(date, now, root):
-    """Require an actual completed, non-rehearsal observation before publishing pre-open."""
-    for path in sorted(root.glob(f'{date}_*/summary.json'), reverse=True):
+def completed_observation(date, now, root, record=None):
+    """Bind an exact evening receipt, or find a completed prior-session receipt."""
+    paths = [Path(record)] if record is not None else sorted(root.glob(f'{date}_*/summary.json'), reverse=True)
+    for path in paths:
         if path.stat().st_mtime > now.timestamp():
             continue
-        saved = json.loads(path.read_text(encoding='utf-8'))
-        if (saved.get('as_of') == str(date) and saved.get('status') == 'complete'
+        payload = path.read_bytes()
+        saved = json.loads(payload)
+        execution = path.parent/'scheduler.json'
+        if execution.exists():
+            status = json.loads(execution.read_text(encoding='utf-8'))
+            if not isinstance(status, dict) or status.get('exit_code') != 0:
+                continue
+        if (isinstance(saved, dict) and saved.get('as_of') == str(date) and saved.get('status') == 'complete'
                 and saved.get('rehearsal') is False and saved.get('saved_data') is False):
-            return dict(path=str(path), sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+            return dict(path=str(path), sha256=hashlib.sha256(payload).hexdigest(),
                         available_at=dt.datetime.fromtimestamp(path.stat().st_mtime, now.tzinfo).isoformat())
     raise ValueError(f'No completed live-data daily observation for {date}')
 
 
 def run(*, data_root=Path('data'), root=Path('artifacts/daily/market_context'), now=None,
-        require_daily_receipt=False, daily_root=Path('artifacts/daily/sue_v2')):
+        require_daily_receipt=False, daily_root=Path('artifacts/daily/sue_v2'),
+        completed_session=None, daily_record=None):
     now = now or dt.datetime.now(dt.timezone(dt.timedelta(hours=8)))
     if now.tzinfo is None:
         raise ValueError('Require timezone-aware observation clock')
-    today = now.astimezone(dt.timezone(dt.timedelta(hours=8))).date()
+    local = now.astimezone(dt.timezone(dt.timedelta(hours=8)))
+    today = local.date()
     cal = pl.read_parquet(data_root/'clean/trade_calendar/market=SH/data.parquet')
-    date = cal.filter(pl.col('is_open') & (pl.col('date')<today))['date'].max()
-    if date is None:
-        raise ValueError('No preceding exchange session')
+    preceding = cal.filter(pl.col('is_open') & (pl.col('date')<today))['date'].max()
+    date = completed_session if completed_session is not None else preceding
+    effective = None
     try:
-        receipt = completed_observation(date, now, daily_root) if require_daily_receipt else None
+        if date is None:
+            raise ValueError('No preceding exchange session')
+        if completed_session is not None:
+            closed = (pl.col('date') <= today) if local.time() >= dt.time(15) else (pl.col('date') < today)
+            latest_closed = cal.filter(pl.col('is_open') & closed)['date'].max()
+            if date != latest_closed:
+                raise ValueError('Completed session is not the latest closed exchange session')
+        if daily_record is not None and completed_session is None:
+            raise ValueError('An exact daily receipt requires its completed session')
+        effective = cal.filter(pl.col('is_open') & (pl.col('date') > date))['date'].min()
+        receipt = completed_observation(date, now, daily_root, daily_record) if (
+            require_daily_receipt or completed_session is not None) else None
+        if effective is None:
+            raise ValueError(f'No next exchange session after {date}')
     except (OSError, ValueError) as exc:
         # Keep the immutable historical reports, but never show an old successful
         # session as the current pre-open context when its receipt is absent.
         atomic_json(root/'latest.json', dict(status='incomplete', observed_at=now.isoformat(),
-            date=str(date), effective_date=str(today), daily_completion=None,
+            date=str(date) if date else None, effective_date=str(effective) if effective else None, daily_completion=None,
             market_state='unknown', reason=str(exc), auto_trade=False, changes_positions=False))
         raise
     config = Path('configs/research/market_indicators_v1.toml')
@@ -72,11 +94,17 @@ def run(*, data_root=Path('data'), root=Path('artifacts/daily/market_context'), 
         if rows.height!=1:
             raise ValueError('Expected exactly one prior-session state')
         row=rows.row(0,named=True)
+        if row['effective_date'] != effective:
+            reason = 'Market state effective date differs from the next exchange session'
+            atomic_json(root/'latest.json', dict(status='incomplete', observed_at=now.isoformat(),
+                date=str(date), effective_date=str(effective), daily_completion=None,
+                market_state='unknown', reason=reason, auto_trade=False, changes_positions=False))
+            raise ValueError(reason)
         result=dict(status='complete',observed_at=now.isoformat(),date=str(date),
                     effective_date=str(row['effective_date']),
                     available_at=dt.datetime.now(now.tzinfo).isoformat(),
                     daily_completion=receipt,
-                    timing='computed_from_completed_prior_session; available_at is actual publication time',
+                    timing='computed_from_completed_session; effective next exchange session; available_at is actual publication time',
                     market_state=row['market_state'],coverage=row['coverage'],
                     reference_stocks=row['reference_stocks'],report=str(output/'report.md'),
                     reused=reused,auto_trade=False,changes_positions=False)

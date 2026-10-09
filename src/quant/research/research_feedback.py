@@ -140,9 +140,10 @@ def sample_summary(diagnostics: list[dict]) -> dict:
             'mean_ic_distribution': distributions}
 
 
-def build(config: Path) -> dict:
+def build(config: Path, *, maximum_completed: int | None = None) -> dict:
     policy = tomllib.loads(config.read_text(encoding='utf-8'))
     batches, pending = [], []
+    completed = []
     for path in sorted(Path(policy['continuous_root']).glob('batch_*/????-??-??/summary.json')):
         saved = json.loads(path.read_text(encoding='utf-8'))
         steps = saved.get('steps', {})
@@ -151,6 +152,12 @@ def build(config: Path) -> dict:
         if not steps.get('N3', {}).get('ok') or not scorecard:
             pending.append({'run': str(path.parent), 'reason': 'Battery not completed'})
             continue
+        completed.append((path, scorecard))
+    if maximum_completed is not None:
+        if maximum_completed < 1:
+            raise ValueError('maximum_completed must be positive')
+        completed = completed[-maximum_completed:]
+    for path, scorecard in completed:
         rows = pl.read_parquet(scorecard).to_dicts()
         families = sorted({r.get('family', 'unknown') for r in rows})
         search_path = path.parent/'N2'/'search.json'
@@ -197,10 +204,11 @@ def update(config: Path) -> dict:
 
 
 def prompt_context(config: Path) -> dict:
-    result = update(config)
-    return {**result, 'completed_batteries': [
+    # A new request needs the recent batches, not a full report regeneration.
+    result = build(config, maximum_completed=3)
+    return {**result, 'completed_comparison_scope': 'last_3_completed_batteries', 'completed_batteries': [
         {k: v for k, v in batch.items() if k != 'candidate_diagnostics'}
-        for batch in result['completed_batteries'][-3:]]}
+        for batch in result['completed_batteries']]}
 
 
 def main() -> None:

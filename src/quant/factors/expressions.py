@@ -14,6 +14,8 @@ from functools import reduce
 import numpy as np
 import polars as pl
 
+from quant.factors.rolling_stable import rolling_moment
+
 
 _BINARY: dict[type[ast.operator], Callable] = {
     ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
@@ -44,6 +46,18 @@ def required_history(expression: str) -> int:
     """Return the number of preceding sessions needed, including nested windows."""
     def visit(node: ast.AST) -> int:
         if isinstance(node, ast.Name):
+            if node.id in {'industry_momentum_6m', 'industry_leader_return_1m', 'industry_return_1m'}:
+                # The separate monthly reader freezes six full months of members/weights.
+                return 32
+            if node.id in {'turnover_reference_gain_260w_skip1w', 'turnover_reference_gain_x_turnover_260w_skip1w',
+                    'turnover_reference_equal_price_gain_260w', 'turnover_reference_mean_turnover_52w',
+                    'turnover_reference_long_return_156w_skip52w'}:
+                # Dedicated thin input reads retain all 260 weeks; the daily grid needs prior-month carry.
+                return 32
+            if node.id in {'return_seasonality_ann_y2_5','return_seasonality_nann_y2_5','return_seasonality_amn_y2_5'}:
+                # Daily carry needs the prior completed publication month. The
+                # dedicated endpoint reader separately loads exact M-60 prices.
+                return 32
             # Intrinsic windows remain additive when a consumer nests another window.
             return {"market_beta_60_vs_510300": 60, "downside_beta_60_vs_510300": 60,
                     "amihud_illiquidity_monthly": 62, "free_float_turnover_level_monthly": 62,
@@ -51,6 +65,11 @@ def required_history(expression: str) -> int:
                     "amihud_illiquidity_monthly_calendar80_v1": 62,
                     "free_float_turnover_level_monthly_calendar80_v1": 62,
                     "free_float_turnover_abnormal_12m_calendar80_v1": 400,
+                    "price_delay_d1_52w_skip1m": 400,
+                    "price_delay_d2_52w_skip1m": 400,
+                    "price_delay_d3_52w_skip1m": 400,
+                    "statement_ear3_market_proxy_120d": 200,
+                    "statement_abvol3_stable_shares_120d": 200,
                     "max_daily_return_20_size_turnover_residual": 20, "ivol_ff3_60": 100}.get(node.id, 0)
         if isinstance(node, ast.Constant):
             return 0
@@ -77,7 +96,7 @@ class ExpressionEngine:
     """Compile AST nodes into materialized Polars stages, never Python eval."""
 
     def __init__(self, panel: pl.DataFrame):
-        self.frame = panel.lazy()
+        self.frame = panel.sort("symbol", "trade_date").lazy()
         self.fields = set(panel.columns)
         self.cache: dict[str, str] = {}
 
@@ -125,10 +144,10 @@ class ExpressionEngine:
         x = self._node(args[0])
         if name in _WINDOW:
             n = _window(args[-1])
+            if name in {"ts_mean", "ts_sum", "ts_std", "ts_std0"}:
+                return rolling_moment(x, n, name)
             if name in _ROLLING:
                 return getattr(x, _ROLLING[name])(window_size=n, min_samples=n).over("symbol")
-            if name == "ts_std0":
-                return x.rolling_std(n, min_samples=n, ddof=0).over("symbol")
             if name == "ts_skew":
                 if n < 3:
                     raise ValueError("Skewness requires at least three sessions")
@@ -148,28 +167,7 @@ class ExpressionEngine:
             if name in {"ts_slope", "ts_rsquare", "ts_resi"}:
                 if n < 2:
                     raise ValueError("Regression requires at least two sessions")
-                # Weighted rolling kernels return floats even for integer
-                # indicators; normalize before grouping to keep one dtype.
-                x = x.cast(pl.Float64)
-                centered_time = [i - (n - 1) / 2 for i in range(n)]
-                time_ss = n * (n * n - 1) / 12
-                complete = x.is_not_null().cast(pl.Int32).rolling_sum(n, min_samples=n).over("symbol") == n
-                # Weighted kernels cannot consume nulls. The separate complete
-                # window mask prevents the zero placeholders from becoming data.
-                slope = x.fill_null(0).rolling_sum(
-                    n, weights=centered_time, min_samples=n,
-                ).over("symbol") / time_ss
-                if name == "ts_slope":
-                    result = slope
-                elif name == "ts_resi":
-                    result = x - x.rolling_mean(n, min_samples=n).over("symbol") - slope * (n - 1) / 2
-                else:
-                    variance = x.rolling_var(n, min_samples=n, ddof=1).over("symbol")
-                    # Match Qlib's undefined-R² guard for near-constant prices.
-                    result = pl.when(variance > 2e-5 ** 2).then(
-                        (slope ** 2 * time_ss / ((n - 1) * variance)).clip(0, 1)
-                    )
-                return pl.when(complete).then(result)
+                return rolling_moment(x, n, name)
             if name == "delay":
                 return x.shift(n).over("symbol")
             if name == "delta":
@@ -185,14 +183,13 @@ class ExpressionEngine:
             if name in {"ts_corr", "ts_cov"}:
                 if n < 2:
                     return pl.lit(None, dtype=pl.Float64)
-                fn = pl.rolling_corr if name == "ts_corr" else pl.rolling_cov
                 y = self._node(args[1])
                 # Arithmetic paths can make the same price differ by one ULP.
                 # Use the ranking precision for the constant-window decision.
                 stable_x, stable_y = x.round_sig_figs(10), y.round_sig_figs(10)
                 x_range = (stable_x.rolling_max(n, min_samples=n) - stable_x.rolling_min(n, min_samples=n)).over("symbol")
                 y_range = (stable_y.rolling_max(n, min_samples=n) - stable_y.rolling_min(n, min_samples=n)).over("symbol")
-                result = fn(x, y, window_size=n, min_samples=n, ddof=1).over("symbol")
+                result = rolling_moment(x, n, name, y)
                 if name == "ts_corr":
                     return pl.when((x_range > 0) & (y_range > 0)).then(result.clip(-1, 1))
                 return pl.when(x_range.is_not_null() & y_range.is_not_null()).then(

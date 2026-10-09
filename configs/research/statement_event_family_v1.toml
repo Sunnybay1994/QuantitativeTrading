@@ -1,0 +1,34 @@
+family = "statement_event_reaction_v1"
+signals = ["statement_ear3_market_proxy_120d", "statement_abvol3_stable_shares_120d"]
+directions = [1, 1]
+event_definition = "first type-1 statement disclosure for a report period; newest period on simultaneous dates; not first earnings news"
+date_validation = "ann_date and f_ann_date must agree; available_date must equal them; quarter-end period; disclosure delay 0..180; latest disclosed period; unambiguous earliest record dates/type/value pair"
+legacy_quarantine = "artifacts/research/pead_event_inputs_20260930_01/events.parquet"
+legacy_status_policy = "QUARANTINED remains excluded; all other SUE context statuses require independent statement-date validation"
+anchor = "first exchange session on or after date-only announcement"
+reaction_offsets = [-1, 0, 1]
+price_formula = "adjusted_close[+1]/adjusted_close[-2] - market_total_return_level[+1]/market_total_return_level[-2]"
+price_requirements = "all four consecutive exchange endpoints positive finite price/adjustment/volume; same four index dates required"
+market_index = "H00985.CSI"
+market_return_type = "total_return"
+initial_index_version = "nightly_month_20260930"
+price_adaptation = "three-session compounded market-excess proxy; not original size/book-to-market matched portfolio; no pre-index-history substitute"
+volume_formula = "mean(share_volume[-1:+1])/mean(share_volume[-63:-8])-1"
+volume_baseline_count = 56
+volume_requirements = "all baseline observations finite nonnegative, positive baseline mean; all three event volumes positive; no missing-session compression or zero imputation"
+capital_policy = "positive finite total_shares and float_shares on every exchange session -63:+1; each series range <=1 share; otherwise volume signal missing"
+capital_adaptation = "stable observed capital filter, not proof of complete corporate-action history; keep its sample-selection coverage"
+availability = "reaction window end close; earliest trade next exchange session; never announcement-month backfill"
+carry_policy = "latest completed reaction event including invalid events replaces prior event; no fallback to an older valid event"
+expiry_calendar_days_exclusive = 120
+monthly_policy = "original battery samples available daily values at completed exchange month ends; original eligible universe unchanged"
+prior_earnings_news = "positive earlier forecast matches reported separately; no match is unknown, not proof of first earnings news; preliminary-release coverage unestablished"
+forecast_corpus = "data/clean/forecast_text_corpus/p7_all_20260912_01/forecasts.parquet"
+additional_controls = ["pit_sue8_context_v2", "reversal_20", "report01_skip_month_momentum_n252", "amihud_illiquidity_monthly_calendar80_v1", "free_float_turnover_level_monthly_calendar80_v1"]
+control_policy = "original admitted controls plus fixed SUE/momentum/reversal/liquidity controls on size-industry-neutral candidate; original 96 months and NW t>=2.5 incremental rule"
+stop_rule = "original statistical or incremental failure closes this family; no direction/window/Top-K rescue"
+account_policy = "only original-admission survivor may justify one registered CNY100000 few-holdings, CNY1 minimum commission account with all three costs"
+price_source = "https://www.anderson.ucla.edu/documents/areas/fac/finance/santa_clara_surprises.pdf equation 4"
+volume_source = "https://archive.nyu.edu/jspui/bitstream/2451/27578/2/SSRN-id1122463.pdf equation 4"
+implementation_contrast = "OSAP v1.4.1 four-session sum is not this three-session compounded formula"
+auto_trade = false

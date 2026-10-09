@@ -186,12 +186,34 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
     else:
         date = str(end)
         result['as_of'] = date
-        stage('model', lambda: run_daily(
+        dependency_options: dict[str, Any] = {}
+        dependency_ok = True
+        if settings.get('dependency_refresh', False):
+            from quant.research.daily_dependencies import resolve_daily_dependencies
+
+            def dependencies() -> dict:
+                plan = resolve_daily_dependencies(config=config, as_of=end)
+                (output/'dependencies.json').write_text(
+                    json.dumps(plan, ensure_ascii=False, indent=2, default=str), encoding='utf-8')
+                return plan
+
+            dependency_ok = stage('dependencies', dependencies, lambda value: bool(value['required_factor_ids']))
+            if dependency_ok:
+                plan = stages['dependencies']['result']
+                dependency_options = {'required_factor_ids': plan['required_factor_ids']}
+                # Minute inputs are refreshed only if an actual signal consumer needs them.
+                # Forward slippage keeps its separate required order/window coverage checks.
+                dependency_options['intraday'] = bool(plan['required_minute_inputs'])
+        if dependency_ok:
+            stage('model', lambda: run_daily(
             to=date, selection=Path(settings['model']['selection']), output=output/'model',
             data_root=data_root, refresh_config=Path(settings['refresh_config']),
             artifact_root=artifact_root, saved_data=saved_data,
-            intraday=settings.get('intraday', True), rehearsal=rehearsal, now=clock),
+            rehearsal=rehearsal, now=clock,
+            **{'intraday': settings.get('intraday', True), **dependency_options}),
             lambda value: value.get('as_of') == date and value.get('status') == 'recorded')
+        else:
+            stages['model'] = {'status': 'skipped', 'reason': 'consumer dependencies could not be verified'}
         try:
             refresh = json.loads((output/'model/refresh.json').read_text(encoding='utf-8'))
             result['factor_health'] = refresh['input_quality'].get('factor_health')

@@ -104,10 +104,35 @@ def maximum_correlation(frame: pl.DataFrame, score: str, controls: list[str], mi
 
 
 def search(panel: pl.DataFrame, labels: pl.DataFrame, mapping: dict[str, str], settings: dict,
-           output: Path, *, family: str) -> list[dict]:
+           output: Path, *, family: str, context_evaluator=None) -> list[dict]:
     if 'predictive_priority' in settings:
         from quant.research.predictive_priority_search import search_predictive
         return search_predictive(panel, labels, mapping, settings, output, family=family)
+    from quant.research.gp_expression_identity import (
+        LEGACY as LEGACY_IDENTITY, canonical_expression, expression_key)
+    from quant.research.gp_full_context import LEGACY as LEGACY_CONTEXT, VERSION as FULL_CONTEXT
+    identity_version = settings.get('expression_identity', LEGACY_IDENTITY)
+    context_version = settings.get('calculation_context', LEGACY_CONTEXT)
+    if context_version not in (LEGACY_CONTEXT, FULL_CONTEXT):
+        raise ValueError('Unknown GP calculation context')
+    if context_version == FULL_CONTEXT and context_evaluator is None:
+        raise ValueError('Full-market GP context requires its frozen evaluator')
+    if context_version == LEGACY_CONTEXT and context_evaluator is not None:
+        raise ValueError('Cannot apply new context semantics to a legacy run')
+    input_identity = context_evaluator.identity if context_evaluator else None
+    if identity_version != LEGACY_IDENTITY and input_identity is None:
+        # A direct caller may request symmetry de-duplication alone. Its cache
+        # still belongs to these values, labels, schema and terminal definitions.
+        digest = hashlib.sha256(json.dumps(mapping, sort_keys=True).encode())
+        for frame in (panel, labels):
+            digest.update(str(frame.schema).encode())
+            digest.update(frame.hash_rows(seed=20261004).to_numpy().tobytes())
+        input_identity = digest.hexdigest()
+    aliases_path = output/'expression_aliases.json'
+    aliases = json.loads(aliases_path.read_text(encoding='utf-8')) if aliases_path.exists() else {}
+    if any(row.get('input_identity') != input_identity or row.get('expression_identity') != identity_version
+           for row in aliases.values()):
+        raise ValueError('GP alias/input version changed; use a new run directory')
     random.seed(settings['seed'])
     controls = list(mapping)
     basics: list[str] = [c for c in ('adj_open', 'adj_high', 'adj_low', 'adj_close', 'volume', 'amount',
@@ -131,6 +156,12 @@ def search(panel: pl.DataFrame, labels: pl.DataFrame, mapping: dict[str, str], s
     cached=json.loads(checkpoint.read_text(encoding='utf-8')) if checkpoint.exists() else None
     cache_path=output/'fitness_cache.json'
     records=cached['records'] if cached else (json.loads(cache_path.read_text(encoding='utf-8')) if cache_path.exists() else [])
+    if any(row.get('calculation_context', LEGACY_CONTEXT) != context_version
+           or row.get('expression_identity', LEGACY_IDENTITY) != identity_version
+           or row.get('input_identity') != input_identity for row in records):
+        raise ValueError('GP calculation/identity/input version changed; use a new run directory')
+    if context_evaluator and context_evaluator.verify_sources:
+        context_evaluator.verify_sources()
     cross_stock = settings.get('cross_stock')
     assignments = {}
     objective = cross_stock['version'] if cross_stock else 'pooled_mean_ic_v1'
@@ -154,21 +185,35 @@ def search(panel: pl.DataFrame, labels: pl.DataFrame, mapping: dict[str, str], s
             temporary.replace(contract_path)
     if any(row.get('fitness_preprocessing') != _FITNESS_PREPROCESSING for row in records):
         raise ValueError('GP fitness preprocessing changed; preserve this checkpoint and use a new run directory')
-    cache={r['terminal_expression']:r for r in records}
+    cache={expression_key(r['terminal_expression'], identity_version):r for r in records}
     def assess(ind):
-        expression = gp.compile(ind, pset)
-        if expression in cache:
-            ind.fitness.values = (cache[expression]['fitness'],)
+        observed = gp.compile(ind, pset)
+        expression = observed
+        if context_evaluator:
+            from quant.research.gp_full_context import scope_cross_sections
+            expression = scope_cross_sections(expression)
+        expression = canonical_expression(expression, identity_version)
+        key = expression_key(expression, identity_version)
+        if identity_version != LEGACY_IDENTITY:
+            aliases[observed] = {'canonical_terminal_expression': expression, 'canonical_key': key,
+                                 'input_identity': input_identity, 'expression_identity': identity_version}
+        if key in cache:
+            ind.fitness.values = (cache[key]['fitness'],)
             return
-        row = {'expression': expand_expression(expression, mapping), 'terminal_expression': expression,
+        row = {'expression': canonical_expression(expand_expression(expression, mapping), identity_version),
+               'terminal_expression': expression,
                'complexity': len(ind), 'depth': ind.height, 'fitness': -1e9,
                'fitness_preprocessing': _FITNESS_PREPROCESSING, 'search_objective': objective}
+        if context_version != LEGACY_CONTEXT or identity_version != LEGACY_IDENTITY:
+            row.update(calculation_context=context_version, expression_identity=identity_version,
+                       input_identity=input_identity, canonical_key=key)
         try:
             if ind.height > settings['max_depth']:
                 raise ValueError('depth exceeded')
             fields=sorted({node.id for node in ast.walk(ast.parse(expression,mode='eval'))
                            if isinstance(node,ast.Name) and node.id in panel.columns}-{'symbol','trade_date'})
-            values = evaluate_expressions(panel.select('symbol','trade_date',*fields), {'candidate': expression})
+            values = (context_evaluator.evaluate(expression) if context_evaluator else
+                      evaluate_expressions(panel.select('symbol','trade_date',*fields), {'candidate': expression}))
             scored = monthly.join(values.select('symbol', 'trade_date', 'candidate'), on=['symbol', 'trade_date'])
             scored = preprocess_training_scores(scored)
             series = rank_ic_by_date(scored, score='candidate', label='label', minimum_symbols=100,
@@ -191,7 +236,7 @@ def search(panel: pl.DataFrame, labels: pl.DataFrame, mapping: dict[str, str], s
                 raise
             row['error'] = str(exc)[:500]
             row['error_type']=type(exc).__name__
-        cache[expression] = row
+        cache[key] = row
         records.append(row)
         if len(records)%20==0:
             temporary=cache_path.with_suffix('.tmp')
@@ -221,6 +266,9 @@ def search(panel: pl.DataFrame, labels: pl.DataFrame, mapping: dict[str, str], s
         temporary.write_text(json.dumps({'generation':generation,'population':[str(i) for i in population],
             'random_state':random.getstate(),'records':records}),encoding='utf-8')
         temporary.replace(checkpoint)
+        if identity_version != LEGACY_IDENTITY:
+            from quant.data.gp_context_inputs import dump
+            dump(aliases_path, aliases)
         # A timed-out run retains real best-so-far candidates; resume does not resample them.
         (output/'best_so_far.json').write_text(json.dumps(sorted([r for r in records if 'error' not in r],
             key=lambda r:-r['fitness'])[:20],indent=2),encoding='utf-8')
@@ -239,7 +287,8 @@ def search(panel: pl.DataFrame, labels: pl.DataFrame, mapping: dict[str, str], s
         population = tools.selBest(population, 10) + children[:len(children)-10]
     unique: dict[str,dict]={}
     for row in sorted([r for r in records if 'error' not in r],key=lambda r:-r['fitness']):
-        unique.setdefault(ast.dump(ast.parse(row['expression'],mode='eval')),row)
+        normalized = canonical_expression(row['expression'], identity_version)
+        unique.setdefault(ast.dump(ast.parse(normalized,mode='eval')),row)
     winners = list(unique.values())[:20]
     library = output/'library'
     library.mkdir(exist_ok=True)
@@ -248,6 +297,26 @@ def search(panel: pl.DataFrame, labels: pl.DataFrame, mapping: dict[str, str], s
         definition = dict(id=row['factor_id'], expr=row['expression'], direction=row['direction'],
                           family=f'nightly_{family}', source_ref=str(output/'search.json'))
         (library/f"{row['factor_id']}.toml").write_text(''.join(f'{k} = {json.dumps(v)}\n' for k,v in definition.items()), encoding='utf-8')
+    if context_evaluator and winners:
+        # Preserve the exact pre-MAD values for the natural N3 computation check.
+        # Winners reuse already materialized context; no new population/trials.
+        from quant.data.gp_context_inputs import dump, sha256
+        saved_values = []
+        for row in winners:
+            values = context_evaluator.evaluate(row['terminal_expression'])
+            saved_values.append(monthly.select('symbol', 'trade_date').join(
+                values, on=['symbol', 'trade_date'], how='left', validate='1:1').with_columns(
+                    pl.lit(row['factor_id']).alias('factor')))
+        values_path = output/'training_candidate_values.parquet'
+        temporary = values_path.with_suffix('.partial.parquet')
+        pl.concat(saved_values).write_parquet(temporary)
+        temporary.replace(values_path)
+        dump(output/'training_values_manifest.json', {
+            'calculation_context': context_version, 'expression_identity': identity_version,
+            'input_identity': input_identity, 'values_sha256': sha256(values_path),
+            'labels_sha256': sha256(output/'monthly_sample.parquet'),
+            'directions': {row['factor_id']: row['direction'] for row in winners},
+            'expressions': {row['factor_id']: row['expression'] for row in winners}})
     (output/'search.json').write_text(json.dumps({'candidates': winners, 'trials': records}, indent=2), encoding='utf-8')
     return winners
 
@@ -282,6 +351,15 @@ def run(settings: dict, output: Path) -> dict:
         from quant.research.predictive_priority_inputs import run_predictive
         return run_predictive(settings, output)
     from quant.data.nightly_genetic_inputs import read_training_sample
+    if settings.get('genetic', {}).get('calculation_context'):
+        # Pin the refresh source before making the sample, not after a possible
+        # interruption/daily refresh. The saved pointer is also used by context.
+        folder = output/'full_context'
+        folder.mkdir(exist_ok=True)
+        config = folder/'refresh.toml'
+        if not config.exists():
+            config.write_bytes(Path(settings['refresh_config']).read_bytes())
+        settings = {**settings, 'refresh_config': str(config)}
     definitions = load_library(Path(settings['library']))
     diagnostics=recovery_diagnostics(output)
     # All raw-library terminals remain in every night's grammar and redundancy controls.
@@ -334,6 +412,12 @@ def run(settings: dict, output: Path) -> dict:
     if has_checkpoint and not summary_path.exists():
         raise ValueError('GP checkpoint has no frozen input summary; cannot safely select its family')
     frozen = json.loads(summary_path.read_text(encoding='utf-8')) if has_checkpoint else None
+    if frozen:
+        from quant.research.gp_full_context import LEGACY as legacy_context
+        from quant.research.gp_expression_identity import LEGACY as legacy_identity
+        for key, default in [('calculation_context', legacy_context), ('expression_identity', legacy_identity)]:
+            if frozen.get(key, default) != search_settings.get(key, default):
+                raise ValueError('Frozen GP calculation/identity version changed; preserve the old batch')
     selection = select_family(groups, coverage, search_settings['seed'], frozen)
     family = selection['family']
     search_settings['favored_terminals'] = selection['favored_terminals']
@@ -343,6 +427,12 @@ def run(settings: dict, output: Path) -> dict:
                    'sample_last_signal':str(labels['trade_date'].max()),
                    'last_label_exit':str(labels['label_exit_date'].max()),'training_end':str(end),
                    'finite_terminal_months':coverage}
+    # Version fields are opt-in on a newly frozen config. Missing fields preserve
+    # legacy sampling/cache behavior, including recovery of batches 64--67.
+    for key in ('calculation_context', 'expression_identity', 'context_max_subtrees',
+                'context_max_rows', 'context_memory_mb', 'context_max_disk_mb'):
+        if key in search_settings:
+            input_summary[key] = search_settings[key]
     if cross_stock:
         from quant.research.cross_stock_search import stock_groups
         input_summary['cross_stock'] = cross_stock
@@ -354,7 +444,15 @@ def run(settings: dict, output: Path) -> dict:
     temporary.replace(summary_path)
     if labels['trade_date'].n_unique()!=72 or not input_summary['family_terminals_with_72_months']:
         raise ValueError(f'{family} has no terminal with 72 months and 100 finite stocks; see input_summary.json')
-    winners = search(panel, labels, mapping, search_settings, output, family=family)
+    context_options = {}
+    if search_settings.get('calculation_context'):
+        from quant.research.gp_full_context import build_evaluator
+        evaluator = build_evaluator(panel, mapping, settings, output, sample, monthly_sample)
+        context_options['context_evaluator'] = evaluator
+        input_summary['input_identity'] = evaluator.identity
+        from quant.data.gp_context_inputs import dump
+        dump(summary_path, input_summary)
+    winners = search(panel, labels, mapping, search_settings, output, family=family, **context_options)
     return {'candidates':len(winners), 'terminal_count':len(mapping), 'family':family,
             'sample_symbols':labels['symbol'].n_unique(), 'sample_months':labels['trade_date'].n_unique(),
             'recovery_diagnostics':diagnostics}

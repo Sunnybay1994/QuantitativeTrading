@@ -12,6 +12,7 @@ import polars as pl
 from quant.data.factor_panels import available_sessions
 from quant.data.industry_history import attach_industry
 from quant.data.refresh_stocks import read_stock_data
+from quant.data.stock_limits import read_saved_limits, validate_limits
 from quant.research.factor_battery_universe import prepare_battery_universe
 
 _KEYS = ["symbol", "trade_date"]
@@ -29,26 +30,13 @@ def _read_current_limits(
             frame = pl.scan_parquet(path).filter(pl.col("trade_date") == as_of).select(
                 *_KEYS, "up_limit", "down_limit").collect()
             if frame.height:
-                if frame.select(_KEYS).is_duplicated().any():
-                    raise ValueError("Duplicate current-session limit keys")
+                validate_limits(frame, as_of)
                 if required_keys.join(frame.select(_KEYS), on=_KEYS, how="anti").is_empty():
                     return frame, str(path)
-    # Existing same-day raw is a bounded last fallback; no capture or network call.
-    for metadata in sorted((data_root / f"raw/tushare/stk_limit/date={as_of}").glob("*.json"), reverse=True):
-        description = json.loads(metadata.read_text(encoding="utf-8"))
-        if description.get("parameters", {}).get("trade_date") != as_of.strftime("%Y%m%d"):
-            continue
-        path = metadata.with_suffix(".parquet")
-        raw = pl.read_parquet(path)
-        if raw.is_empty() or raw["trade_date"].unique().to_list() != [as_of.strftime("%Y%m%d")]:
-            raise ValueError("Current raw limits are empty or wrong-date")
-        frame = raw.filter(pl.col("ts_code").str.contains(r"^\d{6}\.(SH|SZ)$")).select(
-            pl.col("ts_code").alias("symbol"), pl.lit(as_of).alias("trade_date"),
-            pl.col("up_limit").cast(pl.Float64), pl.col("down_limit").cast(pl.Float64))
-        if frame["symbol"].null_count() or frame["symbol"].is_duplicated().any():
-            raise ValueError("Invalid current raw limit keys")
-        if required_keys.join(frame.select(_KEYS), on=_KEYS, how="anti").is_empty():
-            return frame, str(path)
+    saved = read_saved_limits(data_root, as_of, required_keys)
+    if saved is not None:
+        frame, path, _ = saved
+        return frame, str(path)
     raise ValueError(f"No saved complete same-session limits for {as_of}; old limits cannot replace them")
 
 

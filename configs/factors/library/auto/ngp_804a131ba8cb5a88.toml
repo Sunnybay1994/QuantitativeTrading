@@ -1,0 +1,6 @@
+id = "ngp_804a131ba8cb5a88"
+expr = "(pit_roe_ttm > exp(ts_sum(where(delay(adj_close, 1) > 0, log(adj_close / adj_open), 0 / 0), 20)) - 1) * 1.0"
+direction = 1
+family = "nightly_predictive_priority_v2"
+source_ref = "artifacts\\research\\continuous\\batch_000012\\2026-09-20\\N2\\search.json"
+source = "nightly_gp"

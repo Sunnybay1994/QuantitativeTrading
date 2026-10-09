@@ -21,7 +21,8 @@ from quant.research.run_multifactor_replay import model_target_plans, signal_sel
 
 
 def prepare_constrained_hook(*, scores: pl.DataFrame, targets: pl.DataFrame,
-                             statistics: Path, policy: dict, score_column: str):
+                             statistics: Path, policy: dict, score_column: str,
+                             minimum_signal_stocks: int | None = None):
     """Prepare R4 once for a frozen score method, also consumed by nightly N5."""
     dates = sorted(set(targets['as_of']))
     universe = read_frozen_battery_universe(statistics=statistics,
@@ -38,8 +39,12 @@ def prepare_constrained_hook(*, scores: pl.DataFrame, targets: pl.DataFrame,
 
     def transform(batch: pl.DataFrame, state: dict) -> tuple[pl.DataFrame, dict]:
         day = batch['as_of'][0]
-        return constrained_targets(targets=batch, state=state, market=market_days[day],
-            scores=score_days[day], policy=policy)
+        signal = score_days.get(day, pl.DataFrame(schema={'as_of': pl.Date, 'symbol': pl.String, 'score': pl.Float64}))
+        minimum = minimum_signal_stocks if minimum_signal_stocks is not None else policy['top_k']
+        if (batch['weight'] > 0).any() and signal.filter(pl.col('score').is_finite()).height < minimum:
+            raise ValueError('Positive constrained targets require the registered minimum signal pool')
+        return constrained_targets(targets=batch, state=state, market=market_days.get(day, markets.head(0)),
+            scores=signal, policy=policy)
 
     extra = scores.select(pl.col('trade_date').alias('as_of'), 'symbol').join(
         targets.select('as_of', 'execution_date').unique(), on='as_of').select('execution_date', 'symbol')
@@ -100,7 +105,8 @@ def run(*, config: Path, output: Path, data_root: Path, resume: bool = False) ->
     _, targets = model_target_plans(scores, model=model, sessions=sessions)['lightgbm_top50']
     targets = targets.with_columns(pl.lit('r4_constrained').alias('strategy'))
     transform, extra, markets = prepare_constrained_hook(scores=scores, targets=targets,
-        statistics=Path(research['statistics']), policy=policy, score_column='lightgbm')
+        statistics=Path(research['statistics']), policy=policy, score_column='lightgbm',
+        minimum_signal_stocks=model['models']['minimum_signal_stocks'])
     if resume:
         if (output/'config.toml').read_bytes() != config.read_bytes():
             raise ValueError('Resume requires unchanged preregistration')

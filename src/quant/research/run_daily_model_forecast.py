@@ -11,7 +11,8 @@ import polars as pl
 from quant.data.daily_input_quality import run_quality
 from quant.data.factor_panels import panel_complete, read_coverage
 from quant.data.model_forward_inputs import read_forward_values
-from quant.data.refresh import SHANGHAI, completed_date, latest_session, refresh_factor_selection, run_refresh
+from quant.data.refresh import (SHANGHAI, completed_date, latest_session, refresh_factor_selection,
+                                run_refresh, scoped_factor_settings)
 from quant.data.stock_paper_inputs import capture_stock_paper_day
 from quant.factors.library import load_library
 from quant.research.run_fixed_model_forecast import run_forecast
@@ -81,10 +82,13 @@ def check_model_factor_date(*, data_root: Path, factors: list[str], as_of: dt.da
     return evidence, errors
 
 
-def check_saved_input_quality(*, data_root: Path, config: Path, end: dt.date, output: Path) -> dict:
+def check_saved_input_quality(*, data_root: Path, config: Path, end: dt.date, output: Path,
+                              required_factor_ids: list[str] | None = None) -> dict:
     """Run the refresh quality checks on local inputs with the same scope and thresholds."""
     try:
         settings = tomllib.loads(config.read_text(encoding='utf-8'))
+        if required_factor_ids is not None:
+            settings['factors'] = scoped_factor_settings(settings['factors'], required_factor_ids)
         quality = settings.get('quality', {})
         if not quality.get('enabled', False):
             raise ValueError('Saved-data prediction requires enabled local input quality checks')
@@ -103,7 +107,8 @@ def check_saved_input_quality(*, data_root: Path, config: Path, end: dt.date, ou
 
 def run_daily(*, to: str, selection: Path, output: Path, data_root: Path,
               refresh_config: Path, artifact_root: Path, saved_data: bool = False,
-              intraday: bool = True, rehearsal: bool = False, now: dt.datetime | None = None) -> dict:
+              intraday: bool = True, rehearsal: bool = False, now: dt.datetime | None = None,
+              required_factor_ids: list[str] | None = None) -> dict:
     """One dated invocation; preserve forecasts and never change account positions."""
     if output.exists():
         raise FileExistsError('Use a new daily record directory')
@@ -118,6 +123,12 @@ def run_daily(*, to: str, selection: Path, output: Path, data_root: Path,
     requirements, requirement_errors = None, []
     try:
         requirements = model_factor_requirements(selection=selection, refresh_config=refresh_config, as_of=end)
+        if required_factor_ids is not None:
+            factor_settings = tomllib.loads(refresh_config.read_text(encoding='utf-8'))['factors']
+            scoped_factor_settings(factor_settings, required_factor_ids)
+            missing = set(requirements['required_factors']) - set(required_factor_ids)
+            if missing:
+                requirement_errors.append('Daily consumer scope omits model factors: ' + ', '.join(sorted(missing)))
         if requirements['required_outside_refresh_selection']:
             requirement_errors.append('Frozen model requires factors outside the refresh selection: '
                 + ', '.join(requirements['required_outside_refresh_selection']))
@@ -132,10 +143,11 @@ def run_daily(*, to: str, selection: Path, output: Path, data_root: Path,
     elif saved_data:
         refresh = {'latest_session': str(end), 'message': 'saved_data', 'intraday_errors': [],
             'input_quality': check_saved_input_quality(data_root=data_root, config=refresh_config,
-                end=end, output=output/'input_quality')}
+                end=end, output=output/'input_quality', required_factor_ids=required_factor_ids)}
     else:
         refresh = run_refresh(to=to, data_root=data_root, artifact_root=artifact_root,
-            config=refresh_config, now=clock, intraday=intraday, progress_path=output/'refresh_progress.json')
+            config=refresh_config, now=clock, intraday=intraday, progress_path=output/'refresh_progress.json',
+            required_factor_ids=required_factor_ids)
     (output/'refresh.json').write_text(json.dumps(refresh, ensure_ascii=False, indent=2), encoding='utf-8')
     if refresh['latest_session'] != str(end):
         raise ValueError('Refresh and forecast must use the same completed session')
@@ -150,6 +162,7 @@ def run_daily(*, to: str, selection: Path, output: Path, data_root: Path,
               'input_errors': errors, 'forecast_path': None, 'prediction_stocks': 0,
               'factor_health': refresh['input_quality'].get('factor_health'),
               'model_factor_requirements': requirements, 'model_factor_inputs': evidence,
+              'required_factor_ids': required_factor_ids,
               'status': 'input_errors' if errors else 'missing_model_inputs'}
     if not errors:
         if not saved_data:

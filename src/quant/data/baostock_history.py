@@ -8,6 +8,7 @@ from pathlib import Path
 import polars as pl
 
 from quant.data.connectors.baostock import BaostockConnector
+from quant.data.connectors.baostock_access import BaoStockAccessPaused
 from quant.data.intraday import _complete_stock_dates, _directory, add_session_quality, merge_bars
 from quant.data.intraday_bars import TZ, normalize_baostock
 from quant.data.market_universe import bao_members, listing
@@ -91,6 +92,10 @@ def run(root=Path('data'), output=Path('artifacts/baostock_history'), max_second
                 try:
                     dates = [day for day in expected.get(row['symbol'], []) if start <= day <= stop]
                     result = capture(root, row, start, stop, dates)
+                except BaoStockAccessPaused as exc:
+                    state.update(status='paused', pause_reason='source_access_limit', error=str(exc))
+                    publish()
+                    return state  # Do not turn a source-wide pause into symbol failures.
                 except Exception as exc:
                     result = dict(status='error', error=str(exc), changed_rows=0)
                     state['errors'] += 1

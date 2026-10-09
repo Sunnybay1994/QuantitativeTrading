@@ -199,13 +199,19 @@ def _predict(output: Path, data_root: Path) -> None:
     _stage(prefix, lambda: run_prefixes(config=output/'model.toml', output=prefix),
            ('annual_statistical_screen.parquet',))
     completed = json.loads((output/'evaluation/costs/batch_summary.json').read_text(encoding='utf-8'))
-    cost_runs = [Path(p) for p in completed['completed_runs'].values()]
+    from quant.research.monthly_prefix_costs import prepare_costs, refresh_cached_stages
+    cost_runs = prepare_costs(output, data_root, completed['completed_runs'])
     empty_root = output/'additional_costs'
     empty_root.mkdir(exist_ok=True)
+    sources = {**completed['completed_runs'], **{
+        path.parent.name: str(path.parent) for path in empty_root.glob('*/summary.json')}}
+    previous = refresh_cached_stages(output, sources)
     _stage(costs, lambda: run_cost_prefixes(prefix=prefix, output=costs, cost_runs=cost_runs,
         cost_root=empty_root, benchmarks=output/'evaluation/benchmarks', data_root=data_root,
-        return_benchmark_config=output/'measurement.toml'), ('annual_cost_screen.parquet',))
-    result = _stage(selection, lambda: run_selection(costs=costs, output=selection), ('annual_selection.parquet',))
+        return_benchmark_config=output/'return_benchmarks.toml',
+        previous_costs=previous.get('prefix_costs')), ('annual_cost_screen.parquet',))
+    result = _stage(selection, lambda: run_selection(costs=costs, output=selection,
+        correlations_from=previous.get('selection')), ('annual_selection.parquet',))
     if any(not row['selection_complete'] for row in result['annual_selection']):
         raise ValueError('Annual causal selection is incomplete; no monthly model can be reported ready')
     _stage(output/'predictions', lambda: run_predictions(selection=selection, output=output/'predictions'),
@@ -250,7 +256,8 @@ def _constructions(output: Path, method: str, data_root: Path) -> dict:
         f"{method}_top{model['portfolio']['primary_top_k']}"]
     if targets.height:
         transform, extra, markets = prepare_constrained_hook(scores=scores, targets=targets,
-            statistics=output/'evaluation/statistics', policy=policy, score_column=method)
+            statistics=output/'evaluation/statistics', policy=policy, score_column=method,
+            minimum_signal_stocks=model['models']['minimum_signal_stocks'])
     else:
         def transform(batch, state):
             raise ValueError('Unexpected signal for a cash-only monthly model')

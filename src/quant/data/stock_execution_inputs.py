@@ -279,6 +279,7 @@ def prepare_stock_execution_inputs(
     else:
         suspend_frame = suspend_frame.filter(pl.col("suspend_type") == "S").select(
             pl.col("ts_code").alias("symbol"), pl.col("trade_date").str.to_date("%Y%m%d"),
+            "suspend_type", "suspend_timing",
         ).unique().filter(pl.col("symbol").is_in(symbols))
     dividends = []
     for index, symbol in enumerate(symbols):
@@ -343,6 +344,10 @@ def stock_session_states(
     slippage: float,
 ):
     """Use vendor bands on order sessions; absent quotes cannot execute."""
+    if 'suspension_policy' in suspensions.columns:
+        from quant.data.stock_open_suspensions import versioned_open_states
+        return versioned_open_states(bars=bars, limits=limits, suspensions=suspensions,
+            sessions=sessions, symbols=symbols, execution_dates=execution_dates, slippage=slippage)
     from quant.backtest.rules import DailyMarketState
 
     quotes = {(r["trade_date"], r["symbol"]): r for r in bars.iter_rows(named=True)}

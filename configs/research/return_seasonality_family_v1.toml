@@ -1,0 +1,31 @@
+family = "return_seasonality_calendar_y2_5_v1"
+status = "signal_computation_intake_not_admitted"
+sources = [
+  "https://doi.org/10.1016/j.jfineco.2007.02.003",
+  "https://doi.org/10.1016/j.jfineco.2020.07.009",
+  "https://doi.org/10.1016/j.pacfin.2024.102391",
+  "https://www.sciencedirect.com/science/article/pii/S092753981830077X"
+]
+formula_source = "October 2018 author working paper, Seasonal Reversals in Expected Stock Returns, Table 2 and page 19, hosted by Nasdaq; Table 3 motivates ANN/NANN/AMN but uses up to 20 years"
+formula_pdf = "artifacts/research/return_seasonality_intake_20261005_01/sources/seasonal_reversals_working.pdf"
+signals = ["return_seasonality_ann_y2_5", "return_seasonality_nann_y2_5", "return_seasonality_amn_y2_5"]
+directions = [1, -1, 1]
+target_month = "next calendar month after completed signal month"
+all_lags_from_target = "integers 13 through 60, inclusive"
+annual_lags_from_target = [24, 36, 48, 60]
+other_lags_from_target = "13 through 60 excluding 24,36,48,60"
+same_month_required = 4
+other_month_required = 44
+joint_complete_required = 48
+missing_policy = "all three signals share all 48 finite observed months; missing, zero-volume endpoints and missing calendar months stay missing; never compress months or carry prices"
+return_basis = "exact exchange month-end close*vendor adjustment factor ratio, positive endpoint volume; price proxy, not independently audited cash-wealth return"
+demeaning = "not applied: identical complete calendar cohorts make historical cross-sectional demeaning a common additive constant; raw and demeaned ranks are algebraically equal, tested explicitly"
+publication = "signal month-end close, effective next exchange session; monthly score applies to next calendar month"
+adaptation = "fixed years 2-5 formation from original tables; common complete 48-month cohort and local adjusted-price basis; not a replication of the 20-year US factor portfolio or China paper profits"
+control_columns_only = ["return_mean_all_y2_5", "return_compounded_y2_5"]
+control_purpose = "separate same-month contrast from generic arithmetic-mean/cumulative long-term reversal; not new candidate factors"
+statistical_pipeline = "existing original factor battery only; raw and size/industry neutral, unchanged 96-month and multiple-testing screens"
+incremental_policy = "existing admitted controls plus both saved long-term controls and registered short reversal, momentum and liquidity controls; treat ANN/NANN/AMN as one related family, not three independent mechanisms"
+stop_rule = "insufficient coverage leaves unknown; statistical or incremental failure closes this fixed family without window/sign/Top-K rescue"
+account_policy = "only an original-admission survivor may justify one CNY100000 few-holdings account, CNY1 minimum commission, three costs; no account at intake"
+auto_trade = false

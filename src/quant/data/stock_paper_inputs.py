@@ -26,6 +26,10 @@ DIVIDEND_SCHEMA = {
     "share_ratio": pl.Float64,
 }
 
+# The stock paper accounts consume mainland SH/SZ A shares. B-share settlement
+# dates and currencies follow different rules and must not enter this mapper.
+_A_SHARE_SYMBOL = r"^(?:6\d{5}\.SH|[03]\d{5}\.SZ)$"
+
 
 @dataclass
 class StockPaperInputs:
@@ -65,7 +69,11 @@ def map_day_dividends(raw: pl.DataFrame, date: dt.date) -> pl.DataFrame:
     if raw.height >= 2000:
         raise ValueError("Possibly truncated daily dividend response")
     frame = (
-        raw.filter((pl.col("div_proc") == "实施") & pl.col("ex_date").is_not_null())
+        raw.filter(
+            (pl.col("div_proc") == "实施")
+            & pl.col("ts_code").str.contains(_A_SHARE_SYMBOL)
+            & (pl.col("ex_date").cast(pl.String) == date.strftime("%Y%m%d"))
+        )
         .select(
             pl.col("ts_code").alias("symbol"),
             pl.col("imp_ann_date").cast(pl.String).str.to_date("%Y%m%d").alias("ann_date"),
@@ -76,22 +84,38 @@ def map_day_dividends(raw: pl.DataFrame, date: dt.date) -> pl.DataFrame:
             pl.col("cash_div_tax").cast(pl.Float64).fill_null(0.0).alias("div_cash"),
             pl.col("stk_div").cast(pl.Float64).fill_null(0.0).alias("share_ratio"),
         )
-        .filter(pl.col("ex_date") == date)
     )
     frame = resolve_same_day_dividends(frame)
-    if frame.filter(
-        pl.col("ann_date").is_null()
-        | (pl.col("ann_date") > date)
-        | pl.col("record_date").is_null()
-        | (pl.col("ann_date") > pl.col("record_date"))
-        | (pl.col("record_date") >= pl.col("ex_date"))
-        | ((pl.col("div_cash") > 0) & (pl.col("pay_date").is_null() | (pl.col("pay_date") < date)))
-        | (
+    checks = {
+        "missing_implementation_announcement": pl.col("ann_date").is_null(),
+        "future_implementation_announcement": pl.col("ann_date") > date,
+        "missing_record_date": pl.col("record_date").is_null(),
+        "announcement_after_record_date": pl.col("ann_date") > pl.col("record_date"),
+        "record_date_not_before_ex_date": pl.col("record_date") >= pl.col("ex_date"),
+        "missing_or_early_cash_payment": (
+            (pl.col("div_cash") > 0)
+            & (pl.col("pay_date").is_null() | (pl.col("pay_date") < date))
+        ),
+        "missing_or_early_share_listing": (
             (pl.col("share_ratio") > 0)
             & (pl.col("share_list_date").is_null() | (pl.col("share_list_date") < date))
+        ),
+    }
+    invalid = frame.with_columns(
+        *[expr.fill_null(False).alias(name) for name, expr in checks.items()]
+    ).filter(pl.any_horizontal(*[pl.col(name) for name in checks]))
+    if invalid.height:
+        examples = [
+            {
+                **{name: row[name] for name in DIVIDEND_SCHEMA},
+                "reasons": [name for name in checks if row[name]],
+            }
+            for row in invalid.head(5).iter_rows(named=True)
+        ]
+        raise ValueError(
+            f"Incomplete or future stock dividend implementation ({invalid.height}): "
+            + json.dumps(examples, default=str, ensure_ascii=False)
         )
-    ).height:
-        raise ValueError("Incomplete or future stock dividend implementation")
     return frame
 
 

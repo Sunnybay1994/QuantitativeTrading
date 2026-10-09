@@ -32,6 +32,7 @@ def test_compute_and_quality_share_explicit_version_selection(tmp_path, monkeypa
     monkeypatch.setattr(refresh, 'refresh_stocks', lambda **kw: {'new_dates': 0, 'new_rows': 0})
     monkeypatch.setattr(refresh, 'refresh_etfs', lambda **kw: {'new_rows': 0, 'new_bar_rows': 0})
     monkeypatch.setattr(refresh, 'refresh_limits', lambda **kw: 0)
+    monkeypatch.setattr(refresh, 'refresh_stock_limits', lambda **kw: {'new_rows': 0})
 
     def calculate(**kwargs):
         assert kwargs['selected'] == 'pit_sue8_context_v2'
@@ -69,3 +70,15 @@ def test_excluding_legacy_factor_does_not_change_explicit_library_access(tmp_pat
     old = load_library(Path(settings['library']), 'pit_sue8')
     assert len(old) == 1 and old[0].id == old[0].expr == 'pit_sue8'
     assert refresh.refresh_factor_selection(settings) == 'pit_sue8_context_v2'
+
+
+def test_consumer_selection_cannot_restore_excluded_or_unknown_factors(tmp_path):
+    _, settings = configuration(tmp_path)
+    original = dict(settings)
+    scoped = refresh.scoped_factor_settings(settings, ['pit_sue8_context_v2'])
+    assert scoped['selected'] == 'pit_sue8_context_v2'
+    assert scoped['excluded_factors'] == []
+    assert settings == original
+    for required in [[], ['pit_sue8'], ['missing'], ['pit_sue8_context_v2'] * 2]:
+        with pytest.raises(ValueError):
+            refresh.scoped_factor_settings(settings, required)

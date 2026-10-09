@@ -107,6 +107,8 @@ def test_freeze_keeps_formal_library_and_configuration_across_retry(tmp_path, mo
 
 
 def test_causal_stage_order_requires_complete_selection(tmp_path, monkeypatch):
+    from quant.research import monthly_prefix_costs
+    monkeypatch.setattr(monthly_prefix_costs, 'prepare_costs', lambda o, d, c: [Path(p) for p in c.values()])
     from quant.research import model_training_prefix, model_training_costs, model_training_selection
     from quant.research import run_multifactor_predictions
     folder = tmp_path/'evaluation/costs'
@@ -126,6 +128,45 @@ def test_causal_stage_order_requires_complete_selection(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match='causal selection'):
         monthly._predict(tmp_path, Path('data'))
     assert calls == ['known_prefixes', 'prefix_costs', 'annual_selection']
+
+
+def test_monthly_prefix_costs_load_frozen_return_indexes(tmp_path, monkeypatch):
+    from quant.research import monthly_prefix_costs
+    monkeypatch.setattr(monthly_prefix_costs, 'prepare_costs', lambda o, d, c: [Path(p) for p in c.values()])
+    """The index measurement config is not the return-benchmark source contract."""
+    from quant.research import model_training_prefix, model_training_costs, model_training_selection
+    from quant.research.factor_battery_cost_report import return_indexes, REQUIRED_BENCHMARKS
+    from quant.data import equal_weight_index
+
+    folder = tmp_path/'evaluation/costs'
+    folder.mkdir(parents=True)
+    (folder/'batch_summary.json').write_text('{"completed_runs": {}}')
+    for name, source in (
+        ('measurement.toml', 'configs/models/q1_report_measurement_20260912.toml'),
+        ('return_benchmarks.toml', 'configs/data/return_benchmarks_q1b_20260912.toml'),
+    ):
+        shutil.copyfile(source, tmp_path/name)
+    monkeypatch.setattr(monthly, '_stage', lambda folder, action, required: action())
+    monkeypatch.setattr(model_training_prefix, 'run_prefixes', lambda **kwargs: {})
+    dates = [dt.date(2025, 12, day) for day in (29, 30, 31)]
+    monkeypatch.setattr(equal_weight_index, 'available_sessions', lambda *_: dates)
+    monkeypatch.setattr(equal_weight_index, 'read_etf_total_return', lambda **_: pl.DataFrame({
+        'date': dates, 'unit_nav': [1., 1.01, 1.02]}))
+    monkeypatch.setattr(equal_weight_index, 'read_equal_weight_index', lambda **_: pl.DataFrame({
+        'date': dates, 'daily_return': [0., .01, .01]}))
+
+    def costs(**kwargs):
+        indexes = return_indexes(config=kwargs['return_benchmark_config'], data_root=Path('data'),
+            start=dt.date(2025, 12, 29), end=dt.date(2025, 12, 31), cache={})
+        assert set(indexes) == REQUIRED_BENCHMARKS
+        assert all(frame['date'][-1] == dt.date(2025, 12, 31) for frame in indexes.values())
+        return {}
+
+    monkeypatch.setattr(model_training_costs, 'run_cost_prefixes', costs)
+    monkeypatch.setattr(model_training_selection, 'run_selection', lambda **kwargs:
+        {'annual_selection': [{'selection_complete': False}]})
+    with pytest.raises(ValueError, match='causal selection'):
+        monthly._predict(tmp_path, Path('data'))
 
 
 def test_construction_dispatch_preserves_budget_and_uses_actual_state_for_r4():

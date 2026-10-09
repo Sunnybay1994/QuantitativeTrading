@@ -1,0 +1,35 @@
+family = "turnover_reference_adjusted_price_v1"
+registered_on = "2026-10-05"
+sources = [
+  "https://depot.som.yale.edu/icf/papers/fileuploads/2533/original/00-71.pdf",
+  "https://pubsonline.informs.org/doi/pdf/10.1287/mnsc.2019.3404",
+  "https://tushare.pro/document/2?doc_id=146",
+  "https://tushare.pro/document/1?doc_id=109",
+]
+kernel = "src/quant/factors/turnover_reference.py"
+signals = ["turnover_reference_gain_260w_skip1w", "turnover_reference_gain_x_turnover_260w_skip1w"]
+directions = [1, 1]
+scope = "Literature-informed daily-turnover reference-price proxy, not observed investor cost basis or an exact US-paper replication"
+formation_calendar_weeks = 260
+interaction_calendar_weeks = 52
+skip_completed_weeks = 1
+week_anchor = "Friday; use preceding exchange session if closed; omit most recently completed calendar week"
+price_basis = "Historical close times vendor adj_factor, normalized by cutoff adj_factor. This is a dividend-reinvestment-adjusted price proxy, not tax cost, investor wealth or split-only cost basis"
+turnover_basis = "Each session's raw traded shares divided by that session's total shares, not float turnover_rate; require 0<=ratio<=1 without clipping"
+weights = "h_d times product of (1-h_j) for all later formation sessions, normalized within fixed 260 weeks"
+gain = "1 - survival_weighted_adjusted_price / cutoff_adjusted_close"
+interaction = "gain times mean daily total-share turnover over last 52 calendar weeks, ending at the same cutoff"
+corporate_action_boundary = "Adjustment factor removes mechanical price discontinuities according to vendor convention. Share-count changes update daily turnover denominator; issuance, buybacks and rights do not create inferred holder cohorts or estimated acquisition cash flows. No claim of actual cost reconstruction"
+missing_policy = "Every exchange session in the complete fixed window requires valid observed price, factor, volume and total_shares; no missing-to-zero, interpolation, suspension fill, reduced window or weight-based missing exemption"
+current_quote_policy = "A valid positive-volume signal-date quote and total_shares are required; input may invalidate a signal but post-cutoff price/turnover does not enter its value"
+publication = "Completed exchange month-end close; next-session execution only"
+snapshot_boundary = "Saved vendor histories lack source-observed original vintages; prefix invariance does not establish revision-safe historical PIT"
+matched_controls = ["turnover_reference_equal_price_gain_260w", "turnover_reference_mean_turnover_52w", "turnover_reference_long_return_156w_skip52w"]
+matched_long_return = "Adjusted close return between last exchange sessions at or before cutoff Friday minus 156 weeks and minus 52 weeks; fixed same complete 260-week cohort; a control, not a candidate"
+additional_controls = ["reversal_20", "report01_skip_month_momentum_n252", "amihud_illiquidity_monthly_calendar80_v1", "market_beta_60_vs_510300", "ivol_ff3_60"]
+incremental_policy = "Same eligible/signal-valid cohort, size/industry-neutral variant, existing admitted factors plus fixed momentum/reversal/liquidity/turnover/beta/IVOL and matched price-position controls; do not count related interaction as independent mechanism"
+pipeline = "Existing original N1/N3/N4 only after computation and coverage validation; this file alone does not enqueue or admit"
+minimum_formal_months = 96
+stop_rule = "Statistical or incremental failure closes family; no sign, window, price convention, universe, Top-K or cost rescue"
+account_policy = "Only original admission survivor may justify one registered CNY100000 few-holdings account with minimum commission CNY1 and all three costs"
+auto_trade = false

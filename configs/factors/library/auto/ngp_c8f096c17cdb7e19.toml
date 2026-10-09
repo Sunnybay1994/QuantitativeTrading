@@ -1,0 +1,6 @@
+id = "ngp_c8f096c17cdb7e19"
+expr = "decay_linear(ts_cov(turnover_rate, -rank(ts_rank(adj_close, 10)) * rank(adj_close / adj_open), 20), 5)"
+direction = 1
+family = "nightly_price_volume"
+source_ref = "artifacts\\research\\continuous\\batch_000028\\2026-09-24\\N2\\search.json"
+source = "nightly_gp"

@@ -98,7 +98,8 @@ def test_statistical_rejection_skips_cost_work_after_full_family_validation(tmp_
     assert result['completed_runs'] == result['failures'] == {}
 
 
-def test_explicit_batch_resume_only_dispatches_checkpointed_local_partials(tmp_path, monkeypatch):
+@pytest.mark.parametrize('required', [None, ['checkpointed', 'fresh']])
+def test_explicit_batch_resume_only_dispatches_checkpointed_local_partials(tmp_path, monkeypatch, required):
     from concurrent.futures import Future
     from quant.research import factor_battery_cost_batch as module
 
@@ -108,7 +109,7 @@ def test_explicit_batch_resume_only_dispatches_checkpointed_local_partials(tmp_p
         folder.mkdir()
         (folder / 'battery.toml').write_text(config)
     table = pl.DataFrame({'factor': ['checkpointed', 'old', 'fresh'], 'variant': ['raw'] * 3,
-                          'statistical_pass': [True] * 3, 'icir': [.3, .2, .1]})
+                          'statistical_pass': [False] * 3, 'icir': [.3, .2, .1]})
     table.select('factor', 'variant').write_parquet(statistics / 'statistics.parquet')
     table.write_parquet(screen / 'statistical_screen.parquet')
     for factor in ('checkpointed', 'old'):
@@ -137,7 +138,7 @@ def test_explicit_batch_resume_only_dispatches_checkpointed_local_partials(tmp_p
 
     monkeypatch.setattr(module, 'ProcessPoolExecutor', Pool)
     result = run_cost_batch(statistics=statistics, screen=screen, output=output, data_root=tmp_path,
-        execution_snapshot='fixture', existing_runs=[], workers=1, resume=True)
+        execution_snapshot='fixture', existing_runs=[], workers=1, resume=True, required_factors=required)
     assert calls == [('checkpointed', True), ('fresh', False)]
-    assert set(result['failures']) == {'old'}
+    assert set(result['failures']) == ({'old'} if required is None else set())
     assert (output / 'old/battery.toml').is_file()

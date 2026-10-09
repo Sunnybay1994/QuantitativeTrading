@@ -1,0 +1,57 @@
+auto_trade = false
+hypothesis_id = "calendar-allocation-20260929-v1"
+hypothesis = "A fixed turn-of-month equity sleeve has positive after-cost timing value relative to calendar-exposure-matched stock/bond allocation. This is distinct from cross-sectional small-cap selection and trend ranking."
+inputs = "artifacts/research/etf_history_extension_20260929_02/inputs"
+start = 2013-11-01
+end = 2026-08-31
+capital = 100000.0
+cost_multipliers = [0.5, 1.0, 2.0]
+equity_symbol = "510300.SH"
+bond_symbol = "511010.SH"
+equity_sleeve = 0.25
+first_sessions = 3
+include_last_session = true
+execution = "Calendar-only decision before next-session open, including non-trading days; as_of is prior price session, decision_date is day before execution; buy known last-session open, sell fourth-session open."
+calendar_assumption = "Regular exchange schedules assumed announced in advance; known 2020 emergency closure versioned by announcement date. Other historical announcement vintages not exhaustively verified. Never infer sessions from surviving price rows."
+cost_policy = "fixed fee sensitivity for entire history, not verified historical broker tariffs"
+source_limitations = "Inherited audited ETF cash-action chain; early bond daily prices lack independent daily-source validation; daily-open fills are not manual-delay validation."
+controls = ["static_calendar_exposure", "calendar_cash", "bond_only"]
+control_design = "Static equity weight is 0.25*4/N for N exchange sessions in that month, determined from calendar alone; monthly rebalance. This matches target time exposure, not ex-post realized volatility. Cash control keeps 75% bond and parks the 25% equity sleeve in zero-interest cash outside turn-of-month."
+weight_rationale = "Quarter-capital sleeve keeps ideal two-leg switching turnover near 6/year (2 switches*12 months*0.25), without performance-based sizing. Actual account turnover is measured, not presumed."
+historical_status = "retrospective development on already observed history; no new OOS claim"
+sources = ["https://business.purdue.edu/faculty/mcconnell/publications/Equity-Returns-at-the-Turn-of-the-Month.pdf", "https://www.aeaweb.org/conference/2016/retrieve.php?pdfid=21226&tk=zHQNB4Rz"]
+
+[costs.etf]
+commission_rate = 0.00025
+commission_min = 1.0
+slippage = 0.0
+slippage_per_share = 0.001
+effective_from = 2013-07-29
+
+# Required by the shared account constructor; this ETF-only experiment never
+# trades A shares. The ETF tariff above is the one applied to all four accounts.
+[costs.a_share]
+commission_rate = 0.00025
+commission_min = 1.0
+stamp_tax_sell = 0.0005
+transfer_fee = 0.00001
+slippage = 0.001
+effective_from = 2023-08-28
+
+[diagnostic]
+bootstrap_seed = 20260929
+bootstrap_samples = 2000
+bootstrap_block_months = 12
+subperiod_ends = [2017-12-31, 2021-12-31, 2026-08-31]
+continue_if = "At 2x: CAGR and rf2 Sharpe exceed static_calendar_exposure; at least two of three fixed chronological blocks have positive CAGR difference; paired 12-month-block bootstrap 95% lower bound of annualized log-return difference >0. These are research stop conditions, not relaxed formal admission gates."
+stop_if = "Any continuation condition fails: retain this negative experiment, no date/sleeve grid or state threshold rescue."
+formal_admission = "Not evaluated here; existing gates, execution validation and future frozen observation remain required."
+
+[[calendar_revisions]]
+session = 2020-01-31
+previous_open = true
+final_open = false
+announced_date = 2020-01-27
+original_source = "https://www.sse.com.cn/disclosure/announcement/general/c/c_20191220_4969627.shtml"
+revision_source = "https://english.sse.com.cn/news/newsrelease/c/4993503.shtml"
+reason = "Unscheduled Spring Festival extension: do not identify Jan23 as month end before the Jan27 announcement."

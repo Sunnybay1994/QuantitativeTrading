@@ -1,4 +1,5 @@
 prepare_month_inputs = true
+n4_correlation_engine = "pairwise_sorted_counts_v1"
 slice_checkpoint_seconds = 180
 research_policy = "configs/research/research_priorities.toml"
 one_shot_search_config = "configs/research/gp_stock_time_stability_v3.toml"
@@ -17,10 +18,10 @@ statistics = ["artifacts/factors/battery_statistics_20260831_20260911"]
 reference_statistics = "artifacts/factors/battery_statistics_20260831_20260911"
 reference_scorecard = "artifacts/factors/scorecard/2026-08-31_20260912_q1b_01/factor_scorecard.parquet"
 refresh_config = "configs/data/refresh_q2_sue_v2_model_20260912.toml"
-battery_config = "configs/factors/battery.toml"
-execution_snapshot = "factor_battery_20260911_v2"
-return_benchmark_config = "configs/data/return_benchmarks_q1b_20260912.toml"
-measurement_config = "configs/models/q1_report_measurement_20260912.toml"
+battery_config = "artifacts/research/monthly_open_activation_20261005_01/battery.toml"
+execution_snapshot = "nightly_month_20260930_open_20261005_v1"
+return_benchmark_config = "artifacts/research/monthly_open_activation_20261005_01/return_benchmarks.toml"
+measurement_config = "artifacts/research/monthly_open_activation_20261005_01/measurement.toml"
 model_config = "configs/models/p4_annual_walk_forward_20260911.toml"
 constrained_config = "configs/portfolio/r4_constrained_q10_20260913.toml"
 monthly_first_period = "2026-10"
@@ -30,6 +31,12 @@ weekend_hours = 20
 minimum_free_gb = 50
 
 [genetic]
+calculation_context = "full_market_observed_cross_subtrees_v1"
+expression_identity = "ts_corr_cov_argument_order_v1"
+context_max_subtrees = 128
+context_max_rows = 6000000
+context_memory_mb = 256
+context_max_disk_mb = 1024
 seed = 20260913
 population_size = 200
 generations = 30

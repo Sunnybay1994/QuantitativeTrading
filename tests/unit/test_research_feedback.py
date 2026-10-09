@@ -104,3 +104,34 @@ def test_compact_feedback_keeps_new_search_primary_and_secondary(tmp_path):
     assert summary['secondary_correlation']['median'] == .8
     assert summary['eligible'] == 1
     assert summary['correlation_role'] == 'secondary_within_registered_ic_band'
+
+
+def test_prompt_only_diagnoses_recent_completed_and_preserves_full_report(tmp_path, monkeypatch):
+    from quant.research.research_feedback import prompt_context
+    from quant.research import search_sample_diagnostics
+    root = tmp_path/'runs'
+    output = tmp_path/'report'
+    output.mkdir()
+    saved = output/'feedback.json'
+    saved.write_text('previous full report')
+    config = tmp_path/'policy.toml'
+    config.write_text(f'continuous_root = "{root.as_posix()}"\noutput_root = "{output.as_posix()}"')
+    calls = []
+    monkeypatch.setattr(search_sample_diagnostics, 'batch_diagnostics',
+                        lambda run, statistics: calls.append(run.parent.name) or {})
+    for index in range(1, 7):
+        run = root/f'batch_{index:06d}'/'2026-10-04'
+        run.mkdir(parents=True)
+        score = run/'score.parquet'
+        pl.DataFrame({'factor': [f'x{index}'], 'statistical_pass': [False]}).write_parquet(score)
+        (run/'summary.json').write_text(json.dumps({'steps': {'N3': {
+            'ok': index != 6, 'result': {'scorecard': str(score)}}}}))
+    result = prompt_context(config)
+    assert calls == ['batch_000003', 'batch_000004', 'batch_000005']
+    assert len(result['pending_batteries']) == 1
+    assert 'batch_000006' in result['pending_batteries'][0]['run']
+    assert result['completed_comparison_scope'] == 'last_3_completed_batteries'
+    assert saved.read_text() == 'previous full report'
+    calls.clear()
+    assert len(build(config)['completed_batteries']) == 5
+    assert len(calls) == 5

@@ -1,0 +1,17 @@
+auto_trade = false
+purpose = "Mechanical long-history validation of already registered B13 and B16, not a new parameter search or rescue of their frozen short-history results"
+inputs = "artifacts/research/etf_history_extension_20260929_02/inputs"
+source_config = "configs/research/b13_cross_asset_dual_momentum_20260909.toml"
+inverse_volatility_config = "configs/research/b16_cross_asset_inverse_volatility60_20260909.toml"
+start = 2014-08-01
+end = 2026-08-31
+start_rationale = "First month-start after 13 completed month-end observations in the audited common three-ETF history, which begins July 2013"
+capital = 100000.0
+commission_min = 1.0
+cost_multipliers = [0.5, 1.0, 2.0]
+cost_policy = "Original commission rate and one-tick slippage; user-authorized CNY1 minimum for this new personal account; same fixed tariff assumed over whole history in all controls, not verified historical broker fees"
+rules = ["dual_momentum", "equal_weight", "inverse_volatility"]
+mechanics = "Original B13 12-month return, Top1, strict-positive absolute filter, else zero-interest cash; original B16 60-session inverse volatility; all monthly prior-close signals and next-session-open execution"
+subperiod_ends = [2017-12-31, 2021-12-31, 2026-08-31]
+no_tuning = "No asset, window, direction, weight-cap or state-filter search. Preserve all previous results and accounts."
+interpretation = "Retrospective measurement extension, not fresh OOS and not new admission. Stronger CAGR alone does not establish improvement if Sharpe/drawdown or recent chronological block are worse."

@@ -72,14 +72,16 @@ def test_same_battery_rules_preserve_missing_controls_and_ignore_future_name(sav
 
 
 def test_same_day_raw_limits_are_read_only_fallback(saved_day):
+    from quant.data.storage import RawStore
+
     (saved_day["reference"] / "limits.parquet").unlink()
-    root = saved_day["root"] / f"raw/tushare/stk_limit/date={AS_OF}"
-    root.mkdir(parents=True)
-    (root / "saved.json").write_text(json.dumps({"parameters": {"trade_date": AS_OF.strftime("%Y%m%d")}}), encoding="utf-8")
-    saved_day["limits"].rename({"symbol": "ts_code"}).with_columns(
-        pl.col("trade_date").dt.strftime("%Y%m%d")).write_parquet(root / "saved.parquet")
+    raw = saved_day["limits"].rename({"symbol": "ts_code"}).with_columns(
+        pl.col("trade_date").dt.strftime("%Y%m%d"))
+    saved = RawStore(saved_day['root'] / 'raw').write(source='tushare', table='stk_limit',
+        frame=raw, parameters={'trade_date': AS_OF.strftime('%Y%m%d')},
+        fetched_at=dt.datetime(2026, 9, 11, 12, tzinfo=dt.timezone.utc))
     result = read(saved_day)
-    assert "saved.parquet" in result["limits_source"][0]
+    assert result["limits_source"][0] == str(saved.data_path)
     assert result["eligible"].sum() == 1
 
 

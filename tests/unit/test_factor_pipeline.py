@@ -153,6 +153,8 @@ def test_real_batch_reuses_external_result_without_a_local_replay(tmp_path):
 @pytest.mark.parametrize('legacy', [False, True])
 def test_resume_reuses_heavy_stages_continues_costs_and_preserves_old_scorecard(tmp_path, monkeypatch, legacy):
     args = arguments(tmp_path)
+    # This orchestration fixture stubs statistics; complete-screen validation has separate tests.
+    monkeypatch.setattr(pipeline, '_statistical_cost_plan', lambda **kwargs: (['a'], []))
     calls = []
     cost_calls = []
 
@@ -170,6 +172,7 @@ def test_resume_reuses_heavy_stages_continues_costs_and_preserves_old_scorecard(
 
     def costs(**kwargs):
         assert kwargs['deduplicate'] == (not legacy or not cost_calls)
+        assert kwargs['only_statistical_pass'] == (not legacy or not cost_calls)
         cost_calls.append(kwargs['resume'])
         kwargs['output'].mkdir(exist_ok=True)
         return {'completed_runs': {}, 'failures': {'a': 'interrupted'} if len(cost_calls) == 1 else {},
@@ -189,9 +192,12 @@ def test_resume_reuses_heavy_stages_continues_costs_and_preserves_old_scorecard(
         config = json.loads(path.read_text())
         config.pop('cost_deduplication')
         config.pop('benchmark_reuse')
+        config.pop('cost_statistical_gate')
         path.write_text(json.dumps(config))
         (args['output']/'benchmarks/benchmark_reuse.json').unlink()
+    frozen_settings = (args['output']/'pipeline_config.json').read_bytes()
     second = pipeline.run_pipeline(**args, resume=True)
+    assert (args['output']/'pipeline_config.json').read_bytes() == frozen_settings
     assert first['cost_failures'] and not second['cost_failures']
     assert calls == ['statistics', 'screen', 'benchmarks', 'redundancy']
     assert cost_calls == [False, True]
@@ -205,6 +211,7 @@ def test_resume_reuses_heavy_stages_continues_costs_and_preserves_old_scorecard(
 
 def test_benchmark_summary_before_reuse_validation_is_not_stage_completion(tmp_path, monkeypatch):
     args = arguments(tmp_path)
+    monkeypatch.setattr(pipeline, '_statistical_cost_plan', lambda **kwargs: (['a'], []))
     attempts = []
     def stage(**kwargs):
         kwargs['output'].mkdir()
@@ -255,6 +262,7 @@ def test_resume_rejects_changed_inputs_before_any_stage(tmp_path, monkeypatch, c
 
 def test_resume_preserves_interrupted_benchmark_directory(tmp_path, monkeypatch):
     args = arguments(tmp_path)
+    monkeypatch.setattr(pipeline, '_statistical_cost_plan', lambda **kwargs: (['a'], []))
     visits = []
 
     def run_stage(**kwargs):

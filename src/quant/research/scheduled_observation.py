@@ -12,7 +12,7 @@ from pathlib import Path
 
 from quant.data.refresh import SHANGHAI, latest_session
 
-DEFAULT_CONFIG = Path("configs/research/daily_observation_q2_sue_v2_20260912.toml")
+DEFAULT_CONFIG = Path("configs/research/daily_observation_q2_sue_v2_20260930.toml")
 DEFAULT_ROOT = Path("artifacts/daily/sue_v2")
 
 
@@ -132,7 +132,10 @@ def run(
     if complete:
         try:
             from quant.research.daily_market_context import run as market_context_run
-            market_context = market_context_run(data_root=Path(settings['data_root']), now=clock)
+            market_context = market_context_run(
+                data_root=Path(settings['data_root']), now=dt.datetime.now(SHANGHAI),
+                completed_session=end, daily_record=record, daily_root=root,
+                require_daily_receipt=True)
         except Exception as exc:
             # Context failure is visible but must not invalidate existing account output.
             market_context = {"status": "failed", "error": type(exc).__name__+": "+str(exc)}

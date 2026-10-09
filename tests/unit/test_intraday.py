@@ -27,6 +27,92 @@ def bao_day(day=dt.date(2026, 9, 8)):
     return pl.concat(rows)
 
 
+def test_daily_refresh_accepts_reconciled_whole_day_without_refetch(monkeypatch, tmp_path):
+    day = dt.date(2026, 9, 8)
+    frame = normalize_baostock(bao_day(day), '600000.SH').with_columns(pl.lit('tdx').alias('source'))
+    directory = intraday._directory(tmp_path, 'tdx', '600000.SH', '5m')
+    directory.mkdir(parents=True)
+    frame.write_parquet(directory/'data.parquet')
+    reference = frame.group_by('symbol', 'trade_date').agg(pl.col('close').last(),
+        pl.col('volume').sum(), pl.col('amount').sum())
+    monkeypatch.setattr(intraday, 'BaostockConnector', lambda: pytest.fail('Validated fallback must not be refetched'))
+    result = intraday._stock_job((str(tmp_path), '600000.SH', str(day), [day]),
+        start_date=day, daily_reference=reference)
+    assert result['changed_rows'] == 0 and result['validated_alternate_dates'] == [str(day)]
+    assert not list((tmp_path/'raw').glob('**/*.parquet'))
+    assert not (intraday._directory(tmp_path, 'baostock', '600000.SH', '5m')/'data.parquet').exists()
+
+
+def test_daily_capture_scopes_to_its_config_and_traded_stocks(monkeypatch, tmp_path):
+    from quant.data import market_universe, refresh_stocks
+    day = dt.date(2026, 9, 8)
+    config = tmp_path/'active.toml'
+    monkeypatch.setattr(market_universe, 'bao_members', lambda root: [
+        {'symbol': name} for name in ('600000.SH', '159152.SZ', '600001.SH')])
+
+    def daily(**kwargs):
+        assert kwargs['config'] == config
+        return pl.DataFrame({'symbol': ['600000.SH', '600001.SH'], 'trade_date': [day, day],
+            'volume': [100., 0.]})
+
+    calls = []
+    monkeypatch.setattr(refresh_stocks, 'read_stock_data', daily)
+    def job(args, **kwargs):
+        calls.append(args[1])
+        assert kwargs['daily_reference']['symbol'].to_list() == ['600000.SH']
+        return {'symbol': args[1], 'changed_rows': 0}
+    monkeypatch.setattr(intraday, '_stock_job', job)
+    monkeypatch.chdir(tmp_path)
+    result = intraday.refresh_intraday(data_root=tmp_path, end=day, yahoo=False,
+        stock_from=day, refresh_config=config, required_stocks_only=True)
+    assert calls == ['600000.SH'] and result['errors'] == []
+
+
+def test_source_pause_does_not_retry_every_symbol(monkeypatch, tmp_path):
+    from quant.data import market_universe, refresh_stocks
+    day = dt.date(2026, 9, 8)
+    symbols = ['600000.SH', '600001.SH', '600002.SH']
+    monkeypatch.setattr(market_universe, 'bao_members', lambda root: [{'symbol': s} for s in symbols])
+    monkeypatch.setattr(refresh_stocks, 'read_stock_data', lambda **kw: pl.DataFrame({
+        'symbol': symbols, 'trade_date': [day]*3, 'volume': [100.]*3}))
+    calls = []
+    def job(args, **kwargs):
+        calls.append(args[1])
+        raise intraday.BaoStockAccessPaused('request budget exhausted')
+    monkeypatch.setattr(intraday, '_stock_job', job)
+    monkeypatch.chdir(tmp_path)
+    result = intraday.refresh_intraday(data_root=tmp_path, end=day, yahoo=False, stock_from=day)
+    assert calls == symbols[:1]
+    assert result['deferred_stock_symbols'] == symbols[1:]
+    assert len(result['errors']) == 1 and result['completed_requests'] == 0
+
+
+@pytest.mark.parametrize('permanent', [False, True])
+def test_clean_publish_handles_locked_destination(monkeypatch, tmp_path, permanent):
+    original = normalize_baostock(bao(), '600000.SH')
+    intraday.merge_bars(tmp_path, original)
+    revised = original.with_columns(pl.lit(10.6).alias('close'))
+    replace = Path.replace
+    attempts = []
+
+    def locked(source, target):
+        attempts.append(source)
+        assert pl.read_parquet(target)['close'][0] == 10.5
+        if permanent or len(attempts) < 3:
+            raise PermissionError('reader holds destination')
+        return replace(source, target)
+
+    monkeypatch.setattr(Path, 'replace', locked)
+    monkeypatch.setattr(intraday.time, 'sleep', lambda _: None)
+    if permanent:
+        with pytest.raises(PermissionError):
+            intraday.merge_bars(tmp_path, revised)
+    else:
+        assert intraday.merge_bars(tmp_path, revised) == 1
+    assert pl.read_parquet(tmp_path / 'data.parquet')['close'][0] == (10.5 if permanent else 10.6)
+    assert list(tmp_path.glob('*.parquet')) == [tmp_path / 'data.parquet']
+
+
 def test_bao_end_timestamp_and_invalid_prices():
     result = normalize_baostock(bao(), "600000.SH")
     assert result["bar_start"][0] == dt.datetime(2026, 9, 8, 9, 30, tzinfo=TZ)
@@ -231,6 +317,48 @@ def test_bounded_stock_capture_rejects_invalid_range(tmp_path):
     with pytest.raises(ValueError, match='stocks enabled'):
         intraday.refresh_intraday(data_root=tmp_path, end=dt.date(2026, 9, 8), stocks=False,
                                   stock_from=dt.date(2026, 9, 8))
+
+
+@pytest.mark.parametrize('case', ['complete', 'latest', 'middle', 'partial', 'ohlc', 'grid', 'empty_expected', 'absent'])
+def test_rolling_window_uses_valid_actual_bars(monkeypatch, tmp_path, case):
+    days = [dt.date(2026, 9, d) for d in (7, 8, 9)]
+    frame = pl.concat([normalize_baostock(bao_day(day), '600000.SH') for day in days])
+    expected = [] if case == 'empty_expected' else days
+    first_missing = days[0]
+    if case in ('latest', 'middle'):
+        first_missing = days[-1] if case == 'latest' else days[1]
+        frame = frame.filter(pl.col('trade_date') != first_missing)
+    elif case == 'partial':
+        frame = frame.slice(1)
+    elif case == 'ohlc':
+        frame = frame.with_columns(pl.lit(None, dtype=pl.Float64).alias('close'))
+    elif case == 'grid':
+        frame = frame.with_columns(pl.col('bar_start')+pl.duration(minutes=1),
+                                   pl.col('bar_end')+pl.duration(minutes=1))
+    directory = intraday._directory(tmp_path, 'baostock', '600000.SH', '5m')
+    directory.mkdir(parents=True)
+    if case != 'absent':
+        frame.write_parquet(directory/'data.parquet')
+    (directory/'recent_coverage.json').write_text(json.dumps({'from':'2026-09-01', 'through':'2026-09-30'}))
+    calendar = tmp_path/'clean/trade_calendar/market=SH/data.parquet'
+    calendar.parent.mkdir(parents=True)
+    pl.DataFrame({'date':days, 'is_open':[True]*3, 'is_half_day':[False]*3}).write_parquet(calendar)
+    calls=[]
+    class Connector:
+        def fetch_intraday(self, symbol, start, end):
+            calls.append((start,end))
+            return pl.concat([bao_day(day) for day in days if start <= day <= end])
+    monkeypatch.setattr(intraday, 'BaostockConnector', Connector)
+    args=(str(tmp_path),'600000.SH',str(days[-1]),expected)
+    if case == 'grid':
+        with pytest.raises(ValueError):  # Dirty extra timestamps cannot silently become complete.
+            intraday._stock_job(args,start_date=days[0])
+    else:
+        result=intraday._stock_job(args,start_date=days[0])
+        if case == 'empty_expected':
+            assert result['coverage_verified'] is False
+            assert result['through'] < str(days[0])
+    assert calls == ([] if case == 'complete' else [(first_missing,days[-1])])
 
 
 @pytest.mark.parametrize('bounded', [False, True])

@@ -42,7 +42,7 @@ def existing_cost_factor(run: Path, *, settings: dict, snapshot: str) -> str:
 def run_cost_batch(*, statistics: Path, screen: Path, output: Path, data_root: Path,
                    execution_snapshot: str, existing_runs: list[Path], workers: int,
                    only_statistical_pass: bool = False, resume: bool = False,
-                   deduplicate: bool = False) -> dict:
+                   deduplicate: bool = False, required_factors: list[str] | None = None) -> dict:
     settings_bytes = (statistics/'battery.toml').read_bytes()
     settings = tomllib.loads(settings_bytes.decode('utf-8'))
     if workers < 1 or (screen/'battery.toml').read_bytes() != settings_bytes:
@@ -52,6 +52,10 @@ def run_cost_batch(*, statistics: Path, screen: Path, output: Path, data_root: P
     if table.height != expected.height or set(table.select('factor', 'variant').rows()) != set(expected.rows()):
         raise ValueError('Cost batch cannot omit registered statistical rows')
     ordered = cost_order(table, primary=settings['primary_variant'])
+    if required_factors is not None:
+        if only_statistical_pass or len(set(required_factors)) != len(required_factors) or not set(required_factors) <= set(ordered):
+            raise ValueError('Explicit causal cost dependencies require unique registered factors and no final-cutoff screen')
+        ordered = [factor for factor in ordered if factor in required_factors]
     skipped = []
     if only_statistical_pass:
         passing = set(table.filter(pl.col('statistical_pass'))['factor'].to_list())

@@ -1,7 +1,8 @@
-# Official peak prices verified 2026-09-14; use conservative peak rates for budgets.
+# Official peak prices rechecked 2026-09-29; unchanged conservative peak budget.
+# https://api-docs.deepseek.com/quick_start/pricing/
 model = "deepseek-flash"
 model_epoch = "DeepSeek-V4.1-Flash-docs-20260914"
-pricing_checked = 2026-09-14
+pricing_checked = 2026-09-29
 input_usd_per_million = 0.30
 output_usd_per_million = 1.20
 max_tokens = 4096

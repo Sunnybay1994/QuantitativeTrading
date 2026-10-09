@@ -99,6 +99,7 @@ def history_end(data_root: Path, settings: dict[str, Any]) -> dt.date:
 def read_stock_data(
     *, data_root: Path, config: Path, table: str, start: dt.date, end: dt.date,
     symbols: list[str] | None = None,
+    columns: tuple[str, ...] | None = None,
 ) -> pl.DataFrame:
     """Read the frozen historical table plus complete daily increments."""
     if table not in TABLES or start > end:
@@ -122,6 +123,10 @@ def read_stock_data(
     combined = pl.concat(frames, how="vertical_relaxed")
     if symbols is not None:
         combined = combined.filter(pl.col("symbol").is_in(symbols))
+    if columns is not None:
+        if not {'symbol', date_column} <= set(columns) or len(columns) != len(set(columns)):
+            raise ValueError('Projected stock inputs must retain unique symbol/date key columns')
+        combined = combined.select(columns)
     return combined.collect().unique(subset=["symbol", date_column], keep="last",
                                      maintain_order=True).sort(date_column, "symbol")
 

@@ -20,7 +20,7 @@ if ([int]$clock.DayOfWeek -in 1,2,3,4,5) {
     }
 }
 $writers = @(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" |
-    Where-Object { $_.CommandLine -match 'quant research (daily|nightly|mining|cycle|gp)|quant\.(data\.(refresh|intraday)|factors\.compute|research\.(continuous_mining|nightly|run_daily|scheduled_observation|run_factor_search|run_genetic_factor_search|run_research_cycle|run_constrained|run_multifactor)|execution\.(q10_paper|stock_paper|paper_ledger|cross_asset_forward))|daily_recovery.+recover.py' })
+    Where-Object { $_.CommandLine -match 'quant research (daily|nightly|mining|cycle|gp)|quant data (refresh|minute-factors)|quant\.(data\.(refresh|refresh_minute_factors|intraday)|factors\.compute|research\.(continuous_mining|nightly|run_daily|scheduled_observation|run_factor_search|run_genetic_factor_search|run_research_cycle|run_constrained|run_multifactor)|execution\.(q10_paper|stock_paper|paper_ledger|cross_asset_forward))|daily_recovery.+recover.py' })
 if ($writers.Count -gt 0) { $reason = 'Another data/factor/account writer is running' }
 if ($hours -lt (1.0 / 60)) { $reason = 'Daily observation starts shortly' }
 if ($reason) {

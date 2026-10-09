@@ -1,0 +1,10 @@
+data_root = "data"
+source_month = "nightly_month_20260930"
+source_open = "factor_battery_20261005_open_v1"
+version = "nightly_month_20260930_open_20261005_v1"
+as_of = 2026-09-30
+suspension_policy = "opening_price_0930_suspension_v1"
+prepared_settings = "artifacts/research/continuous/batch_000068/2026-10-05/inputs/settings.json"
+nightly_config = "configs/research/nightly.toml"
+frozen_manifest = "artifacts/research/turnover_reference_family_20261005_01/batch68_frozen_before.json"
+auto_trade = false

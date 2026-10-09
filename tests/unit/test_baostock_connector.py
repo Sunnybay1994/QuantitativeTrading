@@ -52,7 +52,9 @@ def test_eof_guard_preserves_bytes_and_timeout():
         guarded.recv(2)
 
 
-def test_real_sdk_login_installs_eof_guard_and_restores_connect(monkeypatch):
+def test_real_sdk_login_installs_eof_guard_and_restores_connect(monkeypatch, tmp_path):
+    from quant.data.connectors import baostock_access
+    monkeypatch.setattr(baostock_access, 'ROOT', tmp_path)
     from types import SimpleNamespace
     from quant.data.connectors.baostock import _BaoStockEOFSocket
 
@@ -193,7 +195,7 @@ def test_intraday_detects_error_at_end_of_response():
     client = Client()
     with pytest.raises(BaostockResponseError, match="minute response completion"):
         BaostockConnector(client).fetch_intraday("600000.SH", dt.date(2020, 1, 1), dt.date(2026, 9, 8))
-    assert client.logout_calls == 1
+    assert client.logout_calls == 0  # Interrupted stream must not receive another request.
 
 
 def test_baostock_bar_query_uses_unadjusted_daily_and_logs_out():

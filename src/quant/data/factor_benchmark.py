@@ -12,6 +12,26 @@ import polars as pl
 from quant.domain import Bar1dSchema
 
 
+def read_price_delay_market(data_root: Path, config: Path, start: dt.date, end: dt.date) -> pl.DataFrame:
+    """Read the pinned all-share total-return index; precoverage stays missing."""
+    from quant.data.index_benchmarks import read_index_benchmark
+    settings = tomllib.loads(config.read_text(encoding='utf-8'))
+    version = settings.get('price_delay_index_version')
+    if not isinstance(version, str) or not version or Path(version).name != version or version in ('.', '..'):
+        raise ValueError('Set price_delay_index_version before computing price delay')
+    folder = data_root/'clean/index_benchmarks'/version
+    summary = json.loads((folder/'summary.json').read_text(encoding='utf-8'))
+    low = max(start, dt.date.fromisoformat(summary['start']))
+    # Always validate the configured series type, including precoverage requests.
+    specs = [s for s in summary['series'] if s['index_code'] == 'H00985.CSI']
+    if len(specs) != 1 or specs[0]['return_type'] != 'total_return':
+        raise ValueError('Price delay requires H00985.CSI total_return')
+    if low > end:
+        return pl.DataFrame(schema={'trade_date': pl.Date, 'index_level': pl.Float64})
+    return read_index_benchmark(data_root=data_root, version=version, index_code='H00985.CSI',
+        start=low, end=end, required_return_type='total_return').select('trade_date', 'index_level')
+
+
 def read_factor_benchmark(
     data_root: Path, config: Path, start: dt.date, end: dt.date,
 ) -> pl.DataFrame:

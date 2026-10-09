@@ -1,6 +1,7 @@
 import datetime as dt
 
 import polars as pl
+import pytest
 
 from quant.portfolio.constrained_selection import constrained_targets
 
@@ -63,3 +64,62 @@ def test_trade_weight_distance_respects_adv_not_total_position_value():
     out, info = constrained_targets(targets=targets, state=state, market=market, scores=scores, policy=policy)
     assert not info['constraints_satisfied']  # 100 names * 0.5% cannot reach sector minimums.
     assert out['weight'].sum() == 0
+
+
+@pytest.mark.parametrize('holdings', [{}, {'000099.SZ': {'quantity': 1000, 'mark_price': 10.}}])
+def test_cash_exit_includes_actual_r4_names_and_never_nominates(holdings):
+    targets, state, market, scores, policy = fixture()
+    targets = targets.with_columns(pl.lit(0.).alias('weight'))
+    state['holdings'] = holdings
+    out, info = constrained_targets(targets=targets, state=state, market=market, scores=scores, policy=policy)
+    assert set(holdings) <= set(out['symbol'])
+    assert out['weight'].sum() == 0 and info['action'] == 'cash_exit'
+    assert info['nominee_symbols'] == [] and info['constraints_satisfied']
+    assert not info['exposure_constraints_applicable']
+    assert all(not permission[0] for permission in info['execution_direction_permissions'].values())
+
+
+@pytest.mark.parametrize('mode', ['unsellable', 'restricted', 'low_adv', 'missing_adv', 'missing_market'])
+def test_cash_exit_retains_permissions_and_capacity(mode):
+    targets, state, market, scores, policy = fixture()
+    targets = targets.with_columns(pl.lit(0.).alias('weight'))
+    held = '000099.SZ'
+    state['holdings'] = {held: {'quantity': 1000, 'mark_price': 10.}}
+    if mode == 'unsellable':
+        market = market.with_columns(pl.lit(False).alias('can_sell'))
+    elif mode == 'restricted':
+        state['restricted_shares'] = [{'symbol': held, 'quantity': 100, 'list_date': '2020-02-10'}]
+    elif mode in ('low_adv', 'missing_adv'):
+        market = market.with_columns(pl.lit(10000. if mode == 'low_adv' else None).alias('adv20'))
+    else:
+        market = market.filter(pl.col('symbol') != held)
+    out, info = constrained_targets(targets=targets, state=state, market=market, scores=scores.head(0), policy=policy)
+    assert info['feasible'] and not info['constraints_satisfied']
+    assert out['weight'].sum() == 0
+    assert info['signal_capacity_residual_weights'][held] > 0
+    if mode in ('unsellable', 'restricted', 'missing_market'):
+        assert info['execution_direction_permissions'][held] == (False, False)
+    if mode in ('low_adv', 'missing_adv', 'missing_market'):
+        assert info['execution_notional_caps'][held] == (500. if mode == 'low_adv' else 0.)
+
+
+@pytest.mark.parametrize('count', [0, 75])
+@pytest.mark.parametrize('cash', [False, True])
+def test_hook_missing_or_small_signal_pool_honors_cash_only(tmp_path, monkeypatch, count, cash):
+    from quant.research import run_constrained_portfolio as runner
+    targets, state, market, scores, policy = fixture()
+    scores = scores.head(count).rename({'as_of': 'trade_date'})
+    universe = market.rename({'as_of': 'trade_date', 'adv20': 'amount20'}).with_columns(
+        pl.lit(True).alias('traded'), pl.lit(True).alias('limits_known'),
+        pl.lit(10.).alias('close'), pl.lit(11.).alias('up_limit'), pl.lit(9.).alias('down_limit'))
+    monkeypatch.setattr(runner, 'read_frozen_battery_universe', lambda **kw: universe)
+    if cash:
+        targets = targets.with_columns(pl.lit(0.).alias('weight'))
+    transform, _, _ = runner.prepare_constrained_hook(scores=scores, targets=targets,
+        statistics=tmp_path, policy=policy, score_column='score', minimum_signal_stocks=100)
+    if cash:
+        result, info = transform(targets, state)
+        assert result['weight'].sum() == 0 and info['action'] == 'cash_exit'
+    else:
+        with pytest.raises(ValueError, match='minimum signal pool'):
+            transform(targets, state)

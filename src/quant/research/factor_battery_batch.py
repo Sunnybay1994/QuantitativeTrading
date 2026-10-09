@@ -65,12 +65,22 @@ def _factor_worker(data_root: Path, definition: FactorDefinition, settings: dict
     return result
 
 
+def battery_snapshot(config_bytes: bytes, *, as_of: dt.date, selected: str) -> bytes:
+    """Merge existing run metadata while preserving legacy base-config bytes."""
+    settings = tomllib.loads(config_bytes.decode('utf-8'))
+    if 'run' not in settings:
+        return config_bytes + f'\n[run]\nas_of = {as_of.isoformat()}\nselected = {json.dumps(selected)}\n'.encode('utf-8')
+    from quant.data.nightly_month_inputs import _toml_text
+    settings['run'] = {**settings['run'], 'as_of': as_of, 'selected': selected}
+    return _toml_text(settings).encode('utf-8')
+
+
 def run_statistics(*, data_root: Path, config: Path, library: Path, as_of: dt.date,
                    output: Path, selected: str = "all", workers: int = 4) -> dict:
     """Compute all registered statistics; admission and executable costs follow."""
     config_bytes=config.read_bytes()
     settings=tomllib.loads(config_bytes.decode("utf-8"))
-    snapshot=config_bytes+f'\n[run]\nas_of = {as_of.isoformat()}\nselected = {json.dumps(selected)}\n'.encode("utf-8")
+    snapshot=battery_snapshot(config_bytes, as_of=as_of, selected=selected)
     if workers<1 or as_of<settings["start"]:
         raise ValueError("Invalid battery execution range or worker count")
     calendar=available_sessions(data_root,as_of+dt.timedelta(days=40))

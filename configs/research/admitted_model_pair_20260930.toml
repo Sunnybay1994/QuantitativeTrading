@@ -1,0 +1,34 @@
+id = "admitted-model-pair-20260930"
+registered_on = 2026-09-29
+auto_trade = false
+hypothesis = "Adding the three already admitted GP definitions to the original causal candidate family improves the unchanged personal Top5 account after costs; annual selection may exclude any or all additions."
+evidence = "Previously observed historical development evidence; not a new holdout or forward validation."
+control_selection = "artifacts/models/q1d_causal48_admission_20260912_01/selection"
+control_costs = "artifacts/models/q1d_causal48_admission_20260912_01/costs"
+control_predictions = "artifacts/models/q2_sue_context_v2_causal48_20260912_02/predictions"
+control_model_repair = "artifacts/models/q2_sue_context_v2_causal48_20260912_02/config.toml"
+control_account = "artifacts/research/personal_top5_fee1_20260925_02"
+personal_config = "configs/research/personal_top5_fee1_v1.toml"
+return_benchmark_config = "configs/data/return_benchmarks_q1b_20260912.toml"
+selection = "Reuse frozen original annual cost screens and correlations; append only registered additions, recompute annual causal selection, retain original 48-month threshold and all other gates."
+models = "Original LightGBM only; same parameters and random state, no model/seed/window grid. Reuse original year predictions only when the entire ordered selected-factor list is unchanged."
+capital = 100000
+top_k = 5
+commission_min = 1.0
+cost_multipliers = [0.5, 1.0, 2.0]
+decision = "Require original model admission gates plus positive treatment-minus-control CAGR at 1x and 2x, higher rf2 Sharpe and no worse maximum drawdown. No parameter rescue when failed."
+
+[[candidates]]
+factor = "ngp_804a131ba8cb5a88"
+batch = "artifacts/factors/nightly_batches/6b35e47b1f0dcf04"
+admission = "artifacts/research/continuous/batch_000012/2026-09-20/N4/result.json"
+
+[[candidates]]
+factor = "ngp_bbcc07585bc35fbe"
+batch = "artifacts/factors/nightly_batches/6b35e47b1f0dcf04"
+admission = "artifacts/research/continuous/batch_000012/2026-09-20/N4/result.json"
+
+[[candidates]]
+factor = "ngp_c8f096c17cdb7e19"
+batch = "artifacts/factors/nightly_batches/542e4557b2081f5d"
+admission = "artifacts/research/continuous/batch_000028/2026-09-24/N4/result.json"

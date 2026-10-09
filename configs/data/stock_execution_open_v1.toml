@@ -1,0 +1,11 @@
+data_root = "data"
+source_snapshot = "factor_battery_20260911_v2"
+new_snapshot = "factor_battery_20261005_open_v1"
+refresh_config = "configs/data/refresh_q2_sue_v2_model_20260912.toml"
+receipt_inventory = "artifacts/research/capital_gains_input_feasibility_20261005_01/suspension_followup/receipt_inventory.parquet"
+suspension_policy = "opening_price_0930_suspension_v1"
+model_scope = "existing daily open execution; not an intraday fill reconstruction"
+timing_policy = "every reported interval must start after 09:30 to clear; touching 09:30 remains blocked"
+conflict_policy = "source disagreement or unspecified S timing with positive daily volume stays unknown; no daily-volume rescue"
+activation = "explicit opt-in on a new future run; existing experiments and active configs remain on their frozen version"
+auto_trade = false

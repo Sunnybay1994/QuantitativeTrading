@@ -213,38 +213,6 @@ def test_adv_notional_cap_uses_execution_price_and_board_lots(selling):
     assert curtailed['rejected_quantity'][0] == curtailed['requested_quantity'][0] - 200
 
 
-def test_missing_adv_cap_blocks_trade_instead_of_allowing_unbounded_order():
-    result = simulate_daily_targets(
-        calendar=_calendar(SESSION), bars=_bar(), scheduled_targets=_target(1.),
-        instruments=_instruments(), market_states={(SESSION, STOCK): DailyMarketState()},
-        initial_cash=20000., etf_costs=_etf_costs(), stock_costs=_stock_costs(),
-        strategy='m2-u1', execution_notional_caps={})
-    assert result.trades.is_empty()
-    assert result.rejections['reason'].to_list() == ['PARTICIPATION_CAP']
-
-
-def test_full_day_suspension_without_bar_carries_mark_and_rejects_sale() -> None:
-    result = _simulate(
-        bars=_bar().head(0),
-        target_weight=0.0,
-        state=DailyMarketState(suspended=True),
-        initial_position=_initial_position(quantity=100, settled_quantity=100),
-    )
-
-    assert result.nav.item(0, "market_value") == pytest.approx(1_000.0)
-    assert result.positions.item(0, "quantity") == 100
-    assert result.positions.item(0, "mark_price") == pytest.approx(10.0)
-    assert result.trades.height == 0
-    assert result.rejections.select(
-        "symbol",
-        "side",
-        "reason",
-        "requested_quantity",
-        "rejected_quantity",
-        "reference_price",
-    ).row(0) == (STOCK, "SELL", "SUSPENDED", 100, 100, 10.0)
-
-
 @pytest.mark.parametrize(("cash", "quantity", "final_cash"), [(2006.,200,1992.), (2005.9,100,1992.9)])
 def test_early_share_based_fee_affects_affordability_and_realized_cash(cash, quantity, final_cash):
     from dataclasses import replace

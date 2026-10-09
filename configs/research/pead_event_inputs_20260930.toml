@@ -1,0 +1,24 @@
+[research]
+id = "pead_event_inputs_20260930"
+auto_trade = false
+scope = "Financial event input preparation before deciding a new account experiment. No strategy selection, parameter search, returns or admission."
+source_strategy = "configs/research/b31_pead40_20260909.toml"
+repair = "Use existing SUE context-v2 first-disclosure/revision logic and the full historical A-share population. Never reuse the legacy Top800 fold-reset runner."
+
+[data]
+refresh_config = "configs/data/refresh.toml"
+start = 2010-01-01
+end = 2026-08-31
+financial_vintage = "Reconstructed vendor statement history; provider disclosure dates do not prove original collector-time availability or original-vintage filings."
+
+[event]
+first = "Earliest available_date per symbol/end_date for type1 statements, before any company-type filtering"
+same_day_periods = "Latest period only"
+maximum_report_lag_days = 180
+context = "build_monthly_sue_context_v2 as_of announcement_date+1, strictly prior dates"
+revision = "Do not create a new event or revise an earlier frozen event score"
+execution = "Earliest actual exchange session strictly after announcement_date; account eligibility still pending"
+holding_sessions_reference = 40
+
+[remaining]
+checks = ["historical names/ST and signal-time liquidity", "previous quarter threshold sufficiency", "first entry and complete exit feasibility", "full historical continuous account and same-event comparator", "three costs and unchanged risk gates"]

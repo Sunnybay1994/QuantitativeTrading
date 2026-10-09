@@ -1,0 +1,34 @@
+[research]
+id = "pead_event_market_inputs_20260930"
+auto_trade = false
+scope = "Input eligibility and prior-quarter threshold preparation only; no return selection or account admission"
+parent = "configs/research/pead_event_inputs_20260930.toml"
+source_strategy = "configs/research/b31_pead40_20260909.toml"
+
+[data]
+start = 1990-01-01
+end = 2026-08-31
+bar_fields = ["symbol", "trade_date", "close", "amount"]
+amount_unit = "CNY"
+source_policy = "Same frozen stock snapshot and complete incremental partitions as read_stock_data; later complete increments win"
+
+[eligibility]
+liquidity_sessions = 20
+minimum_average_amount = 20000000.0
+minimum_valid_price_observations = 120
+stale_close = "Reject unless the last valid close is on the most recent exchange session at or before the announcement"
+missing_session = "Do not bridge missing exchange sessions in the 20-session amount mean"
+historical_names = "Known effective name interval, not current stock name; unknown/ambiguous/expired coverage is ineligible"
+
+[threshold]
+window = "Previous complete calendar quarter only"
+sample = "All financially VALID and market-eligible events"
+minimum_events = 100
+quantile = 0.9
+interpolation = "linear"
+selection = "SUE > 0 and SUE >= threshold"
+
+[limits]
+announcement_timing = "Date-only financial announcement is available by announcement-day close; earliest execution is strictly next exchange open"
+historical_vintage = "Reconstructed source history and name intervals; original collector-time availability not proven"
+next_stage = "Before any return test, freeze personal continuous-account construction and matched all-event comparator; no legacy fold resets or Top800 survivor pool"

@@ -21,6 +21,7 @@ from quant.data.mappers import TushareCalendarMapper
 from quant.data.refresh_etf_prices import refresh as refresh_etfs
 from quant.data.refresh_stocks import refresh as refresh_stocks
 from quant.data.storage import CleanCalendarStore, RawStore
+from quant.data.stock_limits import refresh_stock_limits
 from quant.data.update_disclosed_financials import refresh_daily as refresh_disclosed_financials
 
 SHANGHAI = dt.timezone(dt.timedelta(hours=8))
@@ -63,12 +64,15 @@ def latest_session(*, data_root: Path, through: dt.date, refresh_calendar: bool 
 def run_refresh(
     *, to: str, data_root: Path, artifact_root: Path, config: Path,
     now: dt.datetime | None = None, intraday: bool = True, progress_path: Path | None = None,
+    required_factor_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     from quant.data.refresh_progress import RefreshProgress
     progress = RefreshProgress(progress_path)
     through = completed_date(to, now or dt.datetime.now(SHANGHAI))
     end = progress.run('calendar', latest_session, data_root=data_root, through=through)
     settings = tomllib.loads(config.read_text(encoding="utf-8"))
+    if required_factor_ids is not None:
+        settings['factors'] = scoped_factor_settings(settings['factors'], required_factor_ids)
     # A failed stage raises immediately; the next invocation reuses complete daily partitions.
     with contextlib.redirect_stdout(io.StringIO()):
         stocks = progress.run('stocks', refresh_stocks, end=end, data_root=data_root, artifact_root=artifact_root, config=config)
@@ -77,6 +81,8 @@ def run_refresh(
     universe = tomllib.loads(Path(settings["etf_config"]).read_text(encoding="utf-8"))["universe"]
     symbols = sorted({s for value in universe.values() if isinstance(value, list) for s in value})
     limit_rows = progress.run('limits', refresh_limits, data_root=data_root, symbols=symbols, end=end)
+    stock_limits = progress.run('stock_limits', refresh_stock_limits,
+                                data_root=data_root, config=config, end=end)
     minute_options: dict[str, Any] = {}
     minute_days = settings.get('intraday', {}).get('stock_lookback_days')
     if minute_days is not None:
@@ -85,7 +91,17 @@ def run_refresh(
         minute_options['stock_from'] = through - dt.timedelta(days=minute_days-1)
     if progress_path is not None:
         minute_options['progress'] = progress.update
-    minutes = progress.run('minutes', refresh_intraday, data_root=data_root, end=through, **minute_options) if intraday else {}
+    minutes = progress.run('minutes', refresh_intraday, data_root=data_root, end=through,
+        refresh_config=config, required_stocks_only=True, **minute_options) if intraday else {}
+    minute_rebuild_dates = []
+    if minutes.get('stock_changed_rows', 0):
+        minute_rebuild_dates.append(minute_options.get('stock_from', dt.date(2020, 1, 1)))
+    if minutes.get('stock_alternate_from'):
+        minute_rebuild_dates.append(dt.date.fromisoformat(minutes['stock_alternate_from']))
+    # A failed collector may already have published part of a response. Retry
+    # only this bounded daily interval, including previously materialized nulls.
+    if minutes.get('errors') and 'stock_from' in minute_options:
+        minute_rebuild_dates.append(minute_options['stock_from'])
     benchmark = (progress.run('benchmark', refresh_factor_benchmark, data_root=data_root, config=config, end=end)
                  if settings.get("factor_benchmark_snapshot") else {"new_rows": 0})
     financials = {"message": "disabled", "new_rows": 0}
@@ -101,9 +117,10 @@ def run_refresh(
     if settings.get("factors", {}).get("enabled", False):
         factors = progress.run('factors', refresh_factors, data_root=data_root, artifact_root=artifact_root,
                                       config=config, end=end, settings=settings["factors"],
-                                      minute_available=not bool(minutes.get('errors')),
-                                      minute_start=(minute_options.get('stock_from', dt.date(2020, 1, 1))
-                                                    if minutes.get('stock_changed_rows', 0) else None),
+                                      # Per-day reconciliation yields null for genuinely missing
+                                      # inputs. Unrelated request errors must not suppress every
+                                      # minute factor, including accepted whole-day TDX fallbacks.
+                                      minute_start=min(minute_rebuild_dates) if minute_rebuild_dates else None,
                                       industry_start=(dt.date.fromisoformat(industry['rebuild_from'])
                                                       if industry['new_intervals'] else None))
     quality: dict[str, Any] = {"errors": [], "message": "disabled"}
@@ -118,14 +135,17 @@ def run_refresh(
             factors=[{'id': row.id, 'family': row.family} for row in definitions], financials=financials,
             output=artifact_root/'data'/'input_quality'/stamp,
             lookback_sessions=settings['quality'].get('lookback_sessions', 5), minimum_symbols=battery['minimum_symbols'])
-    changed = (stocks["new_dates"] or etfs["new_rows"] or etfs["new_bar_rows"] or limit_rows
+    changed = (stocks["new_dates"] or etfs["new_rows"] or etfs["new_bar_rows"] or limit_rows or stock_limits['new_rows']
                or minutes.get("changed_rows", 0) or benchmark["new_rows"] or factors["years"]
                or financials['new_rows'] or industry['new_intervals'])
     message = "partial" if minutes.get("errors") or quality['errors'] else "updated" if changed else "no-op"
     return {"latest_session": str(end), "message": message,
+            "required_factor_ids": required_factor_ids,
+            "intraday_requested": intraday,
             "stock_new_dates": stocks["new_dates"], "stock_new_rows": stocks["new_rows"],
             "etf_price_new_rows": etfs["new_rows"], "etf_bar_new_rows": etfs["new_bar_rows"],
             "etf_limit_new_rows": limit_rows,
+            "stock_limits": stock_limits,
             "intraday_changed_rows": minutes.get("changed_rows", 0),
             "intraday_errors": minutes.get("errors", []),
             "factor_benchmark_new_rows": benchmark["new_rows"],
@@ -135,6 +155,24 @@ def run_refresh(
             "industry": industry,
             "input_quality": quality,
             "stock_artifact": stocks.get("artifact_path"), "etf_artifact": etfs.get("artifact_path")}
+
+
+def scoped_factor_settings(settings: dict[str, Any], required: list[str]) -> dict[str, Any]:
+    """Narrow one invocation without editing the source config or its snapshot versions."""
+    from quant.factors.library import load_library
+
+    if (not isinstance(required, list) or not required
+            or any(not isinstance(name, str) or not name for name in required)
+            or len(set(required)) != len(required)):
+        raise ValueError('Daily consumers require distinct nonempty factor IDs')
+    if settings.get('enabled', True) is not True:
+        raise ValueError('Daily consumer factor computation is disabled')
+    allowed = {row.id for row in load_library(Path(settings['library']), refresh_factor_selection(settings))}
+    missing = set(required) - allowed
+    if missing:
+        raise ValueError('Required factors outside allowed refresh selection: ' + ', '.join(sorted(missing)))
+    # Exclusions have already been enforced against the original selection.
+    return {**settings, 'selected': ','.join(required), 'excluded_factors': []}
 
 
 def refresh_factor_selection(settings: dict[str, Any]) -> str:

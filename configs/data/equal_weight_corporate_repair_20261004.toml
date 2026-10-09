@@ -1,0 +1,89 @@
+id = "equal_weight_corporate_repair_20261004"
+registered_on = 2026-10-04
+auto_trade = false
+original_version = "battery_monthly_gross_20260912"
+version = "battery_monthly_gross_ca_20261004"
+original_config = "configs/data/equal_weight_indexes_20260912.toml"
+consumer = "artifacts/research/pead_account_v1_20260930_02"
+artifact_root = "artifacts/research/benchmark_corporate_repair_20261004_01"
+fact_files = ["artifacts/research/benchmark_corporate_actions_20260930_01/source_facts.json", "artifacts/research/benchmark_corporate_actions_20260930_02/source_facts.json"]
+proof_sessions = 5
+baseline_absolute_tolerance = 0.0000000001
+
+[rules]
+scope = "Repair all seven verified retained-holder share exchanges in the specified index. No live pointers, factors, running batches or strategy accounts are changed."
+recognition = "At legal delisting, preserve the preceding close holding as a nontradable exchange claim under already published default terms. This is economic-right recognition, not an assertion about an unverified legal registration date."
+cash_election = "No voluntary election is made; observed exercise by other named shareholders is not assigned to the benchmark."
+pending_valuation = "Carry the predecessor's last book value without future successor prices. This is an explicit stale-book accounting convention, not observed fair value. Track its dates and weights."
+pending_rebalance = "Keep pending claim units and book value unchanged. Rebalance only liquid opening capital to the original frozen target weights; no cash financing, forced disposal or write-off of the claim."
+release = "Use only listing notices already available by the session and whose effective listing date has arrived, plus a positive-volume valid open/close bar. Lack of intraday evidence is a limitation of this daily reference, not proven execution."
+merge = "Add delivered fractional successor units to existing successor units with a value-preserving blended prior mark before ordinary overnight/dividend/rebalance calculation."
+fractional = "Fractional index shares; no household lottery or rounding rule is imposed on a continuous index."
+dividends = "Preserve the original gross ex-date reinvestment convention. Reject an action on a pending successor or on the conversion date unless explicitly implemented; never silently double count."
+other_inputs = "Original target plans, point-in-time membership, prices and ordinary dividends are reused. Unrelated suspension/missing-quote valuation conventions remain frozen."
+seam = "Initialize normalized weights at a pre-event monthly close, reproduce frozen daily returns, repair through the first actual weight resynchronization, and verify five subsequent sessions. Reuse outside-window daily returns exactly; recompute continuous levels."
+uncertainty = "Unknown legal registration/corporate cancellation dates stay null in evidence. A retained claim does not require inventing those dates. No assertion of true unobservable fair value while pending."
+
+[[exchanges]]
+from_symbol = "600607.SH"
+to_symbol = "601607.SH"
+ratio = "1.61"
+announcement_date = 2010-02-11
+effective_date = 2010-02-12
+provider_identity = "Frozen quotes use canonical 601607 for the economic successor originally numbered 600849; no second exchange at the later code change."
+listing_notices = [{available_date = 2010-02-25, tradable_date = 2010-03-01}, {available_date = 2010-03-08, tradable_date = 2010-03-09}]
+source = "https://static.cninfo.com.cn/finalpage/2010-02-11/57603948.PDF"
+
+[[exchanges]]
+from_symbol = "600631.SH"
+to_symbol = "600827.SH"
+ratio = "0.861"
+announcement_date = 2011-08-19
+effective_date = 2011-08-23
+listing_notices = [{available_date = 2011-08-29, tradable_date = 2011-08-31}]
+source = "https://static.cninfo.com.cn/finalpage/2011-08-19/59839566.PDF"
+
+[[exchanges]]
+from_symbol = "600102.SH"
+to_symbol = "600022.SH"
+ratio = "2.41"
+announcement_date = 2012-02-24
+effective_date = 2012-02-28
+listing_notices = [{available_date = 2012-03-06, tradable_date = 2012-03-08}]
+source = "https://static.cninfo.com.cn/finalpage/2012-02-24/60579815.PDF"
+
+[[exchanges]]
+from_symbol = "600991.SH"
+to_symbol = "601238.SH"
+ratio = "1.6"
+announcement_date = 2012-03-16
+effective_date = 2012-03-20
+listing_notices = [{available_date = 2012-03-27, tradable_date = 2012-03-29}]
+source = "https://static.cninfo.com.cn/finalpage/2012-03-16/60678056.PDF"
+
+[[exchanges]]
+from_symbol = "300186.SZ"
+to_symbol = "300498.SZ"
+ratio = "0.8070"
+announcement_date = 2015-10-29
+effective_date = 2015-11-02
+listing_notices = [{available_date = 2015-10-29, tradable_date = 2015-11-02}]
+source = "https://static.cninfo.com.cn/finalpage/2015-10-29/1201740792.PDF"
+
+[[exchanges]]
+from_symbol = "000916.SZ"
+to_symbol = "001965.SZ"
+ratio = "0.6956"
+announcement_date = 2017-12-22
+effective_date = 2017-12-25
+listing_notices = [{available_date = 2017-12-22, tradable_date = 2017-12-25}]
+source = "https://static.cninfo.com.cn/finalpage/2017-12-22/1204246098.PDF"
+
+[[exchanges]]
+from_symbol = "600270.SH"
+to_symbol = "601598.SH"
+ratio = "3.8225"
+announcement_date = 2018-12-24
+effective_date = 2018-12-28
+listing_notices = [{available_date = 2019-01-15, tradable_date = 2019-01-18}]
+source = "https://static.cninfo.com.cn/finalpage/2018-12-24/1205685377.PDF"

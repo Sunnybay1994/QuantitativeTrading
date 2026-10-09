@@ -35,7 +35,8 @@ def test_stock_actions_keep_combined_cash_but_exclude_creditor_shares(monkeypatc
                 return pl.DataFrame({"ts_code": ["300760.SZ", "000793.SZ", "003001.SZ"],
                     "trade_date": [params["trade_date"]] * 3, "up_limit": [12.0, 3.0, 50.0], "down_limit": [8.0, 2.0, 30.0]})
             if api == "suspend_d":
-                return pl.DataFrame()
+                return pl.DataFrame({'ts_code': ['300760.SZ'], 'trade_date': [params['trade_date']],
+                    'suspend_type': ['S'], 'suspend_timing': ['13:00-15:00']})
             if api == "stock_basic":
                 schema = {"ts_code": pl.String, "name": pl.String, "list_date": pl.String, "delist_date": pl.String}
                 if params["list_status"] != "L":
@@ -66,7 +67,9 @@ def test_stock_actions_keep_combined_cash_but_exclude_creditor_shares(monkeypatc
         with pytest.raises(ValueError, match="Incomplete stock dividend dates"):
             source.prepare_stock_execution_inputs(**kwargs)
         return
-    _, _, dividends, instruments = source.prepare_stock_execution_inputs(**kwargs)
+    _, suspensions, dividends, instruments = source.prepare_stock_execution_inputs(**kwargs)
+    assert suspensions['suspend_timing'].to_list() == ['13:00-15:00']
+    assert 'suspension_policy' not in suspensions.columns  # New semantics require a versioned snapshot.
     assert dividends.filter(pl.col("symbol") == "300760.SZ").item(0, "div_cash") == 1.56
     assert dividends.filter(pl.col("symbol") == "000793.SZ").item(0, "share_ratio") == 0.0
     assert instruments.height == 3

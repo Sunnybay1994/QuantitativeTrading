@@ -1,0 +1,103 @@
+id = "pead40_personal_v1"
+registered_on = 2026-09-30
+auto_trade = false
+cases = ["pead40", "all_events"]
+cost_multipliers = [0.5, 1.0, 2.0]
+hypothesis = "Positive earnings surprise above the previous-quarter P90, held for 40 sessions after first publication, improves the cost-after personal account over otherwise identical unscreened eligible financial events."
+scope = "One fixed historical development experiment. Reconstructed financial/name vintages are not original releases, and previously observed history is not new out-of-sample evidence. No admission or forward account changes."
+
+[inputs]
+event_root = "artifacts/research/pead_event_inputs_20260930_01"
+execution_snapshot = "factor_battery_20260911_v2"
+limits_snapshot = "limits_20260911"
+return_benchmark_config = "configs/data/return_benchmarks_q1b_20260912.toml"
+model_rules = "configs/models/q1d_causal48_return_benchmark_20260912.toml"
+stress_config = "configs/research/q5_eight_stress_windows_20260912.toml"
+start = 2010-01-01
+end = 2026-08-31
+
+[paper]
+initial_cash = 100000.0
+auto_trade = false
+
+[portfolio]
+slots = 5
+cash_buffer = 0.02
+holding_sessions = 40
+max_participation = 0.05
+stock_dividend_withholding = 0.20
+quantity = "Fix new shares using the actual previous-close equity and price, equal 19.6 percent NAV per free slot, with board-specific lots; no execution-open information in intended shares."
+capacity = "Use actual previous-close occupied slots including pending conversions; an intended next-open exit still occupies its slot. Reserve at most the free slots from the fixed ranking. No replacement after rejected, unaffordable or unfilled entries."
+repeat_symbol = "Ignore a new event for an already held security or pending successor; do not add shares or restart its clock. Coalesced conversion lots inherit the earliest expiry and retain event lineage."
+exits = "Attempt full exit at the original reference expiry open; retry each following session while blocked. Keep late entries and ending inventory even when expiry is beyond the data cutoff."
+
+[execution]
+priority_salt = "pead40-personal-v1"
+priority = "For both cases SHA256(salt|symbol|announcement_date|end_date), ascending. Never rank by future return, security price, or SUE among the qualified pool. No additional seeds."
+fill_order = "Hash selects nominations only. The unchanged shared account engine executes sells before buys and symbols ascending within each side."
+duplicate = "Same symbol and first execution date: retain latest known announcement, then newest financial period."
+candidate_pead = "Frozen selected=true, with unchanged prior-quarter minimum sample and positive-SUE P90 rule."
+candidate_control = "Frozen financial VALID and market eligible and finite prior-quarter threshold; no positive-SUE or percentile requirement."
+entry = "One attempt on the first exchange session strictly after announcement date; no delayed entry or later replacement."
+participation = "Each side capped at 5 percent of the exact 20 exchange-session mean amount ending at the previous close; unknown windows cannot be treated as zero cost or unlimited capacity."
+missing = "No valid OHLCV bar or no verified daily price band means no fill. Preserve and retry blocked exits. Record independently whether suspension requests cover the date; absent request is not proof of no halt."
+suspension_policy = "bar_present_known_suspensions_block"
+suspension_limitation = "A positive-volume bar on a date without a complete suspension request is only a historical execution assumption. Mark actual orders/fills with coverage. Any promising account requires original-source validation on actual execution dates before promotion; do not describe this run as verified executable or independently out of sample. Do not choose between missing-data policies by observed returns."
+delisting = "Do not silently zero a held unclassified corporate event. Resolve its actual consideration before continuing; never remove an event from the candidate pool using future delisting."
+alias = "001914 before 2019-12-16 may use same-entity 000043 price bands only after source-backed code-change evidence and same-date close/amount equality. Keep an explicit mapping receipt."
+
+[costs.a_share]
+commission_rate = 0.00025
+commission_min = 1.0
+stamp_tax_sell = 0.0005
+transfer_fee = 0.00001
+slippage = 0.001
+effective_from = 2010-01-01
+historical_statutory_fees = true
+pre_2015_sh_transfer_multiplier = 2.0
+pre_2015_sh_transfer_min = 1.0
+pre_2015_sh_par_value = 1.0
+
+[costs.etf]
+commission_rate = 0.00025
+commission_min = 1.0
+slippage = 0.001
+effective_from = 2010-01-01
+
+[[share_exchanges]]
+from_symbol = "000522.SZ"
+to_symbol = "600332.SH"
+announcement_date = 2013-04-26
+record_date = 2013-04-26
+effective_date = 2013-04-26
+tradable_date = 2013-05-23
+ratio = "0.95"
+fractional_allocation = "floor"
+record_capture = "opening_holdings_same_day_suspended"
+valuation_until_tradable = "predecessor_book_value"
+account_registration_assumption = "normal_account_confirmed_initial_registration"
+cash_option = "not_exercised"
+source = "https://static.cninfo.com.cn/finalpage/2013-04-26/62429428.PDF"
+tradable_source = "https://static.cninfo.com.cn/finalpage/2013-05-18/62503174.PDF"
+evidence = "artifacts/research/pead_event_inputs_20260930_01/execution_readiness/sources/000522_corporate_action_facts.json"
+assumption = "Floor is a conservative account assumption, not proof of the exact fractional allotment; registration is assumed completed as required by the actual notice."
+
+[[share_exchanges]]
+from_symbol = "000418.SZ"
+to_symbol = "000333.SZ"
+announcement_date = 2019-06-19
+record_date = 2019-06-20
+effective_date = 2019-06-21
+tradable_date = 2019-06-21
+ratio = "1.15144821"
+fractional_allocation = "floor"
+source = "https://static.cninfo.com.cn/finalpage/2019-06-19/1206364891.PDF"
+fractional_source = "https://static.cninfo.com.cn/finalpage/2019-05-23/1206296152.PDF"
+
+[evaluation]
+primary = "Full continuous historical path, actual holding window with subsequent cash retained; 1x and 2x paired CAGR and rf2 Sharpe versus all_events. Also report exposure differences: the comparator does not isolate a pure causal earnings effect."
+benchmarks = "Use only real matched daily return-index coverage; 510300 has its first price on 2012-05-28 and its first measurable daily return on 2012-05-29. Earlier ETF comparison is unavailable. Keep full account path. Equal-weight delisting consideration still requires review; mark related admission evidence pending."
+required = ["annual and monthly returns", "rf0 and rf2 Sharpe", "drawdown", "turnover", "cash and name concentration", "all intended orders and rejections", "continuous stress windows with cash-only N/A", "three costs", "paired common-window result", "terminal holdings and delayed exits"]
+rules = "Original model admission thresholds remain unchanged. Neither an input repair nor a historical paired gain is PAPER_CANDIDATE. No <=3-year Top-K judgement."
+stop = "If this fixed account fails to improve both net CAGR and rf2 Sharpe versus the control at 1x, or its apparent advantage reverses at 2x, stop this portfolio hypothesis without changing SUE sign, percentile, holding window, number of slots or hash seed. Diagnose saved paths before any distinct future mechanism."
+limitations = ["reconstructed financial and name vintages", "daily OHLC fills are not order-book execution proof", "minimum commission 1 CNY is the user's assumption", "unknown intraday suspension coverage must be reported", "no independent future outcome yet"]

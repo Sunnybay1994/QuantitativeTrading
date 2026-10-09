@@ -155,6 +155,43 @@ class BaostockConnector(BaseConnector):
 
     @contextmanager
     def _session(self) -> Iterator[None]:
+        if getattr(self.client, '__name__', '') != 'baostock':
+            with self._unguarded_session():
+                yield
+            return
+        from quant.data.connectors.baostock_access import AccessBudget, BaoStockAccessPaused, session_slot
+        with session_slot():
+            budget = AccessBudget()
+            self._access_budget = budget
+            failed = False
+            opened = False
+            try:
+                budget.begin_session()  # Refuse before even opening a socket.
+                opened = True
+                with self._unguarded_session():
+                    yield
+            except Exception as exc:
+                failed = True
+                if '10001011' in str(exc):
+                    budget.block()
+                    raise BaoStockAccessPaused('BaoStock blacklist 10001011; further requests blocked') from exc
+                raise
+            finally:
+                context = importlib.import_module('baostock.common.context')
+                raw = getattr(context, 'default_socket', None)
+                try:
+                    if raw is not None:
+                        raw.close()
+                        context.default_socket = None
+                finally:
+                    if opened:
+                        budget.session_event('failed' if failed or budget.error is not None else 'closed')
+                    budget.db.close()
+                if budget.error is not None:
+                    raise budget.error
+
+    @contextmanager
+    def _unguarded_session(self) -> Iterator[None]:
         # BaoStock creates its socket at login without any timeout. Bound that
         # socket's connect/read waits; restore the process default immediately.
         previous_timeout = socket.getdefaulttimeout()
@@ -170,6 +207,8 @@ class BaostockConnector(BaseConnector):
                     original_connect(instance)
                     raw = getattr(context, "default_socket", None)
                     if raw is not None:
+                        from quant.data.connectors.baostock_access import BudgetSocket
+                        raw = BudgetSocket(raw, self._access_budget)
                         setattr(context, "default_socket", _BaoStockEOFSocket(raw))
 
                 # Patch only the SDK's connection creation during this serial login.
@@ -185,10 +224,20 @@ class BaostockConnector(BaseConnector):
         finally:
             socket.setdefaulttimeout(previous_timeout)
         _ensure_success(login_result, "login")
+        query_failed = False
         try:
             yield
+        except BaseException:
+            # A timed-out/partial response leaves the stream boundary unknown.
+            # Do not send logout on it or mask the original query exception.
+            query_failed = True
+            raise
         finally:
-            self.client.logout()
+            budget = getattr(self, '_access_budget', None)
+            if not query_failed and (budget is None or budget.error is None):
+                result = self.client.logout()
+                if result is not None:
+                    _ensure_success(result, 'logout')
 
 
 class BaostockResponseError(RuntimeError):

@@ -24,6 +24,39 @@ def _varied(day):
         pl.Series('volume', volume), pl.Series('amount', volume * close)), np.array(returns)
 
 
+@pytest.mark.parametrize('mode', ['valid', 'partial', 'mismatch', 'off_grid', 'primary_complete', 'tdx_only'])
+def test_tdx_fallback_requires_complete_reconciled_days_and_preserves_source(tmp_path, mode):
+    day = dt.date(2026, 1, 5)
+    full = _varied(day)[0].with_columns(pl.lit('baostock').alias('source'))
+    daily = full.group_by('symbol', 'trade_date').agg(
+        pl.col('close').last(), pl.col('volume').sum(), pl.col('amount').sum())
+    primary = full if mode == 'primary_complete' else full.slice(1)
+    alternative = full.with_columns(pl.lit('tdx').alias('source'))
+    if mode == 'partial':
+        alternative = alternative.slice(1)
+    elif mode == 'mismatch':
+        alternative = alternative.with_columns((pl.col('amount') * 2).alias('amount'))
+    elif mode == 'off_grid':
+        alternative = alternative.with_columns(
+            (pl.col('bar_start') + pl.duration(seconds=1)).alias('bar_start'))
+    paths = []
+    for source, frame in [('baostock', primary), ('tdx', alternative)]:
+        if mode == 'tdx_only' and source == 'baostock':
+            continue
+        path = tmp_path / f'clean/bar_intraday/freq=5m/source={source}/symbol=600000.SH/data.parquet'
+        path.parent.mkdir(parents=True)
+        frame.write_parquet(path)
+        paths.append((path, path.read_bytes()))
+    result = list(read_factor_minute_inputs(tmp_path, daily))[0]
+    expected_source = 'tdx' if mode in ('valid', 'tdx_only') else 'baostock'
+    assert result['source'].unique().to_list() == [expected_source]
+    assert result.height == (48 if mode in ('valid', 'tdx_only', 'primary_complete') else 47)
+    if expected_source == 'tdx':
+        assert result['daily_reconciled'].all()
+    for path, original in paths:
+        assert path.read_bytes() == original
+
+
 def test_expanded_daily_moments_and_correlations_match_numpy():
     day = dt.date(2026, 1, 5)
     minute, returns = _varied(day)
