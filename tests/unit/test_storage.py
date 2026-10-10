@@ -207,13 +207,16 @@ def test_request_raw_rejects_symlink(tmp_path: Path) -> None:
 def test_request_raw_rejects_root_or_parent_symlink_directly(tmp_path: Path, kind: str) -> None:
     real = tmp_path / "real"
     real.mkdir()
-    if kind == "root":
-        root = tmp_path / "raw"
-        root.symlink_to(real, target_is_directory=True)
-    else:
-        parent = tmp_path / "parent"
-        parent.symlink_to(real, target_is_directory=True)
-        root = parent / "raw"
+    try:
+        if kind == "root":
+            root = tmp_path / "raw"
+            root.symlink_to(real, target_is_directory=True)
+        else:
+            parent = tmp_path / "parent"
+            parent.symlink_to(real, target_is_directory=True)
+            root = parent / "raw"
+    except OSError:
+        pytest.skip("filesystem does not permit symlink creation")
     with pytest.raises(ValueError, match="symlink"):
         RawStore(root).write_request(
             source="tushare",

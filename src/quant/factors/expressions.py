@@ -192,10 +192,12 @@ class ExpressionEngine:
                 x_range = (stable_x.rolling_max(n, min_samples=n) - stable_x.rolling_min(n, min_samples=n)).over("symbol")
                 y_range = (stable_y.rolling_max(n, min_samples=n) - stable_y.rolling_min(n, min_samples=n)).over("symbol")
                 result = rolling_moment(x, n, name, y)
+                # Snap ULP noise to 0 so later cross-sectional ranks match stable ties.
+                cleaned = pl.when(result.abs() <= 1e-12).then(0.0).otherwise(result)
                 if name == "ts_corr":
-                    return pl.when((x_range > 0) & (y_range > 0)).then(result.clip(-1, 1))
+                    return pl.when((x_range > 0) & (y_range > 0)).then(cleaned.clip(-1, 1))
                 return pl.when(x_range.is_not_null() & y_range.is_not_null()).then(
-                    pl.when((x_range == 0) | (y_range == 0)).then(0.0).otherwise(result)
+                    pl.when((x_range == 0) | (y_range == 0)).then(0.0).otherwise(cleaned)
                 )
             if name == "decay_linear":
                 weights = [float(i) for i in range(1, n + 1)]

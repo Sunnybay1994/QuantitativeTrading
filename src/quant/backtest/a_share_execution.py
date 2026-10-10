@@ -54,6 +54,7 @@ from quant.backtest.a_share_execution_formal_matching import (
     execute_formal_a_share_session,
     resolve_formal_a_share_order_quantity_rule,
 )
+from quant.backtest.a_share_execution_formal_open import _valid_buy_quantities
 from quant.backtest.a_share_execution_matching import (
     allocate_buy_lots,
     build_target_order_intents,

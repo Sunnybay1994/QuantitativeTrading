@@ -1,8 +1,8 @@
-# Official docs checked 2026-09-12: https://api-docs.deepseek.com/quick_start/pricing/
+# Official docs checked 2026-10-10: https://api-docs.deepseek.com/quick_start/pricing/
 # Peak USD prices; ignore cache/off-peak discounts when reserving request budgets.
 model = "deepseek-flash"
 model_epoch = "DeepSeek-V4.1-Flash-docs-20260912"
-pricing_checked = 2026-09-12
+pricing_checked = 2026-10-10
 input_usd_per_million = 0.30
 output_usd_per_million = 1.20
 max_tokens = 768

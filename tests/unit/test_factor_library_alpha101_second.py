@@ -47,13 +47,15 @@ def reference_p2f(panel):
         stable_x = x.map(lambda value: float(f"{value:.10g}"))
         stable_y = y.map(lambda value: float(f"{value:.10g}"))
         valid = (high(stable_x, n) > low(stable_x, n)) & (high(stable_y, n) > low(stable_y, n))
-        return x.rolling(n, min_periods=n).corr(y).replace([np.inf, -np.inf], np.nan).clip(-1, 1).where(valid)
+        out = x.rolling(n, min_periods=n).corr(y).replace([np.inf, -np.inf], np.nan).clip(-1, 1).where(valid)
+        return out.mask(out.abs() <= 1e-12, 0)
 
     def cov(x, y, n):
         stable_x = x.map(lambda value: float(f"{value:.10g}"))
         stable_y = y.map(lambda value: float(f"{value:.10g}"))
         constant = (high(stable_x, n) == low(stable_x, n)) | (high(stable_y, n) == low(stable_y, n))
-        return x.rolling(n, min_periods=n).cov(y).mask(constant, 0)
+        out = x.rolling(n, min_periods=n).cov(y).mask(constant, 0)
+        return out.mask(out.abs() <= 1e-12, 0)
 
     def trank(x, n):
         x = x.map(lambda value: float(f"{value:.10g}"))

@@ -8,7 +8,6 @@ import json
 import os
 import secrets
 import shutil
-import sqlite3
 import stat
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -312,6 +311,8 @@ def _quarantine_query() -> str:
 
 
 def _raw_paths(root: Path, *, expected_count: int) -> dict[str, list[str]]:
+    import sqlite3
+
     ledger = root / "run_state" / "tushare_bulk" / "state.sqlite"
     uri = f"file:{ledger.resolve(strict=True).as_posix()}?mode=ro"
     with sqlite3.connect(uri, uri=True) as connection:

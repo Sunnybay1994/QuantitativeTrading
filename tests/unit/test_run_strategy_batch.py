@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import polars as pl
 import pytest
 
 from quant.research import run_strategy_batch as batch
@@ -11,6 +12,7 @@ def isolated_registry(tmp_path, monkeypatch):
     from quant.reporting import experiment_registry
     monkeypatch.setattr(experiment_registry, 'DEFAULT_REGISTRY', tmp_path/'registry/experiments.parquet')
     monkeypatch.setattr(experiment_registry, 'DEFAULT_LEADERBOARD', tmp_path/'leaderboard.md')
+    monkeypatch.setattr(experiment_registry, 'register_run', lambda *_args, **_kwargs: None)
 
 
 def completed(tmp_path, kind):
@@ -39,8 +41,9 @@ def completed(tmp_path, kind):
         for cost in (.5, 1., 2.):
             directory = output/variant/f'cost_{cost:g}'/'2026'
             directory.mkdir(parents=True)
-            for name in ('account.json', 'nav.parquet', 'trades.parquet', 'rejections.parquet'):
-                (directory/name).write_text('fixture')
+            (directory/'account.json').write_text('{}')
+            for name in ('nav.parquet', 'trades.parquet', 'rejections.parquet'):
+                pl.DataFrame({'row': [0]}).write_parquet(directory/name)
             rows.append({'variant': variant, 'cost_multiplier': cost, 'active_start': '2026-01-02'})
     comparisons = [{'cost' if kind == 'volatility_overlay' else 'cost_multiplier': c,
         'nav_exact' if kind == 'volatility_overlay' else 'nav_exact_equal': True} for c in (.5, 1., 2.)]

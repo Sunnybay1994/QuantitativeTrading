@@ -396,7 +396,10 @@ def test_zero_command_session_closes_end_to_end_via_real_terminal_machinery(
 
 
 def test_infra_007_and_f2_f3_source_contracts() -> None:
-    source = inspect.getsource(runtime)
+    # Implementation lives under legacy/; the public module is a thin shim.
+    from pathlib import Path
+
+    source = Path("legacy/quant/execution/soak_runtime.py").read_text(encoding="utf-8")
     assert "_finalize_and_query_formal_paper_broker_eod" not in source
     assert "_session_order_semantic_closure_identity" not in source
     assert "recover_local_state" not in source

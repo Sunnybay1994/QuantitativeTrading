@@ -356,7 +356,7 @@ def test_mandatory_input_over_limit_defers_without_call_or_library_truncation(se
     assert result['state'] == 'deferred_input_size' and client.calls == 0
     request = json.loads((paths['output_root']/'2026-09-14/request.json').read_bytes())
     content = json.loads(request['messages'][1]['content'])
-    assert content['library'] == [{'id': 'old', 'expression': 'adj_close'}]
+    assert content['library'] == [{'id': 'old', 'expression': 'adj_close', 'direction': 1}]
     assert content['fields'] == ['adj_close'] and content['operators'] == ['delay']
     assert not paths['queue'].exists() and not paths['cache'].exists()
 

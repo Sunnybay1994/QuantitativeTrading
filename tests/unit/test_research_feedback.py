@@ -115,7 +115,18 @@ def test_prompt_only_diagnoses_recent_completed_and_preserves_full_report(tmp_pa
     saved = output/'feedback.json'
     saved.write_text('previous full report')
     config = tmp_path/'policy.toml'
-    config.write_text(f'continuous_root = "{root.as_posix()}"\noutput_root = "{output.as_posix()}"')
+    config.write_text(
+        f'continuous_root = "{root.as_posix()}"\n'
+        f'output_root = "{output.as_posix()}"\n'
+        '[[priority]]\n'
+        'id = "fixture"\n'
+        'status = "open"\n'
+        'mechanism = "fixture"\n'
+        'evidence_paths = []\n'
+        'stop_condition = "fixture"\n'
+        'next_action = "fixture"\n'
+        'updated = "2026-10-10"\n'
+    )
     calls = []
     monkeypatch.setattr(search_sample_diagnostics, 'batch_diagnostics',
                         lambda run, statistics: calls.append(run.parent.name) or {})

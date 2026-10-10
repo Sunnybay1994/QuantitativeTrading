@@ -338,57 +338,64 @@ def run(config: Path, now: dt.datetime | None = None, client: Any = None,
         if result['state'] != 'success':
             return finish(result['state'], error=result.get('error'), error_details=result.get('error_details_json'))
         payload = strict_json(result['scores_json'])
-        atomic_json(output/'candidates.json', payload)
-        # C2: compile-partition + up to 2 repair retries when illegal rate is high.
-        existing = known_definitions(library, queue, root)
-        existing_keys = {canonical(d.expr) for d in existing}
-        fields = design['search']['fields']
-        operators = design['search']['operators']
-        examples = legal_examples(
-            [{'id': d.id, 'expression': d.expr, 'direction': d.direction} for d in existing],
-            limit=3,
-        )
-        raw, validated_compile, rejected_compile = partition_candidates(
-            payload, fields=fields, existing_keys=existing_keys)
-        attempts = 0
-        while illegal_rate(len(raw), len(rejected_compile)) > 0.2 and attempts < 2 and execute:
-            attempts += 1
-            repair = retry_messages(
-                frozen['messages'], rejected_compile,
-                operators=operators, fields=fields, examples=examples,
-            )
-            repair_key = hashlib.sha256(
-                (frozen['cache_key'] + f':repair{attempts}').encode()
-                + json.dumps(repair, ensure_ascii=False).encode()
-            ).hexdigest()
-            totals = budget_totals(cache, now)
-            bound_repair = cost_for(frozen['token_bound'], settings['max_tokens'], settings)
-            if totals['week_usd'] + bound_repair > weekly or totals['month_usd'] + bound_repair > monthly:
-                break
-            repaired = score_one(
-                '', settings=settings, cache=cache,
-                client=DiagnosticClient(client, repair),
-                max_requests=cache.totals()['requests'] + settings['max_attempts'],
-                max_usd=cache.totals()['charged_or_reserved_usd'] + bound_repair,
-                request_key=repair_key, token_bound=frozen['token_bound'],
-                parse=parse,
-            )
-            if repaired['state'] != 'success':
-                break
-            payload = strict_json(repaired['scores_json'])
-            raw, validated_compile, rejected_compile = partition_candidates(
-                payload, fields=fields, existing_keys=existing_keys)
-        ledger = Path('artifacts/research/weekly_candidates') / week
-        ledger.mkdir(parents=True, exist_ok=True)
-        atomic_json(ledger / 'raw.json', {'candidates': raw, 'repair_attempts': attempts})
-        atomic_json(ledger / 'validated.json', validated_compile)
-        atomic_json(ledger / 'rejected.json', rejected_compile)
-        report['dsl_illegal_rate'] = illegal_rate(len(raw), len(rejected_compile))
-        report['dsl_repair_attempts'] = attempts
+        if not (output/'candidates.json').exists():
+            atomic_json(output/'candidates.json', payload)
         accepted_path = output/'accepted.json'
         if accepted_path.exists():
+            # Resume after queue publication: keep frozen acceptance, no repair traffic.
             accepted = json.loads(accepted_path.read_text(encoding='utf-8'))
+            report['dsl_repair_attempts'] = 0
         else:
+            atomic_json(output/'candidates.json', payload)
+            # C2: compile-partition + up to 2 repair retries when illegal rate is high.
+            existing = known_definitions(library, queue, root)
+            existing_keys = {canonical(d.expr) for d in existing}
+            fields = design['search']['fields']
+            operators = design['search']['operators']
+            examples = legal_examples(
+                [{'id': d.id, 'expression': d.expr, 'direction': d.direction} for d in existing],
+                limit=3,
+            )
+            raw, validated_compile, rejected_compile = partition_candidates(
+                payload, fields=fields, existing_keys=existing_keys)
+            attempts = 0
+            # Duplicates are local filters; only syntax/schema failures burn repair budget.
+            def _repairable(rows: list[dict]) -> list[dict]:
+                return [row for row in rows if "duplicate_expression" not in row.get("reason", "")]
+            while illegal_rate(len(raw), len(_repairable(rejected_compile))) > 0.2 and attempts < 2 and execute:
+                attempts += 1
+                repair = retry_messages(
+                    frozen['messages'], _repairable(rejected_compile),
+                    operators=operators, fields=fields, examples=examples,
+                )
+                repair_key = hashlib.sha256(
+                    (frozen['cache_key'] + f':repair{attempts}').encode()
+                    + json.dumps(repair, ensure_ascii=False).encode()
+                ).hexdigest()
+                totals = budget_totals(cache, now)
+                bound_repair = cost_for(frozen['token_bound'], settings['max_tokens'], settings)
+                if totals['week_usd'] + bound_repair > weekly or totals['month_usd'] + bound_repair > monthly:
+                    break
+                repaired = score_one(
+                    '', settings=settings, cache=cache,
+                    client=DiagnosticClient(client, repair),
+                    max_requests=cache.totals()['requests'] + settings['max_attempts'],
+                    max_usd=cache.totals()['charged_or_reserved_usd'] + bound_repair,
+                    request_key=repair_key, token_bound=frozen['token_bound'],
+                    parse=parse,
+                )
+                if repaired['state'] != 'success':
+                    break
+                payload = strict_json(repaired['scores_json'])
+                raw, validated_compile, rejected_compile = partition_candidates(
+                    payload, fields=fields, existing_keys=existing_keys)
+            ledger = Path('artifacts/research/weekly_candidates') / week
+            ledger.mkdir(parents=True, exist_ok=True)
+            atomic_json(ledger / 'raw.json', {'candidates': raw, 'repair_attempts': attempts})
+            atomic_json(ledger / 'validated.json', validated_compile)
+            atomic_json(ledger / 'rejected.json', rejected_compile)
+            report['dsl_illegal_rate'] = illegal_rate(len(raw), len(rejected_compile))
+            report['dsl_repair_attempts'] = attempts
             accepted, trials = validate_candidates(payload, design=design,
                 existing=existing, idea_ids={'weekly_gap'},
                 source_ref=str((output/'candidates.json').resolve()), synthetic=False)

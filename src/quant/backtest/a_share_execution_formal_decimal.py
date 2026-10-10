@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import datetime as dt
+import hashlib
+import json
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, localcontext
 from fractions import Fraction
 from typing import Any, cast
 
 import polars as pl
 
-from quant.domain import ExecutionRejectReason, OrderSide
+from quant.domain import ExecutionRejectReason, OrderSide, TargetWeightSchema
 from quant.research.m3.contracts import AShareCostPeriod
 
 from quant.backtest.a_share_execution_contracts import (
+    AShareFeeComponents,
     AShareOrderQuantityRule,
     AccountPosition,
     ExecutionFill,
@@ -25,7 +29,9 @@ from quant.backtest.a_share_execution_matching import (
     largest_valid_buy_quantity,
 )
 
-_PRICE_TICK = Decimal('0.01')
+_CENT = Decimal("0.01")
+_PRICE_TICK = Decimal("0.01")
+_FORMAL_HALF_PRICE_TICK = Decimal("0.005")
 
 _FORMAL_TARGET_COLUMNS = [
     "as_of", "strategy", "strategy_version", "symbol", "weight",

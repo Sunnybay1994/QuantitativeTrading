@@ -99,6 +99,11 @@ class AShareSessionExecutionTransition:
     buy_allocation_lambda: Fraction | None
 
     def __post_init__(self) -> None:
+        # Lazy import: validator lives in formal_session to avoid import cycles.
+        from quant.backtest.a_share_execution_formal_session import (
+            _validate_formal_session_transition,
+        )
+
         _validate_formal_session_transition(self)
 
 

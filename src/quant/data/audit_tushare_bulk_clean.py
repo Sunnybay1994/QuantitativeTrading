@@ -6,7 +6,6 @@ import argparse
 import hashlib
 import json
 import re
-import sqlite3
 from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
@@ -174,6 +173,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _ledger_rows(path: Path) -> list[tuple[object, ...]]:
+    import sqlite3
+
     try:
         uri = f"file:{path.resolve(strict=True).as_posix()}?mode=ro"
         with sqlite3.connect(uri, uri=True) as connection:

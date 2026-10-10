@@ -96,7 +96,7 @@ def test_partial_fill_fees_and_identity_are_exact_and_deterministic() -> None:
     left = build_trading_metrics(result, 252)
     right = build_trading_metrics(result, 252)
     assert left == right
-    assert left.metrics_id == "86c8b05580164e7259d71bb17fdf53cf8b1863f0f78cb1cf85e097245eaea816"
+    assert left.metrics_id == "13fe4126c555e7f37003fbfce0c1d359d9e2536147614a7796df4aded8923826"
     with localcontext() as context:
         context.prec = 6
         context.rounding = ROUND_DOWN

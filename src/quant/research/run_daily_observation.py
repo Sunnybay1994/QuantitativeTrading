@@ -107,7 +107,12 @@ def write_daily_report(record: dict[str, Any], output: Path) -> None:
         else:
             lines += ['当前配置未启用健康日志。']
         if health.get('status') == 'recorded' and health.get('output'):
-            target = Path(os.path.relpath(Path(health['output'])/'summary.json', output)).as_posix()
+            detail = Path(health['output']) / 'summary.json'
+            try:
+                target = Path(os.path.relpath(detail, output)).as_posix()
+            except ValueError:
+                # Cross-drive temp fixtures (Windows) cannot form a relative link.
+                target = detail.resolve().as_posix()
             lines += ['', f'[健康诊断详情]({target})；诊断数值不改变既有准入或持仓。']
     lines += ['', '[完整运行记录](summary.json)', '']
     temporary = output/'report.md.tmp'

@@ -59,10 +59,10 @@ def test_new_recipe_freezes_once_and_does_not_rewrite_prior_runs(tmp_path):
     run = tmp_path/'batch_1'/'2026-09-23'
     run.mkdir(parents=True)
     frozen = freeze_recipe(source, run, run, [])
-    assert 'cross_stock_config' in tomllib.loads(frozen)
-    saved = (run/'cross_stock.toml').read_bytes()
+    assert 'incremental_residual_config' in tomllib.loads(frozen)
+    saved = (run/'incremental_residual.toml').read_bytes()
     next_run = tmp_path/'batch_2'/'2026-09-23'
     next_run.mkdir(parents=True)
     assert freeze_recipe(source, next_run, next_run, [run.parent]) == source
-    assert (run/'cross_stock.toml').read_bytes() == saved
-    assert not (next_run/'cross_stock.toml').exists()
+    assert (run/'incremental_residual.toml').read_bytes() == saved
+    assert not (next_run/'incremental_residual.toml').exists()

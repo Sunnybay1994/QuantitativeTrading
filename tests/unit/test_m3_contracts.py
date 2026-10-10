@@ -6,8 +6,8 @@ import polars as pl
 import pytest
 
 from quant.domain import ForwardReturnLabelSchema, PredictionScoreSchema
-from quant.research.m3 import DatasetSnapshot, TemporalFold, load_m3_config
-from quant.research.m3.contracts import DateSegment
+from quant.research.m3 import DatasetSnapshot, load_m3_config
+from quant.research.m3.contracts import DateSegment, TemporalFold
 
 
 def test_m3_example_config_parses_and_stays_disabled_before_runtime_gate() -> None:

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import datetime as dt
-from decimal import Decimal, localcontext
+import hashlib
+import hmac
+from decimal import ROUND_FLOOR, Decimal, localcontext
 from fractions import Fraction
 from typing import cast
 
@@ -14,6 +16,7 @@ from quant.research.m3.contracts import AShareCostPeriod
 
 from quant.backtest.a_share_execution_contracts import (
     AShareExecutionError,
+    AShareOrderQuantityRule,
     AccountPosition,
     ExecutionFill,
     ExecutionRejection,
@@ -22,23 +25,28 @@ from quant.backtest.a_share_execution_contracts import (
 )
 from quant.backtest.a_share_execution_formal_open import AShareSessionExecutionTransition
 from quant.backtest.a_share_execution_formal_facts import (
+    FormalAShareMarketFactsIdentityV1,
     VerifiedAShareMarketFacts,
     _FORMAL_EXECUTION_ERROR,
     _HEX64,
 )
 from quant.backtest.a_share_execution_formal_open import (
-    AShareOrderQuantityRule,
     build_formal_a_share_open_execution_states,
     resolve_formal_a_share_order_quantity_rule,
 )
 from quant.backtest.a_share_execution_fees import _fee_total
 from quant.backtest.a_share_execution_formal_decimal import (
+    _CENT,
+    _FORMAL_HALF_PRICE_TICK,
+    _FORMAL_REJECTION_PRIORITY,
+    _PRICE_TICK,
     _formal_blocked_reason,
     _formal_buy_cost,
     _formal_buy_quantity_at_fraction,
     _formal_buy_total_cost,
     _formal_decimal,
     _formal_effective_cost_period,
+    _formal_fee_components,
     _formal_fill,
     _formal_math_context,
     _formal_multiply,
@@ -46,6 +54,7 @@ from quant.backtest.a_share_execution_formal_decimal import (
     _formal_positions,
     _formal_previous_buy_breakpoint,
     _formal_quantity_rejection,
+    _formal_reference_opens,
     _formal_reference_opens_sha256,
     _formal_rejection_key,
     _formal_subtract,
@@ -56,6 +65,7 @@ from quant.backtest.a_share_execution_formal_open import (
     _validate_formal_open_execution_frame,
 )
 from quant.backtest.a_share_execution_matching import (
+    _next_valid_buy_quantity,
     largest_valid_buy_quantity,
     largest_valid_sell_quantity,
 )
@@ -777,7 +787,15 @@ def execute_formal_a_share_session(
             {cast(str, row["symbol"]) for row in rows}
             | {item.symbol for item in clean_positions}
         ))
-        open_states = build_formal_a_share_open_execution_states(
+        import sys
+
+        registry = sys.modules.get("quant.backtest.a_share_execution")
+        build_open = (
+            getattr(registry, "build_formal_a_share_open_execution_states", None)
+            if registry is not None
+            else None
+        )
+        open_states = (build_open or build_formal_a_share_open_execution_states)(
             facts=facts, date=date, symbols=symbols
         )
         if _validate_formal_open_execution_frame(open_states) is not open_states:

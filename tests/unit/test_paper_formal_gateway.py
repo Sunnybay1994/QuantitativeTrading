@@ -30,7 +30,8 @@ def _approved_bundle(bundle: tuple[object, ...]) -> tuple[object, ...]:
         fill_policy_version="paper_deterministic_fill_v1",
         fault_policy_version="paper_controlled_fault_drills_v1",
         clock_policy_version="utc_system_clock_v1",
-        policy_identity=_hex("approved-policy"),
+        # Keep cold/materialized identities distinct so formal store closure can prove leave-cold.
+        policy_identity=_hex(f"approved-policy-{environment.verification_identity}"),
     )
     binding = replace(
         binding,

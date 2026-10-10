@@ -27,8 +27,10 @@ def test_admission_resumes_completed_candidates_with_frozen_references(tmp_path,
         keys.with_columns(pl.lit(1.).alias('raw')).write_parquet(folder/'monthly_scores.parquet')
         (batch/'library'/f'{name}.toml').write_text(f'id="{name}"\n')
     refs = ['r']
-    monkeypatch.setattr(steps, 'load_library', lambda path: [SimpleNamespace(id=x, source_ref='fixture')
-        for x in (['a','b'] if path == batch/'library' else refs)])
+    monkeypatch.setattr(steps, 'load_library', lambda path: [
+        SimpleNamespace(id=x, source_ref='fixture', family='price', expr='adj_close', direction=1)
+        for x in (['a', 'b'] if path == batch / 'library' else refs)
+    ])
     control_ids = ['control_a', 'control_b']
     monkeypatch.setattr(inputs, 'admitted_controls', lambda *args: (keys, list(control_ids)))
     seen_refs = []

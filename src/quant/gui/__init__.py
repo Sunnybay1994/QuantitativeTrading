@@ -1,1 +1,1 @@
-﻿"""Legacy GUI compatibility package."""`n
+"""Legacy GUI compatibility package."""

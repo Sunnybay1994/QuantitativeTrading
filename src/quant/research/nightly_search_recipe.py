@@ -12,7 +12,7 @@ def freeze_recipe(source: str, run: Path, final_run: Path, batches: list[Path]) 
     recipe = tomllib.loads(recipe_text)
     if recipe['maximum_batches'] != 1:
         raise ValueError('One-shot search requires exactly one registered batch')
-    filenames = ('cross_stock.toml', 'predictive_priority.toml')
+    filenames = ('cross_stock.toml', 'predictive_priority.toml', 'incremental_residual.toml')
     consumed = any(tomllib.loads(p.read_text(encoding='utf-8')).get('version') == recipe['version']
                    for prior in batches for name in filenames for p in prior.glob(f'????-??-??/{name}'))
     if consumed:

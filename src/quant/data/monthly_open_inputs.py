@@ -99,7 +99,8 @@ def extension_version(settings: dict, as_of: dt.date) -> str:
 def evaluation_source_identity(settings: dict) -> bytes:
     """Keep legacy batch IDs; opening-policy batteries cannot reuse their cache."""
     folder = Path(settings['data_root'])/'clean/stock_execution'/settings['execution_snapshot']
-    if policy_of(folder) != POLICY:
+    # Synthetic / fixture callers may omit the snapshot tree; treat as non-opening-policy.
+    if not folder.exists() or policy_of(folder) != POLICY:
         return b''
     identity = extension_identity(settings, settings['as_of'])
     identity['return_benchmark_sha256'] = digest(Path(settings['return_benchmark_config']))
