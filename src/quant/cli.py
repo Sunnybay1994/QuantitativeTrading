@@ -97,6 +97,7 @@ def _delegate(module: str, argv: list[str]) -> int:
 
 
 def _status() -> dict[str, Any]:
+    from datetime import datetime
     from pathlib import Path
 
     root = project_paths()
@@ -110,6 +111,68 @@ def _status() -> dict[str, Any]:
     intel = sorted((root.artifacts / "intel").glob("**/digest.md")) if (root.artifacts / "intel").exists() else []
     from quant.reporting.sample_scope import months_between, q10_oos_defaults
     q10 = q10_oos_defaults()
+    paper_dir = root.artifacts / "paper" / "q10_sue_v2"
+    paper_summary = paper_dir / "latest_summary.json"
+    q10_paper = None
+    if paper_summary.is_file():
+        summary = json.loads(paper_summary.read_text(encoding="utf-8"))
+        q10_paper = {
+            "equity": summary.get("equity") or summary.get("nav") or summary.get("total_equity"),
+            "as_of": summary.get("as_of") or summary.get("date") or summary.get("last_date"),
+            "path": str(paper_summary),
+        }
+    forward_months = sorted((paper_dir / "monthly").glob("*.json")) if (paper_dir / "monthly").is_dir() else []
+    q10_forward = None
+    for path in reversed(forward_months):
+        fwd = json.loads(path.read_text(encoding="utf-8"))
+        if "rolling12_excess_1x" not in fwd and "month_excess_primary" not in fwd:
+            continue
+        q10_forward = {
+            "as_of_month": fwd.get("as_of_month"),
+            "status": fwd.get("status"),
+            "month_excess_vs_equal_weight": (fwd.get("benchmark_month") or {})
+            .get("all_market_equal_weight", {})
+            .get("excess", fwd.get("month_excess_primary")),
+            "cumulative_oos_excess_primary": fwd.get("cumulative_oos_excess_primary"),
+            "rolling12_excess_1x": fwd.get("rolling12_excess_1x"),
+            "rolling12_excess_2x": fwd.get("rolling12_excess_2x"),
+            "complete_oos_months": fwd.get("complete_oos_months"),
+            "path": str(path),
+        }
+        break
+    # Registry primary Q10 row supplies rolling24 when forward month file lacks it.
+    registry_path = root.artifacts / "registry" / "experiments.parquet"
+    if registry_path.is_file():
+        import polars as pl
+
+        q10_rows = pl.read_parquet(registry_path).filter(
+            pl.col("experiment_id").str.to_lowercase().str.contains("q10")
+            & (pl.col("variant") == "budgeted")
+            & (pl.col("conclusion") == "PAPER_CANDIDATE")
+        )
+        if q10_rows.height:
+            primary = q10_rows.sort("result_time", descending=True).row(0, named=True)
+            if q10_forward is None:
+                q10_forward = {}
+            q10_forward.setdefault("rolling12_excess_min", primary.get("rolling12_excess_min"))
+            q10_forward.setdefault("rolling24_excess", primary.get("rolling24_excess"))
+            q10_forward["registry_experiment_id"] = primary.get("experiment_id")
+    funnel_path = root.artifacts / "research" / "funnel_latest.json"
+    funnel = json.loads(funnel_path.read_text(encoding="utf-8")) if funnel_path.is_file() else None
+    intel_latest = None if not intel else intel[-1]
+    intel_mtime = None
+    if intel_latest is not None:
+        intel_mtime = datetime.fromtimestamp(intel_latest.stat().st_mtime).isoformat(timespec="seconds")
+    n5_methods = {}
+    if n5:
+        for k, v in (n5.get("methods") or {}).items():
+            n5_methods[k] = (v.get("conclusions") or {}).get("budgeted")
+        # Surface admitted-stack key when present under methods or top-level assessments.
+        extra = n5.get("q10_plus_admitted") or (n5.get("assessments") or {}).get("q10_plus_admitted")
+        if extra is not None and "q10_plus_admitted" not in n5_methods:
+            n5_methods["q10_plus_admitted"] = (
+                extra.get("conclusion") if isinstance(extra, dict) else extra
+            )
     return {
         "root": str(root.root),
         "device": gpu.to_dict(),
@@ -119,12 +182,17 @@ def _status() -> dict[str, Any]:
         "mining_status": json.loads(mining.read_text(encoding="utf-8")) if mining.exists() else None,
         "n5_latest": None if not n5 else {
             "period": n5.get("period"),
-            "methods": {k: (v.get("conclusions") or {}).get("budgeted") for k, v in (n5.get("methods") or {}).items()},
+            "methods": n5_methods,
+            "path": str(monthly[-1]),
         },
         "q10_oos_start": q10["oos_start"],
         "q10_oos_months": months_between(q10["oos_start"], __import__("datetime").date.today()),
+        "q10_paper": q10_paper,
+        "q10_forward": q10_forward,
+        "reject_funnel": funnel,
         "latest_brief": None if not brief else str(brief[-1]),
-        "latest_intel_digest": None if not intel else str(intel[-1]),
+        "latest_intel_digest": None if intel_latest is None else str(intel_latest),
+        "latest_intel_mtime": intel_mtime,
         "notify_config": str(Path(runtime.notify_config)),
     }
 

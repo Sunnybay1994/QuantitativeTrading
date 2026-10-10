@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+import sys
 from collections.abc import Mapping
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, localcontext
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from typing import Any, cast
 import polars as pl
 
 from quant.domain import (
+    AShareBoard,
     ExecutionRejectReason,
     InstrumentType,
     OpenExecutionStateSchema,
@@ -36,6 +38,7 @@ from quant.backtest.a_share_execution_formal_facts import (
     _FORMAL_EXECUTION_ERROR,
     _FORMAL_HALF_PRICE_TICK,
     _HEX64,
+    _RULE_VERSION,
     _partial_open_status,
 )
 from quant.backtest.a_share_execution_matching import (
@@ -385,7 +388,13 @@ def _build_formal_open_execution_states(
         reason: str | None = None
         allowed = True
         if suspension is not None:
-            partial_status = _partial_open_status(
+            registry = sys.modules.get("quant.backtest.a_share_execution")
+            partial_fn = (
+                getattr(registry, "_partial_open_status", None)
+                if registry is not None
+                else None
+            )
+            partial_status = (partial_fn or _partial_open_status)(
                 cast(str, suspension["suspension_detail"])
             )
             if partial_status == "SUSPENDED_AT_OPEN":

@@ -53,7 +53,7 @@ def run_incremental(*, run: Path, statistics: Path, data_root: Path, output: Pat
     from quant.data.factor_panels import available_sessions
 
     report = json.loads((run / "run.json").read_text(encoding="utf-8"))
-    if report["dry_run"]:
+    if report.get("dry_run"):
         raise ValueError("Real incremental evaluation requires live scores; use --fixture for synthetic tests")
     settings = tomllib.loads((statistics / "battery.toml").read_text(encoding="utf-8"))
     numeric = read_forecast_controls(Path(report["source"]))
@@ -136,17 +136,22 @@ def run_pipeline(*, run: Path, output: Path, data_root: Path, design_path: Path,
             folder.rename(preserved)
         return action()
 
+    import sys
+    public = sys.modules.get('quant.research.evaluate_forecast_text')
     publication_path = output/'publication.json'
     if resume and publication_path.is_file():
         publication = json.loads(publication_path.read_text(encoding='utf-8'))
     else:
-        publication = publish_panels(run, data_root=data_root, design=design)
+        # Resolve via public shim so tests can monkeypatch quant.research.evaluate_forecast_text.
+        publish = public.publish_panels if public is not None else publish_panels
+        publication = publish(run, data_root=data_root, design=design)
         publication_path.write_text(json.dumps(publication, indent=2), encoding='utf-8')
+    incremental_fn = public.run_incremental if public is not None else run_incremental
     statistics = output / "statistics"
     stage(statistics, lambda: run_statistics(data_root=data_root, config=run / "battery.toml", library=library,
                    as_of=design["end"], output=statistics, workers=workers), resumable=True)
     screen = stage(output/'screen', lambda: run_screen(statistics=statistics, output=output / "screen", library=library))
-    incremental = stage(output/'incremental', lambda: run_incremental(run=run, statistics=statistics, data_root=data_root,
+    incremental = stage(output/'incremental', lambda: incremental_fn(run=run, statistics=statistics, data_root=data_root,
                                   output=output / "incremental", design=design))
     costs = None
     redundancy = benchmarks = None
@@ -250,12 +255,16 @@ def main() -> None:
     parser.add_argument('--resume', action='store_true', help='Continue the same evaluation after its previous process stops')
     parser.add_argument('--return-benchmark-config', type=Path)
     args = parser.parse_args()
+    import sys
+    public = sys.modules.get('quant.research.evaluate_forecast_text')
     if args.fixture:
         if args.resume:
             parser.error('--resume applies to real scoring runs, not synthetic fixtures')
-        result = run_fixture(source=args.fixture, output=args.output, design_path=args.design)
+        fixture_fn = public.run_fixture if public is not None else run_fixture
+        result = fixture_fn(source=args.fixture, output=args.output, design_path=args.design)
     else:
-        result = run_pipeline(run=args.run, output=args.output, data_root=args.data_root,
+        pipeline_fn = public.run_pipeline if public is not None else run_pipeline
+        result = pipeline_fn(run=args.run, output=args.output, data_root=args.data_root,
             design_path=args.design, workers=args.workers, execution_snapshot=args.execution_snapshot,
             peer_library=args.peer_library, peer_statistics=args.peer_statistics,
             existing_cost_runs=args.existing_cost_run, resume=args.resume,

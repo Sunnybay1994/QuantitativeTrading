@@ -393,7 +393,14 @@ def _initialize_formal_facts_capability(
         artifact_roots: Mapping[str, Path],
     ) -> Any:
         try:
-            identity, selected, provenance = _prepare_verified_a_share_market_facts(
+            # Resolve via registry module so tests can monkeypatch the facade.
+            registry = sys.modules.get(registry_module_name)
+            prepare = getattr(
+                registry, "_prepare_verified_a_share_market_facts", None
+            )
+            if prepare is None:
+                prepare = _prepare_verified_a_share_market_facts
+            identity, selected, provenance = prepare(
                 release=release,
                 plan=plan,
                 fresh_context=fresh_context,
@@ -447,6 +454,14 @@ def _initialize_formal_facts_capability(
     return _VerifiedAShareMarketFacts, public_loader
 
 
+def _registry_attr(name: str, default: Any) -> Any:
+    """Prefer the a_share_execution facade binding so tests can monkeypatch it."""
+    registry = sys.modules.get("quant.backtest.a_share_execution")
+    if registry is not None and hasattr(registry, name):
+        return getattr(registry, name)
+    return default
+
+
 def _prepare_verified_a_share_market_facts(
     *,
     release: VerifiedG1Release,
@@ -458,14 +473,29 @@ def _prepare_verified_a_share_market_facts(
     dict[str, pl.DataFrame],
     tuple[_PathEntity, _PathEntity, tuple[_PathEntity, ...]],
 ]:
-    _validate_formal_facts_outer(release, plan, fresh_context, artifact_roots)
-    release_root_before = _snapshot_directory(release.release.root)
-    plan_root_before = _snapshot_directory(plan.root)
+    validate_outer = _registry_attr(
+        "_validate_formal_facts_outer", _validate_formal_facts_outer
+    )
+    snapshot_directory = _registry_attr("_snapshot_directory", _snapshot_directory)
+    snapshot_file = _registry_attr("_snapshot_regular_file", _snapshot_regular_file)
+    verify_g1 = _registry_attr("verify_g1_release", verify_g1_release)
+    verify_plan = _registry_attr(
+        "verify_backtest_plan_artifact", verify_backtest_plan_artifact
+    )
+    read_files = _registry_attr("_read_formal_fact_files", _read_formal_fact_files)
+    select_facts = _registry_attr(
+        "_select_and_validate_formal_facts", _select_and_validate_formal_facts
+    )
+    fact_digests = _registry_attr("_formal_fact_digests", _formal_fact_digests)
 
-    fresh_release = verify_g1_release(release=release.release)
+    validate_outer(release, plan, fresh_context, artifact_roots)
+    release_root_before = snapshot_directory(release.release.root)
+    plan_root_before = snapshot_directory(plan.root)
+
+    fresh_release = verify_g1(release=release.release)
     if not _same_verified_g1(fresh_release, release):
         raise ValueError
-    fresh_plan = verify_backtest_plan_artifact(
+    fresh_plan = verify_plan(
         root=plan.root,
         receipt_path=fresh_context.plan_receipt_path,
         target=fresh_context.target,
@@ -484,13 +514,13 @@ def _prepare_verified_a_share_market_facts(
     if type(benchmark_selector) is not str or benchmark_selector != "510300.SH":
         raise ValueError
 
-    raw_frames, raw_bytes, file_entities = _read_formal_fact_files(
+    raw_frames, raw_bytes, file_entities = read_files(
         fresh_release, artifact_roots
     )
-    selected = _select_and_validate_formal_facts(
+    selected = select_facts(
         raw_frames, fresh_plan, benchmark=benchmark_selector
     )
-    digests = _formal_fact_digests(
+    digests = fact_digests(
         fresh_release, selected, raw_bytes, artifact_roots
     )
     window_sha256 = hashlib.sha256(
@@ -518,9 +548,9 @@ def _prepare_verified_a_share_market_facts(
         ).hexdigest(),
     )
     if (
-        _snapshot_directory(release.release.root) != release_root_before
-        or _snapshot_directory(plan.root) != plan_root_before
-        or any(_snapshot_regular_file(path) != entity
+        snapshot_directory(release.release.root) != release_root_before
+        or snapshot_directory(plan.root) != plan_root_before
+        or any(snapshot_file(path) != entity
                for path, entity in file_entities.items())
     ):
         raise ValueError
@@ -1464,10 +1494,30 @@ def _open_state_row(
     }
 
 
+def rebind_capability_for_a_share_execution() -> tuple[type[Any], Any]:
+    """(Re)issue the formal facts capability against the a_share_execution facade."""
+    global VerifiedAShareMarketFacts, load_verified_a_share_market_facts
+    VerifiedAShareMarketFacts, load_verified_a_share_market_facts = (
+        _initialize_formal_facts_capability(
+            registry_module_name="quant.backtest.a_share_execution",
+        )
+    )
+    # Consumers that imported the class by value must see the rotated type.
+    open_mod = sys.modules.get("quant.backtest.a_share_execution_formal_open")
+    if open_mod is not None:
+        setattr(open_mod, "VerifiedAShareMarketFacts", VerifiedAShareMarketFacts)
+    matching = sys.modules.get("quant.backtest.a_share_execution_formal_matching")
+    if matching is not None:
+        setattr(matching, "VerifiedAShareMarketFacts", VerifiedAShareMarketFacts)
+    session = sys.modules.get("quant.backtest.a_share_execution_formal_session")
+    if session is not None:
+        setattr(session, "VerifiedAShareMarketFacts", VerifiedAShareMarketFacts)
+    return VerifiedAShareMarketFacts, load_verified_a_share_market_facts
+
+
 VerifiedAShareMarketFacts, load_verified_a_share_market_facts = (
     _initialize_formal_facts_capability(
         registry_module_name="quant.backtest.a_share_execution",
     )
 )
-del _initialize_formal_facts_capability
 

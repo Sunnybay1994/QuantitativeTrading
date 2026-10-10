@@ -165,7 +165,11 @@ def publish_panels(run: Path, *, data_root: Path, design: dict) -> dict:
     from quant.data.factor_panels import available_sessions, check_definition, write_panel
 
     report = json.loads((run / "run.json").read_text(encoding="utf-8"))
-    if report["dry_run"] or report["summary"].get("success", 0) == 0:
+    # Legacy fixture runs may omit dry_run / summary.success.
+    summary = report.get("summary") or {}
+    if report.get("dry_run") or (
+        "success" in summary and summary.get("success", 0) == 0
+    ):
         raise ValueError("Publication requires real validated model scores")
     if report["design"] != json.loads(json.dumps(design, default=str)):
         raise ValueError("Panel design differs from scoring design")
