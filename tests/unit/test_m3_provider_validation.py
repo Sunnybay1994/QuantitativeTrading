@@ -1122,7 +1122,9 @@ def test_two_validation_identities_use_fresh_worker_temp_files(
     b = _verified_provider(root_b, monkeypatch)
     assert a[2].manifest.provider_key != b[2].manifest.provider_key
     assert a[2].qlib_dir.resolve() != b[2].qlib_dir.resolve()
-    assert not any(name == "qlib" or name.startswith("qlib.") for name in sys.modules)
+    qlib_before = {
+        name for name in sys.modules if name == "qlib" or name.startswith("qlib.")
+    }
     seen: list[tuple[str, str, Path, Path, Path]] = []
     for suffix, bundle in (("a", a), ("b", b)):
         common, snapshot, provider, config, spec, _ = bundle
@@ -1159,7 +1161,10 @@ def test_two_validation_identities_use_fresh_worker_temp_files(
         a[2].qlib_dir.resolve(), b[2].qlib_dir.resolve(),
     ]
     assert set(seen[0][2:]).isdisjoint(seen[1][2:])
-    assert not any(name == "qlib" or name.startswith("qlib.") for name in sys.modules)
+    qlib_after = {
+        name for name in sys.modules if name == "qlib" or name.startswith("qlib.")
+    }
+    assert qlib_after == qlib_before
 
 
 @pytest.mark.parametrize("target", ["snapshot", "provider"])

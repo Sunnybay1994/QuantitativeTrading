@@ -284,8 +284,15 @@ def test_public_loader_orders_fresh_verification_before_fact_read_and_redacts(
     plan_root = tmp_path / "plan"
     release_root.mkdir()
     plan_root.mkdir()
-    release_handle = _bare(G1Release, root=release_root)
-    manifest = _bare(G1ManifestV5, release_id="1" * 64)
+    release_id = "1" * 64
+    release_handle = _bare(
+        G1Release,
+        release_id=release_id,
+        root=release_root,
+        manifest_path=release_root / "manifest.json",
+        quality_path=release_root / "quality.json",
+    )
+    manifest = _bare(G1ManifestV5, release_id=release_id)
     release = _bare(
         VerifiedG1Release,
         release=release_handle,

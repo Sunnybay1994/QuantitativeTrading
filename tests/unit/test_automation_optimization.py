@@ -158,12 +158,12 @@ def test_progress_records_counts_and_safe_failure_without_claiming_complete(tmp_
 
     with pytest.raises(ValueError):
         progress.run('minutes', failing)
-    row = json.loads(path.read_text())
+    row = json.loads(path.read_text(encoding='utf-8'))
     assert row['status'] == row['stages']['minutes'] == 'failed'
     assert row['counts']['completed'] == 3
-    assert 'secret' not in path.read_text()
+    assert 'secret' not in path.read_text(encoding='utf-8')
     progress.run('quality', lambda: {'errors': ['missing']})
-    assert json.loads(path.read_text())['status'] == 'partial'
+    assert json.loads(path.read_text(encoding='utf-8'))['status'] == 'partial'
 
 
 def test_concurrent_forced_status_refresh_is_single_flight():

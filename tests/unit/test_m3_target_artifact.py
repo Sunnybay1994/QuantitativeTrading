@@ -7,6 +7,8 @@ import importlib
 import importlib.util
 import inspect
 import json
+import os
+import subprocess
 import sys
 from dataclasses import asdict, replace
 from decimal import Decimal
@@ -534,13 +536,27 @@ def test_target_wholesale_bundle_from_foreign_work_is_rejected(
         _verify(first)
 
 
-def test_target_package_import_is_lightgbm_free(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in tuple(sys.modules):
-        if name == "lightgbm" or name.startswith("lightgbm."):
-            monkeypatch.delitem(sys.modules, name, raising=False)
-    import quant.research.m3 as public
-
-    importlib.reload(importlib.import_module("quant.research.m3.targets"))
-    assert public.TargetBuildSpec is TargetBuildSpec
-    assert public.VerifiedDevelopmentExampleTargetArtifact is not None
-    assert not any(name == "lightgbm" or name.startswith("lightgbm.") for name in sys.modules)
+def test_target_package_import_is_lightgbm_free() -> None:
+    # Subprocess only: in-process reload replaces targets and breaks later
+    # formal/target consumers holding pre-reload types.
+    script = """
+import sys
+for name in list(sys.modules):
+    if name == "lightgbm" or name.startswith("lightgbm."):
+        del sys.modules[name]
+import quant.research.m3 as public
+import quant.research.m3.targets as targets
+assert public.TargetBuildSpec is not None
+assert public.VerifiedDevelopmentExampleTargetArtifact is not None
+assert targets is not None
+assert not any(name == "lightgbm" or name.startswith("lightgbm.") for name in sys.modules)
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).resolve().parents[2]),
+        env={**os.environ, "PYTHONPATH": "src"},
+    )
+    assert completed.returncode == 0, completed.stderr

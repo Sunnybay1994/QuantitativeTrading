@@ -9,6 +9,8 @@ import importlib.util
 import inspect
 import json
 import math
+import os
+import subprocess
 import sys
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -563,16 +565,28 @@ def test_wholesale_evaluation_bundle_from_other_work_is_rejected(
         _verify(first)
 
 
-def test_evaluation_import_does_not_load_qlib_lightgbm_or_mlflow(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    for name in tuple(sys.modules):
-        if name in {"qlib", "lightgbm", "mlflow"} or name.startswith(
-            ("qlib.", "lightgbm.", "mlflow.")
-        ):
-            monkeypatch.delitem(sys.modules, name, raising=False)
-    importlib.reload(importlib.import_module("quant.research.m3.evaluate"))
-    assert not any(
-        name in {"qlib", "lightgbm", "mlflow"} or name.startswith(("qlib.", "lightgbm.", "mlflow."))
-        for name in sys.modules
+def test_evaluation_import_does_not_load_qlib_lightgbm_or_mlflow() -> None:
+    # Subprocess only: in-process reload replaces evaluate and breaks later
+    # formal summary tests holding pre-reload callables/types.
+    script = """
+import sys
+heavy = {"qlib", "lightgbm", "mlflow"}
+for name in list(sys.modules):
+    if name in heavy or name.startswith(("qlib.", "lightgbm.", "mlflow.")):
+        del sys.modules[name]
+import quant.research.m3.evaluate as module
+assert module is not None
+assert not any(
+    name in heavy or name.startswith(("qlib.", "lightgbm.", "mlflow."))
+    for name in sys.modules
+)
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).resolve().parents[2]),
+        env={**os.environ, "PYTHONPATH": "src"},
     )
+    assert completed.returncode == 0, completed.stderr

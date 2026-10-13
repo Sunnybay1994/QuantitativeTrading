@@ -10,6 +10,14 @@ from pathlib import Path
 
 import pytest
 
+
+def _require_windows_miniforge_base() -> None:
+    if sys.platform != "win32":
+        return
+    expected = Path(r"D:\Miniforge3").resolve()
+    if Path(sys.prefix).resolve() != expected:
+        pytest.skip("Windows formal platform proof requires D:/Miniforge3 base")
+
 from quant.backtest.costs import ExecutionCostPeriod, build_execution_cost_schedule
 from quant.domain.enums import Currency, Market
 from quant.execution.contracts import CashBalance, build_account_snapshot
@@ -641,6 +649,7 @@ def _public_cold_chain(
     paper_account.VerifiedFormalPaperAccountDescriptor,
 ]:
     """Real public cold chain; environment identity changes on materialization."""
+    _require_windows_miniforge_base()
     monkeypatch.setattr(
         paper_runtime, "_system_temp_root", lambda: tmp_path / "other-temp"
     )

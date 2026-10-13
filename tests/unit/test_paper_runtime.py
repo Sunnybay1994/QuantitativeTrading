@@ -78,6 +78,15 @@ def _assert_sanitized(exc: runtime.PaperRuntimeError, code: str) -> None:
     assert exc.__context__ is None
 
 
+def _require_windows_miniforge_base() -> None:
+    """Formal Windows NTFS proof binds sys.prefix/executable to D:\\Miniforge3."""
+    if sys.platform != "win32":
+        return
+    expected = Path(r"D:\Miniforge3").resolve()
+    if Path(sys.prefix).resolve() != expected:
+        pytest.skip("Windows formal platform proof requires D:/Miniforge3 base")
+
+
 def _public_formal_environment_for_nested_tests(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[Path, runtime.VerifiedPaperRuntimeEnvironment]:
@@ -233,6 +242,7 @@ def test_windows_mode_loads_as_exact_formal_and_binds_config_identity(
 def test_actual_windows_miniforge_base_ntfs_mints_and_fresh_checks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _require_windows_miniforge_base()
     monkeypatch.setenv("CONDA_PREFIX", r"D:\Miniforge3")
     monkeypatch.setenv("CONDA_DEFAULT_ENV", "base")
     monkeypatch.setattr(runtime, "_system_temp_root", lambda: tmp_path / "other-temp")
@@ -300,6 +310,7 @@ def test_windows_formal_platform_rejects_whole_rehashed_drift(
     field: str,
     value: object,
 ) -> None:
+    _require_windows_miniforge_base()
     monkeypatch.setenv("CONDA_PREFIX", r"D:\Miniforge3")
     monkeypatch.setenv("CONDA_DEFAULT_ENV", "base")
     config_path, _ = _write_config(tmp_path, mode="PAPER_REAL_TIME_WINDOWS")

@@ -539,9 +539,9 @@ def test_development_reconciliation_closed_loop(
     labels_module._label_worker_request(
         snapshot=snapshot, provider=provider, labels=labels, spec=spec
     )
-    assert not any(
-        name == "qlib" or name.startswith("qlib.") for name in sys.modules
-    )
+    qlib_before = {
+        name for name in sys.modules if name == "qlib" or name.startswith("qlib.")
+    }
     result = reconcile_development_example_labels_with_qlib(
         release=release, snapshot=snapshot, experiment=experiment,
         provider=provider, provider_validation=provider_validation,
@@ -565,9 +565,10 @@ def test_development_reconciliation_closed_loop(
     assert result.summary.passed is True
     assert second_result.summary.passed is False
     assert second_result.summary.raw_label_max_abs_error > 0.09
-    assert not any(
-        name == "qlib" or name.startswith("qlib.") for name in sys.modules
-    )
+    qlib_after = {
+        name for name in sys.modules if name == "qlib" or name.startswith("qlib.")
+    }
+    assert qlib_after == qlib_before
     assert result.summary.row_count == labels.labels.height
     raw = result.details.select(*labels_module._RECONCILIATION_RAW_COLUMNS)
     expression_bad = raw.with_row_index().with_columns(

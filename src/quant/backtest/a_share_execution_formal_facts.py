@@ -705,6 +705,10 @@ def _validate_formal_facts_outer(
 
 
 def _same_verified_g1(left: object, right: VerifiedG1Release) -> bool:
+    # Same instance (common for mocked fresh verify) avoids dataclass __eq__
+    # on incomplete test doubles that omit optional fields.
+    if left is right:
+        return True
     return bool(
         type(left) is VerifiedG1Release
         and left.release == right.release
@@ -719,6 +723,8 @@ def _same_verified_g1(left: object, right: VerifiedG1Release) -> bool:
 def _same_verified_plan(
     left: object, right: VerifiedBacktestPlanArtifact
 ) -> bool:
+    if left is right:
+        return True
     return bool(
         type(left) is VerifiedBacktestPlanArtifact
         and left.root == right.root

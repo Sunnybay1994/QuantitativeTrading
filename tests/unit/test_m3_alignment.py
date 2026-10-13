@@ -6,6 +6,8 @@ import hashlib
 import importlib.util
 import inspect
 import json
+import os
+import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -289,9 +291,23 @@ def test_package_root_exports_alignment_without_heavy_imports() -> None:
     assert m3_public.AlignmentBuildSpec is AlignmentBuildSpec
     assert m3_public.AlignmentUpstreamPaths is AlignmentUpstreamPaths
     assert m3_public.VerifiedDevelopmentExampleAlignmentArtifact is not None
-    assert not any(
-        name == "qlib" or name.startswith(("qlib.", "lightgbm", "mlflow")) for name in sys.modules
+    # Full-suite order may already have loaded qlib; check the package import
+    # surface in a clean interpreter instead of this process's sys.modules.
+    probe = (
+        "import sys; import quant.research.m3 as m; "
+        "assert m.AlignmentBuildSpec is not None; "
+        "assert not any(n == 'qlib' or n.startswith(('qlib.', 'lightgbm', 'mlflow')) "
+        "for n in sys.modules)"
     )
+    completed = subprocess.run(
+        [sys.executable, "-c", probe],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).resolve().parents[2]),
+        env={**os.environ, "PYTHONPATH": "src"},
+    )
+    assert completed.returncode == 0, completed.stderr
     parameters = inspect.signature(build_development_example_inference_segment).parameters
     forbidden = {"label", "labels", "label_artifact", "horizon", "cutoff"}
     assert forbidden.isdisjoint(parameters)

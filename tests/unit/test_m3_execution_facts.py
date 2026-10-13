@@ -4675,4 +4675,5 @@ def test_no_network_or_research_imports() -> None:
     assert "quant.research" not in text
     assert "qlib" not in text.lower()
     assert "open(" not in text
-    importlib.reload(sys.modules["quant.data.m3_execution_facts"])
+    # Do not importlib.reload here: it replaces exception/classes in sys.modules
+    # and breaks later pytest.raises(M3G1ExecutionFactError) identity checks.

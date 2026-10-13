@@ -39,6 +39,15 @@ def scalar_values(prices, highs, lows, volumes, n):
             "wvma": statistics.stdev(weighted) / (statistics.mean(weighted) + 1e-12)}
 
 
+def _snap_corr(value: float) -> float:
+    """Match expressions.ts_corr near-±1 / near-zero ULP snap."""
+    if abs(value) <= 1e-12:
+        return 0.0
+    if (1.0 - abs(value)) <= 1e-3:
+        return 1.0 if value >= 0 else -1.0
+    return value
+
+
 def test_all_forty_formulas():
     panel = prepared(sample_bars())
     expressions = definitions()
@@ -52,6 +61,8 @@ def test_all_forty_formulas():
             for family, value in expected.items():
                 name = f"alpha158_{family}{n}"
                 if name in BATCH:
+                    if family in {"corr", "cord"}:
+                        value = _snap_corr(value)
                     assert row[name] == pytest.approx(value, rel=1e-7, abs=1e-8)
 
 

@@ -8,7 +8,9 @@ import importlib
 import importlib.util
 import inspect
 import json
+import os
 import shutil
+import subprocess
 import sys
 from dataclasses import asdict, replace
 from decimal import Decimal
@@ -446,10 +448,24 @@ def test_plan_verifier_rejects_each_output_or_receipt_tamper(
         _verify(bundle)
 
 
-def test_plan_package_import_does_not_load_qlib(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in tuple(sys.modules):
-        if name == "qlib" or name.startswith("qlib."):
-            monkeypatch.delitem(sys.modules, name, raising=False)
-    module = importlib.reload(importlib.import_module("quant.backtest.a_share_plan"))
-    assert module.BacktestPlanManifestV1 is BacktestPlanManifestV1
-    assert not any(name == "qlib" or name.startswith("qlib.") for name in sys.modules)
+def test_plan_package_import_does_not_load_qlib() -> None:
+    # Subprocess only: in-process reload replaces a_share_plan and breaks later
+    # formal plan tests that still hold the pre-reload public callables.
+    script = """
+import sys
+for name in list(sys.modules):
+    if name == "qlib" or name.startswith("qlib."):
+        del sys.modules[name]
+import quant.backtest.a_share_plan as module
+assert module.BacktestPlanManifestV1 is not None
+assert not any(name == "qlib" or name.startswith("qlib.") for name in sys.modules)
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).resolve().parents[2]),
+        env={**os.environ, "PYTHONPATH": "src"},
+    )
+    assert completed.returncode == 0, completed.stderr

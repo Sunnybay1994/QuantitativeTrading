@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-import importlib.util
 import hashlib
+import importlib.util
 import json
+import os
+import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -49,10 +51,24 @@ def test_package_root_exports_verified_fold_contract_without_heavy_imports() -> 
     assert m3_public.VerifiedFoldPlanArtifact is not None
     assert not hasattr(m3_public, "make_temporal_folds")
     assert not hasattr(m3_public, "TemporalFold")
-    assert not any(
-        name == "qlib" or name.startswith(("qlib.", "lightgbm", "mlflow"))
-        for name in sys.modules
+    # Full-suite order may already have loaded qlib; probe a clean interpreter.
+    probe = (
+        "import sys; import quant.research.m3 as m; "
+        "assert m.VerifiedFoldPlanArtifact is not None; "
+        "assert not hasattr(m, 'make_temporal_folds'); "
+        "assert not hasattr(m, 'TemporalFold'); "
+        "assert not any(n == 'qlib' or n.startswith(('qlib.', 'lightgbm', 'mlflow')) "
+        "for n in sys.modules)"
     )
+    completed = subprocess.run(
+        [sys.executable, "-c", probe],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).resolve().parents[2]),
+        env={**os.environ, "PYTHONPATH": "src"},
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 def _fold_spec(config: Any, snapshot: Any, experiment: Any) -> FoldPlanBuildSpec:

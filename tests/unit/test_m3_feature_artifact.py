@@ -6,6 +6,7 @@ import hashlib
 import io
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from dataclasses import replace
@@ -190,9 +191,20 @@ def test_package_root_exports_verified_feature_contract_without_qlib() -> None:
     assert m3_public.VerifiedDevelopmentExampleFeatureArtifact is not None
     assert m3_public.build_feature_artifact is build_feature_artifact
     assert m3_public.verify_feature_artifact is verify_feature_artifact
-    assert not any(
-        name == "qlib" or name.startswith("qlib.") for name in sys.modules
+    probe = (
+        "import sys; import quant.research.m3 as m; "
+        "assert m.FeatureBuildSpec is not None; "
+        "assert not any(n == 'qlib' or n.startswith('qlib.') for n in sys.modules)"
     )
+    completed = subprocess.run(
+        [sys.executable, "-c", probe],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).resolve().parents[2]),
+        env={**os.environ, "PYTHONPATH": "src"},
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_development_feature_artifact_preserves_fold_shared_nan_contract(

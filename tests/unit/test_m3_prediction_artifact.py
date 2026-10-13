@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import importlib
 import importlib.util
 import inspect
 import json
 import math
+import os
+import subprocess
 import sys
-import datetime as dt
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, cast
@@ -246,16 +248,29 @@ def test_schema_key_and_rank_groups_include_model() -> None:
         PredictionScoreSchema.validate(pl.concat([base, base.slice(0, 1)]))
 
 
-def test_package_and_strategy_import_do_not_load_lightgbm(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in tuple(sys.modules):
-        if name == "lightgbm" or name.startswith("lightgbm."):
-            monkeypatch.delitem(sys.modules, name, raising=False)
-    import quant.research.m3 as m3_public
-
-    strategy = importlib.reload(importlib.import_module("quant.strategies.ml_topk"))
-    assert m3_public.PredictionBuildSpec is PredictionBuildSpec
-    assert strategy.normalize_prediction_scores is normalize_prediction_scores
-    assert not any(name == "lightgbm" or name.startswith("lightgbm.") for name in sys.modules)
+def test_package_and_strategy_import_do_not_load_lightgbm() -> None:
+    # Subprocess only: in-process reload replaces ml_topk and breaks later
+    # consumers holding pre-reload callables.
+    script = """
+import sys
+for name in list(sys.modules):
+    if name == "lightgbm" or name.startswith("lightgbm."):
+        del sys.modules[name]
+import quant.research.m3 as m3_public
+import quant.strategies.ml_topk as strategy
+assert m3_public.PredictionBuildSpec is not None
+assert strategy.normalize_prediction_scores is not None
+assert not any(name == "lightgbm" or name.startswith("lightgbm.") for name in sys.modules)
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).resolve().parents[2]),
+        env={**os.environ, "PYTHONPATH": "src"},
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_prediction_closed_loop_is_full_test_and_label_independent(
