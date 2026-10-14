@@ -165,6 +165,8 @@ ETF 人工延迟账户：初始化 `python -m quant research etf-manual-init`；
 
 先确认 Python 进程已结束。持续挖掘自动从 GP 种群与 `N4/admission_progress.json` 恢复。不要删断点、不要改冻结配置冒充同一次 run。日更与挖掘互斥，工作日 17:20/21:20 挖掘让路。
 
+分钟/ BaoStock 补采与持续挖掘互斥写 clean bar：对方在跑时调度记 `deferred` 不失败；若冻结源已被日更改写，`mining_retry.invalidate_stale_gp_context` 归档 `full_context` 等到 `N2/stale_context_recovery`，下次 N2 按当前字节重钉（不关 checksum）。
+
 ## GPU
 
 默认 CPU。要加速时：`$env:QUANT_DEVICE='auto'` 或改 `configs/runtime.toml`。`python -m quant gpu-check --refresh` 查看本机 OpenCL 是否可用。

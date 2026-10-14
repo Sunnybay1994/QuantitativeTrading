@@ -39,11 +39,13 @@
 
 相关入口：`scripts/run_minute_refresh.ps1`（历史加 `-History`）；日志位于 `artifacts/minute_refresh/scheduler/`。所有入口维持 `auto_trade=false`。本流程是数据积累，不自动改变现有因子选源或策略准入。
 
+**与 GP 冻结互斥（2026-10-14）：** 采集会改写 clean `bar_intraday` 字节。若检测到持续挖掘 / nightly / GP 进程，调度脚本写 `deferred` 状态后退出 0，不抢写；挖掘侧若撞上过期冻结则归档 `N2/stale_context_recovery` 后重钉。
+
 ## 全市场 BaoStock 5 分钟（2026-09-23）
 
 数据名单与研究池分离：`market_universe.py` 合并最新全市场股票/ETF、历史日线中的已退市标的，以及 BaoStock 基础资料中的历史股票；研究 Top800 不再限制采集。沪深队列按上市日期请求，北交所继续由已有近期源/TDX 覆盖；不把供应商不支持的市场称为已完成。
 
-`python -m quant data baostock-history` 独立补采。每轮先扩大全市场当前年度覆盖，再逐年向前请求至上市日期或 1990-12-19；具体可取起点由供应商实际返回决定，空响应不证明此前无历史。已有日线确认的完整交易日复用，不重抓；有数据但缺少日线验证的年度记为 unverified，缺根记为 partial，空响应记为 empty。错误十分钟后可重试，缺口/空返回七天后再试。原始响应追加保留，clean 按标的写锁合并，兼容日更与历史补采同时运行。
+`python -m quant data baostock-history` 独立补采。每轮先扩大全市场当前年度覆盖，再逐年向前请求至上市日期或 1990-12-19；具体可取起点由供应商实际返回决定，空响应不证明此前无历史。已有日线确认的完整交易日复用，不重抓；有数据但缺少日线验证的年度记为 unverified，缺根记为 partial，空响应记为 empty。错误十分钟后可重试，缺口/空返回七天后再试。原始响应追加保留，clean 按标的写锁合并，兼容日更与历史补采同时运行。`run_baostock_history.ps1` 在挖掘/GP 持有冻结 bar 时同样 `deferred` 退出，避免打穿 checksum。
 
 `QuantitativeTrading-BaostockHistory` 每天每小时 25 分触发，每轮默认 3000 秒，运行中忽略重复触发；机器须开机且用户登录。年度请求结束后保存断点，暂停或关机后下次续跑。`scripts/install_baostock_history.ps1` 注册，`run_baostock_history.ps1` 执行。每日目标随完成交易日滚动，不固定在研究截止日。
 
