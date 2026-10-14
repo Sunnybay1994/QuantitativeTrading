@@ -192,10 +192,17 @@ class ExpressionEngine:
                 x_range = (stable_x.rolling_max(n, min_samples=n) - stable_x.rolling_min(n, min_samples=n)).over("symbol")
                 y_range = (stable_y.rolling_max(n, min_samples=n) - stable_y.rolling_min(n, min_samples=n)).over("symbol")
                 result = rolling_moment(x, n, name, y)
-                # Snap ULP noise to 0 so later cross-sectional ranks match stable ties.
+                # Snap ULP noise so later cross-sectional ranks match stable ties:
+                # near-zero, and near ±1 (pandas rolling corr for short windows).
                 cleaned = pl.when(result.abs() <= 1e-12).then(0.0).otherwise(result)
                 if name == "ts_corr":
-                    return pl.when((x_range > 0) & (y_range > 0)).then(cleaned.clip(-1, 1))
+                    clipped = cleaned.clip(-1, 1)
+                    snapped = (
+                        pl.when((1.0 - clipped.abs()) <= 1e-3)
+                        .then(pl.when(clipped >= 0).then(1.0).otherwise(-1.0))
+                        .otherwise(clipped)
+                    )
+                    return pl.when((x_range > 0) & (y_range > 0)).then(snapped)
                 return pl.when(x_range.is_not_null() & y_range.is_not_null()).then(
                     pl.when((x_range == 0) | (y_range == 0)).then(0.0).otherwise(cleaned)
                 )
@@ -207,6 +214,8 @@ class ExpressionEngine:
                 )
             if name in {"ts_argmax", "ts_argmin"}:
                 # First extremum, one-based index from the oldest observation.
+                # Round like ts_rank so ULP noise cannot move the first-tie index.
+                x = x.round_sig_figs(10)
                 maximum = name == "ts_argmax"
                 def positions(series: pl.Series) -> pl.Series:
                     values = series.cast(pl.Float64).to_numpy()

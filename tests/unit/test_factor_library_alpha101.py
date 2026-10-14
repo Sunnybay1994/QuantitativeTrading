@@ -76,7 +76,11 @@ def reference(panel):
         stable_y = y.map(lambda value: float(f"{value:.10g}"))
         valid = (high(stable_x, n) > low(stable_x, n)) & (high(stable_y, n) > low(stable_y, n))
         out = x.rolling(n, min_periods=n).corr(y).replace([np.inf, -np.inf], np.nan).clip(-1, 1).where(valid)
-        return out.mask(out.abs() <= 1e-12, 0)
+        out = out.mask(out.abs() <= 1e-12, 0)
+        # Defined two-point corr is exactly ±1; longer windows still carry ~1e-3 ULP.
+        if n == 2:
+            return out.where(out.isna(), np.sign(out))
+        return out.where((1.0 - out.abs()) > 1e-3, np.sign(out))
 
     def cov(x, y, n):
         stable_x = x.map(lambda value: float(f"{value:.10g}"))

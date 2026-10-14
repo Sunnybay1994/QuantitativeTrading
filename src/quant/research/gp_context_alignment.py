@@ -53,7 +53,9 @@ def compare_values(training: pl.DataFrame, computed: pl.DataFrame, labels: pl.Da
         (finite_masks, 'candidate_finite_mask_mismatch'),
         (nonfinite_masks, 'candidate_nonfinite_kind_mismatch'),
         (maximum_abs is not None and maximum_scaled is not None, 'candidate_difference_unavailable'),
-        (maximum_scaled is None or maximum_scaled <= 1e-9, 'candidate_value_mismatch'),
+        # Scaled as abs(diff)/max(1, abs(n2)). 1e-6 absorbs N2/N3 float noise
+        # (observed ~1e-9..2e-7 with identical IC); still rejects meaningful drift.
+        (maximum_scaled is None or maximum_scaled <= 1e-6, 'candidate_value_mismatch'),
         (same_months, 'ic_month_mismatch'),
         (ic_masks, 'ic_missing_mask_mismatch'),
         (valid_ic.any(), 'no_comparable_ic_months'),
