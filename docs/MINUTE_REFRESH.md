@@ -11,7 +11,29 @@
 
 状态：`artifacts/minute_refresh/status.json`；名单：`universe.json`；逐标的断点和覆盖：`date=YYYY-MM-DD/*.json`。同日成功取到最新交易日的来源避免重复请求；失败项下次重试，断点恢复优先未尝试标的。支持 `--limit N --skip-tdx --max-seconds N` 做小范围诊断。
 
-长期历史：`python -m quant data minute-history` 使用 Futu 现有额度慢补，起点不再限定为 2023 年：从上市日期与 1990-01-01 中较晚者开始请求首页，以供应商实际返回的首条分钟记录确定每只标的最早可取日期；结束日期仍为 2026-09-18，后续交易日由近期流程积累。[富途官方限制](https://openapi.futunn.com/futu-api-doc/quote/request-history-kline.html)说明分钟 K 线提供最近八年，实际边界逐标的保存在 `artifacts/minute_history/earliest_bounds.json`，探测原始页追加保存。缺失年份从最早到最近下载，优先保住即将滚出窗口的旧记录。配置 `configs/data/minute_history.toml`；每次最多尝试五个新额度标的、预留五个历史额度，优先恢复已扣额度的未完成下载。扫描已有所有 Futu 历史计划的 symbol/year 分区，存在的年份不重复下载，不用历史接口更新已有标的最新分钟。某年空返回只记录该年并继续其他年份，不据此判定最早边界；空年份/下载错误延后七天再试，边界探测错误延后一天；北京市场目前列为不支持，不偷偷丢弃。`--check-only` 生成全市场剩余队列而不请求 Futu 历史。
+## Futu 全市场历史 1 分钟
+
+职责拆分：
+
+| 通道 | 入口 | 用途 | 是否消耗 Futu 历史额度 |
+|---|---|---|---|
+| 近期分钟 | `quant data minutes`（任务 MinutesRecent） | 当日/近窗全市场 1m（TDX + 公开源） | 否 |
+| 历史分钟 | `quant data minute-history`（任务 MinutesHistory） | 全市场缺失年份回填 | 是（约 100 标的 / 滚动约 7 天） |
+
+额度策略（`configs/data/minute_history.toml`）：
+
+- **100 额度全部用于历史缺年**；`quota_reserve=0`，用到 remaining=0 为止；`max_new_symbols=100`。
+- **`same_day_topup=false`**：不用 Futu 做当日续更，避免 7 天滚动后旧标的反复占额；近期靠 MinutesRecent。
+- 每轮优先续下窗口内**已扣额度**的未完成标的，再开新标的；时间预算 `max_seconds=10800`。
+
+时间范围（尽量早）：
+
+- 配置 `start=1990-01-01`，与上市日取较晚者作为探测请求起点。
+- `earliest_available=true`：向 Futu 拉首页，以**实际返回的第一条分钟**为该标的最早日（官方约最近八年，供应商能给多早就取多早；边界写入 `artifacts/minute_history/earliest_bounds.json`）。
+- 缺失年份**从早到晚**下载，先保住即将滚出窗口的旧数据。
+- `end_policy=latest_completed_session`：结束日随最近已收盘交易日滚动，不冻结在固定日历日。
+
+产物与规则：clean 在 `data/clean/futu_minute/all_market/symbol=*/year=*/data.parquet`；已有年份分区不重下；北交所跳过；空年/下载错误分别延后七天、边界探测错误延后一天。进度：`artifacts/minute_history/status.json`、`progress.json`。`--check-only` 只排队列不请求。
 
 部署：`scripts/install_minute_refresh.ps1` 安装两个独立 Windows 任务。近期补数工作日 16:10、21:10；历史队列工作日 22:10。相同任务忽略重入，程序另有文件锁，机器须开机且用户登录；Futu 历史需要 OpenD 登录。任务与订单/净值日更分开运行，以免全市场网络抓取阻塞现有日更。
 

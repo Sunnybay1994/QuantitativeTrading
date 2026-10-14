@@ -86,9 +86,11 @@ def request_messages(request: dict, maximum_bytes: int) -> tuple[list[dict], byt
                     'is not prediction failure. All other evidence is retained.')
 
     def encode():
+        # Research evidence may carry date/Path values from scorecards.
+        payload = json.dumps(request, ensure_ascii=False, default=str)
         messages = [{'role': 'system', 'content': PROMPT},
-                    {'role': 'user', 'content': json.dumps(request, ensure_ascii=False)}]
-        return messages, json.dumps(messages, ensure_ascii=False).encode()
+                    {'role': 'user', 'content': payload}]
+        return messages, json.dumps(messages, ensure_ascii=False, default=str).encode()
     messages, encoded = encode()
     feedback = request.get('generation_feedback', {})
     for week in reversed(feedback.get('weeks', [])):

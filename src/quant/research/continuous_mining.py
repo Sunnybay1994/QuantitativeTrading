@@ -9,7 +9,8 @@ import tomllib
 from pathlib import Path
 
 from quant.research import nightly
-from quant.research.mining_retry import code_fingerprint, failure_kind, admission_dependency
+from quant.research.mining_retry import (code_fingerprint, failure_kind, admission_dependency,
+                                         errors_indicate_stale_gp_context, invalidate_stale_gp_context)
 
 
 def read(path: Path) -> dict:
@@ -46,7 +47,7 @@ def dispatch(config: Path, root: Path, *, now: dt.datetime | None = None,
         from quant.research.weekly_factor_candidates import run as weekly_run
         try:
             weekly = weekly_run(Path(weekly_config), execute=True)
-        except (OSError, ValueError, RuntimeError) as exc:
+        except (OSError, ValueError, RuntimeError, TypeError) as exc:
             # A text-generation failure must not stop local factor research.
             weekly = {'state': 'needs_attention', 'error': f'{type(exc).__name__}: {exc}'}
     batches = sorted(p for p in root.glob('batch_*') if re.fullmatch(r'batch_\d+', p.name))
@@ -108,6 +109,10 @@ def dispatch(config: Path, root: Path, *, now: dt.datetime | None = None,
     else:
         status['state'] = 'running'
         save(root/'status.json', status)
+        # Prior freeze may still name yesterday's clean bars after a data refresh.
+        if errors_indicate_stale_gp_context(previous.get('error') or {}, run):
+            status['stale_gp_context'] = invalidate_stale_gp_context(run / 'N2')
+            save(root/'status.json', status)
         try:
             summary = nightly.execute(run/'config.toml', now=now, run_path=run, session_hours=slice_hours)
             errors = {key: row.get('error', 'incomplete') for key, row in summary.get('steps', {}).items()
@@ -116,6 +121,8 @@ def dispatch(config: Path, root: Path, *, now: dt.datetime | None = None,
             status['steps'] = summary.get('steps', {})
         except (OSError, RuntimeError, ValueError) as exc:
             errors, success = {'runner': str(exc)}, False
+        if not success and errors_indicate_stale_gp_context(errors, run):
+            status['stale_gp_context'] = invalidate_stale_gp_context(run / 'N2')
         # Exhausting a slice is normal resumable work, unlike a failed worker.
         primary_errors = [error for error in errors.values() if not error.endswith(' did not complete')]
         resumable = bool(primary_errors) and all(
@@ -168,9 +175,24 @@ def main() -> None:
     parser.add_argument('--output-root', type=Path, default=Path('artifacts/research/continuous'))
     parser.add_argument('--slice-hours', type=float, default=2)
     args = parser.parse_args()
+    # Sticky needs_attention re-ticks must not exit 1 every hour (alert spam).
+    # Only a newly finished attempt that lands in needs_attention is a failure.
+    batch_dirs = sorted(
+        p for p in args.output_root.glob('batch_*') if re.fullmatch(r'batch_\d+', p.name))
+    prior_attempt = {}
+    if batch_dirs:
+        unfinished = next(
+            (p for p in batch_dirs
+             if not completed(read(next(p.glob('????-??-??')) / 'summary.json'))),
+            None)
+        if unfinished is not None:
+            prior_attempt = read(unfinished / 'attempt.json')
     status = dispatch(args.config, args.output_root, slice_hours=args.slice_hours)
     print(json.dumps(status, ensure_ascii=False))
-    if status['state'] == 'needs_attention':
+    if status['state'] != 'needs_attention':
+        return
+    current = read(Path(status['run']).parent / 'attempt.json') if status.get('run') else {}
+    if current.get('finished_at') and current.get('finished_at') != prior_attempt.get('finished_at'):
         raise SystemExit(1)
 
 

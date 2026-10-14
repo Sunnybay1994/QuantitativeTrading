@@ -8,6 +8,7 @@ import datetime as dt
 import hashlib
 import json
 from pathlib import Path
+import time
 import tomllib
 
 import polars as pl
@@ -29,9 +30,17 @@ def sha256(path: Path) -> str:
 
 
 def dump(path: Path, value: dict) -> None:
+    """Atomic JSON replace with short retries for Windows destination locks."""
     temporary = path.with_suffix('.tmp')
     temporary.write_text(json.dumps(value, indent=2, default=str, allow_nan=False), encoding='utf-8')
-    temporary.replace(path)
+    for attempt in range(8):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:
+            if attempt == 7:
+                raise
+            time.sleep(0.05 * (2 ** min(attempt, 4)))
 
 
 def null_without_bar(expression: str) -> bool:

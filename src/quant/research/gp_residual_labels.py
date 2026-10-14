@@ -1,6 +1,7 @@
 """Build residual GP search labels for incremental_residual_ic_v1 (B1)."""
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 
@@ -10,6 +11,22 @@ import tomllib
 from quant.data.model_forecast_labels import residual_labels
 from quant.factors.expressions import evaluate_expressions
 from quant.factors.library import load_library
+
+
+def alias_gp_terminals(panel: pl.DataFrame, expressions: dict[str, str]) -> pl.DataFrame:
+    """N2 samples store PIT terminals as gp_<id>; library exprs use bare ids."""
+    needed = {
+        node.id
+        for expr in expressions.values()
+        for node in ast.walk(ast.parse(expr, mode="eval"))
+        if isinstance(node, ast.Name)
+    }
+    aliases = [
+        pl.col(f"gp_{name}").alias(name)
+        for name in sorted(needed)
+        if name not in panel.columns and f"gp_{name}" in panel.columns
+    ]
+    return panel.with_columns(aliases) if aliases else panel
 
 
 def load_residual_controls(
@@ -44,6 +61,7 @@ def load_residual_controls(
             raise ValueError(f"ngp factor missing from library: {name}")
         exprs[name] = library[name].expr
     if exprs:
+        monthly_panel = alias_gp_terminals(monthly_panel, exprs)
         scored = evaluate_expressions(monthly_panel, exprs)
         for name in ngp_names:
             controls = controls.join(

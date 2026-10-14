@@ -26,6 +26,27 @@ def _latest_selected(income_history: pl.DataFrame, date: dt.date) -> pl.DataFram
     return project_selected_financial_factor_frame(selection.selected, dataset="income"), selection
 
 
+def _announce_by_period(selection) -> pl.DataFrame:
+    """PIT selection keeps available_date; factor projection intentionally drops it."""
+    frame = selection.selected
+    if "available_date" not in frame.columns:
+        raise ValueError("PIT selection lacks available_date for SUE decay")
+    symbol = (
+        pl.col("symbol") if "symbol" in frame.columns
+        else pl.col("ts_code").alias("symbol")
+    )
+    end = pl.col("end_date")
+    if frame.schema["end_date"] == pl.String:
+        end = end.str.to_date("%Y%m%d", strict=False)
+    available = pl.col("available_date")
+    if frame.schema["available_date"] == pl.String:
+        available = available.str.to_date("%Y%m%d", strict=False)
+    return (
+        frame.select(symbol, end.alias("end_date"), available.alias("available_date"))
+        .unique(subset=["symbol", "end_date"], keep="last")
+    )
+
+
 def _cross(symbols: tuple[str, ...], latest: pl.DataFrame, date: dt.date, name: str) -> pl.DataFrame:
     return (
         pl.DataFrame({"symbol": list(symbols)})
@@ -47,11 +68,10 @@ def build_monthly_sue_decay(
     for date in signal_dates:
         selected, selection = _latest_selected(income_history, date)
         scored = compute_sue8(selected).sort("symbol", "end_date").group_by("symbol").tail(1)
-        # Carry announcement date from selected PIT rows for the same end_date.
-        announce = selected.select("symbol", "end_date", "available_date").unique(
-            subset=["symbol", "end_date"], keep="last"
+        # Projection strips available_date; take it from the PIT selection view.
+        scored = scored.join(
+            _announce_by_period(selection), on=["symbol", "end_date"], how="left", validate="1:1",
         )
-        scored = scored.join(announce, on=["symbol", "end_date"], how="left", validate="1:1")
         scored = apply_time_decay(
             scored.rename({"end_date": "financial_period_end"}),
             signal_date=date,

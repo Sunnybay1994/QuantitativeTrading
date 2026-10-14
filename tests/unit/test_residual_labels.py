@@ -5,6 +5,20 @@ import numpy as np
 import polars as pl
 
 from quant.data.model_forecast_labels import residual_labels
+from quant.research.gp_residual_labels import alias_gp_terminals
+
+
+def test_alias_gp_terminals_exposes_bare_pit_ids():
+    panel = pl.DataFrame({
+        "symbol": ["000001.SZ"],
+        "trade_date": [dt.date(2024, 1, 31)],
+        "gp_pit_roe_ttm": [0.12],
+        "adj_close": [10.0],
+    })
+    out = alias_gp_terminals(panel, {"x": "(pit_roe_ttm > 0) * adj_close"})
+    assert "pit_roe_ttm" in out.columns
+    assert out["pit_roe_ttm"][0] == 0.12
+    assert "adj_close" in out.columns
 
 
 def test_residual_labels_orthogonal_to_controls():

@@ -3,6 +3,7 @@ import argparse
 import datetime as dt
 import json
 import tomllib
+import uuid
 from pathlib import Path
 
 import polars as pl
@@ -10,6 +11,19 @@ import polars as pl
 from quant.data.factor_benchmarks import read_csi800_members
 from quant.data.factor_panels import available_sessions
 from quant.research.factor_battery_costs import run_cost_plans
+
+
+def _retire_incompatible_benchmarks(output: Path) -> None:
+    """Move aside a fingerprint-stale benchmarks stage so resume can rebuild."""
+    parent = output.parent.resolve()
+    if not output.exists():
+        return
+    if not output.resolve().is_relative_to(parent):
+        raise ValueError('Benchmark output escaped its parent')
+    stale = output.with_name(f'{output.name}_incompatible_{uuid.uuid4().hex[:8]}')
+    if not stale.resolve().is_relative_to(parent):
+        raise ValueError('Stale benchmark archive escaped its parent')
+    output.rename(stale)
 
 
 def equal_weight_targets(universe: pl.DataFrame, *, members: pl.DataFrame | None,
@@ -75,7 +89,17 @@ def run_benchmarks(*, statistics: Path, output: Path, data_root: Path, execution
     if reuse_context is not None:
         inputs = output/'benchmark_inputs.json'
         if inputs.exists():
-            benchmark_reuse.require_compatible_resume(inputs, reuse_context)
+            try:
+                benchmark_reuse.require_compatible_resume(inputs, reuse_context)
+            except ValueError as exc:
+                # Code/data fingerprint drifted (e.g. module split). Never brick
+                # continuous mining: retire the stale stage and rebuild.
+                if 'compatible scope receipt absent or stale' not in str(exc):
+                    raise
+                _retire_incompatible_benchmarks(output)
+                output.mkdir(parents=True, exist_ok=False)
+                resume = False
+                inputs = output/'benchmark_inputs.json'
         if not inputs.exists():
             inputs.write_text(json.dumps(reuse_context, indent=2), encoding='utf-8')
     frozen_bytes = config_bytes + (

@@ -5,7 +5,23 @@ recent_output = "artifacts/minute_refresh"
 # Probe from the mainland market's inception; actual start comes from provider response/listing.
 start = "1990-01-01"
 earliest_available = true
+# Roll the history end with the latest completed session; do not freeze mid-month.
+end_policy = "latest_completed_session"
 end = "2026-09-18"
-quota_reserve = 5
-max_new_symbols = 5
-max_seconds = 3600
+# Use the full ~100 history quota each refresh (no idle reserve).
+quota_reserve = 0
+max_new_symbols = 100
+# Nightly History task allows up to 12h; keep wall time for full-quota downloads.
+max_seconds = 10800
+
+# Futu's ~100 history quota is reserved for multi-year all-market gaps only.
+# Recent / same-day minutes come from MinutesRecent (TDX + AkShare), not Futu.
+# Keep same_day_topup=false so rolling 7-day re-charges do not crowd out history.
+same_day_topup = false
+liquidity_ranking = "artifacts/futu_backfill_20260910/liquidity_ranking.parquet"
+market_caps = "artifacts/realtime/selection_20260919/market_caps.parquet"
+# Circulating MV CNY bands (same as selection_20260919/build_watchlist.py).
+mid_float_min = 10000000000
+mid_float_max = 50000000000
+large_float_min = 50000000000
+liquid_mid_large_limit = 200

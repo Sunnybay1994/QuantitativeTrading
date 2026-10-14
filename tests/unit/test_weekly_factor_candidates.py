@@ -347,6 +347,16 @@ def test_benchmark_details_without_source_or_with_few_rows_remain_intact():
     assert json.loads(messages[1]['content']) == request
 
 
+def test_request_messages_serializes_dates():
+    import datetime as dt
+    request = {'as_of': dt.date(2026, 10, 12), 'nested': {'day': dt.date(2026, 9, 30)}}
+    messages, encoded = weekly.request_messages(request, 100000)
+    body = json.loads(messages[1]['content'])
+    assert body['as_of'] == '2026-10-12'
+    assert body['nested']['day'] == '2026-09-30'
+    assert isinstance(encoded, (bytes, bytearray))
+
+
 def test_mandatory_input_over_limit_defers_without_call_or_library_truncation(setup):
     config, paths = setup
     paths['scoring_config'].write_text(paths['scoring_config'].read_text().replace(

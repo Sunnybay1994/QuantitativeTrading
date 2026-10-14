@@ -50,8 +50,9 @@ def normalize(frame: pl.DataFrame, symbol: str, start: str, end: str) -> pl.Data
     return result.sort("bar_time")
 
 
-def download_year(context: Any, symbol: str, start: str, end: str,
-                  raw_directory: Path, clean_path: Path) -> dict[str, Any]:
+def fetch_history_pages(context: Any, symbol: str, start: str, end: str,
+                         raw_directory: Path) -> tuple[pl.DataFrame, int]:
+    """Append-only raw pages; caller decides whether to replace or merge clean."""
     raw_directory.mkdir(parents=True, exist_ok=False)
     page_key = None
     frames = []
@@ -67,21 +68,58 @@ def download_year(context: Any, symbol: str, start: str, end: str,
             break
     else:
         raise RuntimeError("Excessive pagination")
-    joined = pl.concat(frames, how="vertical_relaxed")
-    if joined.is_empty():
-        return {"symbol": symbol, "start": start, "end": end, "rows": 0,
-                "raw": str(raw_directory), "empty": True}
-    clean = normalize(joined, symbol, start, end)
+    return pl.concat(frames, how="vertical_relaxed"), len(frames)
+
+
+def write_clean(clean_path: Path, clean: pl.DataFrame) -> None:
     clean_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = clean_path.with_suffix(".tmp.parquet")
     clean.write_parquet(temporary, compression="zstd")
     temporary.replace(clean_path)
+
+
+def merge_clean(clean_path: Path, incoming: pl.DataFrame) -> pl.DataFrame:
+    """Keep prior year bars; same-day top-up must not wipe earlier months."""
+    old = pl.read_parquet(clean_path) if clean_path.exists() else incoming.head(0)
+    merged = pl.concat([old, incoming], how="diagonal_relaxed").unique(
+        subset=["symbol", "bar_time"], keep="last", maintain_order=True,
+    ).sort("bar_time")
+    write_clean(clean_path, merged)
+    return merged
+
+
+def download_year(context: Any, symbol: str, start: str, end: str,
+                  raw_directory: Path, clean_path: Path) -> dict[str, Any]:
+    joined, pages = fetch_history_pages(context, symbol, start, end, raw_directory)
+    if joined.is_empty():
+        return {"symbol": symbol, "start": start, "end": end, "rows": 0,
+                "raw": str(raw_directory), "empty": True}
+    clean = normalize(joined, symbol, start, end)
+    write_clean(clean_path, clean)
     counts = clean.group_by("trade_date").len()["len"]
     return dict(symbol=symbol, start=start, end=end, rows=clean.height,
                 days=counts.len(), first=str(clean["bar_time"].min()),
                 last=str(clean["bar_time"].max()), days_241=int((counts == 241).sum()),
                 days_other=int((counts != 241).sum()), raw=str(raw_directory),
-                clean=str(clean_path), pages=len(frames))
+                clean=str(clean_path), pages=pages)
+
+
+def download_range_merge(context: Any, symbol: str, start: str, end: str,
+                         raw_directory: Path, clean_path: Path) -> dict[str, Any]:
+    """Fetch [start, end] and merge into an existing year partition (same-day top-up)."""
+    joined, pages = fetch_history_pages(context, symbol, start, end, raw_directory)
+    if joined.is_empty():
+        return {"symbol": symbol, "start": start, "end": end, "rows": 0,
+                "raw": str(raw_directory), "empty": True, "merged": False,
+                "clean": str(clean_path)}
+    incoming = normalize(joined, symbol, start, end)
+    merged = merge_clean(clean_path, incoming)
+    counts = merged.group_by("trade_date").len()["len"]
+    return dict(symbol=symbol, start=start, end=end, rows=incoming.height,
+                merged_rows=merged.height, days=counts.len(),
+                first=str(merged["bar_time"].min()), last=str(merged["bar_time"].max()),
+                days_241=int((counts == 241).sum()), days_other=int((counts != 241).sum()),
+                raw=str(raw_directory), clean=str(clean_path), pages=pages, merged=True)
 
 
 def main() -> None:

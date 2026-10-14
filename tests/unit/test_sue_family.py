@@ -71,3 +71,20 @@ def test_mad_and_rsue_produce_columns():
     assert "sue_mad8" in mad.columns
     rsue = compute_rsue8(income)
     assert "rsue8" in rsue.columns
+
+
+def test_monthly_sue_decay_reads_available_date_from_pit_selection():
+    """Factor projection drops available_date; decay must still resolve."""
+    from quant.research.monthly_sue_family import build_monthly_sue_decay_tau20
+    from tests.unit.test_earnings_surprise import income as make_income
+
+    history = make_income([float(i * i + 5 * (i % 4)) for i in range(16)])
+    signal = history["available_date"].max() + dt.timedelta(days=1)
+    result = build_monthly_sue_decay_tau20(
+        income_history=history,
+        signal_dates=(signal,),
+        candidate_symbols=("000001.SZ",),
+    )
+    assert "sue_decay_tau20" in result.factors.columns
+    assert result.factors.height == 1
+    assert result.factors["sue_decay_tau20"][0] is not None
