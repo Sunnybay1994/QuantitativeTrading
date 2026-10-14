@@ -574,7 +574,7 @@ def _verified_view(
         schedule=schedule, now=now
     )
     if (
-        fresh_policy != policy
+        fresh_policy is not policy
         or fresh_schedule is not schedule
         or environment.config.mode != "PAPER_REAL_TIME_WINDOWS"
         or policy.session_date != session_date
