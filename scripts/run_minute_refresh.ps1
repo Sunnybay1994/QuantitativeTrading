@@ -20,7 +20,7 @@ function Invoke-LoggedPython([string[]]$PythonArguments) {
 function Invoke-MinuteFactors {
     # This stage publishes factor panels. It must yield to existing daily/model writers.
     $factorWriters = @(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" |
-        Where-Object { $_.CommandLine -match 'quant research (daily|nightly|mining|cycle|gp)|quant data (refresh|minute-factors)|quant\.(data\.(refresh|refresh_minute_factors)|factors\.compute|research\.(continuous_mining|nightly|run_daily|scheduled_observation|run_factor_search|run_genetic_factor_search|run_research_cycle|run_constrained|run_multifactor)|execution\.(q10_paper|stock_paper|paper_ledger|cross_asset_forward))|daily_recovery.+recover.py' })
+        Where-Object { $_.CommandLine -match 'quant research (daily|nightly|mining|cycle|gp)|quant data (refresh|minute-factors|minutes|minute-history|baostock-history)|quant\.(data\.(refresh|refresh_minute_factors|intraday|baostock_history|recent_minutes|minute_history)|factors\.compute|research\.(continuous_mining|nightly|run_daily|scheduled_observation|run_factor_search|run_genetic_factor_search|run_research_cycle|run_constrained|run_multifactor)|execution\.(q10_paper|stock_paper|paper_ledger|cross_asset_forward))|daily_recovery.+recover.py' })
     if ($factorWriters.Count -gt 0) {
         @{status='deferred'; updated_at=(Get-Date).ToString('o'); reason='Existing data/factor/account writer'; writer_pids=@($factorWriters.ProcessId)} |
             ConvertTo-Json | Set-Content -LiteralPath (Join-Path $logRoot 'factor_scheduler.json') -Encoding utf8
@@ -34,6 +34,14 @@ function Invoke-MinuteFactors {
     return $factorCode
 }
 try {
+    # Collection rewrites clean bar_intraday; yield while GP freeze is live.
+    $miningWriters = @(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" |
+        Where-Object { $_.CommandLine -match 'quant research (mining|nightly|cycle|gp)|quant\.research\.(continuous_mining|nightly|run_genetic_factor_search)' })
+    if ($miningWriters.Count -gt 0) {
+        @{status='deferred'; updated_at=(Get-Date).ToString('o'); reason='Mining/GP writer holds frozen bars'; writer_pids=@($miningWriters.ProcessId)} |
+            ConvertTo-Json | Set-Content -LiteralPath (Join-Path $logRoot 'data_scheduler.json') -Encoding utf8
+        exit 0
+    }
     $dataCode = Invoke-LoggedPython @('-m', 'quant', 'data', $kind)
     $null = Invoke-LoggedPython @('-m', 'quant.notify.automation_alert', '--task', $kind, '--code', "$dataCode", '--log', $logFile)
     $factorCode = Invoke-MinuteFactors

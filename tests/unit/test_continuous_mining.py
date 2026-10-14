@@ -206,3 +206,36 @@ def test_explicit_session_resumes_expired_run_without_changing_default(tmp_path,
     result = nightly.execute(path, now=dt.datetime(2026, 9, 16, 10), run_path=run, session_hours=2)
     assert result['started_at'] == '2026-09-14T00:00:00'
     assert result['deadline_at'] == '2026-09-16T12:00:00'
+
+def test_stale_gp_freeze_is_cleared_before_retry(tmp_path, monkeypatch):
+    path, root = config(tmp_path), tmp_path / 'continuous'
+    run = root / 'batch_000001' / '2026-10-13'
+    n2 = run / 'N2'
+    n2.mkdir(parents=True)
+    (run / 'config.toml').write_text(path.read_text())
+    (run / 'summary.json').write_text(json.dumps({
+        'steps': {'N1': {'ok': True}, 'N2': {'ok': False, 'error': 'N2 exit=1'},
+                  'N3': {'ok': True}, 'N4': {'ok': True}, 'N5': {'ok': True}}
+    }))
+    context = n2 / 'full_context'
+    context.mkdir()
+    (context / 'source_manifest.json').write_text('{"old": true}', encoding='utf-8')
+    (n2 / 'process.log').write_text(
+        'ValueError: Frozen GP context source checksum changed: data.parquet\n', encoding='utf-8')
+    mining.save(run.parent / 'attempt.json', {
+        'consecutive_failures': 1,
+        'error': {'N2': 'N2 exit=1; see process.log'},
+        'failure_kind': 'transient',
+        'code_fingerprint': mining.code_fingerprint(),
+        'retry_after': '2026-10-13T00:00:00',
+    })
+    calls = []
+    def execute(*a, **k):
+        calls.append(k['run_path'])
+        assert not (n2 / 'full_context').exists()  # cleared before retry
+        return success()
+    monkeypatch.setattr(mining.nightly, 'execute', execute)
+    result = mining.dispatch(path, root, now=__import__('datetime').datetime(2026, 10, 13, 12))
+    assert result['state'] == 'completed'
+    assert calls == [run]
+    assert (n2 / 'stale_context_recovery').is_dir()
