@@ -10,5 +10,6 @@
 | 2026-09-13 | 实验结果不手写成文档。换手=年单边成交/日均净值，报中位数；6–8× 且 2× 超额≥5pp 视为通过。Q10 按此进模拟盘第二账户。 |
 | 2026-09-14 | 持续挖掘替代夜间调度；NightlyResearch 停用。 |
 | 2026-09-15 | 全量重构：死代码进 `legacy/`；统一 `python -m quant`；新增 `core`/`llm`/`notify`/`intel`；GPU 为配置项默认 CPU；交易网关仅 `ManualGateway`。不改回测器与 m3 合约，不迁 artifacts。 |
+| 2026-10-13 | [优化工作清单_20261009](优化工作清单_20261009.md) 四周任务与 §3 总验收闭合：`quant status` 字段齐、注册表监控列、`q10_plus_admitted_v1=PAPER_CANDIDATE`、LLM 月花费>$2 可对账、全量 `pytest` 6999 passed / 107 skipped。不改 §1.2；真钱下单仍须用户确认。 |
 
 来历：`docs/archive/` 与 `docs/research/experiments_2026-09/`。当前任务见根目录 `项目实施路线图.md`。
