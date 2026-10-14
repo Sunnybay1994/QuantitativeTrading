@@ -1,0 +1,10 @@
+batch = "000071"
+written_on = 2026-10-12
+source = "deterministic"
+auto_trade = false
+soft_constraint_only = true
+rationale = "deterministic from batch artifacts\\research\\continuous\\batch_000071\\2026-10-10: pass=9 reject_heavy_ops=[]"
+
+avoid_operator_families = ["none"]
+avoid_windows = ["none"]
+suggested_inputs = ["continue_intel", "continue_sue_family_v1"]
