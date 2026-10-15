@@ -298,37 +298,32 @@ def test_owned_cleanup_retains_on_lstat_exception(
 
 
 def _profile_verifiers(call: object) -> tuple[FormalBacktestCliResolution, list[str]]:
-    """Observe top-level public verifier code-objects via sys.setprofile.
+    """Observe top-level verifier order via shims on formal_cli_resolve.
 
-    Nested upstream re-verify inside another verifier is expected (static map in
-    formal_cli_resolve / artifact verifiers). Only depth-0 entries among the
-    contracted 13 names are ordered as exact-once top-level calls. No production wrap.
+    Nested upstream re-verify inside another verifier goes through that module's
+    own imports, so wrapping only ``formal_cli_resolve`` records exact-once
+    top-level calls among the contracted 13 names. Avoids ``sys.setprofile``,
+    which makes Windows resolve pathologically slow.
     """
+    import quant.research.m3.formal_cli_resolve as resolve_mod
+
     order: list[str] = []
-    wanted = set(_VERIFY_ORDER)
-    depth = 0
+    originals = {name: getattr(resolve_mod, name) for name in _VERIFY_ORDER}
 
-    def _profile(frame: object, event: str, _arg: object) -> None:
-        nonlocal depth
-        if event not in ("call", "return"):
-            return
-        code = getattr(frame, "f_code", None)
-        name = getattr(code, "co_name", None)
-        if name not in wanted:
-            return
-        if event == "call":
-            if depth == 0:
-                order.append(str(name))
-            depth += 1
-            return
-        depth = max(0, depth - 1)
+    def _wrap(name: str, fn: object):
+        def wrapped(*args: object, **kwargs: object) -> object:
+            order.append(name)
+            return fn(*args, **kwargs)  # type: ignore[operator]
 
-    previous = sys.getprofile()
-    sys.setprofile(_profile)
+        return wrapped
+
     try:
+        for name, fn in originals.items():
+            setattr(resolve_mod, name, _wrap(name, fn))
         result = call()  # type: ignore[operator]
     finally:
-        sys.setprofile(previous)
+        for name, fn in originals.items():
+            setattr(resolve_mod, name, fn)
     assert isinstance(result, FormalBacktestCliResolution)
     return result, order
 

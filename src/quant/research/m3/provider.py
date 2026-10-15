@@ -1152,11 +1152,28 @@ def _is_windows_reparse(status: os.stat_result) -> bool:
     return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
 
 
+_REPARSE_CLEAN_PREFIXES: set[str] = set()
+
+
+def clear_reparse_chain_cache() -> None:
+    """Drop cached clean ancestors (call at each top-level resolve boundary)."""
+    _REPARSE_CLEAN_PREFIXES.clear()
+
+
 def _require_no_reparse_chain(path: Path) -> None:
+    # Provider tree digests lstat every file; cache only ancestors already
+    # checked clean so each directory is verified once per resolve.
+    verified: list[str] = []
     for candidate in (path, *path.parents):
+        key = os.fspath(candidate)
+        if key in _REPARSE_CLEAN_PREFIXES:
+            _REPARSE_CLEAN_PREFIXES.update(verified)
+            return
         try:
             status = os.lstat(candidate)
         except FileNotFoundError:
             continue
         if stat.S_ISLNK(status.st_mode) or _is_windows_reparse(status):
             raise ValueError("path contains symlink or reparse point")
+        verified.append(key)
+    _REPARSE_CLEAN_PREFIXES.update(verified)

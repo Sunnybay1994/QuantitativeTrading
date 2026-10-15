@@ -68,6 +68,7 @@ from quant.research.m3.model import build_lightgbm_training_spec, verify_model_a
 from quant.research.m3.predictions import verify_prediction_artifact
 from quant.research.m3.provider import (
     build_provider_runtime_fingerprint,
+    clear_reparse_chain_cache,
     verify_provider_artifact,
 )
 from quant.research.m3.provider_validation import verify_provider_validation_artifact
@@ -486,6 +487,7 @@ def _resolve(
     horizon: int,
     reproducibility_only: bool,
 ) -> FormalBacktestCliResolution | FormalReproducibilityCliResolution:
+    clear_reparse_chain_cache()
     root = _validate_project_root(project_root)
     loaded = _validate_config(config)
     relative = _validate_config_relative(config_relative)
@@ -1224,14 +1226,21 @@ def _read_bootstrap_request(request_path: Path) -> Any:
         _fail(_CODE_UPSTREAM, 3)
 
 
+def _missing_detail(kind: str, path: Path) -> str | None:
+    """Optional path detail for local diagnosis; redacted unless explicitly enabled."""
+    if os.environ.get("QUANT_FORMAL_CLI_RESOLVE_DETAIL") != "1":
+        return None
+    return f"{kind}:{path}"
+
+
 def _require_real_dir(path: Path, *, code: str, exit_code: int) -> Path:
     try:
         resolved = path.resolve(strict=True)
         st = os.lstat(resolved)
     except OSError:
-        _fail(code, exit_code)
+        _fail(code, exit_code, _missing_detail("missing_dir", path))
     if not stat.S_ISDIR(st.st_mode) or _is_link_or_reparse(st):
-        _fail(code, exit_code)
+        _fail(code, exit_code, _missing_detail("bad_dir", path))
     _reject_symlink_ancestors(resolved, code=code, exit_code=exit_code)
     return resolved
 
@@ -1240,7 +1249,7 @@ def _require_real_file(path: Path, *, code: str, exit_code: int) -> Path:
     try:
         resolved = path.resolve(strict=True)
     except OSError:
-        _fail(code, exit_code)
+        _fail(code, exit_code, _missing_detail("missing_file", path))
     _require_regular_file_stat(resolved, code=code, exit_code=exit_code)
     return resolved
 
@@ -1249,9 +1258,9 @@ def _require_regular_file_stat(path: Path, *, code: str, exit_code: int) -> os.s
     try:
         st = os.lstat(path)
     except OSError:
-        _fail(code, exit_code)
+        _fail(code, exit_code, _missing_detail("missing_stat", path))
     if not stat.S_ISREG(st.st_mode) or _is_link_or_reparse(st):
-        _fail(code, exit_code)
+        _fail(code, exit_code, _missing_detail("bad_file", path))
     _reject_symlink_ancestors(path, code=code, exit_code=exit_code)
     return st
 
@@ -1265,9 +1274,9 @@ def _reject_symlink_ancestors(path: Path, *, code: str, exit_code: int) -> None:
         try:
             st = os.lstat(parent)
         except OSError:
-            _fail(code, exit_code)
+            _fail(code, exit_code, _missing_detail("missing_ancestor", parent))
         if _is_link_or_reparse(st):
-            _fail(code, exit_code)
+            _fail(code, exit_code, _missing_detail("reparse_ancestor", parent))
         current = parent
 
 
