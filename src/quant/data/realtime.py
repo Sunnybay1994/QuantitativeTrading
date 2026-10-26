@@ -1,4 +1,4 @@
-"""Trading-day subscribed Futu feed. QUOTE polls every 5s; unadjusted K_1M every 60s."""
+"""Trading-day subscribed Futu feed. QUOTE-first; rotating unadjusted K_1M on leftover quota."""
 
 import argparse
 import contextlib
@@ -9,7 +9,9 @@ import time
 from pathlib import Path
 
 from quant.data.connectors.futu_realtime import FutuRealtime
-from quant.data.realtime_inputs import TZ, fit_quota, load_config, phase, watchlist
+from quant.data.realtime_inputs import (
+    TZ, fit_quota, k1m_refresh_seconds, load_config, next_k1m_batch, phase, watchlist,
+)
 from quant.data.realtime_store import FeedStore, atomic_json, raw_packet, read_for_strategy
 
 
@@ -94,9 +96,34 @@ def run(config: Path, *, probe: bool = False, max_seconds: float | None = None,
         client = None
         start = time.monotonic()
         due_bars: dict[str, float] = {}
+        k1m_active: list[str] = []
+        k1m_cursor = 0
+        k1m_slots = 0
+        k1m_rotate_due = 0.0
         quote_due = health_due = retry_at = 0.0
         failure_streak = 0
         probed = set()
+        rotate_seconds = int(settings.get('k1m_rotate_seconds', 65))
+
+        def apply_k1m_batch(batch: list[str], *, cursor: int) -> None:
+            nonlocal k1m_active, k1m_cursor, due_bars, k1m_rotate_due
+            assert client is not None
+            drop = [s for s in k1m_active if s not in batch]
+            add = [s for s in batch if s not in k1m_active]
+            if drop:
+                state['quota'] = client.unsubscribe_k1m(drop)
+            if add:
+                # Reserve already held as unused remain after initial quote/k budgeting.
+                state['quota'] = client.subscribe_k1m(add)
+            k1m_active = list(batch)
+            k1m_cursor = cursor
+            due_bars = {s: due_bars.get(s, 0.0) for s in k1m_active}
+            for symbol in add:
+                due_bars[symbol] = 0.0
+            k1m_rotate_due = time.monotonic() + rotate_seconds
+            state['k1m_active'] = list(k1m_active)
+            state['k1m_cursor'] = k1m_cursor
+
         try:
             while max_seconds is None or time.monotonic() - start < max_seconds:
                 now, tick = clock(), time.monotonic()
@@ -121,11 +148,25 @@ def run(config: Path, *, probe: bool = False, max_seconds: float | None = None,
                         admitted = fit_quota(selection, remaining=int(client.quota()['remain']),
                                              reserve=settings['quota_reserve'])
                         state['symbols'] = admitted['symbols']
+                        k1m_slots = int(admitted['k1m_slots'])
+                        state['k1m_slots'] = k1m_slots
+                        state['quote_slots'] = admitted['quote_slots']
+                        state['k1m_refresh_seconds'] = k1m_refresh_seconds(
+                            len(state['symbols']), k1m_slots, rotate_seconds)
                         atomic_json(output / 'watchlist.json', admitted)
-                        # Quota overflow never silently removes held/order symbols.
-                        state['quota'] = client.subscribe(state['symbols'], settings['quota_reserve'])
-                        due_bars = {s: 0.0 for s in state['symbols']}
+                        # QUOTE for the full admitted set; leftover quota rotates K_1M.
+                        state['quota'] = client.subscribe_quotes(
+                            state['symbols'], settings['quota_reserve'])
+                        batch, k1m_cursor = next_k1m_batch(state['symbols'], k1m_slots, 0)
+                        k1m_active = []
+                        due_bars = {}
+                        apply_k1m_batch(batch, cursor=k1m_cursor)
                         quote_due = health_due = 0.0
+                    if (k1m_slots < len(state['symbols']) and k1m_slots > 0
+                            and tick >= k1m_rotate_due):
+                        batch, nxt = next_k1m_batch(state['symbols'], k1m_slots, k1m_cursor)
+                        apply_k1m_batch(batch, cursor=nxt)
+                        state['k1m_rotations'] = state.get('k1m_rotations', 0) + 1
                     if tick >= health_due:
                         state['provider_state'] = client.state()
                         server = float(state['provider_state']['timestamp'])
@@ -149,32 +190,36 @@ def run(config: Path, *, probe: bool = False, max_seconds: float | None = None,
                         if errors or state['missing_quote_symbols']:
                             raise ValueError('Quote response has invalid or missing symbols')
                         quote_due = tick + settings['quote_poll_seconds']
-                    # Spread K-line queries: <=40/minute, with quote heartbeats between them.
-                    symbol = min(due_bars, key=lambda s: due_bars[s])
-                    if tick >= due_bars[symbol]:
-                        try:
-                            rows = client.bars(symbol)
-                            if not rows:
-                                raise ValueError('Empty current K-line response')
-                            received = clock()
-                            raw = raw_packet(Path(settings['data_root']), 'k1m', rows, received)
-                            result = store.bars(rows, symbol, received, raw,
-                                                settings['confirmation_seconds'],
-                                                session_date=last_session if probe else None)
-                            state['bar_requests'] += 1
-                            state.setdefault('last_bar_result', {})[symbol] = result
-                            if result['errors']:
-                                raise ValueError(str(result['errors'][:3]))
-                            state['symbol_errors'].pop(symbol, None)
-                            state.setdefault('last_bar_fetch', {})[symbol] = received.isoformat()
-                            probed.add(symbol)
-                        except Exception as exc:
-                            state['symbol_errors'][symbol] = f'{type(exc).__name__}: {exc}'
-                        due_bars[symbol] = tick + settings['bar_poll_seconds']
+                    # Only poll bars for the active K_1M window; stagger across the batch.
+                    if due_bars:
+                        symbol = min(due_bars, key=lambda s: due_bars[s])
+                        if tick >= due_bars[symbol]:
+                            try:
+                                rows = client.bars(symbol)
+                                if not rows:
+                                    raise ValueError('Empty current K-line response')
+                                received = clock()
+                                raw = raw_packet(Path(settings['data_root']), 'k1m', rows, received)
+                                result = store.bars(rows, symbol, received, raw,
+                                                    settings['confirmation_seconds'],
+                                                    session_date=last_session if probe else None)
+                                state['bar_requests'] += 1
+                                state.setdefault('last_bar_result', {})[symbol] = result
+                                if result['errors']:
+                                    raise ValueError(str(result['errors'][:3]))
+                                state['symbol_errors'].pop(symbol, None)
+                                state.setdefault('last_bar_fetch', {})[symbol] = received.isoformat()
+                                probed.add(symbol)
+                            except Exception as exc:
+                                state['symbol_errors'][symbol] = f'{type(exc).__name__}: {exc}'
+                            due_bars[symbol] = tick + settings['bar_poll_seconds']
                     failure_streak = 0
                     publish(status='probe' if probe else 'running', error=None, primary_available=True)
-                    if probe and len(probed | set(state['symbol_errors'])) == len(state['symbols']):
-                        break
+                    if probe and state.get('quote_requests', 0) > 0:
+                        # Short probes cover the active K window; full-list needs longer rotate.
+                        targets = k1m_active if k1m_active else []
+                        if not targets or len(probed | set(state['symbol_errors'])) >= len(targets):
+                            break
                     time.sleep(1)
                 except Exception as exc:
                     failure_streak += 1
@@ -182,6 +227,8 @@ def run(config: Path, *, probe: bool = False, max_seconds: float | None = None,
                     if client is not None:
                         client.close()
                         client = None
+                    k1m_active = []
+                    due_bars = {}
                     state['reconnects'] += 1
                     # Closed SDK connections retain quota for a minute. Avoid rapid churn.
                     retry_at = time.monotonic() + min(300, 65 * failure_streak)

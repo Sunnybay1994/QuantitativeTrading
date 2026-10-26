@@ -37,20 +37,50 @@ class FutuRealtime:
         code, market = symbol.split('.')
         return f'{market}.{code}'
 
-    def subscribe(self, symbols: list[str], reserve: int) -> dict:
+    def _codes(self, symbols: list[str]) -> list[str]:
+        return [self.code(s) for s in symbols]
+
+    def subscribe_types(self, symbols: list[str], subtypes: list, *, reserve: int | None = None,
+                        slots_per_symbol: int | None = None) -> dict:
+        """Subscribe exact subtypes. Each (symbol, subtype) uses one quota slot."""
+        if not symbols:
+            return self.quota()
+        slots = slots_per_symbol if slots_per_symbol is not None else len(subtypes)
         quota = self.quota()
-        required = len(symbols) * 2
-        if required + reserve > int(quota['remain']):
+        required = len(symbols) * slots
+        remain = int(quota['remain'])
+        floor = reserve if reserve is not None else 0
+        if required + floor > remain:
             raise RuntimeError(f'Subscription quota insufficient: need {required}, '
-                               f'reserve {reserve}, remaining {quota["remain"]}')
-        # OpenD receives streaming updates; our bounded polling reads its current cache.
-        # Python K-line push defaults to QFQ. Explicit NONE on get_cur_kline avoids that.
-        self._value(self.context.subscribe([self.code(s) for s in symbols],
-                    [self.sdk.SubType.QUOTE, self.sdk.SubType.K_1M], subscribe_push=False))
+                               f'reserve {floor}, remaining {remain}')
+        self._value(self.context.subscribe(self._codes(symbols), subtypes, subscribe_push=False))
         return self.quota()
 
+    def unsubscribe_types(self, symbols: list[str], subtypes: list) -> dict:
+        if not symbols:
+            return self.quota()
+        self._value(self.context.unsubscribe(self._codes(symbols), subtypes))
+        return self.quota()
+
+    def subscribe(self, symbols: list[str], reserve: int) -> dict:
+        """Legacy helper: QUOTE+K_1M for every symbol (2 slots each). Prefer quote-first path."""
+        return self.subscribe_types(
+            symbols, [self.sdk.SubType.QUOTE, self.sdk.SubType.K_1M],
+            reserve=reserve, slots_per_symbol=2)
+
+    def subscribe_quotes(self, symbols: list[str], reserve: int) -> dict:
+        return self.subscribe_types(symbols, [self.sdk.SubType.QUOTE], reserve=reserve,
+                                    slots_per_symbol=1)
+
+    def subscribe_k1m(self, symbols: list[str], *, reserve: int | None = None) -> dict:
+        return self.subscribe_types(symbols, [self.sdk.SubType.K_1M], reserve=reserve,
+                                    slots_per_symbol=1)
+
+    def unsubscribe_k1m(self, symbols: list[str]) -> dict:
+        return self.unsubscribe_types(symbols, [self.sdk.SubType.K_1M])
+
     def quotes(self, symbols: list[str]) -> list[dict]:
-        data = self._value(self.context.get_stock_quote([self.code(s) for s in symbols]))
+        data = self._value(self.context.get_stock_quote(self._codes(symbols)))
         fields = ['code', 'data_date', 'data_time', 'last_price', 'volume', 'turnover',
                   'suspension', 'sec_status']
         return data[[f for f in fields if f in data.columns]].to_dict('records')

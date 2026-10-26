@@ -5,7 +5,9 @@ from pathlib import Path
 import pytest
 
 from quant.data.realtime import single_writer
-from quant.data.realtime_inputs import TZ, fit_quota, minute_grid, phase, watchlist
+from quant.data.realtime_inputs import (
+    TZ, fit_quota, k1m_refresh_seconds, minute_grid, next_k1m_batch, phase, watchlist,
+)
 from quant.data.realtime_store import FeedStore, atomic_json, raw_packet, read_for_strategy
 
 
@@ -155,9 +157,16 @@ def test_collector_reconnects_and_recovers_without_history(tmp_path, monkeypatch
                 raise ConnectionError('disconnect')
             return {'timestamp': now().timestamp()}
 
-        def subscribe(self, symbols, reserve):
+        def subscribe_quotes(self, symbols, reserve):
             assert symbols == ['510300.SH'] and reserve == 10
-            return {'remain': 98}
+            return {'remain': 89}
+
+        def subscribe_k1m(self, symbols, reserve=None):
+            assert symbols == ['510300.SH']
+            return {'remain': 88}
+
+        def unsubscribe_k1m(self, symbols):
+            return {'remain': 89}
 
         def quota(self):
             return {'remain': 100}
@@ -171,8 +180,9 @@ def test_collector_reconnects_and_recovers_without_history(tmp_path, monkeypatch
         def close(self):
             self.closed = True
 
-    monkeypatch.setattr(realtime, 'load_config', lambda _: cfg)
-    monkeypatch.setattr(realtime, 'watchlist', lambda *_, **kw: {'symbols': ['510300.SH']})
+    monkeypatch.setattr(realtime, 'load_config', lambda _: {**cfg, 'k1m_rotate_seconds': 65})
+    monkeypatch.setattr(realtime, 'watchlist', lambda *_, **kw: {
+        'symbols': ['510300.SH'], 'holdings': [], 'orders': []})
     monkeypatch.setattr(refresh, 'latest_session', lambda **_: now().date())
     monkeypatch.setattr(realtime, 'FutuRealtime', Client)
     monkeypatch.setattr(realtime.time, 'monotonic', lambda: elapsed[0])
@@ -186,12 +196,39 @@ def test_collector_reconnects_and_recovers_without_history(tmp_path, monkeypatch
     store.close()
 
 
-def test_quota_trims_only_representatives():
-    selection = dict(symbols=['510300.SH','159915.SZ','600000.SH'],
+def test_quota_quote_first_trims_only_representatives():
+    selection = dict(symbols=['510300.SH', '159915.SZ', '600000.SH'],
                      holdings=['510300.SH'], orders=['159915.SZ'])
-    assert fit_quota(selection, remaining=14, reserve=10)['symbols'] == selection['symbols'][:2]
-    with pytest.raises(ValueError):
-        fit_quota(selection, remaining=12, reserve=10)
+    # available=4 QUOTE slots → all 3 admitted, 1 leftover for K_1M
+    fitted = fit_quota(selection, remaining=14, reserve=10)
+    assert fitted['symbols'] == selection['symbols']
+    assert fitted['quote_slots'] == 3 and fitted['k1m_slots'] == 1
+    # available=2 exactly covers mandatory QUOTE; representative dropped; no K leftover
+    fitted = fit_quota(selection, remaining=12, reserve=10)
+    assert fitted['symbols'] == ['510300.SH', '159915.SZ']
+    assert fitted['k1m_slots'] == 0
+    with pytest.raises(ValueError, match='QUOTE'):
+        fit_quota(selection, remaining=11, reserve=10)
+
+
+def test_quota_allows_53_mandatory_quotes_on_100_tier():
+    mandatory = [f'{i:06d}.SH' for i in range(53)]
+    selection = dict(symbols=mandatory, holdings=mandatory[:40], orders=mandatory[40:])
+    fitted = fit_quota(selection, remaining=100, reserve=10)
+    assert fitted['symbols'] == mandatory
+    assert fitted['quote_slots'] == 53 and fitted['k1m_slots'] == 37
+    assert k1m_refresh_seconds(53, 37, 65) == 130
+    assert k1m_refresh_seconds(53, 53, 65) is None
+
+
+def test_k1m_batch_rotates_round_robin():
+    symbols = [f'{i:06d}.SH' for i in range(5)]
+    batch, cursor = next_k1m_batch(symbols, 3, 0)
+    assert batch == ['000000.SH', '000001.SH', '000002.SH'] and cursor == 3
+    batch, cursor = next_k1m_batch(symbols, 3, cursor)
+    assert batch == ['000003.SH', '000004.SH', '000000.SH'] and cursor == 1
+    assert next_k1m_batch(symbols, 5, 2)[0] == symbols
+    assert next_k1m_batch(symbols, 0, 1) == ([], 1)
 
 
 def test_stale_account_is_not_silently_treated_as_current(tmp_path):
@@ -199,3 +236,71 @@ def test_stale_account_is_not_silently_treated_as_current(tmp_path):
     with pytest.raises(ValueError, match='Stale account'):
         watchlist(dict(account_roots=[str(tmp_path)],max_symbols=40), dt.date(2026,9,21),
                   previous_session=dt.date(2026,9,18))
+
+
+def test_collector_rotates_k1m_on_leftover_slots(tmp_path, monkeypatch):
+    from quant.data import realtime, refresh
+    elapsed, events = [0.0], []
+
+    def now():
+        return at('10:00:00') + dt.timedelta(seconds=elapsed[0])
+
+    cfg = dict(auto_trade=False, output=str(tmp_path / 'out'), database=str(tmp_path / 'feed.sqlite'),
+               data_root=str(tmp_path), confirmation_seconds=63, quote_max_age_seconds=30,
+               heartbeat_max_age_seconds=30, host='localhost', port=11111, quota_reserve=10,
+               quote_poll_seconds=5, bar_poll_seconds=60, k1m_rotate_seconds=65)
+    symbols = ['510300.SH', '159915.SZ', '518880.SH']
+
+    class Client:
+        def __init__(self, *_):
+            self.k1m = set()
+
+        def state(self):
+            return {'timestamp': now().timestamp()}
+
+        def quota(self):
+            # available=5 → quote all 3, k1m_slots=2
+            return {'remain': 15}
+
+        def subscribe_quotes(self, chosen, reserve):
+            assert chosen == symbols and reserve == 10
+            events.append(('quote', list(chosen)))
+            return {'remain': 12}
+
+        def subscribe_k1m(self, batch, reserve=None):
+            events.append(('sub_k', list(batch)))
+            self.k1m.update(batch)
+            return {'remain': 12 - len(self.k1m)}
+
+        def unsubscribe_k1m(self, batch):
+            events.append(('unsub_k', list(batch)))
+            self.k1m.difference_update(batch)
+            return {'remain': 12 - len(self.k1m)}
+
+        def quotes(self, chosen):
+            return [dict(code='SH.' + s.split('.')[0] if s.endswith('.SH') else 'SZ.' + s.split('.')[0],
+                         data_date='2026-09-18', data_time=now().strftime('%H:%M:%S'),
+                         last_price=10, volume=100, turnover=1000, suspension=False)
+                    for s in chosen]
+
+        def bars(self, symbol):
+            assert symbol in self.k1m
+            return [bar('09:59:00'), bar('10:00:00')]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(realtime, 'load_config', lambda _: cfg)
+    monkeypatch.setattr(realtime, 'watchlist', lambda *_, **kw: {
+        'symbols': symbols, 'holdings': symbols[:2], 'orders': []})
+    monkeypatch.setattr(refresh, 'latest_session', lambda **_: now().date())
+    monkeypatch.setattr(realtime, 'FutuRealtime', Client)
+    monkeypatch.setattr(realtime.time, 'monotonic', lambda: elapsed[0])
+    monkeypatch.setattr(realtime.time, 'sleep', lambda seconds: elapsed.__setitem__(0, elapsed[0] + seconds))
+    result = realtime.run(tmp_path / 'cfg', max_seconds=70, now_fn=now)
+    assert events[0] == ('quote', symbols)
+    assert events[1][0] == 'sub_k' and len(events[1][1]) == 2
+    assert any(kind == 'unsub_k' for kind, _ in events)
+    assert result.get('k1m_rotations', 0) >= 1
+    assert result['k1m_slots'] == 2
+    assert result['status'] == 'stopped'

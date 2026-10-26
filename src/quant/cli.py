@@ -60,6 +60,7 @@ _DELEGATE: dict[tuple[str, str], str] = {
     ("data", "minute-history"): "quant.data.minute_history",
     ("data", "minute-factors"): "quant.data.refresh_minute_factors",
     ("data", "baostock-history"): "quant.data.baostock_history",
+    ("data", "post-close-k1m"): "quant.data.post_close_k1m",
     ("factors", "compute"): "quant.factors.compute",
     ("research", "daily"): "quant.research.scheduled_observation",
     ("research", "nightly"): "quant.research.nightly",
@@ -223,7 +224,7 @@ def main(argv: list[str] | None = None) -> int:
     intel.add_argument("--dry-run", action="store_true")
 
     data = sub.add_parser("data", help="数据刷新")
-    data.add_argument("command", choices=["refresh", "realtime", "market-snapshot", "minutes", "minute-history", "minute-factors", "baostock-history", "latency", "stock-execution-open", "monthly-execution-open"])
+    data.add_argument("command", choices=["refresh", "realtime", "market-snapshot", "minutes", "minute-history", "minute-factors", "baostock-history", "post-close-k1m", "latency", "stock-execution-open", "monthly-execution-open"])
     factors = sub.add_parser("factors", help="因子计算")
     factors.add_argument("command", choices=["compute"])
     research = sub.add_parser("research", help="投研流水线")

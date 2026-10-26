@@ -12,7 +12,7 @@
 
 ## 数据时效和消费
 
-OpenD 订阅 QUOTE 和 K_1M 并持续接收供应商推送，采集器每 5 秒读取报价缓存、每个标的每 60 秒读取当前最多 1000 根一分钟 K 线，显式使用不复权。K 线请求错开执行，避免整池请求同时发出。它不是逐笔、盘口或毫秒级接收器。
+OpenD **优先**为整份观察名单订阅 QUOTE（每标的 1 档额度），剩余额度用于 K_1M。若 K_1M 并发槽位少于名单，则按 `k1m_rotate_seconds`（默认 65，须 ≥60）轮转订阅：先退订离开窗口的标的，再订入下一批。OpenD 规定订阅满约 1 分钟后才能释放额度，因此轮转间隔不能更短。采集器每 5 秒读取报价缓存；仅对当前 K_1M 窗口内的标的每 60 秒读取最多 1000 根不复权一分钟 K 线，请求错开执行。它不是逐笔、盘口或毫秒级接收器。
 
 首版保留供应商分钟标签及独立 09:30 开盘行，不强行转换为 TDX 的 240 根格式。为避免把正在变化的 K 线当成最终值，只有在标签时间之后至少 63 秒重新获取的记录才发布。考虑一分钟轮询，实际确认延迟约 63—123 秒，再加网络和处理耗时；策略必须按实际 available_at 决策，不能假设每到整分就有最终 K 线。后续降低延迟需要盘中验证标签与结束时刻语义。
 
@@ -28,12 +28,12 @@ Tushare 使用既有本地 token，并保留 SDK 权限校验，不自动购买�
 
 备用数据保留 source、供应商时间、received_at/available_at；raw 按来源隔离。AKShare 报价保留 SDK 投影前的东财 f86 时间字段，不以本机请求时刻冒充行情时刻。读取器拒绝过期报价、缺分钟、无成交额的分钟，以及混合来源的分钟窗口。这里的自动降级只表示尝试恢复；状态为 running 也不保证某个标的满足策略输入条件。盘中延迟仍需首个交易时段验证。
 
-全市场盘后分钟补全及慢速历史队列见 [MINUTE_REFRESH.md](MINUTE_REFRESH.md)。
+全市场盘后分钟补全及慢速历史队列见 [MINUTE_REFRESH.md](MINUTE_REFRESH.md)。其中 **Futu 盘后 K_1M 实时订阅扫全市场** 为独立命令 `quant data post-close-k1m`，不占用本采集器的观察名单，也不走 History KL。
 
 - `python -m quant data realtime status`：本地状态、心跳年龄、逐标的请求异常及订阅额度。
 - `python -m quant data realtime probe --max-seconds 90`：有限的连接、订阅、报价与当前 K 线读取探测，结果放在独立 probes 目录；不会让生产读取器变成 ready。
 - 主状态 `artifacts/realtime/futu/status.json`；调度日志在其 scheduler 子目录。
 - OpenD 不在线或未登录时重连并退避；不得把客户端登录窗口或订阅成功当成盘中低延迟验证。
-- 一只股票两种订阅占两个实时额度；预留 10，最多 40 只。额度不足时先缩减补充观察名单；连持仓和订单都无法覆盖时报告错误，不抢占其他连接。账户快照早于上一交易日或缺少持仓文件时也会拒绝启动。
+- 报价优先：持仓∪订单必须全部能订上 QUOTE（每只 1 档）；`max_symbols` 硬上限 1..200，配置默认 80，仍以 `query_subscription` 的 remain 与 `quota_reserve` 为准。额度不够时只砍补充观察名单，**绝不静默丢掉持仓/订单**。QUOTE 订完后的剩余额度作为并发 K_1M 槽；100 档、remain≈100、reserve=10、强制 53 只时约 37 个 K 槽，约 2×65s 一轮；300 档通常可全量并发 K_1M、无需轮转。连持仓订单的 QUOTE 都盖不住时报告错误，不抢占其他连接。账户快照早于上一交易日或缺少持仓文件时也会拒绝启动。
 
 协议依据：[实时 K 线](https://openapi.futunn.com/futu-api-doc/quote/get-kl.html)、[订阅及默认推送复权](https://openapi.futunn.com/futu-api-doc/quote/sub.html)、[额度](https://openapi.futunn.com/futu-api-doc/intro/authority.html)。历史额度仅适用于历史 K 线接口，此采集器不调用该接口。

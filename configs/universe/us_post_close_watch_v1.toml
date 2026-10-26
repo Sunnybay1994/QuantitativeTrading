@@ -1,0 +1,105 @@
+# High-attention US names for post-close Futu K_1M (market-local ET wall clock).
+# Index exposure via liquid ETFs — raw Futu index codes (IXIC/DJI/SPX) are not subscribable here.
+name = "US_POST_CLOSE_WATCH_V1"
+as_of = 2026-10-19
+purpose = "Post-close K_1M sample: major index ETFs + liquid mega-caps; not a PIT strategy universe"
+
+[[members]]
+symbol = "SPY.US"
+name = "SPDR S&P 500 ETF"
+
+[[members]]
+symbol = "QQQ.US"
+name = "Invesco QQQ"
+
+[[members]]
+symbol = "DIA.US"
+name = "SPDR Dow Jones Industrial Average ETF"
+
+[[members]]
+symbol = "IWM.US"
+name = "iShares Russell 2000 ETF"
+
+[[members]]
+symbol = "AAPL.US"
+name = "Apple"
+
+[[members]]
+symbol = "MSFT.US"
+name = "Microsoft"
+
+[[members]]
+symbol = "NVDA.US"
+name = "NVIDIA"
+
+[[members]]
+symbol = "AMZN.US"
+name = "Amazon"
+
+[[members]]
+symbol = "GOOGL.US"
+name = "Alphabet"
+
+[[members]]
+symbol = "META.US"
+name = "Meta"
+
+[[members]]
+symbol = "TSLA.US"
+name = "Tesla"
+
+[[members]]
+symbol = "AMD.US"
+name = "AMD"
+
+[[members]]
+symbol = "AVGO.US"
+name = "Broadcom"
+
+[[members]]
+symbol = "NFLX.US"
+name = "Netflix"
+
+[[members]]
+symbol = "CRM.US"
+name = "Salesforce"
+
+[[members]]
+symbol = "COST.US"
+name = "Costco"
+
+[[members]]
+symbol = "JPM.US"
+name = "JPMorgan"
+
+[[members]]
+symbol = "V.US"
+name = "Visa"
+
+[[members]]
+symbol = "MA.US"
+name = "Mastercard"
+
+[[members]]
+symbol = "XOM.US"
+name = "Exxon Mobil"
+
+[[members]]
+symbol = "JNJ.US"
+name = "Johnson & Johnson"
+
+[[members]]
+symbol = "WMT.US"
+name = "Walmart"
+
+[[members]]
+symbol = "PG.US"
+name = "Procter & Gamble"
+
+[[members]]
+symbol = "BAC.US"
+name = "Bank of America"
+
+[[members]]
+symbol = "DIS.US"
+name = "Disney"

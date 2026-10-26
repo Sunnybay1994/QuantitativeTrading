@@ -5,8 +5,10 @@ port = 11111
 data_root = "data"
 output = "artifacts/realtime/futu"
 database = "data/realtime/futu/market.sqlite"
-max_symbols = 40
+# Quote-first: 1 slot/symbol. Keep below remain-reserve so leftover can rotate K_1M.
+max_symbols = 80
 quota_reserve = 10
+k1m_rotate_seconds = 65
 quote_poll_seconds = 5
 bar_poll_seconds = 60
 confirmation_seconds = 63

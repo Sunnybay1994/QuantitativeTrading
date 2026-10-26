@@ -11,6 +11,20 @@
 
 状态：`artifacts/minute_refresh/status.json`；名单：`universe.json`；逐标的断点和覆盖：`date=YYYY-MM-DD/*.json`。同日成功取到最新交易日的来源避免重复请求；失败项下次重试，断点恢复优先未尝试标的。支持 `--limit N --skip-tdx --max-seconds N` 做小范围诊断。
 
+## Futu 盘后实时订阅全市场 1 分钟（独立机制）
+
+与盘中 `quant data realtime`（QUOTE 优先、小观察名单）和 `quant data minutes`（TDX/公开源）分开。收盘后只用 OpenD **K_1M 订阅 + get_cur_kline** 轮转扫全市场，**不消耗 History KL 额度**。
+
+| 项 | 说明 |
+|---|---|
+| 入口 | `python -m quant data post-close-k1m` |
+| 配置 | `configs/data/post_close_k1m.toml`（与 `realtime.toml` 隔离） |
+| 产物 | clean：`data/clean/bar_intraday/freq=1m/source=futu_realtime/`；raw：`data/raw/futu/realtime/date=*/post_close_k1m/`；状态：`artifacts/post_close_k1m/` |
+| 调度 | `scripts/install_post_close_k1m.ps1` → 工作日 15:10；`scripts/run_post_close_k1m.ps1` |
+| 探针 | `--limit N --max-batches 1 --max-seconds 600`；非闭盘诊断加 `--force` |
+
+OpenD 约 100 档、每轮 ≥65s，全市场约 1.5h。与盘中 RealtimeQuotes 互斥（脚本检测到 live realtime / GP 冻结会 deferred）。
+
 ## Futu 全市场历史 1 分钟
 
 职责拆分：

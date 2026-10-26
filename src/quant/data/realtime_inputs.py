@@ -10,18 +10,26 @@ import polars as pl
 TZ = dt.timezone(dt.timedelta(hours=8))
 
 
+# Quote-first: one QUOTE slot per symbol. Hard cap leaves headroom for 100/300-tier remain.
+MAX_SYMBOLS_LIMIT = 200
+
+
 def load_config(path: Path) -> dict:
     settings = tomllib.loads(path.read_text(encoding='utf-8'))
     if settings.get('auto_trade') is not False:
         raise ValueError('Realtime data capture requires auto_trade=false')
-    if not 1 <= settings['max_symbols'] <= 40:
-        raise ValueError('max_symbols must be within 1..40')
+    if not 1 <= settings['max_symbols'] <= MAX_SYMBOLS_LIMIT:
+        raise ValueError(f'max_symbols must be within 1..{MAX_SYMBOLS_LIMIT}')
     if settings['quote_poll_seconds'] < 5 or settings['bar_poll_seconds'] < 60:
         raise ValueError('Quote polling >=5 seconds and bar polling >=60 seconds required')
     if settings['confirmation_seconds'] < 63:
         raise ValueError('Provider-labelled bars require conservative 63-second confirmation')
     if settings['quota_reserve'] < 0:
         raise ValueError('quota_reserve cannot be negative')
+    # Futu releases a slot only after >=60s subscribed; rotation must honour that.
+    rotate = settings.setdefault('k1m_rotate_seconds', 65)
+    if rotate < 60:
+        raise ValueError('k1m_rotate_seconds must be >=60 (OpenD unsubscribe hold)')
     return settings
 
 
@@ -86,14 +94,50 @@ def watchlist(settings: dict, date: dt.date, *, previous_session: dt.date | None
 
 
 def fit_quota(selection: dict, *, remaining: int, reserve: int) -> dict:
-    capacity = max(0, (remaining - reserve) // 2)
+    """Admit symbols under quote-first budgeting (1 QUOTE slot each).
+
+    Mandatory holdings/orders must fit in ``remaining - reserve``. Leftover slots
+    after all admitted QUOTE subscriptions become concurrent K_1M capacity for
+    rotation. Representatives may be trimmed; positions/orders are never dropped.
+    """
+    available = max(0, remaining - reserve)
     mandatory = set(selection.get('holdings', [])) | set(selection.get('orders', []))
-    if len(mandatory) > capacity or capacity == 0:
-        raise ValueError(f'Realtime quota cannot cover {len(mandatory)} held/order symbols; '
-                         f'capacity={capacity}, remaining={remaining}')
-    chosen = selection['symbols'][:capacity]
-    return {**selection, 'symbols': chosen, 'omitted_representatives':
-            selection.get('omitted_representatives', []) + selection['symbols'][capacity:]}
+    if len(mandatory) > available or available == 0:
+        raise ValueError(
+            f'Realtime quota cannot cover QUOTE for {len(mandatory)} held/order symbols; '
+            f'available={available}, remaining={remaining}, reserve={reserve}')
+    chosen = selection['symbols'][:available]
+    if mandatory - set(chosen):
+        raise ValueError(
+            f'Realtime quota cannot cover QUOTE for {len(mandatory)} held/order symbols; '
+            f'available={available}, remaining={remaining}, reserve={reserve}')
+    k1m_slots = available - len(chosen)
+    return {**selection, 'symbols': chosen, 'k1m_slots': k1m_slots,
+            'quote_slots': len(chosen),
+            'omitted_representatives':
+            selection.get('omitted_representatives', []) + selection['symbols'][len(chosen):]}
+
+
+def next_k1m_batch(symbols: list[str], capacity: int, cursor: int) -> tuple[list[str], int]:
+    """Return the next rotating K_1M window and the cursor for the following cycle."""
+    if capacity <= 0 or not symbols:
+        return [], cursor
+    if capacity >= len(symbols):
+        return list(symbols), 0
+    n = len(symbols)
+    start = cursor % n
+    batch = [symbols[(start + i) % n] for i in range(capacity)]
+    return batch, (start + capacity) % n
+
+
+def k1m_refresh_seconds(n_symbols: int, k1m_slots: int, rotate_seconds: int) -> int | None:
+    """Seconds until each symbol re-enters a K_1M window; None if fully covered or no K slots."""
+    if k1m_slots <= 0 or n_symbols <= 0:
+        return None
+    if k1m_slots >= n_symbols:
+        return None
+    cycles = (n_symbols + k1m_slots - 1) // k1m_slots
+    return cycles * rotate_seconds
 
 
 def minute_grid(day: dt.date) -> list[dt.datetime]:

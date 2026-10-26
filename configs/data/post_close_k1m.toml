@@ -1,0 +1,23 @@
+# Independent post-close 1m via Futu realtime K_1M subscribe (not History KL).
+# Does NOT use live realtime.toml watchlist or History KL quota.
+# Markets:
+#   cn  — SH/SZ after ~15:05 (existing A-share path)
+#   hk  — Stock Connect (+ AH H-leg priority) after ~16:05 HKT
+#   us  — high-attention US watchlist; ready after ~05:00 Asia/Shanghai (prior ET session)
+auto_trade = false
+host = "127.0.0.1"
+port = 11111
+data_root = "data"
+output = "artifacts/post_close_k1m"
+universe_path = "artifacts/minute_refresh/universe.json"
+universe_output = "artifacts/minute_refresh"
+us_universe_path = "configs/universe/us_post_close_watch_v1.toml"
+ah_dual_list = "configs/universe/ah_dual_list_v1.toml"
+hk_connect_watch = "configs/universe/hk_connect_watch_v1.toml"
+include_hsi = true
+markets = ["cn", "hk", "us"]
+# Leave a few slots for other OpenD clients; rest of remain rotates as K_1M.
+quota_reserve = 5
+# OpenD holds subscription quota ~60s before release after unsubscribe.
+k1m_rotate_seconds = 65
+request_spacing_seconds = 0.05

@@ -1,0 +1,225 @@
+# Curated AH dual-listed pairs (A leg + H leg). H legs prioritized inside HK Connect sweep.
+# Not exhaustive; preference is official connect_snapshot membership.
+name = "AH_DUAL_LIST_V1"
+as_of = 2026-10-19
+purpose = "Priority boost for AH dual-listed H shares within post-close HK K_1M"
+
+[[pairs]]
+a_symbol = "601318.SH"
+h_symbol = "02318.HK"
+name = "中国平安"
+
+[[pairs]]
+a_symbol = "600030.SH"
+h_symbol = "06030.HK"
+name = "中信证券"
+
+[[pairs]]
+a_symbol = "601398.SH"
+h_symbol = "01398.HK"
+name = "工商银行"
+
+[[pairs]]
+a_symbol = "601939.SH"
+h_symbol = "00939.HK"
+name = "建设银行"
+
+[[pairs]]
+a_symbol = "601288.SH"
+h_symbol = "01288.HK"
+name = "农业银行"
+
+[[pairs]]
+a_symbol = "601988.SH"
+h_symbol = "03988.HK"
+name = "中国银行"
+
+[[pairs]]
+a_symbol = "601328.SH"
+h_symbol = "03328.HK"
+name = "交通银行"
+
+[[pairs]]
+a_symbol = "600036.SH"
+h_symbol = "03968.HK"
+name = "招商银行"
+
+[[pairs]]
+a_symbol = "601166.SH"
+h_symbol = "06166.HK"
+name = "兴业银行"
+
+[[pairs]]
+a_symbol = "600016.SH"
+h_symbol = "01988.HK"
+name = "民生银行"
+
+[[pairs]]
+a_symbol = "601857.SH"
+h_symbol = "00857.HK"
+name = "中国石油"
+
+[[pairs]]
+a_symbol = "600028.SH"
+h_symbol = "00386.HK"
+name = "中国石化"
+
+[[pairs]]
+a_symbol = "600938.SH"
+h_symbol = "00883.HK"
+name = "中国海油"
+
+[[pairs]]
+a_symbol = "601088.SH"
+h_symbol = "01088.HK"
+name = "中国神华"
+
+[[pairs]]
+a_symbol = "601225.SH"
+h_symbol = "01898.HK"
+name = "陕西煤业"
+
+[[pairs]]
+a_symbol = "601899.SH"
+h_symbol = "02899.HK"
+name = "紫金矿业"
+
+[[pairs]]
+a_symbol = "600585.SH"
+h_symbol = "00914.HK"
+name = "海螺水泥"
+
+[[pairs]]
+a_symbol = "600941.SH"
+h_symbol = "00941.HK"
+name = "中国移动"
+
+[[pairs]]
+a_symbol = "601728.SH"
+h_symbol = "00728.HK"
+name = "中国电信"
+
+[[pairs]]
+a_symbol = "600050.SH"
+h_symbol = "00762.HK"
+name = "中国联通"
+
+[[pairs]]
+a_symbol = "601628.SH"
+h_symbol = "02628.HK"
+name = "中国人寿"
+
+[[pairs]]
+a_symbol = "601601.SH"
+h_symbol = "02601.HK"
+name = "中国太保"
+
+[[pairs]]
+a_symbol = "601336.SH"
+h_symbol = "01336.HK"
+name = "新华保险"
+
+[[pairs]]
+a_symbol = "000002.SZ"
+h_symbol = "02202.HK"
+name = "万科"
+
+[[pairs]]
+a_symbol = "601818.SH"
+h_symbol = "06818.HK"
+name = "光大银行"
+
+[[pairs]]
+a_symbol = "600660.SH"
+h_symbol = "03606.HK"
+name = "福耀玻璃"
+
+[[pairs]]
+a_symbol = "600048.SH"
+h_symbol = "00817.HK"
+name = "保利发展"
+
+[[pairs]]
+a_symbol = "601668.SH"
+h_symbol = "03311.HK"
+name = "中国建筑"
+
+[[pairs]]
+a_symbol = "601390.SH"
+h_symbol = "00390.HK"
+name = "中国中铁"
+
+[[pairs]]
+a_symbol = "601186.SH"
+h_symbol = "01186.HK"
+name = "中国铁建"
+
+[[pairs]]
+a_symbol = "601800.SH"
+h_symbol = "01800.HK"
+name = "中国交建"
+
+[[pairs]]
+a_symbol = "600685.SH"
+h_symbol = "00317.HK"
+name = "中船防务"
+
+[[pairs]]
+a_symbol = "601919.SH"
+h_symbol = "01919.HK"
+name = "中远海控"
+
+[[pairs]]
+a_symbol = "601111.SH"
+h_symbol = "00753.HK"
+name = "中国国航"
+
+[[pairs]]
+a_symbol = "600029.SH"
+h_symbol = "01055.HK"
+name = "南方航空"
+
+[[pairs]]
+a_symbol = "600115.SH"
+h_symbol = "00670.HK"
+name = "中国东航"
+
+[[pairs]]
+a_symbol = "601808.SH"
+h_symbol = "02883.HK"
+name = "中海油服"
+
+[[pairs]]
+a_symbol = "600688.SH"
+h_symbol = "00338.HK"
+name = "上海石化"
+
+[[pairs]]
+a_symbol = "600362.SH"
+h_symbol = "00358.HK"
+name = "江西铜业"
+
+[[pairs]]
+a_symbol = "000898.SZ"
+h_symbol = "00347.HK"
+name = "鞍钢股份"
+
+[[pairs]]
+a_symbol = "600808.SH"
+h_symbol = "00323.HK"
+name = "马钢股份"
+
+[[pairs]]
+a_symbol = "600874.SH"
+h_symbol = "01065.HK"
+name = "创业环保"
+
+[[pairs]]
+a_symbol = "600377.SH"
+h_symbol = "00177.HK"
+name = "江苏高速"
+
+[[pairs]]
+a_symbol = "601107.SH"
+h_symbol = "00107.HK"
+name = "四川成渝"
