@@ -10,6 +10,10 @@ from quant.execution.manual_session_service import instance_lock
 from quant.notify import send
 
 
+# Scheduler scripts stay ASCII. Chinese titles are applied here.
+TASK_LABELS = {'intel_weekly': '情报周扫描'}
+
+
 def report(task, code, log, *, root=None, now=None, sender=send):
     folder = root or project_paths().artifacts / 'notify/automation'
     folder.mkdir(parents=True, exist_ok=True)
@@ -25,7 +29,8 @@ def report(task, code, log, *, root=None, now=None, sender=send):
             return {'status': 'suppressed', 'reason': 'same task/exit within one hour'}
         # Record the attempt before sending; an ambiguous send is never retried automatically.
         state_path.write_text(json.dumps(dict(task=task, code=code, at=timestamp)), encoding='utf-8')
-        result = sender('自动化异常：'+task,
+        label = TASK_LABELS.get(task, task)
+        result = sender('自动化异常：'+label,
                         f'任务未正常完成（退出码 {code}）。\n日志：{log}\n同一任务、同一退出码一小时内不重复提醒；请查看日志定位原因。')
         return {'status': 'attempted', 'results': [vars(r) for r in result]}
 

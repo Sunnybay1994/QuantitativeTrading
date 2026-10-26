@@ -13,6 +13,6 @@ if ($DryRun) { $argsList += '--dry-run' }
 & $python @argsList *>> $logFile
 $code = $LASTEXITCODE
 if ($code -ne 0) {
-    & $python -m quant.notify.automation_alert --task '情报周扫描' --code $code --log $logFile *>> $logFile
+    & $python -m quant.notify.automation_alert --task intel_weekly --code $code --log $logFile *>> $logFile
 }
 exit $code
