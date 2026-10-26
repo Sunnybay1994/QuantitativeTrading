@@ -209,6 +209,10 @@ def main(argv: list[str] | None = None) -> int:
     gpu.add_argument("--refresh", action="store_true")
 
     sub.add_parser("status", help="调度、预算、最近日更的只读快照")
+    doctor = sub.add_parser("doctor", help="只读验收页：计划任务、日更、注册表、账本、git")
+    doctor.add_argument("--json", action="store_true")
+    doctor.add_argument("--no-notify", action="store_true")
+    doctor.add_argument("--record-tests", action="store_true")
 
     notify = sub.add_parser("notify", help="人工通道发消息")
     notify.add_argument("action", choices=["test", "send"], nargs="?", default="test")
@@ -248,6 +252,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.group == "status":
         print(json.dumps(_status(), ensure_ascii=False, indent=2, default=str))
         return 0
+    if args.group == "doctor":
+        from quant.reporting.doctor import main as doctor_main
+        extra = []
+        if args.json:
+            extra.append("--json")
+        if args.no_notify:
+            extra.append("--no-notify")
+        if args.record_tests:
+            extra.append("--record-tests")
+        return doctor_main(extra)
     if args.group == "notify":
         from quant.notify import main as notify_main
         extra: list[str] = [args.action, "--title", args.title, "--body", args.body]

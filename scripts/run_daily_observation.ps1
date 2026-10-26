@@ -22,6 +22,8 @@ try {
         exit $code
     }
     if (-not $CheckOnly) {
+        # Fast-test receipt for quant doctor. Failure is recorded, not a trading gate.
+        & $python -m quant doctor --record-tests *>> $logFile
         $writers = @(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" |
             Where-Object { $_.CommandLine -match 'quant research (daily|nightly|mining|cycle|gp)|quant data (refresh|minute-factors)|quant\.(data\.(refresh|refresh_minute_factors|intraday)|factors\.compute|research\.(continuous_mining|run_daily|scheduled_observation|run_factor_search|run_research_cycle|nightly|run_genetic_factor_search|run_constrained_portfolio|run_multifactor)|execution\.(stock_paper|q10_paper|paper_ledger|cross_asset_forward))' })
         if ($writers.Count -gt 0) {
@@ -34,6 +36,8 @@ try {
     & $python @runArgs *> $logFile
     $code = $LASTEXITCODE
     if ($code -ne 2) { Notify-Failure $code }
+    # Read-only acceptance page after the 17:30/21:30 run. Do not change the task result.
+    & $python -m quant doctor --json *>> $logFile
     exit $code
 } catch {
     $_.Exception.Message | Out-File $logFile -Append -Encoding utf8
