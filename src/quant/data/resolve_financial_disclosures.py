@@ -10,7 +10,10 @@ from pathlib import Path
 
 import polars as pl
 
-from quant.data.connectors.cninfo_announcements import download_document
+from quant.data.connectors.cninfo_announcements import (
+    AnnouncementDocumentTooLarge,
+    download_document,
+)
 from quant.data.financial_document_periods import document_periods
 from quant.data.connectors.tushare import TushareConnector
 from quant.data.storage import RawStore
@@ -144,9 +147,17 @@ def resolve(*, disclosures: Path, data_root: Path, output: Path, document_cache:
         if cached:
             pdf = cached[0]
         else:
+            try:
+                body = download_document(relative)
+            except AnnouncementDocumentTooLarge as exc:
+                # One oversized PDF must not abort the evening disclosure refresh.
+                unresolved.append({**item, 'reason': 'document_exceeds_size_limit', 'detail': str(exc)})
+                continue
+            except (ValueError, RuntimeError) as exc:
+                unresolved.append({**item, 'reason': 'document_download_unavailable', 'detail': str(exc)})
+                continue
             stamp = dt.datetime.now(dt.timezone.utc)
             folder = raw_root/f'date={stamp.astimezone(dt.timezone(dt.timedelta(hours=8))).date()}'/stamp.strftime('%H%M%S%f')
-            body = download_document(relative)
             folder.mkdir(parents=True, exist_ok=False)
             pdf = folder/f'{identifier}.pdf'
             with pdf.open('xb') as file:

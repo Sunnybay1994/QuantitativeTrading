@@ -98,6 +98,10 @@ def test_public_pdf_download_requires_bounded_document_path_and_pdf_bytes():
         def raise_for_status(self):
             pass
 
+        @property
+        def headers(self):
+            return {}
+
         def iter_content(self, chunk_size):
             yield b'%PDF-'
             yield b'fixture'
@@ -111,3 +115,61 @@ def test_public_pdf_download_requires_bounded_document_path_and_pdf_bytes():
     assert download_document('finalpage/2026-09-10/123.PDF', session=Session()) == b'%PDF-fixture'
     with pytest.raises(ValueError, match='Unexpected'):
         download_document('https://elsewhere.example/file.pdf', session=Session())
+
+
+def test_public_pdf_download_rejects_declared_and_streamed_oversized_documents():
+    from quant.data.connectors.cninfo_announcements import (
+        AnnouncementDocumentTooLarge,
+        MAX_ANNOUNCEMENT_DOCUMENT_BYTES,
+        download_document,
+    )
+
+    class DeclaredResponse:
+        headers = {'Content-Length': str(MAX_ANNOUNCEMENT_DOCUMENT_BYTES + 1)}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, chunk_size):
+            raise AssertionError('must not stream after Content-Length rejects')
+
+    class StreamResponse:
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, chunk_size):
+            yield b'%PDF-'
+            yield b'x' * MAX_ANNOUNCEMENT_DOCUMENT_BYTES
+
+    class Session:
+        def __init__(self, response):
+            self.response = response
+            self.calls = 0
+
+        def get(self, url, **kwargs):
+            self.calls += 1
+            return self.response
+
+    declared = Session(DeclaredResponse())
+    with pytest.raises(AnnouncementDocumentTooLarge, match='128 MiB'):
+        download_document('finalpage/2026-09-10/123.PDF', session=declared)
+    assert declared.calls == 1
+
+    streamed = Session(StreamResponse())
+    with pytest.raises(AnnouncementDocumentTooLarge, match='128 MiB'):
+        download_document('finalpage/2026-09-10/123.PDF', session=streamed)
+    assert streamed.calls == 1

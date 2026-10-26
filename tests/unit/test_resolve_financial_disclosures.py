@@ -4,6 +4,7 @@ import subprocess
 import polars as pl
 
 from quant.data import resolve_financial_disclosures as resolver
+from quant.data.connectors.cninfo_announcements import AnnouncementDocumentTooLarge
 
 
 def test_resolution_preserves_raw_and_adds_only_recognized_issuer_periods(tmp_path, monkeypatch):
@@ -115,3 +116,46 @@ def test_partial_document_preserves_unknown_dates_without_requesting_them(tmp_pa
     assert len(result['document_resolutions']) == 1
     assert result['unresolved'][0]['reason'] == 'partially_readable_document_periods'
     assert result['unresolved'][0]['unconfirmed_evidence'][0]['period'] == '2021-12-31'
+
+
+def test_oversized_announcement_pdf_is_unresolved_without_aborting_batch(tmp_path, monkeypatch):
+    raw = tmp_path/'announcements.parquet'
+    pl.DataFrame({'announcementId': ['1', '2'], 'secName': ['金道科技', '金道科技'],
+                  'adjunctUrl': ['finalpage/2026-09-10/1.PDF', 'finalpage/2026-09-10/2.PDF']
+                  }).write_parquet(raw)
+    source = tmp_path/'source'
+    source.mkdir()
+    (source/'summary.json').write_text(json.dumps({
+        'start': '2026-09-10', 'end': '2026-09-10', 'raw_paths': [str(raw)], 'requests': [],
+        'unresolved': [
+            {'symbol': '301279.SZ', 'announcement_id': '1', 'announcement_date': '2026-09-10',
+             'title': '发行人最近一期财务报告', 'reason': 'report_period_not_explicit_in_title'},
+            {'symbol': '301279.SZ', 'announcement_id': '2', 'announcement_date': '2026-09-10',
+             'title': '发行人最近一期财务报告', 'reason': 'report_period_not_explicit_in_title'},
+        ],
+    }), encoding='utf-8')
+
+    def download(path):
+        if path.endswith('/1.PDF'):
+            raise AnnouncementDocumentTooLarge('Announcement document exceeds the 128 MiB limit')
+        return b'%PDF-fixture'
+
+    monkeypatch.setattr(resolver, 'issuer_names',
+                        lambda *a, **k: {'301279.SZ': {'fullname': '金道科技股份有限公司'}})
+    monkeypatch.setattr(resolver, 'download_document', download)
+    monkeypatch.setattr(resolver, 'ocr_pages', lambda *a: [
+        {'page': page, 'text': '合并资产负债表 编制单位：金道科技 2025年12月31日 2026年6月30日'}
+        for page in (1, 2)])
+    result = resolver.resolve(disclosures=source, data_root=tmp_path/'data',
+                              output=tmp_path/'out', document_cache=tmp_path/'cache')
+    assert result['requests'] == [
+        {'symbol': '301279.SZ', 'period': '2025-12-31'},
+        {'symbol': '301279.SZ', 'period': '2026-06-30'},
+    ]
+    assert len(result['document_resolutions']) == 1
+    assert result['document_resolutions'][0]['announcement_id'] == '2'
+    oversized = [row for row in result['unresolved'] if row['announcement_id'] == '1']
+    assert len(oversized) == 1
+    assert oversized[0]['reason'] == 'document_exceeds_size_limit'
+    assert '128 MiB' in oversized[0]['detail']
+    assert not list((tmp_path/'data'/'raw'/'cninfo'/'financial_disclosure_documents').rglob('1.pdf'))
