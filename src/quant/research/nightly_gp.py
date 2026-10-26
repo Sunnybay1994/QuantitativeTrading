@@ -300,24 +300,49 @@ def search(panel: pl.DataFrame, labels: pl.DataFrame, mapping: dict[str, str], s
         (library/f"{row['factor_id']}.toml").write_text(''.join(f'{k} = {json.dumps(v)}\n' for k,v in definition.items()), encoding='utf-8')
     if context_evaluator and winners:
         # Preserve the exact pre-MAD values for the natural N3 computation check.
-        # Winners reuse already materialized context; no new population/trials.
+        # Receipt uses a fresh registry so a full search budget cannot abort N2.
         from quant.data.gp_context_inputs import dump, sha256
-        saved_values = []
+        from quant.research.gp_full_context import FullContextEvaluator
+        contract = json.loads((context_evaluator.output/'contract.json').read_text(encoding='utf-8'))
+        identity = {k: v for k, v in contract.items()
+                    if k not in ('context_version', 'population', 'maximum_subtrees',
+                                 'maximum_disk_mb', 'mapping')}
+        receipt_evaluator = FullContextEvaluator(
+            context_evaluator.panel, context_evaluator.mapping, output/'full_context_receipt',
+            identity=identity, maximum_subtrees=contract['maximum_subtrees'],
+            maximum_disk_mb=contract['maximum_disk_mb'], reader=context_evaluator.reader,
+            verify_sources=context_evaluator.verify_sources)
+        saved_values, kept = [], []
         for row in winners:
-            values = context_evaluator.evaluate(row['terminal_expression'])
+            # Receipt must match N3's compute of definition.expr (library expression),
+            # not the opaque grammar terminal that may still name mapped gp_* shortcuts.
+            try:
+                values = receipt_evaluator.evaluate(row['expression'])
+            except ValueError as exc:
+                message = str(exc)
+                if 'GP_CONTEXT_SUBTREE_BUDGET' not in message and 'GP_CONTEXT_STORAGE_BUDGET' not in message:
+                    raise
+                (library/f"{row['factor_id']}.toml").unlink(missing_ok=True)
+                continue
+            except (pl.exceptions.PolarsError, OverflowError):
+                (library/f"{row['factor_id']}.toml").unlink(missing_ok=True)
+                continue
             saved_values.append(monthly.select('symbol', 'trade_date').join(
                 values, on=['symbol', 'trade_date'], how='left', validate='1:1').with_columns(
                     pl.lit(row['factor_id']).alias('factor')))
-        values_path = output/'training_candidate_values.parquet'
-        temporary = values_path.with_suffix('.partial.parquet')
-        pl.concat(saved_values).write_parquet(temporary)
-        temporary.replace(values_path)
-        dump(output/'training_values_manifest.json', {
-            'calculation_context': context_version, 'expression_identity': identity_version,
-            'input_identity': input_identity, 'values_sha256': sha256(values_path),
-            'labels_sha256': sha256(output/'monthly_sample.parquet'),
-            'directions': {row['factor_id']: row['direction'] for row in winners},
-            'expressions': {row['factor_id']: row['expression'] for row in winners}})
+            kept.append(row)
+        winners = kept
+        if saved_values:
+            values_path = output/'training_candidate_values.parquet'
+            temporary = values_path.with_suffix('.partial.parquet')
+            pl.concat(saved_values).write_parquet(temporary)
+            temporary.replace(values_path)
+            dump(output/'training_values_manifest.json', {
+                'calculation_context': context_version, 'expression_identity': identity_version,
+                'input_identity': input_identity, 'values_sha256': sha256(values_path),
+                'labels_sha256': sha256(output/'monthly_sample.parquet'),
+                'directions': {row['factor_id']: row['direction'] for row in winners},
+                'expressions': {row['factor_id']: row['expression'] for row in winners}})
     (output/'search.json').write_text(json.dumps({'candidates': winners, 'trials': records}, indent=2), encoding='utf-8')
     return winners
 

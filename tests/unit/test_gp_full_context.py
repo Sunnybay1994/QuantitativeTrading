@@ -27,7 +27,9 @@ def panels():
                 'industry_l1': None if j == 7 else str(j % 6),
                 'label': float(x * .1 + y * .01 + rng.normal())})
     full = pl.from_dicts(rows).sort('symbol', 'trade_date')
-    sample = full.filter(pl.col('symbol') < 's120').rename({'a': 'gp_a', 'b': 'gp_b'})
+    # Keep raw leaves alongside gp_* aliases (production panel does the same).
+    sample = full.filter(pl.col('symbol') < 's120').with_columns(
+        gp_a=pl.col('a'), gp_b=pl.col('b'))
     return full, sample
 
 
@@ -66,6 +68,30 @@ def test_full_context_values_masks_and_ic_match_deployment(tmp_path, panels, exp
         raise AssertionError('A completed cross-section must reuse its same-input projection')
     runner.reader = forbidden
     assert runner.evaluate(expression).equals(actual)
+
+
+def test_mapped_terminal_ignores_divergent_panel_shortcut(tmp_path, panels):
+    """Mapped gp_* names must expand; a stale panel column must not win."""
+    full, sample = panels
+    # Inject a wildly wrong gp_a column while mapping still says gp_a -> a.
+    divergent = sample.with_columns((pl.col('gp_a') + 1000.0).alias('gp_a'))
+    runner = evaluator(tmp_path, full, divergent)
+    terminal = 'ts_mean(delay(gp_a, 1), 5)'
+    expanded = 'ts_mean(delay(a, 1), 5)'
+    actual = runner.evaluate(terminal).sort('symbol', 'trade_date')
+    via_expanded = runner.evaluate(expanded).sort('symbol', 'trade_date')
+    expected = evaluate_expressions(
+        divergent.select('symbol', 'trade_date', 'a', 'adj_close'),
+        {'candidate': expanded}).sort('symbol', 'trade_date')
+    np.testing.assert_allclose(actual['candidate'].to_numpy(), via_expanded['candidate'].to_numpy(),
+                               equal_nan=True, atol=1e-13, rtol=1e-12)
+    np.testing.assert_allclose(actual['candidate'].to_numpy(), expected['candidate'].to_numpy(),
+                               equal_nan=True, atol=1e-13, rtol=1e-12)
+    # Sanity: reading the divergent column directly would not match.
+    wrong = evaluate_expressions(
+        divergent.select('symbol', 'trade_date', 'gp_a', 'adj_close'),
+        {'candidate': 'ts_mean(delay(gp_a, 1), 5)'}).sort('symbol', 'trade_date')
+    assert not np.allclose(actual['candidate'].to_numpy(), wrong['candidate'].to_numpy(), equal_nan=True)
 
 
 def test_context_budget_never_falls_back_to_sample_or_increases_on_resume(tmp_path, panels):
@@ -229,3 +255,63 @@ def test_source_inventory_detects_new_increment_before_cache_reuse(tmp_path):
     (folder/'bar_1d.parquet').write_bytes(b'new historical partition')
     with pytest.raises(ValueError, match='inventory changed'):
         guard.verify_sources()
+
+
+def test_winner_receipt_survives_full_search_registry_and_skips_budget(tmp_path, panels):
+    """Exhausted search subtree budget must not crash N2 receipts; over-budget winners drop."""
+    import random
+    from deap import gp
+    from quant.research import nightly_gp
+    from quant.research.gp_full_context import scope_cross_sections
+    from quant.research.nightly_gp import _FITNESS_PREPROCESSING, expand_expression
+
+    full, sample = panels
+    mapping = {'gp_a': 'a', 'gp_b': 'b'}
+    panel = sample.drop('label')
+    labels = sample.select('symbol', 'trade_date', 'label')
+    search_ctx = tmp_path/'search_context'
+    runner = evaluator(search_ctx, full, sample, maximum_subtrees=1)
+    runner.evaluate('rank(gp_a)')
+    assert len(runner.registry) == 1
+    with pytest.raises(ValueError, match='SUBTREE_BUDGET'):
+        runner.evaluate('scale(gp_a)')
+
+    out = tmp_path/'run'
+    out.mkdir()
+    labels.write_parquet(out/'monthly_sample.parquet')
+    scoped_rank = scope_cross_sections('rank(gp_a)')
+    scoped_scale = scope_cross_sections('scale(gp_a)')
+    records = []
+    for terminal, fitness in ((scoped_rank, 0.5), (scoped_scale, 0.4)):
+        records.append({
+            'expression': expand_expression(terminal, mapping),
+            'terminal_expression': terminal, 'complexity': 2, 'depth': 1,
+            'fitness': fitness, 'direction': 1,
+            'fitness_preprocessing': _FITNESS_PREPROCESSING,
+            'search_objective': 'pooled_mean_ic_v1',
+            'calculation_context': VERSION, 'expression_identity': 'literal_expression_v1',
+            'input_identity': runner.identity, 'canonical_key': terminal,
+            'train': {'months': 48, 'mean_ic': fitness}, 'maximum_rank_correlation': 0.1})
+    pset = nightly_gp.primitive_set(['gp_a', 'gp_b', 'adj_close', 'a', 'b'])
+    population = [str(gp.PrimitiveTree.from_string(tree, pset))
+                  for tree in ("rank('gp_a')", "scale('gp_a')")]
+    (out/'search_checkpoint.json').write_text(json.dumps({
+        'generation': 0, 'population': population, 'random_state': random.getstate(),
+        'records': records}), encoding='utf-8')
+
+    winners = nightly_gp.search(
+        panel, labels, mapping,
+        {'seed': 1, 'population_size': 2, 'generations': 0, 'max_depth': 5,
+         'complexity_penalty': .0005, 'calculation_context': VERSION},
+        out, family='fixture', context_evaluator=runner)
+
+    assert len(winners) == 1
+    assert 'rank' in winners[0]['expression']
+    assert (out/'training_candidate_values.parquet').exists()
+    manifest = json.loads((out/'training_values_manifest.json').read_text(encoding='utf-8'))
+    assert list(manifest['expressions']) == [winners[0]['factor_id']]
+    assert list((out/'library').glob('*.toml')) == [out/'library'/f"{winners[0]['factor_id']}.toml"]
+    saved = json.loads((out/'search.json').read_text(encoding='utf-8'))
+    assert len(saved['candidates']) == 1
+    assert (out/'full_context_receipt').exists()
+    assert len(runner.registry) == 1

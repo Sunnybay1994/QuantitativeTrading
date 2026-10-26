@@ -161,9 +161,14 @@ class FullContextEvaluator:
             projected[name] = values
             return name
 
-        rewritten = replace_cross_subtrees(scope_cross_sections(expression), materialize)
+        # Expand mapped grammar terminals before scoping/materializing so nested
+        # cross ops see the real expression, not a panel gp_* shortcut column.
+        expanded = expand(expression, self.mapping)
+        rewritten = replace_cross_subtrees(scope_cross_sections(expanded), materialize)
         fields = {node.id for node in ast.walk(ast.parse(rewritten, mode='eval')) if isinstance(node, ast.Name)}
-        sample = self.panel.select(*KEYS, *sorted(fields & set(self.panel.columns) - set(KEYS)))
+        # Never read mapped terminal names from the sample panel as value shortcuts.
+        usable = set(self.panel.columns) - set(KEYS) - set(self.mapping)
+        sample = self.panel.select(*KEYS, *sorted(fields & usable))
         for values in projected.values():
             sample = sample.join(values, on=KEYS, how='left', validate='1:1')
         result = evaluate_expressions(sample, {'candidate': rewritten})
