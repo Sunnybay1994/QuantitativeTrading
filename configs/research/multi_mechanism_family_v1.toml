@@ -1,0 +1,91 @@
+# S1: four fixed-weight mechanism portfolios. Freeze before any portfolio result.
+# Do not add members or change weights after the first replay.
+id = "multi_mechanism_family_v1"
+registered_on = 2026-10-27
+auto_trade = false
+hypothesis = "Equal-weight cross-sectional z of one primary factor from each of volatility_risk, liquidity_activity, and value_dividend, plus SUE v2. No weight search."
+mapping = "artifacts/research/market_mechanism_20261004_01/frozen_mapping.json"
+evidence = "artifacts/research/market_mechanism_20261004_01/factor_cost_evidence.parquet"
+score_variant = "size_industry_neutral"
+statistics = "artifacts/factors/p7_peer_statistics_20260831_20260912_01"
+predictions = "artifacts/models/q2_sue_context_v2_causal48_20260912_02/predictions"
+sue_column = "lightgbm"
+q10_control = "artifacts/models/q10_sue_v2_turnover_budget_05_20260912_01"
+benchmarks = "artifacts/factors/battery_stock_benchmarks_20260911"
+return_benchmark_config = "configs/data/return_benchmarks_q1b_20260912.toml"
+method = "lightgbm"
+stress_start = 2024-01-01
+stress_end = 2024-02-08
+promote_excess_pp = 1.0
+
+# Primary variant, highest ICIR inside the frozen mechanism. Selected before replay.
+[[factors]]
+mechanism = "volatility_risk"
+id = "max_daily_return_20"
+icir = 0.834197
+direction = 1
+
+[[factors]]
+mechanism = "liquidity_activity"
+id = "free_float_turnover_level_monthly"
+icir = 0.79286
+direction = 1
+
+[[factors]]
+mechanism = "value_dividend"
+id = "daily_ep_ttm_positive"
+icir = 0.513543
+direction = 1
+
+[[members]]
+id = "M1"
+top_k = 50
+budget = 0.5
+include_sue = true
+size_neutral = false
+rebalance = "monthly"
+
+[[members]]
+id = "M2"
+top_k = 50
+budget = 0.5
+include_sue = false
+size_neutral = false
+rebalance = "monthly"
+
+[[members]]
+id = "M3"
+top_k = 50
+budget = 0.5
+include_sue = true
+size_neutral = true
+rebalance = "monthly"
+
+[[members]]
+id = "M4"
+top_k = 50
+budget = 0.5
+include_sue = true
+size_neutral = false
+rebalance = "quarterly"
+execution_months = [3, 6, 9, 12]
+
+[size_on_policy]
+auto_trade = false
+top_k = 50
+retention_multiplier = 1.5
+cash_buffer = 0.02
+single_stock_weight = 0.10
+industry_active_band = 1.0
+size_band = 0.5
+adv_participation = 0.05
+maximum_iterations = 4000
+tolerance = 0.00000001
+benchmark = "signal_date_eligible_all_market_equal_weight"
+unknown_benchmark_industry = "explicit_UNKNOWN_bucket_no_new_buys"
+size = "R3_winsor_1_99_log_market_cap_eligible_equal_weight_z"
+selection = "size_band_only_buffered_topk"
+objective = "Euclidean_distance_to_size_neutral_equal_weights"
+infeasible = "freeze_actual_quantities_record_violations_never_count_as_constraint_pass"
+missing_held_controls = "freeze_actual_quantities_no_risk_imputation"
+cost_multipliers = [0.5, 1.0, 2.0]

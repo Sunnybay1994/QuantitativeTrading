@@ -51,6 +51,9 @@ def run_cell(
     output: Path,
     data_root: Path,
     resume: bool = False,
+    score_frame: pl.DataFrame | None = None,
+    execution_months: tuple[int, ...] | None = None,
+    research_id: str | None = None,
 ) -> dict:
     from quant.backtest.share_exchanges import validate_exchanges
     from quant.data.equal_weight_index import load_return_benchmarks
@@ -72,7 +75,7 @@ def run_cell(
     folder.mkdir(parents=True, exist_ok=True)
 
     source = Path(spec["predictions"])
-    scores = pl.read_parquet(source / "monthly_predictions.parquet")
+    scores = score_frame if score_frame is not None else pl.read_parquet(source / "monthly_predictions.parquet")
     model = tomllib.loads((source / "model.toml").read_text(encoding="utf-8"))
     settings = tomllib.loads((source / "battery.toml").read_text(encoding="utf-8"))
     settings["share_exchanges"] = validate_exchanges(
@@ -87,12 +90,14 @@ def run_cell(
     name, targets = model_target_plans(scores, model=model, sessions=sessions)[
         f"{spec['method']}_top{cell['top_k']}"
     ]
+    if execution_months:
+        targets = targets.filter(pl.col("execution_date").dt.month().is_in(list(execution_months)))
     for filename in ("model.toml", "battery.toml"):
         shutil.copyfile(source / filename, folder / filename)
     shutil.copyfile(Path(spec["return_benchmark_config"]), folder / "return_benchmarks.toml")
     cell_toml = "\n".join([
         "[research]",
-        f'id = "q10-sizing-{cell["cell_id"]}"',
+        f'id = "{research_id or f"q10-sizing-{cell["cell_id"]}"}"',
         f'registered_on = {dt.date.today().isoformat()}',
         f'cell_id = "{cell["cell_id"]}"',
         f"budget = {cell['budget']}",
