@@ -195,7 +195,6 @@ class FullMarketInputs:
 
     def _aux_sources(self, expression: str, bars: pl.DataFrame) -> None:
         from quant.research.factor_financials import financial_input_names
-        from quant.research.factor_intraday import minute_input_names
         from quant.research.factor_market import market_input_names
         from quant.data.forecast_numeric import forecast_numeric_input_names
         settings = self.source_settings
@@ -224,6 +223,8 @@ class FullMarketInputs:
         if forecast_numeric_input_names((expression,)):
             path = Path(settings['forecast_numeric_corpus'])
             self.track(path if path.is_absolute() else self.root/path)
+        # Minute parquets are rewritten by collectors and stay out of the N2
+        # freeze inventory. A minute writer must not fail the source checksum.
         from quant.factors.statement_event_reaction import NAMES as STATEMENT_NAMES
         from quant.factors.turnover_reference import NAMES as TURNOVER_NAMES, CONTROLS as TURNOVER_CONTROLS
         if any(n.id in (*TURNOVER_NAMES, *TURNOVER_CONTROLS) for n in ast.walk(ast.parse(expression)) if isinstance(n, ast.Name)):
@@ -237,10 +238,6 @@ class FullMarketInputs:
             folder = self.root/'clean/index_benchmarks'/settings['statement_event_index_version']
             for name in ('data.parquet', 'summary.json'):
                 self.track(folder/name)
-        if minute_input_names((expression,)):
-            for symbol in sorted(set(bars['symbol'])):
-                for source in ('baostock', 'tdx'):
-                    self.track(self.root/'clean/bar_intraday/freq=5m'/f'source={source}'/f'symbol={symbol}'/'data.parquet')
 
     def verify_sources(self) -> None:
         if self._base_paths() != self.base_paths:

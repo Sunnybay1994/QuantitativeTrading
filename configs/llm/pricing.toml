@@ -1,0 +1,6 @@
+# Frozen with the code. Weekly generation must not stop because this date aged.
+# Peak rates recorded 2026-10-10 from
+# https://api-docs.deepseek.com/quick_start/pricing/
+model = "deepseek-flash"
+input_usd_per_million = 0.30
+output_usd_per_million = 1.20

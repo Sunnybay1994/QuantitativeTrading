@@ -29,6 +29,7 @@ from quant.research.dsl_candidate_validate import (
     retry_messages,
 )
 from quant.research.generate_factor_candidates import Candidate, _envelope, validate_candidates
+from quant.llm.pricing import DEFAULT_PRICING, load_pricing
 from quant.research.score_forecast_text import cost_for, load_settings, score_one
 from quant.research.weekly_generation_feedback import generation_feedback, mechanism_shape
 
@@ -284,23 +285,8 @@ def run(config: Path, now: dt.datetime | None = None, client: Any = None,
     if frozen['cache'] != str(Path(cfg['cache']).resolve()):
         raise ValueError('Resume must use the original shared cache')
     settings = load_settings(output/'scoring.toml')
-    # A frozen request must not become permanently unresumable solely because
-    # its pricing-check date ages. Accept a freshly checked *identical* tariff
-    # and request configuration, preserving the original prompt/cache identity.
-    if (local.date()-settings['pricing_checked']).days not in range(8):
-        current_path = Path(cfg['scoring_config'])
-        current = load_settings(current_path)
-        same = all(current[key] == value for key, value in settings.items() if key != 'pricing_checked')
-        if same and (local.date()-current['pricing_checked']).days in range(8):
-            receipt = output/f"pricing_revalidation_{current['pricing_checked']}.toml"
-            payload = current_path.read_bytes()
-            if receipt.exists() and receipt.read_bytes() != payload:
-                raise ValueError('Conflicting pricing revalidation receipt')
-            if not receipt.exists():
-                receipt.write_bytes(payload)
-            report['pricing_revalidation'] = {'source': str(receipt),
-                'sha256': hashlib.sha256(payload).hexdigest(), 'checked': str(current['pricing_checked'])}
-            settings = {**settings, 'pricing_checked': current['pricing_checked']}
+    # Tariff is configs/llm/pricing.toml (or the test path), not an 8-day clock.
+    settings.update(load_pricing(Path(cfg['pricing_config']) if cfg.get('pricing_config') else DEFAULT_PRICING))
     design = tomllib.loads((output/'design.toml').read_text(encoding='utf-8'))
     report.update(cache_key=frozen['cache_key'], input_bytes=frozen['input_bytes'],
                   maximum_candidates=frozen['maximum'])
@@ -322,8 +308,6 @@ def run(config: Path, now: dt.datetime | None = None, client: Any = None,
                 return finish('deferred_off_peak', next_allowed_at=window['next_allowed_at'])
             if totals['week_usd']+bound > weekly or totals['month_usd']+bound > monthly:
                 return finish('deferred_budget')
-            if (local.date()-settings['pricing_checked']).days not in range(8):
-                return finish('deferred_pricing_refresh')
             if owned:
                 client = DeepSeekClient(load_key(Path.cwd()), timeout=settings['timeout_seconds'])
         def parse(content: str) -> dict:

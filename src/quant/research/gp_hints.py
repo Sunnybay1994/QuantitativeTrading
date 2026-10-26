@@ -8,6 +8,7 @@ import tomllib
 from pathlib import Path
 
 HINTS_DIR = Path("configs/research/gp_hints")
+CACHE_DIR = Path("artifacts/research/gp_hints_cache")
 MAX_USD = 0.3
 
 
@@ -84,7 +85,25 @@ def write_hint_toml(path: Path, payload: dict, *, batch_id: str, source: str) ->
     temporary.replace(path)
 
 
-def _llm_enrich(base: dict, batch: dict) -> dict | None:
+def priced_usd(response: dict, pricing_path: Path) -> tuple[float | None, bool]:
+    """Provider usd wins. Otherwise estimate from the frozen tariff. Never return 0."""
+    raw = response.get("usd") if response.get("usd") not in (None, 0, 0.0) else response.get("cost_usd")
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > 0:
+        return float(raw), False
+    usage = response.get("usage")
+    if not isinstance(usage, dict):
+        return None, False
+    prompt, completion = usage.get("prompt_tokens"), usage.get("completion_tokens")
+    if type(prompt) is not int or type(completion) is not int:
+        return None, False
+    from quant.llm.pricing import load_pricing
+
+    rates = load_pricing(pricing_path)
+    usd = (prompt * rates["input_usd_per_million"] + completion * rates["output_usd_per_million"]) / 1_000_000
+    return (usd, True) if usd > 0 else (None, False)
+
+
+def _llm_enrich(base: dict, batch: dict, *, batch_id: str, pricing_path: Path) -> dict | None:
     """Optional DeepSeek enrichment; returns None on budget/API failure."""
     try:
         from quant.llm import complete_messages, RequestFailure
@@ -122,13 +141,16 @@ def _llm_enrich(base: dict, batch: dict) -> dict | None:
     if isinstance(response.get("message"), dict):
         text = response["message"].get("content", text)
     try:
-        # ledger may not exist in older trees
-        ledger_append({
-            "task": "gp_hints",
-            "usd": response.get("usd") or response.get("cost_usd") or 0,
-            "tokens": response.get("usage"),
-            "batch": batch.get("run"),
-        })
+        usd, estimated = priced_usd(response, pricing_path)
+        if usd is not None:
+            ledger_append({
+                "task": "gp_hints",
+                "usd": usd,
+                "estimated": estimated,
+                "tokens": response.get("usage"),
+                "batch": batch.get("run"),
+                "batch_id": batch_id,
+            })
     except Exception:
         pass
     match = re.search(r"\{.*\}", text, re.S)
@@ -144,8 +166,17 @@ def _llm_enrich(base: dict, batch: dict) -> dict | None:
     return parsed
 
 
-def update_from_feedback(feedback: dict, *, hints_dir: Path = HINTS_DIR, use_llm: bool = True) -> dict:
-    """Write one hint file for the latest completed battery in research_feedback."""
+def update_from_feedback(
+    feedback: dict,
+    *,
+    hints_dir: Path = HINTS_DIR,
+    cache_dir: Path = CACHE_DIR,
+    pricing_path: Path | None = None,
+    use_llm: bool = True,
+) -> dict:
+    """Write one hint file. Each batch_id calls the LLM at most once."""
+    from quant.llm.pricing import DEFAULT_PRICING
+
     batches = feedback.get("completed_batteries") or []
     if not batches:
         return {"written": None, "reason": "no_completed_batteries"}
@@ -153,11 +184,22 @@ def update_from_feedback(feedback: dict, *, hints_dir: Path = HINTS_DIR, use_llm
     run = Path(batch["run"])
     batch_id = batch_number(run)
     path = hints_dir / f"batch_{batch_id}.toml"
+    tariff = pricing_path or DEFAULT_PRICING
     base = deterministic_hints(batch)
     source = "deterministic"
     payload = base
-    if use_llm:
-        enriched = _llm_enrich(base, batch)
+    receipt = cache_dir / f"batch_{batch_id}.json"
+    if use_llm and receipt.is_file():
+        saved = json.loads(receipt.read_text(encoding="utf-8"))
+        if saved.get("ok") and isinstance(saved.get("payload"), dict):
+            payload, source = saved["payload"], "llm"
+    elif use_llm:
+        enriched = _llm_enrich(base, batch, batch_id=batch_id, pricing_path=tariff)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        temporary = receipt.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(
+            {"ok": enriched is not None, "payload": enriched}, ensure_ascii=False), encoding="utf-8")
+        temporary.replace(receipt)
         if enriched:
             payload, source = enriched, "llm"
     write_hint_toml(path, payload, batch_id=batch_id, source=source)

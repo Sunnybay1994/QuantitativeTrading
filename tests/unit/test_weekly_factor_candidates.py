@@ -60,13 +60,16 @@ def setup(tmp_path, monkeypatch):
     pl.DataFrame({'factor': ['old'], 'statistical_pass': [False]}).write_parquet(scorecard)
     scoring = tmp_path/'scoring.toml'
     scoring.write_text('model="deepseek-flash"\nmodel_epoch="fixture"\npricing_checked=2026-09-15\n'
-                       'input_usd_per_million=0.3\noutput_usd_per_million=1.2\n'
+                       'input_usd_per_million=9.9\noutput_usd_per_million=9.9\n'
                        'max_tokens=4096\nmax_input_bytes=100000\nmax_attempts=1\n')
+    pricing = tmp_path/'pricing.toml'
+    pricing.write_text('input_usd_per_million=0.3\noutput_usd_per_million=1.2\n')
     design = tmp_path/'design.toml'
     design.write_text('[search]\nfields=["adj_close"]\noperators=["delay"]\n'
                       'maximum_candidates=20\nmaximum_depth=20\nmaximum_history=300\n')
     paths = {'output_root': tmp_path/'weekly', 'library': library, 'queue': tmp_path/'queue',
-             'scorecard': scorecard, 'scoring_config': scoring, 'design': design, 'cache': tmp_path/'shared.sqlite'}
+             'scorecard': scorecard, 'scoring_config': scoring, 'design': design,
+             'cache': tmp_path/'shared.sqlite', 'pricing_config': pricing}
     config = tmp_path/'weekly.toml'
     config.write_text(''.join(f'{key}={json.dumps(str(value))}\n' for key, value in paths.items()))
     return config, paths
@@ -118,11 +121,16 @@ def test_revalidated_identical_price_resumes_without_changing_frozen_request(set
     result = weekly.run(config, dt.datetime(2026, 9, 29, 21, tzinfo=weekly.SHANGHAI), client, execute=True)
     assert result['cache_key'] == initial['cache_key']
     assert originals == {name: (folder/name).read_bytes() for name in originals}
-    if change == 'date_only':
-        assert result['completed'] and client.calls == 1
-        assert result['pricing_revalidation']['checked'] == '2026-09-29'
-    else:
-        assert result['state'] == 'deferred_pricing_refresh' and client.calls == 0
+    from quant.research.score_forecast_text import cost_for
+    frozen = json.loads((folder/'request.json').read_text(encoding='utf-8'))
+    cheap = cost_for(frozen['token_bound'], 4096, {
+        'input_usd_per_million': 0.3, 'output_usd_per_million': 1.2})
+    expensive = cost_for(frozen['token_bound'], 4096, {
+        'input_usd_per_million': 9.9, 'output_usd_per_million': 9.9})
+    assert result['completed'] and client.calls == 1
+    assert 'pricing_revalidation' not in result
+    assert result['usd_bound_one_attempt'] == pytest.approx(cheap)
+    assert result['usd_bound_one_attempt'] != pytest.approx(expensive)
 
 
 def test_deduplicates_library_and_candidate_then_cached_resume(setup):

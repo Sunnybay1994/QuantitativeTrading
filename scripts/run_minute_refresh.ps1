@@ -24,7 +24,8 @@ function Invoke-MinuteFactors {
     if ($factorWriters.Count -gt 0) {
         @{status='deferred'; updated_at=(Get-Date).ToString('o'); reason='Existing data/factor/account writer'; writer_pids=@($factorWriters.ProcessId)} |
             ConvertTo-Json | Set-Content -LiteralPath (Join-Path $logRoot 'factor_scheduler.json') -Encoding utf8
-        return 2
+        # Yielding the factor publish is a successful scheduler outcome.
+        exit 0
     }
     # Collection and bounded minute-factor reconciliation have their own receipt.
     # A partial provider response remains partial; it cannot block daily-only signals.
@@ -44,6 +45,7 @@ try {
     }
     $dataCode = Invoke-LoggedPython @('-m', 'quant', 'data', $kind)
     $null = Invoke-LoggedPython @('-m', 'quant.notify.automation_alert', '--task', $kind, '--code', "$dataCode", '--log', $logFile)
+    if ($dataCode -ne 0) { exit $dataCode }
     $factorCode = Invoke-MinuteFactors
     $researchCode = Invoke-LoggedPython @('-m', 'quant', 'research', 'minutes')
     $null = Invoke-LoggedPython @('-m', 'quant.notify.automation_alert', '--task', '分钟策略研究', '--code', "$researchCode", '--log', $logFile)
