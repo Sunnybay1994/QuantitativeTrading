@@ -163,8 +163,16 @@ def factor_records_from_run(run: Path) -> list[dict]:
     return records
 
 
-def append_records(records: list[dict], registry: Path = DEFAULT_REGISTRY) -> int:
+def append_records(records: list[dict], registry: Path | None = None) -> int:
     """Upsert by report run and variant, preserving separate historical runs."""
+    from quant.reporting.registry_hygiene import outside_repository, registry_file
+
+    registry = registry_file(DEFAULT_REGISTRY, registry)
+    production = registry.resolve() == DEFAULT_REGISTRY.resolve()
+    if production:
+        for record in records:
+            if outside_repository(str(record.get("run_path")), ROOT):
+                raise ValueError(f"run_path outside repository: {record.get('run_path')}")
     if registry.resolve() == DEFAULT_REGISTRY.resolve():
         from quant.reporting.registered_periods import attach
         attach(records, ROOT)
@@ -188,7 +196,8 @@ def register_run(run: Path, registry: Path | None = None,
                  leaderboard: Path | None = None) -> int:
     """Public completion hook for model, strategy and nightly research runners."""
     from quant.reporting.leaderboard import write_leaderboard
-    registry = registry or DEFAULT_REGISTRY
+    from quant.reporting.registry_hygiene import registry_file
+    registry = registry_file(DEFAULT_REGISTRY, registry)
     count = append_records(records_from_run(run), registry)
     write_leaderboard(registry, leaderboard or DEFAULT_LEADERBOARD)
     return count

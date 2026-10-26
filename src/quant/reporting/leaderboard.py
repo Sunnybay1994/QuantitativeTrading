@@ -25,6 +25,8 @@ def infer_level(run_path: str, level: str | None = None) -> str:
 
 
 def _label(row: dict) -> str:
+    if str(row.get("canonical_id") or "").startswith("q10_sue_v2|"):
+        return "Q10 SUE v2"
     label = row['experiment_id']
     path = row['run_path'].replace('\\', '/')
     if 'q1b_original_p4_equal_weight_reports_' in path:
@@ -35,6 +37,9 @@ def _label(row: dict) -> str:
 
 
 def _render(rows: list[dict], *, title: str, intro: str, limit: int | None) -> list[str]:
+    from quant.reporting.registry_hygiene import board_rows
+
+    rows = board_rows(rows)
     latest = {}
     for row in sorted(rows, key=lambda r: (r['result_time'], r['run_path'])):
         if row.get('primary'):
@@ -55,8 +60,9 @@ def _render(rows: list[dict], *, title: str, intro: str, limit: int | None) -> l
         # Stable: ensure first row is Q10 PAPER_CANDIDATE budgeted when available.
         preferred = next(
             (r for r in chosen
-             if r.get('conclusion') == 'PAPER_CANDIDATE' and r.get('variant') == 'budgeted'
-             and 'q10_sue_v2_turnover' in r['run_path'].replace('\\', '/').lower()),
+             if str(r.get("canonical_id")) == "q10_sue_v2"
+             and r.get("variant") == "budgeted"
+             and r.get("conclusion") == "PAPER_CANDIDATE"),
             None,
         )
         if preferred is None:

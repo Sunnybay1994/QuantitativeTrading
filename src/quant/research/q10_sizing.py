@@ -161,7 +161,10 @@ def run_cell(
         nav, trades = load_cost_history(folder, "budgeted", multiplier, end)
         if nav.filter(pl.col("market_value") > 0).height:
             turnover = calendar_turnover(nav, trades)
-            row["annualized_one_way_turnover"] = turnover["median"]
+            measured = row.get("annualized_one_way_turnover") or 0
+            median = turnover["median"] or 0
+            # A zero calendar median must not wipe the cost-report turnover.
+            row["annualized_one_way_turnover"] = measured if median == 0 and measured > 0 else median
     nav1, _ = load_cost_history(folder, "budgeted", 1.0, end)
     nav2, _ = load_cost_history(folder, "budgeted", 2.0, end)
     assessment = assess_model(
