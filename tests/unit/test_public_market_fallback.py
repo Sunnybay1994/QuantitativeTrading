@@ -173,11 +173,13 @@ def test_history_plan_reuses_old_plans_and_lists_beijing(tmp_path, monkeypatch):
     path.parent.mkdir(parents=True)
     path.touch()
     monkeypatch.setattr(minute_history, 'universe', lambda *args: [
-        dict(symbol='000001.SZ', list_date='19910403'), dict(symbol='920001.BJ', list_date='20200101')])
+        dict(symbol='000001.SZ', list_date='19910403'),
+        dict(symbol='920001.BJ', list_date='20200101'),
+        dict(symbol='00700.HK', list_date='20000101')])
     result = minute_history.run(config, check_only=True)
     plan = json.loads((tmp_path/'out/plan.json').read_text())
-    assert result['unsupported_symbols'] == ['920001.BJ']
-    assert plan['queue'][0]['years'] == [2025, 2024, 2023]
+    assert result['unsupported_symbols'] == ['000001.SZ', '920001.BJ']
+    assert plan['queue'][0]['symbol'] == '00700.HK'
 
 
 def test_history_earliest_mode_preserves_oldest_first(tmp_path, monkeypatch):
@@ -186,11 +188,12 @@ def test_history_earliest_mode_preserves_oldest_first(tmp_path, monkeypatch):
     config.write_text(f'auto_trade=false\nearliest_available=true\ndata_root="{tmp_path.as_posix()}"\n'
         f'output="{(tmp_path/"out").as_posix()}"\nrecent_output="{(tmp_path/"recent").as_posix()}"\n'
         'start="1990-01-01"\nend="2026-09-18"\n')
-    monkeypatch.setattr(minute_history, 'universe', lambda *args: [dict(symbol='000001.SZ', list_date='19910403')])
-    atomic_json(tmp_path/'out/earliest_bounds.json', {'000001.SZ': dict(
-        requested_start='1991-04-03', requested_end='2026-09-18', first_date='2018-09-17')})
+    monkeypatch.setattr(minute_history, 'universe', lambda *args: [dict(symbol='00700.HK', list_date='20000101')])
+    atomic_json(tmp_path/'out/earliest_bounds.json', {'00700.HK': dict(
+        requested_start='2000-01-01', requested_end='2026-09-18', first_date='2018-09-17')})
     minute_history.run(config, check_only=True)
     plan = json.loads((tmp_path/'out/plan.json').read_text())
+    assert plan['queue'][0]['symbol'] == '00700.HK'
     assert plan['queue'][0]['years'] == list(range(2018, 2027))
     assert plan['queue'][0]['start'] == '2018-09-17'
 
@@ -223,8 +226,8 @@ def test_charged_history_continues_past_empty_year_without_new_quota(tmp_path, m
         def close(self):
             pass
     monkeypatch.setattr(minute_history, 'FutuRealtime', Client)
-    monkeypatch.setattr(minute_history, 'universe', lambda *args: [dict(symbol='000001.SZ', list_date='19910403')])
-    monkeypatch.setattr(minute_history, 'history_quota', lambda _: (95, 5, {'000001.SZ'}))
+    monkeypatch.setattr(minute_history, 'universe', lambda *args: [dict(symbol='00700.HK', list_date='20000101')])
+    monkeypatch.setattr(minute_history, 'history_quota', lambda _: (95, 5, {'00700.HK'}))
     monkeypatch.setattr(minute_history, 'earliest_available', lambda *args: '2018-09-17')
     requested = []
     def download(context, symbol, begin, finish, raw, clean):
@@ -234,4 +237,4 @@ def test_charged_history_continues_past_empty_year_without_new_quota(tmp_path, m
     result = minute_history.run(config)
     assert requested == ['2018-09-17', '2019-01-01', '2020-01-01']
     assert result['newly_charged_attempts'] == 0
-    assert '2019' in json.loads((tmp_path/'out/progress.json').read_text())['000001.SZ']['empty_years']
+    assert '2019' in json.loads((tmp_path/'out/progress.json').read_text())['00700.HK']['empty_years']

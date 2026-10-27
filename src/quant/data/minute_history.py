@@ -124,7 +124,7 @@ def same_day_queue(root: Path, end: str, settings: dict) -> list[dict]:
     seen: set[str] = set()
 
     for symbol, years in sorted(inventory.items()):
-        if symbol.endswith('.BJ'):
+        if not symbol.endswith(('.HK', '.US')):
             continue
         last = symbol_last_date(years)
         if last is not None and last >= end_date:
@@ -139,7 +139,7 @@ def same_day_queue(root: Path, end: str, settings: dict) -> list[dict]:
 
     for row in liquid_mid_large(settings):
         symbol = row['symbol']
-        if symbol in seen:
+        if symbol in seen or not symbol.endswith(('.HK', '.US')):
             continue
         years = inventory.get(symbol, {})
         last = symbol_last_date(years) if years else None
@@ -249,7 +249,7 @@ def run(config: Path, *, check_only=False):
             if (progress.get(symbol, {}).get('retry_start') == start
                     and progress.get(symbol, {}).get('retry_after', '') > dt.datetime.now().isoformat()):
                 continue
-            if symbol.endswith('.BJ'):
+            if not symbol.endswith(('.HK', '.US')):
                 unsupported.append(symbol)
                 continue
             listing = member.get('list_date') or start.replace('-', '')

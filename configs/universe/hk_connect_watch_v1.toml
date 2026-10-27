@@ -1,3 +1,4 @@
+consumer = "connect_and_ah_observation"
 name = "HK_CONNECT_WATCH_V1"
 frozen_as_of = 2026-09-09
 purpose = "Current eligible observation pool; historical membership is not inferred"

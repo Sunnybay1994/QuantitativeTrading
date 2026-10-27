@@ -1,5 +1,6 @@
 # High-attention US names for post-close Futu K_1M (market-local ET wall clock).
 # Index exposure via liquid ETFs — raw Futu index codes (IXIC/DJI/SPX) are not subscribable here.
+consumer = "us_etf_manual_feasibility"
 name = "US_POST_CLOSE_WATCH_V1"
 as_of = 2026-10-19
 purpose = "Post-close K_1M sample: major index ETFs + liquid mega-caps; not a PIT strategy universe"
