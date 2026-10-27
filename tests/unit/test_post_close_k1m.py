@@ -102,7 +102,13 @@ def test_normalize_us_session_minutes_et_wall_clock():
     assert frame.height == 2
 
 
-def test_pool_without_consumer_pauses_after_60_days(tmp_path: Path):
+def test_declared_primary_and_history_paths(tmp_path: Path):
+    from quant.data.intraday_sources import minute_bars_path
+    primary = minute_bars_path(tmp_path, "510300.SH").as_posix()
+    history = minute_bars_path(tmp_path, "510300.SH", role="history").as_posix()
+    assert primary.endswith("source=futu_realtime/symbol=510300.SH/data.parquet")
+    assert history.endswith("source=tdx/symbol=510300.SH/data.parquet")
+    assert minute_bars_path(tmp_path, "00700.HK").as_posix().endswith("source=futu_realtime/symbol=00700.HK/data.parquet")
     data = {"as_of": "2026-01-01", "members": [{"symbol": "SPY.US"}]}
     assert mod.consumer_paused(data, dt.date(2026, 10, 27)) is True
     data["consumer"] = "us_etf_manual_feasibility"

@@ -19,6 +19,7 @@ import polars as pl
 
 from quant.data.connectors.futu_realtime import FutuRealtime
 from quant.data.intraday import merge_bars
+from quant.data.intraday_sources import minute_bars_path
 from quant.data.intraday_bars import SCHEMA, TZ, validate_bars
 from quant.data.realtime import single_writer
 from quant.data.realtime_inputs import phase
@@ -443,7 +444,7 @@ def market_ready(market: str, now: dt.datetime, *, force: bool = False) -> tuple
 
 
 def today_bar_count(root: Path, symbol: str, session: dt.date) -> int:
-    path = root / "clean/bar_intraday/freq=1m" / f"source={SOURCE}" / f"symbol={symbol}/data.parquet"
+    path = minute_bars_path(root, symbol)
     if not path.exists():
         return 0
     frame = pl.read_parquet(path).filter(pl.col("trade_date") == session)
@@ -656,12 +657,7 @@ def run(
                         raw = raw_packet(root, "post_close_k1m", rows, received, source="futu")
                         frame, rejected_rows = normalize(rows, symbol, session)
                         session_frame = frame.filter(pl.col("trade_date") == session)
-                        directory = (
-                            root
-                            / "clean/bar_intraday/freq=1m"
-                            / f"source={SOURCE}"
-                            / f"symbol={symbol}"
-                        )
+                        directory = minute_bars_path(root, symbol).parent
                         changed = 0 if frame.is_empty() else merge_bars(directory, frame)
                         session_bars = int(session_frame["bar_start"].n_unique()) if session_frame.height else 0
                         result.update(
