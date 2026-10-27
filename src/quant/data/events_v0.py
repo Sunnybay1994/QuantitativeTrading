@@ -161,8 +161,19 @@ def accept_extraction(excerpt: str, payload: dict) -> dict:
 
 
 def _pdf_objects(data: bytes) -> dict[int, bytes]:
-    return {int(match.group(1)): match.group(2)
-            for match in re.finditer(rb"(\d+) 0 obj(.*?)endobj", data, re.S)}
+    objects = {}
+    for match in re.finditer(rb"(?:^|[\r\n])(\d+)\s+0\s+obj", data):
+        start = match.end()
+        end = data.find(b"endobj", start)
+        stream_at = data.find(b"stream", start)
+        if stream_at != -1 and (end == -1 or stream_at < end):
+            endstream = data.find(b"endstream", stream_at)
+            if endstream != -1:
+                end = data.find(b"endobj", endstream)
+        if end == -1:
+            continue
+        objects[int(match.group(1))] = data[start:end]
+    return objects
 
 
 def _pdf_stream(body: bytes) -> bytes:
@@ -228,9 +239,9 @@ def pdf_plain_text(data: bytes) -> str:
         if target is not None:
             cmaps[obj_id] = _parse_cmap(_pdf_stream(target) or target)
     font_names = {name.decode(): int(obj)
-                  for name, obj in re.findall(rb"/FT(\d+)\s+(\d+)\s+0\s+R", data)}
+                  for name, obj in re.findall(rb"/F(?:T)?(\d+)\s+(\d+)\s+0\s+R", data)}
     token = re.compile(
-        r"/FT(\d+)\s+[-\d.]+\s+Tf|<([0-9A-Fa-f\s]+)>\s*Tj|\[([^\]]*)\]\s*TJ", re.S)
+        r"/F(?:T)?(\d+)\s+[-\d.]+\s+Tf|<([0-9A-Fa-f\s]+)>\s*Tj|\[([^\]]*)\]\s*TJ", re.S)
     chunks: list[str] = []
     for obj_id in sorted(objects):
         blob = _pdf_stream(objects[obj_id])
@@ -406,6 +417,7 @@ def build_events(
     for window_start, window_end in _month_ends(start, end):
         if stopped:
             break
+        print(f"start {window_start}", flush=True)
         for family, searchkey in QUERIES:
             if stopped:
                 break
@@ -462,6 +474,7 @@ def build_events(
                              "published": published, "known_at": published, "family": family,
                              "human_label": None, "excerpt": excerpt,
                              "adjunct_url": source.get("adjunctUrl"), **parsed})
+        print(f"{window_start} rows={len(rows)} calls={calls} stopped={stopped}", flush=True)
     frame = pl.DataFrame(rows) if rows else pl.DataFrame(schema={
         "announcement_id": pl.String, "symbol": pl.String, "title": pl.String,
         "published": pl.Date, "known_at": pl.Date, "family": pl.String,
