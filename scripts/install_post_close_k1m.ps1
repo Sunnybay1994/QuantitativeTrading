@@ -10,28 +10,41 @@ function Register-PostCloseK1MTask {
         [Parameter(Mandatory)][string]$Name,
         [Parameter(Mandatory)][string]$Arguments,
         [Parameter(Mandatory)][datetime]$At,
-        [Parameter(Mandatory)][string]$Description
+        [Parameter(Mandatory)][string]$Description,
+        [Parameter(Mandatory)][DayOfWeek[]]$Days
     )
     $action = New-ScheduledTaskAction -Execute $psExe -Argument $Arguments -WorkingDirectory $workspace
     $triggers = @(
-        New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At $At
+        New-ScheduledTaskTrigger -Weekly -DaysOfWeek $Days -At $At
     )
     $existing = Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue
     if ($existing -and (@($existing.Actions).Count -ne 1 -or $existing.Actions.Arguments -ne $Arguments)) {
-        throw "Existing task $Name has different arguments; refusing replacement."
+        Unregister-ScheduledTask -TaskName $Name -Confirm:$false
     }
     Register-ScheduledTask -TaskName $Name -Action $action -Trigger $triggers -Settings $settings -Principal $principal -Description $Description -Force | Out-Null
     Get-ScheduledTask -TaskName $Name | Select-Object TaskName, State | Format-List
 }
 
-# CN whole-market post-close K_1M at 15:10
-$cnArgs = '-NoProfile -NonInteractive -WindowStyle Hidden -File "' + $script + '"'
-Register-PostCloseK1MTask -Name 'QuantitativeTrading-PostCloseK1M' -Arguments $cnArgs `
-    -At ([datetime]::Today.AddHours(15).AddMinutes(10)) `
-    -Description 'Post-close whole-market 1m via Futu realtime K_1M subscribe (not History KL). Distinct from live RealtimeQuotes. No trading.'
+$weekdays = @([DayOfWeek]::Monday, [DayOfWeek]::Tuesday, [DayOfWeek]::Wednesday, [DayOfWeek]::Thursday, [DayOfWeek]::Friday)
+# Friday's US cash session is ready after 05:00 Saturday, Shanghai time. 06:00 covers both EST and EDT.
+$usDays = @([DayOfWeek]::Tuesday, [DayOfWeek]::Wednesday, [DayOfWeek]::Thursday, [DayOfWeek]::Friday, [DayOfWeek]::Saturday)
 
-# HK+US post-close K_1M at 17:00 (markets still open / post HK close window)
-$hkusArgs = '-NoProfile -ExecutionPolicy Bypass -File "' + $script + '" -Markets hk,us -MaxSeconds 7200'
-Register-PostCloseK1MTask -Name 'QuantitativeTrading-PostCloseK1M-HKUS' -Arguments $hkusArgs `
-    -At ([datetime]::Today.AddHours(17)) `
-    -Description 'Post-close HK+US 1m via Futu realtime K_1M subscribe (-Markets hk,us). Distinct from live RealtimeQuotes. No trading.'
+$cnArgs = '-NoProfile -NonInteractive -WindowStyle Hidden -File "' + $script + '" -Markets cn'
+Register-PostCloseK1MTask -Name 'QuantitativeTrading-PostCloseK1M' -Arguments $cnArgs `
+    -At ([datetime]::Today.AddHours(15).AddMinutes(10)) -Days $weekdays `
+    -Description 'Post-close A-share 1m at 15:10 via Futu K_1M. No trading.'
+
+$hkArgs = '-NoProfile -NonInteractive -WindowStyle Hidden -File "' + $script + '" -Markets hk -MaxSeconds 3600'
+Register-PostCloseK1MTask -Name 'QuantitativeTrading-PostCloseK1M-HK' -Arguments $hkArgs `
+    -At ([datetime]::Today.AddHours(16).AddMinutes(40)) -Days $weekdays `
+    -Description 'Post-close HK 1m at 16:40 via Futu K_1M. No trading.'
+
+$usArgs = '-NoProfile -NonInteractive -WindowStyle Hidden -File "' + $script + '" -Markets us -MaxSeconds 1800'
+Register-PostCloseK1MTask -Name 'QuantitativeTrading-PostCloseK1M-US' -Arguments $usArgs `
+    -At ([datetime]::Today.AddHours(6)) -Days $usDays `
+    -Description 'US 1m at 06:00 Shanghai, after the previous US cash close in both EST and EDT. No trading.'
+
+$combined = Get-ScheduledTask -TaskName 'QuantitativeTrading-PostCloseK1M-HKUS' -ErrorAction SilentlyContinue
+if ($combined) {
+    Unregister-ScheduledTask -TaskName 'QuantitativeTrading-PostCloseK1M-HKUS' -Confirm:$false
+}
