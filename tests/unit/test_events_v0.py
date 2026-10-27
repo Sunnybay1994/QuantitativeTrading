@@ -168,3 +168,15 @@ endobj
 def test_literal_pdf_strings_keep_digits_next_to_glyphs():
     from quant.data.events_v0 import _show_text
     assert _show_text("(7500)<56DE8D2D>(6.5)", {0x56DE: "回", 0x8D2D: "购"}) == "7500回购6.5"
+
+
+def test_explicit_paid_total_is_copied_and_a_plan_range_is_not():
+    from quant.data.events_v0 import fill_explicit_total
+    paid = "公司完成回购，已支付的总金额为1,665.30万元（不含交易费用）。"
+    filled = fill_explicit_total(paid, {"parse_status": "unresolved", "amount_cny": None,
+                                        "direction": None, "evidence": None}, "repurchase")
+    assert filled["amount_cny"] == 16_653_000
+    assert filled["direction"] == "repurchase"
+    plan = "回购的资金总额不低于人民币3,000万元，不超过人民币6,000万元。"
+    assert fill_explicit_total(plan, {"parse_status": "unresolved", "amount_cny": None,
+                                      "direction": "repurchase"}, "repurchase")["amount_cny"] is None

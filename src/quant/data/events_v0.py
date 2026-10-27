@@ -160,6 +160,41 @@ def accept_extraction(excerpt: str, payload: dict) -> dict:
             "term_days": term, "direction": direction, "evidence": evidence}
 
 
+_EXPLICIT_TOTAL = re.compile(
+    r"(成交总金额|支付的资金总额|已支付的总金额|已支付的资金总额|使用资金总额)"
+    r"(?:为人民币|为|人民币)?\s*(\d[\d,，]*(?:\.\d+)?)\s*(万亿|亿|万元|万|元)"
+)
+
+
+def fill_explicit_total(excerpt: str, parsed: dict, family: str) -> dict:
+    """Copy one paid total the model left blank. A plan range stays blank."""
+    if parsed.get("amount_cny") is not None:
+        return parsed
+    found = []
+    for match in _EXPLICIT_TOTAL.finditer(excerpt):
+        window = excerpt[max(0, match.start() - 12):match.end()]
+        if "不低于" in window or "不超过" in window:
+            continue
+        number = float(match.group(2).replace(",", "").replace("，", ""))
+        found.append((number * _SCALES[match.group(3)], match.group(0)))
+    if len({round(value, 2) for value, _evidence in found}) != 1:
+        return parsed
+    amount, evidence = found[0]
+    direction = parsed.get("direction")
+    if direction not in {"buy", "sell", "repurchase"}:
+        if family == "repurchase" and "回购" in excerpt:
+            direction = "repurchase"
+        elif "增持" in excerpt and "减持" not in excerpt:
+            direction = "buy"
+        elif "减持" in excerpt and "增持" not in excerpt:
+            direction = "sell"
+        else:
+            return parsed
+    updated = dict(parsed)
+    updated.update(parse_status="parsed", amount_cny=amount, direction=direction, evidence=evidence)
+    return updated
+
+
 def _pdf_objects(data: bytes) -> dict[int, bytes]:
     objects = {}
     for match in re.finditer(rb"(?:^|[\r\n])(\d+)\s+0\s+obj", data):
@@ -520,7 +555,8 @@ def build_events(
                         {"role": "system", "content": (
                             "只从摘录抽取回购实施或股东增减持。返回 JSON，键为 status、amount_cny、"
                             "ratio_pct、term_days、direction、evidence。status 只能是 parsed 或 unresolved。"
-                            "amount_cny 用人民币元。ratio_pct 是百分数本身。direction 只能是 buy、sell、"
+                            "amount_cny 用人民币元，只填已经支付或成交的总金额，不填不低于/不超过的方案区间。"
+                            "ratio_pct 是百分数本身。direction 只能是 buy、sell、"
                             "repurchase 或 null。evidence 必须是摘录里的连续原文。没有的数字不要猜。"
                         )},
                         {"role": "user", "content": excerpt},
@@ -534,6 +570,7 @@ def build_events(
                         payload = {"status": "unresolved"}
                     parsed = accept_extraction(excerpt, payload)
                     _write_new(cached, json.dumps(parsed, ensure_ascii=False))
+                parsed = fill_explicit_total(excerpt, parsed, family)
                 seen.add(identity)
                 rows.append({"announcement_id": identity, "symbol": symbol, "title": title,
                              "published": published, "known_at": published, "family": family,
