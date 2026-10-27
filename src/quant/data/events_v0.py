@@ -198,6 +198,43 @@ def fill_explicit_total(excerpt: str, parsed: dict, family: str) -> dict:
     return updated
 
 
+_ACTUAL_RATIO = re.compile(r"实际回购股数占总股本比例\s*(\d+(?:\.\d+)?)%")
+_NO_SELL = ("未减持", "未实施减持")
+
+
+def fill_explicit_ratio(excerpt: str, parsed: dict) -> dict:
+    """Copy one completed repurchase ratio the model left blank."""
+    if parsed.get("ratio_pct") is not None:
+        return parsed
+    numbers = [float(item) for item in _ACTUAL_RATIO.findall(_compact(excerpt))]
+    if len({round(number, 6) for number in numbers}) != 1:
+        return parsed
+    updated = dict(parsed)
+    updated["ratio_pct"] = numbers[0]
+    return updated
+
+
+def _reports_completed_sale(evidence: str) -> bool:
+    if "实施减持" in evidence:
+        return True
+    compact = evidence.replace(",", "").replace("，", "").replace(" ", "")
+    return re.search(r"减持(?:公司)?股份(?:\d*\.)?[1-9]", compact) is not None
+
+
+def drop_unexecuted_sell(parsed: dict) -> dict:
+    """A quote that says the sale did not happen is not a sell."""
+    if parsed.get("direction") != "sell":
+        return parsed
+    evidence = str(parsed.get("evidence") or "")
+    if not any(token in evidence for token in _NO_SELL):
+        return parsed
+    if _reports_completed_sale(evidence):
+        return parsed
+    updated = dict(parsed)
+    updated.update(parse_status="unresolved", direction=None, amount_cny=None, ratio_pct=None)
+    return updated
+
+
 def _pdf_objects(data: bytes) -> dict[int, bytes]:
     objects = {}
     for match in re.finditer(rb"(?:^|[\r\n])(\d+)\s+0\s+obj", data):
@@ -583,6 +620,8 @@ def build_events(
                 parsed = accept_extraction(excerpt, payload)
                 _write_new(cached, json.dumps(parsed, ensure_ascii=False))
         parsed = fill_explicit_total(excerpt, parsed, family)
+        parsed = fill_explicit_ratio(excerpt, parsed)
+        parsed = drop_unexecuted_sell(parsed)
         return {"announcement_id": identity, "symbol": symbol, "title": title,
                 "published": published, "known_at": published, "family": family,
                 "human_label": None, "excerpt": excerpt,

@@ -195,3 +195,34 @@ def test_explicit_paid_total_is_copied_and_a_plan_range_is_not():
     plan = "回购的资金总额不低于人民币3,000万元，不超过人民币6,000万元。"
     assert fill_explicit_total(plan, {"parse_status": "unresolved", "amount_cny": None,
                                       "direction": "repurchase"}, "repurchase")["amount_cny"] is None
+
+
+def test_explicit_completed_ratio_is_copied_when_blank():
+    from quant.data.events_v0 import fill_explicit_ratio
+    text = "预计回购股份数量占0.74%至1.47%。实际回购股数占总股本比例0.79%。"
+    filled = fill_explicit_ratio(text, {"parse_status": "parsed", "ratio_pct": None, "direction": "repurchase"})
+    assert filled["ratio_pct"] == 0.79
+    kept = fill_explicit_ratio(text, {"ratio_pct": 1.12})
+    assert kept["ratio_pct"] == 1.12
+    mixed = "实际回购股数占总股本比例0.37%。更正后实际回购股数占总股本比例0.31%。"
+    assert fill_explicit_ratio(mixed, {"ratio_pct": None})["ratio_pct"] is None
+
+
+def test_unexecuted_reduction_is_not_a_sell():
+    from quant.data.events_v0 import drop_unexecuted_sell
+    quote = "高新同华在本次减持计划期间内未减持公司股份。"
+    cleared = drop_unexecuted_sell({"parse_status": "parsed", "direction": "sell", "evidence": quote,
+                                    "amount_cny": None, "ratio_pct": None})
+    assert cleared["parse_status"] == "unresolved"
+    assert cleared["direction"] is None
+    done = drop_unexecuted_sell({"parse_status": "parsed", "direction": "sell",
+                                 "evidence": "累计减持公司股份122,662,201股，占公司总股本的4.10%。"})
+    assert done["direction"] == "sell"
+    mixed = drop_unexecuted_sell({
+        "parse_status": "parsed", "direction": "sell",
+        "evidence": "爱特威投资累计减持公司股份1,606,800股，占公司总股本的1%，华古投资未减持。"})
+    assert mixed["direction"] == "sell"
+    zero = drop_unexecuted_sell({
+        "parse_status": "parsed", "direction": "sell",
+        "evidence": "累计减持公司股份0股，占公司总股本的0%；本次减持股份计划已届满，未减持公司股份。"})
+    assert zero["direction"] is None
