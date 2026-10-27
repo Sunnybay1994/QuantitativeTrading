@@ -43,3 +43,10 @@ rolling_config = "configs/research/rolling_signal_monitor_v1.toml"
 monthly_backtest = "artifacts/models/q10_sue_v2_turnover_budget_05_20260912_01"
 config = "configs/paper/q10_sue_v2_20260913.toml"
 output = "artifacts/paper/q10_sue_v2"
+
+[q10_shadow]
+config = "configs/paper/q10_size_neutral_shadow_20261027.toml"
+output = "artifacts/paper/q10_size_neutral_shadow"
+inception = 2026-10-29
+forward_rules = "configs/paper/q10_sue_v2_forward_rules_20261010.toml"
+

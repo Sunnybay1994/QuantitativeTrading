@@ -1,0 +1,65 @@
+# Shadow of A5 b0.5_k50_size_on. Not a third PAPER_CANDIDATE account.
+# First signal is the 2026-10-30 month-end; those orders execute 2026-11-02.
+[research]
+assessment = "artifacts/portfolio/q10_sizing_v1_20261010/b0.5_k50_size_on/assessment.json"
+conclusion = "RESEARCH_ONLY"
+predictions = "artifacts/models/q2_sue_context_v2_causal48_20260912_02/predictions"
+
+[paper]
+name = "q10_size_neutral_shadow"
+inception_date = 2026-10-29
+initial_cash = 1000000.0
+auto_trade = false
+halt = false
+sell_only = false
+shadow = true
+counts_toward_account_limit = false
+construction = "b0.5_k50_size_on"
+statistics = "artifacts/factors/p7_peer_statistics_20260831_20260912_01"
+
+[paper.size_on_policy]
+auto_trade = false
+top_k = 50
+retention_multiplier = 1.5
+cash_buffer = 0.02
+single_stock_weight = 0.10
+industry_active_band = 1.0
+size_band = 0.5
+adv_participation = 0.05
+maximum_iterations = 4000
+tolerance = 0.00000001
+benchmark = "signal_date_eligible_all_market_equal_weight"
+unknown_benchmark_industry = "explicit_UNKNOWN_bucket_no_new_buys"
+size = "R3_winsor_1_99_log_market_cap_eligible_equal_weight_z"
+selection = "size_band_only_buffered_topk"
+objective = "Euclidean_distance_to_size_neutral_equal_weights"
+infeasible = "freeze_actual_quantities_record_violations_never_count_as_constraint_pass"
+missing_held_controls = "freeze_actual_quantities_no_risk_imputation"
+
+[model]
+selection = "artifacts/models/q2_sue_v2_frozen_forward_20260912_01"
+forecast_root = "artifacts/daily/sue_v2"
+
+[data]
+refresh_config = "configs/data/refresh.toml"
+warmup_start = 2026-10-01
+
+[universe]
+minimum_daily_symbols = 1
+
+[portfolio]
+stock_dividend_withholding = 0.20
+
+[costs.a_share]
+commission_rate = 0.00025
+commission_min = 5.0
+stamp_tax_sell = 0.0005
+transfer_fee = 0.00001
+slippage = 0.001
+effective_from = 2023-08-28
+
+[costs.etf]
+commission_rate = 0.00025
+commission_min = 5.0
+slippage = 0.001
+effective_from = 2023-01-01

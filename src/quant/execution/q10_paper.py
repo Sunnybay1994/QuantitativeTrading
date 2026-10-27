@@ -19,8 +19,7 @@ DEFAULT_CONFIG = Path('configs/paper/q10_sue_v2_20260913.toml')
 EXECUTION_READY_HOUR = 21
 
 
-def signal_targets(scores: pl.DataFrame, state: dict, following: dt.date) -> pl.DataFrame:
-    """Same Top50/Top75 scheduled-membership buffer as the frozen replay."""
+def _ranked_selection(scores: pl.DataFrame, state: dict, following: dt.date, strategy: str) -> pl.DataFrame:
     date = dt.date.fromisoformat(state['date'])
     if (scores.is_empty() or scores['trade_date'].unique().to_list() != [date]
             or scores['symbol'].is_duplicated().any()
@@ -34,11 +33,33 @@ def signal_targets(scores: pl.DataFrame, state: dict, following: dt.date) -> pl.
     selected = retained + ranked.filter(~pl.col('symbol').is_in(retained)).head(50-len(retained))['symbol'].to_list()
     targets = pl.from_dicts([{'as_of': date, 'execution_date': following,
         'symbol': symbol, 'weight': .02 if symbol in selected else 0.,
-        'strategy': 'q10_sue_v2', 'strategy_version': '1'}
+        'strategy': strategy, 'strategy_version': '1'}
         for symbol in sorted(previous | set(selected))])
-    adjusted = budget_targets(targets, state, budget=.5)
     state['previous_targets'] = selected
-    return adjusted
+    return targets
+
+
+def signal_targets(scores: pl.DataFrame, state: dict, following: dt.date) -> pl.DataFrame:
+    """Same Top50/Top75 scheduled-membership buffer as the frozen replay."""
+    targets = _ranked_selection(scores, state, following, 'q10_sue_v2')
+    return budget_targets(targets, state, budget=.5)
+
+
+def size_neutral_targets(scores: pl.DataFrame, state: dict, following: dt.date, config: dict) -> pl.DataFrame:
+    """A5 b0.5_k50_size_on: same names, then |z|<=0.5 size band, then the 0.5 budget."""
+    from quant.research.run_constrained_portfolio import prepare_constrained_hook
+
+    paper = config['paper']
+    targets = _ranked_selection(scores, state, following, paper['name'])
+    policy = dict(paper['size_on_policy'])
+    transform, _, _ = prepare_constrained_hook(
+        scores=scores.rename({'prediction': 'score'}).with_columns(pl.col('trade_date')),
+        targets=targets, statistics=Path(paper['statistics']), policy=policy,
+        score_column='score', minimum_signal_stocks=int(policy['top_k']),
+    )
+    # prepare_constrained_hook reads score_column from the original frame's trade_date partition.
+    adjusted, _info = transform(targets, state)
+    return budget_targets(adjusted, state, budget=.5)
 
 
 def load_forecast(folder: Path, date: dt.date, selection: Path, following: dt.date) -> pl.DataFrame:
@@ -66,7 +87,8 @@ def run(*, config_path: Path = DEFAULT_CONFIG, data_root: Path = Path('data'),
     if end == clock.date() and end != paper['inception_date'] and clock.hour < EXECUTION_READY_HOUR:
         raise ValueError('Wait for completed daily execution inputs after 21:00 Shanghai')
     assessment = json.loads(Path(config['research']['assessment']).read_text(encoding='utf-8'))['assessments']['budgeted']
-    if assessment['conclusion'] != 'PAPER_CANDIDATE' or not all(assessment['checks'].values()):
+    shadow = bool(paper.get('shadow'))
+    if not shadow and (assessment['conclusion'] != 'PAPER_CANDIDATE' or not all(assessment['checks'].values())):
         raise ValueError('Q10 must satisfy the registered admission criteria')
     output.mkdir(parents=True, exist_ok=True)
     frozen = output/'config.toml'
@@ -86,7 +108,8 @@ def run(*, config_path: Path = DEFAULT_CONFIG, data_root: Path = Path('data'),
             'receivables': [], 'restricted_shares': [], 'cumulative_fees': 0.,
             'nav': [{'date': str(date), 'unit_nav': 1., 'equity': paper['initial_cash'],
                      'cash': paper['initial_cash'], 'market_value': 0., 'receivable': 0.}],
-            'auto_trade': False, 'conclusion': 'PAPER_CANDIDATE'}
+            'auto_trade': False, 'conclusion': 'SHADOW' if shadow else 'PAPER_CANDIDATE',
+            'shadow': shadow, 'counts_toward_account_limit': not shadow}
         _write_snapshot(output/str(date), state, pl.DataFrame(schema=ORDER_SCHEMA), None, None)
     else:
         state = json.loads(snapshots[-1].read_text(encoding='utf-8'))
@@ -122,9 +145,14 @@ def run(*, config_path: Path = DEFAULT_CONFIG, data_root: Path = Path('data'),
         state['date'] = str(date)
         state['pending'] = []
         if scores is not None:
-            state['pending'] = json.loads(signal_targets(scores, state, following).write_json())
+            if shadow and paper.get('construction') == 'b0.5_k50_size_on':
+                pending = size_neutral_targets(scores, state, following, config)
+            else:
+                pending = signal_targets(scores, state, following)
+            state['pending'] = json.loads(pending.write_json())
         state['recorded_at'] = dt.datetime.now(SHANGHAI).isoformat()
-        state.update(auto_trade=False, conclusion='PAPER_CANDIDATE')
+        state.update(auto_trade=False, conclusion='SHADOW' if shadow else 'PAPER_CANDIDATE',
+                     counts_toward_account_limit=not shadow)
         state['controls_at_snapshot'] = dict(controls)
         orders = reference_orders(state, inputs, config) if inputs else pl.DataFrame(schema=ORDER_SCHEMA)
         _write_snapshot(output/str(date), state, orders, result, None)
@@ -134,12 +162,15 @@ def run(*, config_path: Path = DEFAULT_CONFIG, data_root: Path = Path('data'),
             orders = orders.clear()
         elif controls['sell_only']:
             orders = orders.filter(pl.col('side') == 'SELL')
-    _write_current_orders(output, orders, controls, f"Q10 SUE v2：{state['date']} 订单参考")
-    summary = {'as_of': state['date'], 'conclusion': 'PAPER_CANDIDATE', 'auto_trade': False,
+    _write_current_orders(output, orders, controls,
+        f"{'规模中性影子' if shadow else 'Q10 SUE v2'}：{state['date']} 订单参考")
+    summary = {'as_of': state['date'], 'conclusion': 'SHADOW' if shadow else 'PAPER_CANDIDATE',
+        'shadow': shadow, 'counts_toward_account_limit': not shadow, 'auto_trade': False,
         'cash': state['cash'], 'positions': len(state['holdings']), 'equity': state['nav'][-1]['equity'],
         'controls': controls, 'reference_orders': orders.height, 'output': str(output)}
     (output/'latest_summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
-    (output/'report.md').write_text(f"# Q10 第二模拟账户\n\n{state['date']}；权益 {summary['equity']:.2f} 元；"
+    title = '规模中性影子账户' if shadow else 'Q10 第二模拟账户'
+    (output/'report.md').write_text(f"# {title}\n\n{state['date']}；权益 {summary['equity']:.2f} 元；"
         f"持仓 {summary['positions']} 只；参考订单 {orders.height} 笔。\n\n月末收盘信号，下一交易日模拟成交；auto_trade=false。\n", encoding='utf-8')
     return summary
 

@@ -210,3 +210,54 @@ def write_monthly_package(
     if markdown_extra:
         lines.extend(["", *markdown_extra])
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_two_account_month(
+    *,
+    q10_output: Path,
+    shadow_output: Path,
+    rules_path: Path,
+    stem: Path,
+    data_root: Path,
+) -> dict:
+    """A3 month page for the live Q10 account and the size-neutral shadow."""
+    rules = load_rules(rules_path)
+
+    def nav_of(folder: Path) -> pl.DataFrame:
+        snapshots = sorted(folder.glob("????-??-??/state.json"))
+        if not snapshots:
+            raise ValueError(f"missing paper snapshots: {folder}")
+        state = json.loads(snapshots[-1].read_text(encoding="utf-8"))
+        return pl.DataFrame(state["nav"]).with_columns(pl.col("date").str.to_date())
+
+    q10_nav = nav_of(q10_output)
+    shadow_nav = nav_of(shadow_output)
+    as_of = q10_nav["date"].max()
+    benchmarks = load_return_benchmarks(
+        config=Path(rules.get("return_benchmark_config", "configs/data/return_benchmarks_q1b_20260912.toml")),
+        data_root=data_root,
+        start=dt.date.fromisoformat(str(rules["oos_start"])),
+        end=as_of,
+    )
+    month = f"{as_of.year:04d}-{as_of.month:02d}"
+    oos = dt.date.fromisoformat(str(rules["oos_start"]))
+    q10_eval = evaluate_month(
+        rules=rules, rules_path=rules_path, strategy_nav_1x=q10_nav,
+        strategy_nav_2x=None, benchmarks=benchmarks, as_of_month=month, oos_start=oos,
+    )
+    shadow_eval = evaluate_month(
+        rules=rules, rules_path=rules_path, strategy_nav_1x=shadow_nav,
+        strategy_nav_2x=None, benchmarks=benchmarks, as_of_month=month, oos_start=oos,
+    )
+    stem.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f"# Q10 与规模中性影子 {month}", ""]
+    for title, evaluation in (("Q10", q10_eval), ("影子 b0.5_k50_size_on", shadow_eval)):
+        lines += [f"## {title}", "", "|benchmark|month return|month excess|", "|---|---:|---:|"]
+        for name, block in evaluation["benchmark_month"].items():
+            lines.append(f"|{name}|{block['benchmark_return']:.2%}|{block['excess']:.2%}|")
+        lines.append("")
+    path = stem.with_suffix(".md")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    payload = {"status": "complete", "as_of_month": month, "q10": q10_eval, "shadow": shadow_eval}
+    stem.with_suffix(".json").write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    return payload

@@ -42,6 +42,48 @@ def test_first_signal_empty_account_and_invalid_pool():
         q10.signal_targets(scores.head(50), state, dt.date(2026, 10, 8))
 
 
+def test_shadow_size_band_changes_weights_and_skips_paper_gate(monkeypatch):
+    date, following = dt.date(2026, 10, 30), dt.date(2026, 11, 2)
+    scores = pl.DataFrame({'symbol': [f'{600000+i}.SH' for i in range(100)],
+        'trade_date': [date]*100, 'prediction': [float(i) for i in range(100)]})
+    state = {'date': str(date), 'previous_targets': [], 'holdings': {}, 'nav': [{'equity': 1e6}]}
+    plain = q10.signal_targets(scores, dict(state), following)
+
+    def hook(**kwargs):
+        assert kwargs['score_column'] == 'score'
+
+        def transform(batch, _state):
+            first = batch.sort('symbol')['symbol'][0]
+            return batch.with_columns(
+                pl.when(pl.col('symbol') == first).then(pl.lit(0.30))
+                .when(pl.col('weight') > 0).then(pl.lit(0.004))
+                .otherwise(pl.lit(0.0)).alias('weight')), {'size_band': 0.5}
+        return transform, None, None
+
+    monkeypatch.setattr(
+        'quant.research.run_constrained_portfolio.prepare_constrained_hook', hook)
+    config = {'paper': {'name': 'q10_size_neutral_shadow', 'statistics': 'unused',
+                        'size_on_policy': {'top_k': 50}}}
+    shadow = q10.size_neutral_targets(scores, dict(state), following, config)
+    assert shadow['strategy'].unique().to_list() == ['q10_size_neutral_shadow']
+    assert float(shadow['weight'].max()) == pytest.approx(0.30)
+    assert not shadow.select('symbol', 'weight').equals(plain.select('symbol', 'weight'))
+
+
+def test_shadow_config_stays_out_of_the_candidate_count():
+    import tomllib
+    paper = tomllib.loads(Path('configs/paper/q10_size_neutral_shadow_20261027.toml').read_text(encoding='utf-8'))
+    assert paper['paper']['shadow'] is True
+    assert paper['paper']['counts_toward_account_limit'] is False
+    assert paper['paper']['auto_trade'] is False
+    assert paper['paper']['construction'] == 'b0.5_k50_size_on'
+    assert paper['paper']['inception_date'] == dt.date(2026, 10, 29)
+    daily_cfg = tomllib.loads(Path('configs/research/daily_observation_q2_sue_v2_20260912.toml').read_text(encoding='utf-8'))
+    assert daily_cfg['q10_shadow']['inception'] == dt.date(2026, 10, 29)
+    roadmap = Path('项目实施路线图.md').read_text(encoding='utf-8')
+    assert '真金启动须：两份真实月报（≥2026-12-01）+ 影子账户同步运行 + 两账户均未触发 attention；金额与时点由用户确认。' in roadmap
+
+
 def test_open_account_idempotent_and_controls(tmp_path, monkeypatch):
     monkeypatch.setattr(q10, 'read_stock_paper_calendar', lambda _: pl.DataFrame({
         'date': [dt.date(2026, 9, 14)], 'is_open': [True]}))

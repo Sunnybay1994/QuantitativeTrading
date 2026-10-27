@@ -234,6 +234,28 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
                 data_root=data_root, output=Path(settings['q10']['output']), end=end,
                 forecast=output/'model/forecast'),
                 lambda value: value.get('as_of') == date)
+            shadow_cfg = settings.get('q10_shadow') or {}
+            inception = dt.date.fromisoformat(str(shadow_cfg.get('inception', '2026-10-29')))
+            if shadow_cfg and end >= inception:
+                stage('q10_shadow', lambda: run_q10(
+                    config_path=Path(shadow_cfg['config']), data_root=data_root,
+                    output=Path(shadow_cfg['output']), end=end, forecast=output/'model/forecast'),
+                    lambda value: value.get('as_of') == date and value.get('shadow') is True
+                    and value.get('counts_toward_account_limit') is False)
+                def pair_month() -> dict:
+                    from quant.reporting.q10_forward_rules import write_two_account_month
+                    try:
+                        return write_two_account_month(
+                            q10_output=Path(settings['q10']['output']),
+                            shadow_output=Path(shadow_cfg['output']),
+                            rules_path=Path(shadow_cfg['forward_rules']),
+                            stem=output/'monthly'/f'{date:%Y-%m}_q10_and_shadow',
+                            data_root=data_root,
+                        )
+                    except (OSError, ValueError) as exc:
+                        return {'status': 'waiting', 'reason': f'{type(exc).__name__}: {exc}'}
+                stage('q10_pair_month', pair_month,
+                      lambda value: value.get('status') in ('complete', 'waiting'))
         stages['refresh'] = {'status': 'complete' if refresh_ok else 'failed',
                              'mode': 'saved_data' if saved_data else 'refresh',
                              'input_errors': refresh_errors,
