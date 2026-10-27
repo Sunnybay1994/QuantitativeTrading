@@ -57,6 +57,19 @@ def test_rehearsal_and_late_records_never_become_forward(setup, change):
     assert result['series'][0]['historical_months'] == 1
 
 
+def test_identical_late_copies_stay_one_unqualified_sample(setup):
+    _, folder, _, record = setup
+    other = folder.parent/'b'
+    shutil.copytree(folder, other)
+    (folder/'summary.json').write_text(json.dumps({**record, 'recorded_at': '2026-02-02T10:00:00+08:00'}))
+    (other/'summary.json').write_text(json.dumps({**record, 'recorded_at': '2026-02-02T11:00:00+08:00'}))
+    result = invoke(setup)
+    assert not result['discovery']['conflicts']
+    assert result['scoring']['records'] == 1 and len(result['discovery']['duplicates']) == 1
+    assert result['forward_scored_series_months'] == 0
+    assert result['series'][0]['historical_months'] == 1
+
+
 def test_identical_duplicate_deduplicates_but_qualification_change_conflicts(setup):
     _, folder, _, record = setup
     other = folder.parent/'b'

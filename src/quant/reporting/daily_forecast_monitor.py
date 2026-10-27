@@ -10,6 +10,18 @@ import polars as pl
 from quant.reporting.rolling_signal_monitor import DEFAULT_CONFIG, run as run_monitor
 from quant.research.score_model_forecasts import run_scores
 
+_QUALIFICATION = ('source_selection', 'as_of', 'method', 'auto_trade', 'rehearsal', 'refit_close')
+
+
+def _identical_late_copies(signal_day: str, rows: list) -> bool:
+    """Same scores saved after the session are one sample. A same-day after-close record stays protected."""
+    if any(identity.get('recorded_at') == f'{signal_day}:after_close' for _, identity, _ in rows):
+        return False
+    first = rows[0]
+    return all(
+        all(identity.get(key) == first[1].get(key) for key in _QUALIFICATION) and frame.equals(first[2])
+        for _, identity, frame in rows)
+
 
 def discover(*, settings: dict, known_through: dt.date, current: Path | None = None) -> dict:
     selection = Path(settings['selection']).resolve()
@@ -73,7 +85,8 @@ def discover(*, settings: dict, known_through: dt.date, current: Path | None = N
     selected = []
     for signal_day, rows in sorted(groups.items()):
         first = rows[0]
-        if signal_day in blocked_dates or any(identity != first[1] or not frame.equals(first[2]) for _, identity, frame in rows[1:]):
+        differs = any(identity != first[1] or not frame.equals(first[2]) for _, identity, frame in rows[1:])
+        if signal_day in blocked_dates or (differs and not _identical_late_copies(signal_day, rows)):
             conflicts.append({'as_of': signal_day, 'paths': [str(row[0]) for row in rows]})
             continue
         selected.append(str(first[0]))
