@@ -54,6 +54,7 @@ def run_cell(
     score_frame: pl.DataFrame | None = None,
     execution_months: tuple[int, ...] | None = None,
     research_id: str | None = None,
+    initial_cash: float | None = None,
 ) -> dict:
     from quant.backtest.share_exchanges import validate_exchanges
     from quant.data.equal_weight_index import load_return_benchmarks
@@ -83,6 +84,8 @@ def run_cell(
             "share_exchanges"
         ]
     )
+    if initial_cash is not None:
+        settings["portfolio"]["initial_cash"] = float(initial_cash)
     model["portfolio"]["primary_top_k"] = cell["top_k"]
     model["models"]["methods"] = [spec["method"]]
     end = model["walk_forward"]["test_end"]

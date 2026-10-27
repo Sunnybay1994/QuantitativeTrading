@@ -1,0 +1,62 @@
+# S2 few-holdings. Frozen before the first replay. Do not scan pools or windows.
+id = "few_holdings_v1"
+registered_on = 2026-10-27
+auto_trade = false
+hypothesis = "Q10 SUE v2 concentrated to Top15, and a fixed 12-ETF 12-1 momentum book of at most 4 holdings, are closer to manual execution than Top50."
+predictions = "artifacts/models/q2_sue_context_v2_causal48_20260912_02/predictions"
+q10_control = "artifacts/models/q10_sue_v2_turnover_budget_05_20260912_01"
+q10_nav = "artifacts/models/q10_sue_v2_turnover_budget_05_20260912_01/budgeted/cost_1"
+return_benchmark_config = "configs/data/return_benchmarks_q1b_20260912.toml"
+benchmarks = "artifacts/factors/battery_stock_benchmarks_20260911"
+method = "lightgbm"
+top_k = 15
+budget = 0.5
+single_name_cap = 0.08
+capitals = [100000.0, 1000000.0]
+stress_start = 2024-01-01
+stress_end = 2024-02-08
+promote_excess_pp = 1.0
+
+[s2b]
+rebalance = "monthly"
+formation = "close[t-21] / close[t-252] - 1"
+top_k = 3
+cash_symbol = "511010.SH"
+cash_rule = "If the best 12-1 momentum is not positive, hold only the bond ETF. This is the defensive cash leg; it does not refit the B16 inverse-volatility weights."
+one_way_cost = 0.0005
+cost_multipliers = [0.5, 1.0, 2.0]
+end = 2026-08-31
+pool = [
+  "510050.SH",
+  "510300.SH",
+  "510500.SH",
+  "510880.SH",
+  "512010.SH",
+  "512100.SH",
+  "512660.SH",
+  "512800.SH",
+  "512880.SH",
+  "518880.SH",
+  "511010.SH",
+  "159915.SZ",
+]
+
+[size_on_policy]
+auto_trade = false
+top_k = 15
+retention_multiplier = 1.5
+cash_buffer = 0.02
+single_stock_weight = 0.08
+industry_active_band = 1.0
+size_band = 1.0
+adv_participation = 0.05
+maximum_iterations = 4000
+tolerance = 0.00000001
+benchmark = "signal_date_eligible_all_market_equal_weight"
+unknown_benchmark_industry = "explicit_UNKNOWN_bucket_no_new_buys"
+size = "R3_winsor_1_99_log_market_cap_eligible_equal_weight_z"
+selection = "size_band_only_buffered_topk"
+objective = "Euclidean_distance_to_size_neutral_equal_weights"
+infeasible = "freeze_actual_quantities_record_violations_never_count_as_constraint_pass"
+missing_held_controls = "freeze_actual_quantities_no_risk_imputation"
+cost_multipliers = [0.5, 1.0, 2.0]
