@@ -300,6 +300,10 @@ def collect(
         row = latest.get(market)
         if row and row.get("expected") and float(row.get("complete_rate") or 0) < floor:
             red.append(f"coverage: {market} {row['date']} {float(row['complete_rate']):.1%}")
+    from quant.data.post_close_k1m import paused_pool_names
+    paused_pools = paused_pool_names(root, today)
+    for name in paused_pools:
+        red.append(f"pool: {name} paused, no consumer for 60 days")
     return {
         "generated_at": clock.isoformat(),
         "date": today.isoformat(),
@@ -313,6 +317,7 @@ def collect(
         "git": git_facts,
         "tests": tests,
         "coverage": coverage,
+        "paused_pools": paused_pools,
     }
 
 

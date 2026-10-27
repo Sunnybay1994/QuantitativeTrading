@@ -102,7 +102,14 @@ def test_normalize_us_session_minutes_et_wall_clock():
     assert frame.height == 2
 
 
-def test_load_universe_filters_bj(tmp_path: Path):
+def test_pool_without_consumer_pauses_after_60_days(tmp_path: Path):
+    data = {"as_of": "2026-01-01", "members": [{"symbol": "SPY.US"}]}
+    assert mod.consumer_paused(data, dt.date(2026, 10, 27)) is True
+    data["consumer"] = "us_etf_manual_feasibility"
+    assert mod.consumer_paused(data, dt.date(2026, 10, 27)) is False
+    path = tmp_path / "us.toml"
+    path.write_text('as_of = 2026-01-01\n[[members]]\nsymbol = "SPY.US"\n', encoding="utf-8")
+    assert mod.load_us_symbols({"us_universe_path": str(path)}) == []
     path = tmp_path / "universe.json"
     path.write_text(
         json.dumps(

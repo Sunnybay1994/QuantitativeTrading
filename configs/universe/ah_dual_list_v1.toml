@@ -1,5 +1,6 @@
 # Curated AH dual-listed pairs (A leg + H leg). H legs prioritized inside HK Connect sweep.
 # Not exhaustive; preference is official connect_snapshot membership.
+consumer = "connect_and_ah_observation"
 name = "AH_DUAL_LIST_V1"
 as_of = 2026-10-19
 purpose = "Priority boost for AH dual-listed H shares within post-close HK K_1M"

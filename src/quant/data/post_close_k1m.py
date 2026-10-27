@@ -230,6 +230,42 @@ def latest_connect_snapshot(root: Path) -> Path | None:
     return best[1]
 
 
+def consumer_paused(data: dict, today: dt.date) -> bool:
+    """A pool with no consumer pauses 60 days after its as-of date."""
+    if str(data.get("consumer") or "").strip():
+        return False
+    raw = data.get("as_of") or data.get("frozen_as_of") or data.get("registered_on")
+    if isinstance(raw, dt.datetime):
+        opened = raw.date()
+    elif isinstance(raw, dt.date):
+        opened = raw
+    elif isinstance(raw, str) and len(raw) >= 10:
+        opened = dt.date.fromisoformat(raw[:10])
+    else:
+        return False
+    return (today - opened).days >= 60
+
+
+def paused_pool_names(root: Path, today: dt.date | None = None) -> list[str]:
+    config = root / "configs/data/post_close_k1m.toml"
+    if not config.is_file():
+        return []
+    settings = tomllib.loads(config.read_text(encoding="utf-8"))
+    clock = today or dt.datetime.now(TZ).date()
+    paused = []
+    for key in ("us_universe_path", "hk_connect_watch", "ah_dual_list"):
+        relative = settings.get(key)
+        if not relative:
+            continue
+        path = root / str(relative)
+        if not path.is_file():
+            continue
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        if consumer_paused(data, clock):
+            paused.append(path.name)
+    return paused
+
+
 def load_hk_connect_symbols(settings: dict) -> list[str]:
     """Official Stock Connect eligibility snapshot (SH∪SZ routes), buy-eligible."""
     root = Path(settings["data_root"])
@@ -251,6 +287,8 @@ def load_hk_connect_symbols(settings: dict) -> list[str]:
             watch = Path(settings.get("hk_connect_watch", "configs/universe/hk_connect_watch_v1.toml"))
             if watch.exists():
                 data = tomllib.loads(watch.read_text(encoding="utf-8"))
+                if consumer_paused(data, dt.datetime.now(TZ).date()):
+                    return []
                 return sorted({m["symbol"] for m in data.get("members", []) if str(m.get("symbol", "")).endswith(".HK")})
             return []
         for route_dir in base.glob("route=*"):
@@ -271,6 +309,8 @@ def load_ah_priority_h_symbols(settings: dict) -> list[str]:
     if not path.exists():
         return []
     data = tomllib.loads(path.read_text(encoding="utf-8"))
+    if consumer_paused(data, dt.datetime.now(TZ).date()):
+        return []
     out: list[str] = []
     for pair in data.get("pairs", []):
         h = pair.get("h_symbol")
@@ -284,6 +324,8 @@ def load_us_symbols(settings: dict) -> list[str]:
     if not path.exists():
         return []
     data = tomllib.loads(path.read_text(encoding="utf-8"))
+    if consumer_paused(data, dt.datetime.now(TZ).date()):
+        return []
     return sorted({m["symbol"] for m in data.get("members", []) if str(m.get("symbol", "")).endswith(".US")})
 
 
