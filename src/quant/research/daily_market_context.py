@@ -31,6 +31,52 @@ def completed_observation(date, now, root, record=None):
     raise ValueError(f'No completed live-data daily observation for {date}')
 
 
+def market_data_observation(date, now, root, record=None):
+    """Verify market inputs independently of account/forward-label maturity."""
+    paths = [Path(record)] if record is not None else sorted(root.glob(f'{date}_*/summary.json'), reverse=True)
+    for path in paths:
+        try:
+            return completed_observation(date, now, root, path)
+        except ValueError:
+            pass
+        if path.stat().st_mtime > now.timestamp():
+            continue
+        payload = path.read_bytes()
+        saved = json.loads(payload)
+        if (not isinstance(saved, dict) or saved.get('as_of') != str(date)
+                or saved.get('status') != 'incomplete' or saved.get('rehearsal') is not False
+                or saved.get('saved_data') is not False or saved.get('auto_trade') is not False):
+            continue
+        stage = saved.get('stages', {}).get('refresh', {})
+        refresh = path.parent/'model/refresh.json'
+        if (stage.get('status') != 'complete' or stage.get('mode') != 'refresh'
+                or stage.get('input_errors') != [] or not stage.get('path')
+                or Path(stage['path']).resolve() != refresh.resolve()
+                or not refresh.is_file() or refresh.stat().st_mtime > now.timestamp()):
+            continue
+        refresh_bytes = refresh.read_bytes()
+        result = json.loads(refresh_bytes)
+        quality = result.get('input_quality', {})
+        stocks = quality.get('stocks', {})
+        checks = ('bars_duplicate_keys', 'bars_missing_keys', 'daily_basic_duplicate_keys',
+                  'daily_basic_missing_keys', 'adjustment_duplicate_keys',
+                  'adjustment_missing_keys', 'close_mismatches', 'invalid_adjustments')
+        if (result.get('latest_session') != str(date) or quality.get('as_of') != str(date)
+                or result.get('intraday_errors') != [] or quality.get('errors') != []
+                or stocks.get('missing_sessions') != []
+                or not isinstance(stocks.get('expected_sessions'), int) or stocks['expected_sessions'] <= 0
+                or not isinstance(stocks.get('latest_traded_symbols'), int) or stocks['latest_traded_symbols'] <= 0
+                or any(stocks.get(key) != 0 for key in checks)):
+            continue
+        return dict(path=str(path), sha256=hashlib.sha256(payload).hexdigest(),
+                    kind='verified_market_inputs', daily_status=saved['status'],
+                    signal_monitor_status=saved.get('stages', {}).get('signal_monitor', {}).get('status'),
+                    refresh_path=str(refresh), refresh_sha256=hashlib.sha256(refresh_bytes).hexdigest(),
+                    available_at=dt.datetime.fromtimestamp(
+                        max(path.stat().st_mtime, refresh.stat().st_mtime), now.tzinfo).isoformat())
+    raise ValueError(f'No completed live-data daily observation or verified market inputs for {date}')
+
+
 def run(*, data_root=Path('data'), root=Path('artifacts/daily/market_context'), now=None,
         require_daily_receipt=False, daily_root=Path('artifacts/daily/sue_v2'),
         completed_session=None, daily_record=None):
@@ -54,7 +100,7 @@ def run(*, data_root=Path('data'), root=Path('artifacts/daily/market_context'), 
         if daily_record is not None and completed_session is None:
             raise ValueError('An exact daily receipt requires its completed session')
         effective = cal.filter(pl.col('is_open') & (pl.col('date') > date))['date'].min()
-        receipt = completed_observation(date, now, daily_root, daily_record) if (
+        receipt = market_data_observation(date, now, daily_root, daily_record) if (
             require_daily_receipt or completed_session is not None) else None
         if effective is None:
             raise ValueError(f'No next exchange session after {date}')
@@ -103,7 +149,8 @@ def run(*, data_root=Path('data'), root=Path('artifacts/daily/market_context'), 
         result=dict(status='complete',observed_at=now.isoformat(),date=str(date),
                     effective_date=str(row['effective_date']),
                     available_at=dt.datetime.now(now.tzinfo).isoformat(),
-                    daily_completion=receipt,
+                    daily_completion=receipt if not receipt or receipt.get('kind') != 'verified_market_inputs' else None,
+                    market_data_completion=receipt,
                     timing='computed_from_completed_session; effective next exchange session; available_at is actual publication time',
                     market_state=row['market_state'],coverage=row['coverage'],
                     reference_stocks=row['reference_stocks'],report=str(output/'report.md'),

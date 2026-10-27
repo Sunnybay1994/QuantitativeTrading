@@ -63,8 +63,9 @@ def source_inventory(data_root, settings, start, end):
 def history(config, output, *, start=None, end=None, data_root=Path('data'), returns_path=None):
     cfg = load_config(config)
     start, end = start or cfg['start'], end or cfg['end']
-    if start > end or end >= dt.datetime.now(TZ).date():
-        raise ValueError('Historical run requires a completed prior date')
+    clock = dt.datetime.now(TZ)
+    if start > end or end > clock.date() or (end == clock.date() and clock.time() < dt.time(15)):
+        raise ValueError('Historical run requires a completed exchange close')
     output.mkdir(parents=True, exist_ok=False)
     (output / 'config.toml').write_bytes(config.read_bytes())
     refresh = Path(cfg['refresh_config'])

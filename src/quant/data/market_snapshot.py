@@ -25,13 +25,18 @@ def _reference(context_path, data_root, now):
     previous = calendar.filter(pl.col('is_open') & (pl.col('date') < now.date()))['date'].max()
     if previous is None or latest.get('date') != str(previous) or latest.get('effective_date') != str(now.date()):
         raise ValueError('Market context is not for the preceding exchange session')
-    receipt = latest.get('daily_completion')
+    receipt = latest.get('market_data_completion') or latest.get('daily_completion')
     if not isinstance(receipt, dict) or not receipt.get('path') or not receipt.get('sha256'):
         raise ValueError('Completed live-data daily receipt missing')
     receipt_path = Path(receipt['path'])
     payload = receipt_path.read_bytes()
     saved = json.loads(payload)
-    if (hashlib.sha256(payload).hexdigest() != receipt['sha256']
+    if receipt.get('kind') == 'verified_market_inputs':
+        from quant.research.daily_market_context import market_data_observation
+        verified = market_data_observation(previous, now, receipt_path.parent.parent, receipt_path)
+        if verified != receipt:
+            raise ValueError('Market input receipt is stale, incomplete or changed')
+    elif (hashlib.sha256(payload).hexdigest() != receipt['sha256']
             or receipt_path.stat().st_mtime > now.timestamp()
             or not isinstance(saved, dict) or saved.get('as_of') != str(previous)
             or saved.get('status') != 'complete' or saved.get('saved_data') is not False
