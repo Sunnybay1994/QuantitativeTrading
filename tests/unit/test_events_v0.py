@@ -126,7 +126,22 @@ def test_existing_table_is_not_overwritten(tmp_path):
     assert target.read_bytes() == b"keep"
 
 
-def test_event_family_is_not_evaluated_this_round():
+def test_retryable_llm_disconnect_stays_unresolved(tmp_path, monkeypatch):
+    from quant.llm import RequestFailure
+    monkeypatch.setattr("quant.data.events_v0.time.sleep", lambda _seconds: None)
+
+    def complete(_messages, _settings):
+        raise RequestFailure("connect_failed", retryable=True)
+
+    summary = build_events(
+        start=dt.date(2024, 1, 1), end=dt.date(2024, 1, 31),
+        data_root=tmp_path / "data", artifact_root=tmp_path / "artifacts",
+        session=Session("<p>本次回购金额1000万元。</p>"), complete=complete,
+        pricing=_pricing(tmp_path / "pricing.toml"), ledger_root=tmp_path / "ledger")
+    assert summary["stopped"] is None
+    assert summary["llm_calls"] == 0
+    frame = pl.read_parquet(tmp_path / "data/clean/events/repurchase/version=20261027/events.parquet")
+    assert frame["parse_status"][0] == "unresolved"
     text = Path("configs/research/event_family_v1.toml").read_text(encoding="utf-8")
     assert "evaluate_this_round = false" in text
     assert "event_extract" in text

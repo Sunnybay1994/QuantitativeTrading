@@ -7,6 +7,7 @@ import datetime as dt
 import json
 import re
 import threading
+import time
 import zlib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -544,26 +545,43 @@ def build_events(
         else:
             if _task_spend(ledger_root) >= TASK_BUDGET_USD:
                 return {"_stop": "budget"}
-            response = complete([
-                {"role": "system", "content": (
-                    "只从摘录抽取回购实施或股东增减持。返回 JSON，键为 status、amount_cny、"
-                    "ratio_pct、term_days、direction、evidence。status 只能是 parsed 或 unresolved。"
-                    "amount_cny 用人民币元，只填已经支付或成交的总金额，不填不低于/不超过的方案区间。"
-                    "ratio_pct 是百分数本身。direction 只能是 buy、sell、"
-                    "repurchase 或 null。evidence 必须是摘录里的连续原文。没有的数字不要猜。"
-                )},
-                {"role": "user", "content": excerpt},
-            ], {"max_tokens": 250, "max_usd": 0.02, "reserve_usd": 0.02,
-                "temperature": 0})
-            with calls_lock:
-                calls += 1
-            _record_spend(response, ledger_root, pricing, identity)
-            try:
-                payload = strict_json(_message_text(response))
-            except ValueError:
-                payload = {"status": "unresolved"}
-            parsed = accept_extraction(excerpt, payload)
-            _write_new(cached, json.dumps(parsed, ensure_ascii=False))
+            from quant.llm import RequestFailure
+            response = None
+            for attempt in range(2):
+                try:
+                    response = complete([
+                        {"role": "system", "content": (
+                            "只从摘录抽取回购实施或股东增减持。返回 JSON，键为 status、amount_cny、"
+                            "ratio_pct、term_days、direction、evidence。status 只能是 parsed 或 unresolved。"
+                            "amount_cny 用人民币元，只填已经支付或成交的总金额，不填不低于/不超过的方案区间。"
+                            "ratio_pct 是百分数本身。direction 只能是 buy、sell、"
+                            "repurchase 或 null。evidence 必须是摘录里的连续原文。没有的数字不要猜。"
+                        )},
+                        {"role": "user", "content": excerpt},
+                    ], {"max_tokens": 250, "max_usd": 0.02, "reserve_usd": 0.02,
+                        "temperature": 0})
+                    break
+                except RequestFailure as exc:
+                    if getattr(exc, "code", "") == "monthly_budget_exhausted":
+                        return {"_stop": "budget"}
+                    if attempt == 0 and getattr(exc, "retryable", False):
+                        time.sleep(1)
+                        continue
+                    response = None
+                    break
+            if response is None:
+                parsed = accept_extraction("", {"status": "unresolved"})
+                _write_new(cached, json.dumps(parsed, ensure_ascii=False))
+            else:
+                with calls_lock:
+                    calls += 1
+                _record_spend(response, ledger_root, pricing, identity)
+                try:
+                    payload = strict_json(_message_text(response))
+                except ValueError:
+                    payload = {"status": "unresolved"}
+                parsed = accept_extraction(excerpt, payload)
+                _write_new(cached, json.dumps(parsed, ensure_ascii=False))
         parsed = fill_explicit_total(excerpt, parsed, family)
         return {"announcement_id": identity, "symbol": symbol, "title": title,
                 "published": published, "known_at": published, "family": family,
