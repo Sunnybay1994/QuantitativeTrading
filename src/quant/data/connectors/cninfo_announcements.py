@@ -53,10 +53,13 @@ def download_document(relative: str, *, session: Any = None) -> bytes:
 
 def announcement_pages(
     start: dt.date, end: dt.date, *, category: str, session: Any = None,
+    searchkey: str = "",
 ) -> Iterator[tuple[dict[str, str], list[dict[str, Any]]]]:
     """Fetch every page, rejecting incomplete or shifting result sets."""
     if start > end:
         raise ValueError("start must not exceed end")
+    if not isinstance(searchkey, str) or len(searchkey) > 40:
+        raise ValueError("invalid announcement search key")
     client = session if session is not None else requests
     expected: int | None = None
     seen: set[str] = set()
@@ -64,7 +67,7 @@ def announcement_pages(
     while True:
         params = {
             "pageNum": str(page), "pageSize": "30", "column": "szse",
-            "tabName": "fulltext", "plate": "", "stock": "", "searchkey": "",
+            "tabName": "fulltext", "plate": "", "stock": "", "searchkey": searchkey,
             "secid": "", "category": category, "trade": "",
             "seDate": f"{start.isoformat()}~{end.isoformat()}", "sortName": "",
             "sortType": "", "isHLtitle": "false",
