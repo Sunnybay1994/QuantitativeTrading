@@ -208,6 +208,13 @@ def _tests(path: Path, today: dt.date) -> dict:
     }
 
 
+def _coverage(path: Path) -> dict:
+    payload = _read_json(path)
+    if not payload:
+        return {"missing": True, "rows": []}
+    return {"missing": False, "rows": list(payload.get("rows") or [])}
+
+
 def collect(
     *,
     root: Path | None = None,
@@ -285,6 +292,14 @@ def collect(
         red.append(f"tests: latest={tests.get('exit_code')}")
     elif (tests.get("age_days") or 0) > 2:
         red.append(f"tests: age_days={tests['age_days']}")
+    coverage = _coverage(artifacts / "post_close_k1m" / "coverage.json")
+    latest: dict[str, dict] = {}
+    for row in coverage["rows"]:
+        latest[row["market"]] = row
+    for market, floor in (("cn", 0.95), ("hk", 0.90), ("us", 0.90)):
+        row = latest.get(market)
+        if row and row.get("expected") and float(row.get("complete_rate") or 0) < floor:
+            red.append(f"coverage: {market} {row['date']} {float(row['complete_rate']):.1%}")
     return {
         "generated_at": clock.isoformat(),
         "date": today.isoformat(),
@@ -297,6 +312,7 @@ def collect(
         "llm": ledger,
         "git": git_facts,
         "tests": tests,
+        "coverage": coverage,
     }
 
 
@@ -324,6 +340,18 @@ def render_markdown(report: dict) -> str:
         f"- tests: exit={report['tests'].get('exit_code')} passed={report['tests'].get('passed')} age_days={report['tests'].get('age_days')}",
         "",
     ])
+    coverage = report.get("coverage") or {}
+    lines.extend(["", "## post_close_coverage", ""])
+    rows = coverage.get("rows") or []
+    if not rows:
+        lines.append("无覆盖回执。")
+    else:
+        lines.append("| date | market | expected | complete | partial | missing | rate |")
+        lines.append("|---|---|---:|---:|---:|---:|---:|")
+        for row in rows[-12:]:
+            lines.append(
+                f"| {row['date']} | {row['market']} | {row['expected']} | {row['complete']} | "
+                f"{row['partial']} | {row['missing']} | {float(row['complete_rate']):.1%} |")
     return "\n".join(lines)
 
 

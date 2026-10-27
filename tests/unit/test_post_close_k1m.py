@@ -42,6 +42,25 @@ def test_normalize_maps_end_labels_and_skips_auction():
     assert set(frame["source"].to_list()) == {"futu_realtime"}
     assert frame["bar_end"].dt.strftime("%H:%M").to_list() == ["09:31", "14:59", "15:00"]
     assert frame["bar_start"][0] == dt.datetime(2026, 10, 19, 9, 30, tzinfo=TZ)
+    assert frame["session_complete"].to_list() == [False, False, False]
+
+
+def test_coverage_counts_complete_partial_and_missing(tmp_path: Path):
+    day = tmp_path / "date=2026-10-27"
+    day.mkdir()
+    (day / "a.json").write_text(json.dumps({
+        "market": "cn", "ok": True, "session_bars": 240, "expected_bars": 240}), encoding="utf-8")
+    (day / "b.json").write_text(json.dumps({
+        "market": "cn", "ok": True, "session_bars": 10, "expected_bars": 240}), encoding="utf-8")
+    (day / "c.json").write_text(json.dumps({
+        "market": "hk", "ok": False, "session_bars": 0, "expected_bars": 330}), encoding="utf-8")
+    summary = mod.write_coverage(tmp_path)
+    text = (tmp_path / "coverage.md").read_text(encoding="utf-8")
+    assert "240" in text and "330" in text
+    cn = next(row for row in summary["rows"] if row["market"] == "cn")
+    assert (cn["expected"], cn["complete"], cn["partial"], cn["missing"]) == (2, 1, 1, 0)
+    hk = next(row for row in summary["rows"] if row["market"] == "hk")
+    assert hk["missing"] == 1 and hk["complete_rate"] == 0
 
 
 def test_normalize_rejects_bad_ohlc():

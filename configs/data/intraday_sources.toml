@@ -1,0 +1,24 @@
+# Which 1-minute store a reader should open. Post-close K_1M is the live primary.
+# History stays on the store that already has the longer archive. Check sources are not primaries.
+auto_trade = false
+
+[cn]
+primary = "futu_realtime"
+history = "tdx"
+checks = ["baostock", "yahoo"]
+expected_bars = 240
+consumer = "a_share_research_and_paper"
+
+[hk]
+primary = "futu_realtime"
+history = "yahoo"
+checks = []
+expected_bars = 330
+consumer = "connect_and_ah_observation"
+
+[us]
+primary = "futu_realtime"
+history = "yahoo"
+checks = []
+expected_bars = 390
+consumer = "us_etf_manual_feasibility"
