@@ -225,6 +225,72 @@ def _map_hex(hex_code: str, cmap: dict[int, str]) -> str:
     return "".join(chars)
 
 
+def _unescape_pdf_literal(body: str) -> str:
+    chars: list[str] = []
+    index = 0
+    while index < len(body):
+        char = body[index]
+        if char != "\\" or index + 1 >= len(body):
+            chars.append(char)
+            index += 1
+            continue
+        nxt = body[index + 1]
+        simple = {"n": "\n", "r": "\r", "t": "\t", "b": "\b", "f": "\f",
+                  "\\": "\\", "(": "(", ")": ")"}
+        if nxt in simple:
+            chars.append(simple[nxt])
+            index += 2
+            continue
+        if nxt.isdigit():
+            octal = nxt
+            index += 2
+            for _ in range(2):
+                if index < len(body) and body[index].isdigit():
+                    octal += body[index]
+                    index += 1
+                else:
+                    break
+            chars.append(chr(int(octal, 8) & 0xFF))
+            continue
+        chars.append(nxt)
+        index += 2
+    return "".join(chars)
+
+
+def _show_text(body: str, cmap: dict[int, str]) -> str:
+    """Keep hex glyphs and literal strings in the order the page draws them."""
+    chunks: list[str] = []
+    index = 0
+    while index < len(body):
+        if body[index] == "<":
+            end = body.find(">", index)
+            if end < 0:
+                break
+            chunks.append(_map_hex(body[index + 1:end], cmap))
+            index = end + 1
+            continue
+        if body[index] == "(":
+            depth = 1
+            start = index + 1
+            index += 1
+            while index < len(body) and depth:
+                if body[index] == "\\":
+                    index += 2
+                    continue
+                if body[index] == "(":
+                    depth += 1
+                elif body[index] == ")":
+                    depth -= 1
+                    if not depth:
+                        break
+                index += 1
+            chunks.append(_unescape_pdf_literal(body[start:index]))
+            index += 1
+            continue
+        index += 1
+    return "".join(chunks)
+
+
 def pdf_plain_text(data: bytes) -> str:
     """Read text from the embedded ToUnicode maps. Unmapped glyphs are dropped."""
     if not data.startswith(b"%PDF-"):
@@ -254,8 +320,7 @@ def pdf_plain_text(data: bytes) -> str:
             elif match.group(2):
                 chunks.append(_map_hex(match.group(2), cmaps.get(current or -1, {})))
             else:
-                for hex_code in re.findall(r"<([0-9A-Fa-f\s]+)>", match.group(3)):
-                    chunks.append(_map_hex(hex_code, cmaps.get(current or -1, {})))
+                chunks.append(_show_text(match.group(3), cmaps.get(current or -1, {})))
     text = _SPACE.sub(" ", "".join(chunks)).strip()
     chinese = len(re.findall(r"[\u4e00-\u9fff]", text))
     return text if chinese >= 20 else ""
@@ -409,7 +474,7 @@ def build_events(
     if (version / "summary.json").exists():
         raise ValueError("event summary already exists")
     rates = load_pricing(pricing)
-    cache = artifact_root / "events_v0_cache"
+    cache = artifact_root / "events_v0_cache_v2"
     rows: list[dict] = []
     seen: set[str] = set()
     stopped = None
@@ -433,7 +498,7 @@ def build_events(
                 published = published_date(source.get("announcementTime"))
                 if symbol is None or published is None or not start <= published <= end:
                     continue
-                text_path = raw_root / "cninfo" / "events_v0_text" / f"{identity}.txt"
+                text_path = raw_root / "cninfo" / "events_v0_text_v2" / f"{identity}.txt"
                 if not text_path.is_file():
                     try:
                         _write_new(text_path, bulletin_text(

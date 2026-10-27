@@ -94,8 +94,8 @@ def test_build_writes_both_tables_and_ledger_once(tmp_path):
     ledger = (tmp_path / "ledger/2026-10.jsonl").read_text(encoding="utf-8")
     row = json.loads(ledger)
     assert row["task"] == "event_extract" and row["usd"] > 0
-    cache_file = next((tmp_path / "artifacts" / "events_v0_cache").glob("*.json"))
-    second = tmp_path / "artifacts2" / "events_v0_cache"
+    cache_file = next((tmp_path / "artifacts" / "events_v0_cache_v2").glob("*.json"))
+    second = tmp_path / "artifacts2" / "events_v0_cache_v2"
     second.mkdir(parents=True)
     (second / cache_file.name).write_text(cache_file.read_text(encoding="utf-8"), encoding="utf-8")
     try:
@@ -163,3 +163,8 @@ endobj
     assert pdf_plain_text(data) == ""
     long = data.replace(b"<56DE8D2D>Tj", b"<" + b"56DE8D2D" * 10 + b">Tj")
     assert pdf_plain_text(long) == "回购" * 10
+
+
+def test_literal_pdf_strings_keep_digits_next_to_glyphs():
+    from quant.data.events_v0 import _show_text
+    assert _show_text("(7500)<56DE8D2D>(6.5)", {0x56DE: "回", 0x8D2D: "购"}) == "7500回购6.5"
