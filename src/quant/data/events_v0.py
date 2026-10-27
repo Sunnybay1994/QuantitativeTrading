@@ -6,7 +6,9 @@ import argparse
 import datetime as dt
 import json
 import re
+import threading
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
 
@@ -463,19 +465,23 @@ def _message_text(response: dict) -> str:
     return ""
 
 
+_LEDGER_LOCK = threading.Lock()
+
+
 def _task_spend(ledger_root: Path) -> float:
     from quant.llm.ledger import month_path
     path = month_path(ledger_root)
     if not path.is_file():
         return 0.0
-    total = 0.0
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        row = json.loads(line)
-        if row.get("task") == "event_extract" and isinstance(row.get("usd"), (int, float)):
-            total += float(row["usd"])
-    return total
+    with _LEDGER_LOCK:
+        total = 0.0
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if row.get("task") == "event_extract" and isinstance(row.get("usd"), (int, float)):
+                total += float(row["usd"])
+        return total
 
 
 def _record_spend(response: dict, ledger_root: Path, pricing: Path, announcement_id: str) -> float | None:
@@ -484,8 +490,9 @@ def _record_spend(response: dict, ledger_root: Path, pricing: Path, announcement
     usd, estimated = priced_usd(response, pricing)
     if usd is None:
         return None
-    append({"task": "event_extract", "announcement_id": announcement_id, "usd": usd,
-            "estimated": estimated, "usage": response.get("usage")}, ledger_root)
+    with _LEDGER_LOCK:
+        append({"task": "event_extract", "announcement_id": announcement_id, "usd": usd,
+                "estimated": estimated, "usage": response.get("usage")}, ledger_root)
     return usd
 
 
@@ -500,6 +507,7 @@ def build_events(
     pricing: Path = Path("configs/llm/pricing.toml"),
     ledger_root: Path = Path("artifacts/research/llm_ledger"),
     limit: int | None = None,
+    workers: int = 4,
 ) -> dict[str, Any]:
     """Append raw pages, extract fields, and write versioned tables once."""
     if start > end:
@@ -514,6 +522,54 @@ def build_events(
     seen: set[str] = set()
     stopped = None
     calls = 0
+    calls_lock = threading.Lock()
+
+    def filing_row(source: dict, family: str, symbol: str, published: dt.date, title: str) -> dict | None:
+        nonlocal calls
+        identity = str(source.get("announcementId") or "")
+        text_path = raw_root / "cninfo" / "events_v0_text_v2" / f"{identity}.txt"
+        if not text_path.is_file():
+            try:
+                _write_new(text_path, bulletin_text(
+                    source, session, raw_root / "cninfo" / "events_v0_pdf"))
+            except Exception:
+                _write_new(text_path, "")
+        excerpt = text_path.read_text(encoding="utf-8")[:MAX_INPUT_CHARS]
+        cached = cache / f"{identity}.json"
+        if cached.is_file():
+            parsed = json.loads(cached.read_text(encoding="utf-8"))
+        elif not excerpt:
+            parsed = accept_extraction("", {"status": "unresolved"})
+            _write_new(cached, json.dumps(parsed, ensure_ascii=False))
+        else:
+            if _task_spend(ledger_root) >= TASK_BUDGET_USD:
+                return {"_stop": "budget"}
+            response = complete([
+                {"role": "system", "content": (
+                    "只从摘录抽取回购实施或股东增减持。返回 JSON，键为 status、amount_cny、"
+                    "ratio_pct、term_days、direction、evidence。status 只能是 parsed 或 unresolved。"
+                    "amount_cny 用人民币元，只填已经支付或成交的总金额，不填不低于/不超过的方案区间。"
+                    "ratio_pct 是百分数本身。direction 只能是 buy、sell、"
+                    "repurchase 或 null。evidence 必须是摘录里的连续原文。没有的数字不要猜。"
+                )},
+                {"role": "user", "content": excerpt},
+            ], {"max_tokens": 250, "max_usd": 0.02, "reserve_usd": 0.02,
+                "temperature": 0})
+            with calls_lock:
+                calls += 1
+            _record_spend(response, ledger_root, pricing, identity)
+            try:
+                payload = strict_json(_message_text(response))
+            except ValueError:
+                payload = {"status": "unresolved"}
+            parsed = accept_extraction(excerpt, payload)
+            _write_new(cached, json.dumps(parsed, ensure_ascii=False))
+        parsed = fill_explicit_total(excerpt, parsed, family)
+        return {"announcement_id": identity, "symbol": symbol, "title": title,
+                "published": published, "known_at": published, "family": family,
+                "human_label": None, "excerpt": excerpt,
+                "adjunct_url": source.get("adjunctUrl"), **parsed}
+
     for window_start, window_end in _month_ends(start, end):
         if stopped:
             break
@@ -521,8 +577,9 @@ def build_events(
         for family, searchkey in QUERIES:
             if stopped:
                 break
+            pending = []
             for source in _load_or_fetch_pages(raw_root, searchkey, window_start, window_end, session):
-                if limit is not None and len(rows) >= limit:
+                if limit is not None and len(rows) + len(pending) >= limit:
                     stopped = "limit"
                     break
                 identity = str(source.get("announcementId") or "")
@@ -533,49 +590,18 @@ def build_events(
                 published = published_date(source.get("announcementTime"))
                 if symbol is None or published is None or not start <= published <= end:
                     continue
-                text_path = raw_root / "cninfo" / "events_v0_text_v2" / f"{identity}.txt"
-                if not text_path.is_file():
-                    try:
-                        _write_new(text_path, bulletin_text(
-                            source, session, raw_root / "cninfo" / "events_v0_pdf"))
-                    except Exception:
-                        _write_new(text_path, "")
-                excerpt = text_path.read_text(encoding="utf-8")[:MAX_INPUT_CHARS]
-                cached = cache / f"{identity}.json"
-                if cached.is_file():
-                    parsed = json.loads(cached.read_text(encoding="utf-8"))
-                elif not excerpt:
-                    parsed = accept_extraction("", {"status": "unresolved"})
-                    _write_new(cached, json.dumps(parsed, ensure_ascii=False))
-                else:
-                    if _task_spend(ledger_root) >= TASK_BUDGET_USD:
-                        stopped = "budget"
-                        break
-                    response = complete([
-                        {"role": "system", "content": (
-                            "只从摘录抽取回购实施或股东增减持。返回 JSON，键为 status、amount_cny、"
-                            "ratio_pct、term_days、direction、evidence。status 只能是 parsed 或 unresolved。"
-                            "amount_cny 用人民币元，只填已经支付或成交的总金额，不填不低于/不超过的方案区间。"
-                            "ratio_pct 是百分数本身。direction 只能是 buy、sell、"
-                            "repurchase 或 null。evidence 必须是摘录里的连续原文。没有的数字不要猜。"
-                        )},
-                        {"role": "user", "content": excerpt},
-                    ], {"max_tokens": 250, "max_usd": 0.02, "reserve_usd": 0.02,
-                        "temperature": 0})
-                    calls += 1
-                    _record_spend(response, ledger_root, pricing, identity)
-                    try:
-                        payload = strict_json(_message_text(response))
-                    except ValueError:
-                        payload = {"status": "unresolved"}
-                    parsed = accept_extraction(excerpt, payload)
-                    _write_new(cached, json.dumps(parsed, ensure_ascii=False))
-                parsed = fill_explicit_total(excerpt, parsed, family)
                 seen.add(identity)
-                rows.append({"announcement_id": identity, "symbol": symbol, "title": title,
-                             "published": published, "known_at": published, "family": family,
-                             "human_label": None, "excerpt": excerpt,
-                             "adjunct_url": source.get("adjunctUrl"), **parsed})
+                pending.append((source, family, symbol, published, title))
+            if not pending:
+                continue
+            with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+                for result in pool.map(lambda item: filing_row(*item), pending):
+                    if not result:
+                        continue
+                    if result.get("_stop") == "budget":
+                        stopped = "budget"
+                        continue
+                    rows.append(result)
         print(f"{window_start} rows={len(rows)} calls={calls} stopped={stopped}", flush=True)
     frame = pl.DataFrame(rows) if rows else pl.DataFrame(schema={
         "announcement_id": pl.String, "symbol": pl.String, "title": pl.String,
