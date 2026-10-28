@@ -156,10 +156,12 @@ def parse_markets(value) -> list[str]:
 
 def normalize(rows: list[dict], symbol: str, end: dt.date) -> tuple[pl.DataFrame, int]:
     """Map get_cur_kline rows into clean SCHEMA bars (Futu minute END labels)."""
-    spec = MARKET_SPECS[market_of(symbol)]
+    symbol_market = market_of(symbol)
+    spec = MARKET_SPECS[symbol_market]
     session_minutes = spec["session_end_minutes"]
     auction = spec["auction_minutes"]
     values, rejected = [], 0
+    us_closes: dict[dt.date, dt.time | None] = {}
     for row in rows:
         try:
             code, market = symbol.split(".", 1)
@@ -174,6 +176,14 @@ def normalize(rows: list[dict], symbol: str, end: dt.date) -> tuple[pl.DataFrame
                 continue
             if stamp.second or minute not in session_minutes:
                 raise ValueError("Unexpected minute label")
+            if symbol_market == 'us':
+                from quant.data.us_sessions import session_close
+
+                if stamp.date() not in us_closes:
+                    us_closes[stamp.date()] = session_close(stamp.date())
+                close = us_closes[stamp.date()]
+                if close is None or stamp.time() > close:
+                    raise ValueError('Outside the published US cash session')
             value = dict(
                 symbol=symbol,
                 trade_date=stamp.date(),
@@ -207,6 +217,11 @@ def normalize(rows: list[dict], symbol: str, end: dt.date) -> tuple[pl.DataFrame
         half = spec.get("half_day_bars")
         if half:
             complete = complete | (count == half)
+        if symbol_market == 'us':
+            from quant.data.us_sessions import expected_bars
+
+            expected = {day: expected_bars(day) for day in frame['trade_date'].unique()}
+            complete = count == pl.col('trade_date').replace_strict(expected, return_dtype=pl.UInt32)
         frame = frame.with_columns(complete.alias("session_complete"))
     return validate_bars(frame), rejected
 
@@ -391,6 +406,10 @@ def load_universe(settings: dict, markets: list[str] | None = None) -> list[str]
 def expected_bars_for(symbol: str, session: dt.date, root: Path) -> int:
     market = market_of(symbol)
     spec = MARKET_SPECS[market]
+    if market == 'us':
+        from quant.data.us_sessions import expected_bars
+
+        return expected_bars(session)
     if market == "hk":
         cal = root / "clean/trade_calendar/market=HK/data.parquet"
         if cal.exists():
@@ -418,14 +437,9 @@ def latest_market_session(
         if not dates:
             raise ValueError("No HK open session in calendar window")
         return max(dates)
-    # US: derive last regular close from America/New_York wall clock (no local calendar yet).
-    from zoneinfo import ZoneInfo
+    from quant.data.us_sessions import latest_closed
 
-    et_now = (now or dt.datetime.now(TZ)).astimezone(ZoneInfo("America/New_York"))
-    day = et_now.date() if et_now.time() >= dt.time(16, 5) else et_now.date() - dt.timedelta(days=1)
-    while day.weekday() >= 5:
-        day -= dt.timedelta(days=1)
-    return min(day, through)
+    return latest_closed(through=through, now=now or dt.datetime.now(TZ))
 
 
 def market_ready(market: str, now: dt.datetime, *, force: bool = False) -> tuple[bool, str]:
