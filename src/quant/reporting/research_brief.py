@@ -52,10 +52,8 @@ def collect_facts(month: str, *, root: Path = Path(".")) -> dict:
     llm_usd = 0.0
     llm_tasks = 0
     if ledger.is_file():
-        for line in ledger.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            row = json.loads(line)
+        from quant.llm.ledger import priced_rows
+        for row in priced_rows(ledger):
             llm_usd += float(row.get("usd") or row.get("cost_usd") or 0)
             llm_tasks += 1
     funnel_path = root / "artifacts/research/funnel_latest.json"

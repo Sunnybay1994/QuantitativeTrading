@@ -172,22 +172,27 @@ def _registry(path: Path, root: Path) -> dict:
 def _ledger(path: Path) -> dict:
     if not path.exists():
         return {"rows": 0, "zero_usd_with_tokens": 0, "spend_usd": 0.0, "missing": True}
-    zero = 0
-    spend = 0.0
-    rows = 0
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        rows += 1
-        try:
-            item = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        usd = float(item.get("usd") or 0)
-        spend += usd
-        if usd == 0 and _token_count(item.get("tokens")) > 0:
-            zero += 1
-    return {"rows": rows, "zero_usd_with_tokens": zero, "spend_usd": round(spend, 4), "missing": False}
+    from quant.llm.ledger import priced_rows
+
+    raw, errors = [], []
+    for line in path.read_text(encoding='utf-8').splitlines():
+        if line.strip():
+            try:
+                raw.append(json.loads(line))
+            except json.JSONDecodeError:
+                errors.append('invalid JSON ledger line')
+    calls = [r for r in raw if r.get('kind') != 'pricing_adjustment']
+    try:
+        priced = priced_rows(path)
+    except (ValueError, TypeError) as exc:
+        errors.append(str(exc))
+        priced = calls
+    def zero(rows):
+        return sum(not r.get('usd') and _token_count(r.get('tokens')) > 0 for r in rows)
+    return {'rows': len(priced), 'raw_rows': len(raw), 'zero_usd_with_tokens': zero(priced),
+            'raw_zero_usd_with_tokens': zero(calls),
+            'pricing_adjustments': len(raw)-len(calls), 'pricing_errors': errors,
+            'spend_usd': round(sum(float(r.get('usd') or 0) for r in priced), 4), 'missing': False}
 
 
 def _tests(path: Path, today: dt.date) -> dict:
@@ -285,6 +290,8 @@ def collect(
         red.append(f"registry: duplicate experiment_id+variant={registry['duplicate_keys']}")
     if ledger["zero_usd_with_tokens"] > 0:
         red.append(f"llm: usd=0 and tokens>0 rows={ledger['zero_usd_with_tokens']}")
+    if ledger.get('pricing_errors'):
+        red.append('llm: invalid pricing adjustments or ledger lines')
     if not git_facts["git_ok"] or git_facts["dirty"] > 20:
         red.append(f"git: dirty={git_facts['dirty']}")
     if git_facts["days_since_commit"] is None or git_facts["days_since_commit"] > 2:
@@ -344,6 +351,7 @@ def render_markdown(report: dict) -> str:
         f"- mining: batch={report['mining']['last_completed_batch']} on={report['mining']['last_completed_on']} age={report['mining']['days_since_completed']} failures={report['mining']['consecutive_failures']} kind={report['mining']['failure_kind']}",
         f"- registry: rows={report['registry']['rows']} outside={report['registry']['outside']} duplicate_keys={report['registry']['duplicate_keys']}",
         f"- llm: spend_usd={report['llm']['spend_usd']} zero_usd_with_tokens={report['llm']['zero_usd_with_tokens']}",
+        f"- llm pricing: historical_raw_zero={report['llm'].get('raw_zero_usd_with_tokens', 0)} estimated_adjustments={report['llm'].get('pricing_adjustments', 0)}",
         f"- git: dirty={report['git']['dirty']} days_since_commit={report['git']['days_since_commit']} root_scratch_py={report['git']['root_scratch_py']}",
         f"- tests: exit={report['tests'].get('exit_code')} passed={report['tests'].get('passed')} age_days={report['tests'].get('age_days')}",
         "",
