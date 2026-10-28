@@ -17,11 +17,13 @@ from quant.core.paths import project_paths
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 _STEPS = ("N1", "N2", "N3", "N4", "N5")
 _TASK_SCRIPT = r"""
-$tasks = @(Get-ScheduledTask | Where-Object { $_.TaskName -like 'Quant*' })
+# Disabled tasks are retired from the acceptance page; never-run codes on them are not red.
+$tasks = @(Get-ScheduledTask | Where-Object { $_.TaskName -like 'Quant*' -and $_.State -ne 'Disabled' })
 $rows = foreach ($t in $tasks) {
   $i = Get-ScheduledTaskInfo -InputObject $t
   [pscustomobject]@{
     name = $t.TaskName
+    state = [string]$t.State
     last_run_time = $i.LastRunTime.ToString('o')
     result = [int]$i.LastTaskResult
   }
