@@ -1,155 +1,369 @@
+# Frozen current observation pool; not a historical research universe.
 consumer = "connect_and_ah_observation"
 name = "HK_CONNECT_WATCH_V1"
-frozen_as_of = 2026-09-09
-purpose = "Current eligible observation pool; historical membership is not inferred"
-eligibility_source = "data/clean/connect_snapshot/route=SH_CONNECT/date=2026-09-09/data.parquet"
+frozen_as_of = 2026-10-28
+maximum_members = 60
+purpose = "60 liquid Connect names; AH pairs added independently"
+selection = "median_HKD_turnover_last_five_full_330_bar_sessions"
+eligibility_snapshot = "2026-09-09"
+selection_evidence = "artifacts/worklog/d1_pool_20261028/selection.json"
 
 [[members]]
-symbol = "00001.HK"
-yahoo_symbol = "0001.HK"
-name = "长和"
+symbol = "02800.HK"
+yahoo_symbol = "2800.HK"
+name = "盈富基金"
+median_daily_amount_hkd = 14302392710.0
 
 [[members]]
-symbol = "00002.HK"
-yahoo_symbol = "0002.HK"
-name = "中电控股"
+symbol = "03033.HK"
+yahoo_symbol = "3033.HK"
+name = "南方恒生科技"
+median_daily_amount_hkd = 9115336203.2
 
 [[members]]
-symbol = "00003.HK"
-yahoo_symbol = "0003.HK"
-name = "香港中华煤气"
-
-[[members]]
-symbol = "00005.HK"
-yahoo_symbol = "0005.HK"
-name = "汇丰控股"
-
-[[members]]
-symbol = "00006.HK"
-yahoo_symbol = "0006.HK"
-name = "电能实业"
-
-[[members]]
-symbol = "00016.HK"
-yahoo_symbol = "0016.HK"
-name = "新鸿基地产"
-
-[[members]]
-symbol = "00027.HK"
-yahoo_symbol = "0027.HK"
-name = "银河娱乐"
-
-[[members]]
-symbol = "00066.HK"
-yahoo_symbol = "0066.HK"
-name = "港铁公司"
-
-[[members]]
-symbol = "00175.HK"
-yahoo_symbol = "0175.HK"
-name = "吉利汽车"
-
-[[members]]
-symbol = "00267.HK"
-yahoo_symbol = "0267.HK"
-name = "中信股份"
-
-[[members]]
-symbol = "00386.HK"
-yahoo_symbol = "0386.HK"
-name = "中国石油化工股份"
-
-[[members]]
-symbol = "00388.HK"
-yahoo_symbol = "0388.HK"
-name = "香港交易所"
-
-[[members]]
-symbol = "00669.HK"
-yahoo_symbol = "0669.HK"
-name = "创科实业"
+symbol = "02828.HK"
+yahoo_symbol = "2828.HK"
+name = "恒生中国企业"
+median_daily_amount_hkd = 7747893448.0
 
 [[members]]
 symbol = "00700.HK"
 yahoo_symbol = "0700.HK"
 name = "腾讯控股"
-
-[[members]]
-symbol = "00762.HK"
-yahoo_symbol = "0762.HK"
-name = "中国联通"
-
-[[members]]
-symbol = "01088.HK"
-yahoo_symbol = "1088.HK"
-name = "中国神华"
-
-[[members]]
-symbol = "00857.HK"
-yahoo_symbol = "0857.HK"
-name = "中国石油股份"
-
-[[members]]
-symbol = "00883.HK"
-yahoo_symbol = "0883.HK"
-name = "中国海洋石油"
-
-[[members]]
-symbol = "00939.HK"
-yahoo_symbol = "0939.HK"
-name = "建设银行"
-
-[[members]]
-symbol = "00941.HK"
-yahoo_symbol = "0941.HK"
-name = "中国移动"
-
-[[members]]
-symbol = "00981.HK"
-yahoo_symbol = "0981.HK"
-name = "中芯国际"
-
-[[members]]
-symbol = "01299.HK"
-yahoo_symbol = "1299.HK"
-name = "友邦保险"
-
-[[members]]
-symbol = "01398.HK"
-yahoo_symbol = "1398.HK"
-name = "工商银行"
-
-[[members]]
-symbol = "01810.HK"
-yahoo_symbol = "1810.HK"
-name = "小米集团－Ｗ"
-
-[[members]]
-symbol = "02318.HK"
-yahoo_symbol = "2318.HK"
-name = "中国平安"
-
-[[members]]
-symbol = "02382.HK"
-yahoo_symbol = "2382.HK"
-name = "舜宇光学科技"
-
-[[members]]
-symbol = "03690.HK"
-yahoo_symbol = "3690.HK"
-name = "美团－Ｗ"
-
-[[members]]
-symbol = "02015.HK"
-yahoo_symbol = "2015.HK"
-name = "理想汽车－Ｗ"
+median_daily_amount_hkd = 6359938880.0
 
 [[members]]
 symbol = "09988.HK"
 yahoo_symbol = "9988.HK"
 name = "阿里巴巴－Ｗ"
+median_daily_amount_hkd = 4285746770.6
+
+[[members]]
+symbol = "00981.HK"
+yahoo_symbol = "0981.HK"
+name = "中芯国际"
+median_daily_amount_hkd = 3864250890.0
+
+[[members]]
+symbol = "01810.HK"
+yahoo_symbol = "1810.HK"
+name = "小米集团－Ｗ"
+median_daily_amount_hkd = 3559207626.8
+
+[[members]]
+symbol = "02513.HK"
+yahoo_symbol = "2513.HK"
+name = "智谱"
+median_daily_amount_hkd = 3482905651.9
+
+[[members]]
+symbol = "00100.HK"
+yahoo_symbol = "0100.HK"
+name = ""
+median_daily_amount_hkd = 2614301870.86
+
+[[members]]
+symbol = "00992.HK"
+yahoo_symbol = "0992.HK"
+name = "联想集团"
+median_daily_amount_hkd = 2608932620.0
+
+[[members]]
+symbol = "00939.HK"
+yahoo_symbol = "0939.HK"
+name = "建设银行"
+median_daily_amount_hkd = 2494265639.0
+
+[[members]]
+symbol = "06869.HK"
+yahoo_symbol = "6869.HK"
+name = "长飞光纤光缆"
+median_daily_amount_hkd = 2348314657.0
+
+[[members]]
+symbol = "01347.HK"
+yahoo_symbol = "1347.HK"
+name = "华虹宏力"
+median_daily_amount_hkd = 2333658116.0
+
+[[members]]
+symbol = "01888.HK"
+yahoo_symbol = "1888.HK"
+name = "建滔积层板"
+median_daily_amount_hkd = 2171525811.0
+
+[[members]]
+symbol = "03690.HK"
+yahoo_symbol = "3690.HK"
+name = "美团－Ｗ"
+median_daily_amount_hkd = 2166256849.1
+
+[[members]]
+symbol = "03750.HK"
+yahoo_symbol = "3750.HK"
+name = "宁德时代"
+median_daily_amount_hkd = 1995744196.1
+
+[[members]]
+symbol = "02359.HK"
+yahoo_symbol = "2359.HK"
+name = "药明康德"
+median_daily_amount_hkd = 1956409330.6
+
+[[members]]
+symbol = "00883.HK"
+yahoo_symbol = "0883.HK"
+name = "中国海洋石油"
+median_daily_amount_hkd = 1924742300.0
+
+[[members]]
+symbol = "01299.HK"
+yahoo_symbol = "1299.HK"
+name = "友邦保险"
+median_daily_amount_hkd = 1743201563.6
+
+[[members]]
+symbol = "01398.HK"
+yahoo_symbol = "1398.HK"
+name = "工商银行"
+median_daily_amount_hkd = 1739193108.0
+
+[[members]]
+symbol = "09992.HK"
+yahoo_symbol = "9992.HK"
+name = "泡泡玛特"
+median_daily_amount_hkd = 1728500662.4
+
+[[members]]
+symbol = "00005.HK"
+yahoo_symbol = "0005.HK"
+name = "汇丰控股"
+median_daily_amount_hkd = 1718336808.0
+
+[[members]]
+symbol = "02318.HK"
+yahoo_symbol = "2318.HK"
+name = "中国平安"
+median_daily_amount_hkd = 1709114200.0
+
+[[members]]
+symbol = "01548.HK"
+yahoo_symbol = "1548.HK"
+name = "金斯瑞生物科技"
+median_daily_amount_hkd = 1697158282.0
+
+[[members]]
+symbol = "02269.HK"
+yahoo_symbol = "2269.HK"
+name = "药明生物"
+median_daily_amount_hkd = 1649907003.5
+
+[[members]]
+symbol = "02899.HK"
+yahoo_symbol = "2899.HK"
+name = "紫金矿业"
+median_daily_amount_hkd = 1581067654.0
+
+[[members]]
+symbol = "03308.HK"
+yahoo_symbol = "3308.HK"
+name = "中际旭创"
+median_daily_amount_hkd = 1550479250.25
+
+[[members]]
+symbol = "02628.HK"
+yahoo_symbol = "2628.HK"
+name = "中国人寿"
+median_daily_amount_hkd = 1508728137.0
+
+[[members]]
+symbol = "00941.HK"
+yahoo_symbol = "0941.HK"
+name = "中国移动"
+median_daily_amount_hkd = 1388060800.0
+
+[[members]]
+symbol = "01211.HK"
+yahoo_symbol = "1211.HK"
+name = "比亚迪股份"
+median_daily_amount_hkd = 1283238072.6
 
 [[members]]
 symbol = "09999.HK"
 yahoo_symbol = "9999.HK"
 name = "网易"
+median_daily_amount_hkd = 1235750603.2
+
+[[members]]
+symbol = "01024.HK"
+yahoo_symbol = "1024.HK"
+name = "快手－Ｗ"
+median_daily_amount_hkd = 1132915227.4
+
+[[members]]
+symbol = "00388.HK"
+yahoo_symbol = "0388.HK"
+name = "香港交易所"
+median_daily_amount_hkd = 1104961090.9
+
+[[members]]
+symbol = "09888.HK"
+yahoo_symbol = "9888.HK"
+name = "百度集团－Ｗ"
+median_daily_amount_hkd = 1054114040.8
+
+[[members]]
+symbol = "09926.HK"
+yahoo_symbol = "9926.HK"
+name = "康方生物"
+median_daily_amount_hkd = 1019453866.0
+
+[[members]]
+symbol = "01378.HK"
+yahoo_symbol = "1378.HK"
+name = "中国宏桥"
+median_daily_amount_hkd = 961025010.0
+
+[[members]]
+symbol = "03988.HK"
+yahoo_symbol = "3988.HK"
+name = "中国银行"
+median_daily_amount_hkd = 928035463.0
+
+[[members]]
+symbol = "01801.HK"
+yahoo_symbol = "1801.HK"
+name = "信达生物"
+median_daily_amount_hkd = 914854119.5
+
+[[members]]
+symbol = "02259.HK"
+yahoo_symbol = "2259.HK"
+name = "紫金黄金国际"
+median_daily_amount_hkd = 908077984.9
+
+[[members]]
+symbol = "00857.HK"
+yahoo_symbol = "0857.HK"
+name = "中国石油股份"
+median_daily_amount_hkd = 824889194.0
+
+[[members]]
+symbol = "01088.HK"
+yahoo_symbol = "1088.HK"
+name = "中国神华"
+median_daily_amount_hkd = 807364284.0
+
+[[members]]
+symbol = "02020.HK"
+yahoo_symbol = "2020.HK"
+name = "安踏体育"
+median_daily_amount_hkd = 798198711.8
+
+[[members]]
+symbol = "06651.HK"
+yahoo_symbol = "6651.HK"
+name = "五一视界"
+median_daily_amount_hkd = 770428560.0
+
+[[members]]
+symbol = "06166.HK"
+yahoo_symbol = "6166.HK"
+name = "剑桥科技"
+median_daily_amount_hkd = 761151960.9
+
+[[members]]
+symbol = "00148.HK"
+yahoo_symbol = "0148.HK"
+name = "建滔集团"
+median_daily_amount_hkd = 745391824.5
+
+[[members]]
+symbol = "01093.HK"
+yahoo_symbol = "1093.HK"
+name = "石药集团"
+median_daily_amount_hkd = 731915602.0
+
+[[members]]
+symbol = "09880.HK"
+yahoo_symbol = "9880.HK"
+name = "优必选"
+median_daily_amount_hkd = 682156737.3
+
+[[members]]
+symbol = "03968.HK"
+yahoo_symbol = "3968.HK"
+name = "招商银行"
+median_daily_amount_hkd = 680196489.0
+
+[[members]]
+symbol = "09660.HK"
+yahoo_symbol = "9660.HK"
+name = "地平线机器人－Ｗ"
+median_daily_amount_hkd = 657177437.4
+
+[[members]]
+symbol = "02476.HK"
+yahoo_symbol = "2476.HK"
+name = "胜宏科技"
+median_daily_amount_hkd = 656147773.3
+
+[[members]]
+symbol = "02388.HK"
+yahoo_symbol = "2388.HK"
+name = "中银香港"
+median_daily_amount_hkd = 643876417.5
+
+[[members]]
+symbol = "03993.HK"
+yahoo_symbol = "3993.HK"
+name = "洛阳钼业"
+median_daily_amount_hkd = 611904579.0
+
+[[members]]
+symbol = "02328.HK"
+yahoo_symbol = "2328.HK"
+name = "中国财险"
+median_daily_amount_hkd = 604096366.0
+
+[[members]]
+symbol = "06809.HK"
+yahoo_symbol = "6809.HK"
+name = "澜起科技"
+median_daily_amount_hkd = 603908864.5
+
+[[members]]
+symbol = "06160.HK"
+yahoo_symbol = "6160.HK"
+name = "百济神州"
+median_daily_amount_hkd = 588161477.9
+
+[[members]]
+symbol = "00386.HK"
+yahoo_symbol = "0386.HK"
+name = "中国石油化工股份"
+median_daily_amount_hkd = 583949530.0
+
+[[members]]
+symbol = "06990.HK"
+yahoo_symbol = "6990.HK"
+name = "科伦博泰生物"
+median_daily_amount_hkd = 559804808.1
+
+[[members]]
+symbol = "00669.HK"
+yahoo_symbol = "0669.HK"
+name = "创科实业"
+median_daily_amount_hkd = 554194120.9
+
+[[members]]
+symbol = "03986.HK"
+yahoo_symbol = "3986.HK"
+name = "兆易创新"
+median_daily_amount_hkd = 533144646.7
+
+[[members]]
+symbol = "02382.HK"
+yahoo_symbol = "2382.HK"
+name = "舜宇光学科技"
+median_daily_amount_hkd = 530931044.4

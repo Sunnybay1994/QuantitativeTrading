@@ -268,7 +268,15 @@ def paused_pool_names(root: Path, today: dt.date | None = None) -> list[str]:
 
 
 def load_hk_connect_symbols(settings: dict) -> list[str]:
-    """Official Stock Connect eligibility snapshot (SH∪SZ routes), buy-eligible."""
+    """Frozen observation pool intersected with current Connect eligibility."""
+    watch = Path(settings.get("hk_connect_watch", "configs/universe/hk_connect_watch_v1.toml"))
+    data = tomllib.loads(watch.read_text(encoding="utf-8"))
+    if consumer_paused(data, dt.datetime.now(TZ).date()):
+        return []
+    watched = {m['symbol'] for m in data.get('members', [])
+               if str(m.get('symbol', '')).endswith('.HK')}
+    if len(watched) > int(data.get('maximum_members', 60)):
+        raise ValueError('HK observation pool exceeds its declared member limit')
     root = Path(settings["data_root"])
     explicit = settings.get("hk_connect_snapshot")
     paths: list[Path] = []
@@ -285,13 +293,7 @@ def load_hk_connect_symbols(settings: dict) -> list[str]:
                     if latest is None or day > latest:
                         latest = day
         if latest is None:
-            watch = Path(settings.get("hk_connect_watch", "configs/universe/hk_connect_watch_v1.toml"))
-            if watch.exists():
-                data = tomllib.loads(watch.read_text(encoding="utf-8"))
-                if consumer_paused(data, dt.datetime.now(TZ).date()):
-                    return []
-                return sorted({m["symbol"] for m in data.get("members", []) if str(m.get("symbol", "")).endswith(".HK")})
-            return []
+            return sorted(watched)
         for route_dir in base.glob("route=*"):
             parquet = route_dir / f"date={latest}" / "data.parquet"
             if parquet.exists():
@@ -302,7 +304,7 @@ def load_hk_connect_symbols(settings: dict) -> list[str]:
         if "buy_eligible" in frame.columns:
             frame = frame.filter(pl.col("buy_eligible"))
         symbols.update(frame["symbol"].to_list())
-    return sorted(s for s in symbols if s.endswith(".HK"))
+    return sorted(symbols & watched)
 
 
 def load_ah_priority_h_symbols(settings: dict) -> list[str]:

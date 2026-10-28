@@ -151,6 +151,9 @@ def test_load_universe_hk_ah_priority(tmp_path: Path):
             "source": ["sse"] * 3,
         }
     ).write_parquet(snap / "data.parquet")
+    watch = tmp_path / 'watch.toml'
+    watch.write_text('\n'.join(f'[[members]]\nsymbol="{s}"' for s in
+                              ['00001.HK', '00700.HK', '02318.HK']), encoding='utf-8')
     ah = tmp_path / "ah.toml"
     ah.write_text(
         '''
@@ -166,11 +169,29 @@ name = "平安"
             "data_root": str(tmp_path),
             "markets": ["hk"],
             "ah_dual_list": str(ah),
+            "hk_connect_watch": str(watch),
             "include_hsi": False,
         }
     )
     assert symbols[0] == "02318.HK"
     assert set(symbols) == {"00001.HK", "00700.HK", "02318.HK"}
+
+
+def test_hk_snapshot_cannot_expand_pool_or_bypass_consumer_pause(tmp_path: Path):
+    snapshot = tmp_path / 'eligibility.parquet'
+    pl.DataFrame({'symbol': ['00001.HK', '00700.HK', '02318.HK'],
+                  'buy_eligible': [True, True, False]}).write_parquet(snapshot)
+    watch = tmp_path / 'watch.toml'
+    members = '[[members]]\nsymbol="00700.HK"\n[[members]]\nsymbol="02318.HK"\n'
+    watch.write_text('consumer="research"\n'+members, encoding='utf-8')
+    settings = {'data_root': str(tmp_path), 'hk_connect_snapshot': str(snapshot),
+                'hk_connect_watch': str(watch)}
+    assert mod.load_hk_connect_symbols(settings) == ['00700.HK']
+    watch.write_text('frozen_as_of=2026-01-01\n'+members, encoding='utf-8')
+    assert mod.load_hk_connect_symbols(settings) == []
+    watch.write_text('consumer="research"\nmaximum_members=1\n'+members, encoding='utf-8')
+    with pytest.raises(ValueError, match='member limit'):
+        mod.load_hk_connect_symbols(settings)
 
 
 def test_load_universe_us_from_config(tmp_path: Path):
