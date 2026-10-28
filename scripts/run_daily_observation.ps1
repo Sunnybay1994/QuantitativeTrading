@@ -77,9 +77,12 @@ try {
     $code = Invoke-Python $runArgs -Append
     if ($code -ne 2) { Notify-Failure $code }
     # Read-only acceptance page after the 17:30/21:30 run. Do not change the task result.
+    # Doctor page first: --record-tests alone never writes artifacts/doctor, and an
+    # unbounded pytest previously held the task past ExecutionTimeLimit (267014).
     Write-Stage ('daily_exit=' + $code + ' doctor')
+    Invoke-Python @('-m', 'quant', 'doctor', '--json', '--no-notify') -Append | Out-Null
+    Write-Stage 'doctor_record_tests_bounded'
     Invoke-Python @('-m', 'quant', 'doctor', '--record-tests') -Append | Out-Null
-    Invoke-Python @('-m', 'quant', 'doctor', '--json') -Append | Out-Null
     exit $code
 } catch {
     $_.Exception.Message | Out-File $logFile -Append -Encoding utf8

@@ -400,16 +400,32 @@ def record_fast_tests(root: Path | None = None) -> int:
     destination.mkdir(parents=True, exist_ok=True)
     started = dt.datetime.now(SHANGHAI)
     clock = dt.datetime.now()
-    completed = subprocess.run(
-        [sys.executable, "-m", "pytest", "tests", "-q", "-m", "not slow", "--tb=no"],
-        cwd=root,
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    text = (completed.stdout or "") + "\n" + (completed.stderr or "")
+    # Bound runtime so DailyObservation can exit before Task Scheduler's limit.
+    test_timeout_seconds = 1200
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-m", "pytest", "tests", "-q", "-m", "not slow", "--tb=no"],
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=test_timeout_seconds,
+        )
+        text = (completed.stdout or "") + "\n" + (completed.stderr or "")
+        exit_code = completed.returncode
+    except subprocess.TimeoutExpired as exc:
+        def _as_text(value: object) -> str:
+            if value is None:
+                return ""
+            if isinstance(value, bytes):
+                return value.decode("utf-8", errors="replace")
+            return str(value)
+
+        text = _as_text(exc.stdout) + "\n" + _as_text(exc.stderr)
+        text += f"\ntimeout after {test_timeout_seconds}s"
+        exit_code = 124
     passed = failed = 0
     for line in text.splitlines():
         if " passed" in line or " failed" in line:
@@ -422,13 +438,14 @@ def record_fast_tests(root: Path | None = None) -> int:
     payload = {
         "ran_at": started.isoformat(),
         "command": "pytest -m \"not slow\"",
-        "exit_code": completed.returncode,
+        "exit_code": exit_code,
         "passed": passed,
         "failed": failed,
         "duration_seconds": round((dt.datetime.now() - clock).total_seconds(), 1),
+        "timeout_seconds": test_timeout_seconds,
     }
     (destination / "latest.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    return completed.returncode
+    return exit_code
 
 
 def main(argv: list[str] | None = None) -> int:
