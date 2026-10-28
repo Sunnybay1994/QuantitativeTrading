@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""All-market Futu multi-year history queue; maximize the ~100-symbol quota.
+"""Futu multi-year history queue for declared HK/US consumer pools.
 
 Recent / same-day minutes must not compete for this quota: use
 `quant data minutes` (TDX + AkShare) and realtime instead. Optional
@@ -18,11 +18,38 @@ import polars as pl
 
 from quant.data.connectors.futu_history import history_page, history_quota
 from quant.data.connectors.futu_realtime import FutuRealtime
-from quant.data.connectors.public_market import PublicMarket
 from quant.data.futu_minute_backfill import download_range_merge, download_year
 from quant.data.realtime import single_writer
 from quant.data.realtime_store import atomic_json
-from quant.data.recent_minutes import universe
+
+
+def history_universe(settings: dict) -> list[dict]:
+    """Reuse the bounded post-close pools; no A-share discovery or quota use."""
+    from quant.data.post_close_k1m import TZ, consumer_paused, load_universe
+
+    config = Path(settings.get('post_close_config', 'configs/data/post_close_k1m.toml'))
+    pools = tomllib.loads(config.read_text(encoding='utf-8'))
+    pools.update(data_root=settings['data_root'], include_hsi=False)
+    allowed = set(load_universe(pools, ['hk', 'us']))
+    priorities = settings.get('consumer_priority', [])
+    ranks = {consumer: i for i, consumer in enumerate(priorities)}
+    members = {}
+    for key, field in [('us_universe_path', 'members'), ('ah_dual_list', 'pairs'),
+                       ('hk_connect_watch', 'members')]:
+        data = tomllib.loads(Path(pools[key]).read_text(encoding='utf-8'))
+        if consumer_paused(data, dt.datetime.now(TZ).date()):
+            continue
+        consumer = str(data.get('consumer') or '')
+        for row in data.get(field, []):
+            symbol = row.get('h_symbol') if field == 'pairs' else row.get('symbol')
+            if symbol not in allowed or not symbol.endswith(('.HK', '.US')):
+                continue
+            member = {'symbol': symbol, 'list_date': row.get('list_date'),
+                      'consumer': consumer, 'consumer_priority': ranks.get(consumer, len(ranks))}
+            if (symbol not in members
+                    or member['consumer_priority'] < members[symbol]['consumer_priority']):
+                members[symbol] = member
+    return sorted(members.values(), key=lambda m: (m['consumer_priority'], m['symbol']))
 
 
 def earliest_available(context, symbol, start, end, root, cache):
@@ -116,23 +143,28 @@ def liquid_mid_large(settings: dict) -> list[dict]:
     return rows
 
 
-def same_day_queue(root: Path, end: str, settings: dict) -> list[dict]:
+def same_day_queue(root: Path, end: str, settings: dict,
+                   *, allowed_symbols: set[str] | None = None,
+                   market_ends: dict[str, str] | None = None) -> list[dict]:
     """Priority A inventory gaps, then Priority B liquid mid/large gaps."""
     inventory = inventory_year_paths(root)
-    end_date = dt.date.fromisoformat(end)
     queue: list[dict] = []
     seen: set[str] = set()
 
     for symbol, years in sorted(inventory.items()):
         if not symbol.endswith(('.HK', '.US')):
             continue
+        if allowed_symbols is not None and symbol not in allowed_symbols:
+            continue
+        symbol_end = (market_ends or {}).get(symbol.rsplit('.', 1)[1].lower(), end)
+        end_date = dt.date.fromisoformat(symbol_end)
         last = symbol_last_date(years)
         if last is not None and last >= end_date:
             continue
-        gap_start = (last + dt.timedelta(days=1)).isoformat() if last else end
-        if gap_start > end:
+        gap_start = (last + dt.timedelta(days=1)).isoformat() if last else symbol_end
+        if gap_start > symbol_end:
             continue
-        queue.append(dict(priority=0, symbol=symbol, gap_start=gap_start,
+        queue.append(dict(priority=0, symbol=symbol, gap_start=gap_start, gap_end=symbol_end,
                           year=end_date.year, band='inventory',
                           clean=str(clean_path_for_year(root, inventory, symbol, end_date.year))))
         seen.add(symbol)
@@ -141,26 +173,32 @@ def same_day_queue(root: Path, end: str, settings: dict) -> list[dict]:
         symbol = row['symbol']
         if symbol in seen or not symbol.endswith(('.HK', '.US')):
             continue
+        if allowed_symbols is not None and symbol not in allowed_symbols:
+            continue
+        symbol_end = (market_ends or {}).get(symbol.rsplit('.', 1)[1].lower(), end)
+        end_date = dt.date.fromisoformat(symbol_end)
         years = inventory.get(symbol, {})
         last = symbol_last_date(years) if years else None
         if last is not None and last >= end_date:
             continue
-        gap_start = (last + dt.timedelta(days=1)).isoformat() if last else end
-        if gap_start > end:
+        gap_start = (last + dt.timedelta(days=1)).isoformat() if last else symbol_end
+        if gap_start > symbol_end:
             continue
-        queue.append(dict(priority=1, symbol=symbol, gap_start=gap_start,
+        queue.append(dict(priority=1, symbol=symbol, gap_start=gap_start, gap_end=symbol_end,
                           year=end_date.year, band=row['band'],
                           median_amount=row['median_amount'],
                           clean=str(clean_path_for_year(root, inventory, symbol, end_date.year))))
         seen.add(symbol)
-    return queue
+    return [item for item in queue if allowed_symbols is None or item['symbol'] in allowed_symbols]
 
 
 def run_same_day_topup(client, root: Path, end: str, settings: dict, status: dict,
                        progress: dict, progress_path: Path, began: float,
-                       new_symbols: int) -> int:
+                       new_symbols: int, *, allowed_symbols: set[str] | None = None,
+                       market_ends: dict[str, str] | None = None) -> int:
     """Spend history quota on same-day gaps before opening new multi-year symbols."""
-    queue = same_day_queue(root, end, settings)
+    queue = same_day_queue(root, end, settings, allowed_symbols=allowed_symbols,
+                          market_ends=market_ends)
     used, remaining, charged = history_quota(client.context)
     # Already-charged inventory first (free), then other A, then B by liquidity.
     queue.sort(key=lambda item: (
@@ -195,7 +233,7 @@ def run_same_day_topup(client, root: Path, end: str, settings: dict, status: dic
         clean = Path(item['clean'])
         try:
             result = download_range_merge(
-                client.context, symbol, item['gap_start'], end, raw, clean)
+                client.context, symbol, item['gap_start'], item['gap_end'], raw, clean)
             result.update(priority=item['priority'], band=item['band'])
             status['same_day']['results'].append(result)
             progress.setdefault(symbol, {}).update(
@@ -222,18 +260,20 @@ def run(config: Path, *, check_only=False):
     root, output = Path(settings['data_root']), Path(settings['output'])
     output.mkdir(parents=True, exist_ok=True)
     with single_writer(output / 'writer.lock'):
-        public = PublicMarket(timeout=25)
-        try:
-            members = universe(public, Path(settings['recent_output']), root)
-        finally:
-            public.close()
+        members = history_universe(settings)
+        allowed_symbols = {m['symbol'] for m in members}
         start = settings['start']
         end = settings['end']
+        market_ends = {'hk': end, 'us': end}
         if settings.get('end_policy') == 'latest_completed_session':
-            from quant.data.refresh import latest_session
-            now = dt.datetime.now()
-            through = now.date() if now.time() >= dt.time(16) else now.date() - dt.timedelta(days=1)
-            end = latest_session(data_root=root, through=through).isoformat()
+            from quant.data.post_close_k1m import TZ, latest_market_session
+            now = dt.datetime.now(TZ)
+            through = now.date() if now.time() >= dt.time(16, 5) else now.date() - dt.timedelta(days=1)
+            market_ends = {market: latest_market_session(
+                market, data_root=root, through=through, now=now).isoformat()
+                for market in {'hk', 'us'}
+                if any(m['symbol'].endswith('.'+market.upper()) for m in members)}
+            end = max(market_ends.values(), default=end)
         discover = settings.get('earliest_available', False)
         bounds_path = output / 'earliest_bounds.json'
         bounds = json.loads(bounds_path.read_text()) if bounds_path.exists() else {}
@@ -252,24 +292,32 @@ def run(config: Path, *, check_only=False):
             if not symbol.endswith(('.HK', '.US')):
                 unsupported.append(symbol)
                 continue
+            symbol_end = market_ends[symbol.rsplit('.', 1)[1].lower()]
             listing = member.get('list_date') or start.replace('-', '')
             first = max(start, dt.datetime.strptime(listing, '%Y%m%d').date().isoformat())
             saved = bounds.get(symbol, {})
-            if discover and saved.get('requested_start') == first and saved.get('requested_end') == end:
+            if discover and saved.get('requested_start') == first and saved.get('requested_end') == symbol_end:
                 first = max(first, saved['first_date'])
-            if first > end:
+            if first > symbol_end:
                 continue
-            years = [year for year in range(int(end[:4]), int(first[:4])-1, -1)
+            years = [year for year in range(int(symbol_end[:4]), int(first[:4])-1, -1)
                      if year not in existing.get(symbol, set()) and progress.get(symbol, {}).get(
                          'empty_years', {}).get(str(year), '') <= dt.datetime.now().isoformat()]
             if discover:
                 years.sort()  # Preserve the oldest retrievable window before it rolls away.
             if years:
-                pending.append(dict(symbol=symbol, start=first, years=years))
-        same_day_pending = same_day_queue(root, end, settings) if settings.get('same_day_topup', False) else []
+                pending.append(dict(symbol=symbol, start=first, end=symbol_end, years=years,
+                                    consumer=member['consumer'],
+                                    consumer_priority=member['consumer_priority']))
+        pending.sort(key=lambda m: (m['consumer_priority'], m['symbol']))
+        same_day_pending = (same_day_queue(root, end, settings, allowed_symbols=allowed_symbols,
+                                          market_ends=market_ends)
+                            if settings.get('same_day_topup', False) else [])
         status = dict(start=start, end=end, earliest_available=discover, pending_symbols=len(pending),
                       unsupported_symbols=unsupported, results=[], errors=[], auto_trade=False,
-                      same_day_pending=len(same_day_pending))
+                      same_day_pending=len(same_day_pending),
+                      universe_scope='declared_hk_us_consumer_pools',
+                      universe_symbols=len(members), market_end=market_ends)
         if check_only:
             status['status'] = 'planned'
             atomic_json(output / 'plan.json', dict(**status, queue=pending, same_day_queue=same_day_pending))
@@ -282,20 +330,21 @@ def run(config: Path, *, check_only=False):
             if settings.get('same_day_topup', False):
                 new_symbols = run_same_day_topup(
                     client, root, end, settings, status, progress, progress_path,
-                    began, new_symbols)
+                    began, new_symbols, allowed_symbols=allowed_symbols, market_ends=market_ends)
                 if status.get('pause_reason'):
                     used, remaining, _ = history_quota(client.context)
                     status.update(status='paused', quota_after=dict(used=used, remaining=remaining),
                                   newly_charged_attempts=new_symbols)
                     return status
             used, remaining, charged = history_quota(client.context)
-            pending.sort(key=lambda m: (m['symbol'] not in charged,
+            pending.sort(key=lambda m: (m['consumer_priority'], m['symbol'] not in charged,
                                         progress.get(m['symbol'], {}).get('attempted_at', '')))
             for item in pending:
                 if time.monotonic() - began >= settings['max_seconds']:
                     status['pause_reason'] = 'time_budget'
                     break
                 symbol = item['symbol']
+                symbol_end = item['end']
                 used, remaining, charged = history_quota(client.context)
                 if symbol not in charged:
                     # Exhaust remaining quota (reserve may be 0); max_new_symbols is a hard cap.
@@ -310,7 +359,7 @@ def run(config: Path, *, check_only=False):
                     try:
                         listing = next(m.get('list_date') for m in members if m['symbol'] == symbol)
                         request_start = max(start, dt.datetime.strptime(listing, '%Y%m%d').date().isoformat()) if listing else start
-                        first = earliest_available(client.context, symbol, request_start, end, root, bounds)
+                        first = earliest_available(client.context, symbol, request_start, symbol_end, root, bounds)
                         atomic_json(bounds_path, bounds)
                         item['start'] = max(item['start'], first)
                         item['years'] = [year for year in item['years'] if year >= int(first[:4])]
@@ -325,7 +374,7 @@ def run(config: Path, *, check_only=False):
                     if time.monotonic() - began >= settings['max_seconds']:
                         status['pause_reason'] = 'time_budget'
                         break
-                    begin, finish = max(item['start'], f'{year}-01-01'), min(end, f'{year}-12-31')
+                    begin, finish = max(item['start'], f'{year}-01-01'), min(symbol_end, f'{year}-12-31')
                     raw = root / 'raw/futu/minute_backfill' / f'symbol={symbol}' / f'year={year}' / dt.datetime.now().strftime('%Y%m%dT%H%M%S%f')
                     clean = root / 'clean/futu_minute/all_market' / f'symbol={symbol}' / f'year={year}/data.parquet'
                     try:

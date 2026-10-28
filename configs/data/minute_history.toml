@@ -1,8 +1,9 @@
 auto_trade = false
 data_root = "data"
 output = "artifacts/minute_history"
-recent_output = "artifacts/minute_refresh"
-# Probe from the mainland market's inception; actual start comes from provider response/listing.
+post_close_config = "configs/data/post_close_k1m.toml"
+consumer_priority = ["us_etf_manual_feasibility", "connect_and_ah_observation"]
+# Probe this lower bound; actual HK/US availability comes from provider response/listing.
 start = "1990-01-01"
 earliest_available = true
 # Roll the history end with the latest completed session; do not freeze mid-month.
@@ -14,7 +15,7 @@ max_new_symbols = 100
 # Nightly History task allows up to 12h; keep wall time for full-quota downloads.
 max_seconds = 10800
 
-# Futu's ~100 history quota is reserved for multi-year all-market gaps only.
+# History quota is reserved for multi-year gaps in the declared HK/US pools.
 # Recent / same-day minutes come from MinutesRecent (TDX + AkShare), not Futu.
 # Keep same_day_topup=false so rolling 7-day re-charges do not crowd out history.
 same_day_topup = false
