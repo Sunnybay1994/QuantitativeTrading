@@ -3,6 +3,7 @@ import json
 from zoneinfo import ZoneInfo
 
 import polars as pl
+import pytest
 
 from quant.cli import main
 from quant.reporting.doctor import collect, notify_red, render_markdown
@@ -107,6 +108,27 @@ def test_daily_receipt_ignores_logs_and_waiting_sidecars(tmp_path, monkeypatch):
     report = collect(root=root, now=NOW, tasks=[{'name': 'daily', 'result': 0}])
     assert report['daily']['status'] is None
     assert 'daily: 2026-10-26 status=None' in report['red']
+
+
+@pytest.mark.parametrize('hour', [0, 8, 16, 17])
+def test_doctor_requires_only_the_latest_completed_input_session(tmp_path, monkeypatch, hour):
+    root = _tree(tmp_path)
+    calendar = root / 'data/clean/trade_calendar/market=SH/data.parquet'
+    pl.DataFrame({'date': [dt.date(2026, 10, 26), dt.date(2026, 10, 27)],
+                  'is_open': [True, True]}).write_parquet(calendar)
+    monkeypatch.setattr('quant.reporting.doctor._git_facts', lambda _: {
+        'dirty': 0, 'days_since_commit': 0, 'root_scratch_py': 0, 'git_ok': True,
+    })
+    report = collect(root=root, now=dt.datetime(2026, 10, 27, hour, tzinfo=SH),
+                     tasks=[{'name': 'daily', 'result': 0}])
+    if hour < 17:
+        assert report['session_date'] == '2026-10-26'
+        assert report['daily']['status'] == 'complete' and report['daily']['q10_state']
+        assert not any(item.startswith('daily:') for item in report['red'])
+    else:
+        assert report['session_date'] == '2026-10-27'
+        assert report['daily']['status'] is None and not report['daily']['q10_state']
+        assert any(item.startswith('daily:') for item in report['red'])
 
 
 def test_notify_sends_red_lines(monkeypatch):

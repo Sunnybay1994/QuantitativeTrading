@@ -234,7 +234,9 @@ def collect(
     artifacts = root / "artifacts"
     clock = _now(now)
     today = clock.date()
-    session = _latest_open(root / "data", today)
+    from quant.data.refresh import completed_date
+
+    session = _latest_open(root / "data", completed_date('today', clock))
     daily_dir = None
     daily_status = None
     if session is not None:
