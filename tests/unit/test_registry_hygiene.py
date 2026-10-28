@@ -1,13 +1,50 @@
 import json
-from pathlib import Path
 
 import polars as pl
 import pytest
 
 from quant.reporting.experiment_registry import DEFAULT_REGISTRY, append_records, register_run
 from quant.reporting.leaderboard import _render
-from quant.reporting.registry_hygiene import canonical_id, quarantine_outside, repair_size_on_turnover
+from quant.reporting.registry_hygiene import (
+    canonical_id,
+    quarantine_outside,
+    repair_size_on_turnover,
+)
 from tests.unit.test_experiment_registry import saved_run
+
+
+def test_production_append_keeps_one_primary_and_all_prior_aliases(tmp_path, monkeypatch):
+    import quant.reporting.experiment_registry as registry_module
+
+    registry = tmp_path / 'artifacts/registry/experiments.parquet'
+    monkeypatch.setattr(registry_module, 'DEFAULT_REGISTRY', registry)
+    monkeypatch.setattr(registry_module, 'ROOT', tmp_path)
+    monkeypatch.setattr('quant.reporting.registered_periods.attach', lambda *args: None)
+    # Use measured records; tests never write the real registry or leaderboard.
+    first = registry_module.records_from_run(saved_run(tmp_path / 'one'))
+    assert append_records(first, registry) == 1
+    second = registry_module.records_from_run(saved_run(tmp_path / 'two'))
+    second[0]['result_time'] = '2099-01-01'
+    assert append_records(second, registry) == 1
+    third = registry_module.records_from_run(saved_run(tmp_path / 'three'))
+    third[0]['result_time'] = '2099-01-02'
+    assert append_records(third, registry) == 1
+    row = pl.read_parquet(registry).to_dicts()[0]
+    assert row['run_path'] == third[0]['run_path']
+    assert set(row['aliases'].split('|')) == {first[0]['run_path'], second[0]['run_path']}
+    assert row['conclusion'] == 'REJECTED'
+    before = registry.read_bytes()
+    assert append_records(third, registry) == 1
+    assert registry.read_bytes() == before
+
+
+def test_registry_lock_contention_never_partially_writes(tmp_path):
+    from quant.execution.manual_session_service import instance_lock
+
+    registry = tmp_path / 'registry.parquet'
+    with instance_lock(registry.with_suffix('.lock')), pytest.raises(OSError):
+        append_records([], registry)
+    assert not registry.exists()
 
 
 def test_production_append_rejects_temp_run(tmp_path, monkeypatch):

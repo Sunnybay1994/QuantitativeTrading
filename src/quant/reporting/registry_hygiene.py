@@ -61,8 +61,12 @@ def collapse_duplicate_keys(rows: list[dict]) -> list[dict]:
     kept = []
     for group in groups.values():
         primary = dict(max(group, key=_primary_key))
-        aliases = [str(row.get("run_path")) for row in group if row.get("run_path") != primary.get("run_path")]
-        primary["aliases"] = "|".join(aliases)
+        aliases = []
+        for row in group:
+            aliases.extend(part for part in str(row.get('aliases') or '').split('|') if part)
+            aliases.append(str(row.get('run_path')))
+        primary["aliases"] = "|".join(path for path in dict.fromkeys(aliases)
+                                       if path != primary.get('run_path'))
         primary["canonical_id"] = canonical_id(primary)
         kept.append(primary)
     return kept

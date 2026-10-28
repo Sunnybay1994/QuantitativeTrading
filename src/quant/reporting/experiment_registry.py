@@ -164,24 +164,42 @@ def factor_records_from_run(run: Path) -> list[dict]:
 
 
 def append_records(records: list[dict], registry: Path | None = None) -> int:
-    """Upsert by report run and variant, preserving separate historical runs."""
-    from quant.reporting.registry_hygiene import outside_repository, registry_file
+    """Upsert runs, keeping a single production primary per experiment/variant."""
+    from quant.execution.manual_session_service import instance_lock
+    from quant.reporting.registry_hygiene import registry_file
 
     registry = registry_file(DEFAULT_REGISTRY, registry)
+    registry.parent.mkdir(parents=True, exist_ok=True)
+    with instance_lock(registry.with_suffix('.lock')):
+        return _append_records(records, registry)
+
+
+def _append_records(records: list[dict], registry: Path) -> int:
+    from quant.reporting.registry_hygiene import outside_repository
+
     production = registry.resolve() == DEFAULT_REGISTRY.resolve()
     if production:
         for record in records:
             if outside_repository(str(record.get("run_path")), ROOT):
                 raise ValueError(f"run_path outside repository: {record.get('run_path')}")
-    if registry.resolve() == DEFAULT_REGISTRY.resolve():
+    if production and records:
         from quant.reporting.registered_periods import attach
         attach(records, ROOT)
     registry.parent.mkdir(parents=True, exist_ok=True)
     prior = pl.read_parquet(registry).to_dicts() if registry.exists() else []
     merged = {(r['run_path'], r['variant']): r for r in prior}
     for record in records:
+        previous = merged.get((record['run_path'], record['variant']))
+        if production and previous:
+            aliases = [part for row in (previous, record)
+                       for part in str(row.get('aliases') or '').split('|') if part]
+            record = {**record, 'aliases': '|'.join(dict.fromkeys(aliases))}
         merged[record['run_path'], record['variant']] = record
-    ordered = sorted(merged.values(), key=lambda r: (r['run_path'], r['variant']))
+    rows = list(merged.values())
+    if production:
+        from quant.reporting.registry_hygiene import collapse_duplicate_keys
+        rows = collapse_duplicate_keys(rows)
+    ordered = sorted(rows, key=lambda r: (r['run_path'], r['variant']))
     if ordered != prior:
         frame = pl.from_dicts(ordered, infer_schema_length=None)
         for name in (f'{metric}_{suffix}' for metric in (*METRICS, 'excess') for suffix in COSTS.values()):
