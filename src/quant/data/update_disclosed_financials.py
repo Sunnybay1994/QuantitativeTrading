@@ -3,23 +3,29 @@ import argparse
 import datetime as dt
 import json
 import re
-import tomllib
+from collections.abc import Callable
 from pathlib import Path
 
-from quant.data.refresh_financials import refresh_quarter
+import tomllib
+
 from quant.data.collect_financial_disclosures import collect
+from quant.data.refresh_financials import TABLES, refresh_quarter
 from quant.data.resolve_financial_disclosures import apply_reviewed_headers, resolve
 
 
 def refresh_daily(*, end: dt.date, config: Path, data_root: Path, artifact_root: Path,
-                  lookback_days: int) -> dict:
+                  lookback_days: int, progress: Callable[[dict],None] | None = None) -> dict:
     if lookback_days < 1:
         raise ValueError('Financial disclosure lookback must be positive')
     disclosures = artifact_root/'data'/f'financial_disclosures_v1_{end:%Y%m%d}'
+    if progress is not None:
+        progress({'phase':'announcement_scan','completed':0})
     collect(start=end-dt.timedelta(days=lookback_days-1), end=end, data_root=data_root, output=disclosures)
     settings = tomllib.loads(config.read_text(encoding='utf-8'))
     version = 'v1'
     if settings.get('financials', {}).get('resolve_documents', False):
+        if progress is not None:
+            progress({'phase':'resolve_documents','completed':0})
         enriched = artifact_root/'data'/f'financial_disclosures_v2_{end:%Y%m%d}'
         resolve(disclosures=disclosures, data_root=data_root, output=enriched,
                 document_cache=artifact_root/'data'/'financial_document_ocr_v1')
@@ -30,10 +36,11 @@ def refresh_daily(*, end: dt.date, config: Path, data_root: Path, artifact_root:
             apply_reviewed_headers(disclosures=disclosures, headers=Path(headers), output=reviewed)
             disclosures, version = reviewed, 'v3'
     return update(disclosures=disclosures, config=config, data_root=data_root,
-                  output=artifact_root/'data'/f'financial_updates_{version}_{end:%Y%m%d}')
+                  output=artifact_root/'data'/f'financial_updates_{version}_{end:%Y%m%d}',progress=progress)
 
 
-def update(*, disclosures: Path, config: Path, data_root: Path, output: Path) -> dict:
+def update(*, disclosures: Path, config: Path, data_root: Path, output: Path,
+           progress: Callable[[dict],None] | None = None) -> dict:
     source = json.loads((disclosures/'summary.json').read_text(encoding='utf-8'))
     requests = source['requests']
     if len({(r['symbol'], r['period']) for r in requests}) != len(requests):
@@ -67,10 +74,15 @@ def update(*, disclosures: Path, config: Path, data_root: Path, output: Path) ->
     final = f'{prefix}_{len(periods)-1:03d}' if periods else base
     if settings['financial_snapshot'] not in (base, final):
         raise ValueError('Active financial snapshot changed during this update')
-    versions, new_rows = [], 0
+    versions, new_rows, completed_requests = [], 0, 0
     for index, period in enumerate(periods):
         symbols = sorted(r['symbol'] for r in requests if r['period'] == period)
         name = f'{prefix}_{index:03d}'
+        def quarter_progress(counts: dict, quarter_number=index+1, before=completed_requests) -> None:
+            if progress is not None:
+                progress({**counts,'quarter_number':quarter_number,'quarters':len(periods),
+                    'completed_requests':before+counts['completed'],
+                    'total_requests':len(requests)*len(TABLES)})
         saved_path = data_root/'clean/tushare_financials'/name/'summary.json'
         if saved_path.is_file():
             result = json.loads(saved_path.read_text(encoding='utf-8'))
@@ -79,7 +91,13 @@ def update(*, disclosures: Path, config: Path, data_root: Path, output: Path) ->
         else:
             result = refresh_quarter(data_root=data_root, base_name=base, name=name,
                 symbols=symbols, period=dt.date.fromisoformat(period),
-                pause_seconds=60 / settings.get('requests_per_minute', 60))
+                pause_seconds=60 / settings.get('requests_per_minute', 60),
+                **({'progress':quarter_progress} if progress is not None else {}))
+        completed_requests += len(symbols)*len(TABLES)
+        if progress is not None:
+            progress({'phase':'quarter_complete','quarter_number':index+1,'quarters':len(periods),
+                      'period':period,'completed_requests':completed_requests,
+                      'total_requests':len(requests)*len(TABLES)})
         new_rows += sum(row['clean_rows']-row['base_clean_rows'] for row in result['datasets'].values())
         versions.append(name)
         base = name

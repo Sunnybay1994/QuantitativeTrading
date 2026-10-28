@@ -108,7 +108,8 @@ def run_refresh(
     if settings.get('financials', {}).get('enabled', False):
         with contextlib.redirect_stdout(io.StringIO()):
             financials = progress.run('financials', refresh_disclosed_financials, end=through, config=config, data_root=data_root,
-                artifact_root=artifact_root, lookback_days=settings['financials']['lookback_days'])
+                artifact_root=artifact_root, lookback_days=settings['financials']['lookback_days'],
+                **({'progress':progress.update} if progress_path is not None else {}))
     factors = {"years": [], "message": "disabled"}
     industry: dict[str, Any] = {'message': 'disabled', 'new_intervals': 0}
     if settings.get('industry', {}).get('enabled', False):

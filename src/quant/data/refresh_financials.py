@@ -6,11 +6,12 @@ import datetime as dt
 import json
 import re
 import time
-import tomllib
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import polars as pl
+import tomllib
 
 from quant.data.connectors.tushare import TushareConnector
 from quant.data.financial_clean import normalize_financial_publication
@@ -40,6 +41,7 @@ def refresh_quarter(
     *, data_root: Path, base_name: str, name: str, symbols: list[str], period: dt.date,
     client: Any = None, pause_seconds: float = 1.0,
     observed_on: dt.date | None = None,
+    progress: Callable[[dict], None] | None = None,
 ) -> dict[str, Any]:
     for value in (base_name, name):
         if not value or Path(value).name != value or value in (".", ".."):
@@ -63,6 +65,11 @@ def refresh_quarter(
            or row["symbol"] not in symbols or row["dataset"] not in TABLES for row in captured):
         raise ValueError("Financial capture belongs to a different request")
     done = {(row["dataset"], row["symbol"]) for row in captured}
+    def report(phase: str, **details) -> None:
+        if progress is not None:
+            progress(dict(phase=phase, completed=len(captured), total=len(symbols)*len(TABLES),
+                          period=str(period), **details))
+    report('capture')
     client = client or TushareConnector(config_path=Path("configs/tushare.local.toml"))
     store = RawStore(data_root / "raw")
     for symbol in symbols:
@@ -70,6 +77,7 @@ def refresh_quarter(
             if (table, symbol) in done:
                 continue
             parameters = {"ts_code": symbol, "period": period.strftime("%Y%m%d")}
+            report('request', table=table, symbol=symbol)
             for attempt in range(3):
                 try:
                     raw = client.query_raw(table, **parameters)
@@ -88,14 +96,16 @@ def refresh_quarter(
                                  dt.timezone(dt.timedelta(hours=8))).date()),
                              "raw_path": str(saved.data_path)})
             pl.DataFrame(captured).write_parquet(capture_path)
+            report('captured', table=table, symbol=symbol)
             if len(captured) % 60 == 0:
-                print(f"Captured financial quarter {len(captured)}/{len(symbols) * 3}", flush=True)
+                print(f"Captured financial quarter {len(captured)}/{len(symbols) * len(TABLES)}", flush=True)
             time.sleep(pause_seconds)
     summary: dict[str, Any] = {"name": name, "base_version": base_name, "period": str(period),
         "symbols_requested": len(symbols), "symbols": sorted(symbols), "datasets": {},
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "pit_rule": "new economic rows available no earlier than observation date; strictly before signal session"}
     for table in TABLES:
+        report('publish', table=table)
         old = pl.read_parquet(base / f"{table}.parquet")
         prior_quarantine = pl.read_parquet(base / f"{table}_quarantine.parquet")
         selected = [row for row in captured if row["dataset"] == table]
@@ -131,6 +141,7 @@ def refresh_quarter(
             raise ValueError(f"Financial refresh row reconciliation failed: {table}")
         print(f"Published {table}: {merged.height} clean rows", flush=True)
     (output / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    report('complete')
     return summary
 
 
