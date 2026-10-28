@@ -233,7 +233,8 @@ def collect(
     daily_dir = None
     daily_status = None
     if session is not None:
-        matches = sorted((artifacts / "daily" / "sue_v2").glob(f"{session.isoformat()}_*"))
+        matches = sorted(path for path in (artifacts / "daily" / "sue_v2").glob(
+            f"{session.isoformat()}_*") if path.is_dir())
         if matches:
             daily_dir = matches[-1]
             summary = _read_json(daily_dir / "summary.json") or {}

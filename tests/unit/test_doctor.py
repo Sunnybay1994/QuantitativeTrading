@@ -91,6 +91,24 @@ def test_known_failures_are_red(tmp_path, monkeypatch):
     assert len(report["red"]) >= 5
 
 
+def test_daily_receipt_ignores_logs_and_waiting_sidecars(tmp_path, monkeypatch):
+    root = _tree(tmp_path)
+    folder = root / 'artifacts/daily/sue_v2'
+    (folder / '2026-10-26_213000.log').write_text('child stdout', encoding='utf-8')
+    (folder / '2026-10-26_waiting_inputs.json').write_text('{}', encoding='utf-8')
+    monkeypatch.setattr('quant.reporting.doctor._git_facts', lambda _: {
+        'dirty': 0, 'days_since_commit': 0, 'root_scratch_py': 0, 'git_ok': True,
+    })
+    report = collect(root=root, now=NOW, tasks=[{'name': 'daily', 'result': 0}])
+    assert report['daily']['status'] == 'complete'
+    assert report['daily']['run'].endswith('2026-10-26_213000')
+    # A newer real run without a summary must remain incomplete, not inherit success.
+    (folder / '2026-10-26_220000').mkdir()
+    report = collect(root=root, now=NOW, tasks=[{'name': 'daily', 'result': 0}])
+    assert report['daily']['status'] is None
+    assert 'daily: 2026-10-26 status=None' in report['red']
+
+
 def test_notify_sends_red_lines(monkeypatch):
     sent = {}
 
