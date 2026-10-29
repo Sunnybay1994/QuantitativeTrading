@@ -25,3 +25,7 @@ G1 构造器与审计的单元测试读取 `tests/fixtures/g1_candidate` 中由�
 跨源参考核对测试使用 `tests/fixtures/g1_reference_candidate` 的固定合成 G1 表；共享 factory/fixture 仍保留在 `test_m3_reference.py`，原核对用例拆到 `test_m3_reference_contracts.py` 与 `test_m3_reference_reconcile.py`。参考样本的真实核对、容差、稳定摘要和零 IO 断言不变。新增的 `test_reference_fixed_candidate_matches_fresh_full_builder` 用原始合成响应重新构建并对比全部表、输入回执与身份，沿用 base 解释器执行 `python -m pytest tests/unit/test_m3_reference_contracts.py -m slow --junitxml=<独立目录>/reference-g1.xml`。
 
 参考固定表的显式生成命令为 `python -m tests.support.build_g1_candidate_fixture --kind reference --output artifacts/tmp/reference-new`，输出目录必须尚不存在。普通核对测试仍调用真实候选构造器校验，固定表不会自动更新；输入 factory 或构建器变化时须执行上述完整重建对比。
+
+正式 G7E/G7F 模拟和三档回测的 `_case` / `_formal_case` 会通过 `_fresh_context` 重建完整目标、模型和预测上游；这些闭环按具体函数进入 M3 慢回归。净值投影、成本缩放、残余意图计数、卖出价格取整及严格上下文类型测试继续留在快集合。质量门完整源码发布、恢复和失败回滚也进入 M3 慢回归，独立导入隔离和环境清理仍为快测试。
+
+G1 发布模块中实际调用 `prepare_g1_release`、`publish_g1_release` 或依赖完整 `prepared` 夹具的测试单列慢回归，仍保留真实候选重建、跨源核对、发布、篡改和原子写入验证。使用既有 base 解释器运行 `python -m pytest tests/unit/test_m3_g1_release.py -m slow --junitxml=<独立目录>/g1-release.xml`；上文 M3 慢回归命令另加入 `--ignore=tests/unit/test_m3_g1_release.py`。不调用完整发布链的输入、列锁、严格 manifest、原生文件系统能力和无重命名回退测试继续留在快集合。依赖审计和默认收集范围对照位于 `artifacts/worklog/remaining_chain_boundaries_20261029/`；本次分类不代表慢回归已经通过。
