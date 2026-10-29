@@ -1,5 +1,6 @@
 import datetime as dt
 import json
+import re
 from pathlib import Path
 
 import httpx
@@ -18,7 +19,13 @@ REASON = "订单显著增加，成本效率改善。"
 
 
 @pytest.fixture(autouse=True)
-def off_peak_clock(monkeypatch):
+def off_peak_clock(monkeypatch, tmp_path):
+    # Fake-client tests use a dated local copy; this is not an official price check.
+    config = tmp_path / "scoring_fixture.toml"
+    config.write_text(re.sub(r"^pricing_checked\s*=.*$",
+        f"pricing_checked = {dt.date.today().isoformat()}",
+        CONFIG.read_text(encoding="utf-8"), flags=re.MULTILINE), encoding="utf-8")
+    monkeypatch.setitem(globals(), "CONFIG", config)
     monkeypatch.setattr('quant.research.score_forecast_text.request_window',
                         lambda: {'allowed': True, 'next_allowed_at': '2026-09-12T00:00:00+00:00'})
 
@@ -303,6 +310,22 @@ def test_dry_run_never_calls_provider(tmp_path):
     assert report["dry_run"] and client.calls == 0
     assert not (tmp_path / "cache.sqlite").exists()
     assert report["plan"]["selected_unique_texts"] == 1
+
+
+def test_batch_rejects_expired_price_check_before_provider(tmp_path):
+    assert CONFIG.parent == tmp_path
+    source = tmp_path / "input.parquet"
+    corpus(source)
+    CONFIG.write_text(re.sub(r"^pricing_checked\s*=.*$",
+        f"pricing_checked = {(dt.date.today() - dt.timedelta(days=8)).isoformat()}",
+        CONFIG.read_text(encoding="utf-8"), flags=re.MULTILINE), encoding="utf-8")
+    client = FakeClient()
+    with pytest.raises(ValueError, match="Recheck official pricing"):
+        run_batch(source=source, config=CONFIG, design_path=DESIGN, output=tmp_path / "run",
+                  cache_path=tmp_path / "cache.sqlite", execute=True, max_requests=1,
+                  max_usd=1, client=client)
+    assert client.calls == 0
+    assert not (tmp_path / "cache.sqlite").exists()
 
 
 def test_panel_no_future_leak_missing_invalidation_and_expiry(tmp_path):
