@@ -309,7 +309,7 @@ def create_server(port: int) -> ThreadingHTTPServer:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--port', type=int, default=8768)
+    parser.add_argument('--port', type=int, default=8769)
     args = parser.parse_args()
     print(f'Research dashboard: http://127.0.0.1:{args.port}', flush=True)
     create_server(args.port).serve_forever()

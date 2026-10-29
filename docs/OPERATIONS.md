@@ -130,12 +130,12 @@ ETF 人工延迟账户：初始化 `python -m quant research etf-manual-init`；
 | 扫描论文/开源 | `python -m quant intel scan`（`--no-extract` 不花 LLM） |
 | 发一条通知 | `python -m quant notify test` |
 | 排行榜 | `python -m quant report leaderboard` |
-| 本地投研看板 | `python -m quant report dashboard --port 8768`；已安装登录任务时自动恢复，不要重复启动 |
+| 本地投研看板 | `python -m quant report dashboard --port 8769`；已安装登录任务时自动恢复，不要重复启动 |
 | 挖掘状态 | `.\scripts\show_factor_mining_status.ps1` |
 | 盘中行情延时小样本复测 | `python -m quant data latency`；只读请求，结果在 `artifacts/realtime/latency_*/`，分开显示冷启动、热调用和供应商时间戳年龄 |
 | 分钟策略开发回放 | `python -m quant research intraday-afternoon --output artifacts/research/<新目录>`；冻结配置、输入哈希、逐日质量及三档成本/人工延迟回放，不发实盘订单 |
 
-计划任务安装：`.\scripts\install_daily_observation.ps1`、`.\scripts\register_continuous_mining.ps1`、`.\scripts\register_research_dashboard.ps1`。电脑须开机且用户登录；看板地址 `http://127.0.0.1:8768`。
+计划任务安装：`.\scripts\install_daily_observation.ps1`、`.\scripts\register_continuous_mining.ps1`、`.\scripts\register_research_dashboard.ps1`。电脑须开机且用户登录；看板地址 `http://127.0.0.1:8769`。
 
 看板顶部导航分为运行总览、数据获取、策略曲线、模拟账户、研究结果，支持链接直达和浏览器前进/后退。行情覆盖和曲线在首次进入对应页时加载；总览使用独立轻量缓存，不等待研究结果分组。研究结果每页 30 组，搜索、结论筛选及排序作用于全部记录，切页保留筛选。定时刷新仅在当前标签可见时执行：总览/账户 20 秒、结果 60 秒；顶部按钮只刷新当前页。
 
@@ -187,7 +187,7 @@ ETF 人工延迟账户：初始化 `python -m quant research etf-manual-init`；
 
 ## 数据获取看板与手动同步
 
-本地看板 `http://127.0.0.1:8768/#dataAcquisition` 按来源、K线级别列出实际 Parquet 记录日期边界和去重标的数。扫描在后台运行，缓存每五分钟增量检查；页面显示统计时间、扫描进度及读取失败数，也可手动刷新。当前统计包含 TDX、Futu、已有公开源分钟、当前 Tushare 日线快照与日更分区，不计复权因子表。日期边界不证明逐交易日连续完整。
+本地看板 `http://127.0.0.1:8769/#dataAcquisition` 按来源、K线级别列出实际 Parquet 记录日期边界和去重标的数。扫描在后台运行，缓存每五分钟增量检查；页面显示统计时间、扫描进度及读取失败数，也可手动刷新。当前统计包含 TDX、Futu、已有公开源分钟、当前 Tushare 日线快照与日更分区，不计复权因子表。日期边界不证明逐交易日连续完整。
 
 展开“1 分钟标的列表”可搜索代码/名称/来源、筛选和导出 CSV。“已补齐计划年份”仅表示从已探测 Futu 最早年份到配置结束年份均有非空年度分区；尚未核验逐日缺口。最新日期单独显示，允许由 TDX 等近期源补足。
 

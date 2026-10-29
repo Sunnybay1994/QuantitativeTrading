@@ -5,10 +5,14 @@
 
 ```powershell
 $env:PYTHONPATH = "$PWD\src"
-D:\Miniforge3\python.exe -m quant report dashboard --port 8768
+D:\Miniforge3\python.exe -m quant report dashboard --port 8769
 ```
 
-浏览器打开 [投研工作台](http://127.0.0.1:8768/)。服务仅监听本机；已注册下述登录任务时，登录后自动恢复，否则需手动启动。
+浏览器打开 [投研工作台](http://127.0.0.1:8769/)。服务仅监听本机；已注册下述登录任务时，登录后自动恢复，否则需手动启动。
+
+启动器默认使用 8769，避免与本机代理服务占用的旧端口 8768 冲突。
+需要其他端口时，可运行 `scripts/run_research_dashboard.ps1 -Port <端口>`；
+先加 `-CheckOnly` 可检查是否允许绑定，不会启动服务。
 
 - 查看实际研究进程、CPU 累计计算时间、显卡占用，以及挖掘阶段、断点进度和候选入库结果。
 - 查看历史回测的成本后收益、夏普、回撤与报告证据，支持搜索、结论筛选和点击表头切换升降序。
@@ -24,7 +28,7 @@ D:\Miniforge3\python.exe -m quant report dashboard --port 8768
 
 看板当前流水线提供“重启投研 / 从断点恢复”按钮，通过现有计划任务恢复；不会重复启动运行中的任务，也不会清空断点。
 
-看板后台服务可通过 `scripts/register_research_dashboard.ps1` 注册为当前用户的登录启动任务 `QuantitativeTrading-ResearchDashboard`，只监听本机8768端口；启动器互斥和端口检查防止重复启动，异常退出每隔1分钟重试，最多3次。关机期间不运行，登录后恢复。日志位于 `artifacts/research/dashboard_service/`；`/api/health` 用于核对实际服务进程。
+看板后台服务可通过 `scripts/register_research_dashboard.ps1` 注册为当前用户的登录启动任务 `QuantitativeTrading-ResearchDashboard`，只监听本机8769端口；启动器互斥和端口检查防止重复启动，异常退出每隔1分钟重试，最多3次。关机期间不运行，登录后恢复。日志位于 `artifacts/research/dashboard_service/`；`/api/health` 用于核对实际服务进程。
 
 曲线下的期间报告展示冻结配置中的训练设置、评估范围及实际保存净值覆盖，下载 HTML 保留相同说明和证据路径。未保存的训练首末日显示未知；逐年历史回放不自动视为独立测试，模拟净值的前向独立性须结合候选冻结记录核验。
 
