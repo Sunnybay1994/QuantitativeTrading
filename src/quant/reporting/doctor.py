@@ -7,6 +7,7 @@ import datetime as dt
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -304,6 +305,8 @@ def collect(
         red.append(f"tests: latest={tests.get('exit_code')}")
     elif (tests.get("age_days") or 0) > 2:
         red.append(f"tests: age_days={tests['age_days']}")
+    if tests.get("duration_seconds") is not None and tests["duration_seconds"] > 600:
+        red.append(f"tests: duration_seconds={tests['duration_seconds']} exceeds 600")
     coverage = _coverage(artifacts / "post_close_k1m" / "coverage.json")
     latest: dict[str, dict] = {}
     for row in coverage["rows"]:
@@ -399,9 +402,9 @@ def record_fast_tests(root: Path | None = None) -> int:
     destination = root / "artifacts" / "tests"
     destination.mkdir(parents=True, exist_ok=True)
     started = dt.datetime.now(SHANGHAI)
-    clock = dt.datetime.now()
+    clock = time.monotonic()
     # Bound runtime so DailyObservation can exit before Task Scheduler's limit.
-    test_timeout_seconds = 1200
+    test_timeout_seconds = 600
     try:
         completed = subprocess.run(
             [sys.executable, "-m", "pytest", "tests", "-q", "-m", "not slow", "--tb=no"],
@@ -435,14 +438,17 @@ def record_fast_tests(root: Path | None = None) -> int:
                     passed = int(parts[index - 1])
                 if token == "failed" and index:
                     failed = int(parts[index - 1])
+    log_path = destination / (started.strftime("%Y%m%dT%H%M%S_%f") + ".log")
+    log_path.write_text(text, encoding="utf-8")
     payload = {
         "ran_at": started.isoformat(),
         "command": "pytest -m \"not slow\"",
         "exit_code": exit_code,
         "passed": passed,
         "failed": failed,
-        "duration_seconds": round((dt.datetime.now() - clock).total_seconds(), 1),
+        "duration_seconds": round(time.monotonic() - clock, 1),
         "timeout_seconds": test_timeout_seconds,
+        "log": str(log_path),
     }
     (destination / "latest.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return exit_code
