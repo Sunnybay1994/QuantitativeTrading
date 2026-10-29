@@ -80,3 +80,67 @@ def test_each_cost_uses_own_benchmark_window(tmp_path):
     assert row['excess_0_5x'] == pytest.approx(.185)
     assert row['excess_1x'] == pytest.approx(.17)
     assert row['excess_2x'] == pytest.approx(.14)
+
+
+def test_q10_related_experiment_keeps_own_freeze_and_evidence_in_registry_and_board(tmp_path):
+    from quant.reporting.leaderboard import write_leaderboard
+    run=saved_run(tmp_path/'q10_combo')
+    (run/'config.toml').write_text('[research]\nid="q10_plus_admitted_v1"\nregistered_on=2026-10-10\n')
+    record=records_from_run(run)[0]
+    assert record['design_date']=='2026-10-10' and record['oos_start']=='2026-11'
+    assert record['oos_months']==0 and record['sample_scope']=='IS_ONLY'
+    registry,board=tmp_path/'registry.parquet',tmp_path/'board.md'
+    # Simulate an existing poisoned registry; rendering must repair persistence too.
+    record.update(design_date='2026-09-12',oos_start='2026-10',oos_months=1,sample_scope='HAS_OOS')
+    pl.DataFrame([record]).write_parquet(registry)
+    write_leaderboard(registry,board)
+    saved=pl.read_parquet(registry).row(0,named=True)
+    assert saved['design_date']=='2026-10-10'
+    assert saved['oos_start']=='2026-11' and saved['oos_months']==0 and saved['sample_scope']=='IS_ONLY'
+    assert 'HAS_OOS' not in board.read_text(encoding='utf-8')
+    assert saved['conclusion']==record['conclusion']
+    assert (tmp_path/'排行榜_因子.md').exists()
+
+
+def test_render_does_not_overwrite_a_concurrent_append_or_publish_stale_board(tmp_path, monkeypatch):
+    from quant.reporting import leaderboard
+    from quant.reporting.experiment_registry import append_records
+
+    registry, board = tmp_path/'registry.parquet', tmp_path/'board.md'
+    old, new = saved_run(tmp_path/'old'), saved_run(tmp_path/'new', 'PAPER_CANDIDATE')
+    append_records(records_from_run(old), registry)
+    board.write_text('Existing board', encoding='utf-8')
+    render = leaderboard._render
+    appended = []
+
+    def concurrent(*args, **kwargs):
+        if not appended:
+            append_records(records_from_run(new), registry)
+            appended.append(True)
+        return render(*args, **kwargs)
+
+    monkeypatch.setattr(leaderboard, '_render', concurrent)
+    with pytest.raises(ValueError, match='Registry changed while rendering'):
+        leaderboard.write_leaderboard(registry, board)
+    assert pl.read_parquet(registry).height == 2
+    assert board.read_text(encoding='utf-8') == 'Existing board'
+    assert not (tmp_path/'排行榜_因子.md').exists()
+    assert not list(tmp_path.glob('registry.parquet.*.tmp'))
+    leaderboard.write_leaderboard(registry, board)
+    assert pl.read_parquet(registry).height == 2
+    assert set(pl.read_parquet(registry)['conclusion']) == {'REJECTED', 'PAPER_CANDIDATE'}
+
+
+def test_render_uses_the_same_registry_lock_as_append(tmp_path):
+    from quant.execution.manual_session_service import instance_lock
+    from quant.reporting.experiment_registry import append_records
+    from quant.reporting.leaderboard import write_leaderboard
+
+    registry = tmp_path/'registry.parquet'
+    append_records(records_from_run(saved_run(tmp_path/'run')), registry)
+    original = registry.read_bytes()
+    with instance_lock(registry.with_suffix('.lock')), pytest.raises(OSError):
+        write_leaderboard(registry, tmp_path/'board.md')
+    assert registry.read_bytes() == original
+    assert not (tmp_path/'board.md').exists()
+    assert not list(tmp_path.glob('registry.parquet.*.tmp'))

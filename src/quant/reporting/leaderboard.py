@@ -1,6 +1,8 @@
 """Render the result registry, retaining the pre-machine leaderboard backup."""
 import argparse
 import datetime as dt
+import io
+import uuid
 from pathlib import Path
 
 import polars as pl
@@ -78,6 +80,7 @@ def _render(rows: list[dict], *, title: str, intro: str, limit: int | None) -> l
              '年化/回撤/超额为百分比；三档按 0.5× / 1× / 2× 成本排列，换手为单边年化倍数。缺失字段显示 —。',
              '结论沿用各运行原判定；不同测量口径与历史版本不混作新的准入证据。',
              'IS/OOS：设计日 / 数据截止 / 样本外起点月 / 样本外月数 / 范围（D2）。', '',
+             'OOS月数仅统计本实验冻结后已保存收益覆盖的月份（可含不足整月）；缺少证据为 OOS_UNVERIFIED。独立前向账户不并入历史准入。', '',
              '|实验 / 变体|持股区间|设计日|数据截止|OOS起点|OOS月数|范围|CAGR 三档|Sharpe 三档|最大回撤三档|换手三档|超额最强基准三档|结论|产物|',
              '|---|---|---|---|---|---:|---|---|---|---|---|---|---|---|']
     for row in chosen:
@@ -95,25 +98,17 @@ def _render(rows: list[dict], *, title: str, intro: str, limit: int | None) -> l
 
 
 def write_leaderboard(registry: Path = DEFAULT_REGISTRY, output: Path = DEFAULT_LEADERBOARD,
-                      factor_output: Path = DEFAULT_FACTOR_LEADERBOARD) -> None:
-    frame = pl.read_parquet(registry)
+                      factor_output: Path | None = None) -> None:
+    factor_output = factor_output or output.with_name(DEFAULT_FACTOR_LEADERBOARD.name)
+    original = registry.read_bytes()
+    frame = pl.read_parquet(io.BytesIO(original))
     if 'level' not in frame.columns:
         frame = frame.with_columns(pl.lit(None).cast(pl.Utf8).alias('level'))
     rows = frame.to_dicts()
-    from quant.reporting.sample_scope import months_between, q10_oos_defaults
+    from quant.reporting.sample_scope import refresh_sample_fields
     for row in rows:
         row['level'] = infer_level(row['run_path'], row.get('level'))
-        path = row['run_path'].replace('\\', '/').lower()
-        if 'q10' in path or 'q10' in str(row.get('experiment_id', '')).lower():
-            defaults = q10_oos_defaults()
-            row['design_date'] = row.get('design_date') or defaults['design_date']
-            row['oos_start'] = defaults['oos_start']
-            row['oos_months'] = months_between(defaults['oos_start'], dt.date.today())
-            row['sample_scope'] = defaults['sample_scope']
-            row['data_end'] = row.get('data_end') or row.get('end')
-    if output.exists() and MARKER not in output.read_text(encoding='utf-8'):
-        stamp = dt.datetime.now().strftime('%Y%m%dT%H%M%S%f')
-        (registry.parent / f'leaderboard_before_machine_{stamp}.md').write_bytes(output.read_bytes())
+        refresh_sample_fields(row)
     strategies = [r for r in rows if r['level'] == 'strategy']
     factors = [r for r in rows if r['level'] == 'factor']
     strategy_lines = _render(
@@ -132,19 +127,29 @@ def write_leaderboard(registry: Path = DEFAULT_REGISTRY, output: Path = DEFAULT_
         intro=f'因子级运行 {len(factors)} 行；策略级见 [排行榜.md]({output.name})。',
         limit=80,
     )
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text('\n'.join(strategy_lines) + '\n', encoding='utf-8')
-    factor_output.write_text('\n'.join(factor_lines) + '\n', encoding='utf-8')
-    # Persist inferred levels without rebuilding unrelated columns.
-    levels = pl.DataFrame({
-        'run_path': [r['run_path'] for r in rows],
-        'variant': [r['variant'] for r in rows],
-        'level': [r['level'] for r in rows],
-    })
-    refreshed = frame.drop('level', strict=False).join(levels, on=['run_path', 'variant'], how='left')
-    temporary = registry.with_suffix('.parquet.tmp')
-    refreshed.write_parquet(temporary)
-    temporary.replace(registry)
+    # Persist evidence fields as displayed, keeping all admission metrics intact.
+    fields = {'level':pl.String,'design_date':pl.String,'data_end':pl.String,
+              'oos_start':pl.String,'oos_months':pl.Int64,'sample_scope':pl.String}
+    refreshed = frame.with_columns(*[pl.Series(name,[r.get(name) for r in rows],dtype=dtype)
+                                     for name,dtype in fields.items()])
+    temporary = registry.with_name(registry.name + '.' + uuid.uuid4().hex + '.tmp')
+    from quant.execution.manual_session_service import instance_lock
+
+    try:
+        refreshed.write_parquet(temporary)
+        with instance_lock(registry.with_suffix('.lock')):
+            if registry.read_bytes() != original:
+                raise ValueError('Registry changed while rendering; retry from current evidence')
+            if output.exists() and MARKER not in output.read_text(encoding='utf-8'):
+                stamp = dt.datetime.now().strftime('%Y%m%dT%H%M%S%f')
+                (registry.parent / f'leaderboard_before_machine_{stamp}.md').write_bytes(output.read_bytes())
+            temporary.replace(registry)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            factor_output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text('\n'.join(strategy_lines) + '\n', encoding='utf-8')
+            factor_output.write_text('\n'.join(factor_lines) + '\n', encoding='utf-8')
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def main() -> None:
