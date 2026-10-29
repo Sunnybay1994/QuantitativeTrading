@@ -4,6 +4,7 @@ import datetime as dt
 import hashlib
 import json
 import math
+import time
 import tomllib
 from pathlib import Path
 
@@ -15,6 +16,18 @@ DEFAULT_LEADERBOARD = ROOT/'docs/research/排行榜.md'
 COSTS = {0.5: '0_5x', 1.0: '1x', 2.0: '2x'}
 METRICS = {'cagr': 'cagr', 'sharpe': 'sharpe', 'mdd': 'max_drawdown',
            'turnover': 'annualized_one_way_turnover'}
+
+
+def _replace_registry_file(temporary: Path, registry: Path) -> None:
+    """Retry only atomic publication; caller keeps its registry lock and CAS checks."""
+    for attempt in range(10):
+        try:
+            temporary.replace(registry)
+            return
+        except PermissionError as exc:
+            if getattr(exc, 'winerror', None) not in (5, 32, 33) or attempt == 9:
+                raise
+            time.sleep(0.05 * (attempt + 1))
 
 
 def _json(path: Path) -> dict:
@@ -199,7 +212,7 @@ def _append_records(records: list[dict], registry: Path) -> int:
             frame = frame.with_columns(pl.col(name).cast(pl.Float64))
         temporary = registry.with_suffix('.parquet.tmp')
         frame.write_parquet(temporary)
-        temporary.replace(registry)
+        _replace_registry_file(temporary, registry)
     return len(ordered)
 
 
