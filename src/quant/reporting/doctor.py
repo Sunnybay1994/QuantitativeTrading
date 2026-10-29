@@ -242,13 +242,34 @@ def collect(
     session = _latest_open(root / "data", completed_date('today', clock))
     daily_dir = None
     daily_status = None
+    daily_error = None
     if session is not None:
-        matches = sorted(path for path in (artifacts / "daily" / "sue_v2").glob(
-            f"{session.isoformat()}_*") if path.is_dir())
+        matches = []
+        for path in sorted((artifacts / "daily" / "sue_v2").glob('*')):
+            if not path.is_dir():
+                continue
+            summary = _read_json(path / 'summary.json') or {}
+            # Catch-up directories use the actual recording date. Keep same-day
+            # unfinished directories too, so a new attempt cannot inherit green.
+            if summary.get('as_of') == session.isoformat() or path.name.startswith(f'{session.isoformat()}_'):
+                matches.append((path, summary))
         if matches:
-            daily_dir = matches[-1]
-            summary = _read_json(daily_dir / "summary.json") or {}
+            daily_dir, summary = matches[-1]
             daily_status = summary.get("status")
+            if not summary:
+                daily_error = 'summary missing or invalid'
+            elif summary.get('as_of') != session.isoformat():
+                daily_error = 'summary session mismatch'
+            elif any(summary.get(key) is not False for key in ('rehearsal','saved_data','auto_trade')):
+                daily_error = 'live-data observation mode not verified'
+            elif (daily_dir/'summary.json').stat().st_mtime > clock.timestamp():
+                daily_error = 'summary not yet available at acceptance time'
+            elif (daily_dir/'scheduler.json').exists():
+                execution = _read_json(daily_dir/'scheduler.json') or {}
+                if execution.get('exit_code') != 0:
+                    daily_error = 'observation process did not finish successfully'
+            if daily_error and summary:
+                daily_status = 'invalid_record'
     q10_state = None
     if session is not None:
         candidate = artifacts / "paper" / "q10_sue_v2" / session.isoformat() / "state.json"
@@ -341,7 +362,8 @@ def collect(
         "red": red,
         "scheduled_tasks": scheduled,
         "scheduled_history": history,
-        "daily": {"status": daily_status, "run": None if daily_dir is None else str(daily_dir), "q10_state": bool(q10_state)},
+        "daily": {"status": daily_status, "run": None if daily_dir is None else str(daily_dir),
+                  "q10_state": bool(q10_state), "receipt_error": daily_error},
         "mining": mining,
         "registry": registry,
         "llm": ledger,
@@ -376,7 +398,8 @@ def render_markdown(report: dict) -> str:
         "",
         "## 其他",
         "",
-        f"- daily: session={report['session_date']} status={report['daily']['status']} q10_state={report['daily']['q10_state']}",
+        f"- daily: session={report['session_date']} status={report['daily']['status']} q10_state={report['daily']['q10_state']}"
+        + (f" error={report['daily']['receipt_error']}" if report['daily'].get('receipt_error') else ''),
         f"- mining: batch={report['mining']['last_completed_batch']} on={report['mining']['last_completed_on']} age={report['mining']['days_since_completed']} failures={report['mining']['consecutive_failures']} kind={report['mining']['failure_kind']}",
         f"- registry: rows={report['registry']['rows']} outside={report['registry']['outside']} duplicate_keys={report['registry']['duplicate_keys']}",
         f"- llm: spend_usd={report['llm']['spend_usd']} zero_usd_with_tokens={report['llm']['zero_usd_with_tokens']}",

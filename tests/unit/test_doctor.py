@@ -1,5 +1,6 @@
 import datetime as dt
 import json
+import os
 from zoneinfo import ZoneInfo
 
 import polars as pl
@@ -19,7 +20,9 @@ def _tree(tmp_path):
     pl.DataFrame({"date": [dt.date(2026, 10, 26)], "is_open": [True]}).write_parquet(cal / "data.parquet")
     daily = tmp_path / "artifacts" / "daily" / "sue_v2" / f"{day}_213000"
     daily.mkdir(parents=True)
-    (daily / "summary.json").write_text(json.dumps({"status": "complete"}), encoding="utf-8")
+    (daily / "summary.json").write_text(json.dumps({"status": "complete", "as_of": day,
+        "rehearsal": False, "saved_data": False, "auto_trade": False}), encoding="utf-8")
+    os.utime(daily / "summary.json", (1, 1))
     q10 = tmp_path / "artifacts" / "paper" / "q10_sue_v2" / day
     q10.mkdir(parents=True)
     (q10 / "state.json").write_text("{}", encoding="utf-8")
@@ -108,6 +111,44 @@ def test_daily_receipt_ignores_logs_and_waiting_sidecars(tmp_path, monkeypatch):
     report = collect(root=root, now=NOW, tasks=[{'name': 'daily', 'result': 0}])
     assert report['daily']['status'] is None
     assert 'daily: 2026-10-26 status=None' in report['red']
+
+
+@pytest.fixture
+def isolated_git(monkeypatch):
+    monkeypatch.setattr('quant.reporting.doctor._git_facts', lambda _: {
+        'dirty': 0, 'days_since_commit': 0, 'root_scratch_py': 0, 'git_ok': True,
+    })
+
+
+def test_daily_receipt_matches_payload_session_after_delayed_recording(tmp_path, isolated_git):
+    root = _tree(tmp_path)
+    folder = root/'artifacts/daily/sue_v2'
+    original = folder/'2026-10-26_213000'
+    original.rename(folder/'2026-10-27_081000')
+    report = collect(root=root, now=dt.datetime(2026,10,27,8,30,tzinfo=SH), tasks=[])
+    assert report['session_date'] == '2026-10-26'
+    assert report['daily']['status'] == 'complete'
+    assert report['daily']['run'].endswith('2026-10-27_081000')
+    assert not any(item.startswith('daily:') for item in report['red'])
+
+
+@pytest.mark.parametrize('bad', ['wrong_session', 'missing_session', 'rehearsal', 'saved_data',
+                                 'auto_trade', 'failed_scheduler', 'future_receipt'])
+def test_directory_name_cannot_make_unverified_daily_receipt_green(tmp_path, bad, isolated_git):
+    root = _tree(tmp_path)
+    path = root/'artifacts/daily/sue_v2/2026-10-26_213000/summary.json'
+    value = json.loads(path.read_text())
+    if bad == 'wrong_session': value['as_of'] = '2026-10-23'
+    elif bad == 'missing_session': value.pop('as_of')
+    elif bad in ('rehearsal','saved_data','auto_trade'): value[bad] = True
+    elif bad == 'failed_scheduler': (path.parent/'scheduler.json').write_text('{"exit_code":1}')
+    path.write_text(json.dumps(value))
+    stamp = NOW.timestamp()+1 if bad == 'future_receipt' else 1
+    os.utime(path, (stamp,stamp))
+    report = collect(root=root, now=NOW, tasks=[])
+    assert report['daily']['status'] != 'complete'
+    assert any(item.startswith('daily:') for item in report['red'])
+    assert report['daily']['receipt_error'] in render_markdown(report)
 
 
 @pytest.mark.parametrize('hour', [0, 8, 16, 17])
