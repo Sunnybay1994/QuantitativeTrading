@@ -1,8 +1,9 @@
 """Small, invocation-local progress receipt for the daily input refresh."""
 import datetime as dt
-import json
 import os
 from pathlib import Path
+
+from quant.data.realtime_store import atomic_json
 
 
 class RefreshProgress:
@@ -13,10 +14,7 @@ class RefreshProgress:
     def write(self) -> None:
         if self.path is not None:
             self.state['updated_at'] = dt.datetime.now().isoformat()
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = self.path.with_suffix('.tmp')
-            temporary.write_text(json.dumps(self.state, ensure_ascii=False), encoding='utf-8')
-            temporary.replace(self.path)
+            atomic_json(self.path,self.state)
 
     def update(self, counts: dict) -> None:
         self.state['counts'] = counts
