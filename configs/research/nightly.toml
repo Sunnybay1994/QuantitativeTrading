@@ -31,6 +31,7 @@ weekend_hours = 20
 minimum_free_gb = 50
 
 [genetic]
+terminal_input_policy = "published_terminal_boundary_v1"
 calculation_context = "full_market_observed_cross_subtrees_v1"
 expression_identity = "ts_corr_cov_argument_order_v1"
 context_max_subtrees = 128
