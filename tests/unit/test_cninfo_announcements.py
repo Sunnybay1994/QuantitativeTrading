@@ -26,9 +26,11 @@ class Session:
     def __init__(self, bodies):
         self.bodies = iter(bodies)
         self.pages = []
+        self.parameters = []
 
     def post(self, url, **kwargs):
         self.pages.append(kwargs["data"]["pageNum"])
+        self.parameters.append(kwargs["data"].copy())
         return Response(next(self.bodies))
 
 
@@ -43,6 +45,52 @@ def test_all_pages_and_empty_result():
     assert list(correction_pages(START, END, session=empty))[0][1] == []
 
 
+def test_large_day_partitions_reconcile_full_exchange_union():
+    from quant.data.connectors.cninfo_announcements import announcement_pages
+    bodies=[{'totalAnnouncement':3001,'announcements':[]}]
+    for prefix,count in [('sh',1000),('sz',1000),('bj',1001)]:
+        for offset in range(0,count,30):
+            bodies.append({'totalAnnouncement':count,'announcements':[
+                {'announcementId':f'{prefix}{i}'} for i in range(offset,min(offset+30,count))]})
+    session=Session(bodies)
+    result=list(announcement_pages(START,END,category='fixed-category',searchkey='repurchase',session=session))
+    assert [params['plate'] for params,_ in result]==['sh']*34+['sz']*34+['bj']*34
+    assert sum(len(items) for _,items in result)==3001
+    assert all(0 < len(items) <= 30 for _,items in result)
+    for exchange in ('sh','sz','bj'):
+        assert [p['pageNum'] for p in session.parameters if p['plate']==exchange] == [str(i) for i in range(1,35)]
+    assert all(p['category']=='fixed-category' and p['searchkey']=='repurchase'
+               and p['seDate']==f'{START}~{END}' for p in session.parameters)
+
+
+def test_large_day_partition_overlap_is_rejected():
+    from quant.data.connectors.cninfo_announcements import announcement_pages,AnnouncementSetChanged
+    session=Session([
+        {'totalAnnouncement':3001,'announcements':[]},
+        {'totalAnnouncement':1,'announcements':[{'announcementId':'same'}]},
+        {'totalAnnouncement':1,'announcements':[{'announcementId':'same'}]},
+    ])
+    with pytest.raises(AnnouncementSetChanged,match='overlap'):
+        list(announcement_pages(START,END,category='',session=session))
+
+
+def test_oversized_exchange_partition_fails_without_wrapping_or_accepting_partial_data():
+    from quant.data.connectors.cninfo_announcements import announcement_pages
+    session=Session([{'totalAnnouncement':3001,'announcements':[]}]*2)
+    with pytest.raises(ValueError,match='partition exceeds paging limit'):
+        list(announcement_pages(START,END,category='',session=session))
+    assert [p['plate'] for p in session.parameters] == ['', 'sh']
+    assert session.pages == ['1','1']
+
+
+def test_large_day_partition_gap_rejected():
+    from quant.data.connectors.cninfo_announcements import announcement_pages,AnnouncementSetChanged
+    bodies=[{'totalAnnouncement':3001,'announcements':[]}]
+    bodies += [{'totalAnnouncement':1,'announcements':[{'announcementId':prefix}]} for prefix in ('sh','sz','bj')]
+    with pytest.raises(AnnouncementSetChanged,match='union'):
+        list(announcement_pages(START,END,category='',session=Session(bodies)))
+
+
 @pytest.mark.parametrize("second", [
     {"totalAnnouncement": 2, "announcements": []},
     {"totalAnnouncement": 2, "announcements": [{"announcementId": "a"}]},
@@ -54,6 +102,23 @@ def test_incomplete_or_changing_pages_fail(second):
         {"totalAnnouncement": 2, "announcements": [{"announcementId": "a"}]}, second,
     ])
     with pytest.raises(ValueError):
+        list(correction_pages(START, END, session=session))
+
+
+@pytest.mark.parametrize("second,match", [
+    ({"totalAnnouncement": 2, "announcements": [{"announcementId": "a"}]}, "missing or repeated"),
+    ({"totalAnnouncement": 2, "announcements": [{"announcementId": None}]}, "missing or repeated"),
+    ({"totalAnnouncement": 2, "announcements": [{"announcementId": ""}]}, "missing or repeated"),
+    ({"totalAnnouncement": 2, "announcements": [
+        {"announcementId": "b"}, {"announcementId": "b"}]}, "missing or repeated"),
+])
+def test_missing_or_repeated_announcement_id_is_retryable_set_change(second, match):
+    from quant.data.connectors.cninfo_announcements import AnnouncementSetChanged
+
+    session = Session([
+        {"totalAnnouncement": 2, "announcements": [{"announcementId": "a"}]}, second,
+    ])
+    with pytest.raises(AnnouncementSetChanged, match=match):
         list(correction_pages(START, END, session=session))
 
 

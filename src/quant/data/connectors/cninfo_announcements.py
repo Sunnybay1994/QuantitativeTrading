@@ -54,6 +54,7 @@ def download_document(relative: str, *, session: Any = None) -> bytes:
 def announcement_pages(
     start: dt.date, end: dt.date, *, category: str, session: Any = None,
     searchkey: str = "",
+    plate: str = "",
 ) -> Iterator[tuple[dict[str, str], list[dict[str, Any]]]]:
     """Fetch every page, rejecting incomplete or shifting result sets."""
     if start > end:
@@ -67,7 +68,7 @@ def announcement_pages(
     while True:
         params = {
             "pageNum": str(page), "pageSize": "30", "column": "szse",
-            "tabName": "fulltext", "plate": "", "stock": "", "searchkey": searchkey,
+            "tabName": "fulltext", "plate": plate, "stock": "", "searchkey": searchkey,
             "secid": "", "category": category, "trade": "",
             "seDate": f"{start.isoformat()}~{end.isoformat()}", "sortName": "",
             "sortType": "", "isHLtitle": "false",
@@ -89,6 +90,24 @@ def announcement_pages(
         total = body.get("totalAnnouncement")
         if type(total) is not int or total < 0:
             raise ValueError("missing or invalid announcement count")
+        # The source wraps page 101 to page 1 even when hasMore is true.
+        # Exchange partitions retain the full query scope; reconcile their union
+        # to the unfiltered count rather than accepting a truncated first 3000.
+        if page == 1 and total > 3000:
+            if plate:
+                raise ValueError(f'Announcement exchange partition exceeds paging limit: {plate}, {total}')
+            partition_ids: set[str] = set()
+            for exchange in ('sh','sz','bj'):
+                for parameters, items in announcement_pages(start,end,category=category,
+                        session=session,searchkey=searchkey,plate=exchange):
+                    ids={str(item['announcementId']) for item in items}
+                    if partition_ids & ids:
+                        raise AnnouncementSetChanged('Announcement exchange partitions overlap')
+                    partition_ids.update(ids)
+                    yield parameters,items
+            if len(partition_ids)!=total:
+                raise AnnouncementSetChanged('Announcement exchange union differs from unfiltered count')
+            return
         if expected is not None and total != expected:
             raise AnnouncementSetChanged("announcement count changed during pagination; retry window")
         expected = total
@@ -97,13 +116,18 @@ def announcement_pages(
             rows = []
         if not isinstance(rows, list) or (not rows and len(seen) < total):
             raise ValueError("missing announcement page")
+        page_ids: list[str] = []
         for row in rows:
             identity = row.get("announcementId") if isinstance(row, dict) else None
-            if not identity or str(identity) in seen:
-                raise ValueError("missing or repeated announcement ID")
-            seen.add(str(identity))
-        if len(seen) > total:
+            # CNINFO sometimes returns a shifted/duplicated page while the set is
+            # still settling; treat like a count change so callers retry the window.
+            if (not identity or str(identity) in seen or str(identity) in page_ids):
+                raise AnnouncementSetChanged(
+                    "missing or repeated announcement ID; retry window")
+            page_ids.append(str(identity))
+        if len(seen) + len(page_ids) > total:
             raise ValueError("announcement rows exceed reported count")
+        seen.update(page_ids)
         yield params, rows
         if len(seen) == total:
             return
