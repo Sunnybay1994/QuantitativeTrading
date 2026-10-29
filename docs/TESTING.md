@@ -31,3 +31,5 @@ G1 构造器与审计的单元测试读取 `tests/fixtures/g1_candidate` 中由�
 G1 发布模块中实际调用 `prepare_g1_release`、`publish_g1_release` 或依赖完整 `prepared` 夹具的测试单列慢回归，仍保留真实候选重建、跨源核对、发布、篡改和原子写入验证。使用既有 base 解释器运行 `python -m pytest tests/unit/test_m3_g1_release.py -m slow --junitxml=<独立目录>/g1-release.xml`；上文 M3 慢回归命令另加入 `--ignore=tests/unit/test_m3_g1_release.py`。不调用完整发布链的输入、列锁、严格 manifest、原生文件系统能力和无重命名回退测试继续留在快集合。依赖审计和默认收集范围对照位于 `artifacts/worklog/remaining_chain_boundaries_20261029/`；本次分类不代表慢回归已经通过。
 
 G1 工作流的完整 INDEX 持久化后复用，以及 INDEX→HISTORY→REFERENCE→PREPARE→PUBLISH 五阶段发布并检查闭环，与既有 HISTORY 断点续跑一起按函数名进入 base 慢回归命令。即使供应商响应是合成的，这些用例仍执行真实请求规划、回执落盘和重建核验；原用例及断言保留。新鲜状态检查、缺少 INDEX 的前置拒绝和连接器字段契约继续留在快集合。审计与线程资源实测保存在 `artifacts/worklog/workflow_runtime_20261029/`。
+
+同模块中先成功物化 INDEX，再破坏回执、添加额外文件、检查预算边界、核对状态闭环或继续部分 CNINFO 历史采集的用例，也按具体函数进入上述 base 慢回归。它们不是物化前的输入拒绝测试：成功的阶段调用必须先完成持久化。仅在预期拒绝上下文调用阶段入口的早期校验继续留在快集合。逐函数原始调用、源摘要及全部默认用例/参数的对照见 `artifacts/worklog/g1_staged_integration_20261030/`；未执行的慢回归保持未验证。
