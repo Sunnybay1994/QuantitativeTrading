@@ -1,8 +1,30 @@
 """Explicit fixtures for tests that must never consume production settings."""
 
 import datetime as dt
+from pathlib import Path
 
 import pytest
+
+from tests.full_chain_cases import FULL_CHAIN_CASES
+
+
+def pytest_configure(config):
+    config.addinivalue_line('markers', 'slow: file-backed complete-chain regressions; run separately')
+
+
+def pytest_collection_modifyitems(items):
+    unit = Path(__file__).parent.resolve()
+    canonical = {}
+    for item in items:
+        path = Path(item.path)
+        cases = FULL_CHAIN_CASES.get(path.name, ())
+        if not cases:
+            continue
+        if path not in canonical:
+            canonical[path] = path.resolve()
+        name = getattr(item, 'originalname', None) or item.name.split('[', 1)[0]
+        if canonical[path].parent == unit and name in cases:
+            item.add_marker(pytest.mark.slow)
 
 
 @pytest.fixture
