@@ -19,6 +19,8 @@ from quant.core.paths import project_paths
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 _STEPS = ("N1", "N2", "N3", "N4", "N5")
 _TASK_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 # Disabled tasks are retired from the acceptance page; never-run codes on them are not red.
 $tasks = @(Get-ScheduledTask | Where-Object { $_.TaskName -like 'Quant*' -and $_.State -ne 'Disabled' })
 $rows = foreach ($t in $tasks) {
@@ -66,6 +68,7 @@ def windows_scheduled_tasks() -> list[dict]:
         capture_output=True,
         text=True,
         encoding="utf-8",
+        errors="replace",
         timeout=90,
     )
     if completed.returncode != 0:
@@ -311,7 +314,8 @@ def collect(
         red.append("scheduled_tasks: none")
     for row in scheduled:
         if not row["ok"]:
-            red.append(f"scheduled_tasks: {row['name']} result={row['result']}")
+            detail = f": {row['error']}" if row.get("error") else ""
+            red.append(f"scheduled_tasks: {row['name']} result={row['result']}{detail}")
     if session is None:
         red.append("daily: no SH calendar")
     elif daily_status != "complete":
