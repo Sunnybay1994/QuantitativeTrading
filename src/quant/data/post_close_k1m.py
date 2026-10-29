@@ -24,6 +24,8 @@ from quant.data.intraday_bars import SCHEMA, TZ, validate_bars
 from quant.data.realtime import single_writer
 from quant.data.realtime_inputs import phase
 from quant.data.realtime_store import atomic_json, raw_packet
+from quant.data.post_close_coverage import THRESHOLDS as THRESHOLDS
+from quant.data.post_close_coverage import save_universe, write_coverage
 
 SOURCE = "futu_realtime"
 # Per-market session end-minute labels (Futu get_cur_kline time_key minute-of-day).
@@ -556,6 +558,10 @@ def run(
         active: list[str] = []
         try:
             symbols = load_universe(settings, markets=ready_markets)
+            full_targets = {
+                symbol: expected_bars_for(symbol, sessions[market_of(symbol)], root) for symbol in symbols
+            }
+            save_universe(output, sessions, symbols, full_targets)
             if limit:
                 symbols = symbols[:limit]
             state["universe_total"] = len(symbols)
@@ -614,6 +620,8 @@ def run(
                             dict(
                                 symbol=symbol,
                                 as_of=str(session),
+                                market=market_of(symbol),
+                                ok=True,
                                 session_bars=expected,
                                 expected_bars=expected,
                                 skipped=True,
@@ -734,61 +742,6 @@ def run(
             publish()
             write_coverage(output)
         return state
-
-
-THRESHOLDS = {"cn": 0.95, "hk": 0.90, "us": 0.90}
-
-
-def write_coverage(output: Path) -> dict:
-    """Summarise post-close receipts. Complete means session_bars reached the expected count."""
-    days: dict[str, dict[str, dict[str, int]]] = {}
-    for folder in sorted(output.glob("date=*")):
-        if not folder.is_dir():
-            continue
-        day = folder.name.split("=", 1)[1]
-        for path in folder.glob("*.json"):
-            try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            market = str(payload.get("market") or "")
-            if market not in THRESHOLDS:
-                continue
-            bucket = days.setdefault(day, {}).setdefault(
-                market, {"expected": 0, "complete": 0, "partial": 0, "missing": 0})
-            bars = int(payload.get("session_bars") or 0)
-            target = int(payload.get("expected_bars") or MARKET_SPECS[market]["expected_bars"])
-            bucket["expected"] += 1
-            if payload.get("ok") and bars >= target:
-                bucket["complete"] += 1
-            elif bars > 0:
-                bucket["partial"] += 1
-            else:
-                bucket["missing"] += 1
-    lines = ["# post-close K_1M coverage", "",
-             "| date | market | expected | complete | partial | missing | complete_rate |",
-             "|---|---|---:|---:|---:|---:|---:|"]
-    flat = []
-    for day in sorted(days):
-        for market in ("cn", "hk", "us"):
-            bucket = days[day].get(market)
-            if not bucket:
-                continue
-            rate = bucket["complete"] / bucket["expected"] if bucket["expected"] else 0.0
-            lines.append(
-                f"| {day} | {market} | {bucket['expected']} | {bucket['complete']} | "
-                f"{bucket['partial']} | {bucket['missing']} | {rate:.1%} |")
-            flat.append({"date": day, "market": market, **bucket, "complete_rate": rate})
-    if not flat:
-        lines.append("| | | 0 | 0 | 0 | 0 | |")
-    lines.append("")
-    lines.append("Complete bars: cn 240, hk 330 (half day 150), us 390.")
-    text = "\n".join(lines) + "\n"
-    output.mkdir(parents=True, exist_ok=True)
-    (output / "coverage.md").write_text(text, encoding="utf-8")
-    summary = {"rows": flat, "thresholds": THRESHOLDS}
-    (output / "coverage.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    return summary
 
 
 def main() -> None:

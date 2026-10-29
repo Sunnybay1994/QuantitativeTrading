@@ -313,6 +313,8 @@ def collect(
         latest[row["market"]] = row
     for market, floor in (("cn", 0.95), ("hk", 0.90), ("us", 0.90)):
         row = latest.get(market)
+        if row and not row.get("denominator_verified"):
+            red.append(f"coverage: {market} {row['date']} full universe unverified")
         if row and row.get("expected") and float(row.get("complete_rate") or 0) < floor:
             red.append(f"coverage: {market} {row['date']} {float(row['complete_rate']):.1%}")
     from quant.data.post_close_k1m import paused_pool_names
@@ -367,12 +369,13 @@ def render_markdown(report: dict) -> str:
     if not rows:
         lines.append("无覆盖回执。")
     else:
-        lines.append("| date | market | expected | complete | partial | missing | rate |")
-        lines.append("|---|---|---:|---:|---:|---:|---:|")
+        lines.append("| date | market | expected | complete | partial | missing | rate | denominator |")
+        lines.append("|---|---|---:|---:|---:|---:|---:|---|")
         for row in rows[-12:]:
             lines.append(
                 f"| {row['date']} | {row['market']} | {row['expected']} | {row['complete']} | "
-                f"{row['partial']} | {row['missing']} | {float(row['complete_rate']):.1%} |")
+                f"{row['partial']} | {row['missing']} | {float(row['complete_rate']):.1%} | "
+                f"{row.get('denominator_basis', 'unverified')} |")
     return "\n".join(lines)
 
 
