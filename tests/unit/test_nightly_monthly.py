@@ -13,7 +13,7 @@ from quant.research import nightly_monthly as monthly
 
 def settings(tmp_path):
     return {'output_root': str(tmp_path/'nightly'), 'monthly_first_period': '2026-10',
-            'as_of': dt.date(2026, 9, 30), 'data_root': 'data'}
+            'as_of': dt.date(2026, 9, 30), 'data_root': str(tmp_path/'data')}
 
 
 def test_deployment_month_skips_without_touching_model_inputs(tmp_path):
@@ -30,8 +30,15 @@ def test_first_saturday_unlocks_every_subsequent_night(tmp_path, day, expected):
 
 def test_missed_entire_month_catches_up_before_next_saturday(tmp_path, monkeypatch):
     calls = []
+    spec = settings(tmp_path)
+    dates = pl.date_range(dt.date(2026,8,21),dt.date(2026,9,30),eager=True)
+    calendar = pl.DataFrame({'date':dates}).with_columns((pl.col('date').dt.weekday()<=5).alias('is_open'))
+    for market in ('SH','SZ'):
+        path = Path(spec['data_root'])/f'clean/trade_calendar/market={market}/data.parquet'
+        path.parent.mkdir(parents=True)
+        calendar.write_parquet(path)
     monkeypatch.setattr(monthly, '_run_month', lambda spec, path: calls.append((spec, path)) or {'completed': True})
-    monthly.monthly_models(settings(tmp_path), tmp_path/'2026-11-01')
+    monthly.monthly_models(spec, tmp_path/'2026-11-01')
     assert calls[0][1].name == '2026-10'
     assert calls[0][0]['as_of'] == dt.date(2026, 9, 30)
 

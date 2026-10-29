@@ -1,6 +1,7 @@
 import threading
 import time
 import datetime as dt
+import re
 import polars as pl
 
 import pytest
@@ -99,13 +100,20 @@ def test_live_batch_wiring_and_dollar_reservation_stop_before_requests(tmp_path,
             pass
     monkeypatch.setattr(module,'DeepSeekClient',Client)
     monkeypatch.setattr(module,'load_key',lambda path:'synthetic-key')
+    monkeypatch.setattr(module,'request_window',lambda:dict(allowed=True,next_allowed_at=None))
+    # Fake-client wiring tests use a dated local tariff; no live price check.
+    config=tmp_path/'parallel_scoring_fixture.toml'
+    text,count=re.subn(r'^pricing_checked\s*=.*$',f'pricing_checked = {dt.date.today().isoformat()}',
+                      CONFIG.read_text(encoding='utf-8'),flags=re.MULTILINE)
+    assert count == 1
+    config.write_text(text,encoding='utf-8')
     source=tmp_path/'source.parquet'
     pl.DataFrame({'symbol':['000001.SZ','000002.SZ'],'publication_date':[dt.date(2020,1,1)]*2,
         'report_period':[dt.date(2019,12,31)]*2,'reason_text':[REASON+'甲',REASON+'乙']}).write_parquet(source)
-    result=module.run_batch(source=source,config=CONFIG,design_path=DESIGN,output=tmp_path/'run',
+    result=module.run_batch(source=source,config=config,design_path=DESIGN,output=tmp_path/'run',
         cache_path=tmp_path/'cache.sqlite',execute=True,max_requests=2,max_usd=1.,workers=2,development_test=True)
     assert result['workers']==2 and result['summary']=={'success':2} and len(calls)==2
-    result=module.run_batch(source=source,config=CONFIG,design_path=DESIGN,output=tmp_path/'low',
+    result=module.run_batch(source=source,config=config,design_path=DESIGN,output=tmp_path/'low',
         cache_path=tmp_path/'low.sqlite',execute=True,max_requests=20,max_usd=1e-9,workers=4,development_test=True)
     assert result['requests_this_run']==0 and len(calls)==2
     assert result['summary']=={'budget_exhausted':2}
