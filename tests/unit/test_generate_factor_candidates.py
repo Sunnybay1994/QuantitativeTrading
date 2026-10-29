@@ -9,7 +9,6 @@ from quant.factors.library import FactorDefinition
 from quant.factors.search import prepare
 from quant.research import generate_factor_candidates as module
 
-CONFIG = Path(__file__).resolve().parents[2] / "configs/research/deepseek_diagnosis_v1.toml"
 DESIGN = Path(__file__).resolve().parents[2] / "configs/factors/search/p6c_finite_batch01_window02_20260911.toml"
 
 
@@ -19,7 +18,7 @@ def candidate(expression="ts_mean(adj_close, 3)", **changes):
 
 
 @pytest.fixture
-def inputs(tmp_path):
+def inputs(tmp_path, diagnosis_config):
     root = tmp_path / "artifacts"
     diagnosis = root / "diagnosis"
     diagnosis.mkdir(parents=True)
@@ -37,7 +36,7 @@ def inputs(tmp_path):
         f"library = {json.dumps(str(library).replace(chr(92), '/'))}"), encoding="utf-8")
     return dict(diagnosis=diagnosis, design=design, scope="价格平滑；只准备候选，不评价收益",
         fields=["adj_close"], operators=["ts_mean", "delay"], maximum_candidates=10,
-        maximum_history=60, output=root / "generated", config=CONFIG, artifact_root=root,
+        maximum_history=60, output=root / "generated", config=diagnosis_config, artifact_root=root,
         cache_path=root / "shared.sqlite")
 
 

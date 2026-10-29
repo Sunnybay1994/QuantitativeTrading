@@ -1,15 +1,11 @@
 import datetime as dt
 import json
-from pathlib import Path
 
 import pytest
 
 from quant.research.monthly_market_brief import (
     ZONE, fact_keys, generate, parse_brief, publication_mode, score, validate_facts,
 )
-
-CONFIG = Path('configs/research/deepseek_diagnosis_v1.toml')
-
 
 def facts():
     return {'as_of': '2026-06-30', 'target_date': '2026-07-31', 'first_forecast_session': '2026-07-01',
@@ -66,11 +62,11 @@ def test_facts_and_publication_time():
         validate_facts(data)
 
 
-def test_dry_run_no_cache_and_fixture_reuses_existing_cache(tmp_path):
+def test_dry_run_no_cache_and_fixture_reuses_existing_cache(tmp_path, diagnosis_config):
     source = tmp_path/'facts.json'
     source.write_text(json.dumps(facts()), encoding='utf-8')
     client = Client()
-    args = dict(facts_path=source, config=CONFIG, cache_path=tmp_path/'cache.sqlite',
+    args = dict(facts_path=source, config=diagnosis_config, cache_path=tmp_path/'cache.sqlite',
                 artifact_root=tmp_path, client=client)
     dry = generate(**args, output=tmp_path/'dry')
     assert dry['forecasts'] is None and client.calls == 0 and not args['cache_path'].exists()
@@ -100,7 +96,7 @@ def test_dry_run_no_cache_and_fixture_reuses_existing_cache(tmp_path):
         generate(**args, output=tmp_path/'dry')
 
 
-def test_unknown_output_is_not_a_neutral_probability(tmp_path):
+def test_unknown_output_is_not_a_neutral_probability(tmp_path, diagnosis_config):
     source = tmp_path/'facts.json'
     source.write_text(json.dumps(facts()), encoding='utf-8')
     class EmptyClient(Client):
@@ -108,7 +104,7 @@ def test_unknown_output_is_not_a_neutral_probability(tmp_path):
             result = super().complete_messages(messages, settings)
             result['choices'][0]['message']['content'] = '{"forecasts":[]}'
             return result
-    result = generate(facts_path=source, output=tmp_path/'empty', config=CONFIG,
+    result = generate(facts_path=source, output=tmp_path/'empty', config=diagnosis_config,
         cache_path=tmp_path/'fixture_cache.sqlite', artifact_root=tmp_path, client=EmptyClient(),
         execute=True, max_requests=2, max_usd=.1)
     assert result['status'] != 'success' and result['forecasts'] is None

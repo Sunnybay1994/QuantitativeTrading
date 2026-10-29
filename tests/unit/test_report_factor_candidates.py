@@ -95,11 +95,14 @@ def test_semantic_live_path_keeps_dsl_validation(inputs, calibration_only):
 
 
 @pytest.fixture
-def inputs(tmp_path):
+def inputs(tmp_path, diagnosis_config):
     source=tmp_path/'report.md'
     source.write_text(DEFINITION,encoding='utf-8')
     config=tmp_path/'extraction.toml'
     text=Path('configs/research/report_factor_candidates_v1_20260913.toml').read_text(encoding='utf-8')
+    text = "\n".join(f'scoring_config = {json.dumps(diagnosis_config.as_posix())}'
+                     if line.strip().startswith('scoring_config') else line
+                     for line in text.splitlines())
     text=text.replace('artifacts/research/p7_deepseek_cache.sqlite',(tmp_path/'cache.sqlite').as_posix())
     config.write_text(text,encoding='utf-8')
     return dict(reports=[source],design=Path('configs/factors/search/report_batch01_20260913.toml'),
