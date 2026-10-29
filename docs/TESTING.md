@@ -8,7 +8,7 @@
 
 慢回归单独执行：在 M3 相关代码、依赖、解释器或固定工具变化后，用该链路固定的 Windows 解释器 `D:\Miniforge3\envs\m3chain312\python.exe` 运行 `-m pytest tests -m slow --durations=20 --junitxml=<独立测试目录>/slow.xml`。它不在日更中串行执行；安排在没有生产研究写入者的独立测试时段，使用临时数据和产物目录，并保留完整结果。
 
-正式 PAPER 启动的四个完整运行时用例也标为 slow；同模块的 BOM 前置拒绝和路径规则 AST 检查仍在快集合。该启动链沿用既有 base 解释器 `D:\Miniforge3\python.exe`，单独运行 `-m pytest tests/integration/test_paper_formal_bootstrap.py -m slow --junitxml=<独立测试目录>/paper-bootstrap.xml`。M3 慢回归命令用 `--ignore=tests/integration/test_paper_formal_bootstrap.py` 保持各自原运行时约束。PAPER 启动测试的 basetemp 须满足原模块的同卷、实际代码目录外、非系统临时目录约束；隔离源码副本可使用其相邻的临时目录，不 patch 路径权威函数。
+正式 PAPER 启动的四个完整运行时用例也标为 slow；同模块的 BOM 前置拒绝和路径规则 AST 检查仍在快集合。该启动链沿用既有 base 解释器 `D:\Miniforge3\python.exe`，单独运行 `-m pytest tests/integration/test_paper_formal_bootstrap.py -m slow --junitxml=<独立测试目录>/paper-bootstrap.xml`。M3 慢回归命令加入 `--ignore=tests/integration/test_paper_formal_bootstrap.py --ignore=tests/unit/test_m3_g1_candidate.py --ignore=tests/unit/test_m3_g1_candidate_actions.py --ignore=tests/unit/test_m3_g1_workflow.py`，这些文件各自使用本页的 base 命令，保持原有组件运行时。PAPER 启动测试的 basetemp 须满足原模块的同卷、实际代码目录外、非系统临时目录约束；隔离源码副本可使用其相邻的临时目录，不 patch 路径权威函数。
 
 快测试通过不代表慢回归通过。未跑完的慢回归保持未验证，不用测试标记、部分通过数或超时回执替代。禁止仅为消除红项而扩大慢测试范围；新增标记应有实测耗时或完整链路重建的依据。
 
@@ -17,3 +17,7 @@ G1 构造器与审计的单元测试读取 `tests/fixtures/g1_candidate` 中由�
 完整构建及重建验证仍在 `test_m3_g1_candidate.py` / `test_m3_g1_candidate_actions.py` 中，以函数名逐项标记为 slow；前置拒绝测试继续留在快集合。用既有 base 解释器单独执行 `python -m pytest tests/unit/test_m3_g1_candidate.py tests/unit/test_m3_g1_candidate_actions.py -m slow --junitxml=<独立目录>/g1-build.xml`。其中正向构建回归会从全部原始合成响应重建，并与固定候选逐表、逐回执和身份对比。
 
 需要更新固定表时，显式运行 `python -m tests.support.build_g1_candidate_fixture --output artifacts/tmp/g1-new`，选择尚不存在的新目录，审阅与固定表的差异后再提交。普通测试不会自动重建或更新基准；`manifest.json` 保存生成耗时、种群数、源摘要与文件摘要。此数据仅为测试夹具，不是生产采集或研究结果。
+
+正式模型、预测、目标、回测计划和研究汇总的测试，有些会通过跨模块 `_context` 重建特征、折叠、对齐、模型及各级回执。`tests/full_chain_cases.py` 按函数名补齐这些完整链路，并保留单独的 ICIR 数学、排序、类型、发布锁及原生 LightGBM 小样本测试。G1 的 INDEX→HISTORY 持久化断点续跑回归也单独列出；其他 G1 前置校验不因此被排除。
+
+边界审计位于 `artifacts/worklog/formal_chain_boundaries_20261029/`：逐函数记录构建依赖和源摘要，收集清单核对默认用例及参数不变。正式工件链沿用上文 M3 固定解释器慢回归命令；G1 工作流用既有 base 解释器单独运行 `python -m pytest tests/unit/test_m3_g1_workflow.py -m slow --junitxml=<独立目录>/g1-workflow.xml`。两者均使用独立源码/临时产物目录，并在没有生产研究写入者的时段执行。标记与收集审计不代表这些回归已全部通过。
