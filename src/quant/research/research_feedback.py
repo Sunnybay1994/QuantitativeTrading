@@ -145,6 +145,11 @@ def build(config: Path, *, maximum_completed: int | None = None) -> dict:
     batches, pending = [], []
     completed = []
     for path in sorted(Path(policy['continuous_root']).glob('batch_*/????-??-??/summary.json')):
+        from quant.research.mining_retry import invalidated_batch
+        if invalidated_batch(path.parent.parent):
+            pending.append({'run':str(path.parent),'reason':'Frozen inputs invalidated; no strategy result',
+                            'classification':'FROZEN_INPUTS_INVALIDATED'})
+            continue
         saved = json.loads(path.read_text(encoding='utf-8'))
         steps = saved.get('steps', {})
         scorecard = steps.get('N3', {}).get('result', {}).get('scorecard')

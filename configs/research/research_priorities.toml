@@ -24,29 +24,47 @@ q10_july_attribution = "artifacts/risk/q10_2026_07_attribution_20261009/report.m
 
 [[priority]]
 id = "price_delay_family_v1"
-status = "open"
+status = "closed"
 mechanism = "Price-delay D1/D2/D3 whole-family mechanism via N1/N3/N4; no independent manual battery"
 evidence_paths = [
   "configs/research/price_delay_family_v1.toml",
   "configs/factors/queue/price_delay_family_v1_20261005.toml",
   "artifacts/research/price_delay_kernel_20261004_01/results",
   "artifacts/research/price_delay_integration_20261005_01",
+  "artifacts/factors/nightly_batches/239dea3fcd0c2d26/evaluation/scorecard/factor_scorecard.parquet",
+  "artifacts/research/continuous/batch_000068/2026-10-05/N4/admission_scorecard.parquet",
 ]
 stop_condition = "Statistical or incremental failure closes the family; no sign/window/universe/Top-K/cost rescue"
-next_action = "Consume original N1/N3/N4 outputs; only an admission survivor may justify one CNY100000 few-holdings fee1 account"
-updated = 2026-10-09
+next_action = "none; entire registered family failed original statistical battery in batch68; retain frozen results without parameter rescue"
+updated = 2026-10-27
 
 [[priority]]
 id = "return_seasonality_family_v1"
-status = "open"
+status = "closed"
 mechanism = "ANN/NANN/AMN return-seasonality family through the same N1/N3/N4 queue after price delay"
 evidence_paths = [
   "configs/research/return_seasonality_family_v1.toml",
   "artifacts/research/return_seasonality_integration_20261005_01/report.md",
+  "artifacts/factors/nightly_batches/239dea3fcd0c2d26/evaluation/scorecard/factor_scorecard.parquet",
+  "artifacts/research/continuous/batch_000068/2026-10-05/N4/admission_scorecard.parquet",
 ]
 stop_condition = "Close failed mechanisms without window/sign/Top-K rescue; do not treat algebraically related signals as independent"
-next_action = "Keep shared complete 48-month cohort and lags 13-60; N4 requires long-term-return controls with admitted/reversal/momentum/liquidity/beta/IVOL"
-updated = 2026-10-09
+next_action = "none; entire registered family failed original statistical battery in batch68; no window/sign/Top-K rescue"
+updated = 2026-10-27
+
+[[priority]]
+id = "liquidity_comovement_family_v1"
+status = "open"
+mechanism = "Previously registered three-channel liquidity co-movement family through shared N1/N3/N4 with all admitted, fixed and matched controls"
+evidence_paths = [
+  "configs/research/liquidity_comovement_family_v1.toml",
+  "configs/factors/queue/liquidity_comovement_family_v1_20261027.toml",
+  "artifacts/research/liquidity_comovement_adapter_20261005_01/completed/summary.json",
+  "artifacts/research/liquidity_comovement_controls_20261005_01/",
+]
+stop_condition = "Original statistical or incremental failure closes the whole family; missing history or broken controls remain untested, never drop/fill controls or search signs/windows/Top-K"
+next_action = "Consume at the next natural batch boundary after batch76; preserve original battery-selected variant and three costs; no independent manual battery or new account"
+updated = 2026-10-27
 
 [[priority]]
 id = "market_mechanism_value_family"

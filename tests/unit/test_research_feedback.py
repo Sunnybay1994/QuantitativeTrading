@@ -50,6 +50,20 @@ def test_partial_battery_is_not_a_zero_pass_result(tmp_path):
     assert result['completed_batteries'][0]['candidate_diagnostics'][0]['validation'] is None
 
 
+def test_invalidated_inputs_are_excluded_even_if_saved_battery_claims_complete(tmp_path):
+    import hashlib
+    root=tmp_path/'runs'; run=root/'batch_000001/2026-10-27'; run.mkdir(parents=True)
+    proof=run/'proof.json'; proof.write_text('{}')
+    (run.parent/'input_invalidation.json').write_text(json.dumps(dict(
+        batch=run.parent.name,classification='FROZEN_INPUTS_INVALIDATED',strategy_result=None,
+        evidence=[dict(path=str(proof),sha256=hashlib.sha256(proof.read_bytes()).hexdigest())])))
+    (run/'summary.json').write_text(json.dumps({'steps':{'N3':{'ok':True,'result':{'scorecard':'do-not-read.parquet'}}}}))
+    config=tmp_path/'policy.toml'; config.write_text(f'continuous_root="{root.as_posix()}"')
+    result=build(config)
+    assert not result['completed_batteries']
+    assert result['pending_batteries'][0]['classification']=='FROZEN_INPUTS_INVALIDATED'
+
+
 def test_predictive_primary_is_distinct_from_descriptive_pooled_training():
     candidate = {'direction': -1, 'fitness_preprocessing': 'battery_raw_mad3_scale1.4826_v1',
                  'search_objective': 'predictive_priority_v2', 'train': {'mean_ic': -.2},

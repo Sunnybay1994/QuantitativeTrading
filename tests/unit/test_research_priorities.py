@@ -23,11 +23,11 @@ def test_priorities_structured_and_open_complete():
     assert opens
     assert all(r["status"] == "open" for r in opens)
     assert {r["id"] for r in opens} >= {
-        "price_delay_family_v1",
-        "return_seasonality_family_v1",
         "llm_weekly_candidates",
         "q10_paper_and_next_candidate",
     }
+    closed = {r['id'] for r in rows if r['status'] == 'closed'}
+    assert {'price_delay_family_v1', 'return_seasonality_family_v1'} <= closed
 
 
 def test_prompt_context_shorter_than_legacy_blob():
