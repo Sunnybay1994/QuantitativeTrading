@@ -1,12 +1,36 @@
 import datetime as dt
 import json
 from pathlib import Path
+import tomllib
 
 import polars as pl
 import pytest
 
 from quant.execution import q10_paper as q10
 from quant.research.model_training_models import buffered_model_targets
+
+
+@pytest.fixture
+def paper_config(tmp_path):
+    """Keep frozen account/cost settings; all artifact inputs belong to this test."""
+    payload = q10.DEFAULT_CONFIG.read_text(encoding='utf-8')
+    spec = tomllib.loads(payload)
+    assessment = tmp_path/'inputs/assessment.json'
+    assessment.parent.mkdir()
+    assessment.write_text(json.dumps({'assessments': {'budgeted': {
+        'conclusion': 'PAPER_CANDIDATE', 'checks': {'synthetic_fixture_admission': True}}}}),
+        encoding='utf-8')
+    replacements = [(spec['research']['assessment'], assessment)]
+    for section, field in [('research', 'predictions'), ('model', 'selection'), ('model', 'forecast_root')]:
+        path = tmp_path/'inputs'/field
+        path.mkdir()
+        replacements.append((spec[section][field], path))
+    for old, new in replacements:
+        assert json.dumps(old) in payload
+        payload = payload.replace(json.dumps(old), json.dumps(new.as_posix()))
+    config = tmp_path/'paper_fixture.toml'
+    config.write_text(payload, encoding='utf-8')
+    return config
 
 
 def test_targets_match_frozen_buffer_then_apply_actual_holdings_budget():
@@ -84,11 +108,11 @@ def test_shadow_config_stays_out_of_the_candidate_count():
     assert '真金启动须：两份真实月报（≥2026-12-01）+ 影子账户同步运行 + 两账户均未触发 attention；金额与时点由用户确认。' in roadmap
 
 
-def test_open_account_idempotent_and_controls(tmp_path, monkeypatch):
+def test_open_account_idempotent_and_controls(tmp_path, monkeypatch, paper_config):
     monkeypatch.setattr(q10, 'read_stock_paper_calendar', lambda _: pl.DataFrame({
         'date': [dt.date(2026, 9, 14)], 'is_open': [True]}))
-    first = q10.run(output=tmp_path, end=dt.date(2026, 9, 13))
-    second = q10.run(output=tmp_path, end=dt.date(2026, 9, 13), halt=True)
+    first = q10.run(config_path=paper_config, data_root=tmp_path/'data', output=tmp_path, end=dt.date(2026, 9, 13))
+    second = q10.run(config_path=paper_config, data_root=tmp_path/'data', output=tmp_path, end=dt.date(2026, 9, 13), halt=True)
     assert first['equity'] == second['equity'] == 1e6
     assert second['positions'] == second['reference_orders'] == 0
     assert second['controls']['halt']
@@ -106,7 +130,7 @@ def test_rehearsal_forecast_rejected(tmp_path):
         q10.load_forecast(folder, dt.date(2026, 9, 30), Path('selection'), dt.date(2026, 10, 8))
 
 
-def test_month_end_orders_execute_next_session_and_restart(tmp_path, monkeypatch):
+def test_month_end_orders_execute_next_session_and_restart(tmp_path, monkeypatch, paper_config):
     from tests.unit.test_stock_paper import fixture_inputs
 
     inputs = fixture_inputs()[0]
@@ -125,13 +149,31 @@ def test_month_end_orders_execute_next_session_and_restart(tmp_path, monkeypatch
     (forecast/'summary.json').write_text(json.dumps({'as_of': str(date)}))
     monkeypatch.setattr(q10, 'load_forecast', lambda *args: scores)
     output = tmp_path/'account'
-    first = q10.run(output=output, end=date, forecast=forecast)
+    first = q10.run(config_path=paper_config, data_root=tmp_path/'data', output=output, end=date, forecast=forecast)
     assert first['positions'] == 0
     assert first['reference_orders'] == 50
-    next_day = q10.run(output=output, end=dt.date(2026, 10, 1), forecast=forecast)
+    next_day = q10.run(config_path=paper_config, data_root=tmp_path/'data', output=output, end=dt.date(2026, 10, 1), forecast=forecast)
     assert next_day['positions'] == 50
     fills = pl.read_csv(output/'2026-10-01/fills.csv')
     assert fills.height == 50
     assert (fills['quantity'] % 100 == 0).all()
-    repeated = q10.run(output=output, end=dt.date(2026, 10, 1), forecast=forecast)
+    repeated = q10.run(config_path=paper_config, data_root=tmp_path/'data', output=output, end=dt.date(2026, 10, 1), forecast=forecast)
     assert repeated['equity'] == next_day['equity']
+
+
+@pytest.mark.parametrize('bad', ['conclusion', 'check'])
+def test_fixture_admission_is_still_enforced_before_account_creation(tmp_path, paper_config, bad):
+    config = tomllib.loads(paper_config.read_text(encoding='utf-8'))
+    path = Path(config['research']['assessment'])
+    value = json.loads(path.read_text(encoding='utf-8'))
+    assessment = value['assessments']['budgeted']
+    if bad == 'conclusion':
+        assessment['conclusion'] = 'RESEARCH_ONLY'
+    else:
+        assessment['checks']['synthetic_fixture_admission'] = False
+    path.write_text(json.dumps(value), encoding='utf-8')
+    output = tmp_path/'rejected_account'
+    with pytest.raises(ValueError, match='registered admission criteria'):
+        q10.run(config_path=paper_config, data_root=tmp_path/'data', output=output,
+                end=dt.date(2026,9,13))
+    assert not output.exists()
