@@ -8,6 +8,7 @@ import pytest
 from quant.factors.expressions import evaluate_expressions
 from quant.research.gp_expression_identity import VERSION as IDENTITY_VERSION, canonical_expression, expression_key
 from quant.research.gp_full_context import FullContextEvaluator, VERSION, replace_cross_subtrees, scope_cross_sections
+from quant.research.gp_full_context import PUBLISHED_TERMINALS
 from quant.research.nightly_gp import preprocess_training_scores
 from quant.research.factor_battery_statistics import rank_ic_by_date
 
@@ -87,11 +88,23 @@ def test_mapped_terminal_ignores_divergent_panel_shortcut(tmp_path, panels):
                                equal_nan=True, atol=1e-13, rtol=1e-12)
     np.testing.assert_allclose(actual['candidate'].to_numpy(), expected['candidate'].to_numpy(),
                                equal_nan=True, atol=1e-13, rtol=1e-12)
-    # Sanity: reading the divergent column directly would not match.
     wrong = evaluate_expressions(
         divergent.select('symbol', 'trade_date', 'gp_a', 'adj_close'),
         {'candidate': 'ts_mean(delay(gp_a, 1), 5)'}).sort('symbol', 'trade_date')
     assert not np.allclose(actual['candidate'].to_numpy(), wrong['candidate'].to_numpy(), equal_nan=True)
+
+
+@pytest.mark.parametrize('field',['pit_annual_low_accruals','minute_smart_vwap','free_float_turnover_level_monthly_calendar80_v1'])
+def test_published_policy_keeps_intrinsic_terminal_observations_without_unattached_raw_fields(tmp_path,field):
+    dates=[dt.date(2020,1,2),dt.date(2020,1,3),dt.date(2020,1,6)]
+    sample=pl.DataFrame({'symbol':['A']*3,'trade_date':dates,'gp_factor':[1.,2.+1e-12,3.], 'adj_close':[10.]*3})
+    def forbidden(*args): raise AssertionError('No new cross section needs raw intrinsic expansion')
+    runner=FullContextEvaluator(sample,{'gp_factor':field},tmp_path,
+        identity={'terminal_input_policy':PUBLISHED_TERMINALS,'sample':'frozen'},
+        maximum_subtrees=8,maximum_disk_mb=8,reader=forbidden)
+    actual=runner.evaluate('ts_mean(gp_factor,2)')
+    expected=evaluate_expressions(sample,{'candidate':'ts_mean(gp_factor,2)'})
+    assert actual['candidate'].equals(expected['candidate'])
 
 
 def test_context_budget_never_falls_back_to_sample_or_increases_on_resume(tmp_path, panels):

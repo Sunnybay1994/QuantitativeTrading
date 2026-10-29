@@ -75,3 +75,45 @@ def test_new_cross_sections_use_full_context_reader(tmp_path,monkeypatch):
     result=evaluate_materialized(p.head(1),materialized_plans([d]),data_root=root,refresh_config=cfg,artifact_root=tmp_path/'out')
     assert result['candidate'].item()==.5
     assert len(calls)==1 and 'where(adj_close > 0' in calls[0]
+
+
+def test_search_fitness_receipt_and_n3_share_published_financial_terminal(tmp_path,monkeypatch):
+    import numpy as np
+    from deap import gp
+    from quant.research import nightly_gp
+    from quant.research.gp_full_context import FullContextEvaluator,PUBLISHED_TERMINALS
+    rng=np.random.default_rng(19)
+    rows=[]
+    for month in range(60):
+        day=dt.date(2010+month//12,month%12+1,15)
+        for stock in range(120):
+            value=float(rng.normal())
+            rows.append(dict(symbol=str(stock),trade_date=day,gp_fixture=value,adj_close=10.,label=value+float(rng.normal())*.2))
+    frame=pl.DataFrame(rows); panel=frame.drop('label'); labels=frame.select('symbol','trade_date','label')
+    output=tmp_path/'N2'; output.mkdir()
+    labels.write_parquet(output/'monthly_sample.parquet')
+    mapping={'gp_fixture':'pit_annual_low_accruals'}
+    (output/'terminal_mapping.json').write_text(json.dumps(mapping))
+    def forbidden(*args): raise AssertionError('Published intrinsic does not need raw-field expansion')
+    runner=FullContextEvaluator(panel,mapping,output/'full_context',
+        identity=dict(terminal_input_policy=PUBLISHED_TERMINALS,sample='frozen'),
+        maximum_subtrees=8,maximum_disk_mb=8,reader=forbidden)
+    pset=nightly_gp.primitive_set(['gp_fixture'])
+    monkeypatch.setattr(nightly_gp.gp,'genHalfAndHalf',lambda **kwargs:gp.PrimitiveTree.from_string("'gp_fixture'",pset))
+    settings=dict(seed=7,population_size=1,generations=0,max_depth=5,complexity_penalty=.0005,
+        expression_identity=IDENTITY,calculation_context=VERSION,terminal_input_policy=PUBLISHED_TERMINALS)
+    winners=nightly_gp.search(panel,labels,mapping,settings,output,family='fixture',context_evaluator=runner)
+    assert len(winners)==1 and 'error' not in winners[0]
+    definition=SimpleNamespace(id=winners[0]['factor_id'],expr=winners[0]['expression'],direction=winners[0]['direction'],source_ref=str(output/'search.json'))
+    root=tmp_path/'data'; folder=root/'factors/fixture'; folder.mkdir(parents=True)
+    (folder/'definition.json').write_text(json.dumps({'expr':mapping['gp_fixture']}))
+    for year in range(2010,2015):
+        path=folder/f'year={year}'; path.mkdir()
+        panel.filter(pl.col('trade_date').dt.year()==year).select(pl.col('symbol').alias('ts_code'),
+            'trade_date',pl.col('gp_fixture').alias('value')).write_parquet(path/'data.parquet')
+    actual=evaluate_materialized(panel,materialized_plans([definition]),data_root=root,
+        refresh_config=tmp_path/'unused',artifact_root=tmp_path/'N3')
+    expected=pl.read_parquet(output/'training_candidate_values.parquet')
+    paired=actual.join(expected,on=['symbol','trade_date'],validate='1:1')
+    assert paired.height==frame.height
+    assert (paired[definition.id]-paired['candidate']).abs().max()==0

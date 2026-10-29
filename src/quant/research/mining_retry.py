@@ -7,8 +7,9 @@ import json
 import tomllib
 
 # Daily data writers may rewrite clean parquet after N2 froze source bytes.
-# Fail the attempt (integrity held), archive the freeze, and let the next try re-pin.
+# Preserve the frozen experiment; retrying with new bytes changes its identity.
 _STALE_GP_CONTEXT = re.compile(
+    r'ValueError: Frozen GP minute source (?:checksum changed|changed|inventory changed):?|'
     r'ValueError: Frozen GP context source (?:checksum changed|changed|disappeared):|'
     r'ValueError: Frozen GP base source inventory changed'
 )

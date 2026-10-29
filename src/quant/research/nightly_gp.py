@@ -205,6 +205,8 @@ def search(panel: pl.DataFrame, labels: pl.DataFrame, mapping: dict[str, str], s
                'terminal_expression': expression,
                'complexity': len(ind), 'depth': ind.height, 'fitness': -1e9,
                'fitness_preprocessing': _FITNESS_PREPROCESSING, 'search_objective': objective}
+        if settings.get('terminal_input_policy'):
+            row['terminal_input_policy'] = settings['terminal_input_policy']
         if context_version != LEGACY_CONTEXT or identity_version != LEGACY_IDENTITY:
             row.update(calculation_context=context_version, expression_identity=identity_version,
                        input_identity=input_identity, canonical_key=key)
@@ -231,6 +233,11 @@ def search(panel: pl.DataFrame, labels: pl.DataFrame, mapping: dict[str, str], s
                                         maximum_correlation=corr))
             row.update(measured)
         except BaseException as exc:
+            from quant.research.mining_retry import is_stale_gp_context_error
+            if is_stale_gp_context_error(f'{type(exc).__name__}: {exc}'):
+                # A changed input invalidates the run, not this expression's IC.
+                # Never cache it as a measured/penalized strategy observation.
+                raise
             # Rust's PanicException inherits BaseException; preserve the offending
             # expression as an invalid trial without swallowing interrupts/exits.
             if not isinstance(exc,(ValueError,TypeError,pl.exceptions.PolarsError,OverflowError)) and type(exc).__name__!='PanicException':
@@ -317,7 +324,10 @@ def search(panel: pl.DataFrame, labels: pl.DataFrame, mapping: dict[str, str], s
             # Receipt must match N3's compute of definition.expr (library expression),
             # not the opaque grammar terminal that may still name mapped gp_* shortcuts.
             try:
-                values = receipt_evaluator.evaluate(row['expression'])
+                from quant.research.gp_full_context import PUBLISHED_TERMINALS
+                receipt_expression = (row['terminal_expression']
+                    if settings.get('terminal_input_policy') == PUBLISHED_TERMINALS else row['expression'])
+                values = receipt_evaluator.evaluate(receipt_expression)
             except ValueError as exc:
                 message = str(exc)
                 if 'GP_CONTEXT_SUBTREE_BUDGET' not in message and 'GP_CONTEXT_STORAGE_BUDGET' not in message:

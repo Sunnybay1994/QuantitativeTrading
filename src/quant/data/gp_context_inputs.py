@@ -90,6 +90,12 @@ class FullMarketInputs:
         self.sources_path = output/'source_manifest.json'
         self.sources = json.loads(self.sources_path.read_text(encoding='utf-8')) if self.sources_path.exists() else {}
         self.stamps = {}
+        self.minute_root = None
+        # Existing contexts retain their explicit legacy contract. New contexts
+        # bind this policy into the evaluator identity before any fitness reuse.
+        contract = output/'contract.json'
+        self.freeze_minutes = (not contract.exists() or
+            json.loads(contract.read_text(encoding='utf-8')).get('minute_input_policy') is not None)
         self.sessions = available_sessions(data_root, end)
         frozen = output/'refresh.toml'
         original = frozen.read_bytes() if frozen.exists() else refresh_config.read_bytes()
@@ -223,8 +229,15 @@ class FullMarketInputs:
         if forecast_numeric_input_names((expression,)):
             path = Path(settings['forecast_numeric_corpus'])
             self.track(path if path.is_absolute() else self.root/path)
-        # Minute parquets are rewritten by collectors and stay out of the N2
-        # freeze inventory. A minute writer must not fail the source checksum.
+        from quant.research.factor_intraday import minute_input_names
+        if minute_input_names((expression,)):
+            if not self.freeze_minutes:
+                raise ValueError('Frozen GP context source changed: legacy minute inputs lack a frozen snapshot')
+            if self.minute_root is None:
+                from quant.data.gp_minute_snapshot import freeze
+                self.minute_root, paths = freeze(self.root,self.output/'minute_inputs')
+                for path in paths:
+                    self.track(path)
         from quant.factors.statement_event_reaction import NAMES as STATEMENT_NAMES
         from quant.factors.turnover_reference import NAMES as TURNOVER_NAMES, CONTROLS as TURNOVER_CONTROLS
         if any(n.id in (*TURNOVER_NAMES, *TURNOVER_CONTROLS) for n in ast.walk(ast.parse(expression)) if isinstance(n, ast.Name)):
@@ -301,8 +314,9 @@ class FullMarketInputs:
             return panel, expression, 'published_full_market_terminals_with_null_support_proof'
         from quant.factors.compute import attach_expression_inputs
         self._aux_sources(expanded, bars)
+        extra = {'minute_data_root':self.minute_root} if self.minute_root is not None else {}
         panel = attach_expression_inputs(panel, bars, expressions=(expanded,), data_root=self.root,
-            refresh_config=self.config, read_start=start, read_end=high, sessions=self.sessions)
+            refresh_config=self.config, read_start=start, read_end=high, sessions=self.sessions, **extra)
         self.verify_sources()
         self.metrics['expanded_context_reads'] += 1
         return panel, expanded, 'expanded_N3_inputs_for_non_bar_null_terminals'

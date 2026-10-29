@@ -55,6 +55,7 @@ def attach_expression_inputs(
     panel: pl.DataFrame, bars: pl.DataFrame, *, expressions: tuple[str, ...],
     data_root: Path, refresh_config: Path, read_start: dt.date, read_end: dt.date,
     sessions: tuple[dt.date, ...],
+    minute_data_root: Path | None = None,
 ) -> pl.DataFrame:
     """Share exactly the same intrinsic inputs between N3 and full-context GP."""
     if any("ind_neutralize" in expr for expr in expressions):
@@ -67,7 +68,7 @@ def attach_expression_inputs(
         panel = attach_financial_factors(panel, histories, financial_names)
     minute_names = minute_input_names(expressions)
     if minute_names:
-        panel = attach_minute_factors(panel, read_factor_minute_inputs(data_root, bars),
+        panel = attach_minute_factors(panel, read_factor_minute_inputs(minute_data_root or data_root, bars),
             tuple(day for day in sessions if read_start <= day <= read_end), minute_names)
     market_names = market_input_names(expressions)
     if market_names:

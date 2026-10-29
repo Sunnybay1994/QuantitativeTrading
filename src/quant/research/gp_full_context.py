@@ -15,6 +15,7 @@ from quant.factors.expressions import evaluate_expressions
 
 VERSION = 'full_market_observed_cross_subtrees_v1'
 LEGACY = 'sample_cross_section_v1'
+PUBLISHED_TERMINALS = 'published_terminal_boundary_v1'
 CROSS = {'rank', 'scale', 'ind_neutralize'}
 
 
@@ -75,6 +76,9 @@ class FullContextEvaluator:
                  *, identity: dict, maximum_subtrees: int, maximum_disk_mb: int,
                  reader, verify_sources=None):
         self.panel, self.mapping, self.output = panel, mapping, output
+        self.terminal_policy = identity.get('terminal_input_policy')
+        if self.terminal_policy not in (None,PUBLISHED_TERMINALS):
+            raise ValueError('Unknown GP terminal input policy')
         self.reader, self.verify_sources = reader, verify_sources
         self.maximum_subtrees = maximum_subtrees
         self.maximum_bytes = maximum_disk_mb * 1024**2
@@ -161,13 +165,16 @@ class FullContextEvaluator:
             projected[name] = values
             return name
 
-        # Expand mapped grammar terminals before scoping/materializing so nested
-        # cross ops see the real expression, not a panel gp_* shortcut column.
+        # Preserve legacy expansion contracts. New searches use the exact
+        # published-terminal boundary also consumed by N3 materialized plans.
         expanded = expand(expression, self.mapping)
-        rewritten = replace_cross_subtrees(scope_cross_sections(expanded), materialize)
+        selected = expression if self.terminal_policy == PUBLISHED_TERMINALS else expanded
+        rewritten = replace_cross_subtrees(scope_cross_sections(selected), materialize)
         fields = {node.id for node in ast.walk(ast.parse(rewritten, mode='eval')) if isinstance(node, ast.Name)}
-        # Never read mapped terminal names from the sample panel as value shortcuts.
-        usable = set(self.panel.columns) - set(KEYS) - set(self.mapping)
+        # Published values are authoritative only under the explicit policy.
+        usable = set(self.panel.columns) - set(KEYS)
+        if self.terminal_policy != PUBLISHED_TERMINALS:
+            usable -= set(self.mapping)
         sample = self.panel.select(*KEYS, *sorted(fields & usable))
         for values in projected.values():
             sample = sample.join(values, on=KEYS, how='left', validate='1:1')
@@ -186,7 +193,13 @@ def build_evaluator(panel: pl.DataFrame, mapping: dict[str, str], settings: dict
     reader = FullMarketInputs(data_root=Path(settings['data_root']), refresh_config=Path(settings['refresh_config']),
         output=folder, start=panel['trade_date'].min(), end=panel['trade_date'].max(), mapping=mapping,
         maximum_rows=options['context_max_rows'], memory_mb=options['context_memory_mb'])
+    from quant.data.gp_minute_snapshot import POLICY
+    minute_policy = {'minute_input_policy':POLICY} if reader.freeze_minutes else {}
+    terminal_policy = ({'terminal_input_policy':options['terminal_input_policy']}
+                       if options.get('terminal_input_policy') else {})
     result = FullContextEvaluator(panel, mapping, folder, identity={
+        **minute_policy,
+        **terminal_policy,
         'sample_sha256': sha256(sample), 'labels_sha256': sha256(labels),
         'refresh_sha256': sha256(reader.config), 'data_root': str(reader.root.resolve()),
         'context_max_rows': options['context_max_rows'], 'context_memory_mb': options['context_memory_mb'],
