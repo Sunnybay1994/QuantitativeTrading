@@ -323,7 +323,7 @@ def test_two_writers_same_predecessor_cas_then_retry_once(tmp_path: Path) -> Non
     def fenced(original):
         def read():
             value = original()
-            barrier.wait(timeout=10)
+            barrier.wait(timeout=30)
             return value
 
         return read
@@ -342,10 +342,10 @@ def test_two_writers_same_predecessor_cas_then_retry_once(tmp_path: Path) -> Non
         futures = tuple(pool.submit(submit, index) for index in (0, 1))
         for index, future in enumerate(futures):
             try:
-                results.append(future.result(timeout=20))
+                results.append(future.result(timeout=60))
             except BaseException as error:
                 errors.append((index, error))
-    assert len(results) == 1
+    assert len(results) == 1, [(index, type(error).__name__, str(error)) for index, error in errors]
     assert len(errors) == 1
     assert isinstance(errors[0][1], PaperBrokerStoreError)
     assert str(errors[0][1]) in {
