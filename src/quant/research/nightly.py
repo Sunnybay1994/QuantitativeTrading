@@ -139,6 +139,29 @@ def work_order(settings: dict, day: dt.date) -> tuple[str, ...]:
     return ('N1', 'N2', 'N3', 'N4', 'N5')
 
 
+def prioritize_queued_battery(order: tuple[str, ...], settings: dict, run: Path) -> tuple[str, ...]:
+    """Do not let a resumable GP use every slice ahead of registered candidates.
+
+    Keep monthly prerequisites first. GP candidates arriving after a nonempty
+    completed N3 remain in the existing processing queue for the next batch;
+    preserve_gp_candidates already owns that handoff.
+    """
+    if not {'N2','N3','N4'} <= set(order):
+        return order
+    roots = [run/'candidates']
+    if settings.get('queue'):
+        roots.extend([Path(settings['queue']),Path(settings['queue'])/'processing'])
+    if not any(next(root.glob('*.toml'),None) is not None for root in roots):
+        return order
+    result = []
+    for step in order:
+        if step == 'N2':
+            result.extend(['N3','N4','N2'])
+        elif step not in ('N3','N4'):
+            result.append(step)
+    return tuple(result)
+
+
 def execute(config: Path, *, now: dt.datetime|None=None, run_path: Path|None=None,
             session_hours: float|None=None) -> dict:
     from quant.factors.library import load_library
@@ -175,10 +198,20 @@ def execute(config: Path, *, now: dt.datetime|None=None, run_path: Path|None=Non
         summary['steps'] = {'N1': {'ok': False, 'error': f'Input preparation: {exc}'}}
         digest(settings, run, summary)
         return summary
-    for step in work_order(settings, now.date()):
+    order = prioritize_queued_battery(work_order(settings, now.date()),settings,run)
+    summary['step_order'] = list(order)
+    dump(summary_path,summary)
+    for step in order:
         folder=run/step
         folder.mkdir(exist_ok=True)
         result=folder/'result.json'
+        if step == 'N2':
+            from quant.research.mining_retry import retired_gp_result
+            retired = retired_gp_result(folder)
+            if retired is not None:
+                summary['steps'][step] = {'ok':True,'result':retired}
+                dump(summary_path,summary)
+                continue
         if step == 'N5' and result.exists():
             from quant.research.nightly_monthly import pending_month
             if pending_month(settings, run, day=now.date()) is not None:

@@ -81,6 +81,27 @@ def resolve_settings(settings: dict, run: Path) -> dict:
     return result
 
 
+def _archive_retired_gp(path: Path, target: Path) -> bool:
+    """Keep invalid computation evidence outside both queue and active library."""
+    from quant.research.mining_retry import retired_gp_result
+    content = tomllib.loads(path.read_text(encoding='utf-8'))
+    rows = content.get('factors', [content])
+    retired = [row for row in rows if Path(row.get('source_ref','')).name == 'search.json'
+               and retired_gp_result(Path(row['source_ref']).parent) is not None]
+    if not retired:
+        return False
+    if len(retired) != len(rows):
+        raise ValueError('Mixed valid and retired GP definitions require separate queue files')
+    target.parent.mkdir(exist_ok=True)
+    if target.exists():
+        if target.read_bytes() != path.read_bytes():
+            raise ValueError('Retired GP queue archive collision')
+        path.unlink()
+    else:
+        path.rename(target)
+    return True
+
+
 def ingest(settings: dict, run: Path) -> dict:
     queue = Path(settings['queue'])
     processing = queue/'processing'
@@ -109,6 +130,8 @@ def ingest(settings: dict, run: Path) -> dict:
     library = run/'candidates'
     library.mkdir(exist_ok=True)
     for path in sorted(processing.glob('*.toml')):
+        if _archive_retired_gp(path, processing/'invalid_computation'/f'{run.name}_{path.name}'):
+            continue
         content = tomllib.loads(path.read_text(encoding='utf-8'))
         rows = content.get('factors', [content])
         if all(published_candidate(row, settings) for row in rows):
@@ -139,6 +162,9 @@ def ingest(settings: dict, run: Path) -> dict:
 
 def preserve_gp_candidates(settings: dict, run: Path, search_result: dict) -> int:
     """Queue GP output even when an older nonempty evaluation is already complete."""
+    from quant.research.mining_retry import retired_gp_result
+    if retired_gp_result(run/'N2') is not None:
+        return 0
     folder = Path(search_result.get('gp_output', str(run/'N2')))/'library'
     queued = 0
     for path in sorted(folder.glob('*.toml')):
@@ -166,9 +192,13 @@ def evaluate(settings: dict, run: Path) -> dict:
     from quant.data.nightly_genetic_inputs import require_execution_coverage
     library = run/'candidates'
     library.mkdir(exist_ok=True)
+    for path in sorted(library.glob('*.toml')):
+        _archive_retired_gp(path, library/'invalid_computation'/path.name)
     gp_result=run/'N2'/'result.json'
+    from quant.research.mining_retry import retired_gp_result
+    invalid_gp = retired_gp_result(run/'N2') is not None
     gp_output=Path(json.loads(gp_result.read_text(encoding='utf-8')).get('gp_output',str(run/'N2'))) if gp_result.exists() else run/'N2'
-    for path in sorted((gp_output/'library').glob('*.toml')):
+    for path in ([] if invalid_gp else sorted((gp_output/'library').glob('*.toml'))):
         if published_candidate(tomllib.loads(path.read_text(encoding='utf-8')), settings):
             continue
         processing=Path(settings['queue'])/'processing'
