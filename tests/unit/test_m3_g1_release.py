@@ -19,7 +19,7 @@ import pytest
 import quant.data as qd
 import quant.data.m3_release as release_mod
 from quant.data.connectors.cninfo import CNINFO_STOCK_ALLOTMENT_FIELDS
-from quant.data.m3_g1_candidate import G1BuildInputs, G1Candidate, build_g1_candidate
+from quant.data.m3_g1_candidate import G1BuildInputs, G1Candidate
 from quant.data.m3_identity import clean_table_content_sha256
 from quant.data.m3_reference import (
     CrossSourceSamplePlan,
@@ -48,6 +48,7 @@ from quant.data.m3_release import (
     verify_g1_release,
 )
 from quant.data.storage import RawStore
+from tests.support.g1_candidate_fixture import load_candidate
 from tests.unit import test_m3_reference as ref_tests
 
 
@@ -90,7 +91,10 @@ def happy_inputs() -> G1BuildInputs:
 
 @pytest.fixture(scope="module")
 def happy_candidate(happy_inputs: G1BuildInputs) -> G1Candidate:
-    return build_g1_candidate(inputs=happy_inputs)
+    return load_candidate(
+        happy_inputs,
+        folder=Path(__file__).resolve().parents[1] / "fixtures/g1_reference_candidate",
+    )
 
 
 @pytest.fixture(scope="module")
