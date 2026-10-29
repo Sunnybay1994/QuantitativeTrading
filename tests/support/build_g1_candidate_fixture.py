@@ -14,14 +14,21 @@ from pathlib import Path
 import polars as pl
 
 from quant.data.m3_g1_candidate import build_g1_candidate
-from tests.unit.test_m3_g1_candidate import _build_inputs
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True, type=Path)
-    out = parser.parse_args().output
+    parser.add_argument('--kind', choices=['candidate', 'reference'], default='candidate')
+    args = parser.parse_args()
+    out = args.output
     out.mkdir(parents=True, exist_ok=False)
+    if args.kind == 'reference':
+        from tests.unit.test_m3_reference import _build_inputs
+        factory_source = 'tests/unit/test_m3_reference.py'
+    else:
+        from tests.unit.test_m3_g1_candidate import _build_inputs
+        factory_source = 'tests/unit/test_m3_g1_candidate.py'
     started = time.monotonic()
     candidate = build_g1_candidate(inputs=_build_inputs())
     metadata, frames = {}, []
@@ -43,8 +50,8 @@ def main():
     (out/'candidate.json').write_text(json.dumps(metadata,ensure_ascii=False,indent=2),encoding='utf-8')
     root = Path(__file__).resolve().parents[2]
     sources = ['src/quant/data/m3_g1_candidate.py', 'src/quant/data/m3_execution_facts.py',
-               'tests/unit/test_m3_g1_candidate.py']
-    manifest = dict(synthetic=True, generation_seconds=round(time.monotonic()-started,2),
+               factory_source]
+    manifest = dict(synthetic=True, fixture_kind=args.kind, generation_seconds=round(time.monotonic()-started,2),
                     eligible_symbols=candidate.eligible_keys['symbol'].n_unique(),
                     files={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(out.iterdir())},
                     source_sha256={name:hashlib.sha256((root/name).read_bytes()).hexdigest() for name in sources})

@@ -8,7 +8,7 @@
 
 慢回归单独执行：在 M3 相关代码、依赖、解释器或固定工具变化后，用该链路固定的 Windows 解释器 `D:\Miniforge3\envs\m3chain312\python.exe` 运行 `-m pytest tests -m slow --durations=20 --junitxml=<独立测试目录>/slow.xml`。它不在日更中串行执行；安排在没有生产研究写入者的独立测试时段，使用临时数据和产物目录，并保留完整结果。
 
-正式 PAPER 启动的四个完整运行时用例也标为 slow；同模块的 BOM 前置拒绝和路径规则 AST 检查仍在快集合。该启动链沿用既有 base 解释器 `D:\Miniforge3\python.exe`，单独运行 `-m pytest tests/integration/test_paper_formal_bootstrap.py -m slow --junitxml=<独立测试目录>/paper-bootstrap.xml`。M3 慢回归命令加入 `--ignore=tests/integration/test_paper_formal_bootstrap.py --ignore=tests/unit/test_m3_g1_candidate.py --ignore=tests/unit/test_m3_g1_candidate_actions.py --ignore=tests/unit/test_m3_g1_workflow.py`，这些文件各自使用本页的 base 命令，保持原有组件运行时。PAPER 启动测试的 basetemp 须满足原模块的同卷、实际代码目录外、非系统临时目录约束；隔离源码副本可使用其相邻的临时目录，不 patch 路径权威函数。
+正式 PAPER 启动的四个完整运行时用例也标为 slow；同模块的 BOM 前置拒绝和路径规则 AST 检查仍在快集合。该启动链沿用既有 base 解释器 `D:\Miniforge3\python.exe`，单独运行 `-m pytest tests/integration/test_paper_formal_bootstrap.py -m slow --junitxml=<独立测试目录>/paper-bootstrap.xml`。M3 慢回归命令加入 `--ignore=tests/integration/test_paper_formal_bootstrap.py --ignore=tests/unit/test_m3_g1_candidate.py --ignore=tests/unit/test_m3_g1_candidate_actions.py --ignore=tests/unit/test_m3_g1_workflow.py --ignore=tests/unit/test_m3_reference_contracts.py`，这些文件各自使用本页的 base 命令，保持原有组件运行时。PAPER 启动测试的 basetemp 须满足原模块的同卷、实际代码目录外、非系统临时目录约束；隔离源码副本可使用其相邻的临时目录，不 patch 路径权威函数。
 
 快测试通过不代表慢回归通过。未跑完的慢回归保持未验证，不用测试标记、部分通过数或超时回执替代。禁止仅为消除红项而扩大慢测试范围；新增标记应有实测耗时或完整链路重建的依据。
 
@@ -21,3 +21,7 @@ G1 构造器与审计的单元测试读取 `tests/fixtures/g1_candidate` 中由�
 正式模型、预测、目标、回测计划和研究汇总的测试，有些会通过跨模块 `_context` 重建特征、折叠、对齐、模型及各级回执。`tests/full_chain_cases.py` 按函数名补齐这些完整链路，并保留单独的 ICIR 数学、排序、类型、发布锁及原生 LightGBM 小样本测试。G1 的 INDEX→HISTORY 持久化断点续跑回归也单独列出；其他 G1 前置校验不因此被排除。
 
 边界审计位于 `artifacts/worklog/formal_chain_boundaries_20261029/`：逐函数记录构建依赖和源摘要，收集清单核对默认用例及参数不变。正式工件链沿用上文 M3 固定解释器慢回归命令；G1 工作流用既有 base 解释器单独运行 `python -m pytest tests/unit/test_m3_g1_workflow.py -m slow --junitxml=<独立目录>/g1-workflow.xml`。两者均使用独立源码/临时产物目录，并在没有生产研究写入者的时段执行。标记与收集审计不代表这些回归已全部通过。
+
+跨源参考核对测试使用 `tests/fixtures/g1_reference_candidate` 的固定合成 G1 表；共享 factory/fixture 仍保留在 `test_m3_reference.py`，原核对用例拆到 `test_m3_reference_contracts.py` 与 `test_m3_reference_reconcile.py`。参考样本的真实核对、容差、稳定摘要和零 IO 断言不变。新增的 `test_reference_fixed_candidate_matches_fresh_full_builder` 用原始合成响应重新构建并对比全部表、输入回执与身份，沿用 base 解释器执行 `python -m pytest tests/unit/test_m3_reference_contracts.py -m slow --junitxml=<独立目录>/reference-g1.xml`。
+
+参考固定表的显式生成命令为 `python -m tests.support.build_g1_candidate_fixture --kind reference --output artifacts/tmp/reference-new`，输出目录必须尚不存在。普通核对测试仍调用真实候选构造器校验，固定表不会自动更新；输入 factory 或构建器变化时须执行上述完整重建对比。

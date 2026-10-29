@@ -1,0 +1,98 @@
+{
+  "build_spec": {
+    "config_version": "m3-g1-test-v1",
+    "g1_config_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "mapper_version": "m3-g1-tushare-mapper-v5",
+    "schema_version": "m3-g1-schema-v3",
+    "membership_method_version": "tushare_monthly_observed_next_session_close_v1",
+    "price_limit_method_version": "tushare_stk_limit_suspension_aware_v2",
+    "corporate_action_selection_version": "tushare_dividend_cninfo_rights_share_consideration_basis_v8",
+    "corporate_action_reconciliation_version": "tushare_factor_daily_preclose_suspension_resume_basis_terms_v9",
+    "benchmark_mode": "TRADEABLE_ETF_TOTAL_RETURN_PROXY",
+    "benchmark_method_version": "tushare_510300_fund_daily_fund_adj_hfq_v1",
+    "benchmark_dividend_reconciliation_version": "tushare_fund_div_implemented_cash_v1",
+    "build_code_version": "m3-g1-candidate-v1",
+    "dependency_fingerprint_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "request_plan_sha256": "8e0f4c2e31d328ceae01f8abdce39542d8a110f8bf0551a82d2542b1ac247235",
+  "signal_start": "2016-02-01",
+  "signal_end": "2016-02-01",
+  "history_start": "2016-02-01",
+  "history_end": "2016-03-04",
+  "table_content_digests": [
+    [
+      "adjustment_factor",
+      "bd4951de5a8c792425c1d826a7a55650858c843f6c197c4a63cbb6952476020d"
+    ],
+    [
+      "adjustment_factor_match",
+      "94ccc3b5482cf3a4a473381f1dc75914becb9569a339831c125ec00d88519f91"
+    ],
+    [
+      "bar_1d",
+      "324ccdfb3c2c62606275cee745bfbd97905e2f97f7a5482b25035ea4b1b62d54"
+    ],
+    [
+      "benchmark_bar_1d",
+      "19f4e246292ffcbfcf01d8822c27d64b0efc60fa632c46b9e43c3e11a618af73"
+    ],
+    [
+      "corporate_action_ledger",
+      "2554a298589cfc222ffd88a27c4d1f55e2a6ce9b65146f3a37befe20b13f23f8"
+    ],
+    [
+      "corporate_action_reconciliation",
+      "5cbd0c401084d2ea1bc32f208e1f061a9b30432017e0fed20a22388d8f4a3033"
+    ],
+    [
+      "corporate_action_selection_evidence",
+      "564257fdfb38b0cfd02aa2ed4475d81c7c24df04e916488030807cc4d4f37fd4"
+    ],
+    [
+      "eligible_keys",
+      "0e99af5333461812c8b4c233232788ab272a4020bd2159821d49e83794a71e6d"
+    ],
+    [
+      "index_constituent_observation",
+      "dd7cd55a25616794f5f025e72f8cd1562d15c5a5c371eb63ae8b96658b941906"
+    ],
+    [
+      "instrument",
+      "0569256a8c82a7cb4da78a2b24a76f84e7d8f6e649a8e424abcefb1ce6396ea9"
+    ],
+    [
+      "price_limit_1d",
+      "25369e3ab2c8863ff0efa023f2e268b8fdb3a0b8a54e34096669604c4ba72aa3"
+    ],
+    [
+      "suspension_1d",
+      "ca8dd8b72f0cc5f32bfbb516e4eed56b4f297425d6598347ca4def0fa629b0f3"
+    ],
+    [
+      "trade_calendar",
+      "5d559bee85453b1c33b84e53bd40db643711da5174abee7a10be93d9aaa95b81"
+    ],
+    [
+      "universe_membership",
+      "9af36c8d72112b076f7e30c4c5e02c1a9a67d14a2e2065f41753a0addb551092"
+    ]
+  ],
+  "price_limit_required_keys_sha256": "63c075984e0fb9527ff31ca48c18d711d0ffc5e728aaaa7e6568c4f40fed89b3",
+  "primary_candidate_key": "effa8ee6d5d12f94bbd96c6d4f19a9aadf786c0fa3114c45158a704a783bb8d9",
+  "frames": [
+    "calendars",
+    "instruments",
+    "observations",
+    "membership",
+    "eligible_keys",
+    "bars",
+    "adjustment_factors",
+    "factor_match_evidence",
+    "benchmark_bars",
+    "suspensions",
+    "price_limits",
+    "corporate_actions",
+    "corporate_action_selection_evidence",
+    "corporate_action_reconciliation"
+  ]
+}
