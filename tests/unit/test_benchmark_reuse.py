@@ -1,11 +1,31 @@
 import copy
 import datetime as dt
 import json
+import os
 
 import polars as pl
 import pytest
 
 from quant.research import benchmark_reuse as reuse
+
+
+@pytest.fixture(autouse=True)
+def code_tree(tmp_path, monkeypatch):
+    """Exercise real dependency discovery and hashing against bounded source fixtures."""
+    root = tmp_path / "src/quant"
+    files = {"__init__.py", "research/__init__.py", "backtest/daily_simulator.py"}
+    files.update(f"{package}/__init__.py" for package in
+                 ("backtest", "core", "portfolio", "execution", "data"))
+    files.update(f"research/{name}.py" for name in
+                 ("classic_monthly_baseline", "run_s1_walk_forward", "factor_cost_checkpoint",
+                  "factor_battery_costs", "factor_battery_benchmarks", "benchmark_reuse"))
+    files.update(reuse.INDEPENDENT_MODULES)
+    for name in files:
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("pass\n", encoding="utf-8")
+    monkeypatch.setattr(reuse, "__file__", str(root / "research/benchmark_reuse.py"))
+    return root
 
 
 def setup_context(tmp_path):
@@ -121,6 +141,33 @@ def test_new_dependency_on_excluded_module_refuses_scope(tmp_path,monkeypatch):
     monkeypatch.setattr(reuse,'stock_replay_sources',lambda _:{root/'execution/b16_forward.py'})
     with pytest.raises(ValueError,match='became a stock replay dependency'):
         reuse.context(**setup_context(tmp_path))
+
+
+@pytest.mark.parametrize("source", [
+    "import quant.execution.b16_forward",
+    "from quant.execution import b16_forward",
+    "from ..execution import b16_forward",
+    "def later():\n    import quant.execution.b16_forward",
+    "__import__('quant.execution.b16_forward')",
+    "import importlib\nimportlib.import_module('quant.execution.b16_forward')",
+])
+def test_real_import_closure_rejects_new_independent_dependency(tmp_path, code_tree, source):
+    (code_tree / "research/factor_battery_costs.py").write_text(source, encoding="utf-8")
+    assert code_tree / "execution/b16_forward.py" in reuse.stock_replay_sources(code_tree)
+    with pytest.raises(ValueError, match="became a stock replay dependency"):
+        reuse.context(**setup_context(tmp_path))
+
+
+def test_engine_content_change_with_identical_size_and_mtime_invalidates(tmp_path, code_tree):
+    kwargs = setup_context(tmp_path)
+    before = reuse.key(reuse.context(**kwargs))
+    engine = code_tree / "backtest/daily_simulator.py"
+    stamp = engine.stat()
+    engine.write_bytes(engine.read_bytes().replace(b"pass", b"None"))
+    os.utime(engine, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    assert engine.stat().st_size == stamp.st_size
+    assert engine.stat().st_mtime_ns == stamp.st_mtime_ns
+    assert reuse.key(reuse.context(**kwargs)) != before
 
 
 @pytest.mark.parametrize('contents', ['{interrupted publication', '{"context":{"fixture":1}}'])
