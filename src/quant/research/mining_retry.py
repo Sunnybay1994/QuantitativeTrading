@@ -1,4 +1,4 @@
-﻿"""Bounded recovery of existing checkpoints; never bypass data integrity checks."""
+"""Bounded recovery of existing checkpoints; never bypass data integrity checks."""
 import datetime as dt
 import hashlib
 from pathlib import Path
