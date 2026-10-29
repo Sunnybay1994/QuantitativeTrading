@@ -69,6 +69,27 @@ def test_probe_does_not_run_calendar_or_subprocess(tmp_path, monkeypatch):
     assert scheduled.run(config=config, check_only=True)["status"] == "checked"
 
 
+def test_explicit_previous_session_can_catch_up_in_morning_without_fake_clock(tmp_path,monkeypatch):
+    config=setup_config(tmp_path,monkeypatch)
+    config.write_text(config.read_text()+'\n[q10]\nconfig="q10.toml"\n')
+    root=Path('records')
+    record(root)
+    monkeypatch.setattr(scheduled.subprocess,'run',lambda *a,**kw:SimpleNamespace(returncode=0))
+    result=scheduled.run(config=config,root=root,now=NOW.replace(day=15,hour=8),to='2026-09-14')
+    assert result['status']=='complete'
+    assert result['as_of']=='2026-09-14'
+    assert result['delayed_recording'] is True
+    assert 'recorded_at' in result
+    assert scheduled.run(config=config,root=root,now=NOW.replace(day=15,hour=8))['status']=='skipped'
+
+
+def test_explicit_future_session_rejected(tmp_path,monkeypatch):
+    import pytest
+    config=setup_config(tmp_path,monkeypatch)
+    with pytest.raises(ValueError,match='future'):
+        scheduled.run(config=config,now=NOW,to='2026-09-15')
+
+
 def test_closed_session_does_not_backdate_forecast(tmp_path, monkeypatch):
     config = setup_config(tmp_path, monkeypatch)
     monkeypatch.setattr(scheduled, "latest_session", lambda **kw: dt.date(2026, 9, 11))
@@ -175,3 +196,29 @@ def test_evening_context_binds_completed_record_and_uses_finish_clock(tmp_path, 
     assert seen['completed_session'] == NOW.date()
     assert seen['daily_record'] == root/'previous/summary.json'
     assert seen['daily_root'] == root and seen['require_daily_receipt'] is True
+
+
+def test_monitor_incomplete_still_attempts_independent_market_publication(tmp_path, monkeypatch):
+    from quant.research import daily_market_context
+    config = setup_config(tmp_path, monkeypatch)
+    calls = []
+
+    def execute(command, **kwargs):
+        if command[2] == 'quant.research.run_daily_observation':
+            output = Path(command[command.index('--output')+1]); output.mkdir(parents=True)
+            value = dict(as_of=str(NOW.date()), status='incomplete', rehearsal=False, saved_data=False,
+                stages=dict(refresh=dict(status='complete'), signal_monitor=dict(status='incomplete')))
+            (output/'summary.json').write_text(json.dumps(value))
+            return SimpleNamespace(returncode=1)
+        return SimpleNamespace(returncode=0)
+
+    def publish(**kwargs):
+        calls.append(kwargs)
+        return dict(status='complete', daily_completion=None)
+
+    monkeypatch.setattr(scheduled.subprocess, 'run', execute)
+    monkeypatch.setattr(daily_market_context, 'run', publish)
+    result = scheduled.run(config=config, root=Path('records'), now=NOW)
+    assert result['status'] == 'incomplete' and result['observation_exit_code'] == 1
+    assert result['market_context']['status'] == 'complete' and len(calls) == 1
+    assert scheduled.completed_record(Path('records'), str(NOW.date())) is None

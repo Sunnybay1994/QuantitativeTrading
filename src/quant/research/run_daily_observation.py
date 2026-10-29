@@ -152,6 +152,7 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
     output.mkdir(parents=True)
     stages: dict[str, Any] = {}
     result: dict[str, Any] = {
+        'started_at': clock.isoformat(),
         'requested_to': to, 'as_of': None, 'saved_data': saved_data, 'rehearsal': rehearsal,
         'auto_trade': False, 'conclusion': 'RESEARCH_ONLY', 'status': 'incomplete', 'stages': stages,
         'factor_health': None,
@@ -191,6 +192,7 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
     else:
         date = str(end)
         result['as_of'] = date
+        result['delayed_recording'] = end < clock.astimezone(SHANGHAI).date()
         dependency_options: dict[str, Any] = {}
         dependency_ok = True
         if settings.get('dependency_refresh', False):

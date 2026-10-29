@@ -11,40 +11,52 @@ from quant.execution.manual_session_service import instance_lock
 from quant.research.market_indicators_run import history
 
 
+def _observation_records(date, now, root, record):
+    """Discover exact-session payloads; an explicit binding stays strict."""
+    paths = [Path(record)] if record is not None else sorted(root.glob('*/summary.json'), reverse=True)
+    for path in paths:
+        try:
+            stamp = path.stat().st_mtime
+            if stamp > now.timestamp():
+                continue
+            payload = path.read_bytes()
+            saved = json.loads(payload)
+        except (OSError, ValueError):
+            if record is not None:
+                raise
+            continue
+        if isinstance(saved, dict) and saved.get('as_of') == str(date):
+            yield path, payload, saved, stamp
+
+
 def completed_observation(date, now, root, record=None):
     """Bind an exact evening receipt, or find a completed prior-session receipt."""
-    paths = [Path(record)] if record is not None else sorted(root.glob(f'{date}_*/summary.json'), reverse=True)
-    for path in paths:
-        if path.stat().st_mtime > now.timestamp():
-            continue
-        payload = path.read_bytes()
-        saved = json.loads(payload)
+    for path, payload, saved, stamp in _observation_records(date, now, root, record):
         execution = path.parent/'scheduler.json'
         if execution.exists():
-            status = json.loads(execution.read_text(encoding='utf-8'))
+            try:
+                status = json.loads(execution.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                if record is not None:
+                    raise
+                continue
             if not isinstance(status, dict) or status.get('exit_code') != 0:
                 continue
-        if (isinstance(saved, dict) and saved.get('as_of') == str(date) and saved.get('status') == 'complete'
+        if (saved.get('status') == 'complete'
                 and saved.get('rehearsal') is False and saved.get('saved_data') is False):
             return dict(path=str(path), sha256=hashlib.sha256(payload).hexdigest(),
-                        available_at=dt.datetime.fromtimestamp(path.stat().st_mtime, now.tzinfo).isoformat())
+                        available_at=dt.datetime.fromtimestamp(stamp, now.tzinfo).isoformat())
     raise ValueError(f'No completed live-data daily observation for {date}')
 
 
 def market_data_observation(date, now, root, record=None):
     """Verify market inputs independently of account/forward-label maturity."""
-    paths = [Path(record)] if record is not None else sorted(root.glob(f'{date}_*/summary.json'), reverse=True)
-    for path in paths:
+    for path, payload, saved, _ in _observation_records(date, now, root, record):
         try:
             return completed_observation(date, now, root, path)
         except ValueError:
             pass
-        if path.stat().st_mtime > now.timestamp():
-            continue
-        payload = path.read_bytes()
-        saved = json.loads(payload)
-        if (not isinstance(saved, dict) or saved.get('as_of') != str(date)
-                or saved.get('status') != 'incomplete' or saved.get('rehearsal') is not False
+        if (saved.get('status') != 'incomplete' or saved.get('rehearsal') is not False
                 or saved.get('saved_data') is not False or saved.get('auto_trade') is not False):
             continue
         stage = saved.get('stages', {}).get('refresh', {})

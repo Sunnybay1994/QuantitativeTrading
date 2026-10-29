@@ -10,7 +10,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from quant.data.refresh import SHANGHAI, latest_session
+from quant.data.refresh import SHANGHAI, completed_date, latest_session
 
 DEFAULT_CONFIG = Path("configs/research/daily_observation_q2_sue_v2_20260930.toml")
 DEFAULT_ROOT = Path("artifacts/daily/sue_v2")
@@ -47,6 +47,7 @@ def run(
     root: Path = DEFAULT_ROOT,
     check_only: bool = False,
     now: dt.datetime | None = None,
+    to: str | None = None,
 ) -> dict:
     settings = tomllib.loads(config.read_text(encoding="utf-8"))
     if settings.get("auto_trade") is not False:
@@ -57,15 +58,18 @@ def run(
     if check_only:
         return {"status": "checked", "python": sys.executable, "config": str(config.resolve())}
     clock = (now or dt.datetime.now(SHANGHAI)).astimezone(SHANGHAI)
-    if clock.date() < dt.date(2026, 9, 14) or clock.hour < 17:
+    target=dt.date.fromisoformat(to) if to is not None else clock.date()
+    if target > clock.date():
+        raise ValueError('Requested observation date is in the future')
+    if target < dt.date(2026, 9, 14) or (target == clock.date() and clock.hour < 17):
         return {"status": "skipped", "reason": "Before forward start or daily close cutoff"}
-    end = latest_session(data_root=Path(settings["data_root"]), through=clock.date())
-    if end != clock.date():
+    end = latest_session(data_root=Path(settings["data_root"]), through=completed_date(str(target),clock))
+    if end != target:
         return {"status": "skipped", "reason": "No completed exchange session today"}
     date = str(end)
     if settings.get('q10'):
         from quant.execution.q10_paper import EXECUTION_READY_HOUR
-        if clock.hour < EXECUTION_READY_HOUR:
+        if target == clock.date() and clock.hour < EXECUTION_READY_HOUR:
             from quant.data.realtime_store import atomic_json
             result = dict(status='deferred', as_of=date,
                           reason='Q10 requires completed same-session execution inputs; full observation waits for the evening trigger',
@@ -128,8 +132,8 @@ def run(
                 ).returncode
             s0_status.write_text(json.dumps({"date": date, "exit_code": s0_code}), encoding="utf-8")
     complete = observation_code == 0 and value.get("status") == "complete" and s0_code == 0
-    market_context = {"status": "skipped", "reason": "Daily observation not complete"}
-    if complete:
+    market_context = {"status": "skipped", "reason": "Market input refresh not complete"}
+    if value.get('stages', {}).get('refresh', {}).get('status') == 'complete':
         try:
             from quant.research.daily_market_context import run as market_context_run
             market_context = market_context_run(
@@ -142,6 +146,8 @@ def run(
     return {
         "status": "complete" if complete else "incomplete",
         "as_of": date,
+        'recorded_at':dt.datetime.now(SHANGHAI).isoformat(),
+        'delayed_recording':end < clock.date(),
         "record": str(record),
         "observation_exit_code": observation_code,
         "s0_exit_code": s0_code,
@@ -155,6 +161,7 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
     parser.add_argument("--check-only", action="store_true")
+    parser.add_argument('--to',help='Explicit completed-session catch-up; actual recording clock is retained')
     result = run(**vars(parser.parse_args()))
     print(json.dumps(result, ensure_ascii=False))
     if result["status"] == "incomplete":

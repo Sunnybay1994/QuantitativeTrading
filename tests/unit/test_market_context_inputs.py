@@ -48,6 +48,44 @@ def test_independent_inputs_do_not_claim_daily_or_monitor_completion(tmp_path):
         context.completed_observation(DAY, NOW, record.parent.parent, record)
 
 
+def test_late_record_directory_is_discovered_by_payload_session(tmp_path):
+    record,refresh,summary,_=evidence(tmp_path)
+    late=record.parent.with_name('2026-10-27_081000')
+    record.parent.rename(late)
+    record=late/'summary.json'
+    refresh=late/'model/refresh.json'
+    summary['stages']['refresh']['path']=str(refresh)
+    record.write_text(json.dumps(summary))
+    os.utime(record,(NOW.timestamp()-10,NOW.timestamp()-10))
+    result=context.market_data_observation(DAY,NOW,late.parent)
+    assert result['path']==str(record)
+    assert result['kind']=='verified_market_inputs'
+
+
+@pytest.mark.parametrize('complete', [False, True])
+@pytest.mark.parametrize('unrelated', ['broken_summary', 'other_session_broken_scheduler'])
+def test_unrelated_bad_receipt_does_not_hide_exact_session_evidence(tmp_path, complete, unrelated):
+    record, _, summary, _ = evidence(tmp_path)
+    if complete:
+        summary['status'] = 'complete'
+        record.write_text(json.dumps(summary))
+        (record.parent/'scheduler.json').write_text('{"exit_code":0}')
+        os.utime(record, (NOW.timestamp()-10, NOW.timestamp()-10))
+    other = record.parent.parent/'2026-10-28_001000'
+    other.mkdir()
+    if unrelated == 'broken_summary':
+        (other/'summary.json').write_text('{interrupted')
+    else:
+        (other/'summary.json').write_text(json.dumps(dict(summary, as_of='2026-10-23')))
+        (other/'scheduler.json').write_text('{interrupted')
+    os.utime(other/'summary.json', (NOW.timestamp()-5, NOW.timestamp()-5))
+    lookup = context.completed_observation if complete else context.market_data_observation
+    assert lookup(DAY, NOW, record.parent.parent)['path'] == str(record)
+    # An explicitly bound broken receipt must never be silently replaced.
+    with pytest.raises(ValueError):
+        lookup(DAY, NOW, record.parent.parent, other/'summary.json')
+
+
 @pytest.mark.parametrize('bad', ['wrong_session', 'quality_session', 'saved_data', 'rehearsal',
     'failed_daily', 'saved_mode', 'stage_errors', 'quality_errors', 'missing_sessions',
     'future_refresh', 'wrong_path', 'no_refresh', 'no_stocks', *CHECKS])
