@@ -6,11 +6,35 @@ $env:PYTHONPATH = Join-Path $workspace 'src'
 $env:POLARS_MAX_THREADS = '4'
 $env:PYTHONUTF8 = '1'
 $root = Join-Path $workspace 'artifacts\research\continuous'
-New-Item -ItemType Directory -Path $root -Force | Out-Null
+if (-not $CheckOnly) { New-Item -ItemType Directory -Path $root -Force | Out-Null }
 $clock = Get-Date
 $hours = 2.0
 $reason = $null
 $python = 'D:\Miniforge3\python.exe'
+# A dated, bounded data slot affects future launches only; active workers retain
+# their checkpoints and finish normally. Expiry restores research automatically.
+$reservationPath = Join-Path $root 'data_window.json'
+if (Test-Path -LiteralPath $reservationPath) {
+    $reservation = Get-Content -LiteralPath $reservationPath -Raw | ConvertFrom-Json
+    $slotStart = [DateTimeOffset]::Parse($reservation.starts_at)
+    $slotEnd = [DateTimeOffset]::Parse($reservation.expires_at)
+    $slotClock = [DateTimeOffset]$clock
+    if ($slotEnd -le $slotStart -or ($slotEnd - $slotStart).TotalHours -gt 4) {
+        throw 'Data reservation must be positive and at most four hours'
+    }
+    if ($slotClock -ge $slotStart -and $slotClock -lt $slotEnd) {
+        $slotStatus = @{status='deferred'; updated_at=$clock.ToString('o');
+            reason='Reserved BaoStock data collection window'; reservation=$reservationPath;
+            retry_after=$reservation.expires_at}
+        if ($CheckOnly) { $slotStatus | ConvertTo-Json; exit 0 }
+        $slotStatus | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'scheduler.json') -Encoding utf8
+        exit 0
+    }
+    # Do not start a two-hour research slice across an upcoming reserved slot.
+    if ($slotClock -lt $slotStart) {
+        $hours = [Math]::Min($hours, ($slotStart - $slotClock).TotalHours)
+    }
+}
 if ([int]$clock.DayOfWeek -in 1,2,3,4,5) {
     foreach ($hour in 17,21) {
         $cutoff = $clock.Date.AddHours($hour).AddMinutes(20)
@@ -24,7 +48,9 @@ $writers = @(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='p
 if ($writers.Count -gt 0) { $reason = 'Another data/factor/account writer is running' }
 if ($hours -lt (1.0 / 60)) { $reason = 'Daily observation starts shortly' }
 if ($reason) {
-    @{status='deferred'; updated_at=$clock.ToString('o'); reason=$reason} |
+    $deferred = @{status='deferred'; updated_at=$clock.ToString('o'); reason=$reason}
+    if ($CheckOnly) { $deferred | ConvertTo-Json; exit 0 }
+    $deferred |
         ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'scheduler.json') -Encoding utf8
     exit 0
 }
