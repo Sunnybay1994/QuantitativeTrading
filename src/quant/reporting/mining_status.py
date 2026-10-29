@@ -203,6 +203,8 @@ def describe(status: dict, scheduler: dict, processes: list[dict], process_error
         code, label, detail = 'unknown', '状态未知', '进程读取失败，不能据此判断研究已停止。'
     elif running:
         code, label, detail = 'running', '研究运行中', '已检测到持续研究主进程；阶段和计算进度见下方。'
+    elif state == 'inputs_invalidated' or status.get('failure_kind') == 'frozen_inputs_invalidated':
+        code, label, detail = 'input_invalidated', '本批输入失效，等待核验恢复', '原始证据和检查点已保留，不计策略失败；须恢复原字节，或核实后转入独立新批次。'
     elif state == 'needs_attention':
         code, label, detail = 'failed', '需要处理故障', '已达到连续失败上限，请检查错误记录后恢复。'
     elif retry and retry > now:

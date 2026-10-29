@@ -127,9 +127,19 @@ def test_daily_process_does_not_masquerade_as_live_mining():
 
 
 @pytest.mark.parametrize('state,code', [('resumable', 'slice_wait'), ('completed', 'batch_wait'),
-                                       ('needs_attention', 'failed'), ('running', 'interrupted')])
+                                       ('needs_attention', 'failed'), ('running', 'interrupted'),
+                                       ('inputs_invalidated', 'input_invalidated')])
 def test_saved_states_do_not_claim_a_live_process(state, code):
     assert view(state)['code'] == code
+
+
+def test_scheduler_input_failure_is_distinct_from_ordinary_failure():
+    status={'state':'needs_attention','failure_kind':'frozen_inputs_invalidated'}
+    result=describe(status,{},[],None,{},now=NOW)
+    assert result['code']=='input_invalidated'
+    assert '恢复原字节' in result['detail']
+    assert describe(status,{},[{'command':'python -m quant.research.continuous_mining'}],None,{},now=NOW)['code']=='running'
+    assert describe(status,{},[],'Access denied',{},now=NOW)['code']=='unknown'
 
 
 def test_future_retry_and_timezone_are_kept_separate_from_scheduler_trigger():
