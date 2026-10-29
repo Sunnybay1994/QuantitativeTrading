@@ -261,3 +261,26 @@ FULL_CHAIN_CASES.update({
         'test_quality_gate_failure_publishes_no_artifact',
     },
 })
+
+# Formal stage helpers that materialize target/backtest/evaluation upstream.
+FULL_CHAIN_CASES.update({
+    'test_m3_g8_r1_formal_backtest_stage.py': {
+        'test_build_and_closure_hostile_failures_are_stable_and_cleaned',
+        'test_formal_plan_resolves_exact_21_input_single_work_node',
+        'test_plan_rejects_stale_identity_and_nested_roots_without_writes',
+        'test_public_21_29_ssot_and_root_mapping_order_are_stable',
+        'test_r2_21_input_is_quality_and_eight_tables_without_g1_receipt',
+        'test_r2_new_context_is_new_request_bound_context_drift_fails',
+        'test_r2_quality_or_market_inode_replace_windows_fail_before_receipt',
+        'test_r2_rejects_old_context_four_path_subclass_and_duck',
+        'test_r2_same_context_copied_root_outer_release_fail_closed',
+    },
+    'test_m3_g8d_f1_formal_tracking_stage.py': {
+        'test_finished_remote_reuse_requires_request_tags_exact',
+        'test_formal_plan_and_request_close_34_11_22_2_tags_metrics',
+        'test_hostile_client_and_decimal_context_are_stable',
+        'test_identity_mismatches_and_input_hostility_are_stage_input_invalid',
+        'test_remote_zero_one_two_and_marker_crash_recovery',
+        'test_upload_allowlist_rejects_wrong_counts_and_hardlinks',
+    },
+})
