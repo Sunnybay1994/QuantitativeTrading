@@ -44,6 +44,17 @@ def _force_kill(child: subprocess.Popen[bytes]) -> None:
     child.wait(timeout=5)
 
 
+def _wait_for_lock_holder(child: subprocess.Popen[bytes], ready: Path) -> None:
+    """Synchronize after cold imports, before testing actual cross-process locking."""
+    deadline = time.monotonic() + 30
+    while not ready.exists():
+        if child.poll() is not None:
+            pytest.fail(f'Lock holder exited before readiness: code={child.returncode}')
+        if time.monotonic() >= deadline:
+            pytest.fail('Lock holder did not become ready within 30 seconds')
+        time.sleep(0.01)
+
+
 def _patch_unlock_failure(monkeypatch: pytest.MonkeyPatch, message: str) -> None:
     if _IS_WIN32:
         real = journal_lock.msvcrt.locking
@@ -123,10 +134,7 @@ def test_child_process_hold_blocks_and_kill_recovers(tmp_path: Path) -> None:
         stderr=subprocess.DEVNULL,
     )
     try:
-        for _ in range(400):
-            if ready.exists():
-                break
-            time.sleep(0.01)
+        _wait_for_lock_holder(child, ready)
         assert ready.exists()
         with pytest.raises(M3JournalLockError, match="JOURNAL_WRITER_ACTIVE"):
             with hold_journal_writer_lock(journal_root=root):
@@ -458,10 +466,7 @@ def test_tushare_executor_kill_recovery(tmp_path: Path) -> None:
     )
     child = subprocess.Popen([sys.executable, "-c", script])
     try:
-        for _ in range(400):
-            if ready.exists():
-                break
-            time.sleep(0.01)
+        _wait_for_lock_holder(child, ready)
         assert ready.exists()
         connector = FakeConnector()
         with pytest.raises(M3BackfillError, match="JOURNAL_WRITER_ACTIVE"):
@@ -551,10 +556,7 @@ def test_windows_holder_terminated_then_fresh_acquire(tmp_path: Path) -> None:
     )
     child = subprocess.Popen([sys.executable, "-c", script])
     try:
-        for _ in range(400):
-            if ready.exists():
-                break
-            time.sleep(0.01)
+        _wait_for_lock_holder(child, ready)
         assert ready.exists()
         with pytest.raises(M3JournalLockError) as blocked:
             with hold_journal_writer_lock(journal_root=root):
