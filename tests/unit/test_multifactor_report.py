@@ -5,12 +5,15 @@ import polars as pl
 import pytest
 
 from quant.reporting import multifactor_models as reports
+from quant.reporting import experiment_registry
 from tests.unit.test_multifactor_assessment import fixture
 
 
 def test_report_writes_three_models_and_requires_full_grid_for_double_cost(tmp_path, monkeypatch):
     registry = tmp_path/'registry/experiments.parquet'
     monkeypatch.setenv('QUANT_REGISTRY_ROOT', str(registry))
+    board = tmp_path/'boards/排行榜.md'
+    monkeypatch.setattr(experiment_registry, 'DEFAULT_LEADERBOARD', board)
     nav, one, baselines, model, _ = fixture()
     nav = nav.with_columns(pl.lit(50).alias('position_count'))
     run, output = tmp_path/'run', tmp_path/'report'
@@ -42,6 +45,7 @@ def test_report_writes_three_models_and_requires_full_grid_for_double_cost(tmp_p
     monkeypatch.setattr(reports, 'load_cost_history', history)
     result = reports.report_models(run=run, measurement_config=measurement, output=output, data_root=tmp_path)
     assert registry.is_file()
+    assert board.is_file() and board.with_name('排行榜_因子.md').is_file()
     from quant.reporting.experiment_registry import ROOT
     for value in pl.read_parquet(registry)['run_path']:
         path = Path(value)
