@@ -129,7 +129,7 @@ def test_raw_excerpt_budget_is_shared_and_no_source_starves(sources):
     assert all(any(key.startswith(f"source{i}#") for key in facts) for i in range(4))
 
 
-def test_summary_run_reuses_schedule_budget_and_cache_without_real_provider(sources, monkeypatch):
+def test_summary_run_reuses_schedule_budget_and_cache_without_real_provider(sources, monkeypatch, diagnosis_config):
     root = sources["artifact_root"]
     monkeypatch.setattr("quant.research.score_forecast_text.request_window",
         lambda: {"allowed": False, "next_allowed_at": "2026-09-14T04:00:00+00:00"})
@@ -146,7 +146,7 @@ def test_summary_run_reuses_schedule_budget_and_cache_without_real_provider(sour
                     {"claim": "评分表包含完整汇总", "evidence": [{"pointer": key, "value": facts[key]}]}], "candidates": []})}}]}
 
     client = Client()
-    args = dict(inputs=[], **sources, config=CONFIG, cache_path=root / "cache.sqlite", client=client)
+    args = dict(inputs=[], **sources, config=diagnosis_config, cache_path=root / "cache.sqlite", client=client)
     dry = diagnostics.run_diagnosis(**args, output=root / "dry")
     assert dry["result"] == "dry_run" and not (root / "cache.sqlite").exists()
     assert dry["summary_coverage"]["assessments_included"] == 3

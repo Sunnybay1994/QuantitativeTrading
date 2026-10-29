@@ -1,11 +1,9 @@
+import datetime as dt
 import json
-from pathlib import Path
 
 import pytest
 
 from quant.research.deepseek_diagnostics import extract_facts, parse_diagnosis, run_diagnosis
-
-CONFIG = Path(__file__).resolve().parents[2] / "configs/research/deepseek_diagnosis_v1.toml"
 
 
 @pytest.fixture(autouse=True)
@@ -48,7 +46,7 @@ def test_only_artifacts_and_bounded_facts(tmp_path):
         extract_facts([source], artifact_root=tmp_path / "other")
 
 
-def test_dry_run_and_cited_result_resume(tmp_path):
+def test_dry_run_and_cited_result_resume(tmp_path, diagnosis_config):
     source = tmp_path / "stats.json"
     source.write_text(json.dumps({"effective_months": 24}))
 
@@ -64,7 +62,7 @@ def test_dry_run_and_cited_result_resume(tmp_path):
                         "content": json.dumps(diagnosis())}}]}
 
     client = Client()
-    args = dict(inputs=[source], config=CONFIG, cache_path=tmp_path / "cache.sqlite",
+    args = dict(inputs=[source], config=diagnosis_config, cache_path=tmp_path / "cache.sqlite",
                 artifact_root=tmp_path, client=client)
     dry = run_diagnosis(**args, output=tmp_path / "dry")
     assert dry["dry_run"] and client.calls == 0
@@ -73,3 +71,22 @@ def test_dry_run_and_cited_result_resume(tmp_path):
                                max_requests=2, max_usd=.1)
         assert report["result"] == "success"
     assert client.calls == 1
+
+
+@pytest.mark.parametrize("age_days", [8, -1])
+def test_live_diagnosis_rejects_stale_or_future_price_check_before_client(tmp_path, diagnosis_config, age_days):
+    today = dt.date.today()
+    diagnosis_config.write_text(diagnosis_config.read_text(encoding="utf-8").replace(
+        f"pricing_checked={today.isoformat()}",
+        f"pricing_checked={(today - dt.timedelta(days=age_days)).isoformat()}"), encoding="utf-8")
+
+    class NoCalls:
+        def complete_messages(self, *_args):
+            pytest.fail("invalid price-check date must reject before calling the client")
+
+    with pytest.raises(ValueError, match="Recheck official pricing"):
+        run_diagnosis(inputs=[], config=diagnosis_config, output=tmp_path / "output",
+                      cache_path=tmp_path / "cache.sqlite", artifact_root=tmp_path,
+                      execute=True, max_requests=1, max_usd=.1, client=NoCalls())
+    assert not (tmp_path / "cache.sqlite").exists()
+    assert not (tmp_path / "output").exists()
