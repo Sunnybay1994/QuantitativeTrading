@@ -191,6 +191,8 @@ FULL_CHAIN_CASES.update({
     },
     'test_m3_g1_workflow.py': {
         'test_history_bounded_incomplete_then_resume_success',
+        'test_index_stage_then_idempotent_reuse',
+        'test_five_stage_fake_publish_and_inspect_closure',
     },
 })
 

@@ -29,3 +29,5 @@ G1 构造器与审计的单元测试读取 `tests/fixtures/g1_candidate` 中由�
 正式 G7E/G7F 模拟和三档回测的 `_case` / `_formal_case` 会通过 `_fresh_context` 重建完整目标、模型和预测上游；这些闭环按具体函数进入 M3 慢回归。净值投影、成本缩放、残余意图计数、卖出价格取整及严格上下文类型测试继续留在快集合。质量门完整源码发布、恢复和失败回滚也进入 M3 慢回归，独立导入隔离和环境清理仍为快测试。
 
 G1 发布模块中实际调用 `prepare_g1_release`、`publish_g1_release` 或依赖完整 `prepared` 夹具的测试单列慢回归，仍保留真实候选重建、跨源核对、发布、篡改和原子写入验证。使用既有 base 解释器运行 `python -m pytest tests/unit/test_m3_g1_release.py -m slow --junitxml=<独立目录>/g1-release.xml`；上文 M3 慢回归命令另加入 `--ignore=tests/unit/test_m3_g1_release.py`。不调用完整发布链的输入、列锁、严格 manifest、原生文件系统能力和无重命名回退测试继续留在快集合。依赖审计和默认收集范围对照位于 `artifacts/worklog/remaining_chain_boundaries_20261029/`；本次分类不代表慢回归已经通过。
+
+G1 工作流的完整 INDEX 持久化后复用，以及 INDEX→HISTORY→REFERENCE→PREPARE→PUBLISH 五阶段发布并检查闭环，与既有 HISTORY 断点续跑一起按函数名进入 base 慢回归命令。即使供应商响应是合成的，这些用例仍执行真实请求规划、回执落盘和重建核验；原用例及断言保留。新鲜状态检查、缺少 INDEX 的前置拒绝和连接器字段契约继续留在快集合。审计与线程资源实测保存在 `artifacts/worklog/workflow_runtime_20261029/`。
