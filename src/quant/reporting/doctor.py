@@ -29,7 +29,7 @@ $rows = foreach ($t in $tasks) {
     name = $t.TaskName
     state = [string]$t.State
     last_run_time = $i.LastRunTime.ToString('o')
-    result = [int]$i.LastTaskResult
+    result = [long]$i.LastTaskResult
   }
 }
 if ($rows) { $rows | ConvertTo-Json -Compress } else { '[]' }

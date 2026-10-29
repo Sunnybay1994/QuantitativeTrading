@@ -18,7 +18,8 @@ def test_native_nonterminating_query_error_is_not_an_empty_inventory(monkeypatch
 
 
 @pytest.mark.skipif(sys.platform != 'win32', reason='Native PowerShell query')
-def test_native_query_preserves_active_results_and_filters_retired_tasks(monkeypatch):
+@pytest.mark.parametrize('code', [0, 2147946720, 4294967295])
+def test_native_query_preserves_active_results_and_filters_retired_tasks(monkeypatch, code):
     source = r'''
 function Get-ScheduledTask {
   [pscustomobject]@{TaskName='QuantitativeTrading-Fixture';State='Ready'}
@@ -30,11 +31,12 @@ function Get-ScheduledTaskInfo {
   [pscustomobject]@{LastRunTime=[datetime]'2026-10-29T08:30:00';LastTaskResult=0}
 }
 '''
+    source = source.replace('LastTaskResult=0', f'LastTaskResult=[long]{code}')
     monkeypatch.setattr(doctor, '_TASK_SCRIPT', source + doctor._TASK_SCRIPT)
     rows = doctor.windows_scheduled_tasks()
     assert len(rows) == 1
     assert rows[0]['name'] == 'QuantitativeTrading-Fixture'
-    assert rows[0]['result'] == 0
+    assert rows[0]['result'] == code
     assert rows[0]['last_run_time'].startswith('2026-10-29T08:30:00')
 
 
