@@ -3,6 +3,8 @@ import json
 import tomllib
 from pathlib import Path
 
+import pytest
+
 from quant.research import continuous_mining as mining
 
 
@@ -207,7 +209,7 @@ def test_explicit_session_resumes_expired_run_without_changing_default(tmp_path,
     assert result['started_at'] == '2026-09-14T00:00:00'
     assert result['deadline_at'] == '2026-09-16T12:00:00'
 
-def test_stale_gp_freeze_is_cleared_before_retry(tmp_path, monkeypatch):
+def test_stale_gp_freeze_cannot_repin_or_probe_after_code_change(tmp_path, monkeypatch):
     path, root = config(tmp_path), tmp_path / 'continuous'
     run = root / 'batch_000001' / '2026-10-13'
     n2 = run / 'N2'
@@ -232,10 +234,99 @@ def test_stale_gp_freeze_is_cleared_before_retry(tmp_path, monkeypatch):
     calls = []
     def execute(*a, **k):
         calls.append(k['run_path'])
-        assert not (n2 / 'full_context').exists()  # cleared before retry
-        return success()
+        raise AssertionError('Cannot retry invalid frozen inputs')
     monkeypatch.setattr(mining.nightly, 'execute', execute)
     result = mining.dispatch(path, root, now=__import__('datetime').datetime(2026, 10, 13, 12))
-    assert result['state'] == 'completed'
+    assert result['state'] == 'needs_attention'
+    assert result['failure_kind'] == 'frozen_inputs_invalidated'
+    assert not calls
+    assert (context/'source_manifest.json').read_text() == '{"old": true}'
+    assert not (n2 / 'stale_context_recovery').exists()
+    monkeypatch.setattr(mining, 'code_fingerprint', lambda: 'changed-code')
+    result = mining.dispatch(path, root, now=dt.datetime(2026, 10, 14, 12))
+    assert result['failure_kind'] == 'frozen_inputs_invalidated' and not calls
+
+
+def test_new_frozen_source_failure_stops_retries_without_erasing_checkpoints(tmp_path, monkeypatch):
+    path, root = config(tmp_path), tmp_path/'continuous'
+    n2_paths = []
+
+    def execute(*args, **kwargs):
+        n2 = kwargs['run_path']/'N2'; n2.mkdir(parents=True,exist_ok=True)
+        n2_paths.append(n2)
+        (n2/'search_checkpoint.json').write_text('{"generation":12}')
+        (n2/'process.log').write_text('ValueError: Frozen GP context source checksum changed: x.parquet\n')
+        result = success(); result['steps']['N2'] = dict(ok=False,error='N2 exit=1; see process.log')
+        mining.save(kwargs['run_path']/'summary.json',result)
+        return result
+
+    monkeypatch.setattr(mining.nightly,'execute',execute)
+    result = mining.dispatch(path,root,now=dt.datetime(2026,10,27,12))
+    assert result['state'] == 'needs_attention' and result['retry_after'] is None
+    assert result['failure_kind'] == 'frozen_inputs_invalidated'
+    assert (n2_paths[0]/'search_checkpoint.json').read_text() == '{"generation":12}'
+    mining.dispatch(path,root,now=dt.datetime(2026,10,28,12))
+    assert len(n2_paths) == 1
+
+
+@pytest.mark.parametrize('failures', [1, 3, 8])
+@pytest.mark.parametrize('retry_after', [None, '2026-10-30T12:00:00'])
+def test_exact_source_restoration_resumes_original_batch_and_checkpoint(tmp_path, monkeypatch, failures, retry_after):
+    import hashlib
+    path, root = config(tmp_path), tmp_path/'continuous'
+    run = root/'batch_000001/2026-10-27'
+    context = run/'N2/full_context'; context.mkdir(parents=True)
+    (run/'config.toml').write_text(path.read_text())
+    source = tmp_path/'input.parquet'; source.write_bytes(b'original')
+    (context/'source_manifest.json').write_text(json.dumps(
+        {str(source):hashlib.sha256(source.read_bytes()).hexdigest()}))
+    checkpoint = run/'N2/search_checkpoint.json'; checkpoint.write_text('{"generation":12}')
+    (run/'N2/process.log').write_text('ValueError: Frozen GP context source checksum changed: input.parquet\n')
+    value = success(); value['steps']['N2'] = dict(ok=False,error='N2 exit=1')
+    mining.save(run/'summary.json',value)
+    monkeypatch.setattr(mining, 'code_fingerprint', lambda: 'unchanged-code')
+    previous = dict(error={'N2':'N2 exit=1'},consecutive_failures=failures,
+                    code_fingerprint='unchanged-code',retry_after=retry_after)
+    mining.save(run.parent/'attempt.json',previous)
+    calls = []
+
+    def execute(*args, **kwargs):
+        assert kwargs['run_path'] == run
+        assert checkpoint.read_text() == '{"generation":12}'
+        calls.append(run)
+        return success()
+
+    monkeypatch.setattr(mining.nightly,'execute',execute)
+    source.write_bytes(b'changed')
+    assert mining.dispatch(path,root,now=dt.datetime(2026,10,27,12))['state'] == 'needs_attention'
+    assert not calls
+    source.write_bytes(b'original')
+    assert mining.dispatch(path,root,now=dt.datetime(2026,10,27,13))['state'] == 'completed'
     assert calls == [run]
-    assert (n2 / 'stale_context_recovery').is_dir()
+    recovery = list((run.parent/'recovery').glob('inputs_*.json'))
+    assert len(recovery) == 1
+    assert json.loads(recovery[0].read_text()) == previous
+
+
+def test_evidence_bound_input_invalidation_advances_without_completing_or_rewriting_old_batch(tmp_path,monkeypatch):
+    import hashlib
+    path, root = config(tmp_path),tmp_path/'continuous'
+    batch = root/'batch_000001'; run = batch/'2026-10-27'; run.mkdir(parents=True)
+    (run/'config.toml').write_text(path.read_text())
+    summary = dict(steps={'N2':dict(ok=False,error='invalid input lineage')})
+    mining.save(run/'summary.json',summary)
+    evidence = run/'proof.json'; evidence.write_text('{"lineage":"changed"}')
+    mining.save(batch/'input_invalidation.json',dict(batch=batch.name,classification='FROZEN_INPUTS_INVALIDATED',
+        strategy_result=None,evidence=[dict(path=str(evidence),sha256=hashlib.sha256(evidence.read_bytes()).hexdigest())]))
+    before = (run/'summary.json').read_bytes()
+    calls = []
+    def execute(*args,**kwargs):
+        calls.append(kwargs['run_path'])
+        return success()
+    monkeypatch.setattr(mining.nightly,'execute',execute)
+    result = mining.dispatch(path,root,now=dt.datetime(2026,10,27,12))
+    assert result['batch'] == 'batch_000002' and calls == [root/'batch_000002/2026-10-27']
+    assert (run/'summary.json').read_bytes() == before and not mining.completed(summary)
+    evidence.write_text('{"lineage":"tampered"}')
+    with __import__('pytest').raises(ValueError,match='evidence changed'):
+        mining.dispatch(path,root,now=dt.datetime(2026,10,27,13))

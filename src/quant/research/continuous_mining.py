@@ -10,7 +10,8 @@ from pathlib import Path
 
 from quant.research import nightly
 from quant.research.mining_retry import (code_fingerprint, failure_kind, admission_dependency,
-                                         errors_indicate_stale_gp_context, invalidate_stale_gp_context)
+                                         errors_indicate_stale_gp_context, invalidate_stale_gp_context,
+                                         frozen_context_restored, invalidated_batch)
 
 
 def read(path: Path) -> dict:
@@ -51,7 +52,8 @@ def dispatch(config: Path, root: Path, *, now: dt.datetime | None = None,
             # A text-generation failure must not stop local factor research.
             weekly = {'state': 'needs_attention', 'error': f'{type(exc).__name__}: {exc}'}
     batches = sorted(p for p in root.glob('batch_*') if re.fullmatch(r'batch_\d+', p.name))
-    batch = next((p for p in batches if not completed(read(next(p.glob('????-??-??'))/'summary.json'))), None)
+    batch = next((p for p in batches if not invalidated_batch(p)
+                  and not completed(read(next(p.glob('????-??-??'))/'summary.json'))), None)
     if batch is None:
         index = max((int(p.name.split('_')[1]) for p in batches), default=0)+1
         batch = root/f'batch_{index:06d}'
@@ -75,9 +77,26 @@ def dispatch(config: Path, root: Path, *, now: dt.datetime | None = None,
     else:
         run = next(batch.glob('????-??-??'))
     previous = read(batch/'attempt.json')
+    invalid_inputs = (previous.get('failure_kind') == 'frozen_inputs_invalidated'
+                      or errors_indicate_stale_gp_context(previous.get('error') or {}, run))
+    if invalid_inputs:
+        invalidate_stale_gp_context(run/'N2')
+        invalid_inputs = not frozen_context_restored(run/'N2')
+        if not invalid_inputs:
+            # An exact restoration resolves this input failure, including legacy
+            # retries counted before invalidation was classified separately.
+            # Preserve that history; a later computation failure gets its own budget.
+            archive = batch/'recovery'
+            archive.mkdir(exist_ok=True)
+            with (archive/f'inputs_{now:%Y%m%dT%H%M%S%f}.json').open('x',encoding='utf-8') as stream:
+                json.dump(previous,stream,ensure_ascii=False,indent=2)
+            previous = {**previous,'consecutive_failures':0,'retry_after':None,
+                        'failure_kind':'inputs_restored','error':{},
+                        'recovery_reason':'original frozen source bytes verified'}
+            save(batch/'attempt.json',previous)
     fingerprint = code_fingerprint()
     limit = 8 if previous.get('failure_kind') == 'transient' else max_failures
-    if (previous.get('consecutive_failures',0)>=limit
+    if (not invalid_inputs and previous.get('consecutive_failures',0)>=limit
             and previous.get('code_fingerprint')!=fingerprint):
         # Exactly one probe per changed code version, including legacy attempt metadata.
         archive=batch/'recovery'
@@ -98,7 +117,11 @@ def dispatch(config: Path, root: Path, *, now: dt.datetime | None = None,
     new_month = monthly_due is not None and monthly_due != previous.get('monthly_period')
     dependency = admission_dependency(run, status['steps'])
     dependency_ready = bool(dependency and dependency['ready'])
-    if dependency and not dependency_ready and monthly_due is None:
+    if invalid_inputs:
+        status.update(state='needs_attention', failure_kind='frozen_inputs_invalidated',
+            reason='Frozen input invalidation; restore original bytes or start a distinct batch from stable inputs',
+            error=previous.get('error'), stale_gp_context=invalidate_stale_gp_context(run/'N2'))
+    elif dependency and not dependency_ready and monthly_due is None:
         status.update(state='waiting_dependency', dependency=dependency,
                       reason='Waiting for same-cutoff monthly admission controls; checkpoints retained')
     elif previous.get('consecutive_failures', 0) >= limit and not new_month and not dependency_ready:
@@ -109,10 +132,6 @@ def dispatch(config: Path, root: Path, *, now: dt.datetime | None = None,
     else:
         status['state'] = 'running'
         save(root/'status.json', status)
-        # Prior freeze may still name yesterday's clean bars after a data refresh.
-        if errors_indicate_stale_gp_context(previous.get('error') or {}, run):
-            status['stale_gp_context'] = invalidate_stale_gp_context(run / 'N2')
-            save(root/'status.json', status)
         try:
             summary = nightly.execute(run/'config.toml', now=now, run_path=run, session_hours=slice_hours)
             errors = {key: row.get('error', 'incomplete') for key, row in summary.get('steps', {}).items()
@@ -139,10 +158,10 @@ def dispatch(config: Path, root: Path, *, now: dt.datetime | None = None,
         attempt = {'monthly_period': monthly_due, 'finished_at': finished.isoformat(), 'consecutive_failures': failures,
                    'error': errors, 'failure_kind':kind, 'code_fingerprint':fingerprint,
                    'retry_after': (finished+dt.timedelta(hours=backoff)).isoformat()
-                   if failures else None}
+                   if failures and kind != 'frozen_inputs_invalidated' else None}
         save(batch/'attempt.json', attempt)
         status.update(state='completed' if success else 'waiting_dependency' if waiting else 'resumable' if resumable else
-                      'needs_attention' if failures >= limit else 'cooldown',
+                      'needs_attention' if kind == 'frozen_inputs_invalidated' or failures >= limit else 'cooldown',
                       error=errors, failure_kind=kind, retry_limit=limit,
                       retry_after=attempt['retry_after'], updated_at=finished.isoformat())
         if waiting:
@@ -183,7 +202,7 @@ def main() -> None:
     if batch_dirs:
         unfinished = next(
             (p for p in batch_dirs
-             if not completed(read(next(p.glob('????-??-??')) / 'summary.json'))),
+             if not invalidated_batch(p) and not completed(read(next(p.glob('????-??-??')) / 'summary.json'))),
             None)
         if unfinished is not None:
             prior_attempt = read(unfinished / 'attempt.json')
