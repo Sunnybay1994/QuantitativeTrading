@@ -28,12 +28,16 @@ def cells(spec: dict) -> list[dict]:
     return out
 
 
-def _q10_2x_and_mdd(control: Path) -> tuple[float | None, float | None]:
+def _q10_2x_and_mdd(control: Path, *, start: dt.date, end: dt.date) -> tuple[float | None, float | None]:
     payload = json.loads((control / "assessment.json").read_text(encoding="utf-8"))
     bud = payload.get("assessments", {}).get("budgeted") or {}
     mdd = None
     for row in payload.get("rows", []):
         if row.get("variant") == "budgeted" and row.get("cost_multiplier") == 2.0:
+            first=row.get('active_start') or row.get('first_date')
+            last=row.get('report_end') or row.get('last_date')
+            if str(first)!=str(start) or str(last)!=str(end):
+                raise ValueError('Q10 assessment dates differ; compare saved NAV on a common window')
             mdd = row.get("max_drawdown")
     excess = [
         r["net_cagr_excess"]
@@ -189,10 +193,14 @@ def run_cell(
         assessment["checks"]["turnover"] = turnover_passes(
             rows[1.0]["annualized_one_way_turnover"], treatment_2x
         )
-    q10_2x, q10_mdd = _q10_2x_and_mdd(Path(spec["q10_control"]))
+    from quant.research.q10_matched_comparison import compare_saved
+    matched=compare_saved(folder,Path(spec['q10_control']),end=end,
+        benchmark_config=folder/'return_benchmarks.toml',data_root=data_root)
+    (folder/'matched_q10_comparison.json').write_text(json.dumps(matched,indent=2),encoding='utf-8')
+    matched_two=next(row for row in matched['rows'] if row['cost_multiplier']==2.0)
     mdd2 = rows[2.0].get("max_drawdown")
-    delta_pp = None if treatment_2x is None or q10_2x is None else (treatment_2x - q10_2x) * 100
-    mdd_ok = mdd2 is not None and q10_mdd is not None and mdd2 >= q10_mdd
+    delta_pp = matched_two['vs_q10_excess_pp']
+    mdd_ok = matched_two['mdd_no_worse']
     promote = (
         delta_pp is not None
         and delta_pp >= float(spec["promote_excess_pp"])
@@ -204,6 +212,7 @@ def run_cell(
     assessment["conclusion"] = "RESEARCH_ONLY"
     assessment["sizing_label"] = label
     assessment["vs_q10_2x_excess_pp"] = delta_pp
+    assessment['comparison_window']={key:matched[key] for key in ('start','end','sessions','measurement')}
     stress = window_metrics(
         nav2,
         dt.date.fromisoformat(str(spec["stress_start"])),
@@ -247,6 +256,7 @@ def run_cell(
         "conclusion": label,
         "double_cost_excess": treatment_2x,
         "vs_q10_2x_excess_pp": delta_pp,
+        'comparison_window':assessment['comparison_window'],
         "max_drawdown_2x": mdd2,
         "diagnostics": diagnostics,
         "report": str(folder / "report.md"),
@@ -299,7 +309,16 @@ def main() -> None:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--data-root", type=Path, default=Path("data"))
     parser.add_argument("--resume", action="store_true", default=True)
+    parser.add_argument('--compare-saved',type=Path,help='Correct existing saved comparisons without replay')
+    parser.add_argument('--receipt',type=Path)
     args = parser.parse_args()
+    if args.compare_saved:
+        from quant.research.q10_matched_comparison import repair_saved
+        if args.receipt is None:
+            parser.error('--compare-saved requires a new --receipt directory')
+        result=repair_saved(args.compare_saved,receipt=args.receipt,data_root=args.data_root)
+        print(json.dumps({'receipt':str(args.receipt/'completed.json'),'changes':result['changes']},default=str))
+        return
     print(json.dumps(run(config=args.config, output=args.output, data_root=args.data_root, resume=args.resume),
                       ensure_ascii=False, default=str))
 
