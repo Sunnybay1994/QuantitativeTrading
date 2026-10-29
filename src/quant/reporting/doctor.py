@@ -8,6 +8,7 @@ import json
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -228,6 +229,7 @@ def collect(
     root: Path | None = None,
     now: dt.datetime | None = None,
     tasks: list[dict] | None = None,
+    history: dict | None = None,
 ) -> dict:
     """Build the doctor page. ``tasks`` injects scheduler rows in tests."""
     paths = project_paths()
@@ -251,11 +253,20 @@ def collect(
     if session is not None:
         candidate = artifacts / "paper" / "q10_sue_v2" / session.isoformat() / "state.json"
         q10_state = candidate.exists()
+    live_scheduler = tasks is None
     if tasks is None:
         try:
             tasks = windows_scheduled_tasks()
         except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError, RuntimeError) as exc:
             tasks = [{"name": "query", "last_run_time": None, "result": None, "error": str(exc)[:300]}]
+    if history is None:
+        if live_scheduler:
+            from quant.reporting.doctor_scheduler import read_history
+
+            history = read_history()
+        else:
+            history = {'enabled': None, 'instances': [], 'events': [], 'error': None,
+                       'artifact_validation': 'not_evaluated', 'injected_scheduler': True}
     scheduled = []
     for row in tasks:
         result = row.get("result")
@@ -273,6 +284,8 @@ def collect(
     git_facts = _git_facts(root)
     tests = _tests(artifacts / "tests" / "latest.json", today)
     red: list[str] = []
+    if history.get('error') or history.get('enabled') is False or history.get('truncated'):
+        red.append('scheduled_history: native event evidence unavailable or truncated')
     if not scheduled:
         red.append("scheduled_tasks: none")
     for row in scheduled:
@@ -327,6 +340,7 @@ def collect(
         "session_date": None if session is None else session.isoformat(),
         "red": red,
         "scheduled_tasks": scheduled,
+        "scheduled_history": history,
         "daily": {"status": daily_status, "run": None if daily_dir is None else str(daily_dir), "q10_state": bool(q10_state)},
         "mining": mining,
         "registry": registry,
@@ -350,6 +364,14 @@ def render_markdown(report: dict) -> str:
     lines.extend(["", "## scheduled_tasks", "", "| name | result | last_run |", "|---|---:|---|"])
     for row in report["scheduled_tasks"]:
         lines.append(f"| {row['name']} | {row['result']} | {row['last_run_time']} |")
+    history = report.get('scheduled_history') or {}
+    lines.extend(['', '## scheduled_instances', '',
+                  f"Native log enabled={history.get('enabled')}; truncated={history.get('truncated', False)}.",
+                  'Exit codes require matching dated products and calendar gates for acceptance.', '',
+                  '| task | trigger | started | status | result |', '|---|---|---|---|---:|'])
+    for row in history.get('instances', [])[-12:]:
+        lines.append(f"| {row['task']} | {row['trigger']} | {row['start_time']} | "
+                     f"{row['status']} | {row['result']} |")
     lines.extend([
         "",
         "## 其他",
@@ -385,7 +407,13 @@ def write_report(report: dict, artifacts: Path) -> tuple[Path, Path]:
     stem = folder / report["date"]
     json_path = stem.with_suffix(".json")
     md_path = stem.with_suffix(".md")
-    json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    payload = json.dumps(report, ensure_ascii=False, indent=2)
+    archive = folder / 'runs' / report['date']
+    archive.mkdir(parents=True, exist_ok=True)
+    stamp = dt.datetime.fromisoformat(report['generated_at']).strftime('%H%M%S_%f')
+    with (archive / f'{stamp}_{uuid.uuid4().hex}.json').open('x', encoding='utf-8') as stream:
+        stream.write(payload)
+    json_path.write_text(payload, encoding="utf-8")
     md_path.write_text(render_markdown(report), encoding="utf-8")
     return json_path, md_path
 
