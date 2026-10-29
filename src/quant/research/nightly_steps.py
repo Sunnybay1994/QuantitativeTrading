@@ -3,6 +3,7 @@ import datetime as dt
 import hashlib
 import json
 import shutil
+import time
 import tomllib
 from pathlib import Path
 
@@ -17,7 +18,16 @@ from quant.research.nightly_gp import maximum_correlation
 def dump(path: Path, value: object) -> None:
     temporary = path.with_suffix(path.suffix+'.tmp')
     temporary.write_text(json.dumps(value, indent=2, ensure_ascii=False, default=str, allow_nan=False), encoding='utf-8')
-    temporary.replace(path)
+    for attempt in range(10):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError as exc:
+            # Windows scanners/readers may briefly deny atomic destination replacement.
+            # Keep the complete temporary payload and the old destination on failure.
+            if getattr(exc, 'winerror', None) not in (5, 32, 33) or attempt == 9:
+                raise
+            time.sleep(0.05 * (attempt + 1))
 
 
 def published_candidate(row: dict, settings: dict) -> bool:
