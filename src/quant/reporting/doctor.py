@@ -346,6 +346,11 @@ def collect(
     if tests.get("duration_seconds") is not None and tests["duration_seconds"] > 600:
         red.append(f"tests: duration_seconds={tests['duration_seconds']} exceeds 600")
     coverage = _coverage(artifacts / "post_close_k1m" / "coverage.json")
+    from quant.reporting.doctor_intraday_acceptance import evaluate
+
+    coverage['five_sessions'] = evaluate(root, coverage['rows'], clock)
+    if coverage['five_sessions']['calendar_gate_met'] and not coverage['five_sessions']['coverage_passed']:
+        red.append('coverage: D1 requires five verified consecutive sessions per market')
     latest: dict[str, dict] = {}
     for row in coverage["rows"]:
         latest[row["market"]] = row
@@ -425,6 +430,10 @@ def render_markdown(report: dict) -> str:
                 f"| {row['date']} | {row['market']} | {row['expected']} | {row['complete']} | "
                 f"{row['partial']} | {row['missing']} | {float(row['complete_rate']):.1%} | "
                 f"{row.get('denominator_basis', 'unverified')} |")
+    if coverage.get('five_sessions'):
+        from quant.reporting.doctor_intraday_acceptance import markdown
+
+        lines.extend(markdown(coverage['five_sessions']))
     return "\n".join(lines)
 
 
