@@ -15,7 +15,7 @@ DEFAULT = Path(__file__).resolve().parents[1]/'fixtures/g1_candidate'
 
 def load_candidate(inputs, *, folder=DEFAULT):
     manifest = json.loads((folder/'manifest.json').read_text(encoding='utf-8'))
-    names = {'candidate.json'} | {name+'.parquet' for name in _TABLE_ATTRS.values()}
+    names = {'candidate.json', 'input_receipts.parquet'} | {name+'.parquet' for name in _TABLE_ATTRS.values()}
     if set(manifest['files']) != names or manifest['synthetic'] is not True:
         raise ValueError('Synthetic G1 fixture inventory mismatch')
     for name in sorted(names):
@@ -32,8 +32,9 @@ def load_candidate(inputs, *, folder=DEFAULT):
         value[name] = pl.read_parquet(folder/(name+'.parquet'))
     for name in ('signal_start', 'signal_end', 'history_start', 'history_end'):
         value[name] = dt.date.fromisoformat(value[name])
+    receipts = pl.read_parquet(folder/'input_receipts.parquet').to_dicts()
     value['input_receipts'] = tuple(G1ReceiptProjectionV1(
-        **{**row, 'columns': tuple(row['columns'])}) for row in value['input_receipts'])
+        **{**row, 'columns': tuple(row['columns'])}) for row in receipts)
     value['table_content_digests'] = tuple(tuple(row) for row in value['table_content_digests'])
     # Real constructor recomputes table/required-key identity and checks every receipt.
     return G1Candidate(build_spec=inputs.build_spec, request_plan=inputs.request_plan, **value)

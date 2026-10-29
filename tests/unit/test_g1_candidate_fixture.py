@@ -61,3 +61,12 @@ def test_other_input_plan_is_not_accepted_even_with_rehashed_metadata(inputs, tm
     _resign(folder,'candidate.json')
     with pytest.raises(ValueError,match='input identity mismatch'):
         load_candidate(inputs,folder=folder)
+
+
+def test_rehashed_receipt_rows_still_fail_real_identity_verification(inputs, tmp_path):
+    folder = _copy(tmp_path)
+    path = folder/'input_receipts.parquet'
+    pl.read_parquet(path).with_columns((pl.col('row_count')+1).alias('row_count')).write_parquet(path)
+    _resign(folder,'input_receipts.parquet')
+    with pytest.raises(M3G1CandidateError):
+        load_candidate(inputs,folder=folder)

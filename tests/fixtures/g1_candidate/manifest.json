@@ -7,7 +7,7 @@
     "bars.parquet": "2f70a6fe15f9831aae5280742d2c4b00607d2c4e507d7a579ba76d58bdce5c69",
     "benchmark_bars.parquet": "5004040ea1af720af5f3b8d9f96f55fb6d653e4421c6e6db7cded5ed69265ca1",
     "calendars.parquet": "9691e456d496186e4474e22450df543701cbafefc0ed2597d666c5e8900783d9",
-    "candidate.json": "0fbb3ef09937e2c3d8d0ad9bef1b96c0f54cc76729ed161946bcf48f7cf9b4cc",
+    "candidate.json": "a384a55f8b4bc96ca25cfb927259f129d7a02ee06b0d1d9c6559d64f43a53544",
     "corporate_action_reconciliation.parquet": "7bdfb5752196a43fd7c6693dd2ea473c48434cfd25ed61bd675216a250125296",
     "corporate_action_selection_evidence.parquet": "78cc9dbdaa51486568af009a90c3d83f24b1b4071976f07a4e9e82a85f925454",
     "corporate_actions.parquet": "91568229fef5bfef8bd00837565af11f0ae32fca1899c1f96d0e986fef53ad8e",
@@ -17,11 +17,13 @@
     "membership.parquet": "7ff9f64e1d6d0b01a1ad6a8b58a772371c5ac1b11ce7472463e330ffefb7acc9",
     "observations.parquet": "c87308832aab152756bb7a460c8c9e83a1f75343ee51ee44c798ba710adbc9d9",
     "price_limits.parquet": "0a2f6000539492121a26a9af8e644e14d0c2463616662b99f83c797728b3af88",
-    "suspensions.parquet": "89ff03e567b55db2491ee9d54076fba69fd1c5175f1d4220fb81962fb5d5008f"
+    "suspensions.parquet": "89ff03e567b55db2491ee9d54076fba69fd1c5175f1d4220fb81962fb5d5008f",
+    "input_receipts.parquet": "1af49979c8b0461a736b9c033ea33bb9372b8ee99451609cad3fffa5f3169439"
   },
   "source_sha256": {
     "src/quant/data/m3_g1_candidate.py": "2236d468be74bb587431a4e4ced2ec4d2550bcc19da96645498f0ed72683e09d",
     "src/quant/data/m3_execution_facts.py": "84d7d26eae20cad8db327ef94948c20357496c5de19f5789acf7baed58ba7fda",
     "tests/unit/test_m3_g1_candidate.py": "c9f7164f0502e7679519c2344cd4ca159228c82dcd890f329c3e6f31618d6dce"
-  }
+  },
+  "receipt_storage": "lossless Parquet representation of the original generated JSON receipt rows"
 }

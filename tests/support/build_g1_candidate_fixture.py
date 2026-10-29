@@ -35,7 +35,8 @@ def main():
         elif field.name == 'build_spec':
             metadata[field.name] = dataclasses.asdict(value)
         elif field.name == 'input_receipts':
-            metadata[field.name] = [dataclasses.asdict(item) for item in value]
+            pl.DataFrame([dataclasses.asdict(item) for item in value]).write_parquet(
+                out/'input_receipts.parquet')
         else:
             metadata[field.name] = value.isoformat() if isinstance(value, dt.date) else value
     metadata['frames'] = frames
