@@ -97,3 +97,26 @@ FULL_CHAIN_CASES = {
         'test_target_wholesale_bundle_from_foreign_work_is_rejected',
     },
 }
+
+# G1 end-to-end builds retain the real 300-symbol builder; constructor cases use fixed synthetic tables.
+FULL_CHAIN_CASES.update({
+    'test_m3_g1_candidate.py': {
+        'test_calendar_list_date_change_changes_primary_key',
+        'test_full_day_suspension_allows_factor_without_daily_bar',
+        'test_happy_path_build_verify_audit',
+        'test_price_change_changes_primary_key',
+        'test_response_order_and_frame_row_order_stable_identity',
+    },
+    'test_m3_g1_candidate_actions.py': {
+        'test_no_file_or_network_io_during_build',
+        'test_p0d_audit_rejects_restored_out_of_scope_factors',
+        'test_p0d_build_excludes_pre_first_bar_factor_jump',
+        'test_p0d_r1_adv3a_out_of_scope_factor_still_rejected',
+        'test_p0d_r1_audit_rejects_deleted_transition_evidence',
+        'test_p0d_r1_happy_and_no_event_jump_still_pass',
+        'test_p0d_r1_single_scoped_factor_allows_empty_evidence',
+        'test_p0k_a_cninfo_ca_raw_changes_identity_without_ledger',
+        'test_p0kc_candidate_build_audit_and_formal_receipt_closure',
+        'test_wholesale_candidate_replacement_fails_verify',
+    },
+})
