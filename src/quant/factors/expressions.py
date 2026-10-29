@@ -46,6 +46,10 @@ def required_history(expression: str) -> int:
     """Return the number of preceding sessions needed, including nested windows."""
     def visit(node: ast.AST) -> int:
         if isinstance(node, ast.Name):
+            from quant.factors.liquidity_comovement import SIGNALS, CONTROLS
+            if node.id in (*SIGNALS, *CONTROLS):
+                # Raw adapter loads 61 months; daily carry needs the prior month.
+                return 32
             if node.id in {'industry_momentum_6m', 'industry_leader_return_1m', 'industry_return_1m'}:
                 # The separate monthly reader freezes six full months of members/weights.
                 return 32

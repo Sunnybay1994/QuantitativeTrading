@@ -387,6 +387,18 @@ def admit(settings: dict, run: Path) -> dict:
                 raise ValueError('Industry-information N3 matched control receipt missing or incomplete')
             paths.append(path)
         industry_controls = pl.concat([pl.read_parquet(path) for path in paths])
+    comovement_controls = None
+    if any(d.family == 'liquidity_comovement_logchange_60m_v1' for d in definitions.values()):
+        from quant.data.factor_control_receipts import pending_control_start
+        from quant.factors.liquidity_comovement import CONTROLS as comovement_columns
+        paths = []
+        for year in range(settings['history_start'].year, settings['as_of'].year+1):
+            path = batch/'compute/liquidity_comovement_controls'/f'year={year}.parquet'
+            if pending_control_start(path, start=max(settings['history_start'],dt.date(year,1,1)),
+                    end=min(settings['as_of'],dt.date(year,12,31)),columns=comovement_columns) is not None:
+                raise ValueError('Liquidity co-movement N3 matched control receipt missing or incomplete')
+            paths.append(path)
+        comovement_controls = pl.concat([pl.read_parquet(path) for path in paths])
     for identifier, definition in definitions.items():
         if identifier in completed:
             continue
@@ -405,6 +417,12 @@ def admit(settings: dict, run: Path) -> dict:
         passed = (battery_pass and incremental['months']>=96 and
                   incremental['newey_west_t'] is not None and incremental['newey_west_t']>=2.5 and corr<.6)
         family_result = {}
+        if definition.family == 'liquidity_comovement_logchange_60m_v1':
+            from quant.research.liquidity_comovement_controls import check_liquidity_comovement_controls
+            controlled = scored.join(comovement_controls,on=['symbol','trade_date'],how='left',validate='1:1')
+            family_result = check_liquidity_comovement_controls(controlled,admitted,incremental_statistics,
+                identifier=identifier,variant=variant)
+            passed = passed and family_result['passed']
         if definition.family == 'price_delay_hou_moskowitz_2005_v1':
             # Fixed whole-family controls, evaluated within the original N4.
             # Neutral scores retain the original battery's size/industry adjustment.

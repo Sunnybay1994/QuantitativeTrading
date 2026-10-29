@@ -40,6 +40,8 @@ from quant.factors.turnover_reference import NAMES as TURNOVER_NAMES, CONTROLS a
 from quant.data.factor_industry_information_inputs import read_industry_information
 from quant.factors.industry_information import SIGNALS as INDUSTRY_NAMES, CONTROL as INDUSTRY_CONTROL
 from quant.data.factor_control_receipts import pending_control_start, write_control_receipt
+from quant.data.factor_liquidity_comovement_inputs import read_liquidity_comovement
+from quant.factors.liquidity_comovement import SIGNALS as COMOVEMENT_NAMES, CONTROLS as COMOVEMENT_CONTROLS
 from quant.research.factor_market import attach_market_factors, market_input_names
 from quant.research.factor_monthly import attach_monthly_factors, monthly_input_names
 from quant.data.refresh_stocks import read_stock_data
@@ -95,6 +97,9 @@ def attach_expression_inputs(
         if set(monthly_names) & set((*INDUSTRY_NAMES, INDUSTRY_CONTROL)):
             extra['industry_information_values'], _, _ = read_industry_information(data_root=data_root,
                 refresh_config=refresh_config, calendar=calendar, start=read_start, end=read_end)
+        if set(monthly_names) & set((*COMOVEMENT_NAMES, *COMOVEMENT_CONTROLS)):
+            extra['liquidity_comovement_values'], _, _ = read_liquidity_comovement(data_root=data_root,
+                refresh_config=refresh_config, calendar=calendar, start=read_start, end=read_end)
         panel = attach_monthly_factors(panel, bars, basic, calendar, monthly_names, **extra)
     if special_names:
         panel = attach_legacy_special_factors(panel, bars, basic,
@@ -141,6 +146,7 @@ def run(
     seasonality_definitions = [row for row in definitions if row.id in SEASONALITY_NAMES]
     turnover_definitions = [row for row in definitions if row.id in TURNOVER_NAMES]
     industry_definitions = [row for row in definitions if row.id in INDUSTRY_NAMES]
+    comovement_definitions = [row for row in definitions if row.id in COMOVEMENT_NAMES]
     for year in range(start.year, end.year + 1):
         low, high = max(start, dt.date(year, 1, 1)), min(end, dt.date(year, 12, 31))
         target_sessions = [day for day in sessions if low <= day <= high]
@@ -170,7 +176,13 @@ def run(
         if industry_definitions:
             industry_control_start = low if rebuild else pending_control_start(
                 industry_control_path, start=low, end=high, columns=(INDUSTRY_CONTROL,))
-        if not pending and return_ready and control_start is None and turnover_control_start is None and industry_control_start is None:
+        comovement_control_path = artifact_root/'liquidity_comovement_controls'/f'year={year}.parquet'
+        comovement_control_start = None
+        if comovement_definitions:
+            comovement_control_start = low if rebuild else pending_control_start(
+                comovement_control_path, start=low, end=high, columns=COMOVEMENT_CONTROLS)
+        if (not pending and return_ready and control_start is None and turnover_control_start is None
+                and industry_control_start is None and comovement_control_start is None):
             continue
         factor_starts = {}
         for row in pending:
@@ -188,6 +200,8 @@ def run(
             tail_index = max(0, bisect.bisect_right(sessions, known) - max(HORIZONS) - 1)
             label_start = max(low, sessions[tail_index])
         intervals = list(factor_starts.values()) + ([] if return_ready else [label_start])
+        if comovement_control_start is not None:
+            intervals.append(comovement_control_start)
         if control_start is not None:
             intervals.append(control_start)
         if turnover_control_start is not None:
@@ -200,7 +214,8 @@ def run(
         expression_definitions = ([row for row in pending if row.id not in gp_plans]
             + (seasonality_definitions if control_start is not None else [])
             + (turnover_definitions if turnover_control_start is not None else [])
-            + (industry_definitions if industry_control_start is not None else []))
+            + (industry_definitions if industry_control_start is not None else [])
+            + (comovement_definitions if comovement_control_start is not None else []))
         panel = attach_expression_inputs(panel, bars, expressions=tuple(dict.fromkeys(row.expr for row in expression_definitions)),
             data_root=data_root, refresh_config=refresh_config, read_start=read_start,
             read_end=read_end, sessions=sessions)
@@ -226,6 +241,14 @@ def run(
                 & pl.col('trade_date').is_in(ends)).select('symbol','trade_date',INDUSTRY_CONTROL)
             controls = controls.join(keys,on=['symbol','trade_date'],how='semi')
             write_control_receipt(industry_control_path,controls,start=industry_control_start,end=high,columns=(INDUSTRY_CONTROL,))
+        if comovement_control_start is not None:
+            calendar = available_sessions(data_root, read_end + dt.timedelta(days=40))
+            ends = [a for a,b in zip(calendar,calendar[1:]) if (a.year,a.month)!=(b.year,b.month)]
+            controls = panel.filter(pl.col('trade_date').is_between(comovement_control_start,high)
+                & pl.col('trade_date').is_in(ends)).select('symbol','trade_date',*COMOVEMENT_CONTROLS)
+            controls = controls.join(keys,on=['symbol','trade_date'],how='semi')
+            write_control_receipt(comovement_control_path,controls,start=comovement_control_start,
+                end=high,columns=COMOVEMENT_CONTROLS)
         row_counts = {}
         if pending:
             values = evaluate_expressions(panel, {row.id: row.expr for row in pending if row.id not in gp_plans})

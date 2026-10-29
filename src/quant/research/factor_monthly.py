@@ -9,6 +9,7 @@ from quant.factors.price_delay import PRICE_DELAY_NAMES, compute_price_delay, we
 from quant.factors.return_seasonality import SEASONALITY_NAMES, CONTROL_NAMES, compute_return_seasonality
 from quant.factors.turnover_reference import NAMES as TURNOVER_NAMES, CONTROLS as TURNOVER_CONTROLS
 from quant.factors.industry_information import SIGNALS as INDUSTRY_NAMES, CONTROL as INDUSTRY_CONTROL
+from quant.factors.liquidity_comovement import SIGNALS as COMOVEMENT_NAMES, CONTROLS as COMOVEMENT_CONTROLS
 
 from quant.factors.liquidity import (
     LIQUIDITY_FACTOR_NAMES, compute_monthly_amihud_illiquidity,
@@ -20,7 +21,8 @@ def monthly_input_names(expressions: tuple[str, ...]) -> tuple[str, ...]:
     fields = {node.id for expression in expressions
               for node in ast.walk(ast.parse(expression, mode="eval")) if isinstance(node, ast.Name)}
     return tuple(name for name in (*LIQUIDITY_FACTOR_NAMES, *CALENDAR_LIQUIDITY_NAMES, *PRICE_DELAY_NAMES,
-        *SEASONALITY_NAMES, *TURNOVER_NAMES, *TURNOVER_CONTROLS, *INDUSTRY_NAMES, INDUSTRY_CONTROL) if name in fields)
+        *SEASONALITY_NAMES, *TURNOVER_NAMES, *TURNOVER_CONTROLS, *INDUSTRY_NAMES, INDUSTRY_CONTROL,
+        *COMOVEMENT_NAMES, *COMOVEMENT_CONTROLS) if name in fields)
 
 
 def attach_monthly_factors(
@@ -30,10 +32,12 @@ def attach_monthly_factors(
     seasonality_returns: pl.DataFrame | None = None,
     turnover_reference_values: pl.DataFrame | None = None,
     industry_information_values: pl.DataFrame | None = None,
+    liquidity_comovement_values: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """Month-end is usable after that close; an invalid new month replaces the old value."""
     if not set(names) <= set((*LIQUIDITY_FACTOR_NAMES, *CALENDAR_LIQUIDITY_NAMES, *PRICE_DELAY_NAMES,
-            *SEASONALITY_NAMES, *TURNOVER_NAMES, *TURNOVER_CONTROLS, *INDUSTRY_NAMES, INDUSTRY_CONTROL)):
+            *SEASONALITY_NAMES, *TURNOVER_NAMES, *TURNOVER_CONTROLS, *INDUSTRY_NAMES, INDUSTRY_CONTROL,
+            *COMOVEMENT_NAMES, *COMOVEMENT_CONTROLS)):
         raise ValueError("Unknown monthly liquidity input")
     season_names=tuple(name for name in names if name in SEASONALITY_NAMES)
     if season_names:
@@ -44,6 +48,9 @@ def attach_monthly_factors(
     industry_names = tuple(name for name in names if name in (*INDUSTRY_NAMES, INDUSTRY_CONTROL))
     if industry_names:
         names = tuple(dict.fromkeys([*names, INDUSTRY_CONTROL]))
+    comovement_names = tuple(name for name in names if name in (*COMOVEMENT_NAMES, *COMOVEMENT_CONTROLS))
+    if comovement_names:
+        names = tuple(dict.fromkeys([*names, *COMOVEMENT_CONTROLS]))
     if not calendar or calendar != tuple(sorted(set(calendar))):
         raise ValueError("Monthly factors require an ordered exchange calendar")
     low, high = panel["trade_date"].min(), panel["trade_date"].max()
@@ -109,6 +116,12 @@ def attach_monthly_factors(
             raise ValueError('Industry information requires exact frozen-member monthly inputs')
         fields = tuple(dict.fromkeys([*industry_names, INDUSTRY_CONTROL]))
         monthly = monthly.join(industry_information_values.select('symbol', 'trade_date', *fields),
+            on=['symbol', 'trade_date'], how='left', validate='1:1')
+    if comovement_names:
+        if liquidity_comovement_values is None:
+            raise ValueError('Liquidity co-movement requires full calendar-month raw inputs')
+        fields = tuple(dict.fromkeys([*comovement_names, *COMOVEMENT_CONTROLS]))
+        monthly = monthly.join(liquidity_comovement_values.select('symbol', 'trade_date', *fields),
             on=['symbol', 'trade_date'], how='left', validate='1:1')
     result = panel.sort("symbol", "trade_date").join_asof(
         monthly.sort("symbol", "trade_date"), on="trade_date", by="symbol", strategy="backward",
