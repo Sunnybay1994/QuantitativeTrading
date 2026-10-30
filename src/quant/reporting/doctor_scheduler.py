@@ -1,46 +1,53 @@
 """Read native Task Scheduler instance evidence; never infer product acceptance from exit zero."""
 
 import datetime as dt
-import json
 import subprocess
+import time
 import uuid
+import xml.etree.ElementTree as ET
 
-EVENT_SCRIPT = r'''
-$ErrorActionPreference = 'Stop'
-[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-$channel = 'Microsoft-Windows-TaskScheduler/Operational'
-$log = Get-WinEvent -ListLog $channel
-$events = @()
-if ($log.IsEnabled) {
-  try {
-    $events = @(Get-WinEvent -FilterHashtable @{
-      LogName=$channel; Id=107,110,102,111,201; StartTime=(Get-Date).AddDays(-16)
-    } -MaxEvents 20001 -ErrorAction Stop)
-  } catch {
-    if ($_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*') { throw }
-  }
-}
-$rows = @(foreach ($event in $events) {
-  $xml = [xml]$event.ToXml()
-  $data = @{}
-  foreach ($node in $xml.Event.EventData.Data) {
-    $data[$node.GetAttribute('Name')] = $node.InnerText
-  }
-  $task = [string]$data.TaskName
-  if ($task.Split('\')[-1] -notlike 'Quant*') { continue }
-  $instance = $data.InstanceId
-  if (-not $instance) { $instance = $data.TaskInstanceId }
-  [pscustomobject]@{
-    record_id=[long]$event.RecordId; event_id=[int]$event.Id
-    occurred_at=$event.TimeCreated.ToUniversalTime().ToString('o')
-    task=$task; instance_id=$instance; result=$data.ResultCode; action=$data.ActionName
-  }
-})
-[pscustomobject]@{
-  enabled=[bool]$log.IsEnabled; truncated=($events.Count -gt 20000)
-  window_days=16; events=$rows
-} | ConvertTo-Json -Depth 6 -Compress
-'''
+CHANNEL = 'Microsoft-Windows-TaskScheduler/Operational'
+EVENT_NAMESPACE = '{http://schemas.microsoft.com/win/2004/08/events/event}'
+
+
+def _native_xml(arguments: list[str], timeout: float) -> ET.Element:
+    completed = subprocess.run(['wevtutil', *arguments], check=False, capture_output=True,
+                               timeout=timeout)
+    if completed.returncode:
+        error = completed.stderr or b'Native Task Scheduler query failed'
+        if isinstance(error, bytes):
+            error = error.decode('utf-8', errors='replace')
+        raise RuntimeError(error[:400])
+    # Parse bytes directly: native XML declarations/BOMs identify UTF-8/UTF-16.
+    return ET.fromstring(completed.stdout)
+
+
+def _native_events(document: ET.Element) -> tuple[list[dict], int]:
+    if document.tag != 'Events':
+        raise ValueError('Invalid native event query root')
+    rows = []
+    for event in document:
+        if event.tag != EVENT_NAMESPACE+'Event':
+            raise ValueError('Invalid native event namespace')
+        data = {node.get('Name'): node.text
+                for node in event.findall(EVENT_NAMESPACE+'EventData/'+EVENT_NAMESPACE+'Data')}
+        task = data.get('TaskName') or ''
+        if not task.rsplit('\\', 1)[-1].lower().startswith('quant'):
+            continue
+        system = event.find(EVENT_NAMESPACE+'System')
+        if system is None:
+            raise ValueError('Missing native event System fields')
+        created = system.find(EVENT_NAMESPACE+'TimeCreated')
+        if created is None or not created.get('SystemTime'):
+            raise ValueError('Missing native event timestamp')
+        rows.append({
+            'record_id': int(system.findtext(EVENT_NAMESPACE+'EventRecordID')),
+            'event_id': int(system.findtext(EVENT_NAMESPACE+'EventID')),
+            'occurred_at': created.get('SystemTime'), 'task': task,
+            'instance_id': data.get('InstanceId') or data.get('TaskInstanceId'),
+            'result': data.get('ResultCode'), 'action': data.get('ActionName'),
+        })
+    return rows, len(document)
 
 
 def normalize_events(events: list[dict]) -> list[dict]:
@@ -100,19 +107,28 @@ def normalize_events(events: list[dict]) -> list[dict]:
 
 def read_history() -> dict:
     try:
-        completed = subprocess.run(['powershell', '-NoProfile', '-Command', EVENT_SCRIPT],
-                                   check=False, capture_output=True, text=True, encoding='utf-8',
-                                   errors='replace', timeout=90)
-        if completed.returncode:
-            raise RuntimeError((completed.stderr or 'Task Scheduler event query failed')[:400])
-        data = json.loads(completed.stdout)
-        if not isinstance(data, dict) or type(data.get('enabled')) is not bool:
-            raise ValueError('Invalid Task Scheduler query response')
-        if not isinstance(data.get('events'), list):
-            raise TypeError('Task Scheduler events must be a list')
+        clock = time.monotonic()
+        config = _native_xml(['gl', CHANNEL, '/f:xml'], timeout=90)
+        enabled = config.get('enabled')
+        if (config.tag.rsplit('}', 1)[-1] != 'channel' or config.get('name') != CHANNEL
+                or enabled not in ('true', 'false')):
+            raise ValueError('Invalid native event channel configuration')
+        data = {'enabled': enabled == 'true', 'truncated': False, 'window_days': 16,
+                'events': [], 'reader': 'wevtutil'}
+        if data['enabled']:
+            start = (dt.datetime.now(dt.timezone.utc)-dt.timedelta(days=16)).isoformat().replace('+00:00', 'Z')
+            query = ("*[System[(EventID=107 or EventID=110 or EventID=102 or EventID=111 "
+                     f"or EventID=201) and TimeCreated[@SystemTime >= '{start}']]]")
+            remaining = 90-(time.monotonic()-clock)
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired('native event history', 90)
+            document = _native_xml(['qe', CHANNEL, '/q:'+query, '/rd:true', '/c:20001',
+                                    '/f:xml', '/e:Events'], timeout=remaining)
+            data['events'], count = _native_events(document)
+            data['truncated'] = count > 20000
         data['instances'] = normalize_events(data['events'])
         data.update(error=None, artifact_validation='not_evaluated')
         return data
-    except (OSError, RuntimeError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired) as exc:
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError, ET.ParseError, subprocess.TimeoutExpired) as exc:
         return {'enabled': None, 'events': [], 'instances': [], 'error': str(exc)[:400],
                 'artifact_validation': 'not_evaluated'}
