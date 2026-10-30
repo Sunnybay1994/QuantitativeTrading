@@ -48,7 +48,8 @@ def _tree(tmp_path):
     tests = tmp_path / "artifacts" / "tests"
     tests.mkdir()
     (tests / "latest.json").write_text(json.dumps({
-        "ran_at": NOW.isoformat(), "exit_code": 0, "passed": 3, "failed": 0, "duration_seconds": 1
+        "ran_at": NOW.isoformat(), "exit_code": 0, "passed": 3, "failed": 0, "duration_seconds": 1,
+        "complete": True, "accepted_fast": True, "selected_count": 3, "skipped": 0, "errors": 0
     }), encoding="utf-8")
     return tmp_path
 
@@ -65,6 +66,21 @@ def test_clean_tree_has_no_red_when_git_is_fresh(tmp_path, monkeypatch):
     assert report["scheduled_tasks"][0]["name"].endswith("IntelWeekly")
     assert report["scheduled_tasks"][0]["result"] == 0
     assert "IntelWeekly" in render_markdown(report)
+
+
+@pytest.mark.parametrize('change', [
+    {'complete': False}, {'accepted_fast': False}, {'passed': None},
+    {'selected_count': 4}, {'errors': 1}, {'duration_seconds': -1},
+    {'ran_at': 'invalid'}, {'ran_at': '2026-10-27T00:00:00+08:00'},
+])
+def test_zero_exit_does_not_make_incomplete_fast_receipt_green(tmp_path, isolated_git, change):
+    root = _tree(tmp_path)
+    path = root/'artifacts/tests/latest.json'
+    payload = json.loads(path.read_text(encoding='utf-8'))
+    payload.update(change)
+    path.write_text(json.dumps(payload), encoding='utf-8')
+    report = collect(root=root, now=NOW, tasks=[])
+    assert 'tests: incomplete or invalid fast-test receipt' in report['red']
 
 
 def test_known_failures_are_red(tmp_path, monkeypatch):

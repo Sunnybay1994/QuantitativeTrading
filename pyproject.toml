@@ -45,6 +45,8 @@ gui = ["streamlit>=1.49,<2"]
 wechat = ["wxauto4==41.1.7; sys_platform == 'win32' and python_version == '3.13'"]
 dev = [
     "pytest>=8.0",
+    "pytest-xdist==3.8.0",
+    "execnet==2.1.1",
     "ruff>=0.4",
     "mypy>=1.10",
 ]

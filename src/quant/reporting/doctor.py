@@ -6,8 +6,6 @@ import argparse
 import datetime as dt
 import json
 import subprocess
-import sys
-import time
 import uuid
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -210,6 +208,14 @@ def _tests(path: Path, today: dt.date) -> dict:
         age = (today - ran_day).days
     except ValueError:
         age = None
+    duration = payload.get('duration_seconds')
+    count, passed, skipped = (payload.get(name) for name in ('selected_count', 'passed', 'skipped'))
+    verified = (payload.get('complete') is True and payload.get('accepted_fast') is True
+        and payload.get('failed') == 0 and payload.get('errors') == 0
+        and all(type(value) is int and value >= 0 for value in (count, passed, skipped))
+        and count > 0 and passed + skipped == count
+        and type(duration) in (int, float) and 0 <= duration <= 600
+        and age is not None and 0 <= age <= 2)
     return {
         "missing": False,
         "exit_code": payload.get("exit_code"),
@@ -217,6 +223,7 @@ def _tests(path: Path, today: dt.date) -> dict:
         "failed": payload.get("failed"),
         "duration_seconds": payload.get("duration_seconds"),
         "age_days": age,
+        "verified_fast_receipt": verified,
     }
 
 
@@ -351,6 +358,8 @@ def collect(
         red.append(f"git: root _*.py={git_facts['root_scratch_py']}")
     if tests.get("missing") or tests.get("exit_code") not in (0, "0"):
         red.append(f"tests: latest={tests.get('exit_code')}")
+    elif not tests.get('verified_fast_receipt'):
+        red.append('tests: incomplete or invalid fast-test receipt')
     elif (tests.get("age_days") or 0) > 2:
         red.append(f"tests: age_days={tests['age_days']}")
     if tests.get("duration_seconds") is not None and tests["duration_seconds"] > 600:
@@ -475,60 +484,9 @@ def notify_red(report: dict) -> None:
 
 def record_fast_tests(root: Path | None = None) -> int:
     """Run the fast suite and store the receipt the doctor reads. Does not gate trading."""
-    root = (root or project_paths().root).resolve()
-    destination = root / "artifacts" / "tests"
-    destination.mkdir(parents=True, exist_ok=True)
-    started = dt.datetime.now(SHANGHAI)
-    clock = time.monotonic()
-    # Bound runtime so DailyObservation can exit before Task Scheduler's limit.
-    test_timeout_seconds = 600
-    try:
-        completed = subprocess.run(
-            [sys.executable, "-m", "pytest", "tests", "-q", "-m", "not slow", "--tb=no"],
-            cwd=root,
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=test_timeout_seconds,
-        )
-        text = (completed.stdout or "") + "\n" + (completed.stderr or "")
-        exit_code = completed.returncode
-    except subprocess.TimeoutExpired as exc:
-        def _as_text(value: object) -> str:
-            if value is None:
-                return ""
-            if isinstance(value, bytes):
-                return value.decode("utf-8", errors="replace")
-            return str(value)
+    from quant.reporting.fast_tests import run
 
-        text = _as_text(exc.stdout) + "\n" + _as_text(exc.stderr)
-        text += f"\ntimeout after {test_timeout_seconds}s"
-        exit_code = 124
-    passed = failed = 0
-    for line in text.splitlines():
-        if " passed" in line or " failed" in line:
-            parts = line.replace(",", " ").split()
-            for index, token in enumerate(parts):
-                if token == "passed" and index:
-                    passed = int(parts[index - 1])
-                if token == "failed" and index:
-                    failed = int(parts[index - 1])
-    log_path = destination / (started.strftime("%Y%m%dT%H%M%S_%f") + ".log")
-    log_path.write_text(text, encoding="utf-8")
-    payload = {
-        "ran_at": started.isoformat(),
-        "command": "pytest -m \"not slow\"",
-        "exit_code": exit_code,
-        "passed": passed,
-        "failed": failed,
-        "duration_seconds": round(time.monotonic() - clock, 1),
-        "timeout_seconds": test_timeout_seconds,
-        "log": str(log_path),
-    }
-    (destination / "latest.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    return exit_code
+    return run((root or project_paths().root).resolve())
 
 
 def main(argv: list[str] | None = None) -> int:

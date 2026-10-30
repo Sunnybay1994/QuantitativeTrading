@@ -76,13 +76,19 @@ try {
     Write-Stage ('daily target=' + $requestedDate)
     $code = Invoke-Python $runArgs -Append
     if ($code -ne 2) { Notify-Failure $code }
-    # Read-only acceptance page after the 17:30/21:30 run. Do not change the task result.
+    # Keep the daily failure code; a failed fast suite must also fail the task.
     # Doctor page first: --record-tests alone never writes artifacts/doctor, and an
     # unbounded pytest previously held the task past ExecutionTimeLimit (267014).
     Write-Stage ('daily_exit=' + $code + ' doctor')
     Invoke-Python @('-m', 'quant', 'doctor', '--json', '--no-notify') -Append | Out-Null
     Write-Stage 'doctor_record_tests_bounded'
-    Invoke-Python @('-m', 'quant', 'doctor', '--record-tests') -Append | Out-Null
+    $testCode = Invoke-Python @('-m', 'quant', 'doctor', '--record-tests') -Append
+    Write-Stage ('doctor_record_tests_exit=' + $testCode + ' doctor_refresh')
+    Invoke-Python @('-m', 'quant', 'doctor', '--json', '--no-notify') -Append | Out-Null
+    if ($code -eq 0 -and $testCode -ne 0) {
+        Notify-Failure $testCode
+        exit $testCode
+    }
     exit $code
 } catch {
     $_.Exception.Message | Out-File $logFile -Append -Encoding utf8

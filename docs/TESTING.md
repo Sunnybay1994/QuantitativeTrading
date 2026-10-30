@@ -1,5 +1,9 @@
 # 测试执行
 
+正式入口 `python -m quant doctor --record-tests` 使用 base 解释器及项目 dev 依赖（`pytest-xdist==3.8.0`、`execnet==2.1.1`）。源码复制到当次 `artifacts/tests/<时间>/snapshot/`，子进程使用隔离数据和产物目录、清理后的环境、最多 12 个 worker 和每进程单线程计算库。固定 600 秒包含复制、真实断言负对照和完整快集合；不通过优化模式关闭断言。
+
+回执保留源码摘要、每个 worker 的收集与解释器信息、完整 JUnit 和原始日志。收集身份与 JUnit 逐项一致、零失败且总耗时达标，才会写 `accepted_fast=true`。超时统计为未知、退出码 124；只回收入口自己创建的测试进程树。日更在测试后刷新 doctor 页面，测试失败使计划任务返回非零，日更业务自身的失败码优先保留。临时工程和放宽预算的诊断不写生产测试指针，不构成完整项目验收。
+
 日更的快测试命令是 `python -m pytest tests -q -m "not slow"`。`quant doctor --record-tests` 将其限制为 600 秒，保留输出日志和退出码；超时或失败都不能记为通过。
 
 `tests/integration/test_m3_*.py` 重建完整 M3 数据、模型、模拟成交及验收链路，统一标记为 `slow`。`tests/full_chain_cases.py` 另列出位于 unit 目录、实际构建或消费完整上游工件链的具体函数；只给这些函数加标记，纯计算、类型、边界和前置拒绝测试继续留在快集合。无筛选的 `python -m pytest tests` 继续执行全部测试，测试函数及断言保持不变。
