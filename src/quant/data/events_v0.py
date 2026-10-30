@@ -6,6 +6,7 @@ import argparse
 import datetime as dt
 import hashlib
 import io
+import math
 import json
 import re
 import threading
@@ -503,9 +504,9 @@ def _message_text(response: dict) -> str:
 _LEDGER_LOCK = threading.Lock()
 
 
-def _task_spend(ledger_root: Path) -> float:
+def _task_spend(ledger_root: Path, now: dt.datetime | None = None) -> float:
     from quant.llm.ledger import month_path
-    path = month_path(ledger_root)
+    path = month_path(ledger_root, now=now)
     if not path.is_file():
         return 0.0
     with _LEDGER_LOCK:
@@ -514,20 +515,26 @@ def _task_spend(ledger_root: Path) -> float:
             if not line.strip():
                 continue
             row = json.loads(line)
-            if row.get("task") == "event_extract" and isinstance(row.get("usd"), (int, float)):
-                total += float(row["usd"])
+            if row.get("task") == "event_extract":
+                value = row.get('usd')
+                if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+                    raise ValueError('Invalid event extraction charge')
+                total += float(value)
         return total
 
 
-def _record_spend(response: dict, ledger_root: Path, pricing: Path, announcement_id: str) -> float | None:
+def _record_spend(response: dict, ledger_root: Path, pricing: Path, announcement_id: str,
+                  request_id: str | None = None, now: dt.datetime | None = None) -> float:
     from quant.llm.ledger import append
     from quant.research.gp_hints import priced_usd
     usd, estimated = priced_usd(response, pricing)
-    if usd is None:
-        return None
+    unknown = usd is None or not math.isfinite(usd) or usd <= 0
+    if unknown:
+        usd, estimated = .02, True
     with _LEDGER_LOCK:
         append({"task": "event_extract", "announcement_id": announcement_id, "usd": usd,
-                "estimated": estimated, "usage": response.get("usage")}, ledger_root)
+                "estimated": estimated, "usage": response.get("usage"),
+                'unknown_charge': unknown, 'event_request_id': request_id}, ledger_root, now=now)
     return usd
 
 
@@ -606,10 +613,11 @@ def build_events(
             if _task_spend(ledger_root) >= TASK_BUDGET_USD:
                 return {"_stop": "budget"}
             from quant.llm import RequestFailure
+            from quant.data.events_v0_budget import complete_with_budget, EventBudgetExhausted
             response = None
             for attempt in range(2):
                 try:
-                    response = complete([
+                    response = complete_with_budget(complete, [
                         {"role": "system", "content": (
                             "只从摘录抽取回购实施或股东增减持。返回 JSON，键为 status、amount_cny、"
                             "ratio_pct、term_days、direction、evidence。status 只能是 parsed 或 unresolved。"
@@ -619,8 +627,13 @@ def build_events(
                         )},
                         {"role": "user", "content": excerpt},
                     ], {"max_tokens": 250, "max_usd": 0.02, "reserve_usd": 0.02,
-                        "temperature": 0})
+                        "temperature": 0}, ledger_root=ledger_root, announcement_id=identity,
+                        spend=_task_spend, limit=TASK_BUDGET_USD,
+                        record=lambda reply, request_id, started: _record_spend(
+                            reply, ledger_root, pricing, identity, request_id, started))
                     break
+                except EventBudgetExhausted:
+                    return {'_stop': 'budget'}
                 except RequestFailure as exc:
                     if getattr(exc, "code", "") == "monthly_budget_exhausted":
                         return {"_stop": "budget"}
@@ -634,7 +647,6 @@ def build_events(
             else:
                 with calls_lock:
                     calls += 1
-                _record_spend(response, ledger_root, pricing, identity)
                 try:
                     payload = strict_json(_message_text(response))
                 except ValueError:

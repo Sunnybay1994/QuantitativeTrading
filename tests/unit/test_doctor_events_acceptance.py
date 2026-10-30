@@ -133,3 +133,15 @@ def test_malformed_artifact_is_a_reported_error_not_a_doctor_crash(event_tree, p
         path.write_text(json.dumps(summary))
     result = evaluate(root, TODAY)
     assert result['errors'] and not result['automated_checks_met']
+
+
+def test_doctor_counts_unsettled_fees_without_claiming_they_are_paid(event_tree):
+    root, _ = event_tree
+    directory = root/'artifacts/research/llm_ledger/.event_extract_budget'
+    directory.mkdir()
+    (directory/'2026-10.jsonl').write_text(json.dumps(dict(kind='reserve', request_id='fixture', usd=.02))+'\n')
+    result = evaluate(root, TODAY)
+    assert result['ledger']['usd'] == .5
+    assert result['ledger']['pending_usd'] == .02 and result['ledger']['exposure_usd'] == .52
+    assert not result['automated_checks_met']
+    assert any('unresolved request charges' in item for item in result['errors'])

@@ -115,10 +115,20 @@ def evaluate(root: Path, today: dt.date) -> dict:
         if any(not math.isfinite(amount) or amount <= 0 for amount in amounts):
             raise ValueError('event calls require finite positive USD')
         usd = sum(amounts)
-        result['ledger'] = dict(path=str(ledger_path), calls=len(calls), usd=usd, budget_usd=5.)
-        if usd > 5.:
+        from quant.data.events_v0_budget import pending
+        from quant.llm.ledger import SHANGHAI
+
+        unresolved = pending(ledger_path.parent, dt.datetime.combine(today, dt.time(), tzinfo=SHANGHAI))
+        unknown = sum(row.get('unknown_charge') is True for row in calls)
+        exposure = usd+unresolved['usd']
+        result['ledger'] = dict(path=str(ledger_path), calls=len(calls), usd=usd, budget_usd=5.,
+            pending_requests=unresolved['requests'], pending_usd=unresolved['usd'],
+            exposure_usd=exposure, unknown_charge_estimates=unknown)
+        if unresolved['requests'] or unknown:
+            errors.append('S4 has unresolved request charges; fee exposure remains reserved')
+        if exposure > 5.:
             errors.append('S4 monthly event extraction spend exceeds $5')
-    except (OSError, ValueError, TypeError) as exc:
+    except (OSError, ValueError, TypeError, KeyError) as exc:
         errors.append('event ledger: '+str(exc))
     result['coverage_met'] = (len(result['tables']) == 2
         and all(not row['missing_months'] for row in result['tables'].values())
