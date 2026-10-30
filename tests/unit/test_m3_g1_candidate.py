@@ -661,15 +661,13 @@ def _build_inputs(
 
 
 @pytest.fixture(scope="module")
-def happy_inputs() -> G1BuildInputs:
-    return _build_inputs()
+def happy_inputs(g1_candidate_inputs) -> G1BuildInputs:
+    return g1_candidate_inputs
 
 
 @pytest.fixture(scope="module")
-def happy_candidate(happy_inputs: G1BuildInputs) -> G1Candidate:
-    from tests.support.g1_candidate_fixture import load_candidate
-
-    return load_candidate(happy_inputs)
+def happy_candidate(g1_candidate_baseline) -> G1Candidate:
+    return g1_candidate_baseline
 
 
 def _rebind_identity(candidate: G1Candidate, **changes: Any) -> G1Candidate:

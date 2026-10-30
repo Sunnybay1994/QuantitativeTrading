@@ -824,15 +824,13 @@ def _restrict_bar_symbols(
 
 
 @pytest.fixture(scope="module")
-def happy_inputs() -> G1BuildInputs:
-    return _build_inputs()
+def happy_inputs(g1_reference_inputs) -> G1BuildInputs:
+    return g1_reference_inputs
 
 
 @pytest.fixture(scope="module")
-def happy_candidate(happy_inputs: G1BuildInputs) -> G1Candidate:
-    from tests.support.g1_candidate_fixture import load_candidate
-
-    return load_candidate(happy_inputs, folder=Path(__file__).resolve().parents[1]/"fixtures/g1_reference_candidate")
+def happy_candidate(g1_reference_baseline) -> G1Candidate:
+    return g1_reference_baseline
 
 
 def _base_policy_kwargs() -> dict[str, Any]:

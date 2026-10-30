@@ -27,6 +27,35 @@ def pytest_collection_modifyitems(items):
             item.add_marker(pytest.mark.slow)
 
 
+@pytest.fixture(scope='session')
+def g1_candidate_inputs():
+    from tests.unit.test_m3_g1_candidate import _build_inputs
+
+    return _build_inputs()
+
+
+@pytest.fixture(scope='session')
+def g1_candidate_baseline(g1_candidate_inputs):
+    from tests.support.g1_candidate_fixture import load_candidate
+
+    return load_candidate(g1_candidate_inputs)
+
+
+@pytest.fixture(scope='session')
+def g1_reference_inputs():
+    from tests.unit.test_m3_reference import _build_inputs
+
+    return _build_inputs()
+
+
+@pytest.fixture(scope='session')
+def g1_reference_baseline(g1_reference_inputs):
+    from tests.support.g1_candidate_fixture import load_candidate
+
+    return load_candidate(g1_reference_inputs,
+        folder=Path(__file__).resolve().parents[1]/'fixtures/g1_reference_candidate')
+
+
 @pytest.fixture
 def diagnosis_config(tmp_path):
     """Synthetic prices and a current date for fake-client tests, not a live price check."""

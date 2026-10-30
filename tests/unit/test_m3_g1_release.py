@@ -48,7 +48,6 @@ from quant.data.m3_release import (
     verify_g1_release,
 )
 from quant.data.storage import RawStore
-from tests.support.g1_candidate_fixture import load_candidate
 from tests.unit import test_m3_reference as ref_tests
 
 
@@ -85,16 +84,13 @@ def publish_capable(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(scope="module")
-def happy_inputs() -> G1BuildInputs:
-    return ref_tests._build_inputs()
+def happy_inputs(g1_reference_inputs) -> G1BuildInputs:
+    return g1_reference_inputs
 
 
 @pytest.fixture(scope="module")
-def happy_candidate(happy_inputs: G1BuildInputs) -> G1Candidate:
-    return load_candidate(
-        happy_inputs,
-        folder=Path(__file__).resolve().parents[1] / "fixtures/g1_reference_candidate",
-    )
+def happy_candidate(g1_reference_baseline) -> G1Candidate:
+    return g1_reference_baseline
 
 
 @pytest.fixture(scope="module")
