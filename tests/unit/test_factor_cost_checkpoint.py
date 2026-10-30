@@ -1,7 +1,9 @@
 import copy
 import datetime as dt
 import json
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import polars as pl
 from polars.testing import assert_frame_equal
@@ -49,18 +51,31 @@ def test_annual_publication_retries_permission_only_and_keeps_failed_stage(tmp_p
     _, _, kwargs = setup_run(monkeypatch, tmp_path/'replay')
     rename = Path.rename
     calls, sleeps = [], []
+    injected_wait = False
 
     def blocked(source, target):
+        nonlocal injected_wait
         calls.append((source, target))
         if failure != 'transient' or len(calls) <= 2:
             if failure == 'target_appears':
                 target.mkdir()
                 (target/'sentinel').write_text('another output')
+            injected_wait = True
             raise PermissionError('fixture directory busy')
         return rename(source, target)
 
+    def fixture_sleep(delay):
+        nonlocal injected_wait
+        if injected_wait:
+            sleeps.append(delay)
+            injected_wait = False
+        else:
+            # Real filesystem contention in later years/costs is independent
+            # of the two deliberately injected publication failures.
+            time.sleep(delay)
+
     monkeypatch.setattr(Path, 'rename', blocked)
-    monkeypatch.setattr(checkpoints.time, 'sleep', sleeps.append)
+    monkeypatch.setattr(checkpoints, 'time', SimpleNamespace(sleep=fixture_sleep))
     if failure == 'transient':
         costs.run_cost_plans(**kwargs)
         assert sleeps == [.1, .3]

@@ -2,6 +2,7 @@
 import hashlib
 import json
 import shutil
+import time
 import tomllib
 from pathlib import Path
 
@@ -105,5 +106,15 @@ def publish_alias(source: Path, output: Path, *, factor: str, representative: st
                          for p in stage.rglob('*') if p.is_file() and p.name != 'reuse.json'}}
     (stage/'reuse.json').write_text(json.dumps(receipt, indent=2), encoding='utf-8')
     # Same-volume directory rename publishes all report evidence together.
-    stage.rename(output)
+    for attempt in range(10):
+        try:
+            stage.rename(output)
+            break
+        except PermissionError as exc:
+            # A Windows reader can briefly deny publication of the complete
+            # staging directory. Never replay accounts or replace a target.
+            if (getattr(exc, 'winerror', None) not in (5, 32, 33)
+                    or attempt == 9 or output.exists() or not stage.is_dir()):
+                raise
+            time.sleep(0.05 * (attempt + 1))
     return receipt

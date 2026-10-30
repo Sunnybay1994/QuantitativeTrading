@@ -1,12 +1,15 @@
 import datetime as dt
 import json
+import time
 from concurrent.futures import Future
 from pathlib import Path
+from types import SimpleNamespace
 
 import polars as pl
 import pytest
 
 from quant.research import factor_battery_cost_batch as batch
+from quant.research import factor_cost_reuse as reuse
 from quant.research.factor_battery_cost_report import load_cost_history
 
 
@@ -123,3 +126,86 @@ def test_incomplete_representative_costs_never_publish_alias(case):
     assert 'incomplete' in result['failures']['b']
     assert not (next_args['output']/'b').exists()
     assert result['saved_variant_cost_replays'] == 0 and calls == ['a', 'c']
+
+
+def _files(folder):
+    return {path.relative_to(folder).as_posix(): path.read_bytes()
+            for path in folder.rglob('*') if path.is_file()}
+
+
+@pytest.mark.parametrize('winerror', [5, 32, 33])
+@pytest.mark.parametrize('persistent', [False, True])
+def test_alias_publication_retries_without_replaying_or_mutating_staging(
+        case, monkeypatch, winerror, persistent):
+    args, calls = case
+    rename = Path.rename
+    stages, sleeps = [], []
+
+    def blocked(stage, target):
+        if stage.parent.name == 'reuse_staging':
+            stages.append(_files(stage))
+            if persistent or len(stages) <= 2:
+                exc = PermissionError('fixture Windows reader')
+                exc.winerror = winerror
+                raise exc
+        return rename(stage, target)
+
+    def wait(delay):
+        sleeps.append(delay)
+        time.sleep(delay)
+
+    monkeypatch.setattr(Path, 'rename', blocked)
+    monkeypatch.setattr(reuse, 'time', SimpleNamespace(sleep=wait))
+    result = batch.run_cost_batch(**args)
+    assert calls == ['a', 'c']
+    assert stages and all(stage == stages[0] for stage in stages)
+    assert sleeps == [0.05 * i for i in range(1, len(stages))]
+    stage = args['output']/'reuse_staging/b'
+    target = args['output']/'b'
+    if persistent:
+        assert len(stages) == 10 and len(sleeps) == 9
+        assert set(result['failures']) == {'b'}
+        assert not target.exists() and _files(stage) == stages[0]
+        assert result['saved_variant_cost_replays'] == 0
+    else:
+        assert 3 <= len(stages) <= 10
+        assert not result['failures'] and result['reused_factors'] == {'b': 'a'}
+        assert result['saved_variant_cost_replays'] == 3
+        assert not stage.exists() and _files(target) == stages[0]
+        for cost in (0.5, 1., 2.):
+            nav, _ = load_cost_history(target, 'raw', cost, dt.date(2020, 1, 31))
+            assert nav['strategy'].to_list() == ['battery_b_raw']
+
+
+@pytest.mark.parametrize('kind', ['unknown_permission', 'other_os_error', 'target_appears'])
+def test_alias_publication_does_not_retry_other_errors_or_replace_new_target(case, monkeypatch, kind):
+    args, calls = case
+    rename = Path.rename
+    attempted, sleeps = [], []
+
+    def blocked(stage, target):
+        if stage.parent.name != 'reuse_staging':
+            return rename(stage, target)
+        attempted.append(_files(stage))
+        if kind == 'target_appears':
+            target.mkdir()
+            (target/'sentinel').write_bytes(b'another publication')
+            exc = PermissionError('fixture concurrent publication')
+            exc.winerror = 5
+            raise exc
+        if kind == 'unknown_permission':
+            raise PermissionError('fixture non-Windows permission failure')
+        raise OSError('fixture unrelated filesystem error')
+
+    monkeypatch.setattr(Path, 'rename', blocked)
+    monkeypatch.setattr(reuse, 'time', SimpleNamespace(sleep=sleeps.append))
+    result = batch.run_cost_batch(**args)
+    assert calls == ['a', 'c']
+    assert len(attempted) == 1 and sleeps == []
+    assert set(result['failures']) == {'b'} and result['saved_variant_cost_replays'] == 0
+    assert _files(args['output']/'reuse_staging/b') == attempted[0]
+    target = args['output']/'b'
+    if kind == 'target_appears':
+        assert _files(target) == {'sentinel': b'another publication'}
+    else:
+        assert not target.exists()
