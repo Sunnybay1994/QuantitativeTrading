@@ -119,6 +119,59 @@ def read_frozen_battery_universe(*, statistics: Path,
     return frame.sort('trade_date', 'symbol')
 
 
+def read_battery_universe_dates(*, statistics: Path, as_of_dates: list[dt.date],
+                                data_root: Path | None = None,
+                                include_tradeability: bool = False) -> pl.DataFrame:
+    """Read frozen universe dates; build dates after battery run.as_of when data_root is set.
+
+    Shadow size-on (and similar forward paper hooks) need signal-date controls after the
+    frozen peer/battery statistics cutoff. Match the fixed-forecast pattern: reuse the
+    saved parquet through run.as_of, then construct later sessions with read_forward_universe.
+    """
+    import tomllib
+
+    from quant.data.model_forward_inputs import read_forward_universe
+
+    if (not as_of_dates or any(type(day) is not dt.date for day in as_of_dates)
+            or len(set(as_of_dates)) != len(as_of_dates)):
+        raise ValueError('Universe as_of_dates must be nonempty unique dates')
+    columns = ['symbol', 'trade_date', 'eligible', 'industry_l1', 'total_market_value', 'amount20']
+    if include_tradeability:
+        columns += ['traded', 'limits_known', 'away_from_limits', 'close', 'up_limit', 'down_limit']
+    battery_path = statistics / 'battery.toml'
+    frozen_through = None
+    settings = None
+    if battery_path.is_file():
+        settings = tomllib.loads(battery_path.read_text(encoding='utf-8'))
+        frozen_through = settings.get('run', {}).get('as_of')
+        if isinstance(frozen_through, str):
+            frozen_through = dt.date.fromisoformat(frozen_through)
+    if data_root is None or frozen_through is None:
+        return read_frozen_battery_universe(statistics=statistics, as_of_dates=as_of_dates,
+                                           include_tradeability=include_tradeability)
+    frozen_dates = [day for day in as_of_dates if day <= frozen_through]
+    forward_dates = sorted(day for day in as_of_dates if day > frozen_through)
+    frames: list[pl.DataFrame] = []
+    if frozen_dates:
+        frames.append(read_frozen_battery_universe(statistics=statistics, as_of_dates=frozen_dates,
+                                                   include_tradeability=include_tradeability))
+    for day in forward_dates:
+        frame = read_forward_universe(data_root=data_root, settings=settings, as_of=day)
+        missing_cols = [name for name in columns if name not in frame.columns]
+        if missing_cols:
+            raise ValueError(f'Forward universe missing required columns: {missing_cols}')
+        frames.append(frame.select(columns))
+    frame = pl.concat(frames)
+    missing = set(as_of_dates) - set(frame['trade_date'])
+    if missing:
+        raise ValueError(f'Missing frozen universe trade dates: {sorted(missing)}')
+    if frame.select('symbol', 'trade_date').is_duplicated().any():
+        raise ValueError('Duplicate frozen universe symbol/trade_date keys')
+    if frame['symbol'].null_count():
+        raise ValueError('Null frozen universe symbol')
+    return frame.sort('trade_date', 'symbol')
+
+
 def read_battery_year(*, data_root: Path, refresh_config: Path, limits_snapshot: str,
                       start: dt.date, end: dt.date, known_through: dt.date,
                       minimum_listing_days: int = 120, amount_window_sessions: int = 20,

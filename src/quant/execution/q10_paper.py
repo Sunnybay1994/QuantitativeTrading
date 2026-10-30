@@ -45,7 +45,8 @@ def signal_targets(scores: pl.DataFrame, state: dict, following: dt.date) -> pl.
     return budget_targets(targets, state, budget=.5)
 
 
-def size_neutral_targets(scores: pl.DataFrame, state: dict, following: dt.date, config: dict) -> pl.DataFrame:
+def size_neutral_targets(scores: pl.DataFrame, state: dict, following: dt.date, config: dict,
+                        data_root: Path = Path('data')) -> pl.DataFrame:
     """A5 b0.5_k50_size_on: same names, then |z|<=0.5 size band, then the 0.5 budget."""
     from quant.research.run_constrained_portfolio import prepare_constrained_hook
 
@@ -56,6 +57,7 @@ def size_neutral_targets(scores: pl.DataFrame, state: dict, following: dt.date, 
         scores=scores.rename({'prediction': 'score'}).with_columns(pl.col('trade_date')),
         targets=targets, statistics=Path(paper['statistics']), policy=policy,
         score_column='score', minimum_signal_stocks=int(policy['top_k']),
+        data_root=data_root,
     )
     # prepare_constrained_hook reads score_column from the original frame's trade_date partition.
     adjusted, _info = transform(targets, state)
@@ -146,7 +148,7 @@ def run(*, config_path: Path = DEFAULT_CONFIG, data_root: Path = Path('data'),
         state['pending'] = []
         if scores is not None:
             if shadow and paper.get('construction') == 'b0.5_k50_size_on':
-                pending = size_neutral_targets(scores, state, following, config)
+                pending = size_neutral_targets(scores, state, following, config, data_root=data_root)
             else:
                 pending = signal_targets(scores, state, following)
             state['pending'] = json.loads(pending.write_json())

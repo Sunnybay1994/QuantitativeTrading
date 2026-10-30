@@ -8,7 +8,7 @@ from pathlib import Path
 import polars as pl
 
 from quant.backtest.share_exchanges import validate_exchanges
-from quant.data.factor_battery_inputs import read_frozen_battery_universe
+from quant.data.factor_battery_inputs import read_battery_universe_dates
 from quant.data.equal_weight_index import load_return_benchmarks
 from quant.data.factor_panels import available_sessions
 from quant.data.risk_model_inputs import standardize
@@ -22,11 +22,12 @@ from quant.research.run_multifactor_replay import model_target_plans, signal_sel
 
 def prepare_constrained_hook(*, scores: pl.DataFrame, targets: pl.DataFrame,
                              statistics: Path, policy: dict, score_column: str,
-                             minimum_signal_stocks: int | None = None):
+                             minimum_signal_stocks: int | None = None,
+                             data_root: Path | None = None):
     """Prepare R4 once for a frozen score method, also consumed by nightly N5."""
     dates = sorted(set(targets['as_of']))
-    universe = read_frozen_battery_universe(statistics=statistics,
-        as_of_dates=dates, include_tradeability=True)
+    universe = read_battery_universe_dates(statistics=statistics, as_of_dates=dates,
+        data_root=data_root, include_tradeability=True)
     universe = standardize(universe.with_columns(pl.col('total_market_value').log().alias('size')), ['size'])
     universe = universe.with_columns(pl.col('industry_l1').fill_null('UNKNOWN'))
     markets = universe.select(pl.col('trade_date').alias('as_of'),

@@ -112,7 +112,7 @@ def test_hook_missing_or_small_signal_pool_honors_cash_only(tmp_path, monkeypatc
     universe = market.rename({'as_of': 'trade_date', 'adv20': 'amount20'}).with_columns(
         pl.lit(True).alias('traded'), pl.lit(True).alias('limits_known'),
         pl.lit(10.).alias('close'), pl.lit(11.).alias('up_limit'), pl.lit(9.).alias('down_limit'))
-    monkeypatch.setattr(runner, 'read_frozen_battery_universe', lambda **kw: universe)
+    monkeypatch.setattr(runner, 'read_battery_universe_dates', lambda **kw: universe)
     if cash:
         targets = targets.with_columns(pl.lit(0.).alias('weight'))
     transform, _, _ = runner.prepare_constrained_hook(scores=scores, targets=targets,
