@@ -34,7 +34,8 @@ def _months(start: dt.date, end: dt.date) -> list[str]:
 def evaluate(root: Path, today: dt.date) -> dict:
     root = root.resolve()
     candidates = sorted(p for p in (root/'artifacts/data').glob('events_v0_*')
-                        if p.is_dir() and re.fullmatch(r'events_v0_\d{4}-\d{2}-\d{2}', p.name))
+                        if p.is_dir() and re.fullmatch(
+                            r'events_v0_\d{4}-\d{2}-\d{2}(?:_\d{8}T\d{6}_\d{6})?', p.name))
     enabled = (root/'configs/research/event_family_v1.toml').exists() or bool(candidates)
     result = dict(enabled=enabled, tables={}, errors=[], sample={}, ledger={},
                   required_start='2019-01-01', required_end=today.isoformat(),

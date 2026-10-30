@@ -86,6 +86,18 @@ def test_absent_events_are_not_required_in_a_non_project_fixture(tmp_path):
     assert not evaluate(tmp_path, TODAY)['enabled']
 
 
+def test_doctor_uses_new_immutable_resume_summary(event_tree):
+    root, path = event_tree
+    newer = path.parent.with_name(path.parent.name+'_20261030T050000_123456')
+    newer.mkdir()
+    summary = json.loads(path.read_text())
+    summary['stopped'] = 'budget'
+    (newer/'summary.json').write_text(json.dumps(summary))
+    report = evaluate(root, TODAY)
+    assert report['summary'] == str(newer/'summary.json')
+    assert not report['coverage_met'] and report['stopped'] == 'budget'
+
+
 def test_requested_full_dates_do_not_substitute_for_observed_months(event_tree):
     root, path = event_tree
     summary = json.loads(path.read_text())

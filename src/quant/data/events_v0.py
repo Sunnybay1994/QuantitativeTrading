@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
+import io
 import json
 import re
 import threading
@@ -12,13 +14,14 @@ import zlib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
-import pandera.polars as pa
 import polars as pl
 
 from quant.data.connectors.cninfo_announcements import announcement_pages, download_document
 from quant.factors.forecast_text_score import strict_json
 from quant.llm.pricing import load_pricing
+from quant.data.events_v0_schema import EventV0Schema
 
 MAX_INPUT_CHARS = 1500
 TASK_BUDGET_USD = 5.0
@@ -32,28 +35,6 @@ _SPACE = re.compile(r"\s+")
 _AMOUNT = re.compile(r"(\d+(?:\.\d+)?)\s*(万亿|亿|万元|万|元)")
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
 _SCALES = {"元": 1.0, "万": 1e4, "万元": 1e4, "亿": 1e8, "万亿": 1e12}
-
-
-class EventV0Schema(pa.DataFrameModel):
-    announcement_id: str
-    symbol: str
-    title: str
-    published: pl.Date
-    known_at: pl.Date
-    family: str = pa.Field(isin=["repurchase", "insider_trading"])
-    amount_cny: float = pa.Field(nullable=True)
-    ratio_pct: float = pa.Field(nullable=True)
-    term_days: int = pa.Field(nullable=True)
-    direction: str = pa.Field(isin=["buy", "sell", "repurchase"], nullable=True)
-    parse_status: str = pa.Field(isin=["parsed", "unresolved"])
-    human_label: str = pa.Field(nullable=True)
-    evidence: str = pa.Field(nullable=True)
-    excerpt: str
-    adjunct_url: str = pa.Field(nullable=True)
-
-    class Config:
-        strict = True
-        coerce = True
 
 
 def plain_title(title: object) -> str:
@@ -86,13 +67,14 @@ def a_share_symbol(code: object) -> str | None:
 
 def published_date(value: object) -> dt.date | None:
     if isinstance(value, dt.datetime):
-        return value.date()
+        return (value.astimezone(ZoneInfo('Asia/Shanghai')).date()
+                if value.tzinfo is not None else value.date())
     if isinstance(value, dt.date):
         return value
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         seconds = float(value) / 1000 if float(value) > 1e12 else float(value)
         try:
-            return dt.datetime.fromtimestamp(seconds, dt.timezone.utc).date()
+            return dt.datetime.fromtimestamp(seconds, ZoneInfo('Asia/Shanghai')).date()
         except (OverflowError, OSError, ValueError):
             return None
     match = re.search(r"\d{4}-\d{2}-\d{2}", str(value or ""))
@@ -370,6 +352,17 @@ def pdf_plain_text(data: bytes) -> str:
     """Read text from the embedded ToUnicode maps. Unmapped glyphs are dropped."""
     if not data.startswith(b"%PDF-"):
         return ""
+    if b'startxref' in data:
+        from pypdf import PdfReader
+        from pypdf.errors import PdfReadError
+
+        try:
+            reader = PdfReader(io.BytesIO(data))
+            text = _SPACE.sub(' ', ' '.join(page.extract_text() or '' for page in reader.pages)).strip()
+            if len(re.findall(r'[\u4e00-\u9fff]', text)) >= 20:
+                return text
+        except (PdfReadError, ValueError, TypeError):
+            pass
     objects = _pdf_objects(data)
     cmaps: dict[int, dict[int, str]] = {}
     for obj_id, body in objects.items():
@@ -447,6 +440,10 @@ def _load_or_fetch_pages(raw_root: Path, searchkey: str, start: dt.date, end: dt
 
 
 def bulletin_text(row: dict, session: Any, pdf_dir: Path | None = None) -> str:
+    if pdf_dir is not None:
+        cached_pdf = pdf_dir/f"{row.get('announcementId')}.pdf"
+        if cached_pdf.is_file():
+            return pdf_plain_text(cached_pdf.read_bytes())[:MAX_INPUT_CHARS]
     when = published_date(row.get("announcementTime"))
     try:
         response = session.post(
@@ -546,14 +543,31 @@ def build_events(
     ledger_root: Path = Path("artifacts/research/llm_ledger"),
     limit: int | None = None,
     workers: int = 4,
+    resume: bool = False,
+    collect_only: bool = False,
 ) -> dict[str, Any]:
     """Append raw pages, extract fields, and write versioned tables once."""
     if start > end:
         raise ValueError("start must not exceed end")
     raw_root = data_root / "raw"
     version = artifact_root / f"events_v0_{end.isoformat()}"
+    partition = end.strftime('%Y%m%d')
+    resumed_from = None
+    if resume:
+        previous = sorted(path for path in artifact_root.glob('events_v0_*/summary.json')
+                          if re.fullmatch(r'events_v0_\d{4}-\d{2}-\d{2}(?:_\d{8}T\d{6}_\d{6})?', path.parent.name)
+                          and path.parent.name[10:20] <= end.isoformat())
+        resumed_from = str(previous[-1]) if previous else None
+        stamp = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S_%f')
+        version = version.with_name(version.name+'_'+stamp)
+        partition += '_'+stamp
     if (version / "summary.json").exists():
         raise ValueError("event summary already exists")
+    targets = {name: data_root/'clean/events'/name/f'version={partition}'/'events.parquet'
+               for name in ('repurchase', 'insider_trading')}
+    for target in targets.values():
+        if target.exists():
+            raise ValueError(f'refuse to overwrite {target}')
     rates = load_pricing(pricing)
     cache = artifact_root / "events_v0_cache_v2"
     rows: list[dict] = []
@@ -566,6 +580,11 @@ def build_events(
         nonlocal calls
         identity = str(source.get("announcementId") or "")
         text_path = raw_root / "cninfo" / "events_v0_text_v2" / f"{identity}.txt"
+        recovered = text_path.is_file() and not text_path.stat().st_size
+        if recovered:
+            retries = text_path.parent/'retries'/identity
+            available = sorted((p for p in retries.glob('*.txt') if p.stat().st_size), reverse=True)
+            text_path = available[0] if available else retries/f'{partition}.txt'
         if not text_path.is_file():
             try:
                 _write_new(text_path, bulletin_text(
@@ -574,11 +593,15 @@ def build_events(
                 _write_new(text_path, "")
         excerpt = text_path.read_text(encoding="utf-8")[:MAX_INPUT_CHARS]
         cached = cache / f"{identity}.json"
+        if recovered and excerpt:
+            cached = cache/'recovered'/identity/(hashlib.sha256(excerpt.encode('utf-8')).hexdigest()+'.json')
         if cached.is_file():
             parsed = json.loads(cached.read_text(encoding="utf-8"))
         elif not excerpt:
             parsed = accept_extraction("", {"status": "unresolved"})
-            _write_new(cached, json.dumps(parsed, ensure_ascii=False))
+        elif collect_only:
+            # Keep text for a later budget window; no extraction result exists yet.
+            parsed = accept_extraction('', {'status': 'unresolved'})
         else:
             if _task_spend(ledger_root) >= TASK_BUDGET_USD:
                 return {"_stop": "budget"}
@@ -608,7 +631,6 @@ def build_events(
                     break
             if response is None:
                 parsed = accept_extraction("", {"status": "unresolved"})
-                _write_new(cached, json.dumps(parsed, ensure_ascii=False))
             else:
                 with calls_lock:
                     calls += 1
@@ -676,12 +698,16 @@ def build_events(
     counts = {}
     for name in ("repurchase", "insider_trading"):
         part = frame.filter(pl.col("family") == name)
-        folder = data_root / "clean" / "events" / name / "version=20261027"
-        target = folder / "events.parquet"
+        target = targets[name]
+        folder = target.parent
         if target.exists():
             raise ValueError(f"refuse to overwrite {target}")
         folder.mkdir(parents=True, exist_ok=True)
-        part.write_parquet(target)
+        try:
+            with target.open('xb') as handle:
+                part.write_parquet(handle)
+        except FileExistsError as exc:
+            raise ValueError(f'refuse to overwrite {target}') from exc
         unresolved = 0 if part.is_empty() else int((part["parse_status"] == "unresolved").sum())
         months = [] if part.is_empty() else sorted({f"{d.year:04d}-{d.month:02d}" for d in part["published"].to_list()})
         counts[name] = {"rows": part.height, "unresolved": unresolved,
@@ -693,13 +719,19 @@ def build_events(
         pool = parsed if parsed.height >= 50 else frame
         sample = pool.sample(n=min(50, pool.height), seed=20261027)
     sample_path = version / "sample50.csv"
-    sample.write_csv(sample_path)
+    with sample_path.open('x', encoding='utf-8', newline='') as handle:
+        sample.write_csv(handle)
     summary = {"start": str(start), "end": str(end), "stopped": stopped,
                "llm_calls": calls, "task_budget_usd": TASK_BUDGET_USD,
                "pricing_input_usd_per_million": rates["input_usd_per_million"],
                "tables": counts, "sample_rows": sample.height, "sample_path": str(sample_path),
                "evaluate_this_round": False}
-    (version / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    summary.update(collect_only=collect_only, partition=partition, resumed_from=resumed_from)
+    summary['publication_timezone'] = 'Asia/Shanghai'
+    summary['text_nonempty'] = sum(bool(row.get('excerpt')) for row in rows)
+    summary['text_unavailable'] = len(rows)-summary['text_nonempty']
+    with (version/'summary.json').open('x', encoding='utf-8') as handle:
+        handle.write(json.dumps(summary, ensure_ascii=False, indent=2))
     return summary
 
 
@@ -710,12 +742,15 @@ def main() -> None:
     parser.add_argument("--data-root", type=Path, default=Path("data"))
     parser.add_argument("--artifact-root", type=Path, default=Path("artifacts/data"))
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument('--resume', action='store_true', help='Reuse caches and publish a new immutable version')
+    parser.add_argument('--collect-only', action='store_true', help='Collect source text without LLM calls')
     args = parser.parse_args()
     from quant.llm import complete_messages
     import requests
     summary = build_events(start=args.start, end=args.end, data_root=args.data_root,
                            artifact_root=args.artifact_root, session=requests,
-                           complete=complete_messages, limit=args.limit)
+                           complete=complete_messages, limit=args.limit,
+                           resume=args.resume, collect_only=args.collect_only)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 

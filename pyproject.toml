@@ -22,6 +22,7 @@ dependencies = [
 [project.optional-dependencies]
 # 免费数据源(M1 里程碑);第三方 SDK 只允许在 data/connectors/ 内部 import
 data = [
+    "pypdf==6.10.0",
     "akshare>=1.14",
     "baostock>=0.8",
     "tushare>=1.2.10",

@@ -17,6 +17,7 @@ from quant.llm.budget import month_spend_usd, remaining_budget_usd
 _DELEGATE: dict[tuple[str, str], str] = {
     ("research", "q10-sizing"): "quant.research.q10_sizing",
     ("data", "refresh"): "quant.data.refresh",
+    ("data", "events-v0"): "quant.data.events_v0",
     ("data", "realtime"): "quant.data.realtime",
     ("data", "market-snapshot"): "quant.data.market_snapshot",
     ("research", "factor-family-states"): "quant.research.factor_family_states",
@@ -229,7 +230,7 @@ def main(argv: list[str] | None = None) -> int:
     intel.add_argument("--dry-run", action="store_true")
 
     data = sub.add_parser("data", help="数据刷新")
-    data.add_argument("command", choices=["refresh", "realtime", "market-snapshot", "minutes", "minute-history", "minute-factors", "baostock-history", "post-close-k1m", "latency", "stock-execution-open", "monthly-execution-open"])
+    data.add_argument("command", choices=["refresh", "events-v0", "realtime", "market-snapshot", "minutes", "minute-history", "minute-factors", "baostock-history", "post-close-k1m", "latency", "stock-execution-open", "monthly-execution-open"])
     factors = sub.add_parser("factors", help="因子计算")
     factors.add_argument("command", choices=["compute"])
     research = sub.add_parser("research", help="投研流水线")

@@ -83,15 +83,17 @@ def test_build_writes_both_tables_and_ledger_once(tmp_path):
         ledger_root=tmp_path / "ledger")
     assert calls["n"] == 1
     assert session.queries == ["回购实施", "股东减持", "股东增持"]
-    repurchase = pl.read_parquet(tmp_path / "data/clean/events/repurchase/version=20261027/events.parquet")
-    insider = pl.read_parquet(tmp_path / "data/clean/events/insider_trading/version=20261027/events.parquet")
+    repurchase = pl.read_parquet(tmp_path / "data/clean/events/repurchase/version=20240131/events.parquet")
+    insider = pl.read_parquet(tmp_path / "data/clean/events/insider_trading/version=20240131/events.parquet")
     assert repurchase.height == 1 and insider.height == 0
     assert repurchase["known_at"][0] == repurchase["published"][0] == dt.date(2024, 1, 1)
     assert repurchase["parse_status"][0] == "parsed"
     assert summary["tables"]["repurchase"]["unresolved_ratio"] == 0
     text = (tmp_path / "artifacts/events_v0_2024-01-31/sample50.csv").read_text(encoding="utf-8")
     assert "human_label" in text
-    ledger = (tmp_path / "ledger/2026-10.jsonl").read_text(encoding="utf-8")
+    ledger_files = list((tmp_path/'ledger').glob('*.jsonl'))
+    assert len(ledger_files) == 1
+    ledger = ledger_files[0].read_text(encoding="utf-8")
     row = json.loads(ledger)
     assert row["task"] == "event_extract" and row["usd"] > 0
     cache_file = next((tmp_path / "artifacts" / "events_v0_cache_v2").glob("*.json"))
@@ -110,7 +112,7 @@ def test_build_writes_both_tables_and_ledger_once(tmp_path):
 
 
 def test_existing_table_is_not_overwritten(tmp_path):
-    target = tmp_path / "data/clean/events/repurchase/version=20261027/events.parquet"
+    target = tmp_path / "data/clean/events/repurchase/version=20240131/events.parquet"
     target.parent.mkdir(parents=True)
     target.write_bytes(b"keep")
     try:
@@ -124,6 +126,87 @@ def test_existing_table_is_not_overwritten(tmp_path):
     else:
         raise AssertionError("overwrite was allowed")
     assert target.read_bytes() == b"keep"
+
+
+def _build_fixture(root, **options):
+    defaults = dict(start=dt.date(2024, 1, 1), end=dt.date(2024, 1, 31),
+        data_root=root/'data', artifact_root=root/'artifacts',
+        session=Session('<p>本次回购金额1000万元，占总股本1.2%，期限3个月。</p>'),
+        complete=_complete, pricing=root/'pricing.toml', ledger_root=root/'ledger', workers=1)
+    if not defaults['pricing'].exists():
+        _pricing(defaults['pricing'])
+    defaults.update(options)
+    return build_events(**defaults)
+
+
+def test_collect_only_can_resume_extraction_without_overwriting_or_poisoning_cache(tmp_path):
+    import hashlib
+
+    def forbidden(*args):
+        raise AssertionError('collect-only invoked the LLM')
+
+    first = _build_fixture(tmp_path, collect_only=True, complete=forbidden)
+    old_paths = [Path(row['path']) for row in first['tables'].values()]
+    old_paths.append(tmp_path/'artifacts/events_v0_2024-01-31/sample50.csv')
+    old_paths.append(tmp_path/'artifacts/events_v0_2024-01-31/summary.json')
+    before = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in old_paths}
+    assert first['collect_only'] and first['llm_calls'] == 0
+    assert not (tmp_path/'artifacts/events_v0_cache_v2/a1.json').exists()
+    assert not list((tmp_path/'ledger').glob('*.jsonl'))
+    second = _build_fixture(tmp_path, resume=True)
+    assert second['llm_calls'] == 1 and second['partition'] != first['partition']
+    assert Path(second['resumed_from']).parent.name == 'events_v0_2024-01-31'
+    assert second['tables']['repurchase']['rows'] == 1
+    assert all(hashlib.sha256(Path(p).read_bytes()).hexdigest() == digest for p, digest in before.items())
+
+    class Offline:
+        def post(self, *args, **kwargs):
+            raise AssertionError('cached resume requested network')
+
+    third = _build_fixture(tmp_path, resume=True, complete=forbidden, session=Offline())
+    assert third['llm_calls'] == 0
+    assert third['partition'] not in (first['partition'], second['partition'])
+
+
+def test_budget_stop_resumes_from_cached_raw_into_a_new_version(tmp_path, monkeypatch):
+    monkeypatch.setattr('quant.data.events_v0._task_spend', lambda *_: 5.)
+    first = _build_fixture(tmp_path)
+    assert first['stopped'] == 'budget' and first['tables']['repurchase']['rows'] == 0
+    original = Path(first['tables']['repurchase']['path']).read_bytes()
+    monkeypatch.setattr('quant.data.events_v0._task_spend', lambda *_: 0.)
+    second = _build_fixture(tmp_path, resume=True)
+    assert second['stopped'] is None and second['llm_calls'] == 1
+    assert second['tables']['repurchase']['rows'] == 1
+    assert Path(first['tables']['repurchase']['path']).read_bytes() == original
+
+
+def test_existing_partition_rejection_precedes_network_and_llm(tmp_path):
+    target = tmp_path/'data/clean/events/insider_trading/version=20240131/events.parquet'
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b'unchanged')
+    class Forbidden:
+        def post(self, *args, **kwargs):
+            raise AssertionError('should reject before network')
+    import pytest
+    with pytest.raises(ValueError, match='overwrite'):
+        _build_fixture(tmp_path, session=Forbidden())
+    assert target.read_bytes() == b'unchanged'
+
+
+def test_empty_text_can_retry_without_overwriting_original_raw(tmp_path):
+    from unittest.mock import patch
+
+    with patch('quant.data.events_v0.bulletin_text', return_value=''):
+        first = _build_fixture(tmp_path, collect_only=True)
+    original = tmp_path/'data/raw/cninfo/events_v0_text_v2/a1.txt'
+    assert original.read_bytes() == b''
+    assert not (tmp_path/'artifacts/events_v0_cache_v2/a1.json').exists()
+    second = _build_fixture(tmp_path, resume=True)
+    assert second['llm_calls'] == 1
+    assert original.read_bytes() == b''
+    retry = list((original.parent/'retries/a1').glob('*.txt'))
+    assert len(retry) == 1 and retry[0].stat().st_size > 0
+    assert first['partition'] != second['partition']
 
 
 def test_retryable_llm_disconnect_stays_unresolved(tmp_path, monkeypatch):
@@ -140,12 +223,101 @@ def test_retryable_llm_disconnect_stays_unresolved(tmp_path, monkeypatch):
         pricing=_pricing(tmp_path / "pricing.toml"), ledger_root=tmp_path / "ledger")
     assert summary["stopped"] is None
     assert summary["llm_calls"] == 0
-    frame = pl.read_parquet(tmp_path / "data/clean/events/repurchase/version=20261027/events.parquet")
+    assert not (tmp_path/'artifacts/events_v0_cache_v2/a1.json').exists()
+    frame = pl.read_parquet(tmp_path / "data/clean/events/repurchase/version=20240131/events.parquet")
     assert frame["parse_status"][0] == "unresolved"
     text = Path("configs/research/event_family_v1.toml").read_text(encoding="utf-8")
     assert "evaluate_this_round = false" in text
     assert "event_extract" in text
     assert "repurchase_strength_90d" in text
+
+
+def test_unified_cli_preserves_resume_and_text_only_flags(monkeypatch):
+    from quant import cli
+    seen = []
+    monkeypatch.setattr(cli, '_delegate', lambda module, args: seen.append((module, args)) or 0)
+    args = ['--from', '2019-01-01', '--to', '2026-10-30', '--resume', '--collect-only']
+    assert cli.main(['data', 'events-v0', *args]) == 0
+    assert seen == [('quant.data.events_v0', args)]
+
+
+def test_real_unified_cli_resumes_offline_with_canonical_schema(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    _build_fixture(tmp_path, collect_only=True)
+    env = os.environ.copy()
+    env.update(PYTHONPATH=str(Path(__file__).resolve().parents[2]/'src'),
+               HTTP_PROXY='http://127.0.0.1:9', HTTPS_PROXY='http://127.0.0.1:9',
+               ALL_PROXY='http://127.0.0.1:9')
+    command = [sys.executable, '-m', 'quant', 'data', 'events-v0',
+        '--from', '2024-01-01', '--to', '2024-01-31', '--resume', '--collect-only',
+        '--data-root', str(tmp_path/'data'), '--artifact-root', str(tmp_path/'artifacts')]
+    result = subprocess.run(command, env=env, capture_output=True, text=True,
+                            encoding='utf-8', errors='replace', timeout=60)
+    assert result.returncode == 0, result.stderr
+    paths = list((tmp_path/'artifacts').glob('events_v0_2024-01-31_*/summary.json'))
+    assert len(paths) == 1
+    summary = json.loads(paths[0].read_text(encoding='utf-8'))
+    assert summary['collect_only'] and summary['llm_calls'] == 0
+    assert summary['tables']['repurchase']['rows'] == 1
+
+
+def test_valid_pdf_cid_font_alias_keeps_chinese_and_amount_digits():
+    import io
+    from pypdf import PdfWriter
+    from pypdf.generic import (ArrayObject, DecodedStreamObject, DictionaryObject,
+                              NameObject, NumberObject, TextStringObject)
+    from quant.data.events_v0 import pdf_plain_text
+
+    text = '公司股份回购实施进展公告本次已实际支付回购总金额为1,234,567.89元。'
+    chars = sorted(set(text))
+    cmap = ('/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n'
+        '1 begincodespacerange <0000> <FFFF> endcodespacerange\n'
+        +str(len(chars))+' beginbfchar\n'
+        +'\n'.join(f'<{ord(c):04X}> <{ord(c):04X}>' for c in chars)
+        +'\nendbfchar endcmap end end').encode()
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=600, height=800)
+    unicode_map = DecodedStreamObject(); unicode_map.set_data(cmap)
+    cid = DictionaryObject({NameObject('/Type'): NameObject('/Font'),
+        NameObject('/Subtype'): NameObject('/CIDFontType0'), NameObject('/BaseFont'): NameObject('/STSong-Light'),
+        NameObject('/CIDSystemInfo'): DictionaryObject({NameObject('/Registry'): TextStringObject('Adobe'),
+            NameObject('/Ordering'): TextStringObject('Identity'), NameObject('/Supplement'): NumberObject(0)})})
+    font = DictionaryObject({NameObject('/Type'): NameObject('/Font'),
+        NameObject('/Subtype'): NameObject('/Type0'), NameObject('/BaseFont'): NameObject('/STSong-Light'),
+        NameObject('/Encoding'): NameObject('/Identity-H'),
+        NameObject('/DescendantFonts'): ArrayObject([writer._add_object(cid)]),
+        NameObject('/ToUnicode'): writer._add_object(unicode_map)})
+    page[NameObject('/Resources')] = DictionaryObject({NameObject('/Font'):
+        DictionaryObject({NameObject('/C2_0'): writer._add_object(font)})})
+    stream = DecodedStreamObject()
+    stream.set_data(('BT /C2_0 12 Tf 10 100 Td <'+text.encode('utf-16-be').hex()+'> Tj ET').encode())
+    page[NameObject('/Contents')] = writer._add_object(stream)
+    output = io.BytesIO(); writer.write(output)
+    assert pdf_plain_text(output.getvalue()) == text
+
+
+def test_bulletin_reuses_cached_pdf_before_requesting_network(tmp_path, monkeypatch):
+    from quant.data.events_v0 import bulletin_text
+    cached = tmp_path/'a1.pdf'
+    cached.write_bytes(b'cached original source')
+    def extract(data):
+        assert data == b'cached original source'
+        return '公司股份回购实施公告已支付金额1000万元。'
+    monkeypatch.setattr('quant.data.events_v0.pdf_plain_text', extract)
+    class Offline:
+        def post(self, *args, **kwargs): raise AssertionError('unexpected network')
+        def get(self, *args, **kwargs): raise AssertionError('unexpected download')
+    assert bulletin_text({'announcementId': 'a1'}, Offline(), tmp_path) == extract(cached.read_bytes())
+
+
+def test_publication_timestamp_uses_shanghai_day_at_midnight_boundary():
+    from quant.data.events_v0 import published_date
+    midnight = dt.datetime(2023, 12, 31, 16, tzinfo=dt.timezone.utc)
+    for value in (midnight, midnight.timestamp(), midnight.timestamp()*1000):
+        assert published_date(value) == dt.date(2024, 1, 1)
 
 
 def test_pdf_text_uses_tounicode_and_ignores_unmapped_glyphs():
