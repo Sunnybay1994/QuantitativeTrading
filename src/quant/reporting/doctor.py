@@ -368,6 +368,10 @@ def collect(
     from quant.reporting.doctor_intraday_acceptance import evaluate
 
     coverage['five_sessions'] = evaluate(root, coverage['rows'], clock)
+    from quant.reporting.doctor_events_acceptance import evaluate as evaluate_events
+
+    events = evaluate_events(root, today)
+    red.extend('events: '+error for error in events['errors'])
     if coverage['five_sessions']['calendar_gate_met'] and not coverage['five_sessions']['coverage_passed']:
         red.append('coverage: D1 requires five verified consecutive sessions per market')
     latest: dict[str, dict] = {}
@@ -398,6 +402,7 @@ def collect(
         "git": git_facts,
         "tests": tests,
         "coverage": coverage,
+        "events": events,
         "paused_pools": paused_pools,
     }
 
@@ -453,6 +458,9 @@ def render_markdown(report: dict) -> str:
         from quant.reporting.doctor_intraday_acceptance import markdown
 
         lines.extend(markdown(coverage['five_sessions']))
+    from quant.reporting.doctor_events_acceptance import markdown as events_markdown
+
+    lines.extend(events_markdown(report.get('events') or {}))
     return "\n".join(lines)
 
 
