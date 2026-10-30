@@ -36,12 +36,13 @@ def _replace_report(temporary: Path, target: Path) -> None:
 def write_daily_report(record: dict[str, Any], output: Path) -> None:
     """Keep one readable summary beside the detailed stage artifacts."""
     names = {'calendar': '交易日历', 'model': '模型预测', 'refresh': '输入质量',
+        'q10_pair_month': 'Q10与影子配对月报',
         'b20': 'B20六账户', 'b16_manual': 'B16人工延迟模拟', 'b32': 'B32双账户', 'monthly': '月报',
         'risk': '订单风险', 'signal_monitor': '滚动信号监控', 'forward_tracking': '前向账户与影子滑点',
         'q10_monthly': 'Q10月度记录', 'candidate_forward': '冻结候选前向信号',
         'candidate_scoring': '候选成熟月度评分'}
     statuses = {'complete': '完成', 'incomplete': '未完成', 'failed': '失败',
-                'running': '进行中', 'skipped': '跳过'}
+                'running': '进行中', 'skipped': '跳过', 'waiting': '等待样本'}
     lines = [f"# 日更记录：{record['as_of'] or record['requested_to']}", '',
         f"模式：{'历史演练' if record['rehearsal'] else '前向记录'}；"
         f"数据：{'已保存本地数据' if record['saved_data'] else '本次刷新'}；自动交易：关闭。", '',
@@ -49,7 +50,10 @@ def write_daily_report(record: dict[str, Any], output: Path) -> None:
     for name, stage in record['stages'].items():
         seconds = stage.get('elapsed_seconds')
         duration = f'{seconds:.1f}' if seconds is not None else '—'
-        lines.append(f"|{names.get(name, name)}|{statuses.get(stage['status'], stage['status'])}|{duration}|")
+        display = stage['status']
+        if display == 'complete' and stage.get('result', {}).get('status') == 'waiting':
+            display = 'waiting'
+        lines.append(f"|{names.get(name, name)}|{statuses.get(display, display)}|{duration}|")
     model = record['stages'].get('model', {}).get('result', {})
     errors = model.get('input_errors', [])
     if model:
@@ -245,19 +249,22 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
                     lambda value: value.get('as_of') == date and value.get('shadow') is True
                     and value.get('counts_toward_account_limit') is False)
                 def pair_month() -> dict:
-                    from quant.reporting.q10_forward_rules import write_two_account_month
+                    from quant.reporting.q10_forward_rules import InsufficientMonthlySample, write_two_account_month
                     try:
                         return write_two_account_month(
                             q10_output=Path(settings['q10']['output']),
                             shadow_output=Path(shadow_cfg['output']),
                             rules_path=Path(shadow_cfg['forward_rules']),
-                            stem=output/'monthly'/f'{date:%Y-%m}_q10_and_shadow',
+                            stem=output/'monthly'/f'{end:%Y-%m}_q10_and_shadow',
                             data_root=data_root,
                         )
-                    except (OSError, ValueError) as exc:
-                        return {'status': 'waiting', 'reason': f'{type(exc).__name__}: {exc}'}
+                    except InsufficientMonthlySample as exc:
+                        return {'status': 'waiting', 'reason_code': 'insufficient_monthly_sample',
+                                'reason': str(exc)}
                 stage('q10_pair_month', pair_month,
-                      lambda value: value.get('status') in ('complete', 'waiting'))
+                      lambda value: value.get('status') == 'complete' or (
+                          value.get('status') == 'waiting'
+                          and value.get('reason_code') == 'insufficient_monthly_sample'))
         stages['refresh'] = {'status': 'complete' if refresh_ok else 'failed',
                              'mode': 'saved_data' if saved_data else 'refresh',
                              'input_errors': refresh_errors,

@@ -271,6 +271,16 @@ def collect(
                 execution = _read_json(daily_dir/'scheduler.json') or {}
                 if execution.get('exit_code') != 0:
                     daily_error = 'observation process did not finish successfully'
+            pair = (summary.get('stages') or {}).get('q10_pair_month')
+            if not daily_error and pair is not None:
+                pair_result = pair.get('result') or {}
+                if pair.get('status') != 'complete':
+                    daily_error = 'pair month stage did not complete'
+                elif pair_result.get('status') == 'waiting':
+                    if pair_result.get('reason_code') != 'insufficient_monthly_sample':
+                        daily_error = 'pair month waiting reason is not verified'
+                elif pair_result.get('status') != 'complete':
+                    daily_error = 'pair month result did not complete'
             if daily_error and summary:
                 daily_status = 'invalid_record'
     q10_state = None

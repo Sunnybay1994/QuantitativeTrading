@@ -14,6 +14,10 @@ from quant.data.equal_weight_index import load_return_benchmarks
 from quant.research.rolling_excess_diagnostics import monthly_excess_series, rolling_excess_diagnostics
 
 
+class InsufficientMonthlySample(ValueError):
+    """No month return can yet be measured from the available NAV boundaries."""
+
+
 def rules_sha256(config: Path) -> str:
     return hashlib.sha256(config.read_bytes()).hexdigest()
 
@@ -228,11 +232,24 @@ def write_two_account_month(
         if not snapshots:
             raise ValueError(f"missing paper snapshots: {folder}")
         state = json.loads(snapshots[-1].read_text(encoding="utf-8"))
-        return pl.DataFrame(state["nav"]).with_columns(pl.col("date").str.to_date())
+        nav = pl.DataFrame(state["nav"]).with_columns(pl.col("date").str.to_date())
+        value = 'unit_nav' if 'unit_nav' in nav.columns else 'equity'
+        if (nav.is_empty() or nav['date'].null_count() or not nav['date'].is_sorted()
+                or nav['date'].n_unique() != nav.height
+                or nav[value].null_count() or not nav[value].is_finite().all()
+                or (nav[value] <= 0).any()):
+            raise ValueError(f"invalid paper NAV: {folder}")
+        return nav
 
     q10_nav = nav_of(q10_output)
     shadow_nav = nav_of(shadow_output)
     as_of = q10_nav["date"].max()
+    if shadow_nav['date'].max() != as_of:
+        raise ValueError('Q10 and shadow NAV cutoffs differ')
+    month_start = as_of.replace(day=1)
+    for name, nav in (('q10', q10_nav), ('shadow', shadow_nav)):
+        if not (nav['date'] < month_start).any():
+            raise InsufficientMonthlySample(f'{name}: no NAV boundary before {month_start}')
     benchmarks = load_return_benchmarks(
         config=Path(rules.get("return_benchmark_config", "configs/data/return_benchmarks_q1b_20260912.toml")),
         data_root=data_root,
