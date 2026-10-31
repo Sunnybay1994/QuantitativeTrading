@@ -234,6 +234,31 @@ def _coverage(path: Path) -> dict:
     return {"missing": False, "rows": list(payload.get("rows") or [])}
 
 
+def _post_close_scheduler(path: Path, clock: dt.datetime) -> dict:
+    """Flag silent post-close yields: deferred* with exit 0 used to hide missed US sessions."""
+    payload = _read_json(path) or {}
+    status = payload.get("status")
+    result = {"path": str(path), "status": status, "updated_at": payload.get("updated_at"),
+              "markets": payload.get("markets"), "red": None}
+    if status not in ("deferred", "deferred_timeout", "deferred_waiting"):
+        return result
+    updated = payload.get("updated_at")
+    try:
+        when = dt.datetime.fromisoformat(str(updated).replace("Z", "+00:00"))
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=SHANGHAI)
+        age_hours = (clock - when.astimezone(SHANGHAI)).total_seconds() / 3600
+    except (TypeError, ValueError):
+        age_hours = None
+    # Active wait is informational; terminal defer within 36h is a red item.
+    if status == "deferred_waiting":
+        return result
+    if age_hours is None or age_hours <= 36:
+        markets = payload.get("markets") or "?"
+        result["red"] = f"post_close: scheduler {status} markets={markets}"
+    return result
+
+
 def collect(
     *,
     root: Path | None = None,
@@ -392,6 +417,10 @@ def collect(
     paused_pools = paused_pool_names(root, today)
     for name in paused_pools:
         red.append(f"pool: {name} paused, no consumer for 60 days")
+    post_close_scheduler = _post_close_scheduler(
+        artifacts / "post_close_k1m" / "scheduler" / "scheduler.json", clock)
+    if post_close_scheduler.get("red"):
+        red.append(post_close_scheduler["red"])
     return {
         "generated_at": clock.isoformat(),
         "date": today.isoformat(),
@@ -409,6 +438,7 @@ def collect(
         "coverage": coverage,
         "events": events,
         "paused_pools": paused_pools,
+        "post_close_scheduler": post_close_scheduler,
     }
 
 

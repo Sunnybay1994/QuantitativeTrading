@@ -126,6 +126,24 @@ def test_running_scheduled_task_is_not_red(tmp_path, monkeypatch):
     assert not any("ContinuousMining" in item for item in report["red"])
 
 
+def test_post_close_deferred_timeout_is_red(tmp_path, monkeypatch):
+    root = _tree(tmp_path)
+    path = root / "artifacts/post_close_k1m/scheduler/scheduler.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({
+        "status": "deferred_timeout",
+        "markets": "us",
+        "updated_at": NOW.isoformat(),
+        "reason": "writer busy",
+    }), encoding="utf-8")
+    monkeypatch.setattr("quant.reporting.doctor._git_facts", lambda _: {
+        "dirty": 0, "days_since_commit": 0, "root_scratch_py": 0, "git_ok": True,
+    })
+    report = collect(root=root, now=NOW, tasks=[{"name": "daily", "result": 0}])
+    assert any("post_close: scheduler deferred_timeout" in item for item in report["red"])
+    assert report["post_close_scheduler"]["status"] == "deferred_timeout"
+
+
 def test_daily_receipt_ignores_logs_and_waiting_sidecars(tmp_path, monkeypatch):
     root = _tree(tmp_path)
     folder = root / 'artifacts/daily/sue_v2'
