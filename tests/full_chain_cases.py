@@ -340,3 +340,26 @@ FULL_CHAIN_CASES.update({
         'test_wrong_development_key_fails_before_worker',
     },
 })
+
+# Provider producer fixtures persist G1 and snapshot before testing G3.
+FULL_CHAIN_CASES.update({
+    'test_m3_provider_materialization.py': {
+        'test_development_output_rejects_symlinked_parent_before_execution',
+        'test_development_provider_build_manifest_and_receipt_closed_loop',
+        'test_dump_tool_hardlink_still_rejected_by_read_regular',
+        'test_dump_tool_spec_must_be_bound_to_loaded_config_before_execution',
+        'test_formal_entry_rejects_development_before_subprocess',
+        'test_inspector_rejects_bin_contract_drift',
+        'test_missing_runtime_package_is_sanitized_before_execution',
+        'test_nonzero_dump_still_invokes_static_inspector',
+        'test_python_executable_guard_closes_handle_on_dump_failure',
+        'test_python_executable_relative_path_rejected',
+        'test_python_executable_same_bytes_copy_rejected',
+        'test_python_executable_symlink_rejected',
+        'test_receipt_rejects_correct_suffix_in_decoy_root_alias',
+        'test_receipt_rejects_request_and_snapshot_receipt_wrong_paths',
+        'test_receipt_rejects_same_bytes_from_wrong_output_path',
+        'test_windows_current_conda_python_nlink2_focused_materialization',
+        'test_windows_python_guard_blocks_hostile_third_hardlink_mutations',
+    },
+})
