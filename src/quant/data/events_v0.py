@@ -756,13 +756,18 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument('--resume', action='store_true', help='Reuse caches and publish a new immutable version')
     parser.add_argument('--collect-only', action='store_true', help='Collect source text without LLM calls')
+    parser.add_argument('--workers', type=int, default=4,
+                        help='Thread pool size for PDF/text collection and extraction (default 4)')
     args = parser.parse_args()
+    if args.workers < 1:
+        raise SystemExit('--workers must be >= 1')
     from quant.llm import complete_messages
     import requests
     summary = build_events(start=args.start, end=args.end, data_root=args.data_root,
                            artifact_root=args.artifact_root, session=requests,
                            complete=complete_messages, limit=args.limit,
-                           resume=args.resume, collect_only=args.collect_only)
+                           workers=args.workers, resume=args.resume,
+                           collect_only=args.collect_only)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 

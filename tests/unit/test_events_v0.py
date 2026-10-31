@@ -236,7 +236,8 @@ def test_unified_cli_preserves_resume_and_text_only_flags(monkeypatch):
     from quant import cli
     seen = []
     monkeypatch.setattr(cli, '_delegate', lambda module, args: seen.append((module, args)) or 0)
-    args = ['--from', '2019-01-01', '--to', '2026-10-30', '--resume', '--collect-only']
+    args = ['--from', '2019-01-01', '--to', '2026-10-30', '--resume', '--collect-only',
+            '--workers', '8']
     assert cli.main(['data', 'events-v0', *args]) == 0
     assert seen == [('quant.data.events_v0', args)]
 
