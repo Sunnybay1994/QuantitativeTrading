@@ -311,11 +311,16 @@ def collect(
     scheduled = []
     for row in tasks:
         result = row.get("result")
+        state = row.get("state")
+        # A live run is not a failed completion; ContinuousMining often shows
+        # ERROR_INVALID_STATE / SCHED_S_TASK_RUNNING while the worker holds the slot.
+        running = isinstance(state, str) and state.lower() == "running"
         scheduled.append({
             "name": row.get("name"),
+            "state": state,
             "last_run_time": row.get("last_run_time"),
             "result": result,
-            "ok": result == 0,
+            "ok": result == 0 or running,
             "error": row.get("error"),
         })
     mining = _mining(artifacts / "research" / "continuous", today)

@@ -111,6 +111,21 @@ def test_known_failures_are_red(tmp_path, monkeypatch):
     assert len(report["red"]) >= 5
 
 
+def test_running_scheduled_task_is_not_red(tmp_path, monkeypatch):
+    root = _tree(tmp_path)
+    monkeypatch.setattr("quant.reporting.doctor._git_facts", lambda _: {
+        "dirty": 0, "days_since_commit": 0, "root_scratch_py": 0, "git_ok": True,
+    })
+    report = collect(root=root, now=NOW, tasks=[{
+        "name": "QuantitativeTrading-ContinuousMining",
+        "state": "Running",
+        "last_run_time": NOW.isoformat(),
+        "result": 2147946720,
+    }])
+    assert report["scheduled_tasks"][0]["ok"] is True
+    assert not any("ContinuousMining" in item for item in report["red"])
+
+
 def test_daily_receipt_ignores_logs_and_waiting_sidecars(tmp_path, monkeypatch):
     root = _tree(tmp_path)
     folder = root / 'artifacts/daily/sue_v2'
