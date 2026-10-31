@@ -418,3 +418,22 @@ def test_load_or_fetch_pages_retries_announcement_set_changed(tmp_path, monkeypa
     assert [row['announcementId'] for row in rows] == ['new']
     done = tmp_path / 'cninfo' / 'events_v0_index' / '回购实施' / '2022-02-01_2022-02-28' / 'done.json'
     assert done.is_file()
+
+def test_load_or_fetch_pages_bisects_when_retries_exhaust(tmp_path, monkeypatch):
+    from quant.data import events_v0
+    from quant.data.connectors.cninfo_announcements import AnnouncementSetChanged
+    calls = []
+
+    def pages(start, end, **kwargs):
+        calls.append((start, end))
+        if start != end:
+            yield {'wide': True}, [{'announcementId': f'{start}-{end}'}]
+            raise AnnouncementSetChanged('announcement count changed during pagination; retry window')
+        yield {'day': str(start)}, [{'announcementId': str(start)}]
+
+    monkeypatch.setattr(events_v0, 'announcement_pages', pages)
+    monkeypatch.setattr(events_v0.time, 'sleep', lambda seconds: None)
+    rows = events_v0._load_or_fetch_pages(
+        tmp_path, '回购实施', dt.date(2022, 2, 1), dt.date(2022, 2, 2), session=None)
+    assert [row['announcementId'] for row in rows] == ['2022-02-01', '2022-02-02']
+    assert (dt.date(2022, 2, 1), dt.date(2022, 2, 2)) in calls

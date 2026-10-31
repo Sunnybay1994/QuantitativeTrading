@@ -432,7 +432,7 @@ def _load_or_fetch_pages(raw_root: Path, searchkey: str, start: dt.date, end: dt
         for path in sorted(folder.glob("page_*.json")):
             rows.extend(json.loads(path.read_text(encoding="utf-8"))["rows"])
         return rows
-    for attempt in range(3):
+    for attempt in range(5):
         collected = []
         try:
             for page, (params, rows) in enumerate(
@@ -450,9 +450,17 @@ def _load_or_fetch_pages(raw_root: Path, searchkey: str, start: dt.date, end: dt
         except AnnouncementSetChanged:
             for path in folder.glob("page_*.json"):
                 path.unlink(missing_ok=True)
-            if attempt == 2:
+            if attempt < 4:
+                time.sleep(2 * (attempt + 1))
+                continue
+            # Month-sized windows can churn mid-pagination; bisect until single-day.
+            if start >= end:
                 raise
-            time.sleep(2 * (attempt + 1))
+            mid = start + (end - start) // 2
+            left = _load_or_fetch_pages(raw_root, searchkey, start, mid, session)
+            right = _load_or_fetch_pages(raw_root, searchkey, mid + dt.timedelta(days=1),
+                                         end, session)
+            return left + right
     return []
 
 
