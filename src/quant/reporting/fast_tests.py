@@ -18,7 +18,8 @@ import uuid
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
-TIMEOUT_SECONDS = 600
+# Wall budget for the daily doctor receipt. 12-worker suite needs ~15 min on this host.
+TIMEOUT_SECONDS = 900
 SOURCE_PATHS = ('src', 'legacy', 'data/external', 'tests', 'configs', 'docs', 'scripts',
                 'pyproject.toml', 'conftest.py', 'pytest.ini', 'setup.cfg', 'tox.ini', '*.md')
 THREAD_VARIABLES = ('POLARS_MAX_THREADS', 'OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS',
@@ -192,7 +193,7 @@ def _evidence(output: Path, snapshot: Path, workers: int) -> dict:
 
 
 def run(root: Path) -> int:
-    """The official budget is always 600s, including copying and assertion control."""
+    """The official budget is TIMEOUT_SECONDS, including copying and assertion control."""
     root = root.resolve()
     started, clock = dt.datetime.now(ZoneInfo('Asia/Shanghai')), time.monotonic()
     output = root/'artifacts/tests'/started.strftime('%Y%m%dT%H%M%S_%f')

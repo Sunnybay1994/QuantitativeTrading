@@ -28,7 +28,8 @@ def item_id(source: str, url: str) -> str:
 
 def fetch_arxiv(
     *,
-    category: str = "cat:q-fin.ST+OR+cat:q-fin.PM+OR+cat:q-fin.TR",
+    # Spaces become '+'; literal '+OR+' would be percent-encoded and match nothing.
+    category: str = "cat:q-fin.ST OR cat:q-fin.PM OR cat:q-fin.TR",
     limit: int = 20,
     getter: Fetcher | None = None,
 ) -> list[dict[str, Any]]:

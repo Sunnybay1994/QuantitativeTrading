@@ -22,6 +22,18 @@ def test_arxiv_parser():
     assert "reversal" in items[0]["title"].lower()
 
 
+def test_arxiv_query_uses_spaces_for_or(monkeypatch):
+    seen = {}
+
+    def capture(url: str) -> str:
+        seen["url"] = url
+        return ATOM
+
+    fetch_arxiv(getter=capture, limit=1)
+    assert "search_query=cat%3Aq-fin.ST+OR+cat%3Aq-fin.PM+OR+cat%3Aq-fin.TR" in seen["url"]
+    assert "%2BOR%2B" not in seen["url"]
+
+
 def test_extract_keeps_valid_dsl_and_drops_python():
     items = [{"id": "abcd1234efgh0000", "source": "arxiv", "title": "x", "summary": "y"}]
     accepted, rejected = extract_candidates(

@@ -111,9 +111,9 @@ def run_intel(
     config = _load_toml(root / (config_path or DEFAULT_CONFIG))
     week = iso_week()
     if dry_run:
-        digest = _digest(week, [], [], [], None)
+        # Do not write an empty digest over a real weekly product.
         return {"week": week, "items": 0, "accepted": 0, "rejected": 0,
-                "digest": str(digest), "queue": None, "dry_run": True}
+                "digest": None, "queue": None, "dry_run": True}
     items = collect(config, getter=getter)
     seen = _load_seen(week)
     fresh = [row for row in items if row["id"] not in seen]
