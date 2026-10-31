@@ -19,7 +19,9 @@ from zoneinfo import ZoneInfo
 
 import polars as pl
 
-from quant.data.connectors.cninfo_announcements import announcement_pages, download_document
+from quant.data.connectors.cninfo_announcements import (
+    AnnouncementSetChanged, announcement_pages, download_document)
+
 from quant.factors.forecast_text_score import strict_json
 from quant.llm.pricing import load_pricing
 from quant.data.events_v0_schema import EventV0Schema
@@ -430,14 +432,28 @@ def _load_or_fetch_pages(raw_root: Path, searchkey: str, start: dt.date, end: dt
         for path in sorted(folder.glob("page_*.json")):
             rows.extend(json.loads(path.read_text(encoding="utf-8"))["rows"])
         return rows
-    collected = []
-    for page, (params, rows) in enumerate(
-            announcement_pages(start, end, category="", searchkey=searchkey, session=session), 1):
-        _write_new(_index_path(raw_root, searchkey, start, end, page),
-                   json.dumps({"parameters": params, "rows": rows}, ensure_ascii=False))
-        collected.extend(rows)
-    _write_new(done, json.dumps({"rows": len(collected)}))
-    return collected
+    for attempt in range(3):
+        collected = []
+        try:
+            for page, (params, rows) in enumerate(
+                    announcement_pages(start, end, category="", searchkey=searchkey,
+                                       session=session), 1):
+                target = _index_path(raw_root, searchkey, start, end, page)
+                # Replace any partial page from a prior failed pagination attempt.
+                if target.is_file():
+                    target.unlink()
+                _write_new(target, json.dumps({"parameters": params, "rows": rows},
+                                              ensure_ascii=False))
+                collected.extend(rows)
+            _write_new(done, json.dumps({"rows": len(collected)}))
+            return collected
+        except AnnouncementSetChanged:
+            for path in folder.glob("page_*.json"):
+                path.unlink(missing_ok=True)
+            if attempt == 2:
+                raise
+            time.sleep(2 * (attempt + 1))
+    return []
 
 
 def bulletin_text(row: dict, session: Any, pdf_dir: Path | None = None) -> str:

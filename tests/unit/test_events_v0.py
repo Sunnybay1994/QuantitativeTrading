@@ -399,3 +399,22 @@ def test_unexecuted_reduction_is_not_a_sell():
         "parse_status": "parsed", "direction": "sell",
         "evidence": "累计减持公司股份0股，占公司总股本的0%；本次减持股份计划已届满，未减持公司股份。"})
     assert zero["direction"] is None
+
+def test_load_or_fetch_pages_retries_announcement_set_changed(tmp_path, monkeypatch):
+    from quant.data import events_v0
+    from quant.data.connectors.cninfo_announcements import AnnouncementSetChanged
+    attempts = []
+
+    def pages(start, end, **kwargs):
+        attempts.append(1)
+        yield {'page': len(attempts)}, [{'announcementId': 'old' if len(attempts) == 1 else 'new'}]
+        if len(attempts) == 1:
+            raise AnnouncementSetChanged('announcement count changed during pagination; retry window')
+
+    monkeypatch.setattr(events_v0, 'announcement_pages', pages)
+    monkeypatch.setattr(events_v0.time, 'sleep', lambda seconds: None)
+    rows = events_v0._load_or_fetch_pages(tmp_path, '回购实施', dt.date(2022, 2, 1), dt.date(2022, 2, 28), session=None)
+    assert len(attempts) == 2
+    assert [row['announcementId'] for row in rows] == ['new']
+    done = tmp_path / 'cninfo' / 'events_v0_index' / '回购实施' / '2022-02-01_2022-02-28' / 'done.json'
+    assert done.is_file()
