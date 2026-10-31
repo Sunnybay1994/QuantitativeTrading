@@ -150,6 +150,14 @@ def collect(config: dict[str, Any], *, getter: Fetcher | None = None) -> list[di
 
 
 def iso_week(now: dt.date | None = None) -> str:
+    """ISO week label for the intel digest folder.
+
+    IntelWeekly runs Sunday 20:00. Attribute that run to the ISO week that
+    begins the following Monday so 2026-11-01 → ``2026-W45`` and
+    2026-11-08 → ``2026-W46`` (F2 acceptance paths).
+    """
     day = now or dt.date.today()
+    if day.weekday() == 6:  # Sunday
+        day = day + dt.timedelta(days=1)
     year, week, _ = day.isocalendar()
     return f"{year}-W{week:02d}"

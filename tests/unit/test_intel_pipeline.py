@@ -1,7 +1,9 @@
 from quant.core.paths import project_paths
 from quant.intel.extract import extract_candidates
 from quant.intel.pipeline import run_intel
-from quant.intel.sources import collect, fetch_arxiv
+import datetime as dt
+
+from quant.intel.sources import collect, fetch_arxiv, iso_week
 
 
 ATOM = """<?xml version="1.0"?>
@@ -32,6 +34,12 @@ def test_arxiv_query_uses_spaces_for_or(monkeypatch):
     fetch_arxiv(getter=capture, limit=1)
     assert "search_query=cat%3Aq-fin.ST+OR+cat%3Aq-fin.PM+OR+cat%3Aq-fin.TR" in seen["url"]
     assert "%2BOR%2B" not in seen["url"]
+
+
+def test_iso_week_sunday_intel_slot_matches_f2_paths():
+    assert iso_week(dt.date(2026, 11, 1)) == "2026-W45"
+    assert iso_week(dt.date(2026, 11, 8)) == "2026-W46"
+    assert iso_week(dt.date(2026, 10, 31)) == "2026-W44"
 
 
 def test_extract_keeps_valid_dsl_and_drops_python():
