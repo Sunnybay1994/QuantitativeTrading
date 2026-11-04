@@ -43,15 +43,27 @@ def test_initial_cash_excluded_later_cash_kept():
     assert period_metrics(frame.with_columns(pl.lit(0.).alias('market_value')), {}) == []
 
 
-@pytest.mark.parametrize('values', [[], [50000], [100000, 100000], [100000, 1000000, 5000000], [100000.0]])
+@pytest.mark.parametrize('values', [[], [50000], [100000], [300000, 300000], [300000, 1000000, 5000000], [300000.0]])
 def test_reject_other_capital_grids(values):
     with pytest.raises(ValueError, match='capital tiers'):
         validate_capitals(values)
 
 
 def test_accept_two_or_one_capital_tiers():
-    validate_capitals([100000, 1000000])
-    validate_capitals([100000])
+    validate_capitals([300000, 1000000])
+    validate_capitals([300000])
+    validate_capitals([1000000])
+
+
+def test_research_config_and_validator_agree_without_rewriting_frozen_100k():
+    import tomllib
+    from pathlib import Path
+    settings = tomllib.loads(Path('configs/research/research_priorities.toml').read_text(encoding='utf-8'))
+    validate_capitals(settings['allowed_account_capitals_cny'])
+    assert settings['representative_account_cny'] == 300000
+    assert settings['representative_account_cny'] in settings['allowed_account_capitals_cny']
+    frozen = tomllib.loads(Path('configs/research/r8_capacity_replay_20260915.toml').read_text(encoding='utf-8'))
+    assert frozen['initial_capitals'] == [100000, 1000000]
 
 
 def test_html_download_escapes_description_and_contains_both_frequencies():

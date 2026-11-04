@@ -4,18 +4,18 @@ output_root = "artifacts/research/feedback"
 continuous_root = "artifacts/research/continuous"
 sharpe_objective = 1.5
 risk_free_sensitivity = [0.0, 0.02]
-representative_account_cny = 100000
+representative_account_cny = 300000
 personal_account_experiment = "configs/research/personal_top5_fee1_v1.toml"
 personal_account_commission_min_cny = 1.0
 personal_account_target_holdings = 5
-# User instruction 2026-09-24: applies to new personal-account research only;
+# User instruction 2026-11-01: applies to new personal-account research only;
 # existing frozen batteries and observation accounts retain their input identity.
 maximum_account_validations = 2
-allowed_account_capitals_cny = [100000, 1000000]
+allowed_account_capitals_cny = [300000, 1000000]
 constraints = [
   "Low correlation is not predictive evidence",
   "No repeated Q1-Q9/P7/Q6 variants without a distinct preregistered mechanism",
-  "At most one preregistered portfolio hypothesis; at most CNY 100000 and 1000000 account tiers",
+  "At most one preregistered portfolio hypothesis; at most CNY 300000 and 1000000 account tiers",
   "Do not tune to observed validation/test results; independent future evidence remains necessary",
 ]
 risk_attribution = "artifacts/risk/r3_lightweight_20260914_03/report.md"
