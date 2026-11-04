@@ -1,0 +1,12 @@
+# Public issuer notices, not inferred from vendor adjustment-factor jumps.
+[[splits]]
+symbol = "512890.SH"
+announcement_date = 2021-10-18
+record_date = 2021-10-21
+effective_date = 2021-10-22
+tradable_date = 2021-10-25
+ratio = 2.0
+notice = "https://static.cninfo.com.cn/finalpage/2021-10-18/1211306253.PDF"
+result = "https://static.cninfo.com.cn/finalpage/2021-10-25/1211365339.PDF"
+suspended_dates = [2021-10-22]
+valuation = "preserve total book value: quantity times 2, prior mark divided by 2; no tradable bar is synthesized"
