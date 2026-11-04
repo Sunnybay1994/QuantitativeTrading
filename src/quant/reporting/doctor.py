@@ -27,6 +27,7 @@ $rows = foreach ($t in $tasks) {
     name = $t.TaskName
     state = [string]$t.State
     last_run_time = $i.LastRunTime.ToString('o')
+    next_run_time = if ($i.NextRunTime) { $i.NextRunTime.ToString('o') } else { $null }
     result = [long]$i.LastTaskResult
   }
 }
@@ -340,12 +341,21 @@ def collect(
         # A live run is not a failed completion; ContinuousMining often shows
         # ERROR_INVALID_STATE / SCHED_S_TASK_RUNNING while the worker holds the slot.
         running = isinstance(state, str) and state.lower() == "running"
+        pending = False
+        if result == 267011 and row.get('next_run_time'):
+            try:
+                next_run = dt.datetime.fromisoformat(row['next_run_time'])
+                pending = next_run.replace(tzinfo=next_run.tzinfo or SHANGHAI) > clock
+            except (ValueError, TypeError):
+                pass
         scheduled.append({
             "name": row.get("name"),
             "state": state,
             "last_run_time": row.get("last_run_time"),
             "result": result,
-            "ok": result == 0 or running,
+            "ok": result == 0 or running or pending,
+            "pending_first_run": pending,
+            "next_run_time": row.get('next_run_time'),
             "error": row.get("error"),
         })
     mining = _mining(artifacts / "research" / "continuous", today)
@@ -421,7 +431,13 @@ def collect(
         artifacts / "post_close_k1m" / "scheduler" / "scheduler.json", clock)
     if post_close_scheduler.get("red"):
         red.append(post_close_scheduler["red"])
+    from quant.execution.paper_order_status import collect as order_status
+    try:
+        orders = order_status(root=root, today=today)
+    except (OSError, ValueError, KeyError, pl.exceptions.PolarsError) as exc:
+        orders = {'next_rebalance': None, 'ready': False, 'error': str(exc)}
     return {
+        "orders": orders,
         "generated_at": clock.isoformat(),
         "date": today.isoformat(),
         "session_date": None if session is None else session.isoformat(),
@@ -443,7 +459,10 @@ def collect(
 
 
 def render_markdown(report: dict) -> str:
+    orders = report.get('orders') or {}
     lines = [
+        f"下一调仓日：{orders.get('next_rebalance') or '日历待核对'} / 订单就绪：{'是' if orders.get('ready') else '否'}",
+        "",
         f"# quant doctor {report['date']}",
         "",
         f"红项 {len(report['red'])}。本页只读，不修复。",

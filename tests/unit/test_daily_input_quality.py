@@ -54,6 +54,13 @@ def test_actual_values_and_missing_files_are_distinguished(tmp_path, monkeypatch
     assert table['last_valid_date_this_year'].item() == '2026-02-13'
     assert result['unresolved_financial_symbols'] == ['a']
     assert json.loads((tmp_path/'first'/'summary.json').read_text()) == result
+    monkeypatch.setattr(quality, '_record_factor_health', lambda **k: pytest.fail(
+        'Order-quality checks must defer auxiliary health diagnostics'))
+    deferred = quality.run_quality(**args, output=tmp_path/'order_quality', record_factor_health=False)
+    assert deferred['errors'] == result['errors']
+    assert pl.read_parquet(tmp_path/'order_quality/factor_coverage.parquet').equals(table)
+    assert deferred['factor_health']['status'] == 'deferred'
+    monkeypatch.setattr(quality, '_record_factor_health', lambda **k: {'enabled': False, 'status': 'disabled'})
     args['factors'].append({'id': 'absent', 'family': 'daily'})
     result = quality.run_quality(**args, output=tmp_path/'second')
     assert len(result['errors']) == 1 and 'absent' in result['errors'][0]

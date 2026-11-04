@@ -126,6 +126,15 @@ def test_q10_different_model_is_not_assumed_covered(tmp_path):
         dependencies.resolve_daily_dependencies(config=config, as_of=DAY)
 
 
+@pytest.mark.parametrize('factor,minutes', [('daily_signal', False), ('minute_signal', True)])
+def test_order_model_scope_excludes_auxiliary_minute_consumers(tmp_path, factor, minutes):
+    from quant.research.run_daily_model_forecast import order_model_scope
+    fixture(tmp_path, model=factor, candidate='minute_signal', health='minute_signal')
+    scope = order_model_scope(selection=tmp_path/'selection',
+        refresh_config=tmp_path/'refresh.toml', as_of=DAY)
+    assert scope == {'required_factor_ids': [factor], 'intraday': minutes, 'record_factor_health': False}
+
+
 def test_health_requires_selected_factor_and_known_refit(tmp_path):
     config = fixture(tmp_path, health='extra_daily')
     refresh = tmp_path/'refresh.toml'

@@ -67,7 +67,8 @@ def inspect_factor(frame: pl.DataFrame, *, symbols: set[str]) -> dict:
 
 
 def run_quality(*, data_root: Path, config: Path, end: dt.date, factors: list[dict],
-                financials: dict, output: Path, lookback_sessions: int = 5, minimum_symbols: int = 100) -> dict:
+                financials: dict, output: Path, lookback_sessions: int = 5, minimum_symbols: int = 100,
+                record_factor_health: bool = True) -> dict:
     if lookback_sessions < 1 or minimum_symbols < 1:
         raise ValueError('Use positive session and symbol counts for input quality checks')
     calendar = available_sessions(data_root, end)
@@ -144,8 +145,9 @@ def run_quality(*, data_root: Path, config: Path, end: dt.date, factors: list[di
                         errors.append(f"{factor['id']}: {unexpected} finite values lack compatible latest PIT report context")
     unresolved = financials.get('unresolved_announcements', [])
     output.mkdir(parents=True, exist_ok=False)
-    factor_health = _record_factor_health(data_root=data_root, config=config, end=end,
-        output=output/'factor_health')
+    factor_health = (_record_factor_health(data_root=data_root, config=config, end=end,
+        output=output/'factor_health') if record_factor_health else
+        {'enabled': False, 'status': 'deferred', 'reason': 'auxiliary diagnostics run after orders'})
     result = {'as_of': str(end), 'stocks': stocks, 'factor_count': len(rows),
               'factors_with_valid_values': sum(row['valid_symbols'] > 0 for row in rows),
               'minimum_symbols': minimum_symbols,

@@ -1,5 +1,6 @@
 # Explicit research forecast version; existing B20/B32 account strategies are unchanged.
 auto_trade = false
+independent_orders = true
 data_root = "data"
 artifact_root = "artifacts"
 refresh_config = "configs/data/refresh_q2_sue_v2_model_20260912.toml"

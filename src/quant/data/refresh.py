@@ -64,7 +64,7 @@ def latest_session(*, data_root: Path, through: dt.date, refresh_calendar: bool 
 def run_refresh(
     *, to: str, data_root: Path, artifact_root: Path, config: Path,
     now: dt.datetime | None = None, intraday: bool = True, progress_path: Path | None = None,
-    required_factor_ids: list[str] | None = None,
+    required_factor_ids: list[str] | None = None, record_factor_health: bool = True,
 ) -> dict[str, Any]:
     from quant.data.refresh_progress import RefreshProgress
     progress = RefreshProgress(progress_path)
@@ -133,6 +133,7 @@ def run_refresh(
         battery = tomllib.loads(Path(settings['quality']['battery_config']).read_text(encoding='utf-8'))
         stamp = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S%f')
         quality = progress.run('quality', run_quality, data_root=data_root, config=config, end=end,
+            **({'record_factor_health': False} if not record_factor_health else {}),
             factors=[{'id': row.id, 'family': row.family} for row in definitions], financials=financials,
             output=artifact_root/'data'/'input_quality'/stamp,
             lookback_sessions=settings['quality'].get('lookback_sessions', 5), minimum_symbols=battery['minimum_symbols'])

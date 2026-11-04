@@ -199,7 +199,16 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
         result['delayed_recording'] = end < clock.astimezone(SHANGHAI).date()
         dependency_options: dict[str, Any] = {}
         dependency_ok = True
-        if settings.get('dependency_refresh', False):
+        orders_first = settings.get('independent_orders', False) and bool(settings.get('q10'))
+        if orders_first:
+            from quant.research.run_daily_model_forecast import order_model_scope
+            dependency_ok = stage('order_model_scope', lambda: order_model_scope(
+                selection=Path(settings['model']['selection']),
+                refresh_config=Path(settings['refresh_config']), as_of=end),
+                lambda value: bool(value['required_factor_ids']))
+            if dependency_ok:
+                dependency_options = stages['order_model_scope']['result']
+        if settings.get('dependency_refresh', False) and not orders_first:
             from quant.research.daily_dependencies import resolve_daily_dependencies
 
             def dependencies() -> dict:
@@ -248,6 +257,15 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
                     output=Path(shadow_cfg['output']), end=end, forecast=output/'model/forecast'),
                     lambda value: value.get('as_of') == date and value.get('shadow') is True
                     and value.get('counts_toward_account_limit') is False)
+            if orders_first:
+                from quant.execution.paper_order_chain import push_reference
+                for name in ('q10', 'q10_shadow'):
+                    if stages.get(name, {}).get('status') == 'complete':
+                        account_summary = stages[name]['result']
+                        stage(name+'_notify', lambda name=name, summary=account_summary:
+                            push_reference(account=Path(settings[name]['output']), summary=summary),
+                            lambda value: value['status'] in ('sent', 'no_orders'))
+            if shadow_cfg and end >= inception:
                 def pair_month() -> dict:
                     from quant.reporting.q10_forward_rules import InsufficientMonthlySample, write_two_account_month
                     try:
@@ -265,6 +283,32 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
                       lambda value: value.get('status') == 'complete' or (
                           value.get('status') == 'waiting'
                           and value.get('reason_code') == 'insufficient_monthly_sample'))
+        if orders_first and settings.get('dependency_refresh', False):
+            from quant.research.daily_dependencies import resolve_daily_dependencies
+            from quant.data.refresh import run_refresh
+
+            def auxiliary_refresh() -> dict:
+                plan = resolve_daily_dependencies(config=config, as_of=end)
+                (output/'dependencies.json').write_text(
+                    json.dumps(plan, ensure_ascii=False, indent=2, default=str), encoding='utf-8')
+                if saved_data:
+                    from quant.research.run_daily_model_forecast import check_saved_input_quality
+                    return {'latest_session': date, 'intraday_errors': [],
+                        'input_quality': check_saved_input_quality(data_root=data_root,
+                            config=Path(settings['refresh_config']), end=end,
+                            output=output/'auxiliary_quality', required_factor_ids=plan['required_factor_ids'])}
+                return run_refresh(to=date, data_root=data_root, artifact_root=artifact_root,
+                    config=Path(settings['refresh_config']), now=clock,
+                    intraday=bool(plan['required_minute_inputs']),
+                    required_factor_ids=plan['required_factor_ids'],
+                    progress_path=output/'auxiliary_refresh_progress.json')
+
+            aux_ok = stage('auxiliary_refresh', auxiliary_refresh, lambda value:
+                value['latest_session'] == date and not value['intraday_errors']
+                and not value['input_quality']['errors'])
+            refresh_ok = refresh_ok and aux_ok
+            if not aux_ok:
+                refresh_errors.append('Auxiliary refresh incomplete; primary orders retain their independent result')
         stages['refresh'] = {'status': 'complete' if refresh_ok else 'failed',
                              'mode': 'saved_data' if saved_data else 'refresh',
                              'input_errors': refresh_errors,

@@ -1,5 +1,6 @@
 import datetime as dt
 import json
+from dataclasses import dataclass
 
 from quant.execution import paper_order_chain as chain
 
@@ -30,3 +31,26 @@ def test_shadow_missing_day_preserves_primary_orders(tmp_path, monkeypatch):
     assert result['accounts']['q10_shadow']['status'] == 'failed'
     assert (tmp_path/'primary/latest_orders.md').read_text() == '98 reference orders'
     assert json.loads((tmp_path/'receipt/summary.json').read_text()) == result
+
+
+def test_order_notification_retries_failure_and_deduplicates_success(tmp_path, monkeypatch):
+    account = tmp_path/'primary'
+    account.mkdir()
+    (account/'latest_orders.md').write_text('dated order payload')
+    summary = {'as_of': '2026-10-30', 'auto_trade': False, 'reference_orders': 98}
+
+    @dataclass
+    class Result:
+        channel: str = 'fixture'
+        ok: bool = False
+        detail: str = 'captured'
+
+    calls = []
+    def send(**kwargs):
+        calls.append(kwargs)
+        return [Result(ok=len(calls) > 1)]
+    monkeypatch.setattr('quant.notify.send', send)
+    assert chain.push_reference(account=account, summary=summary)['status'] == 'pending'
+    assert chain.push_reference(account=account, summary=summary)['status'] == 'sent'
+    assert chain.push_reference(account=account, summary=summary)['status'] == 'sent'
+    assert len(calls) == 2

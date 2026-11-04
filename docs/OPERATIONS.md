@@ -17,9 +17,11 @@ python -m quant gpu-check
 
 ## 日常命令
 
-Q10 与影子账户可独立更新：`python -m quant paper order-chain --to YYYY-MM-DD`，只读取冻结预测和账户执行行情，不运行市场背景、分钟补数或月度对比；显式加 `--notify` 才推送。两账户分别记录结果，一个失败仍保留另一个的订单，任一账户失败退出码为 1。此入口尚待接入自然调度。
+Q10 与影子账户可独立更新：`python -m quant paper order-chain --to YYYY-MM-DD`，只读取冻结预测和账户执行行情，不运行市场背景、分钟补数或月度对比；显式加 `--notify` 才推送。两账户分别记录结果，一个失败仍保留另一个的订单，任一账户失败退出码为 1。运行前确认没有正在更新同一账户的日更进程。原 21:30 日更已启用 `independent_orders=true`：先仅刷新冻结模型的实际因子、生成预测和两账户订单并推送，再处理辅助依赖、分钟补数与背景。只有真实通道成功才记录推送完成，同一订单内容成功后不重复发送。
 
-月末隔离预演：`python -m quant paper rehearse --as-month-end --to YYYY-MM-DD`。复用正式订单构建规则，从早于该日的最近账户快照复制到各账户 `rehearsal/<日期_时间戳>/`，保留正式账户控制开关，只生成、不推送；失败也留下 `rehearsal.json`。使用当日已完成且通过质量检查的冻结前向预测；不生成替代预测。生产快照、净值与最新订单不改，预演状态不计入正式账户。11-27 自然预演、月末告警和独立预测调度的接入仍待完成。
+月末隔离预演：`python -m quant paper rehearse --as-month-end --to YYYY-MM-DD`。复用正式订单构建规则，从早于该日的最近账户快照复制到各账户 `rehearsal/<日期_时间戳>/`，保留正式账户控制开关，只生成、不推送；失败也留下 `rehearsal.json`。使用当日已完成且通过质量检查的冻结前向预测；不生成替代预测。生产快照、净值与最新订单不改，预演状态不计入正式账户。
+
+运行 `scripts/register_paper_insurance.ps1` 注册两项保险：`QuantitativeTrading-PaperRehearsal` 在 2026-11-27 22:10 预演；`QuantitativeTrading-PaperOrderWatch` 每天 22:30 只读检查，只有月末未就绪才通知。就绪需当日正式状态、最新 Markdown 和与快照一致的订单 CSV，不能只凭旧文件存在。日志与退出码在 `artifacts/paper/insurance_scheduler/`。doctor 首行显示下一调仓日和两账户订单就绪状态。任务首次自然运行前显示 pending，不视为已通过；K1 仍须等待 11-27 与 11-30 实际验收。
 
 个人账户固定Top5/Top50与佣金配对实验：[运行和断点恢复](PERSONAL_ACCOUNT_REPLAY.md)。
 

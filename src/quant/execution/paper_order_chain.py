@@ -1,6 +1,7 @@
 """Advance paper accounts independently from auxiliary research and reporting."""
 import argparse
 import datetime as dt
+import hashlib
 import json
 import tomllib
 from dataclasses import asdict
@@ -9,6 +10,28 @@ from pathlib import Path
 from quant.data.refresh import SHANGHAI
 from quant.execution.paper_rehearsal import DEFAULT_CONFIG
 from quant.execution.q10_paper import run as run_q10
+
+
+def push_reference(*, account: Path, summary: dict) -> dict:
+    """Send each dated order payload once; retain failed sends for retry."""
+    if summary.get('rehearsal') or summary.get('auto_trade') is not False:
+        raise ValueError('Only production paper reference orders may be pushed')
+    if not summary.get('reference_orders'):
+        return {'status': 'no_orders'}
+    body = (account/'latest_orders.md').read_text(encoding='utf-8')
+    digest = hashlib.sha256((summary['as_of'] + body).encode()).hexdigest()
+    path = account/'order_notification.json'
+    if path.exists():
+        prior = json.loads(path.read_text(encoding='utf-8'))
+        if prior.get('digest') == digest and prior.get('status') == 'sent':
+            return prior
+    from quant.notify import send
+    results = [asdict(row) for row in send(title=f'{account.name} {summary["as_of"]} 参考订单', body=body)]
+    receipt = {'as_of': summary['as_of'], 'digest': digest, 'results': results,
+               'status': 'sent' if results and all(row['ok'] and row['channel'] != 'outbox'
+                   for row in results) else 'pending'}
+    path.write_text(json.dumps(receipt, ensure_ascii=False, indent=2), encoding='utf-8')
+    return receipt
 
 
 def run(*, config: Path = DEFAULT_CONFIG, end: dt.date,
@@ -49,7 +72,9 @@ def run(*, config: Path = DEFAULT_CONFIG, end: dt.date,
                 elif not result['reference_orders']:
                     continue
                 else:
-                    body = (account/'latest_orders.md').read_text(encoding='utf-8')
+                    item['notification'] = push_reference(account=account, summary=result)
+                    save()
+                    continue
                 item['notification'] = [asdict(row) for row in send(
                     title=f'{name} {end} 参考订单' if item['status'] == 'complete'
                     else f'{name} {end} 订单链异常', body=body)]

@@ -68,6 +68,18 @@ def test_clean_tree_has_no_red_when_git_is_fresh(tmp_path, monkeypatch):
     assert "IntelWeekly" in render_markdown(report)
 
 
+def test_future_insurance_first_run_is_pending_not_a_failed_completion(tmp_path, monkeypatch):
+    root = _tree(tmp_path)
+    monkeypatch.setattr('quant.reporting.doctor._git_facts', lambda _: {
+        'dirty': 0, 'days_since_commit': 0, 'root_scratch_py': 0, 'git_ok': True})
+    report = collect(root=root, now=NOW, tasks=[{
+        'name': 'QuantitativeTrading-PaperRehearsal', 'state': 'Ready', 'result': 267011,
+        'next_run_time': '2026-11-27T22:10:00+08:00'}])
+    assert report['scheduled_tasks'][0]['pending_first_run']
+    assert report['scheduled_tasks'][0]['result'] == 267011
+    assert not any(row.startswith('scheduled_tasks:') for row in report['red'])
+
+
 @pytest.mark.parametrize('change', [
     {'complete': False}, {'accepted_fast': False}, {'passed': None},
     {'selected_count': 4}, {'errors': 1}, {'duration_seconds': -1},

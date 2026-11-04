@@ -172,6 +172,34 @@ def test_q10_monthly_runs_independently_of_b32_monthly_failure(env, monkeypatch)
     assert monthly.call_args.kwargs['backtest'] == Path('frozen')
 
 
+def test_orders_precede_auxiliary_dependency_failure(env, monkeypatch):
+    from quant.execution import q10_paper
+    from quant.research import run_daily_model_forecast, daily_dependencies
+    args, model, *_ = env
+    text = args['config'].read_text()
+    args['config'].write_text('independent_orders=true\ndependency_refresh=true\n'+text+
+        '\n[q10]\nconfig="fixture"\noutput="fixture"\n')
+    args['rehearsal'] = False
+    monkeypatch.setattr(daily, 'latest_session', lambda **k: dt.date(2026, 10, 30))
+    scope = {'required_factor_ids': ['frozen_factor'], 'intraday': False}
+    monkeypatch.setattr(run_daily_model_forecast, 'order_model_scope', lambda **k: scope)
+    calls = []
+    def orders(**kwargs):
+        calls.append('orders')
+        return {'as_of': '2026-10-30', 'auto_trade': False, 'reference_orders': 0}
+    def broken_auxiliary(**kwargs):
+        calls.append('auxiliary')
+        raise ValueError('Auxiliary minute pool missing day')
+    monkeypatch.setattr(q10_paper, 'run', orders)
+    monkeypatch.setattr(daily_dependencies, 'resolve_daily_dependencies', broken_auxiliary)
+    result = daily.run(**args)
+    assert calls == ['orders', 'auxiliary']
+    assert result['stages']['q10']['status'] == 'complete'
+    assert result['stages']['auxiliary_refresh']['status'] == 'failed'
+    assert model.call_args.kwargs['intraday'] is False
+    assert model.call_args.kwargs['required_factor_ids'] == ['frozen_factor']
+
+
 @pytest.mark.parametrize('errors', [[], [{'input': 'minute', 'error': 'missing'}]])
 def test_tracking_uses_isolated_accounts_and_surfaces_input_errors(env, monkeypatch, errors):
     from quant.execution import shadow_slippage

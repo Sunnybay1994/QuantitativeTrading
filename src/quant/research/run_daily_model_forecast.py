@@ -82,8 +82,23 @@ def check_model_factor_date(*, data_root: Path, factors: list[str], as_of: dt.da
     return evidence, errors
 
 
+def order_model_scope(*, selection: Path, refresh_config: Path, as_of: dt.date) -> dict:
+    """Limit the order forecast to the frozen fit, before auxiliary consumers."""
+    from quant.research.factor_intraday import minute_input_names
+    requirements = model_factor_requirements(selection=selection,
+        refresh_config=refresh_config, as_of=as_of)
+    if requirements['required_excluded'] or requirements['required_outside_refresh_selection']:
+        raise ValueError('Order model factors are outside the configured refresh scope')
+    settings = tomllib.loads(refresh_config.read_text(encoding='utf-8'))['factors']
+    definitions = load_library(Path(settings['library']), ','.join(requirements['required_factors']))
+    minutes = minute_input_names(tuple(row.expr for row in definitions))
+    return {'required_factor_ids': requirements['required_factors'], 'intraday': bool(minutes),
+            'record_factor_health': False}
+
+
 def check_saved_input_quality(*, data_root: Path, config: Path, end: dt.date, output: Path,
-                              required_factor_ids: list[str] | None = None) -> dict:
+                              required_factor_ids: list[str] | None = None,
+                              record_factor_health: bool = True) -> dict:
     """Run the refresh quality checks on local inputs with the same scope and thresholds."""
     try:
         settings = tomllib.loads(config.read_text(encoding='utf-8'))
@@ -96,6 +111,7 @@ def check_saved_input_quality(*, data_root: Path, config: Path, end: dt.date, ou
                                    refresh_factor_selection(settings['factors']))
         battery = tomllib.loads(Path(quality['battery_config']).read_text(encoding='utf-8'))
         return run_quality(data_root=data_root, config=config, end=end,
+            **({'record_factor_health': False} if not record_factor_health else {}),
             factors=[{'id': row.id, 'family': row.family} for row in definitions], financials={},
             output=output, lookback_sessions=quality.get('lookback_sessions', 5),
             minimum_symbols=battery['minimum_symbols'])
@@ -108,7 +124,8 @@ def check_saved_input_quality(*, data_root: Path, config: Path, end: dt.date, ou
 def run_daily(*, to: str, selection: Path, output: Path, data_root: Path,
               refresh_config: Path, artifact_root: Path, saved_data: bool = False,
               intraday: bool = True, rehearsal: bool = False, now: dt.datetime | None = None,
-              required_factor_ids: list[str] | None = None) -> dict:
+              required_factor_ids: list[str] | None = None,
+              record_factor_health: bool = True) -> dict:
     """One dated invocation; preserve forecasts and never change account positions."""
     if output.exists():
         raise FileExistsError('Use a new daily record directory')
@@ -143,9 +160,11 @@ def run_daily(*, to: str, selection: Path, output: Path, data_root: Path,
     elif saved_data:
         refresh = {'latest_session': str(end), 'message': 'saved_data', 'intraday_errors': [],
             'input_quality': check_saved_input_quality(data_root=data_root, config=refresh_config,
+                **({'record_factor_health': False} if not record_factor_health else {}),
                 end=end, output=output/'input_quality', required_factor_ids=required_factor_ids)}
     else:
         refresh = run_refresh(to=to, data_root=data_root, artifact_root=artifact_root,
+            **({'record_factor_health': False} if not record_factor_health else {}),
             config=refresh_config, now=clock, intraday=intraday, progress_path=output/'refresh_progress.json',
             required_factor_ids=required_factor_ids)
     (output/'refresh.json').write_text(json.dumps(refresh, ensure_ascii=False, indent=2), encoding='utf-8')
