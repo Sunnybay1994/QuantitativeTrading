@@ -30,6 +30,8 @@ no_extra_turnover_budget = true
 [execution]
 enabled_by_default = false
 limit_offsets = [0.01, 0.03]
+quote_tick_cny = 0.01
+quote_rounding = "buy floor, sell ceil; conservative legal quote normalization, including announced corporate actions"
 price_anchor = "original signal-day unadjusted close; unchanged during all retry sessions"
 buy = "open <= limit: open; otherwise low <= limit: limit; otherwise no fill"
 sell = "open >= limit: open; otherwise high >= limit: limit; otherwise no fill"
