@@ -25,6 +25,7 @@ from quant.data.connectors.cninfo_announcements import (
 from quant.factors.forecast_text_score import strict_json
 from quant.llm.pricing import load_pricing
 from quant.data.events_v0_schema import EventV0Schema
+from quant.data.events_v0_budget import task_budget_usd
 
 MAX_INPUT_CHARS = 1500
 TASK_BUDGET_USD = 5.0
@@ -608,6 +609,9 @@ def build_events(
     stopped = None
     calls = 0
     calls_lock = threading.Lock()
+    from quant.data.structured_s4 import StructuredS4
+    structured=StructuredS4(data_root=data_root,start=start,end=end,now=dt.datetime.now(dt.timezone.utc))
+    structured_receipts=[]
 
     def filing_row(source: dict, family: str, symbol: str, published: dt.date, title: str) -> dict | None:
         nonlocal calls
@@ -625,10 +629,13 @@ def build_events(
             except Exception:
                 _write_new(text_path, "")
         excerpt = text_path.read_text(encoding="utf-8")[:MAX_INPUT_CHARS]
+        primary=structured.lookup(family=family,symbol=symbol,published=published,excerpt=excerpt)
         cached = cache / f"{identity}.json"
         if recovered and excerpt:
             cached = cache/'recovered'/identity/(hashlib.sha256(excerpt.encode('utf-8')).hexdigest()+'.json')
-        if cached.is_file():
+        if primary and primary['parsed']['amount_cny'] is not None:
+            parsed=dict(primary['parsed'])
+        elif cached.is_file():
             parsed = json.loads(cached.read_text(encoding="utf-8"))
         elif not excerpt:
             parsed = accept_extraction("", {"status": "unresolved"})
@@ -636,22 +643,26 @@ def build_events(
             # Keep text for a later budget window; no extraction result exists yet.
             parsed = accept_extraction('', {'status': 'unresolved'})
         else:
-            if _task_spend(ledger_root) >= TASK_BUDGET_USD:
+            if _task_spend(ledger_root) >= task_budget_usd():
                 return {"_stop": "budget"}
             from quant.llm import RequestFailure
             from quant.data.events_v0_budget import complete_with_budget, EventBudgetExhausted
             response = None
+            known_fields={k:primary['parsed'][k] for k in ('amount_cny','ratio_pct','direction')
+                if primary and primary['parsed'].get(k) is not None} if primary else {}
+            user_input=((('已核对结构化字段：'+json.dumps(known_fields,ensure_ascii=False)+'；只补空字段。\n')
+                if known_fields else '')+excerpt)[:MAX_INPUT_CHARS]
             for attempt in range(2):
                 try:
                     response = complete_with_budget(complete, [
                         {"role": "system", "content": (
-                            "只从摘录抽取回购实施或股东增减持。返回 JSON，键为 status、amount_cny、"
+                            "只从摘录补齐结构化数据缺失的回购实施或股东增减持字段。返回 JSON，键为 status、amount_cny、"
                             "ratio_pct、term_days、direction、evidence。status 只能是 parsed 或 unresolved。"
                             "amount_cny 用人民币元，只填已经支付或成交的总金额，不填不低于/不超过的方案区间。"
                             "ratio_pct 是百分数本身。direction 只能是 buy、sell、"
                             "repurchase 或 null。evidence 必须是摘录里的连续原文。没有的数字不要猜。"
                         )},
-                        {"role": "user", "content": excerpt},
+                        {"role": "user", "content":user_input},
                     ], {"max_tokens": 250, "max_usd": 0.02, "reserve_usd": 0.02,
                         "temperature": 0}, ledger_root=ledger_root, announcement_id=identity,
                         spend=_task_spend, limit=TASK_BUDGET_USD,
@@ -679,11 +690,22 @@ def build_events(
                     payload = {"status": "unresolved"}
                 parsed = accept_extraction(excerpt, payload)
                 _write_new(cached, json.dumps(parsed, ensure_ascii=False))
+        known_at=published
+        if primary:
+            for key in ('amount_cny','ratio_pct','direction'):
+                if primary['parsed'].get(key) is not None:
+                    parsed[key]=primary['parsed'][key]
+            known_at=max(published,primary['known_at'])
         parsed = fill_explicit_total(excerpt, parsed, family)
         parsed = fill_explicit_ratio(excerpt, parsed)
         parsed = drop_unexecuted_sell(parsed)
+        if primary:
+            with calls_lock:
+                structured_receipts.append({'announcement_id':identity,**{k:v for k,v in primary.items() if k!='parsed'},
+                    'source_fields':[k for k in ('amount_cny','ratio_pct','direction') if primary['parsed'].get(k) is not None
+                        and parsed.get(k)==primary['parsed'][k]]})
         return {"announcement_id": identity, "symbol": symbol, "title": title,
-                "published": published, "known_at": published, "family": family,
+                "published": published, "known_at": known_at, "family": family,
                 "human_label": None, "excerpt": excerpt,
                 "adjunct_url": source.get("adjunctUrl"), **parsed}
 
@@ -760,11 +782,14 @@ def build_events(
     with sample_path.open('x', encoding='utf-8', newline='') as handle:
         sample.write_csv(handle)
     summary = {"start": str(start), "end": str(end), "stopped": stopped,
-               "llm_calls": calls, "task_budget_usd": TASK_BUDGET_USD,
+               "llm_calls": calls, "task_budget_usd": task_budget_usd(),
                "pricing_input_usd_per_million": rates["input_usd_per_million"],
                "tables": counts, "sample_rows": sample.height, "sample_path": str(sample_path),
                "evaluate_this_round": False}
     summary.update(collect_only=collect_only, partition=partition, resumed_from=resumed_from)
+    summary.update(structured_primary_rows=len(structured_receipts),structured_inputs=structured.paths,
+        structured_availability='Known-at date is after current snapshot availability; no historical-vintage backdating')
+    (version/'structured_receipts.json').write_text(json.dumps(structured_receipts,default=str,ensure_ascii=False,indent=2),encoding='utf-8')
     summary['publication_timezone'] = 'Asia/Shanghai'
     summary['text_nonempty'] = sum(bool(row.get('excerpt')) for row in rows)
     summary['text_unavailable'] = len(rows)-summary['text_nonempty']

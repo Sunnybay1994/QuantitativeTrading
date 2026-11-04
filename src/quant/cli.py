@@ -20,6 +20,8 @@ _DELEGATE: dict[tuple[str, str], str] = {
     ("research", "account-stock-leg"): "quant.research.account_portfolio_stock_leg",
     ("research", "account-portfolio"): "quant.research.account_portfolio_replay",
     ("data", "refresh"): "quant.data.refresh",
+    ("data", "probe-tushare"): "quant.data.probe_tushare",
+    ("data", "structured-events"): "quant.data.structured_events",
     ("data", "account-portfolio-inputs"): "quant.data.account_portfolio_inputs",
     ("data", "account-portfolio-panel"): "quant.data.account_portfolio_panel",
     ("data", "events-v0"): "quant.data.events_v0",
@@ -233,14 +235,14 @@ def main(argv: list[str] | None = None) -> int:
     notify.add_argument("--dry-run", action="store_true")
     notify.add_argument("--channel", action="append", dest="channels")
 
-    intel = sub.add_parser("intel", help="扫描论文/开源并写入因子队列")
+    intel = sub.add_parser("intel", help="扫描论文/开源并输出来源digest，不自动入队")
     intel.add_argument("action", choices=["scan"], nargs="?", default="scan")
     intel.add_argument("--config")
     intel.add_argument("--no-extract", action="store_true")
     intel.add_argument("--dry-run", action="store_true")
 
     data = sub.add_parser("data", help="数据刷新")
-    data.add_argument("command", choices=["refresh", "account-portfolio-inputs", "account-portfolio-panel", "events-v0", "realtime", "market-snapshot", "minutes", "minute-history", "minute-factors", "baostock-history", "post-close-k1m", "latency", "stock-execution-open", "monthly-execution-open"])
+    data.add_argument("command", choices=["refresh", "probe-tushare", "structured-events", "account-portfolio-inputs", "account-portfolio-panel", "events-v0", "realtime", "market-snapshot", "minutes", "minute-history", "minute-factors", "baostock-history", "post-close-k1m", "latency", "stock-execution-open", "monthly-execution-open"])
     factors = sub.add_parser("factors", help="因子计算")
     factors.add_argument("command", choices=["compute"])
     research = sub.add_parser("research", help="投研流水线")

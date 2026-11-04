@@ -6,11 +6,13 @@ evaluate_this_round = false
 families = ["repurchase", "insider_trading"]
 first_backfill = "2024-01-01"
 full_coverage_target = "2019-01-01"
-pit = "known_at is the announcement publish date. A later correction is a new row, never a rewrite of the earlier row."
+pit = "Eligibility uses known_at; age windows use original publication date. Current structured snapshots never backdate availability. Later corrections append new rows."
+structured_duplicate_policy = "Before factor aggregation, deduplicate shared structured source_row_id across documents; retain announced progress provenance and do not sum cumulative repurchase totals repeatedly. No factor evaluation this round."
 llm_task = "event_extract"
 max_input_chars = 1500
 max_tokens = 250
 month_budget_usd = 5.0
+month_budget_overrides_usd = { "2026-11" = 2.0 }
 unresolved = "Missing or unparsable amount, ratio, term, or direction stays null. Do not impute."
 factors = ["repurchase_strength_30d", "repurchase_strength_90d", "insider_net_buy_90d"]
 factor_note = "Repurchase strength is the 30/90 day sum of amount_cny divided by market cap. Insider net buy is 90 day buy amount minus sell amount. Evaluation is the next round."

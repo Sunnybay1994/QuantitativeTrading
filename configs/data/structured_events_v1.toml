@@ -1,0 +1,40 @@
+id = "structured_events_v1"
+registered_on = 2026-11-05
+auto_trade = false
+start = 2019-01-01
+end = 2026-11-04
+page_size = 1000
+request_pause_seconds = 2.0
+evaluate_factors = false
+availability = "Keep announcement day separately; available_at is no earlier than first observed supplier snapshot. Current downloads do not prove original historical vintage."
+
+[tables.repurchase]
+date_field = "ann_date"
+announcement_field = "ann_date"
+chunk = "month"
+consumer = "event_family_v1: structured S4 repurchase amount/progress; only executed amounts, never treat plan ceilings as paid amounts"
+units = "amount CNY; vol shares; retain native fields and distinguish progress records"
+
+[tables.stk_holdertrade]
+date_field = "ann_date"
+announcement_field = "ann_date"
+chunk = "month"
+consumer = "event_family_v1: structured S4 insider direction/quantity; unresolved price stays null"
+units = "change_vol in native shares; avg_price CNY/share; amount requires both known fields and source excerpt corroboration"
+units_source = "https://tushare.pro/document/2?doc_id=175"
+
+[tables.share_float]
+date_field = "float_date"
+announcement_field = "ann_date"
+chunk = "month"
+consumer = "event_family_v1: announced unlock date/quantity; no return evaluation this round"
+units = "float_share in native shares; float_ratio percent"
+units_source = "https://tushare.pro/document/2?doc_id=160"
+
+[tables.fund_share]
+date_field = "trade_date"
+announcement_field = "trade_date"
+chunk = "year"
+symbols = ["510050.SH", "510300.SH", "510500.SH", "512100.SH", "159915.SZ"]
+consumer = "monthly market-state panel: broad ETF share changes; five named funds, not whole-market fund coverage"
+units = "fd_share in 10000 fund units; daily release time unverified, never same-session trading input"

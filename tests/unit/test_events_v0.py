@@ -67,6 +67,54 @@ def test_family_and_evidence_rules():
     assert invented["amount_cny"] is None
 
 
+def test_structured_primary_skips_paid_extraction_and_preserves_later_availability(tmp_path):
+    folder=tmp_path/'data/clean/repurchase/snapshot=fixture/year=2024'
+    folder.mkdir(parents=True)
+    observed=dt.datetime(2024,1,2,12,tzinfo=dt.timezone.utc)
+    pl.DataFrame({'ts_code':['600000.SH'],'source_announcement_date':[dt.date(2024,1,1)],
+        'source_row_id':['receipt'],'source_raw_path':['raw/immutable.parquet'],
+        'observed_at':[observed],'available_at':[observed],
+        'proc':['完成'],'end_date':['20231231'],'amount':[1000000.]}).write_parquet(folder/'data.parquet')
+    def no_wire(*args):
+        raise AssertionError('structured amount/direction are complete; must not pay for extraction')
+    summary=build_events(start=dt.date(2024,1,1),end=dt.date(2024,1,31),
+        data_root=tmp_path/'data',artifact_root=tmp_path/'artifacts',
+        session=Session('本次回购实施完成，支付的资金总额100万元。'),complete=no_wire,
+        pricing=_pricing(tmp_path/'pricing.toml'),ledger_root=tmp_path/'ledger')
+    assert summary['llm_calls']==0 and summary['structured_primary_rows']==1
+    frame=pl.read_parquet(summary['tables']['repurchase']['path'])
+    assert frame['amount_cny'].item()==1000000.
+    assert frame['known_at'].item()==dt.date(2024,1,3)
+    assert not list((tmp_path/'ledger').glob('*.jsonl'))
+
+
+def test_partial_structured_fields_only_request_missing_fields_within_input_budget(tmp_path):
+    folder=tmp_path/'data/clean/stk_holdertrade/snapshot=fixture/year=2024'
+    folder.mkdir(parents=True)
+    observed=dt.datetime(2024,1,2,12,tzinfo=dt.timezone.utc)
+    pl.DataFrame({'ts_code':['600000.SH'],'source_announcement_date':[dt.date(2024,1,1)],
+        'source_row_id':['partial'],'source_raw_path':['raw/native.parquet'],
+        'observed_at':[observed],'available_at':[observed],'in_de':['IN'],
+        'change_vol':[100000.],'avg_price':[None],'change_ratio':[None]}).write_parquet(folder/'data.parquet')
+    class InsiderSession(Session):
+        def post(self,url,**kwargs):
+            result=super().post(url,**kwargs)
+            if 'announcements' in result.body:
+                result.body['announcements'][0]['announcementTitle']='关于股东增持股份的公告'
+            return result
+    evidence='股东已增持，成交金额1000万元。'
+    calls=[]
+    def complete(messages,settings):
+        content=messages[1]['content'];calls.append(content)
+        assert len(content)<=1500 and '已核对结构化字段' in content and '"direction": "buy"' in content
+        return {'choices':[{'message':{'content':json.dumps({'status':'parsed','amount_cny':10000000.,
+            'direction':'buy','ratio_pct':None,'term_days':None,'evidence':evidence})}}],'usd':.001}
+    summary=build_events(start=dt.date(2024,1,1),end=dt.date(2024,1,31),data_root=tmp_path/'data',
+        artifact_root=tmp_path/'artifacts',session=InsiderSession(evidence+'补充资料。'*500),complete=complete,
+        pricing=_pricing(tmp_path/'pricing.toml'),ledger_root=tmp_path/'ledger')
+    assert len(calls)==1 and summary['structured_primary_rows']==1
+
+
 def test_build_writes_both_tables_and_ledger_once(tmp_path):
     excerpt = "<p>本次回购金额1000万元，占总股本1.2%，期限3个月。</p>"
     session = Session(excerpt)

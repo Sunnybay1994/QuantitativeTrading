@@ -6,6 +6,15 @@ def test_cli_help():
     assert main([]) == 0
 
 
+def test_data_probe_dispatch(monkeypatch):
+    seen=[]
+    monkeypatch.setattr('quant.cli._delegate',lambda module,argv:seen.append((module,argv)) or 0)
+    assert main(['data','probe-tushare','--as-of','2026-11-05'])==0
+    assert seen==[('quant.data.probe_tushare',['--as-of','2026-11-05'])]
+    assert main(['data','structured-events','--resume'])==0
+    assert seen[-1]==('quant.data.structured_events',['--resume'])
+
+
 def test_cli_gpu_check_cpu(monkeypatch):
     monkeypatch.setattr(
         "quant.core.gpu.detect_device",

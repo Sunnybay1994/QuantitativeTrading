@@ -7,7 +7,7 @@ import time
 import pytest
 
 from quant.data.events_v0 import _task_spend, _record_spend
-from quant.data.events_v0_budget import complete_with_budget, EventBudgetExhausted, pending
+from quant.data.events_v0_budget import complete_with_budget, EventBudgetExhausted, pending, task_budget_usd
 from quant.llm import RequestFailure
 from quant.llm.ledger import append, month_path
 
@@ -21,7 +21,7 @@ def _call(root, complete, *, record=None):
 
 
 def test_parallel_workers_cannot_all_pass_the_same_remaining_balance(tmp_path):
-    append(dict(task='event_extract', usd=4.97), tmp_path)
+    append(dict(task='event_extract', usd=task_budget_usd()-.03), tmp_path)
     reached = threading.Event()
     calls, active, maximum = [], [0], [0]
     def complete(messages, settings):
@@ -42,18 +42,18 @@ def test_parallel_workers_cannot_all_pass_the_same_remaining_balance(tmp_path):
         reached.set()
         outcomes = [f.result(timeout=15) for f in futures]
     assert outcomes.count('charged') == len(calls) == 2
-    assert maximum[0] == 1 and _task_spend(tmp_path) < 5.
+    assert maximum[0] == 1 and _task_spend(tmp_path) < task_budget_usd()
     assert pending(tmp_path) == dict(requests=0, usd=0.)
 
 
 def test_unknown_transport_keeps_a_durable_reservation(tmp_path):
-    append(dict(task='event_extract', usd=4.97), tmp_path)
+    append(dict(task='event_extract', usd=task_budget_usd()-.03), tmp_path)
     def unknown(*args): raise RequestFailure('transport_outcome_unknown')
     with pytest.raises(RequestFailure): _call(tmp_path, unknown)
     assert pending(tmp_path) == dict(requests=1, usd=.02)
     with pytest.raises(EventBudgetExhausted):
         _call(tmp_path, lambda *a: pytest.fail('must not send again'))
-    assert _task_spend(tmp_path) == 4.97
+    assert _task_spend(tmp_path) == pytest.approx(task_budget_usd()-.03)
 
 
 def test_proven_connection_failure_releases_reservation_for_retry(tmp_path):
@@ -95,7 +95,7 @@ def test_killed_request_process_keeps_reservation_and_releases_kernel_lock(tmp_p
     import subprocess
     import sys
 
-    append(dict(task='event_extract', usd=4.97), tmp_path)
+    append(dict(task='event_extract', usd=task_budget_usd()-.03), tmp_path)
     code = '''
 import os, sys
 from pathlib import Path

@@ -17,6 +17,11 @@ _PAYER_LOCK = threading.Lock()
 CALL_RESERVE_USD = .02
 
 
+def task_budget_usd(now: dt.datetime | None = None) -> float:
+    current=(now or dt.datetime.now(SHANGHAI)).astimezone(SHANGHAI)
+    return 2. if current.strftime('%Y-%m')=='2026-11' else 5.
+
+
 class EventBudgetExhausted(RuntimeError):
     pass
 
@@ -75,6 +80,7 @@ def complete_with_budget(complete, messages, settings, *, ledger_root: Path,
     directory.mkdir(parents=True, exist_ok=True)
     with _PAYER_LOCK, hold_journal_writer_lock(journal_root=directory):
         started = dt.datetime.now(SHANGHAI)
+        limit=min(limit,task_budget_usd(started))
         actual = spend(ledger_root, started)
         unresolved = pending(ledger_root, started)
         if not math.isfinite(actual) or actual < 0:
