@@ -79,7 +79,9 @@ def load_forecast(folder: Path, date: dt.date, selection: Path, following: dt.da
 def run(*, config_path: Path = DEFAULT_CONFIG, data_root: Path = Path('data'),
         output: Path = Path('artifacts/paper/q10_sue_v2'), end: dt.date,
         forecast: Path | None = None, halt: bool | None = None,
-        sell_only: bool | None = None) -> dict[str, Any]:
+        sell_only: bool | None = None, as_month_end: bool = False) -> dict[str, Any]:
+    if as_month_end and 'rehearsal' not in output.resolve().parts:
+        raise ValueError('Forced month-end requires an isolated rehearsal output')
     payload = config_path.read_text(encoding='utf-8')
     config = tomllib.loads(payload)
     paper = config['paper']
@@ -119,12 +121,14 @@ def run(*, config_path: Path = DEFAULT_CONFIG, data_root: Path = Path('data'),
     if end < last:
         raise ValueError('Cannot rewind Q10 account')
     sessions = sorted(read_stock_paper_calendar(data_root).filter(pl.col('is_open'))['date'].unique().to_list())
+    if as_month_end and (end not in sessions or last >= end):
+        raise ValueError('Rehearsal requires an open session after the cloned snapshot')
     orders = pl.DataFrame(schema=ORDER_SCHEMA)
     for date in [day for day in sessions if last < day <= end]:
         following = next((day for day in sessions if day > date), None)
         if following is None:
             raise ValueError('Refresh exchange calendar before advancing')
-        due = date.month != following.month
+        due = date.month != following.month or (as_month_end and date == end)
         scores = None
         if due:
             candidates = ([forecast] if forecast else []) + sorted(Path(config['model']['forecast_root']).glob('**/model/forecast'))
@@ -155,6 +159,8 @@ def run(*, config_path: Path = DEFAULT_CONFIG, data_root: Path = Path('data'),
         state['recorded_at'] = dt.datetime.now(SHANGHAI).isoformat()
         state.update(auto_trade=False, conclusion='SHADOW' if shadow else 'PAPER_CANDIDATE',
                      counts_toward_account_limit=not shadow)
+        if as_month_end:
+            state.update(rehearsal=True, conclusion='REHEARSAL', counts_toward_account_limit=False)
         state['controls_at_snapshot'] = dict(controls)
         orders = reference_orders(state, inputs, config) if inputs else pl.DataFrame(schema=ORDER_SCHEMA)
         _write_snapshot(output/str(date), state, orders, result, None)
@@ -170,6 +176,8 @@ def run(*, config_path: Path = DEFAULT_CONFIG, data_root: Path = Path('data'),
         'shadow': shadow, 'counts_toward_account_limit': not shadow, 'auto_trade': False,
         'cash': state['cash'], 'positions': len(state['holdings']), 'equity': state['nav'][-1]['equity'],
         'controls': controls, 'reference_orders': orders.height, 'output': str(output)}
+    if as_month_end:
+        summary.update(rehearsal=True, conclusion='REHEARSAL', counts_toward_account_limit=False)
     (output/'latest_summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
     title = '规模中性影子账户' if shadow else 'Q10 第二模拟账户'
     (output/'report.md').write_text(f"# {title}\n\n{state['date']}；权益 {summary['equity']:.2f} 元；"

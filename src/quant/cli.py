@@ -75,6 +75,8 @@ _DELEGATE: dict[tuple[str, str], str] = {
     ("research", "cycle"): "quant.research.run_research_cycle",
     ("research", "gp"): "quant.research.run_genetic_factor_search",
     ("paper", "q10"): "quant.execution.q10_paper",
+    ("paper", "rehearse"): "quant.execution.paper_rehearsal",
+    ("paper", "order-chain"): "quant.execution.paper_order_chain",
     ("paper", "orders"): "quant.execution.manual_orders",
     ("paper", "manual"): "quant.execution.manual_session_cli",
     ("paper", "b16-forward"): "quant.execution.b16_forward_service",
@@ -241,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:
         "allocation-attribution", "mechanism-detail", "etf-manual-init", "etf-execution-stress", "market-indicators", "factor-family-states", "market-mechanism", "value-family-holdings", "net-payout-feasibility", "joint-account", "joint-integer", "etf-measurement", "etf-history-extension", "calendar-allocation", "cross-asset-long-cycle", "etf-delayed-replay", "etf-envelope-report",
     ])
     paper = sub.add_parser("paper", help="模拟盘与人工订单")
-    paper.add_argument("command", choices=["q10", "orders", "manual", "b16-forward"])
+    paper.add_argument("command", choices=["q10", "rehearse", "order-chain", "orders", "manual", "b16-forward"])
     report = sub.add_parser("report", help="机器报告")
     report.add_argument("command", choices=["leaderboard", "dashboard", "review", "periods", "funnel", "brief", "q10-rolling", "q10-forward-demo"])
 

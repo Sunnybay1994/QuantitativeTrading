@@ -130,6 +130,46 @@ def test_rehearsal_forecast_rejected(tmp_path):
         q10.load_forecast(folder, dt.date(2026, 9, 30), Path('selection'), dt.date(2026, 10, 8))
 
 
+def test_forced_month_end_cannot_write_production(tmp_path, paper_config):
+    with pytest.raises(ValueError, match='isolated rehearsal'):
+        q10.run(config_path=paper_config, output=tmp_path/'production',
+                end=dt.date(2026, 9, 29), as_month_end=True)
+    assert not (tmp_path/'production').exists()
+
+
+def test_rehearsal_forces_signal_without_mutating_production(tmp_path, monkeypatch, paper_config):
+    import hashlib
+    from quant.execution.paper_rehearsal import rehearse_account
+    from tests.unit.test_stock_paper import fixture_inputs
+
+    inputs = fixture_inputs()[0]
+    monkeypatch.setattr(q10, 'read_stock_paper_calendar', lambda _: inputs.calendar)
+    monkeypatch.setattr(q10, 'read_stock_paper_inputs', lambda *args: inputs)
+    account = tmp_path/'account'
+    date = dt.date(2026, 9, 29)  # Ordinary session; only rehearsal should create targets.
+    q10.run(config_path=paper_config, output=account, end=date)
+    before = {str(p.relative_to(account)): hashlib.sha256(p.read_bytes()).hexdigest()
+              for p in account.rglob('*') if p.is_file()}
+    forecast = tmp_path/'forecast'
+    forecast.mkdir()
+    (forecast/'summary.json').write_text(json.dumps({'as_of': str(date)}))
+    scores = pl.DataFrame({'symbol': [f'{600000+i}.SH' for i in range(100)],
+        'trade_date': [date]*100, 'prediction': [float(100-i) for i in range(100)]})
+    monkeypatch.setattr(q10, 'load_forecast', lambda *args: scores)
+    receipt = rehearse_account(account=account, config=paper_config, end=date,
+                               data_root=tmp_path/'data', forecast=forecast)
+    assert receipt['status'] == 'complete'
+    assert receipt['pushed'] is False
+    assert receipt['result']['reference_orders'] == 50
+    output = Path(receipt['output'])
+    state = json.loads((output/str(date)/'state.json').read_text())
+    assert state['conclusion'] == 'REHEARSAL'
+    assert state['counts_toward_account_limit'] is False
+    assert {name: hashlib.sha256((account/name).read_bytes()).hexdigest()
+            for name in before} == before
+    assert json.loads((account/'latest_summary.json').read_text())['reference_orders'] == 0
+
+
 def test_month_end_orders_execute_next_session_and_restart(tmp_path, monkeypatch, paper_config):
     from tests.unit.test_stock_paper import fixture_inputs
 
