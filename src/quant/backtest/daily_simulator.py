@@ -77,8 +77,11 @@ def simulate_daily_targets(
     target_permissions: Mapping[str, tuple[bool, bool]] | None = None,
     execution_notional_caps: Mapping[str, float] | None = None,
     target_share_deltas: Mapping[str, int] | None = None,
+    preposted_limits: Mapping[tuple[str, str], float] | None = None,
 ) -> DailySimulationResult:
     """按权威 session 模拟股票/ETF 目标权重，显式保留拒单证据。"""
+    from quant.backtest.preposted_limit import validate as validate_limits, match as limit_match
+    validate_limits(preposted_limits)
     if execution_notional_caps is not None and any(
         not isinstance(symbol, str) or not symbol or isinstance(value, bool)
         or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0
@@ -342,9 +345,13 @@ def simulate_daily_targets(
                         continue
                     side = OrderSide.BUY if difference > 0 else OrderSide.SELL
                     requested = abs(difference)
+                    quoted = limit_match(limits=preposted_limits,symbol=symbol,side=side.value,
+                        opening=references[symbol]['open'],bar=bar_rows.get((date,symbol)))
+                    if quoted is None:
+                        continue
                     price, _, _ = _execution_values(
                         date=date, symbol=symbol, side=side, quantity=1,
-                        open_price=references[symbol]['open'],
+                        open_price=quoted,
                         instrument_type=instrument_rows[symbol]['instrument_type'],
                         etf_costs=etf_costs, stock_costs=stock_costs)
                     cap = execution_notional_caps.get(symbol, 0.)
@@ -382,6 +389,13 @@ def simulate_daily_targets(
                         reference_price=references[symbol]["open"],
                     )
                     continue
+                quoted = limit_match(limits=preposted_limits,symbol=symbol,side='SELL',
+                    opening=references[symbol]['open'],bar=bar_rows.get((date,symbol)))
+                if quoted is None:
+                    _append_rejection(rows=rejection_rows,strategy=strategy,date=date,symbol=symbol,
+                        side=OrderSide.SELL,reason=ExecutionRejectReason.LIMIT_NOT_REACHED,
+                        quantity=requested,reference_price=references[symbol]['open'])
+                    continue
                 cash, fee = _execute(
                     rows=trade_rows,
                     strategy=strategy,
@@ -389,7 +403,7 @@ def simulate_daily_targets(
                     symbol=symbol,
                     side=OrderSide.SELL,
                     quantity=requested,
-                    open_price=references[symbol]["open"],
+                    open_price=quoted,
                     cash=cash,
                     instrument_type=instrument_rows[symbol]["instrument_type"],
                     etf_costs=etf_costs,
@@ -424,12 +438,19 @@ def simulate_daily_targets(
                         reference_price=references[symbol]["open"],
                     )
                     continue
+                quoted = limit_match(limits=preposted_limits,symbol=symbol,side='BUY',
+                    opening=references[symbol]['open'],bar=bar_rows.get((date,symbol)))
+                if quoted is None:
+                    _append_rejection(rows=rejection_rows,strategy=strategy,date=date,symbol=symbol,
+                        side=OrderSide.BUY,reason=ExecutionRejectReason.LIMIT_NOT_REACHED,
+                        quantity=wanted,reference_price=references[symbol]['open'])
+                    continue
                 quantity = _affordable_quantity(
                     date=date,
                     symbol=symbol,
                     requested=wanted,
                     lot=int(instrument_rows[symbol]["board_lot"]),
-                    open_price=references[symbol]["open"],
+                    open_price=quoted,
                     cash=cash,
                     instrument_type=instrument_rows[symbol]["instrument_type"],
                     etf_costs=etf_costs,
@@ -450,7 +471,7 @@ def simulate_daily_targets(
                     symbol=symbol,
                     side=OrderSide.BUY,
                     quantity=quantity,
-                    open_price=references[symbol]["open"],
+                    open_price=quoted,
                     cash=cash,
                     instrument_type=instrument_rows[symbol]["instrument_type"],
                     etf_costs=etf_costs,

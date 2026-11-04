@@ -12,7 +12,7 @@ class BacktestRejectionSchema(pa.DataFrameModel):
     # record, so the simulator declines both sides rather than inventing a fill.
     reason: str = pa.Field(isin=['SUSPENDED', 'OPEN_UNKNOWN', 'BUY_AT_UPPER_LIMIT', 'SELL_AT_LOWER_LIMIT',
                                'T_PLUS_ONE', 'CASH_CONSTRAINT', 'LOT_CONSTRAINT', 'INSUFFICIENT_SELLABLE',
-                               'PARTICIPATION_CAP'])
+                               'PARTICIPATION_CAP', 'LIMIT_NOT_REACHED'])
     requested_quantity: int = pa.Field(gt=0)
     rejected_quantity: int = pa.Field(gt=0)
     reference_price: float = pa.Field(gt=0)
@@ -24,7 +24,7 @@ class BacktestRejectionSchema(pa.DataFrameModel):
     @pa.dataframe_check
     def rejection_valid(cls, data: pa.PolarsData) -> pl.LazyFrame:  # type: ignore[misc]
         side_matches = (
-            pl.col('reason').is_in(['SUSPENDED', 'OPEN_UNKNOWN', 'LOT_CONSTRAINT', 'PARTICIPATION_CAP'])
+            pl.col('reason').is_in(['SUSPENDED', 'OPEN_UNKNOWN', 'LOT_CONSTRAINT', 'PARTICIPATION_CAP', 'LIMIT_NOT_REACHED'])
             | (pl.col('reason').is_in(['BUY_AT_UPPER_LIMIT', 'CASH_CONSTRAINT']) & (pl.col('side') == 'BUY'))
             | (pl.col('reason').is_in(['SELL_AT_LOWER_LIMIT', 'T_PLUS_ONE', 'INSUFFICIENT_SELLABLE'])
                & (pl.col('side') == 'SELL')))

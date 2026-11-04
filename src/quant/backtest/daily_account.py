@@ -122,6 +122,7 @@ def advance(
     target_permissions: dict[str, tuple[bool, bool]] | None = None,
     execution_notional_caps: dict[str, float] | None = None,
     target_share_deltas: dict[str, int] | None = None,
+    preposted_limits: dict[tuple[str,str],float] | None = None,
 ) -> tuple[dict[str, Any], Any]:
     """Settle prior holdings, recognize dividends, then execute yesterday's targets."""
     paper = config["paper"]
@@ -177,6 +178,7 @@ def advance(
         target_permissions=target_permissions,
         execution_notional_caps=execution_notional_caps,
         target_share_deltas=target_share_deltas,
+        **({'preposted_limits':preposted_limits} if preposted_limits is not None else {}),
     )
     nav = result.nav.row(-1, named=True)
     nav["receivable"] = sum(r["amount"] for r in receivables)
