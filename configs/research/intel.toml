@@ -1,7 +1,7 @@
 # 公开情报扫描。由 `python -m quant intel` 或夜间周步调用。
 
 library = "configs/factors/library"
-queue = "configs/factors/queue"
+auto_enqueue = false
 maximum_candidates = 8
 
 [sources]
@@ -11,6 +11,7 @@ github = true
 github_limit = 10
 github_query = "quant OR quantitative factor language:Python stars:>10"
 rss_limit = 10
+keywords = ["factor", "return", "portfolio", "market", "liquidity", "volatility", "momentum", "risk", "backtest"]
 rss = [
     "https://rss.arxiv.org/rss/q-fin.ST",
     "https://rss.arxiv.org/rss/q-fin.PM",

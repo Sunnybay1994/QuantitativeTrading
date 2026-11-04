@@ -6,7 +6,9 @@ import datetime as dt
 import hashlib
 import xml.etree.ElementTree as ET
 from typing import Any, Callable
-from urllib.parse import urlencode
+from urllib.parse import urlencode,urlparse
+import re
+import html
 
 import httpx
 
@@ -56,6 +58,7 @@ def fetch_arxiv(
             "title": " ".join(title.split()),
             "url": url,
             "summary": " ".join(summary.split())[:800],
+            "evidence_text": " ".join(summary.split()),
             "published": (entry.findtext("a:published", default="", namespaces=ns) or "")[:10],
         })
     return items
@@ -115,12 +118,16 @@ def fetch_rss(url: str, *, getter: Fetcher | None = None, limit: int = 15) -> li
         if not title or not link:
             continue
         summary = (entry.findtext("description") or entry.findtext("{http://www.w3.org/2005/Atom}summary") or "")
+        summary=html.unescape(re.sub(r'<[^>]+>',' ',summary))
+        if 'Abstract:' in summary:
+            summary=summary.split('Abstract:',1)[1]
         items.append({
             "id": item_id("rss", link),
             "source": "rss",
             "title": " ".join(title.split()),
             "url": link.strip(),
             "summary": " ".join(summary.split())[:800],
+            "evidence_text": " ".join(summary.split()),
             "published": (entry.findtext("pubDate") or "")[:16],
         })
     return items
@@ -138,7 +145,12 @@ def collect(config: dict[str, Any], *, getter: Fetcher | None = None) -> list[di
             getter=getter,
         ))
     for feed in list(sources.get("rss") or []):
+        parsed=urlparse(str(feed))
+        if parsed.hostname not in {'rss.arxiv.org','export.arxiv.org','arxiv.org'} or not re.match(r'^/rss/q-fin(?:\.|/|$)',parsed.path):
+            continue
         items.extend(fetch_rss(str(feed), getter=getter, limit=int(sources.get("rss_limit", 10))) )
+    keywords=sources.get('keywords') or ['factor','return','portfolio','market','liquidity','volatility','momentum','risk','backtest']
+    items=[item for item in items if any(str(word).lower() in (item['title']+' '+item['summary']).lower() for word in keywords)]
     seen: set[str] = set()
     unique = []
     for item in items:

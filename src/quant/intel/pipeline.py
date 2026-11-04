@@ -1,10 +1,13 @@
-"""情报扫描 → 去重 →（可选）LLM 提炼 → 写入因子队列与周报。"""
+"""情报扫描、原文验证与周报；候选不自动入队。"""
 
 from __future__ import annotations
 
 import argparse
 import json
 import tomllib
+import datetime as dt
+import hashlib
+import math
 from pathlib import Path
 from typing import Any, Callable
 
@@ -38,21 +41,6 @@ def _load_seen(week: str) -> set[str]:
         return set()
 
 
-def _write_queue(candidates: list[dict[str, Any]], queue: Path, week: str) -> Path | None:
-    if not candidates:
-        return None
-    queue.mkdir(parents=True, exist_ok=True)
-    path = queue / f"intel_{week.replace('-', '').lower()}.toml"
-    lines = []
-    for row in candidates:
-        lines.append("[[factors]]")
-        for key in ("id", "expr", "family", "direction", "source_ref"):
-            lines.append(f"{key} = {json.dumps(row[key], ensure_ascii=False)}")
-        lines.append("")
-    path.write_text("\n".join(lines), encoding="utf-8")
-    return path
-
-
 def _digest(week: str, items: list[dict[str, Any]], accepted: list[dict[str, Any]],
             rejected: list[dict[str, Any]], queue_path: Path | None) -> Path:
     root = project_paths().artifacts / "intel" / week
@@ -69,18 +57,19 @@ def _digest(week: str, items: list[dict[str, Any]], accepted: list[dict[str, Any
         linked = next((a for a in accepted if row["id"] in str(a.get("source_ref", ""))), None)
         mechanism = (linked or {}).get("rationale") or (row.get("summary") or "")[:80]
         feasibility = (linked or {}).get("feasibility", 1.0 if linked else 0.0)
-        queued = "是" if linked else "否"
+        queued = "否"
         lines.append(
             f"|[{row['title'][:60]}]({row['url']})|{row['source']}|{mechanism.replace('|', '/')}|"
             f"{feasibility:.2f}|{queued}|"
         )
     if accepted:
-        lines += ["", "## 写入队列的候选"]
+        lines += ["", "## 有原文依据的来源候选（未入队）"]
         for row in accepted:
             lines.append(
                 f"- `{row['id']}` `{row['expr']}` dir={row['direction']} "
                 f"mechanism={(row.get('rationale') or '')[:80]}"
             )
+            lines.append(f"  原文：{row['evidence_quote']}")
     if queue_path:
         lines += ["", f"队列文件：`{queue_path.as_posix()}`"]
     path = root / "digest.md"
@@ -92,10 +81,13 @@ def _digest(week: str, items: list[dict[str, Any]], accepted: list[dict[str, Any
             "accepted": len(accepted),
             "rejected": len(rejected),
             "queue": None if queue_path is None else str(queue_path),
+            "auto_enqueue":False,
         }, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     (root / "items.json").write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    (root/'candidates.json').write_text(json.dumps(accepted,ensure_ascii=False,indent=2),encoding='utf-8')
+    (root/'rejected.json').write_text(json.dumps(rejected,ensure_ascii=False,indent=2),encoding='utf-8')
     return path
 
 
@@ -133,14 +125,40 @@ def run_intel(
     rejected: list[dict[str, Any]] = []
     if extract and fresh:
         kwargs = {"existing_canonical": set(existing), "maximum": int(config.get("maximum_candidates", 8))}
-        if complete is not None:
-            kwargs["complete"] = complete
+        from quant.llm import complete_messages
+        from quant.llm.ledger import append
+        from quant.research.gp_hints import priced_usd
+        call=complete or complete_messages
+        def tracked(messages,settings):
+            started=dt.datetime.now(dt.timezone.utc)
+            directory=project_paths().artifacts/'intel'/week
+            directory.mkdir(parents=True,exist_ok=True)
+            receipt=directory/f"extraction_{started:%Y%m%dT%H%M%S_%f}.json"
+            record={'status':'attempted','started_at':started.isoformat(),'messages':messages,'settings':settings}
+            with receipt.open('x',encoding='utf-8') as handle:
+                handle.write(json.dumps(record,ensure_ascii=False,default=str))
+            try:
+                response=call(messages,settings)
+            except Exception as exc:
+                record.update(status='request_failed',error_type=type(exc).__name__)
+                if getattr(exc,'code','') not in ('connect_failed','monthly_budget_exhausted'):
+                    append({'task':'intel_extract','usd':settings['reserve_usd'],'estimated':True,
+                        'unknown_charge':True,'artifact':str(receipt)},root/'artifacts/research/llm_ledger',now=started)
+                receipt.write_text(json.dumps(record,ensure_ascii=False,default=str,indent=2),encoding='utf-8')
+                raise
+            usd,estimated=priced_usd(response,Path(__file__).resolve().parents[3]/'configs/llm/pricing.toml')
+            unknown=usd is None or not math.isfinite(usd) or usd<=0
+            usd=settings['reserve_usd'] if unknown else usd
+            record.update(status='responded',response=response,usd=usd,estimated=estimated or unknown,unknown_charge=unknown)
+            receipt.write_text(json.dumps(record,ensure_ascii=False,default=str,indent=2),encoding='utf-8')
+            append({'task':'intel_extract','usd':usd,'estimated':estimated or unknown,'unknown_charge':unknown,
+                'artifact':str(receipt),'artifact_sha256':hashlib.sha256(receipt.read_bytes()).hexdigest(),
+                'usage':response.get('usage')},root/'artifacts/research/llm_ledger',now=started)
+            return response
+        kwargs["complete"] = tracked
         kwargs["library_ids"] = library_ids
         accepted, rejected = extract_candidates(fresh, **kwargs)
-    queue = Path(config.get("queue", "configs/factors/queue"))
-    if not queue.is_absolute():
-        queue = root / queue
-    queue_path = _write_queue(accepted, queue, week)
+    queue_path = None
     digest = _digest(week, fresh, accepted, rejected, queue_path)
     seen_path = _seen_path(week)
     seen_path.parent.mkdir(parents=True, exist_ok=True)
@@ -156,10 +174,10 @@ def run_intel(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="quant intel", description="扫描公开研究并写入因子队列")
+    parser = argparse.ArgumentParser(prog="quant intel", description="扫描公开研究并核对来源；仅输出digest，不自动入队")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--no-extract", action="store_true", help="只抓取摘要，不调用 LLM")
-    parser.add_argument("--dry-run", action="store_true", help="不抓取、不调用 LLM，只写空 digest 骨架")
+    parser.add_argument("--dry-run", action="store_true", help="不抓取、不调用LLM、不覆盖已有产物")
     args = parser.parse_args(argv)
     result = run_intel(config_path=args.config, extract=not args.no_extract, dry_run=args.dry_run)
     print(json.dumps(result, ensure_ascii=False, indent=2))
