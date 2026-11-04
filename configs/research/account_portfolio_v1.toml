@@ -1,0 +1,74 @@
+id = "account_portfolio_v1"
+registered_on = 2026-11-04
+auto_trade = false
+capital_cny = 300000
+stock_source = "artifacts/models/q10_sue_v2_turnover_budget_05_20260912_01"
+predictions = "artifacts/models/q2_sue_context_v2_causal48_20260912_02/predictions"
+stock_rule = "frozen Q10 Top50/75, monthly 0.5 turnover budget; replay actual 300000 CNY integer holdings"
+stock_variants = ["q10"]
+future_top15 = "Only add the preregistered R2 stock leg after its replay; do not replace Q10 results"
+start = 2019-01-01
+end = 2026-08-31
+window = "continuous interval from first Q10 stock holding; retain every calendar year"
+cost_multipliers = [0.5, 1.0, 2.0]
+rebalance = "quarter_end_close_next_exchange_session_open"
+stock_internal_rebalance = "unchanged frozen monthly Q10 membership and turnover budget within assigned leg"
+variants = ["fixed_40_30_30", "inverse_volatility60"]
+fixed_weights = [0.4, 0.3, 0.3]
+leg_order = ["q10", "512890.SH", "511010.SH"]
+unlisted_leg = "hold its allocated cash without reallocating to other legs; no synthetic prelisting prices"
+missing_listed_session = "fail; no zero filling or shortened evaluation window"
+cash_interest = 0.0
+weight_search = false
+market_timing = false
+
+[risk_parity]
+lookback_sessions = 60
+standard_deviation_ddof = 1
+returns = "daily simple total returns of standalone legs, known at signal close only"
+weights = "inverse trailing sample volatility normalized to sum 1; no leverage and no fitted caps"
+initial_insufficient_history = "use preregistered fixed 40/30/30 until all three legs have 60 prior daily returns; change only on scheduled quarterly dates"
+zero_volatility = "fail, do not silently assign a floor"
+
+[etfs.dividend]
+symbol = "512890.SH"
+listing_date = 2019-01-18
+listing_source = "https://www.sse.com.cn/disclosure/fund/announcement/c/new/2026-03-18/512890_20260318_FNWM.pdf"
+liquidity_check = "report actual first/last date, median and minimum daily CNY turnover, and prior-60-session turnover at each allocation date before replay"
+
+[etfs.treasury]
+symbol = "511010.SH"
+listing_date = 2013-03-25
+listing_source = "https://www.sse.com.cn/disclosure/fund/announcement/c/new/2026-03-19/511010_20260319_W8OE.pdf"
+liquidity_check = "same diagnostics as dividend ETF; no post-result symbol substitution"
+
+[costs.etf]
+commission_rate = 0.00025
+commission_min = 5.0
+slippage = 0.0
+slippage_per_share = 0.001
+stamp_tax = 0.0
+
+[assessment]
+source = "项目实施路线图.md section 1.2 account portfolio, confirmed 2026-11-01"
+maximum_drawdown = 0.20
+minimum_sharpe = 1.0
+minimum_sharpe_improvement_over_stock = 0.2
+minimum_double_cost_cagr_over_treasury = 0.04
+minimum_worst_calendar_year = -0.10
+report = "all four gates for each variant and each cost; no new admission gates"
+stock_benchmark = "same-window standalone 300000 CNY Q10, same costs and market data"
+treasury_benchmark = "same-window 511010.SH total return with corresponding transaction costs"
+
+[pessimistic.gold_to_treasury]
+method = "identity_no_gold_in_base"
+explanation = "The requested base portfolio already holds treasury rather than gold. Report identical recomputed results explicitly; do not invent a fourth gold leg or call this an independent stress loss."
+
+[pessimistic.pre2019]
+start = 2015-01-01
+end = 2018-12-31
+stock_proxy = "510300.SH"
+stock_proxy_return = "actual cash-dividend total return; integer ETF execution and same cost convention"
+dividend_etf_before_listing = "allocated cash; 512890.SH was not listed during this interval"
+treasury_symbol = "511010.SH"
+note = "Proxy scenario only, not Q10 performance; explicitly disclose that base Q10 lacks 2015 and 2018 bear years"
