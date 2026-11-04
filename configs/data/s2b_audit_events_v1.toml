@@ -1,0 +1,56 @@
+# R3 data repair. Issuer ratios, never vendor adjustment-factor jumps.
+# Apply ratios to the next quoted session; no fabricated executable bar.
+[[splits]]
+symbol = "510500.SH"
+date = 2015-04-15
+ratio = 0.28032483
+source = "https://www.sse.com.cn/disclosure/fund/announcement/c/2015-04-15/510500_20150415_2.pdf"
+
+[[splits]]
+symbol = "512010.SH"
+date = 2021-06-28
+ratio = 4.0
+source = "https://static.cninfo.com.cn/finalpage/2021-06-16/1210241250.PDF"
+
+[[splits]]
+symbol = "510500.SH"
+date = 2022-08-29
+ratio = 1.14539
+source = "https://www.sse.com.cn/disclosure/fund/announcement/c/new/2022-08-23/510500_20220823_1_aMMa3ZNB.pdf"
+
+[[splits]]
+symbol = "512100.SH"
+date = 2022-09-05
+ratio = 0.36555
+source = "https://www.sse.com.cn/disclosure/fund/announcement/c/new/2022-09-05/512100_20220905_1_UJdHwEYe.pdf"
+
+[[splits]]
+symbol = "512800.SH"
+date = 2025-07-07
+ratio = 2.0
+source = "https://www.sse.com.cn/disclosure/fund/announcement/c/new/2025-07-07/512800_20250707_PJ9L.pdf"
+
+[[nontrading]]
+symbol = "510500.SH"
+dates = [2015-04-13,2015-04-14]
+source = "https://www.sse.com.cn/disclosure/fund/announcement/c/2015-04-12/510500_20150413_1.pdf"
+
+[[nontrading]]
+symbol = "512010.SH"
+dates = [2021-06-25]
+source = "https://static.cninfo.com.cn/finalpage/2021-06-16/1210241250.PDF"
+
+[[nontrading]]
+symbol = "512010.SH"
+dates = [2017-01-12]
+source = "TDX original bar exists with zero volume/amount and OHLC all equal to previous close 1.318; valuation reference only"
+
+[[nontrading]]
+symbol = "512100.SH"
+dates = [2022-09-02]
+source = "https://static.cninfo.com.cn/finalpage/2022-08-24/1214376900.PDF"
+
+[[nontrading]]
+symbol = "159915.SZ"
+dates = [2021-02-08]
+source = "https://pdf.dfcfw.com/pdf/H2_AN202102081459963456_1.pdf?1612777675000.pdf="
