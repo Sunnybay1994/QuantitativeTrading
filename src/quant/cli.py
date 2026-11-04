@@ -17,6 +17,7 @@ from quant.llm.budget import month_spend_usd, remaining_budget_usd
 _DELEGATE: dict[tuple[str, str], str] = {
     ("research", "q10-sizing"): "quant.research.q10_sizing",
     ("research", "account-etf-baselines"): "quant.research.account_portfolio_etf_baselines",
+    ("research", "account-stock-leg"): "quant.research.account_portfolio_stock_leg",
     ("data", "refresh"): "quant.data.refresh",
     ("data", "account-portfolio-inputs"): "quant.data.account_portfolio_inputs",
     ("data", "account-portfolio-panel"): "quant.data.account_portfolio_panel",
@@ -85,6 +86,7 @@ _DELEGATE: dict[tuple[str, str], str] = {
     ("paper", "manual"): "quant.execution.manual_session_cli",
     ("paper", "b16-forward"): "quant.execution.b16_forward_service",
     ("report", "leaderboard"): "quant.reporting.leaderboard",
+    ("report", "account-stock-leg"): "quant.reporting.account_portfolio_stock_leg",
     ("report", "review"): "quant.reporting.strategy_review",
     ("report", "periods"): "quant.reporting.registered_periods",
     ("report", "dashboard"): "quant.reporting.research_dashboard",
@@ -242,14 +244,14 @@ def main(argv: list[str] | None = None) -> int:
     research = sub.add_parser("research", help="投研流水线")
     research.add_argument("command", choices=[
         "q10-sizing",
-        "daily", "nightly", "mining", "cycle", "gp", "feedback", "recovery-audit", "personal-top5", "admitted-model-pair", "residual-momentum", "pead-event-inputs", "pead-event-market-inputs", "pead-account", "benchmark-repair", "benchmark-repair-evaluate",
+        "daily", "nightly", "mining", "cycle", "gp", "feedback", "recovery-audit", "personal-top5", "admitted-model-pair", "residual-momentum", "pead-event-inputs", "pead-event-market-inputs", "pead-account", "benchmark-repair", "benchmark-repair-evaluate", "account-stock-leg",
         "reversal-readiness", "batch-diagnosis", "predictive-inputs", "intraday-afternoon", "minutes", "mechanisms", "statement-event-family", "suspension-execution-audit", "turnover-reference-family", "turnover-reference-verify", "monthly-execution-open-verify", "industry-information-coverage", "industry-information-verify",
         "allocation-attribution", "mechanism-detail", "etf-manual-init", "etf-execution-stress", "market-indicators", "factor-family-states", "market-mechanism", "value-family-holdings", "net-payout-feasibility", "joint-account", "joint-integer", "etf-measurement", "etf-history-extension", "calendar-allocation", "cross-asset-long-cycle", "etf-delayed-replay", "etf-envelope-report", "account-etf-baselines",
     ])
     paper = sub.add_parser("paper", help="模拟盘与人工订单")
     paper.add_argument("command", choices=["q10", "rehearse", "order-chain", "order-watch", "orders", "manual", "b16-forward"])
     report = sub.add_parser("report", help="机器报告")
-    report.add_argument("command", choices=["leaderboard", "dashboard", "review", "periods", "funnel", "brief", "q10-rolling", "q10-forward-demo"])
+    report.add_argument("command", choices=["leaderboard", "dashboard", "review", "periods", "funnel", "brief", "q10-rolling", "q10-forward-demo", "account-stock-leg"])
 
     args, rest = parser.parse_known_args(argv)
     if args.group is None:
