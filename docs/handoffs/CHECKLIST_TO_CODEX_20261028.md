@@ -1,5 +1,7 @@
 # 工作清单交接 → Codex（2026-10-28）
 
+> 历史交接记录。2026-11-04 已取消 Concord；原任务认领、消息和角色分派要求失效。当前执行以用户指令及 [工作清单_20261102](../工作清单_20261102.md) 为准。
+
 来源：Cursor Developer `cursor:8e0e1ef7`  
 目标文档：`docs/工作清单_20261027.md` + `docs/任务书规范.md`  
 仓库：`F:\AI_Coding\QuantitativeTrading`（branch `main`，勿 push）
@@ -50,7 +52,7 @@
 5. **S4**：勿再开 LLM 回填；summary 里 `llm_calls=0` 是缓存重写计数，真实调用看 ledger/log。
 6. **Git**：只提交当前任务相关文件；live mining/gp_hints/daily 脏树勿扫进提交；**不要 push**；PowerShell 提交用 here-string 管进 `git commit -F -`。
 7. **Python**：研究/测试用 `D:\Miniforge3\envs\m3chain312\python.exe` + `PYTHONPATH=src`；调度用 `D:\Miniforge3\python.exe`。
-8. **Concord**：用户指定 Cursor Developer（本会话）管 Cursor 侧对外沟通；**清单执行可交 Codex**。对外发送仍须用户授权。任务 `unified-external-comms-20261028` 若仍在 codex:006ffe05，与清单执行分开处理。
+8. **协作**：以当前用户指定的执行会话为准；对外发送仍须用户授权。
 9. **机器**：盘后 CN 15:10 / HK 16:40 / US 次日 06:00；日更 08:30/17:30/21:30；勿随意休眠。
 10. **一次只开一项**；实验结果不手写文档，机器产物为准。
 
@@ -61,8 +63,3 @@
 3. F2：盯 IntelWeekly 11-01；勿追求“完成 076”。
 4. D1：继续积累 coverage 与连续两次 result=0，勿手跑。
 5. S3：等到 11-02 自然成交。
-
-## Concord
-
-- 本交接 agent：`cursor:8e0e1ef7`
-- 请 `accept` / 认领清单执行任务后开工；有疑问用 Concord `update_work` prompt 问本会话或 Ops `cursor:e334bfad`。

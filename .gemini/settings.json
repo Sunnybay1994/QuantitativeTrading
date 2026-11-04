@@ -1,12 +1,5 @@
 {
-  "mcpServers": {
-    "concord": {
-      "command": "concord-mcp",
-      "env": {
-        "CONCORD_REPO_ROOT": "F:\\AI_Coding\\QuantitativeTrading"
-      }
-    }
-  },
+  "mcpServers": {},
   "tools": {
     "shell": {
       "backgroundCompletionBehavior": "inject"

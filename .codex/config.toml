@@ -1,0 +1,9 @@
+# Project opt-out overrides any user-level Concord MCP registration.
+[mcp_servers.concord]
+enabled = false
+
+# The inherited lifecycle hooks contain only Concord commands.
+[hooks]
+SessionStart = []
+PostToolUse = []
+Stop = []

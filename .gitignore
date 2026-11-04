@@ -49,3 +49,6 @@ configs/feishu-*.tmp
 
 configs/notify.local.dpapi
 configs/notify-*.tmp
+
+# Disabled local coordination state must remain untracked.
+/.concord/

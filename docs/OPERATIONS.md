@@ -11,6 +11,10 @@ python -m quant status
 python -m quant gpu-check
 ```
 
+## 项目协作
+
+2026-11-04 起停用项目级 Concord：无需认领、交接或 inbox 监听；按当前用户指令与工作清单执行。项目客户端的 Concord MCP 已移除，Codex 项目配置显式禁用全局同名入口，并清空本项目继承的 Concord 生命周期 hook。历史协作状态保留在 `artifacts/archive/concord_disabled_20261104/runtime/`，不作为当前任务状态来源。已打开的客户端需重新载入项目配置，清除旧工具和规则缓存。
+
 ## 日常命令
 
 个人账户固定Top5/Top50与佣金配对实验：[运行和断点恢复](PERSONAL_ACCOUNT_REPLAY.md)。
