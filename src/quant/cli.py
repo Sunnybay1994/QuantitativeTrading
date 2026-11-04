@@ -16,8 +16,10 @@ from quant.llm.budget import month_spend_usd, remaining_budget_usd
 # 组、命令 → 现有 __main__ 模块。未知参数原样转交。
 _DELEGATE: dict[tuple[str, str], str] = {
     ("research", "q10-sizing"): "quant.research.q10_sizing",
+    ("research", "account-etf-baselines"): "quant.research.account_portfolio_etf_baselines",
     ("data", "refresh"): "quant.data.refresh",
     ("data", "account-portfolio-inputs"): "quant.data.account_portfolio_inputs",
+    ("data", "account-portfolio-panel"): "quant.data.account_portfolio_panel",
     ("data", "events-v0"): "quant.data.events_v0",
     ("data", "realtime"): "quant.data.realtime",
     ("data", "market-snapshot"): "quant.data.market_snapshot",
@@ -234,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
     intel.add_argument("--dry-run", action="store_true")
 
     data = sub.add_parser("data", help="数据刷新")
-    data.add_argument("command", choices=["refresh", "account-portfolio-inputs", "events-v0", "realtime", "market-snapshot", "minutes", "minute-history", "minute-factors", "baostock-history", "post-close-k1m", "latency", "stock-execution-open", "monthly-execution-open"])
+    data.add_argument("command", choices=["refresh", "account-portfolio-inputs", "account-portfolio-panel", "events-v0", "realtime", "market-snapshot", "minutes", "minute-history", "minute-factors", "baostock-history", "post-close-k1m", "latency", "stock-execution-open", "monthly-execution-open"])
     factors = sub.add_parser("factors", help="因子计算")
     factors.add_argument("command", choices=["compute"])
     research = sub.add_parser("research", help="投研流水线")
@@ -242,7 +244,7 @@ def main(argv: list[str] | None = None) -> int:
         "q10-sizing",
         "daily", "nightly", "mining", "cycle", "gp", "feedback", "recovery-audit", "personal-top5", "admitted-model-pair", "residual-momentum", "pead-event-inputs", "pead-event-market-inputs", "pead-account", "benchmark-repair", "benchmark-repair-evaluate",
         "reversal-readiness", "batch-diagnosis", "predictive-inputs", "intraday-afternoon", "minutes", "mechanisms", "statement-event-family", "suspension-execution-audit", "turnover-reference-family", "turnover-reference-verify", "monthly-execution-open-verify", "industry-information-coverage", "industry-information-verify",
-        "allocation-attribution", "mechanism-detail", "etf-manual-init", "etf-execution-stress", "market-indicators", "factor-family-states", "market-mechanism", "value-family-holdings", "net-payout-feasibility", "joint-account", "joint-integer", "etf-measurement", "etf-history-extension", "calendar-allocation", "cross-asset-long-cycle", "etf-delayed-replay", "etf-envelope-report",
+        "allocation-attribution", "mechanism-detail", "etf-manual-init", "etf-execution-stress", "market-indicators", "factor-family-states", "market-mechanism", "value-family-holdings", "net-payout-feasibility", "joint-account", "joint-integer", "etf-measurement", "etf-history-extension", "calendar-allocation", "cross-asset-long-cycle", "etf-delayed-replay", "etf-envelope-report", "account-etf-baselines",
     ])
     paper = sub.add_parser("paper", help="模拟盘与人工订单")
     paper.add_argument("command", choices=["q10", "rehearse", "order-chain", "order-watch", "orders", "manual", "b16-forward"])
