@@ -1,0 +1,24 @@
+# Mathematical kernel repair of the fixed C1 backlog, not a new search.
+version="window_local_skew_v2"
+registered_on=2026-11-05
+auto_trade=false
+artifact_root="artifacts/research/gp_window_skew_repair_20261105_01"
+candidates=["ngp_41c63e3c228b51f3", "ngp_c804c266475118ac", "ngp_53eea318c012cf80"]
+method="Unbiased Fisher-Pearson skew from the complete finite window; no running-prefix state, no fitted floor or clipping"
+selection="Keep original expressions, directions and selected candidates; no new search or re-ranking"
+evidence="Original N2 numeric values and search fitness remain immutable. Corrected fixed-input training is separately labelled, never claimed to reproduce the broken N2 measurement"
+admission="Original full-history battery, controls and three cost levels; no threshold changes"
+
+[directions]
+"ngp_41c63e3c228b51f3"=1
+"ngp_c804c266475118ac"=-1
+"ngp_53eea318c012cf80"=1
+
+[sources]
+"artifacts\\research\\continuous\\batch_000079\\2026-10-31\\N2\\search.json"="2123bd5d4e72ef3d946019698ca36d1f3ea304489867a515d08549fc2dc6a9a6"
+"artifacts\\research\\continuous\\batch_000079\\2026-10-31\\N2\\terminal_mapping.json"="3fe926dfc88830ca37f562e68ab4129c4a16161fe7355e57d35c64a3883b5dcc"
+"artifacts\\research\\continuous\\batch_000079\\2026-10-31\\N2\\daily_sample.parquet"="486c02b2d508a0f21a450a2563878f572f4de9e34cefeab73c6c8b7e1f1d2870"
+"artifacts\\research\\continuous\\batch_000079\\2026-10-31\\N2\\monthly_sample.parquet"="3877e8a07f5a8aa8c7c9cbf9ce38f4cf3d0018bfaed090ba62c17f85b8df67ae"
+"artifacts\\research\\continuous\\batch_000079\\2026-10-31\\N2\\training_candidate_values.parquet"="78e9a6832427d352c087543b30bc5f1bcdc6dec54831c1b9891711239a0df4f5"
+"artifacts\\research\\continuous\\batch_000079\\2026-10-31\\N2\\training_values_manifest.json"="aa62e6d3447e9ca4f1cb212e76a563448a6cbbe264e943c9ef1c3376e3ca83e9"
+"artifacts\\research\\continuous\\batch_000079\\2026-10-31\\N2\\full_context_receipt\\contract.json"="a70330df6fdc2307b6fafeb5f36484a5111cae5ef7b80ffb83ec9a06f2910f4d"

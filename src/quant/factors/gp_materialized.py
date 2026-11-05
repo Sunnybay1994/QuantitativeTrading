@@ -21,9 +21,11 @@ from quant.research.gp_expression_identity import LEGACY, canonical_expression
 from quant.research.gp_full_context import VERSION, expand, replace_cross_subtrees, scope_cross_sections
 
 
-def materialized_plans(definitions: list) -> dict:
+def materialized_plans(definitions: list, *, numeric_repair: Path | None = None) -> dict:
     """Only route definitions with an explicit, verifiable N2 context receipt."""
     sources, plans = {}, {}
+    from quant.research.gp_skew_repair import load as load_repair
+    repair=load_repair(numeric_repair)
     for definition in definitions:
         source = Path(definition.source_ref)
         if source.name != 'search.json' or not source.is_file():
@@ -43,6 +45,10 @@ def materialized_plans(definitions: list) -> dict:
                     canonical_expression(definition.expr, identity), mode='eval'))):
             raise ValueError('GP materialized terminal mapping differs from frozen definition')
         plans[definition.id] = {'source': source, 'mapping': mapping, 'terminal': terminal}
+        if repair and definition.id in repair['candidates']:
+            if str(source) not in repair['sources'] or 'ts_skew' not in terminal:
+                raise ValueError('Skew repair scope differs from the frozen request')
+            plans[definition.id]['window_skew']=True
     return plans
 
 
@@ -51,7 +57,8 @@ def evaluate_materialized(panel: pl.DataFrame, plans: dict, *, data_root: Path,
     """Evaluate verified GP plans on a full padded grid, without changing N2."""
     output = panel.select(KEYS)
     low, high = panel['trade_date'].min(), panel['trade_date'].max()
-    selection = hashlib.sha256('\n'.join(sorted(plans)).encode()).hexdigest()[:16]
+    selection = hashlib.sha256('\n'.join(name+(':window_skew' if plans[name].get('window_skew') else '')
+        for name in sorted(plans)).encode()).hexdigest()[:16]
     folder = artifact_root/'gp_materialized'/f'{low}_{high}'/selection
     folder.mkdir(parents=True, exist_ok=True)
     manifest_path = folder/'sources.json'
@@ -68,8 +75,9 @@ def evaluate_materialized(panel: pl.DataFrame, plans: dict, *, data_root: Path,
         sources[key] = digest
         stamps[key] = (path.stat().st_size, path.stat().st_mtime_ns) if path.exists() else None
 
-    for index, source in enumerate(dict.fromkeys(p['source'] for p in plans.values())):
-        group = {name: p for name, p in plans.items() if p['source'] == source}
+    groups=dict.fromkeys((p['source'],p.get('window_skew',False)) for p in plans.values())
+    for index, (source,window_skew) in enumerate(groups):
+        group = {name: p for name, p in plans.items() if p['source'] == source and p.get('window_skew',False)==window_skew}
         mapping = next(iter(group.values()))['mapping']
         track(source)
         track(source.parent/'terminal_mapping.json')
@@ -116,7 +124,7 @@ def evaluate_materialized(panel: pl.DataFrame, plans: dict, *, data_root: Path,
                 sample = sample.with_columns(pl.lit(None, dtype=pl.Float64).alias(name))
         for _, values in projections.values():
             sample = sample.join(values, on=KEYS, how='left', validate='1:1')
-        values = evaluate_expressions(sample, expressions)
+        values = evaluate_expressions(sample, expressions,window_skew=window_skew)
         output = output.join(values, on=KEYS, how='left', validate='1:1')
         if reader is not None:
             reader.verify_sources()

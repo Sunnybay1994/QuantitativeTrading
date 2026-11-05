@@ -6,6 +6,7 @@ maximum_gp_batches_per_week = 1
 monthly_three_models = false
 replenish_ngp = false
 weekly_candidate_generation = false
+gp_numeric_repair_config = "configs/research/gp_window_skew_repair_20261105.toml"
 original_checklist_backlog_count = 41
 observed_backlog_count = 40
 registered_family_configs = ["configs/research/liquidity_comovement_family_v1.toml", "configs/research/industry_information_family_v1.toml", "configs/research/sue_family_v1.toml", "configs/research/statement_event_family_v1.toml", "configs/research/turnover_reference_price_family_v1.toml"]

@@ -101,7 +101,8 @@ def required_history(expression: str) -> int:
 class ExpressionEngine:
     """Compile AST nodes into materialized Polars stages, never Python eval."""
 
-    def __init__(self, panel: pl.DataFrame):
+    def __init__(self, panel: pl.DataFrame, *, window_skew: bool = False):
+        self.window_skew=window_skew
         self.frame = panel.sort("symbol", "trade_date").lazy()
         self.fields = set(panel.columns)
         self.cache: dict[str, str] = {}
@@ -157,6 +158,8 @@ class ExpressionEngine:
             if name == "ts_skew":
                 if n < 3:
                     raise ValueError("Skewness requires at least three sessions")
+                if self.window_skew:
+                    return rolling_moment(x,n,name)
                 return x.rolling_skew(n, min_samples=n, bias=False).over("symbol")
             if name == "ts_product":
                 return reduce(operator.mul, (x.shift(lag).over("symbol") for lag in range(n)))
@@ -260,7 +263,7 @@ class ExpressionEngine:
         raise ValueError(f"Unknown factor operator: {name}")
 
 
-def evaluate_expressions(panel: pl.DataFrame, expressions: dict[str, str]) -> pl.DataFrame:
+def evaluate_expressions(panel: pl.DataFrame, expressions: dict[str, str], *, window_skew: bool = False) -> pl.DataFrame:
     """Evaluate on a unique, padded (symbol, trade_date) panel."""
     if panel.select(pl.struct("symbol", "trade_date").is_duplicated().any()).item():
         raise ValueError("Duplicate factor input keys")
@@ -270,7 +273,7 @@ def evaluate_expressions(panel: pl.DataFrame, expressions: dict[str, str]) -> pl
     # A single 321-factor plan overflows the native Windows stack. Each group
     # shares its subexpressions, while bounding the optimizer's plan depth.
     for first in range(0, len(items), 64):
-        engine = ExpressionEngine(ordered)
+        engine = ExpressionEngine(ordered,window_skew=window_skew)
         columns = {name: engine.compile(expr) for name, expr in items[first:first + 64]}
         values = engine.frame.select(
             "symbol", "trade_date",

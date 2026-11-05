@@ -126,8 +126,14 @@ def attach_expression_inputs(
 def run(
     *, data_root: Path, refresh_config: Path, library: Path, selected: str,
     start: dt.date, end: dt.date, artifact_root: Path, rebuild: bool = False,
+    numeric_repair: Path | None = None,
 ) -> dict[str, Any]:
     definitions = load_library(library, selected)
+    if numeric_repair:
+        from quant.research.gp_skew_repair import load as load_repair,archive_panels
+        repair=load_repair(numeric_repair)
+        if any(d.id in repair['candidates'] for d in definitions):
+            archive_panels(repair,data_root=data_root)
     sessions = available_sessions(data_root, end)
     if not sessions or start > end:
         raise ValueError("Invalid factor computation range")
@@ -142,7 +148,8 @@ def run(
     }
     check_definition(data_root, "forward_returns", return_definition)
     results = []
-    gp_context = materialized_plans(definitions)
+    gp_context = materialized_plans(definitions,numeric_repair=numeric_repair)
+    calculations={name:GP_CONTEXT+('_window_skew_v2' if plan.get('window_skew') else '') for name,plan in gp_context.items()}
     seasonality_definitions = [row for row in definitions if row.id in SEASONALITY_NAMES]
     turnover_definitions = [row for row in definitions if row.id in TURNOVER_NAMES]
     industry_definitions = [row for row in definitions if row.id in INDUSTRY_NAMES]
@@ -154,7 +161,7 @@ def run(
             continue
         pending = [row for row in definitions if rebuild or not panel_ready(
             data_root, row.id, year, low, high,
-            calculation=GP_CONTEXT if row.id in gp_context else None)]
+            calculation=calculations.get(row.id))]
         gp_plans = {name: plan for name, plan in gp_context.items() if name in {row.id for row in pending}}
         last_index = bisect.bisect_right(sessions, high) - 1
         read_end = sessions[min(len(sessions) - 1, last_index + max(HORIZONS) + 1)]
@@ -187,7 +194,7 @@ def run(
         factor_starts = {}
         for row in pending:
             coverage = read_coverage(data_root, row.id, year)
-            stale_gp = row.id in gp_context and coverage.get("calculation") != GP_CONTEXT
+            stale_gp = row.id in gp_context and coverage.get("calculation") != calculations[row.id]
             factor_starts[row.id] = (
                 max(low, dt.date.fromisoformat(coverage["end"]) + dt.timedelta(days=1))
                 if not rebuild and not stale_gp and coverage and coverage["start"] <= str(low) else low
@@ -262,7 +269,7 @@ def run(
                     "trade_date", pl.col("symbol").alias("ts_code"), pl.col(row.id).alias("value"))
                 row_counts[row.id] = {"rows": output.height, "valid": output["value"].count()}
                 write_panel(data_root, row.id, year, output, factor_starts[row.id], high,
-                            calculation=GP_CONTEXT if row.id in gp_context else None)
+                            calculation=calculations.get(row.id))
         if not return_ready:
             labels = build_next_open_factor_labels(
                 factor_values=keys.filter(pl.col("trade_date") >= label_start), bars=bars,

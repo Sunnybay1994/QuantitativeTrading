@@ -40,6 +40,14 @@ def rolling_moment(x: pl.Expr, n: int, kind: str, y: pl.Expr | None = None) -> p
                 continue
             centered = delta - mean_delta[:, None]
             with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+                if kind == 'ts_skew':
+                    # Fisher-Pearson sample skew, computed from this window only.
+                    # Scaling cancels algebraically and prevents cube underflow.
+                    scaled=centered/np.max(np.abs(centered),axis=1)[:,None]
+                    ss=np.sum(scaled*scaled,axis=1)
+                    value=n*np.sqrt(n-1)/(n-2)*np.sum(scaled**3,axis=1)/ss**1.5
+                    result[np.flatnonzero(complete)+start+n-1]=value
+                    continue
                 if kind in {"ts_std", "ts_std0", "ts_corr", "ts_rsquare"}:
                     ss = np.sum(centered * centered, axis=1)
                 if kind in {"ts_std", "ts_std0"}:

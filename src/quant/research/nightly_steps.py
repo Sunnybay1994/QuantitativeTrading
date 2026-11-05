@@ -264,13 +264,15 @@ def evaluate(settings: dict, run: Path) -> dict:
     settings.update(allocation)
     definitions = load_library(frozen)
     require_allowed(definitions,settings)
+    repair=settings.get('compute_allocation',{}).get('gp_numeric_repair_config')
+    repair_options={'numeric_repair':Path(repair)} if repair else {}
     require_execution_coverage(Path(settings['data_root']),settings['execution_snapshot'],settings['as_of'])
     compute(data_root=Path(settings['data_root']), refresh_config=Path(settings['refresh_config']),
             library=frozen, selected='all', start=settings['history_start'], end=settings['as_of'],
-            artifact_root=batch/'compute')
+            artifact_root=batch/'compute',**repair_options)
     from quant.research.gp_context_alignment import verify_new_gp_values
     verify_new_gp_values(definitions, data_root=Path(settings['data_root']),
-                         output=batch/'gp_context_alignment.json')
+                         output=batch/'gp_context_alignment.json',**repair_options)
     result = run_pipeline(config=Path(settings['battery_config']), library=frozen,
         as_of=settings['as_of'], output=batch/'evaluation', data_root=Path(settings['data_root']),
         execution_snapshot=settings['execution_snapshot'], workers=settings['workers'],

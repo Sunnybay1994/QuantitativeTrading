@@ -73,10 +73,16 @@ def compare_values(training: pl.DataFrame, computed: pl.DataFrame, labels: pl.Da
             'maximum_month_ic_difference': delta, 'failure_reasons': reasons, 'passed': not reasons}
 
 
-def verify_new_gp_values(definitions: list, *, data_root: Path, output: Path) -> dict:
+def verify_new_gp_values(definitions: list, *, data_root: Path, output: Path,
+                         numeric_repair: Path | None = None) -> dict:
     """Skip legacy definitions; compare each new factor with its own N2 receipt."""
     sources = {}
     checks = []
+    from quant.research.gp_skew_repair import load as load_repair,repaired_training
+    from quant.factors.gp_materialized import materialized_plans
+    repair=load_repair(numeric_repair)
+    plans=materialized_plans(definitions,numeric_repair=numeric_repair) if repair else {}
+    corrections=[]
     for definition in definitions:
         ref = Path(definition.source_ref)
         if ref.name != 'search.json' or not ref.is_file():
@@ -92,7 +98,11 @@ def verify_new_gp_values(definitions: list, *, data_root: Path, output: Path) ->
                 values_path, labels_path = folder/'training_candidate_values.parquet', folder/'monthly_sample.parquet'
                 if sha256(values_path) != manifest['values_sha256'] or sha256(labels_path) != manifest['labels_sha256']:
                     raise ValueError('GP_CONTEXT_ALIGNMENT: frozen N2 value/label receipt changed')
-                sources[ref] = (manifest, pl.read_parquet(values_path), pl.read_parquet(labels_path))
+                training,labels=pl.read_parquet(values_path),pl.read_parquet(labels_path)
+                if repair:
+                    training,correction=repaired_training(repair,source=ref,training=training,labels=labels,plans=plans)
+                    if correction:corrections.append(correction)
+                sources[ref] = (manifest,training,labels)
         if sources[ref] is None:
             continue
         manifest, training, labels = sources[ref]
@@ -103,6 +113,10 @@ def verify_new_gp_values(definitions: list, *, data_root: Path, output: Path) ->
             raise ValueError('GP_CONTEXT_ALIGNMENT: definition/direction differs from frozen N2')
         training_factor = training.filter(pl.col('factor') == definition.id).drop('factor')
         years = sorted(training_factor['trade_date'].dt.year().unique().to_list())
+        if plans.get(definition.id,{}).get('window_skew'):
+            from quant.data.factor_panels import read_coverage
+            if any(read_coverage(data_root,definition.id,year).get('calculation')!=VERSION+'_window_skew_v2' for year in years):
+                raise ValueError('GP_CONTEXT_ALIGNMENT: corrected skew panel version is incomplete')
         paths = [data_root/'factors'/definition.id/f'year={year}'/'data.parquet' for year in years]
         computed = pl.scan_parquet(paths).select(pl.col('ts_code').alias('symbol'), 'trade_date',
             pl.col('value').alias('candidate')).collect()
@@ -110,6 +124,9 @@ def verify_new_gp_values(definitions: list, *, data_root: Path, output: Path) ->
                                      factor=definition.id, direction=definition.direction))
     summary = {'scope': 'N2/N3 fixed sample/label/direction consistency, not alpha or admission',
                'factors_checked': len(checks), 'checks': checks, 'passed': all(r['passed'] for r in checks)}
+    if corrections:
+        summary.update(scope='Window-skew computational correction: fixed N2 input/label/direction versus N3; original N2 measurement preserved, not reproduced',
+            numeric_corrections=corrections,original_n2_reproduction=False)
     if checks:
         dump(output, summary)
     if not summary['passed']:
