@@ -115,6 +115,7 @@ def _temporary_tests(output: Path) -> Path:
     target = (temporary/'quant-native-fast-tests'/output.name/'pytest_tmp').resolve()
     if not target.is_relative_to(temporary) or target.exists():
         raise ValueError('Fast-test temporary directory must be new and inside system temp')
+    target.parent.mkdir(parents=True, exist_ok=True)
     return target
 
 

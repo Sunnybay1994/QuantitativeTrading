@@ -20,7 +20,7 @@ def test_temporary_outputs_are_separate_and_existing_tree_is_never_reused(tmp_pa
     output = tmp_path/'project/artifacts/tests/run'
     target = fast._temporary_tests(output)
     assert target.is_relative_to(private) and not target.is_relative_to(output)
-    target.mkdir(parents=True)
+    target.mkdir()
     sentinel = target/'retained.txt'
     sentinel.write_text('keep')
     with pytest.raises(ValueError, match='must be new'):
