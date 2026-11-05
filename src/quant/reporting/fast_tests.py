@@ -18,8 +18,8 @@ import uuid
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
-# Wall budget for the daily doctor receipt. 12-worker suite needs ~15 min on this host.
-TIMEOUT_SECONDS = 900
+# R8 includes source copying and assertion control within ten minutes.
+TIMEOUT_SECONDS = 600
 SOURCE_PATHS = ('src', 'legacy', 'data/external', 'tests', 'configs', 'docs', 'scripts',
                 'pyproject.toml', 'conftest.py', 'pytest.ini', 'setup.cfg', 'tox.ini', '*.md')
 THREAD_VARIABLES = ('POLARS_MAX_THREADS', 'OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS',
@@ -216,7 +216,7 @@ def run(root: Path) -> int:
             _assertion_control(snapshot, output, env, log, clock)
             command = [sys.executable, '-m', 'pytest', 'tests', '-q', '-m', 'not slow',
                 '-c', str(snapshot/'pyproject.toml'),
-                '-o', 'addopts=', '--assert=plain', '-n', str(workers), '--dist=worksteal',
+                '-o', 'addopts=', '--assert=plain', '-n', str(workers), '--dist=load', '--maxschedchunk=1',
                 '--max-worker-restart=0', '-p', 'quant.reporting.fast_tests', '--tb=short',
                 '--basetemp', str(output/'pytest_tmp'), '--junitxml', str(output/'tests.xml')]
             payload['argv'] = command

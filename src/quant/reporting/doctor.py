@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 import polars as pl
 
 from quant.core.paths import project_paths
+from quant.reporting.fast_tests import TIMEOUT_SECONDS as FAST_TEST_SECONDS
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 _STEPS = ("N1", "N2", "N3", "N4", "N5")
@@ -232,7 +233,7 @@ def _tests(path: Path, today: dt.date) -> dict:
         and payload.get('failed') == 0 and payload.get('errors') == 0
         and all(type(value) is int and value >= 0 for value in (count, passed, skipped))
         and count > 0 and passed + skipped == count
-        and type(duration) in (int, float) and 0 <= duration <= 900
+        and type(duration) in (int, float) and 0 <= duration <= FAST_TEST_SECONDS
         and age is not None and 0 <= age <= 2)
     return {
         "missing": False,
@@ -419,8 +420,8 @@ def collect(
         red.append('tests: incomplete or invalid fast-test receipt')
     elif (tests.get("age_days") or 0) > 2:
         red.append(f"tests: age_days={tests['age_days']}")
-    if tests.get("duration_seconds") is not None and tests["duration_seconds"] > 900:
-        red.append(f"tests: duration_seconds={tests['duration_seconds']} exceeds 900")
+    if tests.get("duration_seconds") is not None and tests["duration_seconds"] > FAST_TEST_SECONDS:
+        red.append(f"tests: duration_seconds={tests['duration_seconds']} exceeds {FAST_TEST_SECONDS}")
     coverage = _coverage(artifacts / "post_close_k1m" / "coverage.json")
     from quant.reporting.doctor_intraday_acceptance import evaluate
 

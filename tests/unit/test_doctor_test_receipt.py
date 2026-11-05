@@ -77,7 +77,7 @@ def child(tmp_path, monkeypatch):
             self.returncode = 1 if state['mode'] == 'failed' else 0
 
         def wait(self, timeout):
-            assert 0 < timeout <= 900
+            assert 0 < timeout <= 600
             if self.returncode is None:
                 raise subprocess.TimeoutExpired(self.command, timeout)
             return self.returncode
@@ -101,14 +101,14 @@ def test_fast_suite_keeps_output_and_enforces_budget(child, timeout):
     code = doctor.record_fast_tests(child['root'])
     receipt = json.loads((child['root']/'artifacts/tests/latest.json').read_text(encoding='utf-8'))
     log = Path(receipt['log'])
-    assert log.is_file() and receipt['timeout_seconds'] == 900
+    assert log.is_file() and receipt['timeout_seconds'] == 600
     assert receipt['exit_code'] == code == (124 if timeout else 1)
     assert b'partial output' in log.read_bytes() and b'error detail' in log.read_bytes()
     assert not receipt['accepted_fast']
     if timeout:
         assert receipt['passed'] is None and receipt['failed'] is None and not receipt['complete']
         assert len(child['stopped']) == 1 and child['stopped'][0] is child['calls'][-1]
-        assert b'timeout after 900s' in log.read_bytes()
+        assert b'timeout after 600s' in log.read_bytes()
     else:
         assert receipt['passed'] == 2 and receipt['failed'] == 1 and receipt['complete']
     for process in child['calls']:

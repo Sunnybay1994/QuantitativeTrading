@@ -109,10 +109,8 @@ def request_messages(request: dict, maximum_bytes: int) -> tuple[list[dict], byt
 
 
 def atomic_json(path: Path, value: Any) -> None:
-    temporary = path.with_suffix('.tmp')
-    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2, default=str,
-                                    allow_nan=False), encoding='utf-8')
-    temporary.replace(path)
+    from quant.data.realtime_store import atomic_json as publish
+    publish(path,json.loads(json.dumps(value,ensure_ascii=False,default=str,allow_nan=False)))
 
 
 def budget_totals(cache: ScoreCache, now: dt.datetime) -> dict:
@@ -375,7 +373,7 @@ def run(config: Path, now: dt.datetime | None = None, client: Any = None,
                 payload = strict_json(repaired['scores_json'])
                 raw, validated_compile, rejected_compile = partition_candidates(
                     payload, fields=fields, existing_keys=existing_keys)
-            ledger = Path('artifacts/research/weekly_candidates') / week
+            ledger = output
             ledger.mkdir(parents=True, exist_ok=True)
             atomic_json(ledger / 'raw.json', {'candidates': raw, 'repair_attempts': attempts})
             atomic_json(ledger / 'validated.json', validated_compile)

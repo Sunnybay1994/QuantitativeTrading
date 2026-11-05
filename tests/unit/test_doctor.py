@@ -84,6 +84,7 @@ def test_future_insurance_first_run_is_pending_not_a_failed_completion(tmp_path,
     {'complete': False}, {'accepted_fast': False}, {'passed': None},
     {'selected_count': 4}, {'errors': 1}, {'duration_seconds': -1},
     {'ran_at': 'invalid'}, {'ran_at': '2026-10-27T00:00:00+08:00'},
+    {'duration_seconds': 600.001}, {'duration_seconds': 636.},
 ])
 def test_zero_exit_does_not_make_incomplete_fast_receipt_green(tmp_path, isolated_git, change):
     root = _tree(tmp_path)

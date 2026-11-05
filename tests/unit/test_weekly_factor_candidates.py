@@ -183,6 +183,37 @@ def test_no_accepted_candidates_has_no_pending_battery(setup, expressions):
     assert client.calls == 1 and summary.read_bytes() == original
 
 
+def test_raw_receipt_retry_does_not_repeat_paid_request(setup,monkeypatch):
+    import time
+    from pathlib import Path
+    from types import SimpleNamespace
+    from quant.data import realtime_store
+    config,paths=setup
+    work=config.parent/'work';work.mkdir();monkeypatch.chdir(work)
+    unrelated=work/'artifacts/research/weekly_candidates/2026-09-14/raw.json'
+    unrelated.parent.mkdir(parents=True);unrelated.write_bytes(b'preserve unrelated diagnostics')
+    target=(paths['output_root']/'2026-09-14/raw.json').resolve()
+    original=Path.replace;denials=[];pauses=[]
+    def replace(source,destination):
+        if Path(destination).resolve()==target and len(denials)<2:
+            denials.append(1)
+            raise PermissionError('Windows reader holds weekly raw receipt')
+        return original(source,destination)
+    def backoff(seconds):
+        pauses.append(seconds)
+        time.sleep(seconds)
+    monkeypatch.setattr(Path,'replace',replace)
+    monkeypatch.setattr(realtime_store,'time',SimpleNamespace(sleep=backoff))
+    now=dt.datetime(2026,9,15,12,tzinfo=weekly.SHANGHAI)
+    client=Client({'candidates':[]})
+    first=weekly.run(config,now,client,execute=True)
+    second=weekly.run(config,now,client,execute=True)
+    assert first['completed'] and second['completed'] and client.calls==1
+    assert denials==[1,1] and pauses==[.1,.1]
+    assert json.loads(target.read_text(encoding='utf-8'))['candidates']==[]
+    assert unrelated.read_bytes()==b'preserve unrelated diagnostics'
+
+
 @pytest.mark.parametrize('status,matching,expected', [
     ('complete', True, True), ('pending', True, False), ('complete', False, False),
 ])
