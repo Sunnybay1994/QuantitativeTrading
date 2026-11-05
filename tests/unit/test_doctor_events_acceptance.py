@@ -145,3 +145,29 @@ def test_doctor_counts_unsettled_fees_without_claiming_they_are_paid(event_tree)
     assert result['ledger']['pending_usd'] == .02 and result['ledger']['exposure_usd'] == .52
     assert not result['automated_checks_met']
     assert any('unresolved request charges' in item for item in result['errors'])
+
+
+@pytest.mark.parametrize('date,amount,cap,over',[
+    (dt.date(2026,10,30),2.01,5.,False),
+    (dt.date(2026,11,6),2.,2.,False),
+    (dt.date(2026,11,6),2.001,2.,True),
+    (dt.date(2026,12,1),2.01,5.,False),
+])
+def test_doctor_uses_the_callers_budget_for_the_observed_month(event_tree,date,amount,cap,over):
+    root,_=event_tree
+    ledger=root/f'artifacts/research/llm_ledger/{date:%Y-%m}.jsonl'
+    ledger.write_text(json.dumps(dict(task='event_extract',usd=amount))+'\n')
+    result=evaluate(root,date)
+    assert result['ledger']['budget_usd']==cap
+    assert any('spend exceeds' in error for error in result['errors']) is over
+
+
+def test_november_pending_exposure_counts_against_two_dollar_cap(event_tree):
+    root,_=event_tree
+    ledger=root/'artifacts/research/llm_ledger/2026-11.jsonl'
+    ledger.write_text(json.dumps(dict(task='event_extract',usd=1.99))+'\n')
+    directory=ledger.parent/'.event_extract_budget';directory.mkdir()
+    (directory/'2026-11.jsonl').write_text(json.dumps(dict(kind='reserve',request_id='pending',usd=.02))+'\n')
+    result=evaluate(root,dt.date(2026,11,6))
+    assert result['ledger']['budget_usd']==2. and result['ledger']['exposure_usd']==2.01
+    assert any('spend exceeds $2' in error for error in result['errors'])

@@ -131,10 +131,13 @@ def _git_facts(root: Path) -> dict:
     return {"dirty": dirty, "days_since_commit": days, "root_scratch_py": scratch, "git_ok": status.returncode == 0}
 
 
-def _mining(continuous: Path, today: dt.date) -> dict:
+def _mining(continuous: Path, today: dt.date, *, observed_at: dt.datetime | None = None) -> dict:
     status = _read_json(continuous / "status.json") or {}
-    latest: dt.date | None = None
+    cutoff = observed_at or dt.datetime.combine(today, dt.time.max, tzinfo=SHANGHAI)
+    latest: dt.datetime | None = None
     batch = None
+    snapshot_date = None
+    date_source = None
     if continuous.exists():
         for summary_path in continuous.glob("batch_*/*/summary.json"):
             payload = _read_json(summary_path)
@@ -144,18 +147,32 @@ def _mining(continuous: Path, today: dt.date) -> dict:
             if not all((steps.get(step) or {}).get("ok") for step in _STEPS):
                 continue
             try:
-                day = dt.date.fromisoformat(summary_path.parent.name[:10])
-            except ValueError:
+                snapshot = dt.date.fromisoformat(summary_path.parent.name[:10])
+                if 'finished_at' in payload:
+                    finished = dt.datetime.fromisoformat(payload['finished_at'])
+                    finished = (finished.replace(tzinfo=SHANGHAI) if finished.tzinfo is None
+                                else finished.astimezone(SHANGHAI))
+                    source = 'finished_at'
+                else:
+                    finished = dt.datetime.combine(snapshot, dt.time.min, tzinfo=SHANGHAI)
+                    source = 'legacy_snapshot_date'
+                if finished > cutoff:
+                    continue
+            except (ValueError, TypeError):
                 continue
-            if latest is None or day > latest:
-                latest, batch = day, summary_path.parent.parent.name
-    age = None if latest is None else (today - latest).days
+            if latest is None or finished > latest:
+                latest, batch = finished, summary_path.parent.parent.name
+                snapshot_date, date_source = str(snapshot), source
+    age = None if latest is None else (today - latest.date()).days
     return {
         "failure_kind": status.get("failure_kind"),
         "consecutive_failures": status.get("consecutive_failures"),
         "state": status.get("state"),
         "last_completed_batch": batch,
-        "last_completed_on": None if latest is None else latest.isoformat(),
+        "last_completed_on": None if latest is None else latest.date().isoformat(),
+        "last_completed_at": None if latest is None else latest.isoformat(),
+        "last_completed_snapshot_date": snapshot_date,
+        "completion_date_source": date_source,
         "days_since_completed": age,
     }
 
@@ -358,7 +375,7 @@ def collect(
             "next_run_time": row.get('next_run_time'),
             "error": row.get("error"),
         })
-    mining = _mining(artifacts / "research" / "continuous", today)
+    mining = _mining(artifacts / "research" / "continuous", today, observed_at=clock)
     registry = _registry(artifacts / "registry" / "experiments.parquet", root)
     month = clock.strftime("%Y-%m")
     ledger = _ledger(artifacts / "research" / "llm_ledger" / f"{month}.jsonl")
