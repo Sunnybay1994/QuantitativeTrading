@@ -5,6 +5,7 @@ import datetime as dt
 import json
 import os
 import re
+import time
 import tomllib
 from pathlib import Path
 
@@ -26,6 +27,24 @@ def save(path: Path, value: dict) -> None:
 def completed(summary: dict) -> bool:
     return all(summary.get('steps', {}).get(step, {}).get('ok')
                for step in ('N1', 'N2', 'N3', 'N4', 'N5'))
+
+
+def _publish_batch(staging: Path, batch: Path, root: Path) -> None:
+    intended=root.resolve()
+    if (staging.parent.resolve()!=intended or batch.parent.resolve()!=intended
+            or not staging.resolve().is_relative_to(intended)
+            or not batch.resolve().is_relative_to(intended)):
+        raise ValueError('Batch publication escapes its intended output directory')
+    for attempt in range(11):
+        if batch.exists():
+            raise FileExistsError('Refuse to replace an existing research batch')
+        try:
+            staging.rename(batch)
+            return
+        except PermissionError:
+            if attempt==10:
+                raise
+            time.sleep(.1)
 
 
 def dispatch(config: Path, root: Path, *, now: dt.datetime | None = None,
@@ -90,7 +109,7 @@ def dispatch(config: Path, root: Path, *, now: dt.datetime | None = None,
         temporary = run/'config.tmp'
         temporary.write_text(source, encoding='utf-8')
         temporary.replace(run/'config.toml')
-        staging.rename(batch)
+        _publish_batch(staging,batch,root)
         run = batch/now.date().isoformat()
     else:
         run = next(batch.glob('????-??-??'))
