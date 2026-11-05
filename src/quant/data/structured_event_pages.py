@@ -27,7 +27,7 @@ def query_page(client,table,params,*,key,receipt,save):
 
 
 def pages(*, table, rule, spec, symbol, first, last, receipt, client, store, save,
-          max_offset=100000,symbol_recovery=None):
+          max_offset=100000,symbol_recovery=None,stop_before=None):
     """Yield original pages first so deduplication retains the earliest observation.
 
     An overflowing window is completed by exhaustive, disjoint child windows.
@@ -40,6 +40,8 @@ def pages(*, table, rule, spec, symbol, first, last, receipt, client, store, sav
     observed_symbols=set()
     while True:
         key=f'{scope}/{offset}'
+        if key==stop_before:
+            return
         record=receipt['requests'].get(key)
         if record:
             path=Path(record['raw_path'])

@@ -74,7 +74,9 @@ def run(*,config,output,resume=False,connector=None):
     client,store=connector or TushareConnector(),RawStore(Path('data/raw'))
     try:
         from quant.data.structured_symbol_recovery import load_symbol_recovery
+        from quant.data.structured_parameter_recovery import load_parameter_recovery,parameter_pages
         symbol_recovery=load_symbol_recovery(output,receipt)
+        parameter_recovery=load_parameter_recovery(output,receipt,spec,symbol_recovery)
         save()
         for table,rule in spec['tables'].items():
             if table in receipt['tables']:
@@ -90,11 +92,20 @@ def run(*,config,output,resume=False,connector=None):
                     raise ValueError('Require a nonempty unique acquisition catalog')
             for symbol in symbols:
                 for first,last in chunks(spec['start'],spec['end'],rule['chunk']):
-                    for frame,record in pages(table=table,rule=rule,spec=spec,symbol=symbol,
+                    recovering=(parameter_recovery and table==parameter_recovery['table']
+                        and first==parameter_recovery['first'])
+                    if recovering:
+                        iterator=parameter_pages(table=table,rule=rule,spec=spec,receipt=receipt,
+                            client=client,store=store,save=save,recovery=parameter_recovery)
+                    else:
+                        iterator=pages(table=table,rule=rule,spec=spec,symbol=symbol,
                             first=first,last=last,receipt=receipt,client=client,store=store,save=save,
-                            symbol_recovery=symbol_recovery):
+                            symbol_recovery=symbol_recovery)
+                    for frame,record in iterator:
                         frames.append(normalize(frame,table=table,rule=rule,
                             observed_at=record['observed_at'],raw_path=record['raw_path']))
+                    if recovering:
+                        break
             if not frames:
                 raise ValueError(f'No historical rows for {table}')
             full=pl.concat(frames,how='diagonal_relaxed').unique('source_row_id',keep='first',maintain_order=True)
