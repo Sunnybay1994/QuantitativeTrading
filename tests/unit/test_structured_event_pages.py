@@ -82,6 +82,22 @@ def test_resume_rejects_corrupt_parent_page_before_any_new_request(tmp_path):
     assert len(client.calls)==count
 
 
+@pytest.mark.parametrize('date',['20200199 ','not-a-date'])
+def test_whitespace_tolerance_does_not_hide_invalid_supplier_dates(tmp_path,date):
+    source=pl.DataFrame({'ts_code':['000001.SZ'],'ann_date':[date],'value':[1]})
+    args,client=capture(tmp_path,source)
+    # Bypass the fixture's date selector: validation must inspect the actual native row.
+    client.query_raw=lambda *a,**k:source
+    with pytest.raises(pl.exceptions.InvalidOperationError):list(pages(**args))
+
+
+def test_trimmed_date_still_must_belong_to_original_shard(tmp_path):
+    source=pl.DataFrame({'ts_code':['000001.SZ'],'ann_date':[' 20200201 '],'value':[1]})
+    args,client=capture(tmp_path,source)
+    client.query_raw=lambda *a,**k:source
+    with pytest.raises(ValueError,match='outside frozen date shard'):list(pages(**args))
+
+
 @pytest.mark.parametrize('failure',[ReadTimeout,ConnectionError])
 def test_transient_transport_retries_identical_page_before_single_raw_write(tmp_path,monkeypatch,failure):
     source=pl.DataFrame({'ts_code':['000001.SZ'],'ann_date':['20200101'],'value':[1]})

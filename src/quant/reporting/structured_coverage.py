@@ -41,7 +41,7 @@ def describe_table(table,record,rule,*,start,end,data_root=Path('data')):
         return {'published':False,'declared_metadata_matches':False,'reason':'Published files missing'}
     frame=pl.scan_parquet(files)
     date=pl.col(rule['date_field'])
-    if frame.collect_schema()[rule['date_field']]==pl.String:date=date.str.to_date('%Y%m%d',strict=False)
+    if frame.collect_schema()[rule['date_field']]==pl.String:date=date.str.strip_chars().str.to_date('%Y%m%d',strict=False)
     frame=frame.with_columns(date.cast(pl.Date).alias('_date'))
     values=frame.select(pl.len().alias('rows'),pl.col('_date').min().alias('first_date'),
         pl.col('_date').max().alias('last_date'),pl.col('ts_code').n_unique().alias('symbols'),

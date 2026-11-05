@@ -43,7 +43,7 @@ def read_preliminary_history(data_root,*,known_at=None):
                 frame=frame.filter(pl.col('available_at')<=known_at)
                 def date_column(name):
                     column=pl.col(name)
-                    return column.str.to_date('%Y%m%d',strict=False) if frame.schema[name]==pl.String else column.cast(pl.Date)
+                    return column.str.strip_chars().str.to_date('%Y%m%d',strict=False) if frame.schema[name]==pl.String else column.cast(pl.Date)
                 numeric=[]
                 for source,target in fields.items():
                     value=pl.col(source).cast(pl.Float64,strict=False) if source in frame.columns else pl.lit(None,dtype=pl.Float64)

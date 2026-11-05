@@ -36,7 +36,7 @@ def normalize(frame,*,table,rule,observed_at,raw_path):
     row_ids=[hashlib.sha256(json.dumps(row,sort_keys=True,ensure_ascii=False,default=str).encode()).hexdigest()
         for row in frame.iter_rows(named=True)]
     result=frame.with_columns(pl.Series('source_row_id',row_ids),
-        pl.col(rule['announcement_field']).str.to_date('%Y%m%d').alias('source_announcement_date'),
+        pl.col(rule['announcement_field']).str.strip_chars().str.to_date('%Y%m%d').alias('source_announcement_date'),
         pl.lit(observed_at).str.to_datetime(time_zone='UTC').alias('observed_at'),
         pl.lit(raw_path).alias('source_raw_path'),pl.lit(table).alias('source_table'))
     result=result.with_columns((pl.col('source_announcement_date').cast(pl.Datetime('us'))
@@ -114,11 +114,11 @@ def run(*,config,output,resume=False,connector=None):
                 raise FileExistsError('Refuse to overwrite a published clean snapshot')
             staging=output/f'clean_{table}'
             staging.mkdir(exist_ok=True)
-            years=full.with_columns(pl.col(rule['date_field']).str.to_date('%Y%m%d').dt.year().alias('_year'))
+            years=full.with_columns(pl.col(rule['date_field']).str.strip_chars().str.to_date('%Y%m%d').dt.year().alias('_year'))
             for (year,),part in years.partition_by('_year',as_dict=True).items():
                 folder=staging/f'year={year}';folder.mkdir(exist_ok=True)
                 part.drop('_year').write_parquet(folder/'data.parquet')
-            dates=full[rule['date_field']].str.to_date('%Y%m%d')
+            dates=full[rule['date_field']].str.strip_chars().str.to_date('%Y%m%d')
             record={'rows':full.height,'first_date':str(dates.min()),'last_date':str(dates.max()),
                 'symbols':full['ts_code'].n_unique(),'years':sorted(years['_year'].unique()),'date_field':rule['date_field'],
                 'consumer':rule['consumer'],'clean_path':str(directory),'available_at_policy':spec['availability'],

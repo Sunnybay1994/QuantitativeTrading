@@ -8,6 +8,8 @@ import pytest
 from quant.data.structured_events import run,chunks
 from quant.data.structured_probe_sample import publish_report_trial
 from quant.data.storage import RawStore
+from quant.data.structured_preliminary import read_preliminary_history
+from quant.reporting.structured_coverage import describe_table
 
 
 def config(tmp_path):
@@ -75,3 +77,29 @@ def test_trial_sample_is_published_at_raw_observation_without_new_requests(tmp_p
     saved=pl.read_parquet(path)
     assert saved['available_at'].item()==observed
     assert publish_report_trial(permissions=permissions,data_root=tmp_path/'data')==result
+
+
+def test_supplier_date_whitespace_keeps_native_values_and_published_consumer_dates(tmp_path,monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    path,_,symbols=config(tmp_path)
+    class Client:
+        def query_raw(self,table,**params):
+            date='trade_date' if table=='margin_detail' else 'ann_date'
+            return pl.DataFrame({'ts_code':[params.get('ts_code','600000.SH')],
+                date:[' 20190115 \t'],'end_date':['20181231 '],'n_income':[123.],
+                'revenue':[456.],'update_flag':['1']})
+    receipt=run(config=path,output=tmp_path/'capture',connector=Client())
+    rule={'date_field':'ann_date','announcement_field':'ann_date'}
+    observation=describe_table('stk_holdernumber',receipt['tables']['stk_holdernumber'],rule,
+        start=dt.date(2019,1,1),end=dt.date(2019,1,31))
+    assert observation['declared_metadata_matches'] and observation['invalid_dates']==0
+    saved=pl.read_parquet('data/clean/stk_holdernumber/snapshot=capture/year=2019/data.parquet')
+    assert saved['ann_date'].item()==' 20190115 \t'
+    assert saved['source_announcement_date'].item()==dt.date(2019,1,15)
+    native={k:v for k,v in saved.row(0,named=True).items() if k in Client().query_raw('stk_holdernumber').columns}
+    digest=hashlib.sha256(json.dumps(native,sort_keys=True,ensure_ascii=False,default=str).encode()).hexdigest()
+    assert saved['source_row_id'].item()==digest
+    history=read_preliminary_history(tmp_path/'data')
+    assert history.height==6
+    assert set(history['announcement_date'])=={dt.date(2019,1,15)}
+    assert set(history['report_period_end'])=={dt.date(2018,12,31)}

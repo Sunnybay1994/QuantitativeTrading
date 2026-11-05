@@ -67,7 +67,7 @@ def pages(*, table, rule, spec, symbol, first, last, receipt, client, store, sav
         if frame.height>spec['page_size']:
             raise ValueError('Supplier ignored bounded page size')
         if frame.height:
-            dates=frame[rule['date_field']].str.to_date('%Y%m%d')
+            dates=frame[rule['date_field']].str.strip_chars().str.to_date('%Y%m%d')
             if dates.null_count() or dates.min()<first or dates.max()>last:
                 raise ValueError('Supplier response outside frozen date shard')
             if symbol and set(frame['ts_code'])!={symbol}:
