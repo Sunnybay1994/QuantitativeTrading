@@ -13,6 +13,7 @@ import polars as pl
 
 from quant.llm.ledger import append as ledger_append,SHANGHAI
 from quant.reporting.structured_market import fund_share_facts,render_fund_shares
+from quant.reporting.structured_margin import margin_facts,render_margin
 
 BRIEF_ROOT = Path("artifacts/research/brief")
 
@@ -92,6 +93,7 @@ def collect_facts(month: str, *, root: Path = Path(".")) -> dict:
         "latest_gp_hint": str(hints[-1]) if hints else None,
         "market_state":market_fact,
         "etf_shares":fund_share_facts(month,root=root),
+        "margin":margin_facts(month,root=root),
     }
 
 
@@ -118,6 +120,8 @@ def render_template(facts: dict, narrative: str | None = None) -> str:
               "", "## 市场状态解读", narrative or "（本月无可用的LLM解读；保留机器事实及调用回执）", ""]
     if facts.get('etf_shares'):
         lines.extend(['',render_fund_shares(facts['etf_shares']),''])
+    if facts.get('margin'):
+        lines.extend(['',render_margin(facts['margin']),''])
     return "\n".join(lines)
 
 
