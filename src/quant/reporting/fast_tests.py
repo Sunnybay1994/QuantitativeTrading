@@ -214,9 +214,10 @@ def run(root: Path) -> int:
             _json(output/'source_manifest.json', manifest)
             env = _environment(snapshot, output)
             _assertion_control(snapshot, output, env, log, clock)
+            # Keep module fixtures on one worker instead of rebuilding them across all workers.
             command = [sys.executable, '-m', 'pytest', 'tests', '-q', '-m', 'not slow',
                 '-c', str(snapshot/'pyproject.toml'),
-                '-o', 'addopts=', '--assert=plain', '-n', str(workers), '--dist=load', '--maxschedchunk=1',
+                '-o', 'addopts=', '--assert=plain', '-n', str(workers), '--dist=loadscope',
                 '--max-worker-restart=0', '-p', 'quant.reporting.fast_tests', '--tb=short',
                 '--basetemp', str(output/'pytest_tmp'), '--junitxml', str(output/'tests.xml')]
             payload['argv'] = command
