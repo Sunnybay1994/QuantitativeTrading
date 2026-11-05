@@ -16,3 +16,12 @@ month_budget_overrides_usd = { "2026-11" = 2.0 }
 unresolved = "Missing or unparsable amount, ratio, term, or direction stays null. Do not impute."
 factors = ["repurchase_strength_30d", "repurchase_strength_90d", "insider_net_buy_90d"]
 factor_note = "Repurchase strength is the 30/90 day sum of amount_cny divided by market cap. Insider net buy is 90 day buy amount minus sell amount. Evaluation is the next round."
+
+[structured_inputs]
+registered_on = 2026-11-05
+reader = "quant.data.event_family_inputs.read_event_source"
+tables = ["repurchase", "stk_holdertrade", "share_float", "stk_holdernumber"]
+publication = "Only snapshots with summary.json; eligibility requires available_at and observed_at no later than observation cutoff"
+unlock = "Preserve float_date, holder_name, share_type, native float_share shares and float_ratio percent; no holder sum or new factor"
+holder_count = "Preserve report end_date and announced holder_num households; never sum counts across periods"
+evaluation = "Input consumption only; original families and factor definitions unchanged, evaluate_this_round=false"

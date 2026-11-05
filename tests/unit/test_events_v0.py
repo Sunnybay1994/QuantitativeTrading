@@ -70,6 +70,7 @@ def test_family_and_evidence_rules():
 def test_structured_primary_skips_paid_extraction_and_preserves_later_availability(tmp_path):
     folder=tmp_path/'data/clean/repurchase/snapshot=fixture/year=2024'
     folder.mkdir(parents=True)
+    (folder.parent/'summary.json').write_text('{}')
     observed=dt.datetime(2024,1,2,12,tzinfo=dt.timezone.utc)
     pl.DataFrame({'ts_code':['600000.SH'],'source_announcement_date':[dt.date(2024,1,1)],
         'source_row_id':['receipt'],'source_raw_path':['raw/immutable.parquet'],
@@ -91,6 +92,7 @@ def test_structured_primary_skips_paid_extraction_and_preserves_later_availabili
 def test_partial_structured_fields_only_request_missing_fields_within_input_budget(tmp_path):
     folder=tmp_path/'data/clean/stk_holdertrade/snapshot=fixture/year=2024'
     folder.mkdir(parents=True)
+    (folder.parent/'summary.json').write_text('{}')
     observed=dt.datetime(2024,1,2,12,tzinfo=dt.timezone.utc)
     pl.DataFrame({'ts_code':['600000.SH'],'source_announcement_date':[dt.date(2024,1,1)],
         'source_row_id':['partial'],'source_raw_path':['raw/native.parquet'],

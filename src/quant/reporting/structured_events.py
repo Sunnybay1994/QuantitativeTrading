@@ -7,6 +7,7 @@ import tomllib
 
 from quant.data.events_v0 import _task_spend
 from quant.data.events_v0_budget import pending,task_budget_usd
+from quant.data.event_family_inputs import event_family_source_facts
 
 
 def build(*,root,permissions):
@@ -23,6 +24,7 @@ def build(*,root,permissions):
         'as_of':str(expected['end']),'observed_at':dt.datetime.now(dt.timezone.utc).isoformat(),
         'historical_vintage_verified':False,'new_factor_backtests':0,'raw_overwrites':0,
         'daily_schedule_attached':False,'pending':'Finish missing supplier shards and verify actual date coverage; this capture is not two natural daily runs'}
+    result['event_family_inputs']=event_family_source_facts(Path('data'))
     lines=['# D1 结构化表接入','',f"当前：{result['status']}；原请求截止{expected['end']}；auto_trade=false。",'',
         '| 表 | 状态 | 行数 | 口径日期 | 最早 | 最新 | 股票/基金数 |','|---|---|---:|---|---|---|---:|']
     for table in expected['tables']:
@@ -34,6 +36,11 @@ def build(*,root,permissions):
     lines+=['','## 权限与空结果','',
         '各接口只作一次限定探测，返回字段及原始快照在权限JSON；available_empty仅表示这次样本为空，不能当作权限拒绝。']
     lines += [f'- {name}: {status}。' for name,status in sources.items()]
+    lines+=['','## 事件族结构化输入','',
+        '以下为按首见时点可见的原生记录数；解禁分持有人、股东户数分报告期，不混合求和，也未生成新因子。',
+        '| 来源 | 消费类型 | 可见记录 | 状态 |','|---|---|---:|---|']
+    for table,item in result['event_family_inputs']['sources'].items():
+        lines.append(f"| {table} | {item['family']} | {item.get('visible_native_records','—')} | {item['status']} |")
     lines+=['','## 来源、可用时间与消费者','',
         '当前供应商历史不证明原历史版本；available_at不早于本次首见快照。公告日期与首次观察时间分别保存，不能把本轮下载倒填为历史PIT。',
         '股东变动数量、解禁份额均保留原生股数，无万股乘数；单位更正及原请求配置见units_erratum.json、recovery.json，不修改raw数值。',

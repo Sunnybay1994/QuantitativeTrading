@@ -5,6 +5,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import polars as pl
+from quant.data.event_family_inputs import read_event_source
 
 
 class StructuredS4:
@@ -12,11 +13,10 @@ class StructuredS4:
         self.rows={}
         self.paths=[]
         for table,family in [('repurchase','repurchase'),('stk_holdertrade','insider_trading')]:
-            paths=sorted((data_root/'clean'/table).glob('snapshot=*/year=*/data.parquet'))
-            if not paths:
+            source,paths=read_event_source(data_root,table,known_at=now)
+            if source is None:
                 continue
-            frame=pl.scan_parquet(paths).filter(pl.col('source_announcement_date').is_between(start,end)
-                &(pl.col('available_at')<=now)).collect().sort('observed_at').unique('source_row_id',keep='first',maintain_order=True)
+            frame=source.filter(pl.col('source_announcement_date').is_between(start,end)).collect()
             # Supplier columns can be strings (including unresolved ranges).
             # Parse native numbers only; nonnumeric/nonfinite values stay missing.
             numeric=('amount',) if table=='repurchase' else ('change_vol','avg_price','change_ratio')
@@ -57,7 +57,7 @@ class StructuredS4:
                     'term_days':None,'direction':direction,'evidence':excerpt})
             if parsed['parse_status']!='parsed':
                 continue
-            available=row['available_at'].astimezone(ZoneInfo('Asia/Shanghai'))
+            available=max(row['available_at'],row['observed_at']).astimezone(ZoneInfo('Asia/Shanghai'))
             known=max(published,(available+dt.timedelta(days=1)).date())
             matches.append({'parsed':parsed,'known_at':known,'source_row_id':row['source_row_id'],
                 'raw_path':row['source_raw_path'],'available_at':row['available_at'].isoformat()})

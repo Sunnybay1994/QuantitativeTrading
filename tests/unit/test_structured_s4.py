@@ -10,6 +10,7 @@ def test_structured_fields_require_executed_excerpt_and_current_snapshot_availab
     observed=dt.datetime(2026,11,4,12,tzinfo=dt.timezone.utc)
     folder=tmp_path/'clean/repurchase/snapshot=fixture/year=2020'
     folder.mkdir(parents=True)
+    (folder.parent/'summary.json').write_text('{}')
     frame=pl.DataFrame({'ts_code':['000001.SZ'],'source_announcement_date':[published],
         'source_row_id':['immutable-id'],'source_raw_path':['raw/snapshot.parquet'],
         'observed_at':[observed],'available_at':[observed],
@@ -32,6 +33,7 @@ def test_insider_quantity_is_native_shares_and_unexecuted_sells_cannot_reappear(
     observed=dt.datetime(2026,11,4,12,tzinfo=dt.timezone.utc)
     folder=tmp_path/'clean/stk_holdertrade/snapshot=fixture/year=2020'
     folder.mkdir(parents=True)
+    (folder.parent/'summary.json').write_text('{}')
     pl.DataFrame({'ts_code':['000001.SZ'],'source_announcement_date':[published],
         'source_row_id':['native-shares'],'source_raw_path':['raw/snapshot.parquet'],
         'observed_at':[observed],'available_at':[observed],'in_de':['DE'],
@@ -47,6 +49,7 @@ def test_native_numeric_strings_and_unresolved_prices(tmp_path):
     observed=dt.datetime(2026,11,5,tzinfo=dt.timezone.utc)
     folder=tmp_path/'clean/stk_holdertrade/snapshot=fixture/year=2026'
     folder.mkdir(parents=True)
+    (folder.parent/'summary.json').write_text('{}')
     def write(price):
         pl.DataFrame({'ts_code':['000001.SZ'],'source_announcement_date':[published],
             'source_row_id':['native-string'],'source_raw_path':['raw/snapshot.parquet'],
@@ -70,6 +73,7 @@ def test_repurchase_native_string_amount_is_not_scaled_or_guessed(tmp_path):
     observed=dt.datetime(2026,11,5,tzinfo=dt.timezone.utc)
     folder=tmp_path/'clean/repurchase/snapshot=fixture/year=2026'
     folder.mkdir(parents=True)
+    (folder.parent/'summary.json').write_text('{}')
     pl.DataFrame({'ts_code':['000001.SZ'],'source_announcement_date':[published],
         'source_row_id':['repurchase-string'],'source_raw_path':['raw/snapshot.parquet'],
         'observed_at':[observed],'available_at':[observed],'proc':['完成'],
