@@ -1,8 +1,28 @@
 """Full integration chains are retained outside the daily ten-minute suite."""
 
+import os
 from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture
+def tmp_path(tmp_path, request):
+    """Preserve the formal bootstrap's real filesystem topology in the isolated runner."""
+    run_dir = os.environ.get('QUANT_TEST_RUN_DIR')
+    if request.node.path.name != 'test_paper_formal_bootstrap.py' or not run_dir:
+        return tmp_path
+    from quant.execution import paper_runtime
+
+    output = Path(run_dir).resolve()
+    if (output/'snapshot').resolve() != paper_runtime._actual_project_root().resolve():
+        return tmp_path
+    target = output/'formal_bootstrap_tmp'/tmp_path.parent.name/tmp_path.name
+    if target.exists() or not target.resolve().is_relative_to(output):
+        raise ValueError('Formal bootstrap scratch directory must be new and within this run')
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.mkdir()
+    return target
 
 
 def pytest_configure(config):
