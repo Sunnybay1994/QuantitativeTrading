@@ -75,6 +75,14 @@ try {
     if ($requestedDate) { $runArgs += @('--to', $requestedDate) }
     Write-Stage ('daily target=' + $requestedDate)
     $code = Invoke-Python $runArgs -Append
+    # Reuse the evening task for the previous month's brief; its cache allows
+    # only one paid narrative attempt and does not start monthly model training.
+    if (-not $CheckOnly) {
+        Write-Stage 'monthly_research_brief'
+        $briefCode = Invoke-Python @('-m', 'quant', 'report', 'brief', '--scheduled', '--no-notify') -Append
+        Write-Stage ('monthly_research_brief_exit=' + $briefCode)
+        if ($code -eq 0 -and $briefCode -ne 0) { $code = 1 }
+    }
     if ($code -ne 2) { Notify-Failure $code }
     # Keep the daily failure code; a failed fast suite must also fail the task.
     # Doctor page first: --record-tests alone never writes artifacts/doctor, and an

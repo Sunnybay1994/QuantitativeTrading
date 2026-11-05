@@ -18,6 +18,43 @@ from quant.reporting.structured_margin import margin_facts,render_margin
 BRIEF_ROOT = Path("artifacts/research/brief")
 
 
+def _market_facts(start, end, root):
+    clock = dt.datetime.now(SHANGHAI)
+    cutoff = min(str(end), str(clock.date()))
+    market = []
+    for path in (root/'artifacts/research').glob('market_indicators_*/summary.json'):
+        payload = json.loads(path.read_text(encoding='utf-8'))
+        latest = payload.get('latest') or {}
+        date = str(latest.get('trade_date') or '')[:10]
+        if date and date <= cutoff and 'observed_stocks' in latest and path.stat().st_mtime <= clock.timestamp():
+            market.append((date, 0, path, latest))
+    for marker in sorted((root/'artifacts/daily/market_context').glob('*/*/completed.json')):
+        date = marker.parent.parent.name
+        if date > cutoff or marker.stat().st_mtime > clock.timestamp():
+            continue
+        receipt = json.loads(marker.read_text(encoding='utf-8'))
+        folder = Path(receipt['output'])
+        folder = folder if folder.is_absolute() else root/folder
+        if not folder.resolve().is_relative_to((root/'artifacts/daily/market_context').resolve()):
+            raise ValueError('Monthly market context source outside its data directory')
+        for name in ('summary.json', 'report.md', 'market_states.parquet', 'source_manifest.json'):
+            if hashlib.sha256((folder/name).read_bytes()).hexdigest() != receipt['hashes'][name]:
+                raise ValueError('Completed monthly market input checksum mismatch')
+        path = folder/'summary.json'
+        latest = json.loads(path.read_text(encoding='utf-8')).get('latest') or {}
+        if str(latest.get('trade_date'))[:10] != date or 'observed_stocks' not in latest:
+            raise ValueError('Monthly market input date or coverage fields mismatch')
+        market.append((date, 1, path, latest))
+    if not market:
+        return {'status':'unavailable_for_month','source':None,'as_of':None,'values':{}}
+    date, _, path, latest = max(market, key=lambda item:(item[0],item[1],item[2].stat().st_mtime))
+    return {'status':'observed_in_month' if str(start)<=date else 'stale_before_month',
+        'source':str(path),'as_of':date,'values':latest,
+        'source_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),
+        'available_at':dt.datetime.fromtimestamp(path.stat().st_mtime, SHANGHAI).isoformat(),
+        'historical_vintage_verified':False}
+
+
 def collect_facts(month: str, *, root: Path = Path(".")) -> dict:
     """Assemble machine facts for YYYY-MM; LLM must not alter these numbers."""
     year, mon = map(int, month.split("-"))
@@ -64,18 +101,7 @@ def collect_facts(month: str, *, root: Path = Path(".")) -> dict:
     funnel_path = root / "artifacts/research/funnel_latest.json"
     funnel = json.loads(funnel_path.read_text(encoding="utf-8")) if funnel_path.is_file() else {}
     hints = sorted((root / "configs/research/gp_hints").glob("batch_*.toml"))
-    market=[]
-    for path in (root/'artifacts/research').glob('market_indicators_*/summary.json'):
-        payload=json.loads(path.read_text(encoding='utf-8'))
-        latest=payload.get('latest') or {}
-        date=str(latest.get('trade_date') or '')[:10]
-        if date and date<=str(end) and 'observed_stocks' in latest:
-            market.append((date,path,latest))
-    market_fact={'status':'unavailable_for_month','source':None,'as_of':None,'values':{}}
-    if market:
-        date,path,latest=max(market,key=lambda item:item[0])
-        market_fact={'status':'observed_in_month' if str(start)<=date else 'stale_before_month',
-            'source':str(path),'as_of':date,'values':latest}
+    market_fact = _market_facts(start, end, root)
     return {
         "month": month,
         "registry_new_rows": new_rows,
@@ -133,15 +159,16 @@ def _llm_narrative(facts: dict,*,cache_path:Path,ledger_root:Path,pricing:Path) 
             return None
     cache_path.parent.mkdir(parents=True,exist_ok=True)
     receipt={'status':'attempted','month':facts['month'],'maximum_calls':1,
-        'facts_sha256':hashlib.sha256(json.dumps(facts,sort_keys=True,default=str,ensure_ascii=False).encode()).hexdigest()}
+        'facts_sha256':hashlib.sha256(json.dumps(facts,sort_keys=True,default=str,ensure_ascii=False).encode()).hexdigest(),
+        'facts':facts}
     try:
         with cache_path.open('x',encoding='utf-8') as handle:
-            handle.write(json.dumps(receipt,ensure_ascii=False))
+            handle.write(json.dumps(receipt,ensure_ascii=False,default=str))
     except FileExistsError:
         return None
     def save():
         temporary=cache_path.with_suffix('.json.tmp')
-        temporary.write_text(json.dumps(receipt,ensure_ascii=False,indent=2),encoding='utf-8')
+        temporary.write_text(json.dumps(receipt,ensure_ascii=False,indent=2,default=str),encoding='utf-8')
         temporary.replace(cache_path)
     try:
         from quant.llm import complete_messages
@@ -191,7 +218,7 @@ def _llm_narrative(facts: dict,*,cache_path:Path,ledger_root:Path,pricing:Path) 
     return text
 
 
-def write_brief(month: str, *, root: Path = Path("."), use_llm: bool = True) -> dict:
+def write_brief(month: str, *, root: Path = Path("."), use_llm: bool = True, notify: bool = True) -> dict:
     facts = collect_facts(month, root=root)
     narrative = _llm_narrative(facts,cache_path=root/BRIEF_ROOT/f'{month}.narrative.json',
         ledger_root=root/'artifacts/research/llm_ledger',pricing=Path(__file__).resolve().parents[3]/'configs/llm/pricing.toml') if use_llm else None
@@ -202,20 +229,33 @@ def write_brief(month: str, *, root: Path = Path("."), use_llm: bool = True) -> 
         json.dumps(facts, indent=2, ensure_ascii=False, default=str), encoding="utf-8"
     )
     out.write_text(text, encoding="utf-8")
-    try:
-        from quant.notify import send
-        send(subject=f"research brief {month}", body=text[:2000])
-    except Exception:
-        pass
+    if notify:
+        try:
+            from quant.notify import send
+            send(subject=f"research brief {month}", body=text[:2000])
+        except Exception:
+            pass
     return {"path": str(out), "facts": facts, "narrative": bool(narrative)}
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--month", required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--month")
+    mode.add_argument("--scheduled", action="store_true")
     parser.add_argument("--no-llm", action="store_true")
+    parser.add_argument("--no-notify", action="store_true")
     args = parser.parse_args()
-    print(json.dumps(write_brief(args.month, use_llm=not args.no_llm), ensure_ascii=False, default=str))
+    if args.scheduled:
+        if args.no_llm:
+            parser.error('Scheduled monthly brief requires the registered single narrative attempt')
+        from quant.reporting.scheduled_brief import run
+        result = run()
+    else:
+        result = write_brief(args.month, use_llm=not args.no_llm, notify=not args.no_notify)
+    print(json.dumps(result, ensure_ascii=False, default=str))
+    if result.get('status') == 'incomplete':
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
