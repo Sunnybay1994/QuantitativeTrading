@@ -27,6 +27,11 @@ def _allowed_fields(library_ids: list[str]) -> str:
     return ", ".join(base + library_ids[:40])
 
 
+def paper_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [row for row in items if row.get('source')=='arxiv' or
+        (row.get('source')=='rss' and urlparse(row.get('url','')).hostname in {'arxiv.org','export.arxiv.org'})]
+
+
 def extract_candidates(
     items: list[dict[str, Any]],
     *,
@@ -37,8 +42,7 @@ def extract_candidates(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     if not items:
         return [], []
-    papers={row['id']:row for row in items if row.get('source')=='arxiv' or
-        (row.get('source')=='rss' and urlparse(row.get('url','')).hostname in {'arxiv.org','export.arxiv.org'})}
+    papers={row['id']:row for row in paper_items(items)}
     if not papers:
         return [],[]
     payload = {

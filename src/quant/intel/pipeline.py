@@ -14,7 +14,7 @@ from typing import Any, Callable
 from quant.core.paths import project_paths
 from quant.factors.library import load_library
 from quant.factors.search import canonical
-from quant.intel.extract import extract_candidates
+from quant.intel.extract import extract_candidates, paper_items
 from quant.intel.sources import collect, iso_week
 
 DEFAULT_CONFIG = Path("configs/research/intel.toml")
@@ -39,6 +39,29 @@ def _load_seen(week: str) -> set[str]:
         return set(json.loads(path.read_text(encoding="utf-8")))
     except json.JSONDecodeError:
         return set()
+
+
+def _weekly_rows(week: str, name: str) -> list[dict]:
+    path=project_paths().artifacts/'intel'/week/(name+'.json')
+    if not path.exists():return []
+    rows=json.loads(path.read_text(encoding='utf-8'))
+    if not isinstance(rows,list) or any(not isinstance(row,dict) for row in rows):
+        raise ValueError('Invalid stored weekly intel rows: '+name)
+    return rows
+
+
+def _reviewed_sources(week: str) -> set[str]:
+    # Collection and paid extraction are distinct. The existing paid receipts
+    # identify exactly which (at most 25) paper inputs reached the model.
+    result=set()
+    for path in (project_paths().artifacts/'intel'/week).glob('extraction_*.json'):
+        receipt=json.loads(path.read_text(encoding='utf-8'))
+        if receipt.get('status')!='responded':continue
+        for message in receipt['messages']:
+            if message['role']=='user':
+                payload=json.loads(message['content'])
+                result.update(row['id'] for row in payload['items'])
+    return result
 
 
 def _digest(week: str, items: list[dict[str, Any]], accepted: list[dict[str, Any]],
@@ -109,6 +132,12 @@ def run_intel(
     items = collect(config, getter=getter)
     seen = _load_seen(week)
     fresh = [row for row in items if row["id"] not in seen]
+    weekly={row['id']:row for row in _weekly_rows(week,'items')}
+    for row in items:weekly.setdefault(row['id'],row)
+    previous_candidates=_weekly_rows(week,'candidates')
+    previous_rejected=_weekly_rows(week,'rejected')
+    reviewed=_reviewed_sources(week)
+    pending=[row for row in paper_items(list(weekly.values())) if row['id'] not in reviewed][:25]
     library_root = Path(config.get("library", "configs/factors/library"))
     if not library_root.is_absolute():
         library_root = root / library_root
@@ -121,9 +150,10 @@ def run_intel(
             definitions = []
         existing = [canonical(item.expr) for item in definitions]
         library_ids = [item.id for item in definitions]
+    existing.extend(canonical(row['expr']) for row in previous_candidates)
     accepted: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
-    if extract and fresh:
+    if extract and pending:
         kwargs = {"existing_canonical": set(existing), "maximum": int(config.get("maximum_candidates", 8))}
         from quant.llm import complete_messages
         from quant.llm.ledger import append
@@ -157,9 +187,10 @@ def run_intel(
             return response
         kwargs["complete"] = tracked
         kwargs["library_ids"] = library_ids
-        accepted, rejected = extract_candidates(fresh, **kwargs)
+        accepted, rejected = extract_candidates(pending, **kwargs)
     queue_path = None
-    digest = _digest(week, fresh, accepted, rejected, queue_path)
+    digest = _digest(week, list(weekly.values()), previous_candidates+accepted,
+        previous_rejected+rejected, queue_path)
     seen_path = _seen_path(week)
     seen_path.parent.mkdir(parents=True, exist_ok=True)
     seen_path.write_text(json.dumps(sorted(seen | {row["id"] for row in fresh})), encoding="utf-8")
@@ -170,6 +201,8 @@ def run_intel(
         "rejected": len(rejected),
         "digest": str(digest),
         "queue": None if queue_path is None else str(queue_path),
+        "weekly_items":len(weekly),
+        "weekly_accepted":len(previous_candidates)+len(accepted),
     }
 
 
