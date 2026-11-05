@@ -34,3 +34,11 @@ definitions = [
   "S6 N4 incremental vs Q10 + ngp controls",
 ]
 auto_trade = false
+
+[structured_preliminary_inputs]
+registered_on = 2026-11-05
+sources = ["data/clean/forecast/snapshot=*/summary.json", "data/clean/express/snapshot=*/summary.json"]
+availability = "Published snapshots only; available_at >= observed_at and strictly before signal-day Shanghai midnight"
+forecast_units = "Preserve net_profit_min/max in native 10000 CNY, change_min/max in percent; no midpoint"
+express_units = "Preserve n_income/revenue in native CNY; n_income is not relabeled parent-attributable income"
+score_policy = "Existing sue_prelim remains SAMPLE_INSUFFICIENT until a point-surprise definition is registered; this intake is not new factor evaluation"

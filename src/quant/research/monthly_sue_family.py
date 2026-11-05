@@ -168,12 +168,16 @@ def build_monthly_rsue8(
 def build_monthly_sue_prelim(
     *, income_history: pl.DataFrame, signal_dates: tuple[dt.date, ...],
     candidate_symbols: tuple[str, ...],
+    preliminary_history: pl.DataFrame | None = None,
 ) -> PITQualitySignalResult:
-    """S4 placeholder: prelim surprise requires statement_event_dates coverage.
+    """Consume structured S4 inputs without redefining the frozen surprise score.
 
-    Until prelim events are wired with unique PIT surprise values, every row is
-    explicitly SAMPLE_INSUFFICIENT (not zero-filled).
+    Forecast ranges and express net income retain their native units and distinct
+    definitions in eligibility evidence. No midpoint or parent-profit substitution
+    defines a score; the registered SAMPLE_INSUFFICIENT behavior is preserved.
     """
+    from quant.data.structured_preliminary import empty_preliminary,preliminary_as_of
+    history=empty_preliminary() if preliminary_history is None else preliminary_history
     name = "sue_prelim"
     factors, eligibility = [], []
     for date in signal_dates:
@@ -184,10 +188,19 @@ def build_monthly_sue_prelim(
             name: [None] * len(candidate_symbols),
         }).cast({"financial_period_end": pl.Date, name: pl.Float64})
         factors.append(frame)
+        visible=preliminary_as_of(history,date,candidate_symbols)
+        latest=visible.filter(pl.col('report_period_end').eq_missing(pl.col('report_period_end').max().over('symbol')))
+        inputs=latest.group_by('symbol').agg(pl.len().alias('preliminary_observation_count'),
+            pl.col('report_period_end').first().alias('preliminary_latest_period'),
+            pl.col('source_table').unique().sort().alias('preliminary_sources'),
+            pl.struct([c for c in history.columns if c!='symbol']).alias('preliminary_observations'))
         eligibility.append(frame.select(
             pl.col("trade_date").alias("as_of"), "symbol", "financial_period_end",
             pl.lit(name).alias("factor"), pl.lit("SAMPLE_INSUFFICIENT").alias("status"),
-        ))
+        ).join(inputs,on='symbol',how='left',validate='1:1').with_columns(
+            pl.col('preliminary_observation_count').fill_null(0),
+            pl.when(pl.col('preliminary_observation_count').fill_null(0)>0)
+            .then(pl.lit('point_surprise_not_defined')).otherwise(pl.lit('no_visible_preliminary_input')).alias('input_reason')))
     empty_q = pl.DataFrame({"symbol": [], "as_of": [], "quarantine_reason": []}).cast({
         "symbol": pl.String, "as_of": pl.Date, "quarantine_reason": pl.String,
     })

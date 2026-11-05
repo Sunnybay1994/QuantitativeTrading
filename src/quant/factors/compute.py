@@ -67,7 +67,11 @@ def attach_expression_inputs(
         histories = read_factor_financial_history(data_root, refresh_config, panel,
             expanded=bool(set(financial_names) - set(PIT_QUALITY_FACTOR_NAMES)),
             share_changes="pit_annual_fscore" in financial_names)
-        panel = attach_financial_factors(panel, histories, financial_names)
+        preliminary={}
+        if 'sue_prelim' in financial_names:
+            from quant.data.structured_preliminary import read_preliminary_history
+            preliminary['preliminary_history']=read_preliminary_history(data_root)
+        panel = attach_financial_factors(panel, histories, financial_names,**preliminary)
     minute_names = minute_input_names(expressions)
     if minute_names:
         panel = attach_minute_factors(panel, read_factor_minute_inputs(minute_data_root or data_root, bars),

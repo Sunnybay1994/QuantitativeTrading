@@ -82,9 +82,11 @@ def scoped_histories(
 
 def direct_snapshot(
     name: str, histories: dict[str, pl.DataFrame], date: dt.date, symbols: tuple[str, ...],
+    *, preliminary_history: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     function = DIRECT[name][0]
     arguments = {ARGUMENTS[table]: frame.filter(pl.col("symbol").is_in(symbols))
                  for table, frame in histories.items()}
+    if name=='sue_prelim':arguments['preliminary_history']=preliminary_history
     return function(**arguments, signal_dates=(date,), candidate_symbols=symbols).factors.select(
         "symbol", "trade_date", "financial_period_end", name)

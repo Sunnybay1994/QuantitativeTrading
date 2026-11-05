@@ -99,6 +99,7 @@ def attach_quality_factors(panel: pl.DataFrame, histories: dict[str, pl.DataFram
 
 def attach_financial_factors(
     panel: pl.DataFrame, histories: dict[str, pl.DataFrame], names: tuple[str, ...],
+    *, preliminary_history: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """Attach registered financial families with announcement updates and daily expiry."""
     unknown = set(names) - _known_names()
@@ -113,9 +114,12 @@ def attach_financial_factors(
         frames = scoped_histories(histories, DIRECT[name][1])
         publications = pl.concat([frame.select("symbol", "available_date")
                                   for frame in frames.values()]).unique()
+        if name=='sue_prelim' and preliminary_history is not None:
+            publications=pl.concat([publications,preliminary_history.select('symbol','available_date')]).unique()
 
         def snapshot(date: dt.date, symbols: tuple[str, ...], factor: str = name) -> pl.DataFrame:
-            return direct_snapshot(factor, frames, date, symbols)
+            options={'preliminary_history':preliminary_history} if factor=='sue_prelim' else {}
+            return direct_snapshot(factor, frames, date, symbols,**options)
 
         panel = _carry_events(panel, publications, snapshot, (name,), DIRECT[name][2])
     for name in sorted(requested & set(RATIO_FIELDS)):
