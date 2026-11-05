@@ -33,6 +33,19 @@ def attach(records: list[dict], root: Path) -> dict:
         paths = sorted((base/variant/'cost_1').glob('????/nav.parquet'))
         if not paths:
             paths = list((base/variant/'cost_1').glob('nav.parquet'))
+        if not paths and (run/'summary.json').is_file():
+            summary=json.loads((run/'summary.json').read_text(encoding='utf-8'))
+            completed_entries=summary.get('completed',[])
+            # Account families publish main/<variant>/cost_1 and explicit receipts.
+            # Do not substitute a stress/proxy ledger or a different cost level.
+            entries=[item for item in (completed_entries if isinstance(completed_entries,list) else []) if isinstance(item,dict)
+                and item.get('variant')==variant and item.get('period')=='main'
+                and item.get('cost_multiplier')==1 and item.get('path')]
+            if len(entries)>1:
+                raise ValueError('Ambiguous completed 1x main-account receipt')
+            if entries:
+                folder=root/entries[0]['path']
+                paths=list(folder.glob('nav.parquet')) or sorted(folder.glob('????/nav.parquet'))
         if not paths and row.get('source_run'):
             paths = sorted((root/row['source_run']/variant/'cost_1').glob('????/nav.parquet'))
         if not paths and (run/'config.toml').is_file() and '/' not in row['variant']:
