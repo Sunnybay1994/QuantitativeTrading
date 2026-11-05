@@ -165,6 +165,8 @@ ETF 人工延迟账户：初始化 `python -m quant research etf-manual-init`；
 
 ## 证据位置
 
+`python -m quant doctor --no-notify` 会在原报告中追加当前工作清单的已观测进度：指定实验的注册表、冻结配置 SHA、三档结果与报告对应关系，R3 条件区间，以及已发布结构化表的实际行数和日期。产物仍在 `artifacts/doctor/`；本节不代替完整验收。11-15 与 12-01 日期未到时不宣告通过，11-27 预演、11-30 及时订单、12-01 月报及费用对应产物仍须逐项核对自然执行证据。
+
 | 问题 | 看哪里 |
 |---|---|
 | 日更 | `artifacts/daily/sue_v2/`、`artifacts/daily/scheduler/` |

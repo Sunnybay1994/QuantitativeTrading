@@ -436,7 +436,10 @@ def collect(
         orders = order_status(root=root, today=today)
     except (OSError, ValueError, KeyError, pl.exceptions.PolarsError) as exc:
         orders = {'next_rebalance': None, 'ready': False, 'error': str(exc)}
+    from quant.reporting.doctor_worklist import collect as worklist_progress
+
     return {
+        "worklist": worklist_progress(root, clock),
         "orders": orders,
         "generated_at": clock.isoformat(),
         "date": today.isoformat(),
@@ -515,6 +518,9 @@ def render_markdown(report: dict) -> str:
     from quant.reporting.doctor_events_acceptance import markdown as events_markdown
 
     lines.extend(events_markdown(report.get('events') or {}))
+    from quant.reporting.doctor_worklist import markdown as worklist_markdown
+
+    lines.extend(worklist_markdown(report.get('worklist') or {}))
     return "\n".join(lines)
 
 
