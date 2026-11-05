@@ -109,8 +109,8 @@ def _environment(snapshot: Path, output: Path) -> dict[str, str]:
     return env
 
 
-def _scope_costs(root: Path, start: float) -> dict:
-    """Use completed native JUnit timings only to start expensive fixture groups early."""
+def _case_costs(root: Path, start: float) -> dict:
+    """Use completed native JUnit timings only to start expensive cases early."""
     from _pytest.junitxml import mangle_test_address
 
     for path in sorted((root/'artifacts/tests').glob('20*/receipt.json'), reverse=True):
@@ -120,17 +120,17 @@ def _scope_costs(root: Path, start: float) -> dict:
             if not receipt.get('complete'):
                 continue
             nodes = json.loads((path.parent/'collection.json').read_text(encoding='utf-8'))['nodeids']
-            scopes = {}
+            identities = {}
             for node in nodes:
                 names = mangle_test_address(node)
-                scopes[('.'.join(names[:-1]), names[-1])] = node.rsplit('::', 1)[0]
+                identities[('.'.join(names[:-1]), names[-1])] = node
             costs = {}
             for case in ET.parse(path.parent/'tests.xml').iter('testcase'):
-                scope = scopes[(case.get('classname'), case.get('name'))]
+                node = identities[(case.get('classname'), case.get('name'))]
                 seconds = float(case.get('time', '0'))
                 if not math.isfinite(seconds) or seconds < 0:
                     raise ValueError('Invalid JUnit timing')
-                costs[scope] = costs.get(scope, 0.) + seconds
+                costs[node] = seconds
             return dict(source_receipt=str(path), costs=costs)
         except (OSError, ValueError, TypeError, KeyError, ET.ParseError):
             continue
@@ -241,17 +241,16 @@ def run(root: Path) -> int:
                 raise RuntimeError('pytest-xdist is required; install the project dev dependencies')
             manifest = _snapshot(root, snapshot, clock)
             _json(output/'source_manifest.json', manifest)
-            timings = _scope_costs(root, clock)
-            _json(output/'scope_costs.json', timings)
+            timings = _case_costs(root, clock)
+            _json(output/'case_costs.json', timings)
             payload['scheduling'] = dict(source_receipt=timings['source_receipt'],
-                                        timed_scopes=len(timings['costs']))
+                                        timed_cases=len(timings['costs']))
             env = _environment(snapshot, output)
             _assertion_control(snapshot, output, env, log, clock)
-            # Keep module fixtures on one worker instead of rebuilding them across all workers.
+            # Short dispatch queues keep costly late cases from stranding the other workers.
             command = [sys.executable, '-m', 'pytest', 'tests', '-vv', '-m', 'not slow',
                 '-c', str(snapshot/'pyproject.toml'),
-                '-o', 'addopts=', '--assert=plain', '-n', str(workers), '--dist=loadscope',
-                *(['--no-loadscope-reorder'] if timings['costs'] else []),
+                '-o', 'addopts=', '--assert=plain', '-n', str(workers), '--dist=load', '--maxschedchunk=1',
                 '--max-worker-restart=0', '-p', 'quant.reporting.fast_tests', '--tb=short',
                 '--basetemp', str(output/'pytest_tmp'), '--junitxml', str(output/'tests.xml')]
             payload['argv'] = command
@@ -310,9 +309,9 @@ def pytest_configure(config):
 def pytest_collection_modifyitems(items):
     if _worker is None:
         return
-    timings = json.loads((Path(os.environ['QUANT_TEST_RUN_DIR'])/'scope_costs.json').read_text(encoding='utf-8'))
-    # Stable sort preserves every case and each fixture group's original order.
-    items.sort(key=lambda item: -timings['costs'].get(item.nodeid.rsplit('::', 1)[0], 0.))
+    timings = json.loads((Path(os.environ['QUANT_TEST_RUN_DIR'])/'case_costs.json').read_text(encoding='utf-8'))
+    # Stable sort preserves every case and the original order of equal-cost cases.
+    items.sort(key=lambda item: -timings['costs'].get(item.nodeid, 0.))
 
 
 def pytest_collection_finish(session):

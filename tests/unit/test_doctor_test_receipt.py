@@ -13,28 +13,29 @@ import pytest
 from quant.reporting import doctor, fast_tests as fast
 
 
-def test_native_timing_order_preserves_all_cases_and_group_order(tmp_path, monkeypatch):
+def test_native_timing_order_preserves_all_cases_and_equal_cost_order(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     previous = tmp_path/'artifacts/tests/20260101T000000'
     previous.mkdir(parents=True)
     nodes = ['tests/test_fast.py::test_one', 'tests/test_slow.py::test_b',
-             'tests/test_slow.py::test_a', 'tests/test_new.py::test_new']
+             'tests/test_slow.py::test_a', 'tests/test_new.py::test_new',
+             'tests/test_other.py::test_tie']
     (previous/'receipt.json').write_text(json.dumps({'complete': True}))
     (previous/'collection.json').write_text(json.dumps({'nodeids': nodes}))
     _junit(previous/'tests.xml', nodes)
     tree = ET.parse(previous/'tests.xml')
-    for case, seconds in zip(tree.iter('testcase'), (1, 40, 60, 0)):
+    for case, seconds in zip(tree.iter('testcase'), (1, 40, 60, 0, 40)):
         case.set('time', str(seconds))
     tree.write(previous/'tests.xml')
-    timings = fast._scope_costs(tmp_path, time.monotonic())
-    assert timings['costs']['tests/test_slow.py'] == 100
-    (tmp_path/'scope_costs.json').write_text(json.dumps(timings))
+    timings = fast._case_costs(tmp_path, time.monotonic())
+    assert timings['costs']['tests/test_slow.py::test_a'] == 60
+    (tmp_path/'case_costs.json').write_text(json.dumps(timings))
     monkeypatch.setenv('QUANT_TEST_RUN_DIR', str(tmp_path))
     monkeypatch.setattr(fast, '_worker', 'gw0')
     items = [SimpleNamespace(nodeid=node) for node in nodes]
     fast.pytest_collection_modifyitems(items)
-    assert [item.nodeid for item in items] == [nodes[1], nodes[2], nodes[0], nodes[3]]
+    assert [item.nodeid for item in items] == [nodes[2], nodes[1], nodes[4], nodes[0], nodes[3]]
     assert sorted(item.nodeid for item in items) == sorted(nodes)
 
 
