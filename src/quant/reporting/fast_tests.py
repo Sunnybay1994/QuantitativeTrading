@@ -229,8 +229,7 @@ def run(root: Path) -> int:
     output.mkdir(parents=True, exist_ok=False)
     snapshot, log_path = output/'snapshot', output/'pytest.log'
     snapshot.mkdir()
-    # The designated Windows host has six physical cores; SMT duplicates costly session data.
-    workers = min(6, os.cpu_count() or 1)
+    workers = min(12, os.cpu_count() or 1)
     payload = dict(ran_at=started.isoformat(), command='pytest -m "not slow"',
         timeout_seconds=TIMEOUT_SECONDS, workers=workers, complete=False, accepted_fast=False,
         passed=None, failed=None, errors=None, skipped=None, selected_count=None,
