@@ -268,7 +268,8 @@ def write_two_account_month(
         strategy_nav_2x=None, benchmarks=benchmarks, as_of_month=month, oos_start=oos,
     )
     stem.parent.mkdir(parents=True, exist_ok=True)
-    lines = [f"# Q10 与规模中性影子 {month}", ""]
+    lines = [f"# Q10 与规模中性影子 {month}", "",
+             f"数据截至 {as_of}；以下为截至该日的月内累计对比，完整月份与自然调度证据另行核对。", ""]
     for title, evaluation in (("Q10", q10_eval), ("影子 b0.5_k50_size_on", shadow_eval)):
         lines += [f"## {title}", "", "|benchmark|month return|month excess|", "|---|---:|---:|"]
         for name, block in evaluation["benchmark_month"].items():
@@ -276,7 +277,8 @@ def write_two_account_month(
         lines.append("")
     path = stem.with_suffix(".md")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    payload = {"status": "complete", "as_of_month": month, "q10": q10_eval, "shadow": shadow_eval}
+    payload = {"status": "complete", "as_of": str(as_of), "as_of_month": month,
+               "q10": q10_eval, "shadow": shadow_eval}
     if benchmark_config is not None:
         payload['benchmark_source'] = {'config': str(benchmark_config),
             'sha256': hashlib.sha256(benchmark_config.read_bytes()).hexdigest(), 'as_of': str(as_of)}

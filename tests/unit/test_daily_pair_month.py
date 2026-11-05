@@ -76,6 +76,8 @@ def test_string_as_of_reaches_actual_month_calculation_and_writes_pair(case):
     assert payload['q10']['month_excess_primary'] == pytest.approx(1.1/1.05-1)
     assert payload['shadow']['month_excess_primary'] == pytest.approx(1.02/1.01-1)
     assert stem.with_suffix('.md').is_file()
+    assert payload['as_of'] == '2026-11-30'
+    assert '数据截至 2026-11-30' in stem.with_suffix('.md').read_text(encoding='utf-8')
 
 
 def test_only_real_insufficient_month_boundaries_are_waiting(case):
