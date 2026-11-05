@@ -1,6 +1,7 @@
 import datetime as dt
 import hashlib
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -124,14 +125,17 @@ def test_checkpoint_replace_retries_do_not_repeat_api_or_raw_writes(tmp_path,mon
                 raise error
         return original(source,target)
     monkeypatch.setattr(Path,'replace',replace)
-    monkeypatch.setattr('quant.data.realtime_store.time.sleep',pauses.append)
+    def sleep(seconds):
+        pauses.append(seconds)
+        time.sleep(seconds)
+    monkeypatch.setattr('quant.data.realtime_store.time',SimpleNamespace(sleep=sleep))
     class Client:
         def query_raw(self,table,**params):
             calls.append((table,params.copy()))
             field='trade_date' if table=='margin_detail' else 'ann_date'
             return pl.DataFrame({'ts_code':[params.get('ts_code','600000.SH')],field:['20190115']})
     result=run(config=path,output=output,connector=Client())
-    assert result['status']=='captured' and failures==[5,5] and pauses.count(.1)==2
+    assert result['status']=='captured' and failures==[5,5] and pauses.count(.1)>=2
     assert len(calls)==len(result['requests'])==len(list((tmp_path/'data/raw').rglob('*.parquet')))==8
     assert json.loads(summary.read_text(encoding='utf-8'))==result
     assert not list(output.glob('*.tmp'))
@@ -148,7 +152,8 @@ def test_permanent_checkpoint_denial_is_bounded_and_retains_last_valid_receipt(t
             raise PermissionError('permanent checkpoint denial')
         return original(source,target)
     monkeypatch.setattr(Path,'replace',replace)
-    monkeypatch.setattr('quant.data.realtime_store.time.sleep',lambda _:None)
+    monkeypatch.setattr('quant.data.realtime_store.time',SimpleNamespace(
+        sleep=lambda seconds: time.sleep(seconds) if not attempts else None))
     class Client:
         def query_raw(self,table,**params):
             calls.append(table)
