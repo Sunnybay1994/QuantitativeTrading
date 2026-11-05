@@ -412,7 +412,8 @@ def collect(
 
     events = evaluate_events(root, today)
     red.extend('events: '+error for error in events['errors'])
-    if coverage['five_sessions']['calendar_gate_met'] and not coverage['five_sessions']['coverage_passed']:
+    coverage_required = (root/'docs/工作清单_20261102.md').is_file() or not coverage['missing']
+    if coverage_required and not coverage['five_sessions']['coverage_passed']:
         red.append('coverage: D1 requires five verified consecutive sessions per market')
     latest: dict[str, dict] = {}
     for row in coverage["rows"]:

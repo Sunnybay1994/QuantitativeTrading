@@ -1,4 +1,4 @@
-"""D1's five-session coverage and date criteria; no collection or calendar refresh."""
+"""Five closed-session coverage; the original review date is informational."""
 
 import datetime as dt
 import math
@@ -9,7 +9,7 @@ import polars as pl
 
 from quant.data.post_close_coverage import THRESHOLDS
 
-NOT_BEFORE = dt.date(2026, 11, 6)
+REVIEW_DATE = dt.date(2026, 11, 6)
 SHANGHAI = ZoneInfo('Asia/Shanghai')
 
 
@@ -114,17 +114,18 @@ def evaluate(root: Path, rows: list[dict], now: dt.datetime) -> dict:
         except (OSError, KeyError, TypeError, ValueError, RuntimeError, pl.exceptions.PolarsError) as exc:
             markets[market] = {'threshold': floor, 'sessions': [], 'passed_sessions': 0,
                                'passed': False, 'calendar_error': str(exc)}
-    gate = now.astimezone(SHANGHAI).date() >= NOT_BEFORE
+    review_reached = now.astimezone(SHANGHAI).date() >= REVIEW_DATE
     coverage = all(value['passed'] for value in markets.values())
-    return {'scope': 'D1 coverage and calendar criteria; natural scheduler receipts and commit remain separate',
-            'not_before': str(NOT_BEFORE), 'calendar_gate_met': gate,
+    return {'scope': 'Five actually closed sessions; user authorized early verification on 2026-11-05. Scheduler receipts remain separate',
+            'scheduled_review_date': str(REVIEW_DATE), 'review_date_reached': review_reached,
+            'observed_at': now.isoformat(),
             'required_sessions': 5, 'markets': markets, 'coverage_passed': coverage,
-            'criteria_met': gate and coverage, 'rejected_rows': rejected}
+            'criteria_met': coverage, 'rejected_rows': rejected}
 
 
 def markdown(result: dict) -> list[str]:
     lines = ['', '## D1 five-session coverage criteria', '',
-             f"Not before {result['not_before']}; date gate={result['calendar_gate_met']}; "
+             f"Original review {result['scheduled_review_date']}; observed {result['observed_at']}; "
              f"coverage={result['coverage_passed']}; criteria_met={result['criteria_met']}.",
              'Natural scheduler receipts and commit are separately required.', '',
              '| market | date | complete / expected | passed | reason |',

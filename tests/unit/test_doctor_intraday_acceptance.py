@@ -43,8 +43,8 @@ def rows():
 
 def test_exact_five_completed_sessions_with_counts_at_threshold_pass(tree):
     value = acceptance.evaluate(tree, rows(), NOW)
-    assert value['not_before'] == '2026-11-06'
-    assert value['calendar_gate_met'] and value['coverage_passed'] and value['criteria_met']
+    assert value['scheduled_review_date'] == '2026-11-06'
+    assert value['review_date_reached'] and value['coverage_passed'] and value['criteria_met']
     for market in ('cn', 'hk', 'us'):
         actual = value['markets'][market]
         assert actual['passed_sessions'] == 5
@@ -87,7 +87,7 @@ def test_every_session_must_reconcile_and_pass_not_average_or_count_rows(tree, f
     assert value['markets']['cn']['passed_sessions'] == 4
 
 
-def test_five_good_sessions_before_calendar_gate_are_not_accepted(tree):
+def test_five_real_completed_sessions_can_be_verified_before_original_review_date(tree):
     now = NOW-dt.timedelta(days=1)
     asia = ['2026-10-30', *ASIA[:4]]
     us = ['2026-10-29', *US[:4]]
@@ -95,7 +95,8 @@ def test_five_good_sessions_before_calendar_gate_are_not_accepted(tree):
             for day in (us if market == 'us' else asia)]
     value = acceptance.evaluate(tree, data, now)
     assert value['coverage_passed']
-    assert not value['calendar_gate_met'] and not value['criteria_met']
+    assert not value['review_date_reached'] and value['criteria_met']
+    assert value['observed_at']==now.isoformat()
 
 
 @pytest.mark.parametrize('fault', ['absent', 'hole_duplicate', 'disagreement'])
@@ -163,5 +164,17 @@ def test_doctor_publishes_criteria_and_red_after_gate_without_claiming_all_d1_do
     assert 'D1 five-session' in doctor.render_markdown(report)
     path.write_text(json.dumps({'rows': []}), encoding='utf-8')
     report = doctor.collect(**arguments)
+    assert not report['coverage']['five_sessions']['criteria_met']
+    assert 'coverage: D1 requires five verified consecutive sessions per market' in report['red']
+
+
+def test_current_worklist_cannot_hide_missing_coverage_before_original_review(tree,monkeypatch):
+    from quant.reporting import doctor
+    docs=tree/'docs';docs.mkdir()
+    (docs/'工作清单_20261102.md').write_text('Current worklist',encoding='utf-8')
+    monkeypatch.setattr(doctor,'_git_facts',lambda _:{
+        'git_ok':True,'dirty':0,'days_since_commit':0,'root_scratch_py':0})
+    report=doctor.collect(root=tree,now=NOW-dt.timedelta(days=1),tasks=[],
+        history={'enabled':True,'instances':[]})
     assert not report['coverage']['five_sessions']['criteria_met']
     assert 'coverage: D1 requires five verified consecutive sessions per market' in report['red']

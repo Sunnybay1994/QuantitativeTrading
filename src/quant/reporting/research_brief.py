@@ -151,12 +151,48 @@ def render_template(facts: dict, narrative: str | None = None) -> str:
     return "\n".join(lines)
 
 
+def _response_text(response):
+    text=response.get('content') or ''
+    if response.get('choices'):
+        text=response['choices'][0].get('message',{}).get('content') or ''
+    if isinstance(response.get('message'),dict):
+        text=response['message'].get('content',text)
+    return text
+
+
+def _structured_narrative(text):
+    """Keep complete nonnumeric summary sentences; never rewrite model numbers."""
+    if not isinstance(text,str):return None
+    try:
+        payload=json.loads(text)
+    except (ValueError,TypeError):
+        return None
+    if not isinstance(payload,dict) or not isinstance(payload.get('summary'),str):return None
+    sentences=re.findall(r'[^。！？!?；;\n]+[。！？!?；;\n]?',payload['summary'])
+    kept=''.join(part for part in sentences if not re.search(r'\d',part)).strip()
+    return kept if 8<=len(kept)<=120 else None
+
+
+def _save_narrative(path,receipt):
+    temporary=path.with_suffix('.json.tmp')
+    temporary.write_text(json.dumps(receipt,ensure_ascii=False,indent=2,default=str),encoding='utf-8')
+    temporary.replace(path)
+
+
 def _llm_narrative(facts: dict,*,cache_path:Path,ledger_root:Path,pricing:Path) -> str | None:
     if cache_path.exists():
         try:
-            return json.loads(cache_path.read_text(encoding='utf-8')).get('accepted_text')
+            cached=json.loads(cache_path.read_text(encoding='utf-8'))
         except json.JSONDecodeError:
             return None
+        if cached.get('status')=='rejected_numeric_narrative':
+            recovered=_structured_narrative(_response_text(cached.get('response',{})))
+            if recovered:
+                cached.update(status='accepted',accepted_text=recovered,
+                    original_status='rejected_numeric_narrative',
+                    text_transform='json.summary; complete sentences without digits only; original response retained')
+                _save_narrative(cache_path,cached)
+        return cached.get('accepted_text')
     cache_path.parent.mkdir(parents=True,exist_ok=True)
     receipt={'status':'attempted','month':facts['month'],'maximum_calls':1,
         'facts_sha256':hashlib.sha256(json.dumps(facts,sort_keys=True,default=str,ensure_ascii=False).encode()).hexdigest(),
@@ -167,9 +203,7 @@ def _llm_narrative(facts: dict,*,cache_path:Path,ledger_root:Path,pricing:Path) 
     except FileExistsError:
         return None
     def save():
-        temporary=cache_path.with_suffix('.json.tmp')
-        temporary.write_text(json.dumps(receipt,ensure_ascii=False,indent=2,default=str),encoding='utf-8')
-        temporary.replace(cache_path)
+        _save_narrative(cache_path,receipt)
     try:
         from quant.llm import complete_messages
     except Exception:
@@ -200,15 +234,15 @@ def _llm_narrative(facts: dict,*,cache_path:Path,ledger_root:Path,pricing:Path) 
     ledger_append({'task':'research_brief','usd':usd,'estimated':estimated or unknown,'unknown_charge':unknown,
         'month':facts['month'],'artifact':str(cache_path),'usage':response.get('usage')},ledger_root)
     receipt.update(response=response,usd=usd,estimated=estimated or unknown)
-    text = response.get("content") or ""
-    if response.get('choices'):
-        text=response['choices'][0].get('message',{}).get('content') or ''
-    if isinstance(response.get("message"), dict):
-        text = response["message"].get("content", text)
+    text = _response_text(response)
     if not isinstance(text,str):
         receipt['status']='invalid_response_text';save()
         return None
     text = text.strip()
+    structured=_structured_narrative(text)
+    if structured:
+        text=structured
+        receipt['text_transform']='json.summary; complete sentences without digits only; original response retained'
     if re.search(r"\d", text):
         # Reject narratives that inject digits (protect facts).
         receipt['status']='rejected_numeric_narrative';save()

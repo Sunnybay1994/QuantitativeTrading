@@ -1,4 +1,4 @@
-param([ValidateSet('Watch', 'Rehearse')][string]$Mode = 'Watch')
+﻿param([ValidateSet('Watch', 'Rehearse')][string]$Mode = 'Watch')
 $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $workspace

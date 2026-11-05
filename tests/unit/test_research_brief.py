@@ -71,3 +71,35 @@ def test_market_inputs_before_report_month_are_explicitly_stale(tmp_path):
     facts=collect_facts('2026-10',root=tmp_path)
     assert facts['market_state']['status']=='stale_before_month'
     assert facts['market_state']['as_of']=='2026-09-21'
+
+
+def test_structured_response_keeps_only_whole_nonnumeric_sentences(tmp_path,monkeypatch):
+    calls=[]
+    raw=json.dumps({'as_of':'2026-10-30','summary':
+        '基准位于200日均线下方。证据仅来自单日收盘重建，非到达证明；相关维度资料不足。'},ensure_ascii=False)
+    monkeypatch.setattr('quant.llm.complete_messages',lambda *a:calls.append(1) or {'content':raw,'usd':.01})
+    result=write_brief('2026-10',root=tmp_path,notify=False)
+    receipt=json.loads((tmp_path/'artifacts/research/brief/2026-10.narrative.json').read_text(encoding='utf-8'))
+    assert result['narrative'] and calls==[1]
+    assert receipt['response']['content']==raw
+    assert receipt['accepted_text']=='证据仅来自单日收盘重建，非到达证明；相关维度资料不足。'
+    assert '200' not in Path(result['path']).read_text(encoding='utf-8')
+
+
+def test_cached_structured_rejection_is_recovered_without_second_call_or_charge(tmp_path,monkeypatch):
+    path=tmp_path/'artifacts/research/brief/2026-10.narrative.json';path.parent.mkdir(parents=True)
+    raw={'content':json.dumps({'summary':'本月数字为2。来源仍有缺口，需要继续核对。'},ensure_ascii=False)}
+    path.write_text(json.dumps({'status':'rejected_numeric_narrative','response':raw,
+        'usd':.01,'maximum_calls':1,'facts':{'month':'2026-10'}}),encoding='utf-8')
+    monkeypatch.setattr('quant.llm.complete_messages',lambda *a:__import__('pytest').fail('no second paid call'))
+    result=write_brief('2026-10',root=tmp_path,notify=False)
+    cached=json.loads(path.read_text(encoding='utf-8'))
+    assert result['narrative'] and cached['accepted_text']=='来源仍有缺口，需要继续核对。'
+    assert cached['response']==raw and cached['usd']==.01 and cached['maximum_calls']==1
+    assert not list((tmp_path/'artifacts/research/llm_ledger').glob('*'))
+
+
+def test_structured_numeric_only_summary_stays_rejected():
+    from quant.reporting.research_brief import _structured_narrative
+    assert _structured_narrative(json.dumps({'summary':'市场风险为2级。'})) is None
+    assert _structured_narrative(json.dumps({'summary':'200日均线下方；短句。'})) is None
