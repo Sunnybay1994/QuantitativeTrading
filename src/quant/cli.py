@@ -24,6 +24,7 @@ _DELEGATE: dict[tuple[str, str], str] = {
     ("data", "refresh"): "quant.data.refresh",
     ("data", "probe-tushare"): "quant.data.probe_tushare",
     ("data", "structured-events"): "quant.data.structured_events",
+    ("data", "forward-benchmarks"): "quant.data.forward_return_benchmarks",
     ("data", "account-portfolio-inputs"): "quant.data.account_portfolio_inputs",
     ("data", "account-portfolio-panel"): "quant.data.account_portfolio_panel",
     ("data", "events-v0"): "quant.data.events_v0",
@@ -244,7 +245,7 @@ def main(argv: list[str] | None = None) -> int:
     intel.add_argument("--dry-run", action="store_true")
 
     data = sub.add_parser("data", help="数据刷新")
-    data.add_argument("command", choices=["refresh", "probe-tushare", "structured-events", "account-portfolio-inputs", "account-portfolio-panel", "events-v0", "realtime", "market-snapshot", "minutes", "minute-history", "minute-factors", "baostock-history", "post-close-k1m", "latency", "stock-execution-open", "monthly-execution-open"])
+    data.add_argument("command", choices=["refresh", "probe-tushare", "structured-events", "forward-benchmarks", "account-portfolio-inputs", "account-portfolio-panel", "events-v0", "realtime", "market-snapshot", "minutes", "minute-history", "minute-factors", "baostock-history", "post-close-k1m", "latency", "stock-execution-open", "monthly-execution-open"])
     factors = sub.add_parser("factors", help="因子计算")
     factors.add_argument("command", choices=["compute"])
     research = sub.add_parser("research", help="投研流水线")

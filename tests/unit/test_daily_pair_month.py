@@ -91,6 +91,41 @@ def test_only_real_insufficient_month_boundaries_are_waiting(case):
     assert '等待样本' in (args['output']/'report.md').read_text(encoding='utf-8')
 
 
+def test_pair_month_prepares_forward_benchmarks_after_auxiliary_refresh(case,monkeypatch):
+    from quant.data import forward_return_benchmarks
+    from quant.research import daily_dependencies,run_daily_model_forecast
+    from quant.data import refresh
+    args,_=case
+    config=args['config'];config.write_text('independent_orders=true\ndependency_refresh=true\n'
+        'q10_forward_benchmarks_config="registered"\n'+config.read_text(),encoding='utf-8')
+    monkeypatch.setattr(run_daily_model_forecast,'order_model_scope',lambda **kw:{'required_factor_ids':['frozen']})
+    monkeypatch.setattr(daily_dependencies,'resolve_daily_dependencies',lambda **kw:{
+        'required_factor_ids':['frozen'],'required_minute_inputs':[]})
+    calls=[]
+    def auxiliary(**kw):
+        calls.append('refresh')
+        return {'latest_session':args['to'],'intraday_errors':[],'input_quality':{'errors':[]}}
+    monkeypatch.setattr(refresh,'run_refresh',auxiliary)
+    references=args['output'].parent/'benchmarks.toml';references.write_text('[benchmarks]\n',encoding='utf-8')
+    def prepare(**kw):
+        assert calls==['refresh']
+        calls.append('benchmarks')
+        assert kw['end']==dt.date(2026,11,30)
+        return {'return_benchmarks':str(references)}
+    monkeypatch.setattr(forward_return_benchmarks,'prepare',prepare)
+    original=forward.load_return_benchmarks
+    def load(**kw):
+        assert calls==['refresh','benchmarks'] and kw['config']==references
+        calls.append('pair')
+        return original(**kw)
+    monkeypatch.setattr(forward,'load_return_benchmarks',load)
+    result=daily.run(**args)
+    assert calls==['refresh','benchmarks','pair']
+    assert result['stages']['q10']['status']=='complete'
+    assert result['stages']['q10_shadow']['status']=='complete'
+    assert result['stages']['q10_pair_month']['result']['benchmark_source']['config']==str(references)
+
+
 @pytest.mark.parametrize('error', [ValueError('invalid date formatting'), OSError('unreadable report source')])
 def test_programming_and_filesystem_errors_fail_the_daily_record(case, monkeypatch, error):
     args, _ = case

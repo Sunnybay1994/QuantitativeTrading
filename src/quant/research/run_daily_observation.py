@@ -200,6 +200,7 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
         dependency_options: dict[str, Any] = {}
         dependency_ok = True
         orders_first = settings.get('independent_orders', False) and bool(settings.get('q10'))
+        pair_month_operation = None
         if orders_first:
             from quant.research.run_daily_model_forecast import order_model_scope
             dependency_ok = stage('order_model_scope', lambda: order_model_scope(
@@ -269,20 +270,24 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
                 def pair_month() -> dict:
                     from quant.reporting.q10_forward_rules import InsufficientMonthlySample, write_two_account_month
                     try:
+                        benchmark_options = {}
+                        if settings.get('q10_forward_benchmarks_config'):
+                            from quant.data.forward_return_benchmarks import prepare as forward_benchmarks
+                            prepared = forward_benchmarks(config=Path(settings['q10_forward_benchmarks_config']),
+                                end=end, output=output/'forward_benchmarks', data_root=data_root, now=clock)
+                            benchmark_options['benchmark_config'] = Path(prepared['return_benchmarks'])
                         return write_two_account_month(
                             q10_output=Path(settings['q10']['output']),
                             shadow_output=Path(shadow_cfg['output']),
                             rules_path=Path(shadow_cfg['forward_rules']),
                             stem=output/'monthly'/f'{end:%Y-%m}_q10_and_shadow',
                             data_root=data_root,
+                            **benchmark_options,
                         )
                     except InsufficientMonthlySample as exc:
                         return {'status': 'waiting', 'reason_code': 'insufficient_monthly_sample',
                                 'reason': str(exc)}
-                stage('q10_pair_month', pair_month,
-                      lambda value: value.get('status') == 'complete' or (
-                          value.get('status') == 'waiting'
-                          and value.get('reason_code') == 'insufficient_monthly_sample'))
+                pair_month_operation = pair_month
         if orders_first and settings.get('dependency_refresh', False):
             from quant.research.daily_dependencies import resolve_daily_dependencies
             from quant.data.refresh import run_refresh
@@ -313,6 +318,11 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
                              'mode': 'saved_data' if saved_data else 'refresh',
                              'input_errors': refresh_errors,
                              'path': str(output/'model/refresh.json')}
+        if pair_month_operation is not None:
+            stage('q10_pair_month', pair_month_operation,
+                  lambda value: value.get('status') == 'complete' or (
+                      value.get('status') == 'waiting'
+                      and value.get('reason_code') == 'insufficient_monthly_sample'))
         stage('b20', lambda: run_b20(config_path=Path(settings['b20']['config']),
               data_root=data_root, output=accounts[0], end=end, refresh_data=not saved_data),
               lambda value: value.get('as_of') == date and len(value.get('accounts', [])) == 6

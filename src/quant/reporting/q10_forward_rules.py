@@ -223,6 +223,7 @@ def write_two_account_month(
     rules_path: Path,
     stem: Path,
     data_root: Path,
+    benchmark_config: Path | None = None,
 ) -> dict:
     """A3 month page for the live Q10 account and the size-neutral shadow."""
     rules = load_rules(rules_path)
@@ -251,7 +252,7 @@ def write_two_account_month(
         if not (nav['date'] < month_start).any():
             raise InsufficientMonthlySample(f'{name}: no NAV boundary before {month_start}')
     benchmarks = load_return_benchmarks(
-        config=Path(rules.get("return_benchmark_config", "configs/data/return_benchmarks_q1b_20260912.toml")),
+        config=benchmark_config or Path(rules.get("return_benchmark_config", "configs/data/return_benchmarks_q1b_20260912.toml")),
         data_root=data_root,
         start=dt.date.fromisoformat(str(rules["oos_start"])),
         end=as_of,
@@ -276,5 +277,8 @@ def write_two_account_month(
     path = stem.with_suffix(".md")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     payload = {"status": "complete", "as_of_month": month, "q10": q10_eval, "shadow": shadow_eval}
+    if benchmark_config is not None:
+        payload['benchmark_source'] = {'config': str(benchmark_config),
+            'sha256': hashlib.sha256(benchmark_config.read_bytes()).hexdigest(), 'as_of': str(as_of)}
     stem.with_suffix(".json").write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
     return payload

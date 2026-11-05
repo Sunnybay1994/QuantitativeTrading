@@ -1,0 +1,13 @@
+id = "q10_forward_return_benchmarks_v1"
+registered_on = 2026-11-05
+auto_trade = false
+base_benchmarks = "configs/data/return_benchmarks_q1b_20260912.toml"
+base_index_config = "configs/data/equal_weight_indexes_20260912.toml"
+statistics = "artifacts/factors/battery_statistics_20260831_20260911"
+refresh_config = "configs/data/refresh_q2_sue_v2_model_20260912.toml"
+historical_members = "nightly_month_20260930"
+source_policy = "Extend the frozen gross total-return definitions; never replace source rows or fall back to another benchmark. Current supplier history is not original historical vintage."
+terminal_state = "Replay only the last frozen rebalance interval; compare every later daily return and final constituent count, then retain the published terminal index level."
+new_sessions = "Every exchange session must have daily instruments, dividends, suspensions and quotes; unexplained missing quotes prevent publication."
+monthly_universe = "Existing frozen P3 universe through run.as_of, native read_forward_universe thereafter; latest dated CSI800 membership not after signal and no more than 40 days old."
+publication = "New version only, unchanged original prefix and rules, atomic summary publication after all original checks; no account writes or notifications."
