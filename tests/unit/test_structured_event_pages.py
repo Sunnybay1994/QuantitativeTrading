@@ -4,6 +4,7 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+from requests.exceptions import ConnectionError,ReadTimeout
 
 from quant.data.storage import RawStore
 from quant.data.structured_event_pages import pages
@@ -79,3 +80,52 @@ def test_resume_rejects_corrupt_parent_page_before_any_new_request(tmp_path):
     with pytest.raises(ValueError,match='checksum'):
         list(pages(**args))
     assert len(client.calls)==count
+
+
+@pytest.mark.parametrize('failure',[ReadTimeout,ConnectionError])
+def test_transient_transport_retries_identical_page_before_single_raw_write(tmp_path,monkeypatch,failure):
+    source=pl.DataFrame({'ts_code':['000001.SZ'],'ann_date':['20200101'],'value':[1]})
+    args,client=capture(tmp_path,source)
+    original=client.query_raw
+    attempts=[]
+    pauses=[]
+    saves=[]
+    def query(table,**params):
+        attempts.append(params.copy())
+        if len(attempts)<3:raise failure('supplier transport unavailable')
+        return original(table,**params)
+    client.query_raw=query
+    args['save']=lambda:saves.append(len(args['receipt']['requests']))
+    monkeypatch.setattr('quant.data.structured_event_pages.time.sleep',pauses.append)
+    result=list(pages(**args))
+    assert len(attempts)==3 and attempts[0]==attempts[1]==attempts[2]
+    assert pauses==[5,15,0] and saves==[0,0,1]
+    assert len(result)==len(args['receipt']['requests'])==1
+    assert len(list((tmp_path/'raw').rglob('*.parquet')))==1
+    saved=next(iter(args['receipt']['requests'].values()))
+    digest=hashlib.sha256(Path(saved['raw_path']).read_bytes()).hexdigest()
+    list(pages(**args))
+    assert len(attempts)==3 and hashlib.sha256(Path(saved['raw_path']).read_bytes()).hexdigest()==digest
+
+
+def test_exhausted_transport_stops_without_publishing_or_retrying_business_errors(tmp_path,monkeypatch):
+    source=pl.DataFrame({'ts_code':['000001.SZ'],'ann_date':['20200101'],'value':[1]})
+    args,client=capture(tmp_path,source)
+    calls=[]
+    pauses=[]
+    def failing(table,**params):
+        calls.append(params)
+        raise ReadTimeout('unavailable')
+    client.query_raw=failing
+    monkeypatch.setattr('quant.data.structured_event_pages.time.sleep',pauses.append)
+    with pytest.raises(ReadTimeout):list(pages(**args))
+    assert len(calls)==3 and pauses==[5,15]
+    assert not args['receipt']['requests'] and not list((tmp_path/'raw').rglob('*.parquet'))
+    assert len(next(iter(args['receipt']['transport_retries'].values())))==3
+    calls.clear()
+    def permission_error(table,**params):
+        calls.append(params)
+        raise ValueError('permission denied or invalid supplier offset')
+    client.query_raw=permission_error
+    with pytest.raises(ValueError):list(pages(**args))
+    assert len(calls)==1 and pauses==[5,15]

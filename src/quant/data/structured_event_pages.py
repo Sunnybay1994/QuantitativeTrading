@@ -6,6 +6,24 @@ from pathlib import Path
 import time
 
 import polars as pl
+from requests.exceptions import ConnectionError,Timeout
+
+
+def query_page(client,table,params,*,key,receipt,save):
+    """Retry only transient read transport failures, before any raw write."""
+    for attempt in range(1,4):
+        try:
+            return client.query_raw(table,**params)
+        except (ConnectionError,Timeout) as exc:
+            delay=(5,15)[attempt-1] if attempt<3 else None
+            item={'attempt':attempt,'error_type':type(exc).__name__,
+                'at':dt.datetime.now(dt.timezone.utc).isoformat(),'retry_after_seconds':delay}
+            receipt.setdefault('transport_retries',{}).setdefault(key,[]).append(item)
+            save()
+            print(json.dumps({'table':table,'request':key,'transport_retry':item}),flush=True)
+            if delay is None:
+                raise
+            time.sleep(delay)
 
 
 def pages(*, table, rule, spec, symbol, first, last, receipt, client, store, save,
@@ -32,7 +50,7 @@ def pages(*, table, rule, spec, symbol, first, last, receipt, client, store, sav
                 'limit':str(spec['page_size']),'offset':str(offset)}
             if symbol:
                 params['ts_code']=symbol
-            frame=client.query_raw(table,**params)
+            frame=query_page(client,table,params,key=key,receipt=receipt,save=save)
             raw=store.write(source='tushare',table=table,frame=frame,
                 parameters={**params,'consumer':spec['id']})
             record={'raw_path':str(raw.data_path),'sha256':raw.checksum_sha256,
