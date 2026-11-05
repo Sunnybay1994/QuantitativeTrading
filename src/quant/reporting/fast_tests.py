@@ -6,13 +6,13 @@ import datetime as dt
 import hashlib
 import importlib.util
 import json
-import math
 import os
 from pathlib import Path
 import re
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 import uuid
@@ -109,32 +109,13 @@ def _environment(snapshot: Path, output: Path) -> dict[str, str]:
     return env
 
 
-def _case_costs(root: Path, start: float) -> dict:
-    """Use completed native JUnit timings only to start expensive cases early."""
-    from _pytest.junitxml import mangle_test_address
-
-    for path in sorted((root/'artifacts/tests').glob('20*/receipt.json'), reverse=True):
-        _remaining(start)
-        try:
-            receipt = json.loads(path.read_text(encoding='utf-8'))
-            if not receipt.get('complete'):
-                continue
-            nodes = json.loads((path.parent/'collection.json').read_text(encoding='utf-8'))['nodeids']
-            identities = {}
-            for node in nodes:
-                names = mangle_test_address(node)
-                identities[('.'.join(names[:-1]), names[-1])] = node
-            costs = {}
-            for case in ET.parse(path.parent/'tests.xml').iter('testcase'):
-                node = identities[(case.get('classname'), case.get('name'))]
-                seconds = float(case.get('time', '0'))
-                if not math.isfinite(seconds) or seconds < 0:
-                    raise ValueError('Invalid JUnit timing')
-                costs[node] = seconds
-            return dict(source_receipt=str(path), costs=costs)
-        except (OSError, ValueError, TypeError, KeyError, ET.ParseError):
-            continue
-    return dict(source_receipt=None, costs={})
+def _temporary_tests(output: Path) -> Path:
+    """Keep synthetic writes outside the editor's project watcher; never reuse a tree."""
+    temporary = Path(tempfile.gettempdir()).resolve()
+    target = (temporary/'quant-native-fast-tests'/output.name/'pytest_tmp').resolve()
+    if not target.is_relative_to(temporary) or target.exists():
+        raise ValueError('Fast-test temporary directory must be new and inside system temp')
+    return target
 
 
 def _stop_owned(process: subprocess.Popen, output: Path, log) -> None:
@@ -241,18 +222,15 @@ def run(root: Path) -> int:
                 raise RuntimeError('pytest-xdist is required; install the project dev dependencies')
             manifest = _snapshot(root, snapshot, clock)
             _json(output/'source_manifest.json', manifest)
-            timings = _case_costs(root, clock)
-            _json(output/'case_costs.json', timings)
-            payload['scheduling'] = dict(source_receipt=timings['source_receipt'],
-                                        timed_cases=len(timings['costs']))
             env = _environment(snapshot, output)
             _assertion_control(snapshot, output, env, log, clock)
-            # Short dispatch queues keep costly late cases from stranding the other workers.
-            command = [sys.executable, '-m', 'pytest', 'tests', '-vv', '-m', 'not slow',
+            temporary = _temporary_tests(output)
+            payload['pytest_tmp'] = str(temporary)
+            command = [sys.executable, '-m', 'pytest', 'tests', '-q', '-m', 'not slow',
                 '-c', str(snapshot/'pyproject.toml'),
                 '-o', 'addopts=', '--assert=plain', '-n', str(workers), '--dist=load', '--maxschedchunk=1',
                 '--max-worker-restart=0', '-p', 'quant.reporting.fast_tests', '--tb=short',
-                '--basetemp', str(output/'pytest_tmp'), '--junitxml', str(output/'tests.xml')]
+                '--basetemp', str(temporary), '--junitxml', str(output/'tests.xml')]
             payload['argv'] = command
             code = _execute(command, snapshot, output, env, log, clock)
             try:
@@ -304,21 +282,6 @@ def pytest_configure(config):
     _worker = getattr(config, 'workerinput', {}).get('workerid')
     if sys.flags.optimize != 0:
         raise RuntimeError('Python optimization disables test assertions')
-
-
-def pytest_collection_modifyitems(items):
-    if _worker is None:
-        return
-    timings = json.loads((Path(os.environ['QUANT_TEST_RUN_DIR'])/'case_costs.json').read_text(encoding='utf-8'))
-    costs, order = {}, {}
-    for node, seconds in timings['costs'].items():
-        module = node.split('::', 1)[0]
-        costs[module] = costs.get(module, 0.) + seconds
-    for item in items:
-        order.setdefault(item.nodeid.split('::', 1)[0], len(order))
-    # Keep module fixtures alive while load dispatch still parallelizes every case.
-    items.sort(key=lambda item: (-costs.get(item.nodeid.split('::', 1)[0], 0.),
-                                 order[item.nodeid.split('::', 1)[0]]))
 
 
 def pytest_collection_finish(session):
