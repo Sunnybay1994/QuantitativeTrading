@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import py_compile
 import re
 import signal
 import subprocess
@@ -93,7 +94,7 @@ def _environment(snapshot: Path, output: Path) -> dict[str, str]:
     for name in list(env):
         if name.startswith('GIT_CONFIG_') or re.search('KEY|TOKEN|SECRET|PASSWORD|WEBHOOK', name, re.I):
             env.pop(name)
-    for name in ('PYTEST_ADDOPTS', 'PYTHONOPTIMIZE', 'PYTEST_XDIST_WORKER', 'PYTEST_CURRENT_TEST'):
+    for name in ('PYTEST_ADDOPTS', 'PYTHONOPTIMIZE', 'PYTHONPYCACHEPREFIX', 'PYTEST_XDIST_WORKER', 'PYTEST_CURRENT_TEST'):
         env.pop(name, None)
     prefix = Path(sys.prefix).resolve()
     env.update(PYTHONPATH=str(snapshot/'src'), PYTHONUTF8='1', PYTHONIOENCODING='utf-8:backslashreplace',
@@ -106,6 +107,22 @@ def _environment(snapshot: Path, output: Path) -> dict[str, str]:
         QUANT_TEST_RUN_DIR=str(output))
     env.update({name: '1' for name in THREAD_VARIABLES})
     return env
+
+
+def _bytecode(snapshot: Path, manifest: list[dict], start: float) -> dict:
+    """Compile the snapshot once; checked hashes invalidate any edited or copied source."""
+    previous, began, count = sys.pycache_prefix, time.monotonic(), 0
+    try:
+        sys.pycache_prefix = None
+        for row in manifest:
+            if row['path'].startswith(('src/', 'tests/')) and row['path'].endswith('.py'):
+                _remaining(start)
+                py_compile.compile(str(snapshot/row['path']), doraise=True, optimize=0,
+                                   invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH)
+                count += 1
+    finally:
+        sys.pycache_prefix = previous
+    return dict(files=count, optimize=0, invalidation='checked_hash', seconds=round(time.monotonic()-began, 2))
 
 
 def _stop_owned(process: subprocess.Popen, output: Path, log) -> None:
@@ -200,7 +217,7 @@ def run(root: Path) -> int:
     output.mkdir(parents=True, exist_ok=False)
     snapshot, log_path = output/'snapshot', output/'pytest.log'
     snapshot.mkdir()
-    workers = min(8, os.cpu_count() or 1)
+    workers = min(12, os.cpu_count() or 1)
     payload = dict(ran_at=started.isoformat(), command='pytest -m "not slow"',
         timeout_seconds=TIMEOUT_SECONDS, workers=workers, complete=False, accepted_fast=False,
         passed=None, failed=None, errors=None, skipped=None, selected_count=None,
@@ -212,6 +229,7 @@ def run(root: Path) -> int:
                 raise RuntimeError('pytest-xdist is required; install the project dev dependencies')
             manifest = _snapshot(root, snapshot, clock)
             _json(output/'source_manifest.json', manifest)
+            payload['bytecode'] = _bytecode(snapshot, manifest, clock)
             env = _environment(snapshot, output)
             _assertion_control(snapshot, output, env, log, clock)
             # Keep module fixtures on one worker instead of rebuilding them across all workers.

@@ -2,6 +2,7 @@
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -11,6 +12,24 @@ import xml.etree.ElementTree as ET
 import pytest
 
 from quant.reporting import doctor, fast_tests as fast
+
+
+def test_precompiled_import_keeps_assertions_and_rejects_same_size_same_time_edits(tmp_path):
+    source = tmp_path/'src/fixture.py'
+    source.parent.mkdir()
+    source.write_text("assert False, 'kept'\n", encoding='utf-8')
+    stat = source.stat()
+    result = fast._bytecode(tmp_path, [{'path': 'src/fixture.py'}], time.monotonic())
+    assert result['files'] == 1 and result['optimize'] == 0
+    cached = next((source.parent/'__pycache__').glob('fixture.*.pyc'))
+    assert int.from_bytes(cached.read_bytes()[4:8], 'little') == 3  # checked source hash
+    env = fast._environment(tmp_path, tmp_path/'output')
+    for message in ('kept', 'next'):
+        source.write_text(f"assert False, '{message}'\n", encoding='utf-8')
+        os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        child = subprocess.run([sys.executable, '-c', 'import fixture'], cwd=tmp_path,
+                               env=env, capture_output=True, text=True, timeout=30)
+        assert child.returncode == 1 and 'AssertionError: '+message in child.stderr
 
 
 def _junit(path, nodes, failed=0, control=False):
