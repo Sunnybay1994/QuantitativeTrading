@@ -124,7 +124,7 @@ def run(*,config,panel,output,resume=False):
                     combined=pl.concat([inputs['bars'],etf['bars']],how='diagonal_relaxed')
                     bars={k[0]:v for k,v in combined.partition_by('trade_date',as_dict=True).items()}
                     instruments=pl.concat([inputs['instruments'],etf['instruments']],how='diagonal_relaxed').unique('symbol',keep='last')
-                    navs,trades,rejects,allocation,audit=[],[],[],[],[]
+                    navs,execution_navs,trades,rejects,allocation,audit=[],[],[],[],[],[]
                     for day in yd:
                         receipt['current']={'variant':variant,'cost':cost,'year':year,'date':str(day)}
                         prior=dt.date.fromisoformat(state['date'])
@@ -172,9 +172,16 @@ def run(*,config,panel,output,resume=False):
                         book.settle(stock_fills)
                         capture_exchange_holdings(date=day,state=state,events=exchanges)
                         navs.append(pl.from_dicts([state['nav'][-1]]).with_columns(pl.col('date').str.to_date()))
+                        execution_navs.append(result.nav)
                         trades.append(result.trades);rejects.append(result.rejections)
-                    chunk=(pl.concat(navs),pl.concat(trades),pl.concat(rejects))
-                    BacktestNavSchema.validate(chunk[0].select(list(BacktestNavSchema.to_schema().columns)))
+                    chunk=(pl.concat(navs,how='diagonal_relaxed'),pl.concat(trades),pl.concat(rejects))
+                    # Same distinction as classic_monthly_baseline: execution NAV
+                    # excludes receivables; the complete ledger retains them.
+                    BacktestNavSchema.validate(pl.concat(execution_navs,how='vertical_relaxed'))
+                    if chunk[0]['date'].to_list()!=yd or chunk[0].filter(
+                            (pl.col('equity')-pl.col('cash')-pl.col('market_value')-pl.col('receivable')).abs()
+                            >pl.col('equity').abs().clip(lower_bound=1.)*1e-9).height:
+                        raise ValueError('Complete account date grid or receivable reconciliation failed')
                     BacktestTradeSchema.validate(chunk[1]);BacktestRejectionSchema.validate(chunk[2])
                     folder.mkdir(exist_ok=False)
                     for kind,frame in zip(('nav','trades','rejections'),chunk):frame.write_parquet(folder/f'{kind}.parquet')
