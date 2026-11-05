@@ -311,8 +311,15 @@ def pytest_collection_modifyitems(items):
     if _worker is None:
         return
     timings = json.loads((Path(os.environ['QUANT_TEST_RUN_DIR'])/'case_costs.json').read_text(encoding='utf-8'))
-    # Stable sort preserves every case and the original order of equal-cost cases.
-    items.sort(key=lambda item: -timings['costs'].get(item.nodeid, 0.))
+    costs, order = {}, {}
+    for node, seconds in timings['costs'].items():
+        module = node.split('::', 1)[0]
+        costs[module] = costs.get(module, 0.) + seconds
+    for item in items:
+        order.setdefault(item.nodeid.split('::', 1)[0], len(order))
+    # Keep module fixtures alive while load dispatch still parallelizes every case.
+    items.sort(key=lambda item: (-costs.get(item.nodeid.split('::', 1)[0], 0.),
+                                 order[item.nodeid.split('::', 1)[0]]))
 
 
 def pytest_collection_finish(session):

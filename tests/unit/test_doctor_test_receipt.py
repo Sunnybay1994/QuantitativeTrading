@@ -13,7 +13,7 @@ import pytest
 from quant.reporting import doctor, fast_tests as fast
 
 
-def test_native_timing_order_preserves_all_cases_and_equal_cost_order(tmp_path, monkeypatch):
+def test_native_timing_order_preserves_all_cases_and_module_fixture_groups(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     previous = tmp_path/'artifacts/tests/20260101T000000'
@@ -25,7 +25,7 @@ def test_native_timing_order_preserves_all_cases_and_equal_cost_order(tmp_path, 
     (previous/'collection.json').write_text(json.dumps({'nodeids': nodes}))
     _junit(previous/'tests.xml', nodes)
     tree = ET.parse(previous/'tests.xml')
-    for case, seconds in zip(tree.iter('testcase'), (1, 40, 60, 0, 40)):
+    for case, seconds in zip(tree.iter('testcase'), (1, 40, 60, 0, 50)):
         case.set('time', str(seconds))
     tree.write(previous/'tests.xml')
     timings = fast._case_costs(tmp_path, time.monotonic())
@@ -35,7 +35,7 @@ def test_native_timing_order_preserves_all_cases_and_equal_cost_order(tmp_path, 
     monkeypatch.setattr(fast, '_worker', 'gw0')
     items = [SimpleNamespace(nodeid=node) for node in nodes]
     fast.pytest_collection_modifyitems(items)
-    assert [item.nodeid for item in items] == [nodes[2], nodes[1], nodes[4], nodes[0], nodes[3]]
+    assert [item.nodeid for item in items] == [nodes[1], nodes[2], nodes[4], nodes[0], nodes[3]]
     assert sorted(item.nodeid for item in items) == sorted(nodes)
 
 
