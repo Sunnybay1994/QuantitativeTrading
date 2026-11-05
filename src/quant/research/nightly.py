@@ -115,7 +115,7 @@ def record_deferred(config: Path, reason: str) -> dict:
     return attempt
 
 
-def reopen_empty_evaluation(run: Path, summary: dict, search_result: dict) -> None:
+def reopen_empty_evaluation(run: Path, summary: dict, search_result: dict, *, settings: dict|None=None) -> None:
     """A resumed GP can supply candidates after an earlier empty downstream pass."""
     result = run/'N3'/'result.json'
     if not search_result.get('candidates') or not result.exists():
@@ -123,6 +123,12 @@ def reopen_empty_evaluation(run: Path, summary: dict, search_result: dict) -> No
     previous = json.loads(result.read_text(encoding='utf-8'))
     if previous.get('evaluated') != 0:
         return
+    if settings and settings.get('compute_allocation'):
+        from quant.research.compute_allocation import may_enqueue
+        folder=Path(search_result.get('gp_output',str(run/'N2')))/'library'
+        if not any(may_enqueue(tomllib.loads(p.read_text(encoding='utf-8')),settings)
+                   for p in folder.glob('*.toml')):
+            return
     stamp = dt.datetime.now().strftime('%H%M%S_%f')
     for step in ('N3', 'N4'):
         path = run/step/'result.json'
@@ -224,7 +230,7 @@ def execute(config: Path, *, now: dt.datetime|None=None, run_path: Path|None=Non
             if step == 'N2':
                 from quant.research.nightly_steps import preserve_gp_candidates
                 preserve_gp_candidates(settings, run, summary['steps'][step]['result'])
-                reopen_empty_evaluation(run, summary, summary['steps'][step]['result'])
+                reopen_empty_evaluation(run, summary, summary['steps'][step]['result'],settings=settings)
             continue
         if step == 'N2':
             from quant.research.compute_allocation import gp_permission
@@ -272,7 +278,7 @@ def execute(config: Path, *, now: dt.datetime|None=None, run_path: Path|None=Non
             if step == 'N2':
                 from quant.research.nightly_steps import preserve_gp_candidates
                 preserve_gp_candidates(settings, run, summary['steps'][step]['result'])
-                reopen_empty_evaluation(run, summary, summary['steps'][step]['result'])
+                reopen_empty_evaluation(run, summary, summary['steps'][step]['result'],settings=settings)
         except (RuntimeError,TimeoutError,OSError) as exc:
             summary['steps'][step]={'ok':False,'error':str(exc)}
         dump(run/'summary.json',summary)

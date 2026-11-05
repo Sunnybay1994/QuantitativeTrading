@@ -158,3 +158,21 @@ def test_nightly_search_cannot_replenish_new_gp_even_after_a_real_search(tmp_pat
     result=run_genetic_factor_search.run_nightly(spec,output)
     assert result['candidates']==1 # Search output is retained, not relabelled as a battery result.
     assert not list((Path(spec['queue'])/'processing').glob('*.toml'))
+
+
+def test_blocked_new_gp_does_not_reopen_empty_evaluation_on_every_tick(tmp_path):
+    from quant.research.nightly import reopen_empty_evaluation
+    spec,old,_=fixture(tmp_path)
+    run=tmp_path/'run'
+    for step in ('N3','N4'):
+        (run/step).mkdir(parents=True)
+        (run/step/'result.json').write_text('{"evaluated":0}')
+    write_definition(run/'N2/library/new.toml',{**old,'id':'ngp_new'})
+    summary={'steps':{'N3':{'ok':True},'N4':{'ok':True}}}
+    for _ in range(2):
+        reopen_empty_evaluation(run,summary,{'candidates':1},settings=spec)
+    assert set(summary['steps'])=={'N3','N4'}
+    assert (run/'N3/result.json').exists() and not list((run/'N3').glob('result_before_*'))
+    write_definition(run/'N2/library/old.toml',old)
+    reopen_empty_evaluation(run,summary,{'candidates':2},settings=spec)
+    assert not summary['steps'] and not (run/'N3/result.json').exists()
