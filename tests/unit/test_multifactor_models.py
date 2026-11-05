@@ -13,7 +13,7 @@ from quant.reporting import multifactor_models as module
 @pytest.fixture
 def saved_run(tmp_path, monkeypatch):
     from quant.reporting import experiment_registry
-    monkeypatch.setattr(experiment_registry, 'DEFAULT_REGISTRY', tmp_path/'registry/experiments.parquet')
+    monkeypatch.setenv('QUANT_REGISTRY_ROOT',str(tmp_path/'registry/experiments.parquet'))
     monkeypatch.setattr(experiment_registry, 'DEFAULT_LEADERBOARD', tmp_path/'leaderboard.md')
     run = tmp_path/'saved'
     run.mkdir()
@@ -101,6 +101,10 @@ def test_cli_uses_explicit_measurement_config(saved_run, monkeypatch, capsys):
         '--data-root', str(saved_run['data_root']), '--measurement-config', str(saved_run['measurement_config'])])
     module.main()
     assert json.loads(capsys.readouterr().out)['lightgbm'] == 'RESEARCH_ONLY'
+    registry=saved_run['output'].parent/'registry/experiments.parquet'
+    rows=pl.read_parquet(registry)
+    assert rows.height==6
+    assert {Path(value).resolve() for value in rows['run_path']}=={saved_run['output'].resolve()}
 
 
 
