@@ -174,9 +174,8 @@ def _structured_narrative(text):
 
 
 def _save_narrative(path,receipt):
-    temporary=path.with_suffix('.json.tmp')
-    temporary.write_text(json.dumps(receipt,ensure_ascii=False,indent=2,default=str),encoding='utf-8')
-    temporary.replace(path)
+    from quant.data.realtime_store import atomic_json
+    atomic_json(path,json.loads(json.dumps(receipt,ensure_ascii=False,default=str)))
 
 
 def _llm_narrative(facts: dict,*,cache_path:Path,ledger_root:Path,pricing:Path) -> str | None:

@@ -1,5 +1,7 @@
 from pathlib import Path
 import json
+from types import SimpleNamespace
+import pytest
 
 from quant.reporting.research_brief import collect_facts, render_template, write_brief
 
@@ -103,3 +105,31 @@ def test_structured_numeric_only_summary_stays_rejected():
     from quant.reporting.research_brief import _structured_narrative
     assert _structured_narrative(json.dumps({'summary':'市场风险为2级。'})) is None
     assert _structured_narrative(json.dumps({'summary':'200日均线下方；短句。'})) is None
+
+
+@pytest.mark.parametrize('permanent',[False,True])
+def test_cached_narrative_retry_preserves_paid_response_without_calling_again(tmp_path,monkeypatch,permanent):
+    from quant.data import realtime_store
+    path=tmp_path/'artifacts/research/brief/2026-10.narrative.json';path.parent.mkdir(parents=True)
+    raw={'content':json.dumps({'summary':'数字为2。来源仍有缺口，需要继续核对。'},ensure_ascii=False)}
+    path.write_text(json.dumps({'status':'rejected_numeric_narrative','response':raw,
+        'usd':.01,'maximum_calls':1,'facts':{'month':'2026-10'}}),encoding='utf-8')
+    before=path.read_bytes();original=Path.replace;denials=[];pauses=[]
+    def replace(source,target):
+        if Path(target)==path and (permanent or len(denials)<2):
+            denials.append(source.name)
+            raise PermissionError('Windows reader holds narrative cache')
+        return original(source,target)
+    monkeypatch.setattr(Path,'replace',replace)
+    monkeypatch.setattr(realtime_store,'time',SimpleNamespace(sleep=pauses.append))
+    monkeypatch.setattr('quant.llm.complete_messages',lambda *a:pytest.fail('no second paid call'))
+    if permanent:
+        with pytest.raises(PermissionError):write_brief('2026-10',root=tmp_path,notify=False)
+        assert path.read_bytes()==before and len(denials)==11 and pauses==[.1]*10
+    else:
+        result=write_brief('2026-10',root=tmp_path,notify=False)
+        cached=json.loads(path.read_text(encoding='utf-8'))
+        assert result['narrative'] and cached['response']==raw and cached['usd']==.01
+        assert len(denials)==2 and pauses==[.1,.1]
+    assert not list(path.parent.glob('*.tmp'))
+    assert not list((tmp_path/'artifacts/research/llm_ledger').glob('*'))

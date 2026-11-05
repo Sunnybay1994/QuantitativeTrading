@@ -10,6 +10,7 @@ import json
 import os
 import re
 import stat
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -30,6 +31,25 @@ from quant.domain import (
 )
 
 _SAFE_PART = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def publish_directory(staging: Path, destination: Path, *, staging_root: Path, destination_root: Path) -> None:
+    """Publish a complete derived directory, retaining staging on bounded failure."""
+    source_parent,target_parent=staging_root.resolve(),destination_root.resolve()
+    if (staging.parent.resolve()!=source_parent or destination.parent.resolve()!=target_parent
+            or not staging.resolve().is_relative_to(source_parent)
+            or not destination.resolve().is_relative_to(target_parent)):
+        raise ValueError('Directory publication escapes its intended output roots')
+    for attempt in range(11):
+        if destination.exists():
+            raise FileExistsError('Refuse to replace an existing published directory')
+        try:
+            staging.rename(destination)
+            return
+        except PermissionError:
+            if attempt==10:
+                raise
+            time.sleep(.1)
 
 
 @dataclass(frozen=True)

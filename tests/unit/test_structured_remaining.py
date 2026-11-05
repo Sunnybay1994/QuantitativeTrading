@@ -2,6 +2,7 @@ import datetime as dt
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import polars as pl
 import pytest
@@ -204,3 +205,40 @@ def test_all_marker_margin_page_cannot_publish_a_table(tmp_path,monkeypatch):
     with pytest.raises(ValueError,match='No historical rows for margin_detail'):
         run(config=path,output=tmp_path/'capture',connector=Client())
     assert not (tmp_path/'data/clean/margin_detail').exists()
+
+
+@pytest.mark.parametrize('permanent',[False,True])
+def test_clean_directory_publication_retries_without_requery_and_resumes_after_denial(tmp_path,monkeypatch,permanent):
+    from quant.data import storage
+    monkeypatch.chdir(tmp_path)
+    path,_,_=config(tmp_path)
+    target=tmp_path/'data/clean/margin_detail/snapshot=capture'
+    original=Path.rename;denials=[];pauses=[];calls=[]
+    def rename(source,destination):
+        if Path(destination).resolve()==target and (permanent or len(denials)<2):
+            denials.append(1)
+            raise PermissionError('Windows reader holds clean staging directory')
+        return original(source,destination)
+    class Client:
+        def query_raw(self,table,**params):
+            calls.append((table,params.copy()))
+            field='trade_date' if table=='margin_detail' else 'ann_date'
+            return pl.DataFrame({'ts_code':[params.get('ts_code','600000.SH')],field:['20190115']})
+    monkeypatch.setattr(Path,'rename',rename)
+    monkeypatch.setattr(storage,'time',SimpleNamespace(sleep=pauses.append))
+    client=Client();output=tmp_path/'capture'
+    if permanent:
+        with pytest.raises(PermissionError):run(config=path,output=output,connector=client)
+        stopped=json.loads((output/'summary.json').read_text(encoding='utf-8'))
+        assert stopped['status']=='stopped' and 'margin_detail' not in stopped['tables']
+        assert not target.exists() and (output/'clean_margin_detail/summary.json').is_file()
+        assert len(denials)==11 and pauses==[.1]*10
+        before={p:hashlib.sha256(p.read_bytes()).hexdigest() for p in (tmp_path/'data/raw').rglob('*.parquet')}
+        monkeypatch.setattr(Path,'rename',original)
+        result=run(config=path,output=output,resume=True,connector=client)
+        assert all(hashlib.sha256(p.read_bytes()).hexdigest()==digest for p,digest in before.items())
+    else:
+        result=run(config=path,output=output,connector=client)
+        assert len(denials)==2 and pauses==[.1,.1]
+    assert result['status']=='captured' and len(calls)==8
+    assert result['tables']['margin_detail']['rows']==1 and target.is_dir()

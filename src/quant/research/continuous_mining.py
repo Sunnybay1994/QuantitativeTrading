@@ -5,7 +5,6 @@ import datetime as dt
 import json
 import os
 import re
-import time
 import tomllib
 from pathlib import Path
 
@@ -30,21 +29,8 @@ def completed(summary: dict) -> bool:
 
 
 def _publish_batch(staging: Path, batch: Path, root: Path) -> None:
-    intended=root.resolve()
-    if (staging.parent.resolve()!=intended or batch.parent.resolve()!=intended
-            or not staging.resolve().is_relative_to(intended)
-            or not batch.resolve().is_relative_to(intended)):
-        raise ValueError('Batch publication escapes its intended output directory')
-    for attempt in range(11):
-        if batch.exists():
-            raise FileExistsError('Refuse to replace an existing research batch')
-        try:
-            staging.rename(batch)
-            return
-        except PermissionError:
-            if attempt==10:
-                raise
-            time.sleep(.1)
+    from quant.data.storage import publish_directory
+    publish_directory(staging,batch,staging_root=root,destination_root=root)
 
 
 def dispatch(config: Path, root: Path, *, now: dt.datetime | None = None,

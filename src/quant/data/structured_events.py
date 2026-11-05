@@ -10,7 +10,7 @@ import tomllib
 import polars as pl
 
 from quant.data.connectors.tushare import TushareConnector
-from quant.data.storage import RawStore
+from quant.data.storage import RawStore,publish_directory
 from quant.data.realtime_store import atomic_json
 from quant.data.structured_event_pages import pages
 from quant.data.structured_native_rows import native_row_id,split_native_rows
@@ -136,7 +136,7 @@ def run(*,config,output,resume=False,connector=None):
             if not directory.resolve().is_relative_to(Path('data/clean').resolve()):
                 raise ValueError('Clean publication escapes the intended workspace data directory')
             directory.parent.mkdir(parents=True,exist_ok=True)
-            staging.rename(directory)
+            publish_directory(staging,directory,staging_root=output,destination_root=directory.parent)
             receipt['tables'][table]=record
             save()
         receipt['status']='captured'

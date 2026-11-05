@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from quant.research import continuous_mining as mining
+from quant.data import storage
 
 
 @pytest.mark.parametrize('permanent',[False,True])
@@ -28,7 +29,7 @@ def test_publication_retries_only_directory_rename_and_keeps_frozen_recipe(tmp_p
         (kwargs['run_path']/'summary.json').write_text(json.dumps(result))
         return result
     monkeypatch.setattr(Path,'rename',publish)
-    monkeypatch.setattr(mining,'time',SimpleNamespace(sleep=pauses.append))
+    monkeypatch.setattr(storage,'time',SimpleNamespace(sleep=pauses.append))
     monkeypatch.setattr(mining.nightly,'execute',execute)
     if permanent:
         with pytest.raises(PermissionError):mining.dispatch(config,root,now=dt.datetime(2026,10,4,15))
