@@ -257,11 +257,6 @@ _worker = None
 
 
 def pytest_runtest_logreport(report):
-    # Keep slow completed phases even if the process budget prevents final JUnit.
-    if _worker is not None and getattr(report, 'duration', 0) >= 1:
-        with (Path(os.environ['QUANT_TEST_RUN_DIR'])/f'slow_phases_{_worker}.jsonl').open('a', encoding='utf-8') as stream:
-            stream.write(json.dumps(dict(nodeid=report.nodeid, phase=report.when,
-                duration_seconds=report.duration, outcome=report.outcome))+'\n')
     # Persist failures immediately: a later timeout may prevent final JUnit.
     if _worker is None or not report.failed:
         return
