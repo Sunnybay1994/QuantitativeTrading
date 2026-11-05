@@ -35,6 +35,7 @@ def build(*, root, stock, register=False):
     if receipt['status']!='replayed' or len(receipt['completed'])!=15:
         raise ValueError('Require two complete portfolio families, all controls and proxy costs')
     spec=tomllib.loads((root/'config.toml').read_text(encoding='utf-8'))
+    top15=spec.get('stock_variants')==['top15_limit_1pct']
     manifest=json.loads((root/'manifest.json').read_text(encoding='utf-8'))
     panel=next(Path(name).parent for name in manifest if Path(name).name=='summary.json')
     bars=pl.read_parquet(panel/'bars.parquet')
@@ -90,12 +91,16 @@ def build(*, root, stock, register=False):
     result={'rows':rows,'assessments':assessments,'benchmark_comparisons':comparisons,
         'pessimistic_scenarios':stress,'auto_trade':False,'source':str(stock),
         'measurement':'Continuous 2019 stock interval, quarterly actual-share account, three costs, roadmap account gates'}
+    if top15:
+        result.update(stock_rule=spec['stock_rule'],reused_controls=receipt['reused_controls'])
     (root/'assessment.json').write_text(json.dumps(result,indent=2,ensure_ascii=False),encoding='utf-8')
     lines=['# R1 账户组合族回放', '',
         '30万元、真实整数持仓及共享现金账本；2019-01-02至2026-08-31，首尾年度收益按实际日历切片，不年化。', '',
         '季度资产配置转移与Q10月度0.5内部换手分开计量；ETF数量非季度保持，分红现金进入共享现金。未上市红利ETF份额留现金。', '',
         '| 组合 | 成本 | 年化 | Sharpe | 最大回撤 | 最差年 | 年收益 | Sharpe增量 | 四门 |',
         '|---|---:|---:|---:|---:|---:|---:|---:|---|']
+    if top15:
+        lines[4]='季度配置与Top15月度选股分开；股票按实际分配腿资金筛一手门槛并生成整数股单，固定1%限价最多三会话，共享现金、ETF按开盘成交。ETF非季度保持实际股数，未上市红利ETF留现金；不添加Q10的0.5换手预算。'
     for row in rows:
         flags=', '.join(f'{k}={v}' for k,v in row['checks'].items())
         lines.append(f"| {row['variant']} | {row['cost_multiplier']:g} | {row['cagr']:.2%} | {row['sharpe']:.3f} | "
@@ -104,13 +109,16 @@ def build(*, root, stock, register=False):
     lines+=['','2×成本年化门只在2×行判定，其他行该门为不适用；其余三门逐档报告。正式门槛未改。',
         '', '## 两个必报悲观情景', '',
         '基础组合已持有国债且没有黄金，黄金换国债为恒等重算，不能称为独立压力损失。',
-        '原Q10连续窗口缺少2015、2018熊市；以下以510300全收益代替股票腿，尚未上市的红利低波ETF对应份额保留现金。', '',
+        ('原Top15' if top15 else '原Q10')+'连续窗口缺少2015、2018熊市；以下以510300全收益代替股票腿，尚未上市的红利低波ETF对应份额保留现金。', '',
         '| 组合 | 成本 | 2015–2018代理年化 | 最大回撤 | 最差年 | 年收益 |', '|---|---:|---:|---:|---:|---:|']
     for key,value in stress.items():
         row=value['proxy_2015_2018']
         lines.append(f"| {key} | 见组合名 | {row['cagr']:.2%} | {row['max_drawdown']:.2%} | "
             f"{row['worst_year']['year']} | {row['worst_year']['return']:.2%} |")
     lines+=['','## 结论','']+[f"- {v}: {a['conclusion']}。" for v,a in assessments.items()]
+    if top15:
+        lines+=['','补充对照使用原R1相同国债及2015–2018代理场景，直接复用已完成账本；来源路径及哈希在manifest.json。原Q10两项结果保留。',
+            '1%为预先固定R2主档，没有按组合收益选择限价档；这批仍为历史开发回放，不能替代未来真实调度或执行证据。']
     lines+=['','## ETF上市与成交额', '',
         '上市日期在预注册固定；逐配置日仅用当时之前60个交易日行情核对成交额，明细见liquidity_diagnostics.parquet。未上市和已公告停牌日不补造行情；本明细为回放后的审计输出，不声称它在回放前已落盘。']
     (root/'report.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
