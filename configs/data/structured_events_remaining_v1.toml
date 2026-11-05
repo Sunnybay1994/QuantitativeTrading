@@ -1,0 +1,45 @@
+id="structured_events_remaining_v1"
+registered_on=2026-11-05
+auto_trade=false
+evaluate_factors=false
+start=2019-01-01
+end=2026-11-04
+page_size=1000
+request_pause_seconds=2.0
+availability="Announcement/trade dates remain separate; available_at is no earlier than first observed raw snapshot. No historical vintage proof."
+
+[tables.forecast]
+date_field="ann_date"
+announcement_field="ann_date"
+chunk="all"
+symbols_file="artifacts\\data\\structured_remaining_20261105\\stock_universe_frozen.json"
+symbols_sha256="fb53e57211e7fe98f8438b387f475f9ec087d4c655693623a3f1b9137c796e80"
+consumer="sue_family_v1 S4: preserve announcement ranges and report period; no new factor evaluation this round"
+units="net_profit_min/max: native 10000 CNY; p_change_min/max percent; no midpoint or missing-value imputation"
+source_document="https://tushare.pro/document/2?doc_id=45"
+
+[tables.express]
+date_field="ann_date"
+announcement_field="ann_date"
+chunk="all"
+symbols_file="artifacts\\data\\structured_remaining_20261105\\stock_universe_frozen.json"
+symbols_sha256="fb53e57211e7fe98f8438b387f475f9ec087d4c655693623a3f1b9137c796e80"
+consumer="sue_family_v1 S4: preserve preliminary actuals, report period and update_flag; no new factor evaluation"
+units="revenue,operate_profit,total_profit,n_income,total_assets,total_hldr_eqy_exc_min_int in native CNY; EPS CNY/share; no 10000 multiplier"
+source_document="https://tushare.pro/document/2?doc_id=46"
+
+[tables.stk_holdernumber]
+date_field="ann_date"
+announcement_field="ann_date"
+chunk="month"
+consumer="event_family_v1 descriptive source: shareholder counts, announced reporting-date observations; no factor evaluation"
+units="holder_num native household count; end_date is report cutoff, not announcement availability"
+source_document="https://tushare.pro/document/2?doc_id=166"
+
+[tables.margin_detail]
+date_field="trade_date"
+announcement_field="trade_date"
+chunk="month"
+consumer="monthly market-state panel: financing balances and flows; settlement release time is not a same-session signal"
+units="rzye,rqye,rzmre,rzche,rzrqye in native CNY; rqyl/rqchl shares; rqmcl mixed shares/fund units/lots, never sum as one universal quantity"
+source_document="https://tushare.pro/document/2?doc_id=59"

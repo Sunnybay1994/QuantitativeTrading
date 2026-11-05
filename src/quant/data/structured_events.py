@@ -1,4 +1,4 @@
-"""D1 four preregistered tables: bounded raw receipts and conservative availability."""
+"""D1 registered table profiles: bounded raw receipts and conservative availability."""
 import argparse
 import calendar
 import datetime as dt
@@ -15,6 +15,11 @@ from quant.data.structured_event_pages import pages
 
 
 def chunks(start,end,kind):
+    if kind=='all':
+        yield start,end
+        return
+    if kind not in ('month','year'):
+        raise ValueError('Unknown registered date chunk')
     first=start
     while first<=end:
         last=min(end,dt.date(first.year,12,31) if kind=='year' else
@@ -46,8 +51,10 @@ def run(*,config,output,resume=False,connector=None):
     spec=tomllib.loads(config.read_text(encoding='utf-8'))
     if spec['auto_trade'] is not False or spec['evaluate_factors'] is not False:
         raise ValueError('This capture must not trade or evaluate new factors')
-    if set(spec['tables'])!={'repurchase','stk_holdertrade','share_float','fund_share'}:
-        raise ValueError('Require the four registered structured tables')
+    profiles={'structured_events_v1':{'repurchase','stk_holdertrade','share_float','fund_share'},
+        'structured_events_remaining_v1':{'forecast','express','stk_holdernumber','margin_detail'}}
+    if set(spec['tables'])!=profiles.get(spec['id']):
+        raise ValueError('Require one exact preregistered structured-table profile')
     if output.exists() and not resume:
         raise FileExistsError('Explicit resume required')
     output.mkdir(parents=True,exist_ok=True)
@@ -70,7 +77,15 @@ def run(*,config,output,resume=False,connector=None):
             if table in receipt['tables']:
                 continue
             frames=[]
-            for symbol in rule.get('symbols',[None]):
+            symbols=rule.get('symbols',[None])
+            if rule.get('symbols_file'):
+                catalog=Path(rule['symbols_file'])
+                if hashlib.sha256(catalog.read_bytes()).hexdigest()!=rule['symbols_sha256']:
+                    raise ValueError('Frozen structured capture stock catalog changed')
+                symbols=json.loads(catalog.read_text(encoding='utf-8'))['symbols']
+                if not symbols or len(symbols)!=len(set(symbols)):
+                    raise ValueError('Require a nonempty unique acquisition catalog')
+            for symbol in symbols:
                 for first,last in chunks(spec['start'],spec['end'],rule['chunk']):
                     for frame,record in pages(table=table,rule=rule,spec=spec,symbol=symbol,
                             first=first,last=last,receipt=receipt,client=client,store=store,save=save):
