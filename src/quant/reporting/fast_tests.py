@@ -6,9 +6,9 @@ import datetime as dt
 import hashlib
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
-import py_compile
 import re
 import signal
 import subprocess
@@ -109,20 +109,32 @@ def _environment(snapshot: Path, output: Path) -> dict[str, str]:
     return env
 
 
-def _bytecode(snapshot: Path, manifest: list[dict], start: float) -> dict:
-    """Compile the snapshot once; checked hashes invalidate any edited or copied source."""
-    previous, began, count = sys.pycache_prefix, time.monotonic(), 0
-    try:
-        sys.pycache_prefix = None
-        for row in manifest:
-            if row['path'].startswith(('src/', 'tests/')) and row['path'].endswith('.py'):
-                _remaining(start)
-                py_compile.compile(str(snapshot/row['path']), doraise=True, optimize=0,
-                                   invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH)
-                count += 1
-    finally:
-        sys.pycache_prefix = previous
-    return dict(files=count, optimize=0, invalidation='checked_hash', seconds=round(time.monotonic()-began, 2))
+def _scope_costs(root: Path, start: float) -> dict:
+    """Use completed native JUnit timings only to start expensive fixture groups early."""
+    from _pytest.junitxml import mangle_test_address
+
+    for path in sorted((root/'artifacts/tests').glob('20*/receipt.json'), reverse=True):
+        _remaining(start)
+        try:
+            receipt = json.loads(path.read_text(encoding='utf-8'))
+            if not receipt.get('complete'):
+                continue
+            nodes = json.loads((path.parent/'collection.json').read_text(encoding='utf-8'))['nodeids']
+            scopes = {}
+            for node in nodes:
+                names = mangle_test_address(node)
+                scopes[('.'.join(names[:-1]), names[-1])] = node.rsplit('::', 1)[0]
+            costs = {}
+            for case in ET.parse(path.parent/'tests.xml').iter('testcase'):
+                scope = scopes[(case.get('classname'), case.get('name'))]
+                seconds = float(case.get('time', '0'))
+                if not math.isfinite(seconds) or seconds < 0:
+                    raise ValueError('Invalid JUnit timing')
+                costs[scope] = costs.get(scope, 0.) + seconds
+            return dict(source_receipt=str(path), costs=costs)
+        except (OSError, ValueError, TypeError, KeyError, ET.ParseError):
+            continue
+    return dict(source_receipt=None, costs={})
 
 
 def _stop_owned(process: subprocess.Popen, output: Path, log) -> None:
@@ -229,13 +241,17 @@ def run(root: Path) -> int:
                 raise RuntimeError('pytest-xdist is required; install the project dev dependencies')
             manifest = _snapshot(root, snapshot, clock)
             _json(output/'source_manifest.json', manifest)
-            payload['bytecode'] = _bytecode(snapshot, manifest, clock)
+            timings = _scope_costs(root, clock)
+            _json(output/'scope_costs.json', timings)
+            payload['scheduling'] = dict(source_receipt=timings['source_receipt'],
+                                        timed_scopes=len(timings['costs']))
             env = _environment(snapshot, output)
             _assertion_control(snapshot, output, env, log, clock)
             # Keep module fixtures on one worker instead of rebuilding them across all workers.
             command = [sys.executable, '-m', 'pytest', 'tests', '-vv', '-m', 'not slow',
                 '-c', str(snapshot/'pyproject.toml'),
                 '-o', 'addopts=', '--assert=plain', '-n', str(workers), '--dist=loadscope',
+                *(['--no-loadscope-reorder'] if timings['costs'] else []),
                 '--max-worker-restart=0', '-p', 'quant.reporting.fast_tests', '--tb=short',
                 '--basetemp', str(output/'pytest_tmp'), '--junitxml', str(output/'tests.xml')]
             payload['argv'] = command
@@ -289,6 +305,14 @@ def pytest_configure(config):
     _worker = getattr(config, 'workerinput', {}).get('workerid')
     if sys.flags.optimize != 0:
         raise RuntimeError('Python optimization disables test assertions')
+
+
+def pytest_collection_modifyitems(items):
+    if _worker is None:
+        return
+    timings = json.loads((Path(os.environ['QUANT_TEST_RUN_DIR'])/'scope_costs.json').read_text(encoding='utf-8'))
+    # Stable sort preserves every case and each fixture group's original order.
+    items.sort(key=lambda item: -timings['costs'].get(item.nodeid.rsplit('::', 1)[0], 0.))
 
 
 def pytest_collection_finish(session):

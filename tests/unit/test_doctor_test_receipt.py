@@ -2,7 +2,6 @@
 import hashlib
 import io
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -14,22 +13,29 @@ import pytest
 from quant.reporting import doctor, fast_tests as fast
 
 
-def test_precompiled_import_keeps_assertions_and_rejects_same_size_same_time_edits(tmp_path):
-    source = tmp_path/'src/fixture.py'
-    source.parent.mkdir()
-    source.write_text("assert False, 'kept'\n", encoding='utf-8')
-    stat = source.stat()
-    result = fast._bytecode(tmp_path, [{'path': 'src/fixture.py'}], time.monotonic())
-    assert result['files'] == 1 and result['optimize'] == 0
-    cached = next((source.parent/'__pycache__').glob('fixture.*.pyc'))
-    assert int.from_bytes(cached.read_bytes()[4:8], 'little') == 3  # checked source hash
-    env = fast._environment(tmp_path, tmp_path/'output')
-    for message in ('kept', 'next'):
-        source.write_text(f"assert False, '{message}'\n", encoding='utf-8')
-        os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns))
-        child = subprocess.run([sys.executable, '-c', 'import fixture'], cwd=tmp_path,
-                               env=env, capture_output=True, text=True, timeout=30)
-        assert child.returncode == 1 and 'AssertionError: '+message in child.stderr
+def test_native_timing_order_preserves_all_cases_and_group_order(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    previous = tmp_path/'artifacts/tests/20260101T000000'
+    previous.mkdir(parents=True)
+    nodes = ['tests/test_fast.py::test_one', 'tests/test_slow.py::test_b',
+             'tests/test_slow.py::test_a', 'tests/test_new.py::test_new']
+    (previous/'receipt.json').write_text(json.dumps({'complete': True}))
+    (previous/'collection.json').write_text(json.dumps({'nodeids': nodes}))
+    _junit(previous/'tests.xml', nodes)
+    tree = ET.parse(previous/'tests.xml')
+    for case, seconds in zip(tree.iter('testcase'), (1, 40, 60, 0)):
+        case.set('time', str(seconds))
+    tree.write(previous/'tests.xml')
+    timings = fast._scope_costs(tmp_path, time.monotonic())
+    assert timings['costs']['tests/test_slow.py'] == 100
+    (tmp_path/'scope_costs.json').write_text(json.dumps(timings))
+    monkeypatch.setenv('QUANT_TEST_RUN_DIR', str(tmp_path))
+    monkeypatch.setattr(fast, '_worker', 'gw0')
+    items = [SimpleNamespace(nodeid=node) for node in nodes]
+    fast.pytest_collection_modifyitems(items)
+    assert [item.nodeid for item in items] == [nodes[1], nodes[2], nodes[0], nodes[3]]
+    assert sorted(item.nodeid for item in items) == sorted(nodes)
 
 
 def _junit(path, nodes, failed=0, control=False):
