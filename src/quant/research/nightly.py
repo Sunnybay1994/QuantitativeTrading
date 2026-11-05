@@ -163,7 +163,7 @@ def prioritize_queued_battery(order: tuple[str, ...], settings: dict, run: Path)
 
 
 def execute(config: Path, *, now: dt.datetime|None=None, run_path: Path|None=None,
-            session_hours: float|None=None) -> dict:
+            session_hours: float|None=None, allocation_config: Path|None=None) -> dict:
     from quant.factors.library import load_library
     settings=tomllib.loads(config.read_text(encoding='utf-8'))
     now=now or dt.datetime.now()
@@ -194,6 +194,9 @@ def execute(config: Path, *, now: dt.datetime|None=None, run_path: Path|None=Non
     try:
         from quant.research.nightly_steps import resolve_settings
         settings = resolve_settings(settings, run)
+        from quant.research.compute_allocation import apply as apply_allocation
+        settings = apply_allocation(settings,allocation_config)
+        settings['scheduler_day']=now.date().isoformat()
     except (RuntimeError, ValueError, OSError) as exc:
         summary['steps'] = {'N1': {'ok': False, 'error': f'Input preparation: {exc}'}}
         digest(settings, run, summary)
@@ -223,6 +226,15 @@ def execute(config: Path, *, now: dt.datetime|None=None, run_path: Path|None=Non
                 preserve_gp_candidates(settings, run, summary['steps'][step]['result'])
                 reopen_empty_evaluation(run, summary, summary['steps'][step]['result'])
             continue
+        if step == 'N2':
+            from quant.research.compute_allocation import gp_permission
+            permission=gp_permission(settings,folder)
+            if not permission['allowed']:
+                # Scheduling success is explicit, but is not a completed GP trial.
+                summary['steps'][step]={'ok':True,'result':{'skipped':True,
+                    'evaluated':False,'candidates':0,**permission}}
+                dump(summary_path,summary)
+                continue
         # A failed GP search must not strand existing queued candidates or monthly work.
         prerequisite = {'N4': 'N3'}.get(step)
         if prerequisite and not summary['steps'].get(prerequisite, {}).get('ok'):
@@ -240,13 +252,15 @@ def execute(config: Path, *, now: dt.datetime|None=None, run_path: Path|None=Non
             continue
         timeout=min(remaining,settings['step_timeout_seconds'][step])
         worker_env = {**os.environ, 'QUANT_SCHEDULER_DAY': now.date().isoformat()}
+        allocation_args=(['--allocation-config',settings['compute_allocation_config']]
+                         if settings.get('compute_allocation_config') else [])
         worker_env.pop('QUANT_SLICE_SOFT_DEADLINE', None)
         if grace:
             worker_env['QUANT_SLICE_SOFT_DEADLINE'] = str(time.time()+timeout-min(grace, timeout/2))
         try:
             with (folder/'process.log').open('a',encoding='utf-8') as log:
                 process=subprocess.Popen([sys.executable,'-m','quant.research.nightly','--config',str(frozen),
-                    '--worker',step,'--run',str(run)],stdout=log,stderr=subprocess.STDOUT,
+                    '--worker',step,'--run',str(run),*allocation_args],stdout=log,stderr=subprocess.STDOUT,
                     env=worker_env)
                 code=wait_bounded(process, run=run, timeout=timeout,
                                   minimum_free_gb=settings['minimum_free_gb'])
@@ -272,6 +286,7 @@ def main() -> None:
     parser.add_argument('--worker',choices=['N1','N2','N3','N4','N5'])
     parser.add_argument('--run',type=Path)
     parser.add_argument('--deferred-reason')
+    parser.add_argument('--allocation-config',type=Path)
     args=parser.parse_args()
     if args.deferred_reason:
         print(json.dumps(record_deferred(args.config, args.deferred_reason), ensure_ascii=False))
@@ -283,6 +298,8 @@ def main() -> None:
             parser.error('--worker requires --run')
         settings=tomllib.loads(args.config.read_text(encoding='utf-8'))
         settings=nightly_steps.resolve_settings(settings,args.run)
+        from quant.research.compute_allocation import apply as apply_allocation
+        settings=apply_allocation(settings,args.allocation_config)
         settings['scheduler_day'] = os.environ.get('QUANT_SCHEDULER_DAY', args.run.name)
         functions={'N1':nightly_steps.ingest,'N2':lambda s,r:run_nightly(s,r/'N2'),
                    'N3':nightly_steps.evaluate,'N4':nightly_steps.admit,'N5':nightly_steps.monthly_models}

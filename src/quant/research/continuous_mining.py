@@ -43,7 +43,14 @@ def dispatch(config: Path, root: Path, *, now: dt.datetime | None = None,
     now = now or dt.datetime.now()
     root.mkdir(parents=True, exist_ok=True)
     weekly: dict = {'state': 'disabled'}
-    weekly_config = tomllib.loads(config.read_text(encoding='utf-8')).get('weekly_candidates_config')
+    live_settings = tomllib.loads(config.read_text(encoding='utf-8'))
+    from quant.research.compute_allocation import apply as apply_allocation
+    live_settings = apply_allocation(live_settings)
+    live_settings['scheduler_day']=now.date().isoformat()
+    weekly_config = live_settings.get('weekly_candidates_config')
+    if live_settings.get('compute_allocation',{}).get('weekly_candidate_generation') is False:
+        weekly_config=None
+        weekly={'state':'disabled_by_C1','reason':'Only preregistered families and the frozen backlog enter N3/N4'}
     if weekly_config:
         from quant.research.weekly_factor_candidates import run as weekly_run
         try:
@@ -54,6 +61,17 @@ def dispatch(config: Path, root: Path, *, now: dt.datetime | None = None,
     batches = sorted(p for p in root.glob('batch_*') if re.fullmatch(r'batch_\d+', p.name))
     batch = next((p for p in batches if not invalidated_batch(p)
                   and not completed(read(next(p.glob('????-??-??'))/'summary.json'))), None)
+    if batch is None and live_settings.get('compute_allocation'):
+        from quant.research.compute_allocation import gp_permission,queued_count
+        from quant.research.nightly_monthly import pending_month
+        permission=gp_permission(live_settings,root/'next'/now.date().isoformat()/'N2')
+        pending=queued_count(live_settings)
+        monthly=pending_month(live_settings,root/now.date().isoformat(),day=now.date())
+        if not pending and not permission['allowed'] and monthly is None:
+            status={'state':'idle','updated_at':now.isoformat(),'queued_candidates':0,
+                'reason':permission['reason'],'weekly_candidates':weekly,'auto_trade':False}
+            save(root/'status.json',status)
+            return status
     if batch is None:
         index = max((int(p.name.split('_')[1]) for p in batches), default=0)+1
         batch = root/f'batch_{index:06d}'
@@ -133,7 +151,9 @@ def dispatch(config: Path, root: Path, *, now: dt.datetime | None = None,
         status['state'] = 'running'
         save(root/'status.json', status)
         try:
-            summary = nightly.execute(run/'config.toml', now=now, run_path=run, session_hours=slice_hours)
+            options=({'allocation_config':Path(live_settings['compute_allocation_config'])}
+                     if live_settings.get('compute_allocation_config') else {})
+            summary = nightly.execute(run/'config.toml', now=now, run_path=run, session_hours=slice_hours,**options)
             errors = {key: row.get('error', 'incomplete') for key, row in summary.get('steps', {}).items()
                       if not row.get('ok')}
             success = completed(summary)

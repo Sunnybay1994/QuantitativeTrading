@@ -13,6 +13,7 @@ import polars as pl
 from quant.factors.library import load_library
 from quant.research.factor_battery_statistics import monthly_ic_summary, rank_ic_by_date
 from quant.research.nightly_gp import maximum_correlation
+from quant.research.compute_allocation import allowed,require_allowed,may_enqueue
 
 
 def dump(path: Path, value: object) -> None:
@@ -122,6 +123,8 @@ def ingest(settings: dict, run: Path) -> dict:
             # Accept normal single-factor definitions and [[factors]] batch files.
             content = tomllib.loads(path.read_text(encoding='utf-8'))
             rows = content.get('factors', [content])
+            if any(not allowed(row,settings) for row in rows):
+                continue  # Leave other sessions' unregistered files untouched.
             for row in rows:
                 from quant.factors.expressions import required_history
                 required_history(row['expr'])
@@ -156,6 +159,8 @@ def ingest(settings: dict, run: Path) -> dict:
                 path.rename(destination)
             continue
         for row in rows:
+            if not allowed(row,settings):
+                continue
             identifier = row['id']
             if not identifier.isidentifier() or identifier.startswith('_'):
                 raise ValueError('unsafe factor id')
@@ -179,6 +184,8 @@ def preserve_gp_candidates(settings: dict, run: Path, search_result: dict) -> in
     queued = 0
     for path in sorted(folder.glob('*.toml')):
         row = tomllib.loads(path.read_text(encoding='utf-8'))
+        if not may_enqueue(row,settings):
+            continue
         if published_candidate(row, settings):
             continue
         target = Path(settings['queue'])/'processing'/path.name
@@ -209,6 +216,8 @@ def evaluate(settings: dict, run: Path) -> dict:
     invalid_gp = retired_gp_result(run/'N2') is not None
     gp_output=Path(json.loads(gp_result.read_text(encoding='utf-8')).get('gp_output',str(run/'N2'))) if gp_result.exists() else run/'N2'
     for path in ([] if invalid_gp else sorted((gp_output/'library').glob('*.toml'))):
+        if not may_enqueue(tomllib.loads(path.read_text(encoding='utf-8')),settings):
+            continue
         if published_candidate(tomllib.loads(path.read_text(encoding='utf-8')), settings):
             continue
         processing=Path(settings['queue'])/'processing'
@@ -247,11 +256,14 @@ def evaluate(settings: dict, run: Path) -> dict:
             batch=prior
             frozen=batch/'library'
             break
+    allocation={k:settings[k] for k in ('compute_allocation','compute_allocation_config') if k in settings}
     if (batch/'settings.json').exists():
         settings=json.loads((batch/'settings.json').read_text(encoding='utf-8'))
         for field in ('as_of','training_end','history_start'):
             settings[field]=dt.date.fromisoformat(settings[field])
+    settings.update(allocation)
     definitions = load_library(frozen)
+    require_allowed(definitions,settings)
     require_execution_coverage(Path(settings['data_root']),settings['execution_snapshot'],settings['as_of'])
     compute(data_root=Path(settings['data_root']), refresh_config=Path(settings['refresh_config']),
             library=frozen, selected='all', start=settings['history_start'], end=settings['as_of'],
@@ -327,14 +339,17 @@ def admit(settings: dict, run: Path) -> dict:
     if not evaluation.get('evaluated'):
         return {'admitted':0,'rejected':0,'reason':'No completed candidate battery'}
     batch = Path(evaluation['batch'])
+    allocation={k:settings[k] for k in ('compute_allocation','compute_allocation_config') if k in settings}
     if (batch/'settings.json').exists():
         settings=json.loads((batch/'settings.json').read_text(encoding='utf-8'))
         for field in ('as_of','training_end','history_start'):
             settings[field]=dt.date.fromisoformat(settings[field])
+    settings.update(allocation)
     # Only a completed reference at the identical cutoff can replace a stale
     # reference. A later month would leak future outcomes into this admission.
     settings = admission_reference(settings)
     definitions = {d.id:d for d in load_library(batch/'library')}
+    require_allowed(definitions.values(),settings)
     library = load_library(Path(settings['library']))
     reference_ids = [d.id for d in library if d.id not in definitions]
     checkpoint = run/'N4'/'admission_progress.json'

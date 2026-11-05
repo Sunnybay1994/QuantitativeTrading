@@ -42,6 +42,8 @@ def write_json(path: Path, value: object) -> None:
 def run_nightly(settings: dict, output: Path) -> dict:
     """Daily DSL search with monthly sample fitness and the full raw terminal library."""
     from quant.research.nightly_gp import run as run_daily_dsl
+    from quant.research.compute_allocation import may_enqueue,gp_permission
+    allocation={k:settings[k] for k in ('compute_allocation','compute_allocation_config','scheduler_day') if k in settings}
     for prior in sorted(output.parent.parent.glob('*/N2/search_checkpoint.json')):
         if not (prior.parent/'search.json').exists():
             frozen=prior.parent.parent/'effective_settings.json'
@@ -51,12 +53,19 @@ def run_nightly(settings: dict, output: Path) -> dict:
                     settings[field]=dt.date.fromisoformat(settings[field])
                 output=prior.parent
                 break
+    settings={**settings,**allocation}
+    permission=gp_permission(settings,output,claim=True)
+    if not permission['allowed']:
+        from quant.research.slice_budget import SliceYield
+        raise SliceYield(permission['reason'])
     result=run_daily_dsl(settings, output)
     result['gp_output']=str(output)
     # Persist completed search candidates before the nightly deadline can skip N3.
     processing=Path(settings['queue'])/'processing'
     processing.mkdir(parents=True,exist_ok=True)
     for candidate in (output/'library').glob('*.toml'):
+        if not may_enqueue(tomllib.loads(candidate.read_text(encoding='utf-8')),settings):
+            continue
         destination=processing/candidate.name
         if not destination.exists() and not (Path(settings['library'])/'auto'/candidate.name).exists():
             shutil.copyfile(candidate,destination)

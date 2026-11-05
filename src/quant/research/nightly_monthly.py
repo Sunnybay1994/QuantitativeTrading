@@ -91,9 +91,11 @@ def _run_month(settings: dict, output: Path) -> dict:
         raise ValueError('Monthly full-family costs incomplete; resume this same month after battery recovery')
     from quant.reporting.experiment_registry import register_run
     register_run(evaluation)
-    _predict(output, data_root)
+    models_enabled=settings.get('compute_allocation',{}).get('monthly_three_models',True)
+    if models_enabled:
+        _predict(output, data_root)
     reports = {}
-    for method in ('equal_z', 'positive_mean_ic', 'lightgbm'):
+    for method in (('equal_z', 'positive_mean_ic', 'lightgbm') if models_enabled else ()):
         reports[method] = _constructions(output, method, data_root)
     from quant.research.q10_plus_admitted import DEFAULT_CONFIG, run_for_month
     reports['q10_plus_admitted'] = run_for_month(
@@ -101,12 +103,14 @@ def _run_month(settings: dict, output: Path) -> dict:
     result = {'skipped': False, 'period': output.name, 'completed': True,
         'as_of': str(as_of),
         'output': str(output), 'methods': reports,
+        'disabled_methods':[] if models_enabled else ['equal_z','positive_mean_ic','lightgbm'],
         'reference_statistics': str(evaluation/'statistics'),
         'reference_scorecard': result['scorecard_path'],
         'selection_basis': 'entire_frozen_family_annual_known_outcomes_and_prefix_costs',
         'evidence': 'retrospective_adaptive_family_not_new_holdout'}
     lines = [f'# 月度模型 {output.name}', '',
-        '整库候选按每次年度拟合前已知结果重新准入；三个权重模型比较0.5预算与R4约束；另含 Q10+准入因子增量模型。', '',
+        ('整库候选按每次年度拟合前已知结果重新准入；三个权重模型比较0.5预算与R4约束；另含 Q10+准入因子增量模型。' if models_enabled else
+         'C1已关闭equal_z、positive_mean_ic、lightgbm三类月度模型；保留同截止日准入控制与已注册Q10增量回放。关闭不是模型检验通过。'), '',
         '|模型|0.5预算结论|R4结论|报告|', '|---|---|---|---|']
     for method, item in reports.items():
         constrained = item['conclusions'].get('constrained', 'n/a')
