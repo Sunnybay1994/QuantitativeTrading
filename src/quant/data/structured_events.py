@@ -11,6 +11,7 @@ import polars as pl
 
 from quant.data.connectors.tushare import TushareConnector
 from quant.data.storage import RawStore
+from quant.data.realtime_store import atomic_json
 from quant.data.structured_event_pages import pages
 
 
@@ -66,9 +67,7 @@ def run(*,config,output,resume=False,connector=None):
     receipt.update(config_sha256=digest,status='running',auto_trade=False)
     receipt.pop('error_type',None)
     def save():
-        temporary=summary.with_suffix('.json.tmp')
-        temporary.write_text(json.dumps(receipt,indent=2,ensure_ascii=False),encoding='utf-8')
-        temporary.replace(summary)
+        atomic_json(summary,receipt)
     (output/'config.toml').write_bytes(config.read_bytes())
     save()
     client,store=connector or TushareConnector(),RawStore(Path('data/raw'))

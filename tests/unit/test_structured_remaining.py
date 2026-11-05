@@ -1,6 +1,7 @@
 import datetime as dt
 import hashlib
 import json
+from pathlib import Path
 
 import polars as pl
 import pytest
@@ -103,3 +104,56 @@ def test_supplier_date_whitespace_keeps_native_values_and_published_consumer_dat
     assert history.height==6
     assert set(history['announcement_date'])=={dt.date(2019,1,15)}
     assert set(history['report_period_end'])=={dt.date(2018,12,31)}
+
+
+def test_checkpoint_replace_retries_do_not_repeat_api_or_raw_writes(tmp_path,monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    path,_,symbols=config(tmp_path)
+    output=tmp_path/'capture';summary=output/'summary.json'
+    original=Path.replace
+    failures=[];pauses=[];calls=[]
+    def replace(source,target):
+        if Path(target)==summary and len(failures)<2:
+            payload=json.loads(source.read_text(encoding='utf-8'))
+            if payload['requests']:
+                error=PermissionError('temporary Windows reader handle')
+                error.winerror=5
+                failures.append(error.winerror)
+                raise error
+        return original(source,target)
+    monkeypatch.setattr(Path,'replace',replace)
+    monkeypatch.setattr('quant.data.realtime_store.time.sleep',pauses.append)
+    class Client:
+        def query_raw(self,table,**params):
+            calls.append((table,params.copy()))
+            field='trade_date' if table=='margin_detail' else 'ann_date'
+            return pl.DataFrame({'ts_code':[params.get('ts_code','600000.SH')],field:['20190115']})
+    result=run(config=path,output=output,connector=Client())
+    assert result['status']=='captured' and failures==[5,5] and pauses.count(.1)==2
+    assert len(calls)==len(result['requests'])==len(list((tmp_path/'data/raw').rglob('*.parquet')))==8
+    assert json.loads(summary.read_text(encoding='utf-8'))==result
+    assert not list(output.glob('*.tmp'))
+
+
+def test_permanent_checkpoint_denial_is_bounded_and_retains_last_valid_receipt(tmp_path,monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    path,_,_=config(tmp_path)
+    output=tmp_path/'capture';summary=output/'summary.json'
+    original=Path.replace;attempts=[];calls=[]
+    def replace(source,target):
+        if Path(target)==summary and json.loads(source.read_text(encoding='utf-8'))['requests']:
+            attempts.append(1)
+            raise PermissionError('permanent checkpoint denial')
+        return original(source,target)
+    monkeypatch.setattr(Path,'replace',replace)
+    monkeypatch.setattr('quant.data.realtime_store.time.sleep',lambda _:None)
+    class Client:
+        def query_raw(self,table,**params):
+            calls.append(table)
+            return pl.DataFrame({'ts_code':[params['ts_code']],'ann_date':['20190115']})
+    with pytest.raises(PermissionError,match='permanent'):
+        run(config=path,output=output,connector=Client())
+    assert len(calls)==1 and len(attempts)==22  # page save, then stopped-status save
+    assert json.loads(summary.read_text(encoding='utf-8'))['requests']=={}
+    assert len(list((tmp_path/'data/raw').rglob('*.parquet')))==1
+    assert not list((tmp_path/'data/clean').glob('forecast/snapshot=*'))
