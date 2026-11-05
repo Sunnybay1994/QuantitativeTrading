@@ -1,6 +1,7 @@
 import datetime as dt
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -185,8 +186,8 @@ def test_collector_reconnects_and_recovers_without_history(tmp_path, monkeypatch
         'symbols': ['510300.SH'], 'holdings': [], 'orders': []})
     monkeypatch.setattr(refresh, 'latest_session', lambda **_: now().date())
     monkeypatch.setattr(realtime, 'FutuRealtime', Client)
-    monkeypatch.setattr(realtime.time, 'monotonic', lambda: elapsed[0])
-    monkeypatch.setattr(realtime.time, 'sleep', lambda seconds: elapsed.__setitem__(0, elapsed[0]+seconds))
+    monkeypatch.setattr(realtime,'time',SimpleNamespace(monotonic=lambda:elapsed[0],
+        sleep=lambda seconds:elapsed.__setitem__(0,elapsed[0]+seconds)))
     result = realtime.run(tmp_path/'cfg', max_seconds=70, now_fn=now)
     assert result['reconnects'] == 1 and result['bar_requests'] == 1
     assert result['history_requests'] == 0 and all(c.closed for c in connections)
@@ -295,8 +296,8 @@ def test_collector_rotates_k1m_on_leftover_slots(tmp_path, monkeypatch):
         'symbols': symbols, 'holdings': symbols[:2], 'orders': []})
     monkeypatch.setattr(refresh, 'latest_session', lambda **_: now().date())
     monkeypatch.setattr(realtime, 'FutuRealtime', Client)
-    monkeypatch.setattr(realtime.time, 'monotonic', lambda: elapsed[0])
-    monkeypatch.setattr(realtime.time, 'sleep', lambda seconds: elapsed.__setitem__(0, elapsed[0] + seconds))
+    monkeypatch.setattr(realtime,'time',SimpleNamespace(monotonic=lambda:elapsed[0],
+        sleep=lambda seconds:elapsed.__setitem__(0,elapsed[0]+seconds)))
     result = realtime.run(tmp_path / 'cfg', max_seconds=70, now_fn=now)
     assert events[0] == ('quote', symbols)
     assert events[1][0] == 'sub_k' and len(events[1][1]) == 2
