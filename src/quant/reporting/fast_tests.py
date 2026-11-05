@@ -200,7 +200,7 @@ def run(root: Path) -> int:
     output.mkdir(parents=True, exist_ok=False)
     snapshot, log_path = output/'snapshot', output/'pytest.log'
     snapshot.mkdir()
-    workers = min(12, os.cpu_count() or 1)
+    workers = min(8, os.cpu_count() or 1)
     payload = dict(ran_at=started.isoformat(), command='pytest -m "not slow"',
         timeout_seconds=TIMEOUT_SECONDS, workers=workers, complete=False, accepted_fast=False,
         passed=None, failed=None, errors=None, skipped=None, selected_count=None,
@@ -215,7 +215,7 @@ def run(root: Path) -> int:
             env = _environment(snapshot, output)
             _assertion_control(snapshot, output, env, log, clock)
             # Keep module fixtures on one worker instead of rebuilding them across all workers.
-            command = [sys.executable, '-m', 'pytest', 'tests', '-q', '-m', 'not slow',
+            command = [sys.executable, '-m', 'pytest', 'tests', '-vv', '-m', 'not slow',
                 '-c', str(snapshot/'pyproject.toml'),
                 '-o', 'addopts=', '--assert=plain', '-n', str(workers), '--dist=loadscope',
                 '--max-worker-restart=0', '-p', 'quant.reporting.fast_tests', '--tb=short',
