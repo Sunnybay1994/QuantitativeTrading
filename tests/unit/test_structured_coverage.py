@@ -77,3 +77,18 @@ def test_internal_calendar_hole_is_unknown_even_with_correct_endpoints(tmp_path)
     result=describe_table('fund_share',record,{'date_field':'trade_date','symbols':['510300.SH']},
         start=START,end=END,data_root=tmp_path)
     assert not result['daily_grid']['calendar_complete'] and not result['daily_grid']['daily_grid_complete']
+
+
+def test_closed_day_native_record_is_disclosed_but_cannot_fill_missing_session(tmp_path):
+    rows=[{'ts_code':'510300.SH','trade_date':d,'fd_share':100.} for d in ('20190101','20190102','20190103')]
+    record=table(tmp_path,'fund_share',rows);record['first_date']='2019-01-01'
+    calendars(tmp_path)
+    rule={'date_field':'trade_date','symbols':['510300.SH']}
+    result=describe_table('fund_share',record,rule,start=START,end=END,data_root=tmp_path)['daily_grid']
+    assert result['daily_grid_complete'] and result['nontrading_native_symbol_days']==1
+    assert result['unexpected_symbol_days']==1 and result['outside_registered_grid']==0
+    assert not result['nontrading_values_verified']
+    path=next((tmp_path/'clean/fund_share').glob('snapshot=*/year=*/data.parquet'))
+    pl.read_parquet(path).filter(pl.col('trade_date')!='20190102').write_parquet(path)
+    missing=describe_table('fund_share',record,rule,start=START,end=END,data_root=tmp_path)['daily_grid']
+    assert not missing['daily_grid_complete'] and missing['missing_symbol_days']==1

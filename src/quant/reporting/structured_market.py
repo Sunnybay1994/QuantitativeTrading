@@ -40,10 +40,12 @@ def fund_share_facts(month,*,root=Path('.'),known_at=None):
         ['ts_code','trade_date'],keep='last',maintain_order=True)
     calendars=[root/f'data/clean/trade_calendar/market={market}/data.parquet' for market in ('SH','SZ')]
     expected={}
+    open_dates={}
     for market,path in zip(('SH','SZ'),calendars):
         if not path.is_file():continue
         calendar=pl.read_parquet(path)
         dates=calendar.filter(pl.col('is_open'))['date']
+        open_dates[market]=dates
         previous=dates.filter(dates<start)
         current=dates.filter((dates>=start)&(dates<=end))
         # A calendar ending midmonth does not prove the final exchange session.
@@ -51,6 +53,9 @@ def fund_share_facts(month,*,root=Path('.'),known_at=None):
             expected[market]=(previous.max(),current.max())
     for symbol in SYMBOLS:
         selected=data.filter(pl.col('ts_code')==symbol).sort('trade_date')
+        dates=open_dates.get(symbol[-2:])
+        nontrading=selected.filter(~pl.col('trade_date').is_in(dates.implode())) if dates is not None else selected.head(0)
+        selected=selected.filter(pl.col('trade_date').is_in(dates.implode())) if dates is not None else selected.head(0)
         pair=expected.get(symbol[-2:])
         baseline=selected.filter(pl.col('trade_date')==pair[0]) if pair else selected.head(0)
         closing=selected.filter(pl.col('trade_date')==pair[1]) if pair else selected.head(0)
@@ -66,6 +71,7 @@ def fund_share_facts(month,*,root=Path('.'),known_at=None):
         change=(closing_row['fd_share']/baseline_row['fd_share']-1
             if status=='complete_endpoints' else None)
         fact['rows'].append({'symbol':symbol,'status':status,
+            'nontrading_native_observations':nontrading.height,
             'expected_baseline':str(pair[0]) if pair else None,'expected_month_end':str(pair[1]) if pair else None,
             'latest_date':str(latest[0]['trade_date']) if latest else None,
             'latest_fd_share':latest[0]['fd_share'] if latest and (symbol,latest[0]['trade_date']) not in conflicts else None,

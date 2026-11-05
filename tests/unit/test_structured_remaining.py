@@ -11,6 +11,7 @@ from quant.data.structured_probe_sample import publish_report_trial
 from quant.data.storage import RawStore
 from quant.data.structured_preliminary import read_preliminary_history
 from quant.reporting.structured_coverage import describe_table
+from quant.data.structured_native_rows import split_native_rows,MARGIN_AMOUNTS
 
 
 def config(tmp_path):
@@ -157,3 +158,49 @@ def test_permanent_checkpoint_denial_is_bounded_and_retains_last_valid_receipt(t
     assert json.loads(summary.read_text(encoding='utf-8'))['requests']=={}
     assert len(list((tmp_path/'data/raw').rglob('*.parquet')))==1
     assert not list((tmp_path/'data/clean').glob('forecast/snapshot=*'))
+
+
+def test_margin_markers_retained_in_raw_do_not_shorten_pagination(tmp_path,monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    path,_,_=config(tmp_path)
+    calls=[]
+    class Client:
+        def query_raw(self,table,**params):
+            if table!='margin_detail':
+                return pl.DataFrame({'ts_code':[params.get('ts_code','600000.SH')],'ann_date':['20190115']})
+            calls.append(int(params['offset']))
+            codes=([f'{i:06d}.SZ' for i in range(999)]+['日期：2019-01-15.BJ']
+                if int(params['offset'])==0 else ['400194','T600018.SH'])
+            return pl.DataFrame({'ts_code':codes,'trade_date':['20190115']*len(codes),
+                **{c:[None if '日期' in s else 1. for s in codes] for c in MARGIN_AMOUNTS}})
+    receipt=run(config=path,output=tmp_path/'capture',connector=Client())
+    assert calls==[0,1000] and receipt['tables']['margin_detail']['rows']==1001
+    quarantines=list(receipt['quarantined_native_rows'].values())
+    assert len(quarantines)==1 and quarantines[0]['rows']==1
+    assert quarantines[0]['reason']=='supplier_non_record_marker'
+    pages=[r for k,r in receipt['requests'].items() if k.startswith('margin_detail/')]
+    assert sum(pl.read_parquet(r['raw_path']).height for r in pages)==1002
+    saved=pl.read_parquet('data/clean/margin_detail/snapshot=capture/year=2019/data.parquet')
+    assert {'400194','T600018.SH'}<=set(saved['ts_code'])
+    assert not saved['ts_code'].str.contains('日期').any()
+
+
+@pytest.mark.parametrize('code,value', [('unknown',None),('日期：2019-01-15.BJ',1.)])
+def test_unrecognised_or_valued_margin_marker_fails_instead_of_discarding(code,value):
+    frame=pl.DataFrame({'ts_code':[code],**{c:[value] for c in MARGIN_AMOUNTS}})
+    with pytest.raises(ValueError,match='Unknown invalid margin'):
+        split_native_rows('margin_detail',frame)
+
+
+def test_all_marker_margin_page_cannot_publish_a_table(tmp_path,monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    path,_,_=config(tmp_path)
+    class Client:
+        def query_raw(self,table,**params):
+            if table!='margin_detail':
+                return pl.DataFrame({'ts_code':[params.get('ts_code','600000.SH')],'ann_date':['20190115']})
+            return pl.DataFrame({'ts_code':['没有找到符合条件的数据！.SZ'],'trade_date':['20190115'],
+                **{c:[None] for c in MARGIN_AMOUNTS}})
+    with pytest.raises(ValueError,match='No historical rows for margin_detail'):
+        run(config=path,output=tmp_path/'capture',connector=Client())
+    assert not (tmp_path/'data/clean/margin_detail').exists()

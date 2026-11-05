@@ -13,6 +13,7 @@ from quant.data.connectors.tushare import TushareConnector
 from quant.data.storage import RawStore
 from quant.data.realtime_store import atomic_json
 from quant.data.structured_event_pages import pages
+from quant.data.structured_native_rows import native_row_id,split_native_rows
 
 
 def chunks(start,end,kind):
@@ -34,8 +35,7 @@ def normalize(frame,*,table,rule,observed_at,raw_path):
         return frame
     if not {'ts_code',rule['date_field'],rule['announcement_field']}.issubset(frame.columns):
         raise ValueError('Missing structured-table identity/availability fields')
-    row_ids=[hashlib.sha256(json.dumps(row,sort_keys=True,ensure_ascii=False,default=str).encode()).hexdigest()
-        for row in frame.iter_rows(named=True)]
+    row_ids=[native_row_id(row) for row in frame.iter_rows(named=True)]
     result=frame.with_columns(pl.Series('source_row_id',row_ids),
         pl.col(rule['announcement_field']).str.strip_chars().str.to_date('%Y%m%d').alias('source_announcement_date'),
         pl.lit(observed_at).str.to_datetime(time_zone='UTC').alias('observed_at'),
@@ -101,8 +101,18 @@ def run(*,config,output,resume=False,connector=None):
                             first=first,last=last,receipt=receipt,client=client,store=store,save=save,
                             symbol_recovery=symbol_recovery)
                     for frame,record in iterator:
-                        frames.append(normalize(frame,table=table,rule=rule,
-                            observed_at=record['observed_at'],raw_path=record['raw_path']))
+                        # Pagination has already used the original raw page height.
+                        frame,rejected=split_native_rows(table,frame)
+                        if not rejected.is_empty():
+                            receipt.setdefault('quarantined_native_rows',{})[record['raw_path']]={
+                                'table':table,'raw_sha256':record['sha256'],'rows':rejected.height,
+                                'reason':'supplier_non_record_marker',
+                                'source_row_ids':[native_row_id(r) for r in rejected.iter_rows(named=True)],
+                                'native_symbols':rejected['ts_code'].to_list()}
+                            save()
+                        if not frame.is_empty():
+                            frames.append(normalize(frame,table=table,rule=rule,
+                                observed_at=record['observed_at'],raw_path=record['raw_path']))
                     if recovering:
                         break
             if not frames:

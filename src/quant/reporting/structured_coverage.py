@@ -6,6 +6,7 @@ import polars as pl
 
 def fund_daily_grid(frame,*,symbols,start,end,data_root):
     expected=[]
+    closed=[]
     for symbol in symbols:
         calendar_path=data_root/f'clean/trade_calendar/market={symbol[-2:]}/data.parquet'
         if not calendar_path.is_file():return {'calendar_complete':False,'daily_grid_complete':False}
@@ -18,6 +19,7 @@ def fund_daily_grid(frame,*,symbols,start,end,data_root):
             return {'calendar_complete':False,'daily_grid_complete':False}
         dates=calendar.filter(pl.col('is_open')&pl.col('date').is_between(start,end))['date']
         expected.extend((symbol,date) for date in dates)
+        closed.extend((symbol,date) for date in window.filter(~pl.col('is_open'))['date'])
     keys=['ts_code','_date']
     grid=pl.DataFrame(expected,schema={'ts_code':pl.String,'_date':pl.Date},orient='row')
     observations=frame.select(*keys,pl.col('fd_share').cast(pl.Float64,strict=False)).collect()
@@ -25,11 +27,18 @@ def fund_daily_grid(frame,*,symbols,start,end,data_root):
     actual=observations.select(keys).unique()
     missing=grid.join(actual,on=keys,how='anti')
     unexpected=actual.join(grid,on=keys,how='anti')
+    # fund_share dates are native trading/change dates. Closed-day records are
+    # disclosed separately and cannot fill a missing exchange session.
+    closed_grid=pl.DataFrame(closed,schema={'ts_code':pl.String,'_date':pl.Date},orient='row')
+    nontrading=unexpected.join(closed_grid,on=keys,how='inner')
+    outside=unexpected.join(closed_grid,on=keys,how='anti')
     duplicate=observations.height-actual.height
     return {'calendar_complete':True,'expected_symbol_days':grid.height,'observed_symbol_days':actual.height,
         'missing_symbol_days':missing.height,'missing_examples':[{**r,'_date':str(r['_date'])} for r in missing.head(10).to_dicts()],
         'unexpected_symbol_days':unexpected.height,'duplicate_symbol_days':duplicate,'invalid_share_rows':invalid,
-        'daily_grid_complete':not (missing.height or unexpected.height or duplicate or invalid)}
+        'nontrading_native_symbol_days':nontrading.height,'outside_registered_grid':outside.height,
+        'nontrading_values_verified':False,
+        'daily_grid_complete':not (missing.height or outside.height or duplicate or invalid)}
 
 
 def describe_table(table,record,rule,*,start,end,data_root=Path('data')):

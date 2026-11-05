@@ -76,3 +76,10 @@ def test_no_published_snapshot_does_not_trigger_a_fetch(tmp_path):
     facts=fund_share_facts('2026-10',root=tmp_path,known_at=NOW)
     assert facts['status']=='table_not_captured' and facts['sources']==[]
     json.dumps(facts)
+
+
+def test_closed_day_share_change_is_retained_but_not_latest_exchange_observation(tmp_path):
+    fixture(tmp_path,[row('20260930',100.),row('20261030',110.),row('20261031',999.)])
+    value=select(fund_share_facts('2026-10',root=tmp_path,known_at=NOW))
+    assert value['latest_date']=='2026-10-30' and value['latest_fd_share']==110.
+    assert abs(value['month_change']-.1)<1e-12 and value['nontrading_native_observations']==1
