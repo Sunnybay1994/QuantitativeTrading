@@ -40,3 +40,41 @@ def test_insider_quantity_is_native_shares_and_unexecuted_sells_cannot_reappear(
     args=dict(family='insider_trading',symbol='000001.SZ',published=published,excerpt='股东已减持，成交金额100万元。')
     assert lookup.lookup(**args)['parsed']['amount_cny']==1000000.
     assert lookup.lookup(**{**args,'excerpt':'股东未实施减持，计划金额100万元。'}) is None
+
+
+def test_native_numeric_strings_and_unresolved_prices(tmp_path):
+    published=dt.date(2026,10,9)
+    observed=dt.datetime(2026,11,5,tzinfo=dt.timezone.utc)
+    folder=tmp_path/'clean/stk_holdertrade/snapshot=fixture/year=2026'
+    folder.mkdir(parents=True)
+    def write(price):
+        pl.DataFrame({'ts_code':['000001.SZ'],'source_announcement_date':[published],
+            'source_row_id':['native-string'],'source_raw_path':['raw/snapshot.parquet'],
+            'observed_at':[observed],'available_at':[observed],'in_de':['DE'],
+            'change_vol':['100000'],'avg_price':[price],'change_ratio':[None]}).write_parquet(folder/'data.parquet')
+    args=dict(family='insider_trading',symbol='000001.SZ',published=published,
+        excerpt='股东已减持，成交金额100万元。')
+    write('10.0')
+    lookup=StructuredS4(data_root=tmp_path,start=published,end=published,now=observed)
+    assert lookup.lookup(**args)['parsed']['amount_cny']==1000000.
+    for price in ('10至12','未披露','NaN','inf'):
+        write(price)
+        lookup=StructuredS4(data_root=tmp_path,start=published,end=published,now=observed)
+        parsed=lookup.lookup(**args)['parsed']
+        assert parsed['amount_cny'] is None and parsed['ratio_pct'] is None
+        assert parsed['direction']=='sell'
+
+
+def test_repurchase_native_string_amount_is_not_scaled_or_guessed(tmp_path):
+    published=dt.date(2026,10,9)
+    observed=dt.datetime(2026,11,5,tzinfo=dt.timezone.utc)
+    folder=tmp_path/'clean/repurchase/snapshot=fixture/year=2026'
+    folder.mkdir(parents=True)
+    pl.DataFrame({'ts_code':['000001.SZ'],'source_announcement_date':[published],
+        'source_row_id':['repurchase-string'],'source_raw_path':['raw/snapshot.parquet'],
+        'observed_at':[observed],'available_at':[observed],'proc':['完成'],
+        'end_date':['20261008'],'amount':['1000000']}).write_parquet(folder/'data.parquet')
+    lookup=StructuredS4(data_root=tmp_path,start=published,end=published,now=observed)
+    args=dict(family='repurchase',symbol='000001.SZ',published=published,
+        excerpt='本次回购实施完成，支付的资金总额100万元。')
+    assert lookup.lookup(**args)['parsed']['amount_cny']==1000000.

@@ -17,6 +17,12 @@ class StructuredS4:
                 continue
             frame=pl.scan_parquet(paths).filter(pl.col('source_announcement_date').is_between(start,end)
                 &(pl.col('available_at')<=now)).collect().sort('observed_at').unique('source_row_id',keep='first',maintain_order=True)
+            # Supplier columns can be strings (including unresolved ranges).
+            # Parse native numbers only; nonnumeric/nonfinite values stay missing.
+            numeric=('amount',) if table=='repurchase' else ('change_vol','avg_price','change_ratio')
+            frame=frame.with_columns(pl.col(name).cast(pl.Float64,strict=False) for name in numeric if name in frame.columns)
+            frame=frame.with_columns(pl.when(pl.col(name).is_finite()).then(pl.col(name)).otherwise(None).alias(name)
+                for name in numeric if name in frame.columns)
             self.paths.extend(map(str,paths))
             for row in frame.iter_rows(named=True):
                 self.rows.setdefault((family,row['ts_code'],row['source_announcement_date']),[]).append(row)
