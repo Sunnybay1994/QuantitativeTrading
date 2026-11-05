@@ -27,7 +27,7 @@ def query_page(client,table,params,*,key,receipt,save):
 
 
 def pages(*, table, rule, spec, symbol, first, last, receipt, client, store, save,
-          max_offset=100000):
+          max_offset=100000,symbol_recovery=None):
     """Yield original pages first so deduplication retains the earliest observation.
 
     An overflowing window is completed by exhaustive, disjoint child windows.
@@ -37,6 +37,7 @@ def pages(*, table, rule, spec, symbol, first, last, receipt, client, store, sav
     scope=f'{table}/{symbol or "all"}/{first}/{last}'
     offset=0
     page_hashes=set()
+    observed_symbols=set()
     while True:
         key=f'{scope}/{offset}'
         record=receipt['requests'].get(key)
@@ -72,12 +73,30 @@ def pages(*, table, rule, spec, symbol, first, last, receipt, client, store, sav
             if record['sha256'] in page_hashes:
                 raise ValueError('Repeated page; pagination completeness is unknown')
             page_hashes.add(record['sha256'])
+            observed_symbols.update(frame['ts_code'].to_list())
             yield frame,record
         if frame.height<spec['page_size']:
             return
         offset+=frame.height
         if offset>max_offset:
             if first==last:
+                if symbol is None and symbol_recovery and symbol_recovery['table']==table:
+                    symbols=symbol_recovery['symbols']
+                    if not observed_symbols<=set(symbols):
+                        raise ValueError('Cached global day contains codes outside the recovery catalog')
+                    receipt.setdefault('symbol_splits',{})[scope]={
+                        'reason':'single_day_supplier_offset_cap','catalog_path':symbol_recovery['catalog_path'],
+                        'catalog_sha256':symbol_recovery['catalog_sha256'],'symbols':len(symbols),
+                        'parent_pages':'retained; native row union keeps earliest observation','complete':False,
+                        'scope':'frozen acquisition catalog; not proof of an original historical universe'}
+                    save()
+                    for recovery_symbol in symbols:
+                        yield from pages(table=table,rule=rule,spec=spec,symbol=recovery_symbol,
+                            first=first,last=last,receipt=receipt,client=client,store=store,save=save,
+                            max_offset=max_offset,symbol_recovery=symbol_recovery)
+                    receipt['symbol_splits'][scope]['complete']=True
+                    save()
+                    return
                 raise ValueError(f'Supplier offset cap exceeded within a single day: {scope}')
             middle=first+(last-first)//2
             children=[(first,middle),(middle+dt.timedelta(days=1),last)]
@@ -88,5 +107,6 @@ def pages(*, table, rule, spec, symbol, first, last, receipt, client, store, sav
             save()
             for a,b in children:
                 yield from pages(table=table,rule=rule,spec=spec,symbol=symbol,first=a,last=b,
-                    receipt=receipt,client=client,store=store,save=save,max_offset=max_offset)
+                    receipt=receipt,client=client,store=store,save=save,max_offset=max_offset,
+                    symbol_recovery=symbol_recovery)
             return

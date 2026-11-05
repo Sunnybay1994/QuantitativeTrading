@@ -73,6 +73,9 @@ def run(*,config,output,resume=False,connector=None):
     save()
     client,store=connector or TushareConnector(),RawStore(Path('data/raw'))
     try:
+        from quant.data.structured_symbol_recovery import load_symbol_recovery
+        symbol_recovery=load_symbol_recovery(output,receipt)
+        save()
         for table,rule in spec['tables'].items():
             if table in receipt['tables']:
                 continue
@@ -88,7 +91,8 @@ def run(*,config,output,resume=False,connector=None):
             for symbol in symbols:
                 for first,last in chunks(spec['start'],spec['end'],rule['chunk']):
                     for frame,record in pages(table=table,rule=rule,spec=spec,symbol=symbol,
-                            first=first,last=last,receipt=receipt,client=client,store=store,save=save):
+                            first=first,last=last,receipt=receipt,client=client,store=store,save=save,
+                            symbol_recovery=symbol_recovery):
                         frames.append(normalize(frame,table=table,rule=rule,
                             observed_at=record['observed_at'],raw_path=record['raw_path']))
             if not frames:
