@@ -8,6 +8,7 @@ import tomllib
 from quant.data.events_v0 import _task_spend
 from quant.data.events_v0_budget import pending,task_budget_usd
 from quant.data.event_family_inputs import event_family_source_facts
+from quant.reporting.structured_coverage import describe_table
 
 
 def build(*,root,permissions):
@@ -25,17 +26,29 @@ def build(*,root,permissions):
         'historical_vintage_verified':False,'new_factor_backtests':0,'raw_overwrites':0,
         'daily_schedule_attached':False,'pending':'Finish missing supplier shards and verify actual date coverage; this capture is not two natural daily runs'}
     result['event_family_inputs']=event_family_source_facts(Path('data'))
+    result['actual_table_observations']={name:describe_table(name,record,expected['tables'][name],
+        start=expected['start'],end=expected['end']) for name,record in capture['tables'].items()}
+    result['published_metadata_matches_actual']=all(item['declared_metadata_matches'] for item in result['actual_table_observations'].values())
+    if not result['published_metadata_matches_actual']:result['status']='partial'
     lines=['# D1 结构化表接入','',f"当前：{result['status']}；原请求截止{expected['end']}；auto_trade=false。",'',
         '| 表 | 状态 | 行数 | 口径日期 | 最早 | 最新 | 股票/基金数 |','|---|---|---:|---|---|---|---:|']
     for table in expected['tables']:
         record=capture['tables'].get(table)
         if record:
-            lines.append(f"| {table} | 已落库 | {record['rows']} | {record['date_field']} | {record['first_date']} | {record['last_date']} | {record['symbols']} |")
+            actual=result['actual_table_observations'][table]
+            status='已发布；摘要一致' if actual['declared_metadata_matches'] else '摘要与实表待核对'
+            lines.append(f"| {table} | {status} | {actual.get('rows','—')} | {actual.get('date_field',expected['tables'][table]['date_field'])} | {actual.get('first_date','—')} | {actual.get('last_date','—')} | {actual.get('symbols','—')} |")
         else:
             lines.append(f'| {table} | 尚未完成 | — | — | — | — | — |')
     lines+=['','## 权限与空结果','',
         '各接口只作一次限定探测，返回字段及原始快照在权限JSON；available_empty仅表示这次样本为空，不能当作权限拒绝。']
     lines += [f'- {name}: {status}。' for name,status in sources.items()]
+    lines+=['','## 实表时间覆盖','',
+        '行数和日期来自已发布Parquet，按年列示。事件表不要求每天发生事件；出现过每一年本身不证明原始历史版本或请求已经跑完。']
+    for table,actual in result['actual_table_observations'].items():
+        lines.append(f"- {table}：逐年行数{actual.get('yearly_rows',{})}；缺少年份{actual.get('missing_requested_years','未知')}；摘要一致{actual['declared_metadata_matches']}。")
+        lines.append(f"  无效日期{actual.get('invalid_dates','未知')}，请求范围外日期{actual.get('dates_outside_request','未知')}，可用时间早于观察{actual.get('availability_before_observation','未知')}。")
+        if 'daily_grid' in actual:lines.append(f"  ETF交易日网格：{actual['daily_grid']}。")
     lines+=['','## 事件族结构化输入','',
         '以下为按首见时点可见的原生记录数；解禁分持有人、股东户数分报告期，不混合求和，也未生成新因子。',
         '| 来源 | 消费类型 | 可见记录 | 状态 |','|---|---|---:|---|']
