@@ -5,13 +5,13 @@ import datetime as dt
 import hashlib
 import json
 from pathlib import Path
-import time
 import tomllib
 
 import polars as pl
 
 from quant.data.connectors.tushare import TushareConnector
 from quant.data.storage import RawStore
+from quant.data.structured_event_pages import pages
 
 
 def chunks(start,end,kind):
@@ -57,6 +57,7 @@ def run(*,config,output,resume=False,connector=None):
     if receipt.get('config_sha256',digest)!=digest:
         raise ValueError('Frozen structured-table request changed')
     receipt.update(config_sha256=digest,status='running',auto_trade=False)
+    receipt.pop('error_type',None)
     def save():
         temporary=summary.with_suffix('.json.tmp')
         temporary.write_text(json.dumps(receipt,indent=2,ensure_ascii=False),encoding='utf-8')
@@ -71,47 +72,10 @@ def run(*,config,output,resume=False,connector=None):
             frames=[]
             for symbol in rule.get('symbols',[None]):
                 for first,last in chunks(spec['start'],spec['end'],rule['chunk']):
-                    offset=0
-                    page_hashes=set()
-                    while True:
-                        key=f'{table}/{symbol or "all"}/{first}/{last}/{offset}'
-                        record=receipt['requests'].get(key)
-                        if record:
-                            path=Path(record['raw_path'])
-                            if hashlib.sha256(path.read_bytes()).hexdigest()!=record['sha256']:
-                                raise ValueError('Immutable raw checksum mismatch')
-                            frame=pl.read_parquet(path)
-                        else:
-                            params={'start_date':first.strftime('%Y%m%d'),'end_date':last.strftime('%Y%m%d'),
-                                'limit':str(spec['page_size']),'offset':str(offset)}
-                            if symbol:
-                                params['ts_code']=symbol
-                            frame=client.query_raw(table,**params)
-                            raw=store.write(source='tushare',table=table,frame=frame,
-                                parameters={**params,'consumer':spec['id']})
-                            record={'raw_path':str(raw.data_path),'sha256':raw.checksum_sha256,
-                                'rows':frame.height,'observed_at':dt.datetime.now(dt.timezone.utc).isoformat()}
-                            receipt['requests'][key]=record
-                            receipt['current']=key
-                            save()
-                            print(json.dumps({'table':table,'start':str(first),'offset':offset,'rows':frame.height}),flush=True)
-                            time.sleep(spec['request_pause_seconds'])
-                        if frame.height>spec['page_size']:
-                            raise ValueError('Supplier ignored bounded page size')
-                        if frame.height:
-                            dates=frame[rule['date_field']].str.to_date('%Y%m%d')
-                            if dates.null_count() or dates.min()<first or dates.max()>last:
-                                raise ValueError('Supplier response outside frozen date shard')
-                            if symbol and set(frame['ts_code'])!={symbol}:
-                                raise ValueError('Supplier symbol scope mismatch')
-                            fingerprint=record['sha256']
-                            if fingerprint in page_hashes:
-                                raise ValueError('Repeated page; pagination completeness is unknown')
-                            page_hashes.add(fingerprint)
-                            frames.append(normalize(frame,table=table,rule=rule,observed_at=record['observed_at'],raw_path=record['raw_path']))
-                        if frame.height<spec['page_size']:
-                            break
-                        offset+=frame.height
+                    for frame,record in pages(table=table,rule=rule,spec=spec,symbol=symbol,
+                            first=first,last=last,receipt=receipt,client=client,store=store,save=save):
+                        frames.append(normalize(frame,table=table,rule=rule,
+                            observed_at=record['observed_at'],raw_path=record['raw_path']))
             if not frames:
                 raise ValueError(f'No historical rows for {table}')
             full=pl.concat(frames,how='diagonal_relaxed').unique('source_row_id',keep='first',maintain_order=True)
