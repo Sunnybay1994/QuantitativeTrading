@@ -2,9 +2,12 @@
 import datetime as dt
 import hashlib
 import json
+import time
+import uuid
 from pathlib import Path
 
 import polars as pl
+from quant.data.realtime_store import atomic_json
 
 
 def _coverage(path: Path, columns: tuple[str, ...]) -> dict | None:
@@ -51,12 +54,21 @@ def write_control_receipt(path: Path, frame: pl.DataFrame, *, start: dt.date, en
     if frame.select('symbol', 'trade_date').is_duplicated().any():
         raise ValueError('Duplicate companion control keys')
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix('.partial.parquet')
-    frame.write_parquet(temporary)
-    temporary.replace(path)
-    record = path.with_suffix('.coverage.json')
-    temporary_record = record.with_suffix('.partial.json')
-    temporary_record.write_text(json.dumps({'start': str(covered_start), 'end': str(covered_end),
+    temporary = path.with_name(path.name+'.'+uuid.uuid4().hex+'.partial.parquet')
+    try:
+        frame.write_parquet(temporary)
+        digest = hashlib.sha256(temporary.read_bytes()).hexdigest()
+        for attempt in range(11):
+            try:
+                temporary.replace(path)
+                break
+            except PermissionError:
+                if attempt == 10:
+                    raise
+                time.sleep(.1)
+    finally:
+        temporary.unlink(missing_ok=True)
+    # Coverage is published last; a failed receipt remains a cache miss.
+    atomic_json(path.with_suffix('.coverage.json'), {'start': str(covered_start), 'end': str(covered_end),
         'columns': list(columns), 'rows': frame.height,
-        'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}, indent=2), encoding='utf-8')
-    temporary_record.replace(record)
+        'sha256': digest})

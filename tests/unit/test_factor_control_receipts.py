@@ -1,5 +1,6 @@
 import datetime as dt
 import json
+from pathlib import Path
 
 import polars as pl
 import pytest
@@ -67,3 +68,34 @@ def test_invalid_output_does_not_replace_completed_controls(tmp_path):
     with pytest.raises(ValueError, match='outside'):
         write_control_receipt(path, frame(dt.date(2021,2,1), 2.), start=start, end=end, columns=COLUMNS)
     assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize('permanent',[False,True])
+def test_windows_reader_denial_retries_only_replace_and_preserves_completed_data(tmp_path,monkeypatch,permanent):
+    path=tmp_path/'year=2021.parquet'
+    day=dt.date(2021,1,29);start=day.replace(day=1)
+    write_control_receipt(path,frame(day,1.),start=start,end=day,columns=COLUMNS)
+    before=path.read_bytes();receipt=path.with_suffix('.coverage.json').read_bytes()
+    original=Path.replace;write=pl.DataFrame.write_parquet
+    failures=[];writes=[];pauses=[]
+    def replace(source,target):
+        if Path(target)==path and (permanent or len(failures)<2):
+            failures.append(5)
+            raise PermissionError('Windows reader prevents destination replacement')
+        return original(source,target)
+    def parquet(data,*args,**kwargs):
+        writes.append(1)
+        return write(data,*args,**kwargs)
+    monkeypatch.setattr(Path,'replace',replace)
+    monkeypatch.setattr(pl.DataFrame,'write_parquet',parquet)
+    monkeypatch.setattr('quant.data.factor_control_receipts.time.sleep',pauses.append)
+    if permanent:
+        with pytest.raises(PermissionError):
+            write_control_receipt(path,frame(day,2.),start=start,end=day,columns=COLUMNS)
+        assert path.read_bytes()==before and path.with_suffix('.coverage.json').read_bytes()==receipt
+        assert len(failures)==11 and len(pauses)==10
+    else:
+        write_control_receipt(path,frame(day,2.),start=start,end=day,columns=COLUMNS)
+        assert pl.read_parquet(path)['mean'].item()==2. and failures==[5,5] and pauses==[.1,.1]
+    assert writes==[1] and not list(tmp_path.glob('*.partial.parquet'))
+    assert pending_control_start(path,start=start,end=day,columns=COLUMNS) is None
