@@ -19,3 +19,7 @@
 | DeepSeek key | `deepseek.local.toml` 或环境变量 |
 
 新增研究用版本化 config 加独立 run 目录，不要改上表里的冻结文件来"顺便试一下"。
+
+## 历史实验
+
+无代码、脚本、测试、配置或注册表引用的 2026-09 实验移入 [archive/2026-09](archive/2026-09/)。保留的日期配置仍按原路径使用；nightly 及其引用和全部 paper 配置保持原位与原字节。实际归档清单见 [整理报告](../docs/STRUCTURE_CLEANUP_REPORT.md)。
