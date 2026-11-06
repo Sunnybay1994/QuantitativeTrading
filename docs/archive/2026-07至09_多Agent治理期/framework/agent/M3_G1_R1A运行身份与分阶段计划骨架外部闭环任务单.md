@@ -22,7 +22,7 @@ R1A 不调用 Tushare/BaoStock、不读 token、不执行 batch、不写 journal
 
 - 必须等待 [`M3_G1_R0权威日历补全与真实源烟测外部闭环任务单.md`](M3_G1_R0权威日历补全与真实源烟测外部闭环任务单.md)
   通过主 Agent 终验后启动。
-- 行为、环境、凭据和职责分离：[`../AGENTS.md`](../../../AGENTS.md)。
+- 行为、环境、凭据和职责分离：[`../AGENTS.md`](../../../../../AGENTS.md)。
 - 配置与 hash：`src/quant/research/m3/config.py`。
 - 请求计划与 raw receipt：`src/quant/data/m3_backfill.py`。
 - PIT 成员：`src/quant/data/index_membership.py`。

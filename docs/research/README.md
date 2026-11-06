@@ -1,17 +1,17 @@
 # 投研文档
 
-长期规则在 `docs/`：
+当前入口：[START_HERE](../START_HERE.md)。历史报告只作出处，不代替当前回执。
 
-- [研究协议](../RESEARCH_PROTOCOL.md)
-- [架构](../ARCHITECTURE.md)
-- [运维](../OPERATIONS.md)
-- [裁定](../DECISIONS.md)
-- [机器排行榜](排行榜.md)
-
-操作细节已收入运维文档。按日期命名的实验结论在 [experiments_2026-09/](experiments_2026-09/) 与 `docs/archive/`，只读，不以当时口径当新证据。
-
-## 外部项目与方法调研
-
-- [quant-handbook 项目调研与本项目借鉴分析（2026-10-29）](quant-handbook项目调研_20261029.md)：31 讲教程及代表性源码、反例测试、时间/成本边界与后续参考方向；未运行外部测试或复现收益。
-- [QuantMind 项目调研与本项目借鉴分析（2026-10-29）](QuantMind项目调研_20261029.md)：固定版本源码、实现风险、已有能力对照及后续参考实现方向；不含收益复现结论。
-- [自动挖因子开源工具调研（2026-09-13）](自动挖因子开源工具调研_20260913.md)：候选生成工具与接入边界。
+- [data](data/README.md)
+- [experiments_2026-09](experiments_2026-09/README.md)
+- [factors](factors/README.md)
+- [hypotheses](hypotheses/README.md)
+- [methodology](methodology/README.md)
+- [ops](ops/README.md)
+- [paper_reading](paper_reading/README.md)
+- [references](references/README.md)
+- [strategies](strategies/README.md)
+- [surveys](surveys/README.md)
+- [排行榜](排行榜.md)
+- [排行榜_因子](排行榜_因子.md)
+- [研究议程_因子与策略清单](研究议程_因子与策略清单.md)

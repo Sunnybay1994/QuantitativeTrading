@@ -18,7 +18,7 @@ docs/M3_E3严格Receipt独立初验报告.md
 
 ## 2. 必读顺序
 
-1. 根 [`AGENTS.md`](../../../AGENTS.md)；历史 `karpathy-guidelines.md` 已不在当前仓库，仅保留名称用于审计；
+1. 根 [`AGENTS.md`](../../../../../AGENTS.md)；历史 `karpathy-guidelines.md` 已不在当前仓库，仅保留名称用于审计；
 2. [`M3实施与Agent交接.md`](../M3实施与Agent交接.md) 4.2、4.9；
 3. [`M3_E3严格Receipt增量返工任务单.md`](M3_E3严格Receipt增量返工任务单.md)；
 4. [`M3_E3设计审查与修订记录.md`](M3_E3设计审查与修订记录.md)；

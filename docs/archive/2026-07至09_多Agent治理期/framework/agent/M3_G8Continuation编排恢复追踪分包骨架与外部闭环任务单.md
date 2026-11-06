@@ -4,7 +4,7 @@
 状态：**设计冻结；可先用 fake handlers 实现 G8A–G8F，真实 Gate 等待 G1–G7 handlers 主验**  
 环境：WSL Miniforge `base`；默认测试不联网、不启动真实 MLflow server  
 设计 SSOT：[`M3实施与Agent交接.md`](../M3实施与Agent交接.md) §4.9  
-历史任务与审查：[`M3_G8编排与追踪实现初验任务单.md`](../../archive/M3_G8编排与追踪实现初验任务单.md)、
+历史任务与审查：[`M3_G8编排与追踪实现初验任务单.md`](../../../M3_G8编排与追踪实现初验任务单.md)、
 [`M3_G8设计审查与修订记录.md`](M3_G8设计审查与修订记录.md)
 
 > 本文取代旧 O1–O5 的执行颗粒度，补齐 verified continuation 输入、stage-owned 原子目录、handler 能力边界和

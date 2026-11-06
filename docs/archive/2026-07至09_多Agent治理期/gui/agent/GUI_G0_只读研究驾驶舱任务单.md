@@ -14,8 +14,8 @@
   `artifacts/research/runs/<run_id>/run.json` 与输出文件，尚无公共 catalog/GUI reader。
 - 相关代码与测试：`src/quant/research/lightweight_run.py`、
   `tests/unit/test_lightweight_research_run.py`。
-- 适用 SSOT / 项目规则：[`AGENTS.md`](../../../AGENTS.md)、
-  [`项目实施路线图.md`](../../../项目实施路线图.md)、
+- 适用 SSOT / 项目规则：[`AGENTS.md`](../../../../../AGENTS.md)、
+  [`项目实施路线图.md`](../../../../../项目实施路线图.md)、
   [`GUI 投研工作台路线图`](../roadmaps/GUI_投研工作台路线图.md)。
 
 ## 成功标准

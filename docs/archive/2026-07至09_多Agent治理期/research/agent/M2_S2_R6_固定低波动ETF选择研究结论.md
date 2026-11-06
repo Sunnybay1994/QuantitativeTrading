@@ -10,7 +10,7 @@
 从低到高选择两只 ETF。仍为月末信号、下一开市日开盘执行、10% 现金缓冲和相同三档费用。
 
 首次经济运行前冻结的配置为
-[`configs/research/m2_s2_low_volatility.toml`](../../../configs/research/m2_s2_low_volatility.toml)，
+[`configs/research/m2_s2_low_volatility.toml`](../../../../../configs/research/m2_s2_low_volatility.toml)，
 SHA-256 为 `c6674ebac47b5d9b027945a2a204bb6bedb7db24928be6761eb2f8a7d9013181`。固定
 `volatility_window=60`、`top_k=2`、`regression_window=60`，没有参数搜索。
 

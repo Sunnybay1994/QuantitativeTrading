@@ -9,7 +9,7 @@
 ETF 组合，仅使用信号日可见的 60 个共同收益观测估计波动率，把年化风险压到 12%，只降仓、不加杠杆。
 
 冻结配置为
-[`configs/research/m2_s2_volatility_target.toml`](../../../configs/research/m2_s2_volatility_target.toml)。
+[`configs/research/m2_s2_volatility_target.toml`](../../../../../configs/research/m2_s2_volatility_target.toml)。
 信号仍在收盘后形成，最早在下一共同开市日开盘执行；策略仍只输出 `target_weight`。walk-forward 的训练、
 验证、测试边界以及 0.5×/1×/2× 成本压力均未改变。
 

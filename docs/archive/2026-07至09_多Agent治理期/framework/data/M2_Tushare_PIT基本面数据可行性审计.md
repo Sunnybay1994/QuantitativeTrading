@@ -186,7 +186,7 @@ canonical audit、manifest 和 quarantine。相同 raw/audit/projection 只会�
 价值代理研究已绑定 daily-basic 与既有 bar 两个 snapshot 完成；不可覆盖 Run
 `05606a6502cf23f2c3c6cfa69d81147eb2ee8260e99c6e637c7a6ed9741b4015` 保留 BP/股息率为因子级
 `RESEARCH_ONLY`，拒绝 EP/SP。详细证据见
-[`M2_daily_basic价值代理因子研究结果.md`](../../research/M2_daily_basic价值代理因子研究结果.md)。
+[`M2_daily_basic价值代理因子研究结果.md`](../../../../research/hypotheses/M2_daily_basic价值代理因子研究结果.md)。
 
 采集推进到 3,003 COMPLETE 时做过一次 2 线程、非字节验真的 partial 字段预诊断：当前 8,212,140 条
 沪深记录中，`pe_ttm/pb/ps_ttm/dv_ttm` 覆盖率分别约为 82.9%/99.1%/99.9%/64.0%。非空
@@ -197,7 +197,7 @@ canonical audit、manifest 和 quarantine。相同 raw/audit/projection 只会�
 ## 4. PIT 通过条件
 
 首批研究公式、公告日滞后、累计转单季、修订选择和非金融边界统一由
-[`M2_PIT财务质量因子首批假设卡.md`](../../research/M2_PIT财务质量因子首批假设卡.md) 冻结；本数据审计只负责
+[`M2_PIT财务质量因子首批假设卡.md`](../../../../research/hypotheses/M2_PIT财务质量因子首批假设卡.md) 冻结；本数据审计只负责
 证明 raw/clean 是否足以执行该合同，不在这里复制第二套因子定义。
 
 财务数据只有同时满足以下条件才可进入策略：

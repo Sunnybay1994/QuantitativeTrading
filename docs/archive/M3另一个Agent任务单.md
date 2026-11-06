@@ -1,7 +1,7 @@
 # M3 另一个 Agent 任务单
 
 你被分配实现 M3 的 **D1–D8**。函数签名、业务语义、目录、fixture 和验收条件的唯一事实来源是
-[`M3实施与Agent交接.md`](../framework/M3实施与Agent交接.md)；开始前必须完整阅读根目录 `AGENTS.md`、
+[`M3实施与Agent交接.md`](2026-07至09_多Agent治理期/framework/M3实施与Agent交接.md)；开始前必须完整阅读根目录 `AGENTS.md`、
 `karpathy-guidelines.md` 和该交接文档。
 
 ## 执行顺序

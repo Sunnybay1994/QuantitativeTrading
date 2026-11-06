@@ -305,4 +305,4 @@ R18 已消耗的 trial 和 `EXACT_ONE_SELECTED_RETURN_NULL` 边界不能因 EVOQ
 - [主要结果、消融与稳健性测试](https://arxiv.org/html/2607.12455#S5)
 - [局限与部署边界](https://arxiv.org/html/2607.12455#S6)
 - [项目当前研究进展与队列](../../archive/2026-07至09_多Agent治理期/research/reports/M2_近期策略研究进展与后续工作安排_20260830.md)
-- [项目因子发现与策略生存方法论](../量化拥挤时代的因子发现与策略生存方法论.md)
+- [项目因子发现与策略生存方法论](../methodology/量化拥挤时代的因子发现与策略生存方法论.md)

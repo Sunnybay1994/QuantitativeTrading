@@ -14,10 +14,10 @@
 
 ## 业务证据入口
 
-- 框架任务证据：[`../framework/agent/`](../framework/agent/)
-- 投研任务证据：[`../research/agent/`](../research/agent/)
-- GUI 任务证据：[`../gui/agent/`](../gui/agent/)
-- 历史归档：[`../archive/`](../archive/README.md)
+- 框架任务证据：[`../framework/agent/`](../framework/agent)
+- 投研任务证据：[`../research/agent/`](../research/agent)
+- GUI 任务证据：[`../gui/agent/`](../gui/agent)
+- 历史归档：[`../archive/`](../../README.md)
 
 本目录不记录分钟级 PID、测试进度或临时资源状态。易变现场只在对应任务回报中保留；稳定状态进入 handoff、
 业务路线图和实际 Git/产物证据。

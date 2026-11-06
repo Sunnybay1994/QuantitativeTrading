@@ -104,6 +104,9 @@ def _table(root, published=True, year=2019):
         'tables': {'repurchase': record}})
     if published:
         _json(clean / 'summary.json', record)
+        # The fixture is evidence available before CLOCK, independent of wall time.
+        # Future-publication tests explicitly move this timestamp after CLOCK.
+        os.utime(clean / 'summary.json', (CLOCK.timestamp()-1, CLOCK.timestamp()-1))
         data = clean / 'year=all/data.parquet'
         data.parent.mkdir()
         pl.DataFrame({'ts_code': ['000001.SZ'] * (2027-year),

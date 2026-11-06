@@ -61,7 +61,7 @@ def run(*, config: Path, output: Path, data_root: Path = Path('data'), prepare_o
     saved = output/'battery.toml'
     saved.write_text(text, encoding='utf-8')
     validation_battery = output/'validation_battery.toml'
-    validation_text, replaced = re.subn(r'(?m)^start = \d{4}-\d{2}-\d{2}$',
+    validation_text, replaced = re.subn(r'(?m)^start = \d{4}-\d{2}-\d{2}\r?$',
         f"start = {dates['validation_start']}", text, count=1)
     if replaced != 1 or tomllib.loads(text)['start'] != dates['start']:
         raise ValueError('Battery start must match the search start')
