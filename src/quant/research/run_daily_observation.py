@@ -60,6 +60,10 @@ def write_daily_report(record: dict[str, Any], output: Path) -> None:
         lines += ['', f"本次模型预测：{model.get('prediction_stocks', 0)}只股票。"]
     if errors:
         lines += ['', '需处理的输入问题：', *['- '+str(error) for error in errors]]
+    for name, observed in record.get('observation_accounts', {}).items():
+        lines += ['', f"仅观察账户 {name}（原REJECTED保留）：{observed['status']}。"]
+        if observed.get('error'):
+            lines.append(observed['error'])
     for name, stage in record['stages'].items():
         if stage.get('error'):
             lines += ['', f"{names.get(name, name)}：{stage['error']}"]
@@ -266,6 +270,12 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
                         stage(name+'_notify', lambda name=name, summary=account_summary:
                             push_reference(account=Path(settings[name]['output']), summary=summary),
                             lambda value: value['status'] in ('sent', 'no_orders'))
+            if settings.get('top15_observation'):
+                from quant.execution.top15_paper import observe_from_daily
+                result.setdefault('observation_accounts', {})['top15'] = observe_from_daily(
+                    settings['top15_observation'], end=end, data_root=data_root,
+                    forecast=output/'model/forecast')
+                save_summary()
             if shadow_cfg and end >= inception:
                 def pair_month() -> dict:
                     from quant.reporting.q10_forward_rules import InsufficientMonthlySample, write_two_account_month

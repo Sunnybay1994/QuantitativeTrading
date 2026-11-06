@@ -14,7 +14,7 @@ from quant.execution.q10_paper import run as run_q10
 
 def push_reference(*, account: Path, summary: dict) -> dict:
     """Send each dated order payload once; retain failed sends for retry."""
-    if summary.get('rehearsal') or summary.get('auto_trade') is not False:
+    if summary.get('rehearsal') or summary.get('observation_only') or summary.get('auto_trade') is not False:
         raise ValueError('Only production paper reference orders may be pushed')
     if not summary.get('reference_orders'):
         return {'status': 'no_orders'}
@@ -81,6 +81,11 @@ def run(*, config: Path = DEFAULT_CONFIG, end: dt.date,
             except Exception as exc:
                 item['notification_error'] = f'{type(exc).__name__}: {exc}'
             save()
+    if settings.get('top15_observation'):
+        from quant.execution.top15_paper import observe_from_daily
+        receipt['observation_accounts'] = {'top15': observe_from_daily(
+            settings['top15_observation'], end=end,
+            data_root=Path(settings.get('data_root', 'data')), forecast=forecast)}
     receipt['status'] = 'complete' if receipt['accounts'] and all(
         r['status'] == 'complete' for r in receipt['accounts'].values()) else 'failed'
     save()

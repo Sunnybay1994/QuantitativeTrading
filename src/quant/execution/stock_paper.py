@@ -208,12 +208,16 @@ def advance_stock_day(
     state: dict[str, Any],
     inputs: StockPaperInputs,
     config: dict[str, Any],
+    scheduled_orders: pl.DataFrame | None = None,
+    preposted_limits: dict[tuple[str, str], float] | None = None,
 ) -> tuple[dict[str, Any], Any]:
     """Advance once, refusing unknown missing prices and using real order-day bands."""
     if state.get("date") and date <= dt.date.fromisoformat(state["date"]):
         raise ValueError("Stock ledger cannot execute a date twice or move backwards")
     state = copy.deepcopy(state)
     relevant = set(state["holdings"]) | {row["symbol"] for row in state["pending"]}
+    if scheduled_orders is not None:
+        relevant |= set(scheduled_orders['symbol'])
     delisted = set(inputs.instruments.filter(pl.col("delist_date") < date)["symbol"])
     removed = relevant & delisted
     writeoff = sum(
@@ -248,7 +252,8 @@ def advance_stock_day(
         suspensions=inputs.suspensions,
         sessions=[date],
         symbols=sorted(relevant),
-        execution_dates=[date] if state["pending"] and config["paper"].get("enabled", True) else [],
+        execution_dates=[date] if (state["pending"] or scheduled_orders is not None and scheduled_orders.height)
+        and config["paper"].get("enabled", True) else [],
         slippage=config["costs"]["a_share"]["slippage"],
     )
     local_config = copy.deepcopy(config)
@@ -278,6 +283,8 @@ def advance_stock_day(
         market_states=states,
         dividends=inputs.dividends,
         config=local_config,
+        **({'scheduled_orders': scheduled_orders, 'preposted_limits': preposted_limits}
+           if scheduled_orders is not None else {}),
     )
     if (
         config["paper"].get("sell_only", False)

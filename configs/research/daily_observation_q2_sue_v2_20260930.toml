@@ -56,3 +56,9 @@ config = "configs/paper/q10_size_neutral_shadow_20261027.toml"
 output = "artifacts/paper/q10_size_neutral_shadow"
 inception = 2026-10-29
 forward_rules = "configs/paper/q10_sue_v2_forward_rules_20261010.toml"
+
+[top15_observation]
+config = "configs/paper/top15_limit_1pct_observation_20261106.toml"
+output = "artifacts/paper/top15_limit_1pct_observation"
+observation_only = true
+notify = false

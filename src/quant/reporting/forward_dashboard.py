@@ -21,6 +21,10 @@ def account_specs(settings: dict) -> list[dict]:
     if settings.get('q10'):
         rows.append({'account': 'q10_sue_v2', 'label': 'Q10 SUE v2',
                      'root': settings['q10']['output'], 'asset_type': 'stock'})
+    if settings.get('top15_observation'):
+        rows.append({'account': 'top15_limit_1pct_observation',
+                     'label': 'Top15·30万元·1%限价（仅观察·REJECTED）',
+                     'root': settings['top15_observation']['output'], 'asset_type': 'stock'})
     return rows
 
 

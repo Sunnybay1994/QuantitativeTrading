@@ -5,6 +5,22 @@ from dataclasses import dataclass
 from quant.execution import paper_order_chain as chain
 
 
+def test_rejected_observation_failure_does_not_block_primary_or_send(tmp_path, monkeypatch):
+    config = tmp_path/'daily.toml'
+    config.write_text('auto_trade = false\n[q10]\nconfig = "primary"\n'
+        f'output = "{(tmp_path/"primary").as_posix()}"\n'
+        '[top15_observation]\nconfig = "missing.toml"\n'
+        f'output = "{(tmp_path/"observe").as_posix()}"\n')
+    day = dt.date(2026, 11, 6)
+    monkeypatch.setattr(chain, 'run_q10', lambda **kw: {'as_of': str(day), 'reference_orders': 0})
+    result = chain.run(config=config, end=day, output=tmp_path/'receipt')
+    assert result['status'] == 'complete'
+    assert result['observation_accounts']['top15']['status'] == 'failed'
+    import pytest
+    with pytest.raises(ValueError):
+        chain.push_reference(account=tmp_path, summary={'observation_only': True, 'auto_trade': False})
+
+
 def test_shadow_missing_day_preserves_primary_orders(tmp_path, monkeypatch):
     config = tmp_path/'daily.toml'
     config.write_text('auto_trade = false\n[q10]\nconfig = "primary"\n'

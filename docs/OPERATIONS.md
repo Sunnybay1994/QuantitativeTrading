@@ -17,6 +17,8 @@ python -m quant gpu-check
 
 ## 日常命令
 
+Top15仅观察账户：用户于11-06裁定开户并保留`REJECTED`，入口 `python -m quant paper top15-observation --to YYYY-MM-DD`，配置 `configs/paper/top15_limit_1pct_observation_20261106.toml`。现金初始化从实际建立日开始，不回放旧委托；月末信号、固定1%报价、最多3日尝试，沿用股票账本和原费用，首次正式信号11-30。日更与独立订单链已接入，该账户失败单独记载且不阻断主账户，不推送委托、不占准入名额、`auto_trade=false`。产物在 `artifacts/paper/top15_limit_1pct_observation/`，看板显示仅观察及原结论。`rehearsal/20261106_real_inputs_01/validation.json`记录11-05真实输入强制月末预演与正式文件SHA不变，预演不计正式业绩。
+
 Q10 与影子账户可独立更新：`python -m quant paper order-chain --to YYYY-MM-DD`，只读取冻结预测和账户执行行情，不运行市场背景、分钟补数或月度对比；显式加 `--notify` 才推送。两账户分别记录结果，一个失败仍保留另一个的订单，任一账户失败退出码为 1。运行前确认没有正在更新同一账户的日更进程。原 21:30 日更已启用 `independent_orders=true`：先仅刷新冻结模型的实际因子、生成预测和两账户订单并推送，再处理辅助依赖、分钟补数与背景。只有真实通道成功才记录推送完成，同一订单内容成功后不重复发送。
 
 月末隔离预演：`python -m quant paper rehearse --as-month-end --to YYYY-MM-DD`。复用正式订单构建规则，从早于该日的最近账户快照复制到各账户 `rehearsal/<日期_时间戳>/`，保留正式账户控制开关，只生成、不推送；失败也留下 `rehearsal.json`。使用当日已完成且通过质量检查的冻结前向预测；不生成替代预测。生产快照、净值与最新订单不改，预演状态不计入正式账户。

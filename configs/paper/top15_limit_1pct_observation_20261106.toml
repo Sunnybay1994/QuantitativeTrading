@@ -1,0 +1,45 @@
+[research]
+assessment = "artifacts/research/top15_limit_v1_20261104_02/assessment.json"
+conclusion = "REJECTED"
+variant = "limit_1pct"
+preregistration = "configs/research/top15_limit_v1.toml"
+authorization = "2026-11-06 user authorized an observation-only paper account; retain REJECTED"
+
+[paper]
+name = "top15_limit_1pct_observation"
+inception_date = 2026-11-06
+initial_cash = 300000.0
+auto_trade = false
+halt = false
+sell_only = false
+observation_only = true
+shadow = true
+counts_toward_account_limit = false
+
+[model]
+selection = "artifacts/models/q2_sue_v2_frozen_forward_20260912_01"
+forecast_root = "artifacts/daily/sue_v2"
+
+[data]
+refresh_config = "configs/data/refresh_q2_sue_v2_model_20260912.toml"
+warmup_start = 2026-10-01
+
+[universe]
+minimum_daily_symbols = 1
+
+[portfolio]
+stock_dividend_withholding = 0.20
+
+[costs.a_share]
+commission_rate = 0.00025
+commission_min = 5.0
+stamp_tax_sell = 0.0005
+transfer_fee = 0.00001
+slippage = 0.001
+effective_from = 2023-08-28
+
+[costs.etf]
+commission_rate = 0.00025
+commission_min = 5.0
+slippage = 0.001
+effective_from = 2023-01-01
