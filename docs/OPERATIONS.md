@@ -31,7 +31,7 @@ Q10 与影子账户可独立更新：`python -m quant paper order-chain --to YYY
 
 运行 `scripts/register_paper_insurance.ps1` 注册两项保险：`QuantitativeTrading-PaperRehearsal` 在 2026-11-27 22:10 预演；`QuantitativeTrading-PaperOrderWatch` 每天 22:30 只读检查，只有月末未就绪才通知。就绪需当日正式状态、最新 Markdown 和与快照一致的订单 CSV，不能只凭旧文件存在。日志与退出码在 `artifacts/paper/insurance_scheduler/`。doctor 首行显示下一调仓日和两账户订单就绪状态。任务首次自然运行前显示 pending，不视为已通过；K1 仍须等待 11-27 与 11-30 实际验收。
 
-个人账户固定Top5/Top50与佣金配对实验：[运行和断点恢复](PERSONAL_ACCOUNT_REPLAY.md)。
+个人账户固定Top5/Top50与佣金配对实验：[运行和断点恢复](operations/PERSONAL_ACCOUNT_REPLAY.md)。
 
 含 Q10 的完整日更与其数据可得时间保持一致：21:00 前的触发只记录
 `deferred` 和最早可运行时刻，不启动整套日更、不误报失败；由既有21:30触发执行。
@@ -49,7 +49,7 @@ B16保存报价撮合核心：`python -m quant.execution.etf_quote_paper --input
 输入须声明 `auto_trade=false` 和 `classification=RESEARCH_ONLY`，包含期初账、固定委托、
 带供应商/接收时刻的盘口、交易日历及不早于撤单截止的 `as_of`。输出保存输入、模拟成交、
 余单及现金持仓；只消费提交后新鲜报价，盘口容量上限1%，同一委托累计最低佣金。
-这是模型撮合，不提交真实委托；B16自动接入及验收边界见 [B16前向模拟](B16_FORWARD.md)。
+这是模型撮合，不提交真实委托；B16自动接入及验收边界见 [B16前向模拟](operations/B16_FORWARD.md)。
 收盘净值复用 `manual_nav` 核验行情和公司行动。股票ETF默认T+1；黄金/国债ETF
 支持T+0，不把所有ETF或港股统一视为同一规则。
 
@@ -79,7 +79,7 @@ B16保存报价撮合核心：`python -m quant.execution.etf_quote_paper --input
 采一轮，盘后退出、单实例锁防重复；原实时行情启动脚本同时启动这一只读伴随进程，
 不挤占持仓订阅额度，产物在 `artifacts/realtime/market_snapshots/`。
 以每轮 `diagnostic/snapshot.json` 的新鲜覆盖率为准，过期/缺失/无效字段不填造；
-同钟点历史基线的生成、缓存及缺失口径见 [盘中基线](MARKET_CLOCK_BASELINE.md)。
+同钟点历史基线的生成、缓存及缺失口径见 [盘中基线](data/MARKET_CLOCK_BASELINE.md)。
 盘中分类映射尚未实现，与输入不足分开报告；日频状态不变。
 这不是连续逐笔报价或订单执行行情，缺失逐项记入 `capture_errors.json`。
 
@@ -136,7 +136,7 @@ ETF测量复核：`python -m quant research etf-measurement --output <新目录>
 不将不完整窗口诊断当作完整延迟净值或正式策略准入。
 
 ETF 人工延迟账户：初始化 `python -m quant research etf-manual-init`；
-运行、报价探测、收盘恢复和证据入口见 [B16前向模拟](B16_FORWARD.md)。
+运行、报价探测、收盘恢复和证据入口见 [B16前向模拟](operations/B16_FORWARD.md)。
 历史 `bootstrap.json` 保留初始化事实，当前进度读取 `service_status.json`、
 `daily_status.json` 及逐日成交/对账文件；现金初始化不算策略表现。
 
@@ -211,7 +211,7 @@ ETF 人工延迟账户：初始化 `python -m quant research etf-manual-init`；
 
 展开“1 分钟标的列表”可搜索代码/名称/来源、筛选和导出 CSV。“已补齐计划年份”仅表示从已探测 Futu 最早年份到配置结束年份均有非空年度分区；尚未核验逐日缺口。最新日期单独显示，允许由 TDX 等近期源补足。
 
-“手动同步”调用已有 Windows 任务：近期分钟、Futu 历史、原有日更或盘中行情；组合选项触发前三项。运行中任务不重复启动，缺失/禁用任务显示失败。原有日更包含模型与模拟账本更新，保留写入互斥。Futu 历史任务把约 100 标的滚动额度**全部**用于全市场缺年回填（尽早起点、从早到晚下载，不预留额度；当日/近期分钟不走 Futu 历史接口，见 [MINUTE_REFRESH.md](MINUTE_REFRESH.md)）；仍受单轮时间预算约束；`auto_trade=false`。请求提交不表示采集完成，任务状态、下次触发时间和采集进度分别展示。按钮仅接受本地同源带令牌的固定任务操作。
+“手动同步”调用已有 Windows 任务：近期分钟、Futu 历史、原有日更或盘中行情；组合选项触发前三项。运行中任务不重复启动，缺失/禁用任务显示失败。原有日更包含模型与模拟账本更新，保留写入互斥。Futu 历史任务把约 100 标的滚动额度**全部**用于全市场缺年回填（尽早起点、从早到晚下载，不预留额度；当日/近期分钟不走 Futu 历史接口，见 [MINUTE_REFRESH.md](data/MINUTE_REFRESH.md)）；仍受单轮时间预算约束；`auto_trade=false`。请求提交不表示采集完成，任务状态、下次触发时间和采集进度分别展示。按钮仅接受本地同源带令牌的固定任务操作。
 
 覆盖缓存与验证：`artifacts/dashboard_data/inventory.json`、`file_index.json`、`tests.xml`、`validation.json`；缓存为派生统计，不覆盖 raw。
 

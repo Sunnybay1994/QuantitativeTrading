@@ -11,7 +11,7 @@
 和相同三档费用。
 
 首次进入经济计算前冻结的有效配置为
-[`configs/research/m2_s2_risk_adjusted_momentum.toml`](../../../configs/research/m2_s2_risk_adjusted_momentum.toml)，
+[`configs/research/m2_s2_risk_adjusted_momentum.toml`](../../../../../configs/research/m2_s2_risk_adjusted_momentum.toml)，
 SHA-256 为 `bbce43e8b5ead8acda70265fe0e1a03c63a10014460cfa9df23231a3a7942f1f`。首次启动因配置漏写
 既有 `[strategy.equal_weight]` 基线段，在读取配置后、生成任何研究产物前以 `KeyError` 停止；补回与其他
 实验相同的零现金缓冲基线段后才冻结上述 SHA 并执行唯一有效经济运行。

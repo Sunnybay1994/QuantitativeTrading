@@ -58,7 +58,7 @@ D:\Miniforge3\python.exe -m quant report dashboard --port 8768
 
 看板新增“消息通知”页，可配置各通道、启停自动通知、绑定飞书应用、启动/停止消息监听，并查看发送与回执状态。
 
-单向通知支持 **邮件、企业微信群机器人、飞书群机器人、个人微信**。选择通道后，按[通知接入指南](docs/NOTIFICATIONS.md)配置账号或环境变量，并在 `configs/notify.toml` 设置默认通道。
+单向通知支持 **邮件、企业微信群机器人、飞书群机器人、个人微信**。选择通道后，按[通知接入指南](docs/operations/NOTIFICATIONS.md)配置账号或环境变量，并在 `configs/notify.toml` 设置默认通道。
 
 ```powershell
 # 只检查本地通知路径，不发送消息
@@ -77,14 +77,14 @@ D:\Miniforge3\python.exe -m quant notify test --channel feishu
 D:\Miniforge3\python.exe -m quant paper manual demo --output artifacts/manual/demo_new
 ```
 
-输出目录须为新目录。配置双向机器人及学习回复格式，见[人工交易演练说明](docs/MANUAL_EXECUTION_OPERATIONS.md)。
+输出目录须为新目录。配置双向机器人及学习回复格式，见[人工交易演练说明](docs/operations/MANUAL_EXECUTION_OPERATIONS.md)。
 
 ## 更多资料
 
 |需要了解|文档|
 |---|---|
 |看板操作和指标含义|[看板说明](docs/DASHBOARD.md)|
-|通知接入和发送方法|[通知接入指南](docs/NOTIFICATIONS.md)|
+|通知接入和发送方法|[通知接入指南](docs/operations/NOTIFICATIONS.md)|
 |后台启动、调度与故障恢复|[运维说明](docs/OPERATIONS.md)|
 |研究结果|[研究排行榜](docs/research/排行榜.md)|
 |项目进度和后续工作|[项目路线图](项目实施路线图.md)|

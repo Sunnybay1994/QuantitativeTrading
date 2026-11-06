@@ -7,7 +7,7 @@
 - [M3/M4 实施总规划](M3_M4实施总规划.md)
 - [数据工程与质量文档](data/README.md)
 - [PAPER soak runbook](runbooks/M4_PAPER_SOAK.md)
-- [框架任务与验收证据](agent/)
+- [框架任务与验收证据](agent)
 
 框架目录不得维护投研结论或 GUI 产品状态。跨领域决策、资源锁和 integration 状态进入
 [`../governance/`](../governance/README.md)。

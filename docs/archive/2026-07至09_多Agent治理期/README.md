@@ -5,7 +5,7 @@
 2026-09-08 起项目改为单 Agent、业务优先模式，有效规则见根目录 [`AGENTS.md`](../../../AGENTS.md)，
 当前工作见 [`项目实施路线图.md`](../../../项目实施路线图.md)。
 
-归档原因与证据见 [`docs/项目审查与流程重构报告_20260908.md`](../../项目审查与流程重构报告_20260908.md)。
+归档原因与证据见 [`docs/项目审查与流程重构报告_20260908.md`](../reviews_2026-09/项目审查与流程重构报告_20260908.md)。
 
 ## 目录
 
@@ -26,5 +26,5 @@
 
 - 数据层的真实数字（Tushare bulk 快照行数、ETF 总回报构造口径、财务采集 177,184 请求）：
   见 `项目实施路线图_v3_20260813.md` M1/M2 节和 `governance/CODEX_HANDOFF.md` 顶部几节。
-- 各因子/策略假设的真实 run 结论：已迁至 [`docs/research/hypotheses/`](../../research/hypotheses/)，不在本目录。
+- 各因子/策略假设的真实 run 结论：已迁至 [`docs/research/hypotheses/`](../../research/hypotheses)，不在本目录。
 - audit-v4 唯一阻断为 1 条 `FINA_INDICATOR_END_AFTER_AVAILABLE` 记录：见 `research/reports/M2_近期策略研究进展与后续工作安排_20260830.md` §3。

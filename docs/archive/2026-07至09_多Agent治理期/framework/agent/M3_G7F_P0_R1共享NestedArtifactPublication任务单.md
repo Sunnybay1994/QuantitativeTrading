@@ -17,7 +17,7 @@ rollback。它不实现 G7F 业务、指标、Parquet、manifest、receipt 或 S
 
 权威来源：
 
-- [`_artifact_publication.py`](../../../src/quant/research/m3/_artifact_publication.py) 当前 anchored transaction；
+- [`_artifact_publication.py`](../../../../../src/quant/research/m3/_artifact_publication.py) 当前 anchored transaction；
 - [G6A R2 shared publication 主验](M3_G6A_R2共享Publication首写前Root复验主Agent最终验收报告.md)；
 - [G7 分包骨架 §9/§9.1](M3_G7目标到账户回测分包骨架与外部闭环任务单.md)；
 - 根目录 `AGENTS.md` 的职责分离、双平台和不可变发布规则。

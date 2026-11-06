@@ -76,4 +76,4 @@ Success: no issues found in 72 source files
 ## 6. 状态边界
 
 允许更新为“E3 严格 Receipt 增量子包 R1–R4 已通过主验”。不得据此勾选 G0–G9、宣称 G1、E3 的其他
-范围或 M3 完成。当时的下一实施依赖见已归档的 [`M3当前验收与返工总览`](../../archive/agent-history/M3当前验收与返工总览_截至2026-07-31.md)；当前状态以代码、路线图与 `CODEX_HANDOFF.md` 为准。
+范围或 M3 完成。当时的下一实施依赖见已归档的 [`M3当前验收与返工总览`](../../../agent-history/M3当前验收与返工总览_截至2026-07-31.md)；当前状态以代码、路线图与 `CODEX_HANDOFF.md` 为准。

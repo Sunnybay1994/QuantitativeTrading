@@ -1,12 +1,12 @@
 # M3 G2–G8 机械实现任务单
 
 > 历史任务单：其中 E3 接口已被
-> [`M3_E3严格Receipt增量返工任务单.md`](../framework/agent/M3_E3严格Receipt增量返工任务单.md) 取代。后续 Agent 不得按本文
-> 的旧 E3 摘要实现；其余内容也须先与最新 [`M3实施与Agent交接.md`](../framework/M3实施与Agent交接.md) 对照。
+> [`M3_E3严格Receipt增量返工任务单.md`](2026-07至09_多Agent治理期/framework/agent/M3_E3严格Receipt增量返工任务单.md) 取代。后续 Agent 不得按本文
+> 的旧 E3 摘要实现；其余内容也须先与最新 [`M3实施与Agent交接.md`](2026-07至09_多Agent治理期/framework/M3实施与Agent交接.md) 对照。
 
 日期：2026-07-13  
-设计与语义 SSOT：[`M3实施与Agent交接.md`](../framework/M3实施与Agent交接.md)
-前置返工：[`M3_D1-D8二次返工任务单.md`](../framework/agent/M3_D1-D8二次返工任务单.md)
+设计与语义 SSOT：[`M3实施与Agent交接.md`](2026-07至09_多Agent治理期/framework/M3实施与Agent交接.md)
+前置返工：[`M3_D1-D8二次返工任务单.md`](2026-07至09_多Agent治理期/framework/agent/M3_D1-D8二次返工任务单.md)
 
 ## 1. 使用范围
 

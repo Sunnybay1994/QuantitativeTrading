@@ -5,6 +5,6 @@
 - [`M3当前验收与返工总览_截至2026-07-31.md`](M3当前验收与返工总览_截至2026-07-31.md)：已被代码、路线图和 `docs/governance/CODEX_HANDOFF.md` 顶部最新摘要取代，仅供追溯。
 
 - `2026-08-external-batch/`：外部整批执行任务书、总 Prompt、I/O 冲突矩阵和阶段总报告。
-- 当前任务、审批和续写入口仍位于 [`../../agent/README.md`](../../governance/README.md)。
+- 当前任务、审批和续写入口仍位于 [`../../agent/README.md`](../2026-07至09_多Agent治理期/governance/README.md)。
 
 归档只改变导航位置，不改变报告当时的事实、结论或 Gate 边界。

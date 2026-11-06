@@ -26,7 +26,7 @@ R1B 通过只表示工作流骨架可恢复；真实全量运行和 Gate 由后�
 - 配置：`src/quant/research/m3/config.py`。
 - raw/journal：`src/quant/data/m3_backfill.py`、`src/quant/data/m3_reference.py`。
 - candidate/release：`src/quant/data/m3_g1_candidate.py`、`src/quant/data/m3_release.py`。
-- 行为和环境：[`../AGENTS.md`](../../../AGENTS.md)。
+- 行为和环境：[`../AGENTS.md`](../../../../../AGENTS.md)。
 
 ## 3. 文件白名单
 
