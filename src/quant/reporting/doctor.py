@@ -43,7 +43,7 @@ def _now(now: dt.datetime | None) -> dt.datetime:
 
 def _read_json(path: Path) -> dict | None:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None

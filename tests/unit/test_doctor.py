@@ -54,6 +54,22 @@ def _tree(tmp_path):
     return tmp_path
 
 
+@pytest.mark.parametrize('status, expected_red', [
+    ('finished', False), ('deferred_timeout', True), ('deferred_waiting', False),
+])
+def test_windows_bom_scheduler_json_preserves_status_and_alerts(tmp_path, isolated_git, status, expected_red):
+    root = _tree(tmp_path)
+    path = root/'artifacts/post_close_k1m/scheduler/scheduler.json'
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({'status': status, 'updated_at': NOW.isoformat(),
+                               'markets': 'us', 'exit_code': 0}), encoding='utf-8-sig')
+    assert path.read_bytes().startswith(b'\xef\xbb\xbf')
+    report = collect(root=root, now=NOW, tasks=[])
+    assert report['post_close_scheduler']['status'] == status
+    assert report['post_close_scheduler']['markets'] == 'us'
+    assert any(item.startswith('post_close:') for item in report['red']) is expected_red
+
+
 def test_clean_tree_has_no_red_when_git_is_fresh(tmp_path, monkeypatch):
     root = _tree(tmp_path)
     monkeypatch.setattr("quant.reporting.doctor._git_facts", lambda _root: {
