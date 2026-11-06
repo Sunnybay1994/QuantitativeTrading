@@ -10,7 +10,7 @@ New-Item -ItemType Directory -Path $folder -Force | Out-Null
 $log = Join-Path $folder ((Get-Date -Format 'yyyy-MM-dd_HHmmss_fffffff') + '_' + $Mode + '.log')
 $arguments = @('-m', 'quant', 'paper')
 if ($Mode -eq 'Rehearse') {
-    $arguments += @('rehearse', '--as-month-end', '--to', (Get-Date -Format 'yyyy-MM-dd'))
+    $arguments += @('rehearse', '--as-month-end')
 } else {
     $arguments += @('order-watch', '--notify')
 }

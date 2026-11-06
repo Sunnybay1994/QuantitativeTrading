@@ -23,6 +23,8 @@ Q10 与影子账户可独立更新：`python -m quant paper order-chain --to YYY
 
 月末隔离预演：`python -m quant paper rehearse --as-month-end --to YYYY-MM-DD`。复用正式订单构建规则，从早于该日的最近账户快照复制到各账户 `rehearsal/<日期_时间戳>/`，保留正式账户控制开关，只生成、不推送；失败也留下 `rehearsal.json`。使用当日已完成且通过质量检查的冻结前向预测；不生成替代预测。生产快照、净值与最新订单不改，预演状态不计入正式账户。
 
+省略`--to`时，按已有沪深日历选择最近达到数据时间窗口的交易日：21时前以上一日为上界，21时后可用当日；行情与冻结预测仍须实际通过质量检查。保险任务同样使用这个选择，提前运行或延期到周末不会把休市日当作预演信号日；不补拉日历，不用旧日期的成功结果冒充本次完成。
+
 配对月报在账户订单及辅助输入刷新之后，按 `configs/data/q10_forward_return_benchmarks_v1.toml` 续接原三条全收益基准，冻结历史前缀与月度规则保留。独立补齐入口：`python -m quant data forward-benchmarks --end YYYY-MM-DD --output artifacts/research/<新目录>`；只读取已完成交易日的原生行情、成分和公司行动，缺少事实或无法解释的报价缺口不发布成功收据。补记月内对比不算完整月份，也不替代自然调度验收；原失败记录保留。
 
 研究简报复用原日更晚间任务：每月首日21:00后生成上一完整月份，先完成日更与订单，再由 `python -m quant report brief --scheduled --no-notify` 判断是否到期，不新建任务或启用N5。数字来自注册表及结构化表，市场描述使用该月份内有原完成收据的日更观测；成功产物保持不变，LLM每月最多一次尝试，失败和计费仍留收据。产物为 `artifacts/research/brief/<月份>.md`、`.facts.json`、`.narrative.json`、`.scheduler.json`；自动流程不推送消息。非到期日只返回not_due；12-01自然执行未发生前不记验收完成。

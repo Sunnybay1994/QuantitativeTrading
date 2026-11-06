@@ -6,10 +6,25 @@ import shutil
 import tomllib
 from pathlib import Path
 
-from quant.data.refresh import SHANGHAI
-from quant.execution.q10_paper import run as run_q10
+from quant.data.refresh import SHANGHAI, latest_session
+from quant.execution.q10_paper import EXECUTION_READY_HOUR, run as run_q10
 
 DEFAULT_CONFIG = Path('configs/research/daily_observation_q2_sue_v2_20260930.toml')
+
+
+def resolve_session(*, data_root: Path, end: dt.date | None = None,
+                    now: dt.datetime | None = None) -> dt.date:
+    clock = now or dt.datetime.now(SHANGHAI)
+    if clock.tzinfo is None:
+        raise ValueError('Rehearsal requires timezone-aware observation time')
+    clock = clock.astimezone(SHANGHAI)
+    through = clock.date()-dt.timedelta(days=clock.hour < EXECUTION_READY_HOUR)
+    ready = latest_session(data_root=data_root, through=through, refresh_calendar=False)
+    if end is None:
+        return ready
+    if end > ready or latest_session(data_root=data_root, through=end, refresh_calendar=False) != end:
+        raise ValueError('Rehearsal requires a completed exchange session with ready daily inputs')
+    return end
 
 
 def rehearse_account(*, account: Path, config: Path, end: dt.date,
@@ -40,6 +55,8 @@ def rehearse_account(*, account: Path, config: Path, end: dt.date,
     try:
         receipt['result'] = run_q10(config_path=config, data_root=data_root,
                                    output=output, end=end, forecast=forecast, as_month_end=True)
+        if receipt['result']['as_of'] != str(end):
+            raise ValueError('Rehearsal did not advance the requested exchange session')
         receipt['status'] = 'complete'
         banner = '# 月末隔离预演（不推送，不计入正式账户）\n\n'
         for name in ('latest_orders.md', 'report.md'):
@@ -51,11 +68,13 @@ def rehearse_account(*, account: Path, config: Path, end: dt.date,
     return receipt
 
 
-def run(*, config: Path = DEFAULT_CONFIG, end: dt.date,
+def run(*, config: Path = DEFAULT_CONFIG, end: dt.date | None = None,
         forecast: Path | None = None) -> dict:
     settings = tomllib.loads(config.read_text(encoding='utf-8'))
     if settings.get('auto_trade') is not False:
         raise ValueError('Paper rehearsal requires auto_trade=false')
+    clock = dt.datetime.now(SHANGHAI)
+    end = resolve_session(data_root=Path(settings.get('data_root', 'data')), end=end, now=clock)
     results = {}
     for name in ('q10', 'q10_shadow'):
         spec = settings.get(name)
@@ -67,7 +86,8 @@ def run(*, config: Path = DEFAULT_CONFIG, end: dt.date,
                 data_root=Path(settings.get('data_root', 'data')), forecast=forecast)
         except Exception as exc:
             results[name] = {'status': 'failed', 'error': f'{type(exc).__name__}: {exc}'}
-    return {'as_of': str(end), 'rehearsal': True, 'auto_trade': False, 'pushed': False,
+    return {'as_of': str(end), 'observed_at': clock.isoformat(),
+            'rehearsal': True, 'auto_trade': False, 'pushed': False,
             'status': 'complete' if results and all(
                 r['status'] == 'complete' for r in results.values()) else 'failed',
             'accounts': results}
@@ -77,7 +97,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, default=DEFAULT_CONFIG)
     parser.add_argument('--to', type=dt.date.fromisoformat,
-                        default=dt.datetime.now(SHANGHAI).date())
+                        help='Completed exchange session; default is the latest ready session')
     parser.add_argument('--forecast', type=Path)
     parser.add_argument('--as-month-end', action='store_true', required=True)
     args = parser.parse_args()
