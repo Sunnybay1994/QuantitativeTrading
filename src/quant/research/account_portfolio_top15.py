@@ -11,6 +11,7 @@ import polars as pl
 from pandera.config import config_context
 
 from quant.backtest.daily_account import advance,prepare_account_actions
+from quant.backtest.account_reconciliation import validate_nav,validate_registered_account
 from quant.backtest.share_exchanges import apply_share_exchanges,capture_exchange_holdings
 from quant.data.factor_battery_inputs import read_battery_execution,read_daily_replay_limits
 from quant.data.stock_execution_inputs import stock_session_states
@@ -41,6 +42,7 @@ def run(*,config,panel,output,resume=False):
         Path('src/quant/portfolio/account_portfolio_top15.py'),Path('src/quant/portfolio/account_portfolio_v1.py'),
         Path('src/quant/portfolio/top15_limit.py'),Path('src/quant/execution/preposted_book.py'),
         Path('src/quant/backtest/daily_account.py'),Path('src/quant/backtest/daily_simulator.py'),
+        Path('src/quant/backtest/account_reconciliation.py'),Path('src/quant/data/etf_corporate_actions.py'),
         baseline/'summary.json',control/'summary.json']
     paths.extend(panel.glob('*.parquet'))
     for entry in reuse:
@@ -183,6 +185,7 @@ def run(*,config,panel,output,resume=False):
                             >pl.col('equity').abs().clip(lower_bound=1.)*1e-9).height:
                         raise ValueError('Complete account date grid or receivable reconciliation failed')
                     BacktestTradeSchema.validate(chunk[1]);BacktestRejectionSchema.validate(chunk[2])
+                    validate_nav(chunk[0],label=str(folder))
                     folder.mkdir(exist_ok=False)
                     for kind,frame in zip(('nav','trades','rejections'),chunk):frame.write_parquet(folder/f'{kind}.parquet')
                     (folder/'allocation.json').write_text(json.dumps(allocation,indent=2),encoding='utf-8')
@@ -197,6 +200,9 @@ def run(*,config,panel,output,resume=False):
                 receipt['completed'].append({'period':'main','variant':variant,'cost_multiplier':cost,'path':str(root)})
                 save()
         receipt['status']='replayed'
+        checks=validate_registered_account(output,receipt)
+        (output/'return_reconciliation.json').write_text(json.dumps(checks,indent=2),encoding='utf-8')
+        receipt['return_reconciliation']='return_reconciliation.json'
     except Exception as exc:
         receipt.update(status='failed',error=f'{type(exc).__name__}: {exc}');save();raise
     save()

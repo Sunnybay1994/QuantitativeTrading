@@ -10,6 +10,7 @@ import tomllib
 import polars as pl
 
 from quant.backtest.daily_account import advance
+from quant.backtest.account_reconciliation import validate_nav,validate_registered_account
 from quant.data.factor_battery_inputs import read_battery_execution
 from quant.data.stock_execution_inputs import stock_session_states
 from quant.portfolio.account_portfolio_v1 import Allocation
@@ -26,7 +27,9 @@ def run(*, config, panel, stock, output, resume=False):
         raise FileExistsError('Use explicit --resume for existing replay')
     output.mkdir(parents=True,exist_ok=True)
     paths=[config, panel/'summary.json',panel/'corporate_actions.toml',stock/'stock_leg_status.json',
-           stock/'targets_budgeted.parquet',Path(__file__),Path('src/quant/portfolio/account_portfolio_v1.py')]
+           stock/'targets_budgeted.parquet',Path(__file__),Path('src/quant/portfolio/account_portfolio_v1.py'),
+           Path('src/quant/backtest/daily_account.py'),Path('src/quant/backtest/daily_simulator.py'),
+           Path('src/quant/backtest/account_reconciliation.py'),Path('src/quant/data/etf_corporate_actions.py')]
     for p in panel.glob('*.parquet'):
         paths.append(p)
     for cost in spec['cost_multipliers']:
@@ -130,6 +133,7 @@ def run(*, config, panel, stock, output, resume=False):
                             dividends=div,market_states=states,config=settings,sessions=yd,name='r1',validate_once=True,
                             account_state=state,target_constraints=None if variant=='treasury_only' else allocator,
                             constraint_records=records,constraint_diagnostics=diagnostics)
+                        validate_nav(nav,label=str(folder))
                         save_year(folder,account=state,chunks=(nav,trades,rejects),target_records=records)
                         (folder/'allocation_state.json').write_text(json.dumps({'reserved':allocator.reserved,'initialized':allocator.initialized}))
                         (folder/'allocation.json').write_text(json.dumps(diagnostics,default=str,indent=2))
@@ -140,6 +144,9 @@ def run(*, config, panel, stock, output, resume=False):
                     receipt['completed'].append({'period':period,'variant':variant,'cost_multiplier':cost,'path':str(root)})
                     save()
         receipt['status']='replayed'
+        checks=validate_registered_account(output,receipt)
+        (output/'return_reconciliation.json').write_text(json.dumps(checks,indent=2),encoding='utf-8')
+        receipt['return_reconciliation']='return_reconciliation.json'
     except Exception as exc:
         receipt.update(status='failed',error=f'{type(exc).__name__}: {exc}')
         save()

@@ -14,30 +14,8 @@ from quant.domain import Bar1dSchema, InstrumentSchema
 
 
 def cash_actions(raw: pl.DataFrame, end: dt.date) -> list[dict]:
-    if raw.is_empty():
-        return []
-    rows = []
-    for row in raw.filter(pl.col('div_proc') == '实施').iter_rows(named=True):
-        if not row.get('ex_date'):
-            continue
-        def day(field):
-            return dt.datetime.strptime(str(row[field]), '%Y%m%d').date()
-        ex = day('ex_date')
-        if ex > end:
-            continue
-        ann = day('imp_anndate') if row.get('imp_anndate') else day('ann_date')
-        record, pay = day('record_date'), day('pay_date')
-        amount = float(row['div_cash'])
-        if not ann <= record < ex <= pay or not 0 <= amount < float('inf'):
-            raise ValueError('Incomplete or noncausal ETF cash action')
-        rows.append(dict(symbol=row['ts_code'], ann_date=ann, record_date=record,
-            ex_date=ex, pay_date=pay, share_list_date=None, div_cash=amount, share_ratio=0.))
-    unique = {tuple(row.items()): row for row in rows}
-    rows = list(unique.values())
-    keys = [(row['symbol'], row['ex_date']) for row in rows]
-    if len(keys) != len(set(keys)):
-        raise ValueError('Conflicting ETF cash action terms')
-    return rows
+    from quant.data.etf_corporate_actions import cash_actions as canonical_cash_actions
+    return canonical_cash_actions(raw,end)
 
 
 def economic_prices(*, bars: pl.DataFrame, sessions: list[dt.date],
@@ -73,7 +51,7 @@ def economic_prices(*, bars: pl.DataFrame, sessions: list[dt.date],
     return pl.from_dicts(rows)
 
 
-def publish(*, capture: Path, output: Path, data_root: Path = Path('data')) -> dict:
+def publish(*, capture: Path, output: Path, data_root: Path = Path('data'), actions_master=None) -> dict:
     receipt = json.loads((capture/'summary.json').read_text(encoding='utf-8'))
     if receipt['status'] != 'captured' or receipt['replay_performed'] is not False:
         raise ValueError('Require completed, unreplayed raw capture')
@@ -101,11 +79,19 @@ def publish(*, capture: Path, output: Path, data_root: Path = Path('data')) -> d
     frames, prices, actions, instruments, references = [], [], [], [], []
     listings = {row['symbol']: row['listing_date'] for row in spec['etfs'].values()}
     listings['510300.SH'] = dt.date(2012, 5, 28)
+    master_events=None
+    if actions_master is not None:
+        from quant.data.etf_corporate_actions import load
+        actions_master=Path(actions_master)
+        if (actions_master/'terms.toml').read_bytes()!=terms:
+            raise ValueError('Corporate-action master terms differ from captured preregistration')
+        master_events=load(actions_master,symbols=list(listings),end=spec['end'])
     for symbol, listing in listings.items():
         daily = read_raw(symbol,'fund_daily')
         bars = Bar1dSchema.validate(TushareBarMapper().map(daily.with_columns(
             pl.col('ts_code').alias('_request_symbol'), pl.lit('SH').alias('_market'))))
-        cash = cash_actions(read_raw(symbol,'fund_div'), spec['end'])
+        cash = (master_events.filter((pl.col('symbol')==symbol)&(pl.col('share_ratio')==0)).to_dicts()
+                if master_events is not None else cash_actions(read_raw(symbol,'fund_div'), spec['end']))
         actions.extend(cash)
         frames.append(bars)
         references.append(daily.select(pl.col('ts_code').alias('symbol'),
@@ -118,7 +104,7 @@ def publish(*, capture: Path, output: Path, data_root: Path = Path('data')) -> d
             record_date=event['record_date'], ex_date=event['effective_date'],
             pay_date=event['effective_date'], div_cash=0., share_ratio=event['ratio']-1.,
             share_list_date=event['tradable_date']))
-    events = pl.from_dicts(actions, schema=DIVIDEND_SCHEMA)
+    events = master_events if master_events is not None else pl.from_dicts(actions, schema=DIVIDEND_SCHEMA)
     if events.select('symbol', 'ex_date').is_duplicated().any():
         raise ValueError('Duplicate ETF corporate actions need explicit reconciliation')
     instruments = InstrumentSchema.validate(pl.from_dicts(instruments, schema_overrides={'delist_date': pl.Date}))
@@ -135,6 +121,9 @@ def publish(*, capture: Path, output: Path, data_root: Path = Path('data')) -> d
         'products': manifest, 'replay_performed': False,
         'return_convention': 'cash-dividend ex-date reinvestment for volatility only; account cash settles on payment date',
         'suspended_bars_synthesized': 0, 'vendor_adjustment_factor_used': False}
+    if actions_master is not None:
+        summary['corporate_actions_master']={'path':str(actions_master),
+            'summary_sha256':hashlib.sha256((actions_master/'summary.json').read_bytes()).hexdigest()}
     (output/'summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
     return summary
 
@@ -143,8 +132,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--capture', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--actions-master', type=Path)
     args = parser.parse_args()
-    print(json.dumps(publish(capture=args.capture, output=args.output)))
+    print(json.dumps(publish(capture=args.capture, output=args.output,actions_master=args.actions_master)))
 
 
 if __name__ == '__main__':

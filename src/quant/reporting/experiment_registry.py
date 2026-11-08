@@ -52,6 +52,9 @@ def records_from_run(run: Path) -> list[dict]:
     config = run/('model.toml' if model_report else 'config.toml')
     config_bytes = config.read_bytes()
     settings = tomllib.loads(config_bytes.decode('utf-8'))
+    if not model_report and settings.get('id','').startswith('account_portfolio_'):
+        from quant.backtest.account_reconciliation import validate_registered_account
+        validate_registered_account(run,_json(run/'summary.json'))
     if model_report:
         rows = pl.read_parquet(run/'cost_metrics.parquet').to_dicts()
         comparisons = (pl.read_parquet(run/'benchmark_comparisons.parquet').to_dicts()
@@ -184,6 +187,12 @@ def _append_records(records: list[dict], registry: Path) -> int:
     from quant.reporting.registry_hygiene import outside_repository
 
     production = registry.resolve() == DEFAULT_REGISTRY.resolve()
+    account_runs={str(row['run_path']) for row in records
+                  if str(row.get('experiment_id','')).startswith('account_portfolio_')}
+    for run_path in account_runs:
+        from quant.backtest.account_reconciliation import validate_registered_account
+        run=Path(run_path)
+        validate_registered_account(run,_json(run/'summary.json'))
     if production:
         for record in records:
             if outside_repository(str(record.get("run_path")), ROOT):

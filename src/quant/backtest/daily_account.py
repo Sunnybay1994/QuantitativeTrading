@@ -44,6 +44,10 @@ def prepare_account_actions(*, date: dt.date, state: dict[str, Any], calendar: p
                 # No compensating price adjustment: surrendered shares are a loss.
                 # Conservatively round remaining shares down to a whole share.
                 holdings[event["symbol"]]["quantity"] = math.floor(quantity * (1 + ratio) + 1e-9)
+                if event.get('action_type') in {'SHARE_CONSOLIDATION', 'SHARE_CONVERSION'}:
+                    # Explicitly sourced ETF economic folds preserve book value;
+                    # stock cancellations retain the existing loss convention.
+                    holdings[event['symbol']]['mark_price'] /= 1+ratio
             continue
         entitled = quantity
         distribution = distributions.pop(f"{event['symbol']}|{date}", None) if ratio > 0 else None
@@ -73,7 +77,7 @@ def prepare_account_actions(*, date: dt.date, state: dict[str, Any], calendar: p
                         raise ValueError("Missing record-date share distribution entitlement")
                     holdings[event["symbol"]] = {"quantity": 0, "mark_price": distribution["mark_price"]}
                 holdings[event["symbol"]]["quantity"] += added
-                if event.get("adjust_share_price", True):
+                if event.get("adjust_share_price") is not False:
                     holdings[event["symbol"]]["mark_price"] /= 1 + ratio
                 listing = event["share_list_date"]
                 if listing is None or listing < date:
@@ -187,6 +191,12 @@ def advance(
     nav["cumulative_fees"] += state.get("cumulative_fees", 0.0)
     if not math.isclose(nav["equity"], nav["cash"] + nav["market_value"] + nav["receivable"]):
         raise ValueError("Paper account does not reconcile")
+    from quant.backtest.account_reconciliation import check_transition
+    reconciliation = check_transition(date=date, previous=state, actual_equity=nav['equity'],
+        bars=bars, dividends=dividends, trades=result.trades)
+    nav.update(reconciliation_expected_equity=reconciliation['expected_equity'],
+        reconciliation_previous_equity=reconciliation['previous_equity'],
+        reconciliation_unexplained_return=reconciliation['unexplained_return'])
     next_state = {
         "date": str(date), "cash": nav["cash"], "receivables": receivables,
         "restricted_shares": restricted,
