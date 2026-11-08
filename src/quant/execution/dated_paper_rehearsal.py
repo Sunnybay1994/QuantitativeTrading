@@ -28,10 +28,17 @@ def run(*, config=paper_rehearsal.DEFAULT_CONFIG, target=TARGET, root=ROOT,
     # No synthetic clock in the scheduled entry point; historical dates are useful
     # only to exercise this same code with saved inputs during development.
     clock = dt.datetime.now(SHANGHAI)
-    folder = Path(root) / 'rehearsal' / str(target)
-    folder.mkdir(parents=True, exist_ok=False)  # Failed attempts require human action.
     receipt = dict(observed_at=clock.isoformat(), target=str(target), rehearsal=True,
                    auto_trade=False, pushed=False, status='running', accounts={})
+    if target > clock.date() or target == clock.date() and clock.hour < 21:
+        return dict(receipt, status='failed', error=
+                    'Wait for the actual target close and ready inputs after 21:00')
+    if Path(root).resolve() == ROOT.resolve() and (
+            target != TARGET or clock.date() != TARGET):
+        return dict(receipt, status='failed', error=
+                    'Formal rehearsal requires the registered target on the actual target day')
+    folder = Path(root) / 'rehearsal' / str(target)
+    folder.mkdir(parents=True, exist_ok=False)  # Failed attempts require human action.
     accounts = {}
     before = {}
     try:
@@ -41,8 +48,6 @@ def run(*, config=paper_rehearsal.DEFAULT_CONFIG, target=TARGET, root=ROOT,
         accounts = {name: Path(settings[name]['output']) for name in NAMES}
         before = {name: hashes(path) for name, path in accounts.items()}
         receipt['formal_before'] = before
-        if target > clock.date() or target == clock.date() and clock.hour < 21:
-            raise ValueError('Wait for the actual target close and ready inputs after 21:00')
         data_root = Path(settings.get('data_root', 'data'))
         paper_rehearsal.resolve_session(data_root=data_root, end=target, now=clock)
         model = tomllib.loads(Path(settings['q10']['config']).read_text(encoding='utf-8'))['model']

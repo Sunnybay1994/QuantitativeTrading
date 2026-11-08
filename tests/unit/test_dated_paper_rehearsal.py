@@ -1,5 +1,6 @@
 import datetime as dt
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -60,6 +61,30 @@ def test_future_target_never_calls_engine(setup_run, monkeypatch):
     assert result['status'] == 'failed'
     assert 'actual target close' in result['error']
     assert result['accounts'] == {}
+    assert not setup_run['root'].exists()
+
+
+@pytest.mark.parametrize('observed', [
+    dt.datetime(2026, 11, 26, 22),
+    dt.datetime(2026, 11, 27, 20, 59),
+    dt.datetime(2026, 11, 28, 22),
+])
+def test_default_not_due_or_expired_does_not_reserve_directory(tmp_path, monkeypatch, observed):
+    monkeypatch.chdir(tmp_path)
+
+    class Clock(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return observed.replace(tzinfo=tz)
+
+    monkeypatch.setattr(subject, 'dt', SimpleNamespace(datetime=Clock))
+    # Missing configuration also proves rejection happens before account reads.
+    result = subject.run()
+    assert result['status'] == 'failed'
+    assert result['accounts'] == {}
+    assert not subject.ROOT.exists()
+    if observed.date() > subject.TARGET:
+        assert 'actual target day' in result['error']
 
 
 def test_missing_same_day_forecast_retained_without_engine(setup_run, monkeypatch):
