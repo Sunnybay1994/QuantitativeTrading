@@ -1,0 +1,32 @@
+id = "sue_preliminary_s4_v1"
+family = "sue_family_v1"
+registered_at = "2026-11-08T23:05:11+08:00"
+auto_trade = false
+signal = "sue_prelim"
+direction = 1
+original_family = "configs/research/sue_family_v1.toml"
+battery_config = "configs/factors/battery.toml"
+minimum_months = 96
+incremental_minimum_nw_t = 2.5
+minimum_symbols = 100
+audit_start = 2010-01-01
+audit_end = 2026-10-31
+sources = ["forecast", "express"]
+availability = "available_at >= observed_at; both strictly before signal-day Shanghai midnight; ann_date < signal day"
+revisions = "Earliest observation of each native source_row_id; latest ann_date then available_at per symbol/period/table; simultaneous distinct latest rows quarantined"
+point = "Forecast midpoint * 10000 CNY or express n_income CNY; require independently explicit parent-attributable basis, never infer it from last_parent_net, EPS or update_flag"
+profit_basis = "parent_attributable_cumulative_CNY"
+basis_evidence = "Native n_income_attr_p for express, or native parent_net_profit_min/max_10000cny for forecast; current generic fields retain unknown basis"
+formula = "Use original compute_sue8: replace only unreported current cumulative parent profit by preliminary point; single quarters, seasonal delta q-q4, demean by prior8 deltas, sample std ddof=1; require consecutive quarters"
+selection = "Latest report period; express preferred to forecast only at same period if both basis-verified; no older-period fallback; do not use preliminary after final report becomes visible"
+future_periods = "Retain as observations; do not score report periods later than signal day; forecasts before period end are not corrupt solely for being forward forecasts"
+missing = "Undisclosed, unknown basis, ambiguous revisions, invalid ranges, unavailable income chain or zero std => null, never zero-fill"
+pipeline = "N1 input qualification -> N3 existing battery both variants and three costs -> N4 fixed controls; stop before battery if no qualified history"
+diagnostics = ["formal_months", "incremental_nw_t", "sue_rank_correlation", "january_ic"]
+controls = ["pit_sue8_context_v2", "ngp_804a131ba8cb5a88", "ngp_bbcc07585bc35fbe", "ngp_c8f096c17cdb7e19", "reversal_20", "report01_skip_month_momentum_n252", "amihud_illiquidity_monthly_calendar80_v1", "free_float_turnover_level_monthly_calendar80_v1", "market_beta_60_vs_510300", "ivol_ff3_60"]
+stop = "Insufficient/PIT-unverified is not statistical failure or admission. No new current download can recover historical first-arrival evidence. No v3 before full incremental admission. Do not enqueue an all-null placeholder."
+request_policy = "Read existing published snapshots only; no collection, no backdating, no repeated battery; later historical source requires its own real vintage evidence"
+
+[primary_sources]
+forecast = "https://tushare.pro/document/2?doc_id=45"
+express = "https://tushare.pro/document/2?doc_id=46"
