@@ -466,7 +466,7 @@ def collect(
             structured = {'status':'unavailable','error':str(exc)}
 
     return {
-        "worklist": worklist_progress(root, clock),
+        "worklist": worklist_progress(root, clock, history=history),
         "structured_incremental": structured,
         "orders": orders,
         "generated_at": clock.isoformat(),

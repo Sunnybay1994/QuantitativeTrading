@@ -26,7 +26,7 @@ def _read(root, path):
     return json.loads(source.read_text(encoding="utf-8"))
 
 
-def collect(root, clock):
+def collect(root, clock, *, history=None):
     if clock.tzinfo is None:
         raise ValueError("Worklist observation requires timezone-aware clock")
     try:
@@ -99,6 +99,7 @@ def collect(root, clock):
             research[name] = dict(path=path, receipt=_read(root, path))
         except (OSError, ValueError, KeyError, TypeError) as exc:
             research[name] = dict(path=path, issue=str(exc))
+    from quant.reporting.worklist_dated_observations import evaluate
     return dict(
         enabled=True,
         worklist_date="2026-11-09",
@@ -112,6 +113,7 @@ def collect(root, clock):
         a2=a2,
         research=research,
         acceptance_verified=False,
+        dated_observations=evaluate(root,clock,history),
         scope="Current receipts only. K2 natural month-end orders, A2 December fills/daily runs, "
         "D2 five real trading days, R5/R6 batteries and the second real monthly report remain to verify.",
     )
@@ -152,5 +154,8 @@ def markdown(result):
             f"- {name}：{state}；机器回执 `{row['path']}`。"
         )
     lines.extend("- 待核对：" + issue for issue in registry["issues"])
+    for name,row in result.get('dated_observations',{}).items():
+        lines.append(f"- 自然运行 {name}（{row['target_date']}）：{row['status']}"
+            +(f"；{row['issue']}" if row.get('issue') else '')+'。')
     lines.append("\n当前不宣告清单验收完成。" + result["scope"])
     return lines

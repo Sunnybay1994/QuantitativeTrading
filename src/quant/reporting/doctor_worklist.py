@@ -183,11 +183,11 @@ def _credibility(root):
         return {'issue': str(exc)}
 
 
-def collect(root, clock):
+def collect(root, clock, *, history=None):
     root = root.resolve()
     if (root/'docs/worklists/工作清单_20261109.md').is_file():
         from quant.reporting.doctor_worklist_20261109 import collect as current
-        return current(root, clock)
+        return current(root, clock, history=history)
     enabled = (root / 'docs/工作清单_20261102.md').is_file()
     result = {'enabled': enabled}
     if not enabled:
