@@ -46,19 +46,18 @@ def signal_targets(scores: pl.DataFrame, state: dict, following: dt.date) -> pl.
 
 
 def size_neutral_targets(scores: pl.DataFrame, state: dict, following: dt.date, config: dict,
-                        data_root: Path = Path('data')) -> pl.DataFrame:
+                        data_root: Path = Path('data'), transform=None) -> pl.DataFrame:
     """A5 b0.5_k50_size_on: same names, then |z|<=0.5 size band, then the 0.5 budget."""
     from quant.research.run_constrained_portfolio import prepare_constrained_hook
 
     paper = config['paper']
     targets = _ranked_selection(scores, state, following, paper['name'])
     policy = dict(paper['size_on_policy'])
-    transform, _, _ = prepare_constrained_hook(
-        scores=scores.rename({'prediction': 'score'}).with_columns(pl.col('trade_date')),
-        targets=targets, statistics=Path(paper['statistics']), policy=policy,
-        score_column='score', minimum_signal_stocks=int(policy['top_k']),
-        data_root=data_root,
-    )
+    if transform is None:
+        transform, _, _ = prepare_constrained_hook(
+            scores=scores.rename({'prediction': 'score'}).with_columns(pl.col('trade_date')),
+            targets=targets, statistics=Path(paper['statistics']), policy=policy,
+            score_column='score', minimum_signal_stocks=int(policy['top_k']), data_root=data_root)
     # prepare_constrained_hook reads score_column from the original frame's trade_date partition.
     adjusted, _info = transform(targets, state)
     return budget_targets(adjusted, state, budget=.5)
@@ -79,7 +78,9 @@ def load_forecast(folder: Path, date: dt.date, selection: Path, following: dt.da
 def run(*, config_path: Path = DEFAULT_CONFIG, data_root: Path = Path('data'),
         output: Path = Path('artifacts/paper/q10_sue_v2'), end: dt.date,
         forecast: Path | None = None, halt: bool | None = None,
-        sell_only: bool | None = None, as_month_end: bool = False) -> dict[str, Any]:
+        sell_only: bool | None = None, as_month_end: bool = False,
+        input_reader=None, calendar: pl.DataFrame | None = None, size_transform=None,
+        before_publish=None) -> dict[str, Any]:
     if as_month_end and 'rehearsal' not in output.resolve().parts:
         raise ValueError('Forced month-end requires an isolated rehearsal output')
     payload = config_path.read_text(encoding='utf-8')
@@ -120,7 +121,8 @@ def run(*, config_path: Path = DEFAULT_CONFIG, data_root: Path = Path('data'),
     last = dt.date.fromisoformat(state['date'])
     if end < last:
         raise ValueError('Cannot rewind Q10 account')
-    sessions = sorted(read_stock_paper_calendar(data_root).filter(pl.col('is_open'))['date'].unique().to_list())
+    calendar = read_stock_paper_calendar(data_root) if calendar is None else calendar
+    sessions = sorted(calendar.filter(pl.col('is_open'))['date'].unique().to_list())
     if as_month_end and (end not in sessions or last >= end):
         raise ValueError('Rehearsal requires an open session after the cloned snapshot')
     orders = pl.DataFrame(schema=ORDER_SCHEMA)
@@ -143,7 +145,7 @@ def run(*, config_path: Path = DEFAULT_CONFIG, data_root: Path = Path('data'),
             symbols |= set(scores['symbol'])
         result, inputs = None, None
         if symbols:
-            inputs = read_stock_paper_inputs(data_root, config, sorted(symbols), date)
+            inputs = (input_reader or read_stock_paper_inputs)(data_root, config, sorted(symbols), date)
             state, result = advance_stock_day(date=date, state=state, inputs=inputs, config=config)
         else:
             state['date'] = str(date)
@@ -152,7 +154,8 @@ def run(*, config_path: Path = DEFAULT_CONFIG, data_root: Path = Path('data'),
         state['pending'] = []
         if scores is not None:
             if shadow and paper.get('construction') == 'b0.5_k50_size_on':
-                pending = size_neutral_targets(scores, state, following, config, data_root=data_root)
+                pending = size_neutral_targets(scores, state, following, config, data_root=data_root,
+                                               **({'transform':size_transform} if size_transform is not None else {}))
             else:
                 pending = signal_targets(scores, state, following)
             state['pending'] = json.loads(pending.write_json())
@@ -163,6 +166,8 @@ def run(*, config_path: Path = DEFAULT_CONFIG, data_root: Path = Path('data'),
             state.update(rehearsal=True, conclusion='REHEARSAL', counts_toward_account_limit=False)
         state['controls_at_snapshot'] = dict(controls)
         orders = reference_orders(state, inputs, config) if inputs else pl.DataFrame(schema=ORDER_SCHEMA)
+        if before_publish is not None:
+            before_publish()
         _write_snapshot(output/str(date), state, orders, result, None)
     if state['pending'] and not orders.height:
         orders = pl.read_csv(output/state['date']/'orders.csv')
@@ -170,6 +175,8 @@ def run(*, config_path: Path = DEFAULT_CONFIG, data_root: Path = Path('data'),
             orders = orders.clear()
         elif controls['sell_only']:
             orders = orders.filter(pl.col('side') == 'SELL')
+    if before_publish is not None:
+        before_publish()
     _write_current_orders(output, orders, controls,
         f"{'规模中性影子' if shadow else 'Q10 SUE v2'}：{state['date']} 订单参考")
     summary = {'as_of': state['date'], 'conclusion': 'SHADOW' if shadow else 'PAPER_CANDIDATE',

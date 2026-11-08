@@ -71,6 +71,13 @@ def run(root=Path('data'), output=Path('artifacts/baostock_history'), max_second
             daily = None
             expected = {}
             for row in rows:
+                from quant.core.capital_window import CapitalPathPause, checkpoint as capital_checkpoint
+                try:
+                    capital_checkpoint(data_root=root)
+                except CapitalPathPause as exc:
+                    state.update(status='paused',pause_reason=str(exc))
+                    publish()
+                    return state
                 start = max(dt.date(year, 1, 1), listing(row), dt.date(1990, 12, 19))
                 stop = min(year_end, dt.date.fromisoformat(row['delist_date'])) if row.get('delist_date') else year_end
                 if start > stop:

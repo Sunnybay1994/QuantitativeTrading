@@ -13,6 +13,8 @@ def test_bounded_reservation_and_read_only_probe(tmp_path, case):
     script = tmp_path/'scripts/run_continuous_mining.ps1'
     script.parent.mkdir()
     script.write_bytes((Path(__file__).resolve().parents[2]/'scripts/run_continuous_mining.ps1').read_bytes())
+    shutil.copyfile(Path(__file__).resolve().parents[2]/'scripts/capital_path_window.ps1',
+                    script.parent/'capital_path_window.ps1')
     root = tmp_path/'artifacts/research/continuous'
     slots = {
         'active': ('2026-10-31T11:00:00', '2026-10-31T13:00:00'),

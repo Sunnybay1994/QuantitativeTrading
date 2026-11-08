@@ -1,11 +1,13 @@
-﻿param([switch]$CheckOnly, [string]$To, [switch]$WaitForWriter)
+﻿param([switch]$CheckOnly, [string]$To, [switch]$WaitForWriter, [ValidateRange(0,480)][int]$WriterWaitSeconds=480)
 $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $workspace
 $env:PYTHONPATH = Join-Path $workspace 'src'
 $env:POLARS_MAX_THREADS = '4'
 $env:PYTHONUTF8 = '1'
-# Scheduled tasks often lack user PATH; doctor --record-tests needs git.
+$env:QUANT_BACKGROUND_WRITER = '0'
+$pauseRequestId = $null
+# Scheduled tasks often lack the diagnostic tool PATH.
 $gitCandidates = @(
     'D:\Miniforge3\Library\mingw64\bin',
     'D:\Miniforge3\Library\bin',
@@ -53,11 +55,13 @@ try {
         exit $code
     }
     if (-not $CheckOnly) {
-        $waitDeadline = (Get-Date).AddHours(2)
+        $capitalTimer = [Diagnostics.Stopwatch]::StartNew()
+        $waitDeadline = (Get-Date).AddSeconds($WriterWaitSeconds)
         do {
-        $writers = @(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" |
-            Where-Object { $_.CommandLine -match 'quant research (daily|nightly|mining|cycle|gp)|quant data (refresh|minute-factors|baostock-history)|quant\.(data\.(refresh|refresh_minute_factors|intraday|baostock_history)|factors\.compute|research\.(continuous_mining|run_daily|scheduled_observation|run_factor_search|run_research_cycle|nightly|run_genetic_factor_search|run_constrained_portfolio|run_multifactor)|execution\.(stock_paper|q10_paper|paper_ledger|cross_asset_forward))' })
+        $writers = @(Get-CimInstance Win32_Process -OperationTimeoutSec 5 -Filter "Name='python.exe' OR Name='pythonw.exe'" |
+            Where-Object { $_.CommandLine -match 'quant paper (q10|top15-observation|order-chain)|quant research (daily|nightly|mining|cycle|gp)|quant data (refresh|minute-factors|baostock-history)|quant\.(data\.(refresh|refresh_minute_factors|intraday|baostock_history)|factors\.compute|research\.(continuous_mining|run_daily|scheduled_observation|run_factor_search|run_research_cycle|nightly|run_genetic_factor_search|run_constrained_portfolio|run_multifactor)|execution\.(stock_paper|q10_paper|paper_ledger|cross_asset_forward|top15_paper|account_30w[^)]*))' })
         if ($writers.Count -gt 0) {
+            $accountWriters = @($writers | Where-Object { $_.CommandLine -match 'quant paper|quant\.execution\.(stock_paper|q10_paper|paper_ledger|cross_asset_forward|top15_paper|account_30w)' })
             Write-Stage ('waiting_writer target=' + $requestedDate + ' pids=' + ($writers.ProcessId -join ','))
             # 17:30 only defers to the 21:30 slot when Q10 waits for execution inputs.
             # Exiting 2 here made LastTaskResult look like a failure.
@@ -65,8 +69,25 @@ try {
                 Write-Stage 'deferred_writer_until_evening'
                 exit 0
             }
-            if (-not $WaitForWriter -or (Get-Date) -ge $waitDeadline) { exit 2 }
-            Start-Sleep -Seconds 30
+            if (-not $pauseRequestId) {
+                $pauseRequest = & $python -m quant.core.capital_window request --to $requestedDate | ConvertFrom-Json
+                if ($LASTEXITCODE -ne 0) { throw 'Could not request cooperative writer pause' }
+                $pauseRequestId = $pauseRequest.request_id
+                Write-Stage ('capital_pause_requested id=' + $pauseRequestId)
+            }
+            if (-not $WaitForWriter -or (Get-Date) -ge $waitDeadline) {
+                Write-Stage 'writer_wait_budget_exhausted; frozen_order_fallback'
+                $remainingBudget = [Math]::Min(110,[Math]::Floor(590-$capitalTimer.Elapsed.TotalSeconds))
+                if ($remainingBudget -le 0) { Write-Stage 'capital_path_unavailable: no preparation budget'; exit 2 }
+                $fallbackArgs = @('-m','quant.execution.paper_order_fallback','--notify','--to',$requestedDate,'--budget-seconds',"$remainingBudget",'--output',($logFile+'.fallback'))
+                if ($accountWriters.Count -gt 0) { $fallbackArgs += '--account-writer' }
+                $fallbackCode = Invoke-Python $fallbackArgs -Append
+                Write-Stage ('frozen_order_fallback_exit=' + $fallbackCode + '; full_daily_not_run')
+                Notify-Failure 2
+                exit $fallbackCode
+            }
+            $remaining = ($waitDeadline - (Get-Date)).TotalSeconds
+            Start-Sleep -Milliseconds ([Math]::Max(1,[Math]::Min(5000,$remaining*1000)))
         }
         } while ($writers.Count -gt 0)
     }
@@ -84,22 +105,16 @@ try {
         if ($code -eq 0 -and $briefCode -ne 0) { $code = 1 }
     }
     if ($code -ne 2) { Notify-Failure $code }
-    # Keep the daily failure code; a failed fast suite must also fail the task.
-    # Doctor page first: --record-tests alone never writes artifacts/doctor, and an
-    # unbounded pytest previously held the task past ExecutionTimeLimit (267014).
+    # Full tests run independently at 00:30; diagnostics cannot hold paper orders.
     Write-Stage ('daily_exit=' + $code + ' doctor')
     Invoke-Python @('-m', 'quant', 'doctor', '--json', '--no-notify') -Append | Out-Null
-    Write-Stage 'doctor_record_tests_bounded'
-    $testCode = Invoke-Python @('-m', 'quant', 'doctor', '--record-tests') -Append
-    Write-Stage ('doctor_record_tests_exit=' + $testCode + ' doctor_refresh')
-    Invoke-Python @('-m', 'quant', 'doctor', '--json', '--no-notify') -Append | Out-Null
-    if ($code -eq 0 -and $testCode -ne 0) {
-        Notify-Failure $testCode
-        exit $testCode
-    }
     exit $code
 } catch {
     $_.Exception.Message | Out-File $logFile -Append -Encoding utf8
     Notify-Failure 1
     exit 1
+} finally {
+    if ($pauseRequestId) {
+        $null = & $python -m quant.core.capital_window release --request-id $pauseRequestId
+    }
 }

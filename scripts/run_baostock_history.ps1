@@ -7,10 +7,13 @@ $env:POLARS_MAX_THREADS = '2'
 $logs = Join-Path $workspace 'artifacts\baostock_history\scheduler'
 New-Item -ItemType Directory -Path $logs -Force | Out-Null
 $now = Get-Date
-# Evening daily observation owns 21:00-22:59 on exchange days. History is resumable next :25.
-if ($now.DayOfWeek -notin [DayOfWeek]::Saturday, [DayOfWeek]::Sunday -and $now.Hour -ge 21 -and $now.Hour -lt 23) {
+. (Join-Path $PSScriptRoot 'capital_path_window.ps1')
+$python = 'D:\Miniforge3\python.exe'
+$env:QUANT_BACKGROUND_WRITER = '1'
+# Trading-day 20:30-23:30 is reserved; cooperative workers release their locks.
+if (Test-CapitalPathPause) {
     $defer = Join-Path $logs ('deferred_' + $now.ToString('yyyyMMdd_HHmmss_fffffff') + '.json')
-    @{status='deferred'; updated_at=$now.ToString('o'); reason='Evening daily observation window; resume next hourly boundary'} |
+    @{status='deferred'; updated_at=$now.ToString('o'); reason='Capital path window or pause request; resume next hourly boundary'} |
         ConvertTo-Json | Set-Content -LiteralPath $defer -Encoding utf8
     exit 0
 }

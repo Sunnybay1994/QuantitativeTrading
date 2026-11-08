@@ -16,6 +16,8 @@ from pathlib import Path
 
 import polars as pl
 
+from quant.core.capital_window import CapitalPathPause, checkpoint as capital_checkpoint
+
 from quant.data.connectors.futu_history import history_page, history_quota
 from quant.data.connectors.futu_realtime import FutuRealtime
 from quant.data.futu_minute_backfill import download_range_merge, download_year
@@ -215,6 +217,11 @@ def run_same_day_topup(client, root: Path, end: str, settings: dict, status: dic
     atomic_json(Path(settings['output']) / 'same_day_plan.json',
                 dict(end=end, queue=queue, auto_trade=False))
     for item in queue:
+        try:
+            capital_checkpoint(data_root=root)
+        except CapitalPathPause as exc:
+            status['pause_reason']=str(exc)
+            break
         if time.monotonic() - began >= settings['max_seconds']:
             status['pause_reason'] = 'time_budget'
             break
@@ -239,6 +246,8 @@ def run_same_day_topup(client, root: Path, end: str, settings: dict, status: dic
             progress.setdefault(symbol, {}).update(
                 attempted_at=dt.datetime.now().isoformat(),
                 same_day_end=end)
+        except CapitalPathPause as exc:
+            status['pause_reason']=str(exc)
         except Exception as exc:
             status['same_day']['errors'].append(
                 dict(symbol=symbol, gap_start=item['gap_start'], error=str(exc)))
@@ -340,6 +349,11 @@ def run(config: Path, *, check_only=False):
             pending.sort(key=lambda m: (m['consumer_priority'], m['symbol'] not in charged,
                                         progress.get(m['symbol'], {}).get('attempted_at', '')))
             for item in pending:
+                try:
+                    capital_checkpoint(data_root=root)
+                except CapitalPathPause as exc:
+                    status['pause_reason']=str(exc)
+                    break
                 if time.monotonic() - began >= settings['max_seconds']:
                     status['pause_reason'] = 'time_budget'
                     break
@@ -364,6 +378,9 @@ def run(config: Path, *, check_only=False):
                         item['start'] = max(item['start'], first)
                         item['years'] = [year for year in item['years'] if year >= int(first[:4])]
                         status.setdefault('earliest_dates', {})[symbol] = first
+                    except CapitalPathPause as exc:
+                        status['pause_reason']=str(exc)
+                        break
                     except Exception as exc:
                         status['errors'].append(dict(symbol=symbol, stage='earliest_probe', error=str(exc)))
                         progress.setdefault(symbol, {}).update(attempted_at=dt.datetime.now().isoformat(),
@@ -371,6 +388,11 @@ def run(config: Path, *, check_only=False):
                         atomic_json(progress_path, progress)
                         continue
                 for year in item['years']:
+                    try:
+                        capital_checkpoint(data_root=root)
+                    except CapitalPathPause as exc:
+                        status['pause_reason']=str(exc)
+                        break
                     if time.monotonic() - began >= settings['max_seconds']:
                         status['pause_reason'] = 'time_budget'
                         break
@@ -385,6 +407,9 @@ def run(config: Path, *, check_only=False):
                             progress[symbol].setdefault('empty_years', {})[str(year)] = (
                                 dt.datetime.now()+dt.timedelta(days=7)).isoformat()
                             continue  # A suspended/empty year does not prove a history boundary.
+                    except CapitalPathPause as exc:
+                        status['pause_reason']=str(exc)
+                        break
                     except Exception as exc:
                         status['errors'].append(dict(symbol=symbol, year=year, error=str(exc)))
                         progress.setdefault(symbol, {}).update(attempted_at=dt.datetime.now().isoformat(), retry_start=start,

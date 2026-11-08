@@ -10,6 +10,8 @@ $logRoot = Join-Path $workspace 'artifacts\minute_refresh\scheduler'
 New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
 $logFile = Join-Path $logRoot ($kind + '_' + (Get-Date -Format 'yyyyMMdd_HHmmss_fffffff') + '.log')
 $python = 'D:\Miniforge3\python.exe'
+$env:QUANT_BACKGROUND_WRITER = '1'
+. (Join-Path $PSScriptRoot 'capital_path_window.ps1')
 function Invoke-LoggedPython([string[]]$PythonArguments) {
     # Windows PowerShell treats native stderr as an ErrorRecord; Stop can abort
     # at the first traceback line. Preserve all output and the native exit code.
@@ -18,6 +20,7 @@ function Invoke-LoggedPython([string[]]$PythonArguments) {
     return $LASTEXITCODE
 }
 function Invoke-MinuteFactors {
+    if (Test-CapitalPathPause) { exit 0 }
     # This stage publishes factor panels. It must yield to existing daily/model writers.
     $factorWriters = @(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" |
         Where-Object { $_.CommandLine -match 'quant research (daily|nightly|mining|cycle|gp)|quant data (refresh|minute-factors|minutes|minute-history|baostock-history)|quant\.(data\.(refresh|refresh_minute_factors|intraday|baostock_history|recent_minutes|minute_history)|factors\.compute|research\.(continuous_mining|nightly|run_daily|scheduled_observation|run_factor_search|run_genetic_factor_search|run_research_cycle|run_constrained|run_multifactor)|execution\.(q10_paper|stock_paper|paper_ledger|cross_asset_forward))|daily_recovery.+recover.py' })
@@ -35,6 +38,11 @@ function Invoke-MinuteFactors {
     return $factorCode
 }
 try {
+    if (Test-CapitalPathPause) {
+        @{status='deferred'; updated_at=(Get-Date).ToString('o'); reason='Capital path window or pause request'} |
+            ConvertTo-Json | Set-Content -LiteralPath (Join-Path $logRoot 'data_scheduler.json') -Encoding utf8
+        exit 0
+    }
     # Collection rewrites clean bar_intraday; yield while GP freeze is live.
     $miningWriters = @(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" |
         Where-Object { $_.CommandLine -match 'quant research (mining|nightly|cycle|gp)|quant\.research\.(continuous_mining|nightly|run_genetic_factor_search)' })
@@ -47,6 +55,7 @@ try {
     $null = Invoke-LoggedPython @('-m', 'quant.notify.automation_alert', '--task', $kind, '--code', "$dataCode", '--log', $logFile)
     if ($dataCode -ne 0) { exit $dataCode }
     $factorCode = Invoke-MinuteFactors
+    if (Test-CapitalPathPause) { exit 0 }
     $researchCode = Invoke-LoggedPython @('-m', 'quant', 'research', 'minutes')
     $null = Invoke-LoggedPython @('-m', 'quant.notify.automation_alert', '--task', '分钟策略研究', '--code', "$researchCode", '--log', $logFile)
     if ($dataCode -ne 0) { exit $dataCode }

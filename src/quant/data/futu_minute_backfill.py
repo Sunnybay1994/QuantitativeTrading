@@ -57,6 +57,8 @@ def fetch_history_pages(context: Any, symbol: str, start: str, end: str,
     page_key = None
     frames = []
     for page in range(1000):
+        from quant.core.capital_window import checkpoint as capital_checkpoint
+        capital_checkpoint()
         # Only initial pages are subject to the 60/30s history rate limit.
         if page == 0:
             time.sleep(2.1)
@@ -64,6 +66,7 @@ def fetch_history_pages(context: Any, symbol: str, start: str, end: str,
         raw = pl.from_pandas(frame)
         raw.write_parquet(raw_directory / f"page_{page:04d}.parquet", compression="zstd")
         frames.append(raw)
+        capital_checkpoint()
         if not page_key:
             break
     else:

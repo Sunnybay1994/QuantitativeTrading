@@ -211,6 +211,13 @@ def execute(config: Path, *, now: dt.datetime|None=None, run_path: Path|None=Non
     summary['step_order'] = list(order)
     dump(summary_path,summary)
     for step in order:
+        from quant.core.capital_window import CapitalPathPause, checkpoint as capital_checkpoint
+        try:
+            capital_checkpoint()
+        except CapitalPathPause as exc:
+            summary['steps'][step]={'ok':False,'error':'Time slice yielded for capital-path priority: '+str(exc)}
+            dump(summary_path,summary)
+            break
         folder=run/step
         folder.mkdir(exist_ok=True)
         result=folder/'result.json'

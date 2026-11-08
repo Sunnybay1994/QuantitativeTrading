@@ -11,6 +11,9 @@ $clock = Get-Date
 $hours = 2.0
 $reason = $null
 $python = 'D:\Miniforge3\python.exe'
+$env:QUANT_BACKGROUND_WRITER = '1'
+. (Join-Path $PSScriptRoot 'capital_path_window.ps1')
+if (Test-CapitalPathPause) { $reason = 'Capital path window or pause request' }
 # A dated, bounded data slot affects future launches only; active workers retain
 # their checkpoints and finish normally. Expiry restores research automatically.
 $reservationPath = Join-Path $root 'data_window.json'

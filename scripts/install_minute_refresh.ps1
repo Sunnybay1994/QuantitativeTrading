@@ -8,7 +8,7 @@ foreach ($kind in @('Recent', 'History')) {
     $arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -File "' + $script + '"'
     if ($kind -eq 'History') { $arguments += ' -History' }
     $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument $arguments -WorkingDirectory $workspace
-    $times = if ($kind -eq 'Recent') { @('16:10', '21:10') } else { @('22:10') }
+    $times = if ($kind -eq 'Recent') { @('16:10', '21:10') } else { @('23:35') }
     $triggers = @($times | ForEach-Object { New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At $_ })
     $existing = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
     if ($existing -and (@($existing.Actions).Count -ne 1 -or $existing.Actions.Arguments -ne $arguments)) { throw "Unexpected existing task: $name" }
