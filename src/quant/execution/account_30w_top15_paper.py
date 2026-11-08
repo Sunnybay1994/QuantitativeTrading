@@ -221,6 +221,8 @@ def _run(
     now=None,
     etf_reader=None,
     stock_reader=None,
+    calendar=None,
+    before_publish=None,
 ):
     now = now or dt.datetime.now(SHANGHAI)
     if now.tzinfo is None or end > now.date():
@@ -244,7 +246,7 @@ def _run(
         frozen.write_bytes(payload)
     controls = _controls(output, config["paper"], None, None)
     config["paper"].update(enabled=not controls["halt"], sell_only=controls["sell_only"])
-    calendar = read_stock_paper_calendar(data_root)
+    calendar = calendar if calendar is not None else read_stock_paper_calendar(data_root)
     sessions = sorted(calendar.filter(pl.col("is_open"))["date"].unique().to_list())
     if first not in sessions or end not in sessions:
         raise ValueError("Observation dates require actual open exchange sessions")
@@ -409,8 +411,12 @@ def _run(
             or bool(state.get("rehearsal")),
         )
         orders = reference_orders(state, book, following, config, controls)
+        if before_publish:
+            before_publish()
         save(output, state, book, orders, result, controls, dt.datetime.now(SHANGHAI))
     following = next(d for d in sessions if d > dt.date.fromisoformat(state["date"]))
+    if before_publish:
+        before_publish()
     return save(
         output,
         state,
@@ -433,6 +439,9 @@ def run(
     now=None,
     etf_reader=None,
     stock_reader=None,
+    calendar=None,
+    preflight=None,
+    before_publish=None,
 ):
     clock = now or dt.datetime.now(SHANGHAI)
     config = tomllib.loads(Path(config_path).read_text(encoding="utf-8"))
@@ -450,6 +459,8 @@ def run(
 
     Path(output).mkdir(parents=True, exist_ok=True)
     with instance_lock(Path(output) / "writer.lock"):
+        if preflight:
+            preflight()
         return _run(
             config_path=config_path,
             data_root=data_root,
@@ -460,6 +471,8 @@ def run(
             now=clock,
             etf_reader=etf_reader,
             stock_reader=stock_reader,
+            calendar=calendar,
+            before_publish=before_publish,
         )
 
 

@@ -190,6 +190,15 @@ def run(*, config=DEFAULT_CONFIG, end, output, account_writer=False, as_month_en
                     result['accounts'][name]['notification_error']=f'{type(exc).__name__}: {exc}'
         except Exception as exc:
             result['accounts'][name]=dict(status='unavailable',reason=f'{type(exc).__name__}: {exc}')
+    if settings.get('account_30w_top15'):
+        try:
+            from quant.execution.account_30w_top15_frozen import run as frozen_joint
+            observation=frozen_joint(settings['account_30w_top15'],end=end,
+                data_root=Path(settings.get('data_root','data')),output=output/'frozen/account_30w_top15',
+                deadline=deadline,account_writer=account_writer,as_month_end=as_month_end)
+        except Exception as exc:
+            observation=dict(status='unavailable',reason=f'{type(exc).__name__}: {exc}')
+        result['observation_accounts']={'account_30w_top15':observation}
     result['status']='complete' if result['accounts'] and all(x['status']=='complete' for x in result['accounts'].values()) else 'unavailable'
     result['elapsed_seconds']=time.monotonic()-began
     (output/'summary.json').write_text(json.dumps(result,indent=2),encoding='utf-8')
