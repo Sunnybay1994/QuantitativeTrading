@@ -1,6 +1,18 @@
 # 项目结构
 
-当前代码基线为 `5831562d`；结构整理不改变业务规则。长期规则见 [研究协议](RESEARCH_PROTOCOL.md)，数据见 [DATA](DATA.md)，操作见 [OPERATIONS](OPERATIONS.md)。
+本页说明当前包职责与目录用途；任务以[当前清单](worklists/工作清单_20261109.md)为准。11-06 的整理已合并至主线，未按文件名推断或迁移活跃代码。长期规则见[研究协议](RESEARCH_PROTOCOL.md)，数据见 [DATA](DATA.md)，操作见 [OPERATIONS](OPERATIONS.md)。
+
+## 维护入口
+
+| 路径 | 用途与边界 |
+|---|---|
+| `src/quant` | 活跃实现，统一入口为 `python -m quant` |
+| `scripts` | Windows 调度和操作入口，引用现有 CLI；不复制业务算法 |
+| `configs` | 运行配置与预注册；`configs/archive` 保留已归档配置原文 |
+| `tests` | 默认测试集合；测试产物写隔离目录 |
+| `legacy` | 已归档实现与测试；保留现有兼容 shim |
+| `docs` | 按用途分类的长期说明、当前清单和历史出处 |
+| `data` / `artifacts` | 数据与实际运行证据，不能当作实现代码或完成状态 |
 
 ## 包职责
 
@@ -20,7 +32,7 @@
 
 ## CLI 子命令
 
-统一入口 `python -m quant`。内建 `gpu-check`、`status`、`doctor`、`notify`、`intel scan`；下表按当前 `_DELEGATE` 生成。
+统一入口 `python -m quant`。内建 `gpu-check`、`status`、`doctor`、`notify`、`intel scan`；下表为 11-06 根据 `_DELEGATE` 生成的命令快照。新增命令及参数以当前 CLI 帮助为准。
 
 | 组 | 子命令 |
 |---|---|
@@ -32,7 +44,7 @@
 
 ## 调度脚本与入口
 
-按本机 2026-11-06 只读任务快照生成，包含全部 14 个 Quant 任务；不修改任务。
+下表是本机 2026-11-06 的 14 个 Quant 任务快照，不代表后续调度改造已经部署。当前任务及时间以 Windows 计划任务和 [OPERATIONS](OPERATIONS.md) 为准；本轮改造范围见清单 K2。
 
 | 任务 | 脚本 | 入口 |
 |---|---|---|
@@ -73,4 +85,4 @@
 | `artifacts/runtime` | 本地锁与运行状态 |
 | `artifacts/worklog` | 实际日期工作记录 |
 
-`legacy/quant` 已归档实现由现有 shim 保持导入兼容。当前可达的 m3/formal 等模块保留；不按文件名猜测死代码。文档位于 data、operations、reviews、worklists、research、archive；旧清单路径保留跳转入口供自动化使用。
+`legacy/quant` 已归档实现由现有 shim 保持导入兼容。当前可达的 m3/formal 等模块保留；不按文件名猜测死代码。文档位于 data、operations、reviews、worklists、research、archive；[文档目录](README.md)说明各类资料的用途。过程记录只写 `artifacts/worklog/<实际日期>.md`，当前清单每项只写一行状态；旧清单路径保留跳转入口供自动化使用。

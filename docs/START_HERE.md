@@ -1,14 +1,14 @@
 # 接手
 
-先读根目录 [AGENTS.md](../AGENTS.md)，再读 [OPERATIONS.md](OPERATIONS.md) 和路线图 §1.0.3 / §1.0.4 / §1.2。
+先读根目录 [AGENTS.md](../AGENTS.md) 和[当前工作清单](worklists/工作清单_20261109.md)，再按需读 [OPERATIONS.md](OPERATIONS.md) 与路线图 §1.0.3 / §1.0.4 / §1.2。当前清单是唯一任务源；[11-08 审查](reviews/项目审查_20261108.md)解释本轮依据。
 
 1. `git status` 与最近提交，保留他人未提交改动。
 2. `python -m quant status` 与计划任务；已有挖掘/日更在跑就不要再开一份。
-3. 按路线图做下一件未完成的事，不要重复已完成的 R 任务；[优化工作清单_20261009](archive/worklists/优化工作清单_20261009.md) 四周总验收已于 2026-10-13 闭合，勿重做其已验收项。
+3. 按当前清单的优先级推进，不另开审查建议中的任务。旧清单仅作出处；11-02 清单已关闭，其月底订单观测并入本轮 K2。清单以外建议写入路线图 §5，等待用户裁定。
 4. 新实验用版本化 config + 新 run 目录。
 5. 数字只来自机器 report 和排行榜。
 
-环境、调度、恢复、证据位置的细节都在 [OPERATIONS.md](OPERATIONS.md)。架构在 [ARCHITECTURE.md](ARCHITECTURE.md)。判定在 [RESEARCH_PROTOCOL.md](RESEARCH_PROTOCOL.md)。
+环境、调度、恢复、证据位置的细节都在 [OPERATIONS.md](OPERATIONS.md)。包、CLI 和运行目录先看 [STRUCTURE.md](STRUCTURE.md)，依赖边界看 [ARCHITECTURE.md](ARCHITECTURE.md)，研究判定看 [RESEARCH_PROTOCOL.md](RESEARCH_PROTOCOL.md)。各类资料入口见[文档目录](README.md)。
 
 ## 文档维护约定
 

@@ -87,5 +87,5 @@ D:\Miniforge3\python.exe -m quant paper manual demo --output artifacts/manual/de
 |通知接入和发送方法|[通知接入指南](docs/operations/NOTIFICATIONS.md)|
 |后台启动、调度与故障恢复|[运维说明](docs/OPERATIONS.md)|
 |研究结果|[研究排行榜](docs/research/排行榜.md)|
-|项目进度和后续工作|[项目路线图](项目实施路线图.md)|
+|项目进度和后续工作|[当前工作清单](docs/worklists/工作清单_20261109.md)、[项目路线图](项目实施路线图.md)|
 |开发维护、架构和研究规则|[文档目录](docs/README.md)|
