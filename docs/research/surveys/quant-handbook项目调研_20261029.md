@@ -2,6 +2,8 @@
 
 调研日期：2026-10-29。对象：[QuantMLResearch/quant-handbook](https://github.com/QuantMLResearch/quant-handbook)。
 
+2026-11-08 已复核上游版本并补充当前本地实现对照，见[复核与借鉴路径](quant-handbook复核与借鉴路径_20261108.md)。本文保留原始调研日期及核验边界。
+
 外部源码固定版本：`29665c79e83aad17aba971721e2f28882630bc25`。GitHub API 返回该提交的 committer 时间为 `2026-10-29 07:37:31 UTC`。本报告的源码链接固定到该提交，后续版本变化须另行核对。
 
 本地对照：调研时 HEAD 为 `9bc575ca1a45ba0888ed9abc21a4bff8e4b95c52`，结合当前工作区的研究协议、相关模块与文档。已有 QuantMind 调研和排行榜修改保留；本次仅新增本文及导航。
