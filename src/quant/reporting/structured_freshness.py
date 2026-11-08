@@ -63,23 +63,34 @@ def build_status(*, data_root=Path('data'), config=Path('configs/data/structured
         if (attempt.get('status') in {'error', 'partial_budget', 'deferred', 'rate_limited', 'permission_denied'} and
                 (not checked.get('checked_at') or attempt_at >= checked['checked_at'])):
             status = attempt['status']
-        actual_checked_days = set()
+        actual_checked_days, actual_query_days, successful_observations = set(), set(), []
         local = dt.timezone(dt.timedelta(hours=8))
         for stamp, states in attempts:
             item = states.get(table, {})
-            if item.get('status') not in {'captured', 'checked_empty'}:
+            checked_success = item.get('status') in {'captured', 'checked_empty'}
+            trial_query_success = item.get('status') == 'permission_limited' and bool(item.get('published'))
+            if not (checked_success or trial_query_success):
                 continue
             run_day = dt.datetime.fromisoformat(stamp).astimezone(local).date()
-            observed_days = {dt.datetime.fromisoformat(request['observed_at']).astimezone(local).date()
-                             for request in item.get('requests', {}).values()}
+            observations = [dt.datetime.fromisoformat(request['observed_at'])
+                            for request in item.get('requests', {}).values()]
+            observed_days = {observed.astimezone(local).date() for observed in observations}
+            successful_observations.extend(observations)
             if run_day in observed_days:
-                actual_checked_days.add(run_day)
+                actual_query_days.add(run_day)
+                if checked_success:
+                    actual_checked_days.add(run_day)
         trailing = list(reversed([day for day in calendar if day <= as_of]))
         consecutive = 0
         for day in trailing:
             if day not in actual_checked_days:
                 break
             consecutive += 1
+        consecutive_queries = 0
+        for day in trailing:
+            if day not in actual_query_days:
+                break
+            consecutive_queries += 1
         rows.append({'table': table, 'status': status, 'latest_date': str(latest) if latest else None,
             'rows_on_as_of': len(today_ids), 'observed_rows_in_versions': total,
             'event_age_calendar_days': (as_of-latest).days if latest else None,
@@ -87,6 +98,10 @@ def build_status(*, data_root=Path('data'), config=Path('configs/data/structured
             'checked_through': covered, 'checked_at': checked.get('checked_at'),
             'last_attempt_status': attempt.get('status'), 'last_attempt_at': attempt_at,
             'consecutive_real_checked_trading_days': consecutive,
+            'consecutive_real_query_trading_days': consecutive_queries,
+            'successful_query_calendar_days': sorted(map(str, actual_query_days)),
+            'last_successful_query_at': max(successful_observations).isoformat() if successful_observations else None,
+            'query_audit_proves_full_coverage': False,
             'check_lag_sessions': lag, 'scope': rule['scope'],
             'availability_rule': rule['availability'], 'historical_vintage_verified': False})
     lagged = [r for r in rows if r['check_lag_sessions'] is not None]
@@ -98,5 +113,6 @@ def build_status(*, data_root=Path('data'), config=Path('configs/data/structured
 
 def render_lines(status):
     return [f"{r['table']}: {r['status']}; latest={r['latest_date']}; today_rows={r['rows_on_as_of']}; "
-            f"checked={r['checked_through']}; lag_sessions={r['check_lag_sessions']}; {r['scope']}"
+            f"checked={r['checked_through']}; lag_sessions={r['check_lag_sessions']}; "
+            f"query_days={r.get('consecutive_real_query_trading_days', 0)} (查询记录，不证明全覆盖); {r['scope']}"
             for r in status['tables']]

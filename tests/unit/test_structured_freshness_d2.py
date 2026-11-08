@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 import polars as pl
+import pytest
 
 from quant.data import structured_incremental as module
 from quant.reporting.structured_freshness import build_status, render_lines
@@ -89,3 +90,53 @@ def test_cached_pages_cannot_fake_five_real_collection_days(tmp_path):
         record['tables']['forecast']['requests']['page']['observed_at'] = record['finished_at']
         p.write_text(json.dumps(record))
     assert report()['five_real_trading_days_verified'] is True
+
+
+def test_trial_query_days_are_audited_without_passing_coverage_gate(tmp_path):
+    args, _ = setup(tmp_path, ['report_rc'])
+    folder = tmp_path/'receipts'
+    for day in range(2, 7):
+        path = folder/str(day)
+        path.mkdir(parents=True)
+        stamp = f'2026-11-{day:02}T10:00:00+00:00'
+        (path/'summary.json').write_text(json.dumps({'finished_at': stamp,
+            'tables': {'report_rc': {'status': 'permission_limited', 'published': 'immutable_snapshot',
+                'requests': {'page': {'observed_at': stamp}}}}}))
+    report = build_status(data_root=tmp_path, config=args['config'],
+        as_of=dt.date(2026, 11, 6), now=NOW, receipt_root=folder)
+    row = report['tables'][0]
+    assert row['status'] == 'permission_limited'
+    assert row['consecutive_real_query_trading_days'] == 5
+    assert row['consecutive_real_checked_trading_days'] == 0
+    assert row['last_successful_query_at'] == '2026-11-06T10:00:00+00:00'
+    assert not row['query_audit_proves_full_coverage']
+    assert not report['five_real_trading_days_verified']
+
+
+@pytest.mark.parametrize('status,published', [('partial_budget', True), ('permission_limited', False), ('error', False)])
+def test_unfinished_trial_queries_do_not_count_as_completed_days(tmp_path, status, published):
+    args, _ = setup(tmp_path, ['report_rc'])
+    path = tmp_path/'receipts/one'
+    path.mkdir(parents=True)
+    stamp = '2026-11-06T10:00:00+00:00'
+    (path/'summary.json').write_text(json.dumps({'finished_at': stamp,
+        'tables': {'report_rc': {'status': status, 'published': published,
+            'requests': {'page': {'observed_at': stamp}}}}}))
+    row = build_status(data_root=tmp_path, config=args['config'], as_of=dt.date(2026, 11, 6),
+        now=NOW, receipt_root=path.parent)['tables'][0]
+    assert row['consecutive_real_query_trading_days'] == 0
+    assert row['last_successful_query_at'] is None
+
+
+def test_trial_seed_pages_do_not_count_as_current_query_day(tmp_path):
+    args, _ = setup(tmp_path, ['report_rc'])
+    path = tmp_path/'receipts/seeded'
+    path.mkdir(parents=True)
+    (path/'summary.json').write_text(json.dumps({'finished_at': '2026-11-06T10:00:00+00:00',
+        'tables': {'report_rc': {'status': 'permission_limited', 'published': 'immutable_snapshot',
+            'requests': {'page': {'observed_at': '2026-11-02T10:00:00+00:00'}}}}}))
+    row = build_status(data_root=tmp_path, config=args['config'], as_of=dt.date(2026, 11, 6),
+        now=NOW, receipt_root=path.parent)['tables'][0]
+    assert row['consecutive_real_query_trading_days'] == 0
+    assert row['successful_query_calendar_days'] == []
+    assert row['consecutive_real_checked_trading_days'] == 0
