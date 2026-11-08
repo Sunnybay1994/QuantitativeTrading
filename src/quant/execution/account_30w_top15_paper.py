@@ -574,6 +574,8 @@ def main():
             as_month_end=args.as_month_end,
         )
     print(json.dumps(result, ensure_ascii=False))
+    if args.notify_due and result['status'] != 'not_due' and not result.get('transport_accepted'):
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

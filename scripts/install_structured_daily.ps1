@@ -20,7 +20,7 @@ $existing = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
 if ($existing) {
     $backup = Join-Path $workspace ('artifacts\maintenance\d2_tasks\' + (Get-Date -Format 'yyyyMMddTHHmmss_fffffff'))
     New-Item -ItemType Directory -Path $backup -Force | Out-Null
-    Export-ScheduledTask -TaskName $name | Set-Content -LiteralPath (Join-Path $backup 'before.xml') -Encoding UTF8
+    Export-ScheduledTask -TaskName $name | Set-Content -LiteralPath (Join-Path $backup 'before.xml') -Encoding Unicode
 }
 Register-ScheduledTask -TaskName $name -InputObject $task -Force | Out-Null
 $saved = Get-ScheduledTask -TaskName $name

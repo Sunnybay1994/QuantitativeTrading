@@ -49,8 +49,12 @@ try {
     # Read-only prior-session context has its own lock and source-change guard;
     # it does not need the account/factor writer slot used by the evening run.
     if (-not $CheckOnly -and -not $requestedDate -and (Get-Date).Hour -lt 12) {
+        Write-Stage 'account_30w_manual_rehearsal_notification'
+        $notifyCode = Invoke-Python @('-m','quant','paper','account-30w-top15','--notify-due') -Append
+        Write-Stage ('account_30w_notification_exit=' + $notifyCode)
         Write-Stage 'market_context'
         $code = Invoke-Python @('-m', 'quant.research.daily_market_context') -Append
+        if ($code -eq 0 -and $notifyCode -ne 0) { $code = $notifyCode }
         Notify-Failure $code
         exit $code
     }
@@ -59,7 +63,7 @@ try {
         $waitDeadline = (Get-Date).AddSeconds($WriterWaitSeconds)
         do {
         $writers = @(Get-CimInstance Win32_Process -OperationTimeoutSec 5 -Filter "Name='python.exe' OR Name='pythonw.exe'" |
-            Where-Object { $_.CommandLine -match 'quant paper (q10|top15-observation|order-chain)|quant research (daily|nightly|mining|cycle|gp)|quant data (refresh|minute-factors|baostock-history)|quant\.(data\.(refresh|refresh_minute_factors|intraday|baostock_history)|factors\.compute|research\.(continuous_mining|run_daily|scheduled_observation|run_factor_search|run_research_cycle|nightly|run_genetic_factor_search|run_constrained_portfolio|run_multifactor)|execution\.(stock_paper|q10_paper|paper_ledger|cross_asset_forward|top15_paper|account_30w[^)]*))' })
+            Where-Object { $_.CommandLine -match 'quant paper (q10|top15-observation|account-30w-top15|order-chain)|quant research (daily|nightly|mining|cycle|gp)|quant data (refresh|minute-factors|baostock-history)|quant\.(data\.(refresh|refresh_minute_factors|intraday|baostock_history)|factors\.compute|research\.(continuous_mining|run_daily|scheduled_observation|run_factor_search|run_research_cycle|nightly|run_genetic_factor_search|run_constrained_portfolio|run_multifactor)|execution\.(stock_paper|q10_paper|paper_ledger|cross_asset_forward|top15_paper|account_30w[^)]*))' })
         if ($writers.Count -gt 0) {
             $accountWriters = @($writers | Where-Object { $_.CommandLine -match 'quant paper|quant\.execution\.(stock_paper|q10_paper|paper_ledger|cross_asset_forward|top15_paper|account_30w)' })
             Write-Stage ('waiting_writer target=' + $requestedDate + ' pids=' + ($writers.ProcessId -join ','))

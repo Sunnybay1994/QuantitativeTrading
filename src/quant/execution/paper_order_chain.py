@@ -86,6 +86,11 @@ def run(*, config: Path = DEFAULT_CONFIG, end: dt.date,
         receipt['observation_accounts'] = {'top15': observe_from_daily(
             settings['top15_observation'], end=end,
             data_root=Path(settings.get('data_root', 'data')), forecast=forecast)}
+    if settings.get('account_30w_top15'):
+        from quant.execution.account_30w_top15_paper import observe_from_daily as observe_joint
+        receipt.setdefault('observation_accounts', {})['account_30w_top15'] = observe_joint(
+            settings['account_30w_top15'], end=end,
+            data_root=Path(settings.get('data_root', 'data')), forecast=forecast)
     receipt['status'] = 'complete' if receipt['accounts'] and all(
         r['status'] == 'complete' for r in receipt['accounts'].values()) else 'failed'
     save()
