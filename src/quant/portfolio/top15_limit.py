@@ -4,7 +4,9 @@ import math
 import polars as pl
 
 
-def targets(*, scores, previous, closes, equity, execution_date):
+def targets(*, scores, previous, closes, equity, execution_date, maximum_new_names=None):
+    if maximum_new_names not in (None, 7) or isinstance(maximum_new_names,bool):
+        raise ValueError('R4 fixes seven new selected names; the default remains unrestricted')
     if (scores.is_empty() or scores['trade_date'].n_unique()!=1 or scores['symbol'].is_duplicated().any()
             or not scores['prediction'].is_finite().all() or not math.isfinite(equity) or equity<=0):
         raise ValueError('Require unique finite same-date forecasts and positive equity')
@@ -22,6 +24,10 @@ def targets(*, scores, previous, closes, equity, execution_date):
     for count in range(min(15,len(candidates)),0,-1):
         proposed=min(1/count,.08)
         eligible=[s for s in candidates if 100*closes[s]<=equity*proposed*.5]
+        if maximum_new_names is not None:
+            old=[s for s in eligible if s in previous]
+            new=[s for s in eligible if s not in previous][:maximum_new_names]
+            eligible=old+new
         if len(eligible)>=count:
             selected,weight=eligible[:count],proposed
             break

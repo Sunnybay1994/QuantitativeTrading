@@ -1,0 +1,70 @@
+id = "top15_pessimistic_fill_v1"
+registered_on = 2026-11-08
+auto_trade = false
+capital_cny = 300000
+predictions = "artifacts/models/q2_sue_context_v2_causal48_20260912_02/predictions"
+q10_control = "artifacts/research/account_portfolio_q10_300k_20261104_01"
+execution_source = "artifacts/models/q10_sue_v2_turnover_budget_05_20260912_01"
+return_benchmark_config = "configs/data/return_benchmarks_q1b_20260912.toml"
+start = 2019-01-01
+end = 2026-08-31
+cost_multipliers = [0.5, 1.0, 2.0]
+scenarios = ["pessimistic_1pct"]
+evidence = "Historical development replay; preserve subsequent forward evidence separately"
+
+[selection]
+buy_rank_at_most = 15
+retain_rank_at_most = 30
+maximum_selected_names = 15
+rank_order = "prediction descending, symbol ascending"
+new_buys = "retain prior selected names still ranked <=30, fill remaining places only from ranks <=15"
+single_stock_weight_cap = 0.08
+weights = "equal weight across selected names, capped at 8%; residual cash not redistributed above cap"
+lot_size = 100
+maximum_lot_fraction_of_stock_budget = 0.5
+lot_reference = "signal-day unadjusted close; one lot must be <= half of that name's intended stock budget"
+insufficient_names = "retain unallocated cash, no widening rank or price eligibility"
+rebalance = "month_end_close_next_exchange_session"
+no_extra_turnover_budget = true
+
+[execution]
+enabled_by_default = false
+limit_offsets = [0.01, 0.03]
+quote_tick_cny = 0.01
+quote_rounding = "buy floor, sell ceil; conservative legal quote normalization, including announced corporate actions"
+price_anchor = "original signal-day unadjusted close; unchanged during all retry sessions"
+buy = "open <= limit: open; otherwise low <= limit: limit; otherwise no fill"
+sell = "open >= limit: open; otherwise high >= limit: limit; otherwise no fill"
+maximum_attempt_sessions = 3
+attempt_count = "first scheduled session plus at most two following exchange sessions"
+unfilled_buy = "cash retained; carry only remaining original share quantity, never add a second copy"
+unfilled_sell = "shares retained; carry only remaining original share quantity"
+new_signal = "cancel previous outstanding targets before replacing; never duplicate a fill"
+corporate_action_during_retry = "adjust quantities and price consistently using announced action; fail if unsupported"
+permissions = "existing suspension, official price limits, settlement, lot and liquidity rules remain in force"
+open_full_fill = "existing opening-price replay as control; real suspension/price-limit/affordability restrictions still apply"
+costs = "same frozen A-share model at each multiplier, applied once per actual fill; no fees for rejected/unfilled orders"
+
+[measurement]
+window = "common continuous first-holding interval with Q10 Top50; report cash and rejected attempts"
+fill_rate = "filled original shares divided by originally submitted shares, by side and combined; also report order count rate"
+slippage_to_open = "signed filled notional difference versus same-session opening reference, divided by filled open-reference notional"
+opportunity_loss = "paired net CAGR and terminal equity difference versus open_full_fill, same dates and cost"
+admission = "unchanged 项目实施路线图.md section 1.2 single-strategy gates and all three costs"
+stress = "same predefined continuous pressure windows; mark all-cash windows not applicable"
+no_parameter_search = true
+
+[r4]
+kind = "pessimistic_fill"
+parent_config = "configs/research/top15_limit_v1.toml"
+parent_config_sha256 = "0f0472babd95f96ca80bcd9aa079c228d85e4b21b38e4c1488cd4807bd1aacb4"
+baseline_run = "artifacts/research/top15_limit_v1_20261104_02"
+registered_at = "2026-11-08T15:52:48.355215+08:00"
+price_penetration_ticks = 1
+liquidity_notional_multiple = 20
+notional = "current original remaining attempt shares after announced corporate actions times the actual adjusted gross limit quote; CNY"
+price_test = "buy low <= limit minus one 0.01 CNY tick; sell high >= limit plus one tick"
+volume_test = "same-session traded amount >= 20 times attempted order notional; inclusive boundary"
+application = "daily fill-feasibility stress veto only; never used in signal, ranking, target weights or opening-order decisions"
+blocked_attempt = "still consumes one of the original three attempt sessions; never extend or resubmit a fresh quantity"
+missing_current_bar = "leave to original tradability rejection, never authorize using a stale mark"
