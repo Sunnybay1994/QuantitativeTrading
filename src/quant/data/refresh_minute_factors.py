@@ -8,8 +8,28 @@ from pathlib import Path
 from quant.data.refresh import (SHANGHAI, completed_date, latest_session, refresh_factor_selection,
                                 refresh_factors)
 from quant.data.refresh_progress import RefreshProgress
+from quant.data.factor_panels import read_coverage
 from quant.factors.library import load_library
 from quant.research.factor_intraday import minute_input_names
+
+
+def contiguous_rebuild_start(data_root: Path, names: list[str], start: dt.date,
+                             end: dt.date) -> tuple[dt.date, list[dict]]:
+    """Bridge missed maintenance dates rather than advertise an uncomputed hole."""
+    bridges = []
+    for year in range(start.year, end.year + 1):
+        for name in [*names, 'forward_returns']:
+            coverage = read_coverage(data_root, name, year)
+            if not coverage:
+                continue
+            next_day = dt.date.fromisoformat(coverage['end']) + dt.timedelta(days=1)
+            low = max(start, dt.date(year, 1, 1))
+            if next_day < low and next_day.year == year:
+                bridges.append({'panel': name, 'previous_end': coverage['end'],
+                                'rebuild_from': str(next_day)})
+    if bridges:
+        start = min(start, *(dt.date.fromisoformat(row['rebuild_from']) for row in bridges))
+    return start, bridges
 
 
 def run(*, config: Path, data_root: Path, artifact_root: Path, output: Path,
@@ -46,6 +66,8 @@ def run(*, config: Path, data_root: Path, artifact_root: Path, output: Path,
         result['minutes'] = minutes
         if minutes.get('stock_alternate_from'):
             start = min(start, dt.date.fromisoformat(minutes['stock_alternate_from']))
+        start, bridges = contiguous_rebuild_start(data_root, names, start, end)
+        result['coverage_bridges'] = bridges
         result['rebuild_start'] = str(start)
         # A prior run may have materialized nulls before late minute bars arrived.
         # The existing engine loads rolling warmup before this bounded rebuild.
@@ -55,7 +77,7 @@ def run(*, config: Path, data_root: Path, artifact_root: Path, output: Path,
             minute_start=start)
         result['status'] = 'partial' if minutes.get('errors') else 'computed'
     except Exception as exc:
-        result.update(status='failed', error_type=type(exc).__name__)
+        result.update(status='failed', error_type=type(exc).__name__, error=str(exc))
         raise
     finally:
         (output/'summary.json').write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str), encoding='utf-8')

@@ -63,4 +63,46 @@ def test_alternate_late_bars_extend_rebuild_and_failure_preserves_receipt(tmp_pa
         module.run(**args, collect=True)
     result = json.loads((args['output']/'summary.json').read_text())
     assert result['status'] == 'failed' and result['error_type'] == 'ValueError'
+    assert result['error'] == 'factor computation failed'
     assert result['rebuild_start'] == '2026-09-10'
+
+
+def test_missed_maintenance_bridges_saved_panel_without_disjoint_write(tmp_path, monkeypatch):
+    import polars as pl
+    from quant.data.factor_panels import write_panel, read_coverage
+    args = setup(tmp_path, monkeypatch)
+    old_day = dt.date(2026, 9, 10)
+    old = pl.DataFrame({'ts_code': ['600000.SH'], 'trade_date': [old_day], 'value': [1.0]})
+    write_panel(tmp_path, 'minute', 2026, old, old_day, old_day)
+
+    def factors(**kw):
+        low = dt.date.fromisoformat(kw['settings']['start'])
+        assert low == kw['minute_start'] == dt.date(2026, 9, 11)
+        dates = [low + dt.timedelta(days=n) for n in range((kw['end'] - low).days + 1)]
+        incoming = pl.DataFrame({'ts_code': ['600000.SH'] * len(dates),
+                                'trade_date': dates, 'value': [2.0] * len(dates)})
+        write_panel(tmp_path, 'minute', 2026, incoming, low, kw['end'])
+        return {'years': [2026]}
+
+    monkeypatch.setattr(module, 'refresh_factors', factors)
+    result = module.run(**args)
+    assert result['status'] == 'computed'
+    assert result['coverage_bridges'] == [{'panel': 'minute', 'previous_end': str(old_day),
+                                          'rebuild_from': '2026-09-11'}]
+    assert read_coverage(tmp_path, 'minute', 2026)['start'] == str(old_day)
+    saved = pl.read_parquet(tmp_path/'factors/minute/year=2026/data.parquet')
+    assert saved.filter(pl.col('trade_date') == old_day)['value'].item() == 1.0
+    assert saved.height == 20
+
+
+def test_bridge_includes_engine_labels_and_does_not_extend_current_panels(tmp_path):
+    folder = tmp_path/'factors/forward_returns/year=2026'
+    folder.mkdir(parents=True)
+    (folder/'data.parquet').touch()
+    (folder/'coverage.json').write_text(json.dumps({'start': '2026-01-01', 'end': '2026-10-21'}))
+    start, bridges = module.contiguous_rebuild_start(tmp_path, ['minute'],
+        dt.date(2026, 10, 30), dt.date(2026, 11, 5))
+    assert start == dt.date(2026, 10, 22)
+    assert bridges[0]['panel'] == 'forward_returns'
+    assert module.contiguous_rebuild_start(tmp_path, ['minute'],
+        dt.date(2026, 10, 20), dt.date(2026, 11, 5)) == (dt.date(2026, 10, 20), [])
