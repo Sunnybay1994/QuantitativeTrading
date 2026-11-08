@@ -93,6 +93,7 @@ def collect(root, clock):
     research = {}
     for name, path in {
         "R5": "artifacts/research/r5_preliminary_20261108_03/summary.json",
+        "R6": "artifacts/research/event_family_r6_20261108_02/summary.json",
     }.items():
         try:
             research[name] = dict(path=path, receipt=_read(root, path))
@@ -145,8 +146,10 @@ def markdown(result):
         )
     for name, row in result["research"].items():
         receipt = row.get("receipt", {})
+        state = receipt.get('status') or ('统计验收未完成' if receipt.get('acceptance_complete') is False
+            else row.get('issue','待核对'))
         lines.append(
-            f"- {name}：{receipt.get('status', row.get('issue', '待核对'))}；机器回执 `{row['path']}`。"
+            f"- {name}：{state}；机器回执 `{row['path']}`。"
         )
     lines.extend("- 待核对：" + issue for issue in registry["issues"])
     lines.append("\n当前不宣告清单验收完成。" + result["scope"])
