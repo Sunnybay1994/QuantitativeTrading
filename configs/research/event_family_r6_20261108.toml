@@ -1,0 +1,28 @@
+id = "event_family_r6_20261108"
+parent = "configs/research/event_family_v1.toml"
+registered_on = 2026-11-08
+authorization = "docs/worklists/工作清单_20261109.md R6; Tech Lead freezes definitions before metrics"
+auto_trade = false
+battery = "configs/factors/battery.toml"
+historical_inputs = "artifacts/factors/battery_statistics_20260831_20260911/inputs"
+start = 2010-01-01
+end = 2026-08-31
+data_root = "data"
+variants = ["raw", "size_industry_neutral"]
+cost_multipliers = [0.5, 1.0, 2.0]
+windows_calendar_days = [30, 90]
+signals = ["repurchase_strength_30d", "repurchase_strength_90d", "insider_net_buy_30d", "insider_net_buy_90d", "unlock_pressure_30d", "unlock_pressure_90d", "holder_count_qoq", "holder_count_yoy", "analyst_eps_revision_30d", "analyst_eps_revision_90d"]
+directions = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+eligibility = "max(available_at,observed_at) <= actual signal close; old announcement dates never replace observed vintage"
+missing = "missing source/amount/price/identity/comparison stays null; absent records do not prove zero event exposure"
+repurchase = "30/90-day completed paid amount CNY / signal-close market cap CNY; repeated cumulative progress not summed; latest completed terms per symbol,end_date; conflicting same-publication terms missing"
+insider = "30/90-day sum(IN change_vol*avg_price - DE change_vol*avg_price) / signal-close market cap; unknown positive price missing; multiple distinct versions at same symbol,ann_date,holder_name,holder_type,in_de remain ambiguous"
+unlock = "negative sum(float_ratio/100) for announced float_date strictly after signal date and <= signal date+30/90 days; latest revision per symbol,float_date,holder_name,share_type; different holders may sum; no clipping invalid percentages"
+holder_count_qoq = "-log(latest holder_num / previous different report end_date holder_num); report end_date not after signal date"
+holder_count_yoy = "-log(latest holder_num / same month/day report end_date one year earlier holder_num); absent exact match missing"
+analyst = "same ts_code,org_name,author_name,quarter EPS adjacent announced revisions; (EPS_new-EPS_prev)/abs(EPS_prev); prior zero or unknown author/period missing; newest revision per org in 30/90 days, median across orgs; no cross-financial-period subtraction"
+analyst_period = "native quarter must explicitly match YYYYQ1..YYYYQ4; exact joint author string, no inferred or split identity"
+control_source = "artifacts/models/q2_sue_context_v2_causal48_20260912_02"
+control_score = "artifacts/models/q2_sue_context_v2_causal48_20260912_02/predictions/monthly_predictions.parquet"
+control_policy = "Q10 source model selected holding factors; absent overlapping mature data leaves incremental NW-t null, never zero or passed"
+stop_rule = "No parameter/direction/price imputation rescue. Zero qualified months is statistical insufficiency, not evidence of strategy loss or completed R6 acceptance."
