@@ -1,0 +1,144 @@
+id = "structured_sources_d2_v1"
+auto_trade = false
+lookback_calendar_days = 7
+page_size = 1000
+request_pause_seconds = 2.0
+max_requests_per_run = 300
+max_catchup_calendar_days = 31
+revision_policy = "native content hash versions; seven-day overlap; resume missed checked dates within bounded catchup"
+capital_window_policy = "yield_between_pages_and_tables"
+availability_policy = "available_at=max(conservative_release_at,actual_raw_observed_at); never infer historical arrival from a current download"
+
+[tables.forecast]
+api = "forecast"
+query_date_parameter = "ann_date"
+date_field = "ann_date"
+announcement_field = "ann_date"
+availability = "announcement_next_calendar_day_00"
+cadence = "event"
+revision_keys = ["ts_code", "ann_date", "end_date"]
+history_snapshot = "structured_events_remaining_v1_20261105_01"
+scope = "supplier announcement-day query; stock universe coverage is not independently certified"
+units = "net_profit_min/max:10000_CNY;p_change_min/max:percent"
+source_document = "https://tushare.pro/document/2?doc_id=45"
+
+[tables.express]
+api = "express"
+query_date_parameter = "ann_date"
+date_field = "ann_date"
+announcement_field = "ann_date"
+availability = "announcement_next_calendar_day_00"
+cadence = "event"
+revision_keys = ["ts_code", "ann_date", "end_date"]
+history_snapshot = "structured_events_remaining_v1_20261105_01"
+scope = "supplier announcement-day query; stock universe coverage is not independently certified"
+units = "revenue/n_income/total_assets:CNY;eps:CNY_per_share;update_flag native"
+source_document = "https://tushare.pro/document/2?doc_id=46"
+
+[tables.repurchase]
+api = "repurchase"
+query_date_parameter = "ann_date"
+date_field = "ann_date"
+announcement_field = "ann_date"
+availability = "announcement_next_calendar_day_00"
+cadence = "event"
+revision_keys = ["ts_code", "ann_date", "end_date"]
+history_snapshot = "structured_events_v1_20261105_01"
+scope = "supplier announcement-day query"
+units = "amount:CNY;vol:shares;progress native, plan ceilings are not executed cash"
+source_document = "https://tushare.pro/document/2?doc_id=124"
+
+[tables.stk_holdertrade]
+api = "stk_holdertrade"
+query_date_parameter = "ann_date"
+date_field = "ann_date"
+announcement_field = "ann_date"
+availability = "announcement_next_calendar_day_00"
+cadence = "event"
+revision_keys = ["ts_code", "ann_date", "holder_name", "holder_type", "in_de"]
+revision_identity = "native_transaction_dates_not_returned; preserve_all_native_versions"
+history_snapshot = "structured_events_v1_20261105_01"
+scope = "supplier announcement-day query"
+units = "change_vol:shares;avg_price:CNY_per_share;unknown price remains null"
+source_document = "https://tushare.pro/document/2?doc_id=175"
+
+[tables.share_float]
+api = "share_float"
+query_date_parameter = "ann_date"
+date_field = "ann_date"
+announcement_field = "ann_date"
+event_date_field = "float_date"
+availability = "announcement_next_calendar_day_00"
+cadence = "event"
+revision_keys = ["ts_code", "ann_date", "float_date", "holder_name", "share_type"]
+history_snapshot = "structured_events_v1_20261105_01"
+scope = "supplier announcement-day query, not float-date range"
+units = "float_share:shares;float_ratio:percent"
+source_document = "https://tushare.pro/document/2?doc_id=160"
+
+[tables.margin_detail]
+api = "margin_detail"
+query_date_parameter = "trade_date"
+date_field = "trade_date"
+announcement_field = "trade_date"
+availability = "next_exchange_session_09"
+cadence = "daily"
+revision_keys = ["ts_code", "trade_date"]
+history_snapshot = "structured_events_remaining_v1_20261105_01"
+scope = "supplier eligible margin instruments; not all listed securities"
+units = "rzye/rqye/rzmre/rzche/rzrqye:CNY;rqyl/rqchl:shares;rqmcl:mixed_native_units"
+source_document = "https://tushare.pro/document/2?doc_id=59"
+
+[tables.stk_holdernumber]
+api = "stk_holdernumber"
+query_date_parameter = "ann_date"
+date_field = "ann_date"
+announcement_field = "ann_date"
+availability = "announcement_next_calendar_day_00"
+cadence = "event"
+revision_keys = ["ts_code", "ann_date", "end_date"]
+history_snapshot = "structured_events_remaining_v1_20261105_01"
+scope = "supplier announcement-day query"
+units = "holder_num:households;end_date:report_cutoff_not_arrival"
+source_document = "https://tushare.pro/document/2?doc_id=166"
+
+[tables.fund_share]
+api = "fund_share"
+query_date_parameter = "trade_date"
+date_field = "trade_date"
+announcement_field = "trade_date"
+availability = "next_exchange_session_09"
+cadence = "daily"
+revision_keys = ["ts_code", "trade_date"]
+symbols = ["510050.SH", "510300.SH", "510500.SH", "512100.SH", "159915.SZ"]
+history_snapshot = "structured_events_v1_20261105_01"
+scope = "five frozen broad ETFs; not whole-market ETF shares"
+units = "fd_share:10000_fund_units"
+source_document = "https://tushare.pro/document/2?doc_id=111"
+
+[tables.report_rc]
+api = "report_rc"
+query_date_parameter = "report_date"
+date_field = "report_date"
+announcement_field = "report_date"
+availability = "report_next_calendar_day_0915"
+cadence = "event"
+revision_keys = ["ts_code", "report_date", "org_name", "author_name", "report_title", "quarter"]
+history_snapshot = "structured_probe_trial_20261105"
+scope = "2000-point trial; existing history is a five-row single-stock sample"
+permission = "limited_trial"
+max_requests_per_run = 4
+max_requests_per_day = 10
+minimum_interval_seconds = 61
+lookback_calendar_days = 2
+units = "op_rt/op_pr/tp/np:10000_CNY;eps:CNY_per_share"
+source_document = "https://tushare.pro/document/2?doc_id=292"
+
+[futures]
+api = "fut_daily"
+exchange = "CFFEX"
+products = ["IF", "IC", "IM"]
+consumer = "monthly_market_panel_only"
+units = "prices:index_points;vol/oi:contracts;amount:10000_CNY"
+availability = "next_exchange_session_09"
+source_document = "https://tushare.pro/document/2?doc_id=138"
