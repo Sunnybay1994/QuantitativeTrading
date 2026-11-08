@@ -12,6 +12,9 @@ from quant.data.structured_availability import due_dates, sessions
 def build_status(*, data_root=Path('data'), config=Path('configs/data/structured_sources.toml'),
                  as_of=None, now=None, receipt_root=None):
     clock = now or dt.datetime.now(dt.timezone.utc)
+    if clock.tzinfo is None:
+        raise ValueError('Require zoned freshness cutoff')
+    clock = clock.astimezone(dt.timezone.utc)
     as_of = as_of or clock.astimezone(dt.timezone(dt.timedelta(hours=8))).date()
     root = Path(data_root)
     spec = tomllib.loads(Path(config).read_text(encoding='utf-8'))

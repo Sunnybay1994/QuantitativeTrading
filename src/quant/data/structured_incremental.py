@@ -258,8 +258,12 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--as-of', type=dt.date.fromisoformat)
     parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--with-futures', action='store_true', help='Also capture IF/IC/IM monthly-panel quotes')
     args = parser.parse_args()
-    result = run(config=args.config, data_root=args.data_root, output=args.output,
+    operation = run
+    if args.with_futures:
+        from quant.data.structured_daily import run as operation
+    result = operation(config=args.config, data_root=args.data_root, output=args.output,
                  as_of=args.as_of, resume=args.resume)
     print(json.dumps(result, default=str))
     if result['status'] != 'checked':

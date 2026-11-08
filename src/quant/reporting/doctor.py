@@ -456,9 +456,18 @@ def collect(
     except (OSError, ValueError, KeyError, pl.exceptions.PolarsError) as exc:
         orders = {'next_rebalance': None, 'ready': False, 'error': str(exc)}
     from quant.reporting.doctor_worklist import collect as worklist_progress
+    structured = {'status': 'not_configured'}
+    if (root/'configs/data/structured_sources.toml').is_file():
+        from quant.reporting.structured_freshness import build_status
+        try:
+            structured = build_status(data_root=root/'data',config=root/'configs/data/structured_sources.toml',
+                as_of=today,now=clock,receipt_root=root/'artifacts/data/structured_incremental')
+        except (OSError, ValueError, KeyError, TypeError, pl.exceptions.PolarsError) as exc:
+            structured = {'status':'unavailable','error':str(exc)}
 
     return {
         "worklist": worklist_progress(root, clock),
+        "structured_incremental": structured,
         "orders": orders,
         "generated_at": clock.isoformat(),
         "date": today.isoformat(),
@@ -540,6 +549,15 @@ def render_markdown(report: dict) -> str:
     from quant.reporting.doctor_worklist import markdown as worklist_markdown
 
     lines.extend(worklist_markdown(report.get('worklist') or {}))
+    structured = report.get('structured_incremental') or {}
+    if structured.get('tables'):
+        from quant.reporting.structured_freshness import render_lines
+        lines.extend(['', '## D2 结构化表新鲜度', ''])
+        lines.extend('- '+line for line in render_lines(structured))
+        lines.append(f"- 最滞后表：{structured['most_lagged_table']}；连续5个真实交易日核验："
+            f"{structured['five_real_trading_days_verified']}。")
+    elif structured.get('error'):
+        lines.extend(['', 'D2 新鲜度不可用：'+structured['error']])
     return "\n".join(lines)
 
 

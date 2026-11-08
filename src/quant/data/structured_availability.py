@@ -80,6 +80,7 @@ def read_versions(*, data_root, table, known_at, latest=False):
     """Read D2 revision versions; only observations actually known at the cutoff."""
     if known_at.tzinfo is None:
         raise ValueError('Require zoned knowledge cutoff')
+    known_at = known_at.astimezone(dt.timezone.utc)
     if latest and table == 'stk_holdertrade':
         raise ValueError('Transaction dates absent from default holder-trade response; retain all native versions')
     files = sorted((Path(data_root)/'clean'/table).glob('snapshot=d2_*/data.parquet'))

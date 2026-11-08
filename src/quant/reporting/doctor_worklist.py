@@ -34,17 +34,21 @@ def _json(path):
     return json.loads(path.read_text(encoding='utf-8'))
 
 
-def _registry(root, clock):
+def _registry(root, clock, *, required=None, optional=None, run_names=None, since=None):
+    required = REQUIRED if required is None else required
+    optional = OPTIONAL if optional is None else optional
+    since = since or dt.datetime(2026, 11, 2, tzinfo=clock.tzinfo)
     path = root / 'artifacts/registry/experiments.parquet'
-    result = {'required_results': 6, 'verified_results': [], 'issues': []}
+    result = {'required_results': sum(map(len, required.values())), 'verified_results': [], 'issues': []}
     if not path.is_file():
         result['issues'].append('registry missing')
         return result
     frame = pl.read_parquet(path)
-    expected = {(name, variant) for name, variants in {**REQUIRED, **OPTIONAL}.items()
+    expected = {(name, variant) for name, variants in {**required, **optional}.items()
                 for variant in variants}
     rows = [row for row in frame.to_dicts()
-            if (row.get('experiment_id'), row.get('variant')) in expected]
+            if (row.get('experiment_id'), row.get('variant')) in expected
+            and (run_names is None or Path(row['run_path']).name in run_names)]
     for key in sorted(expected):
         matches = [row for row in rows if (row['experiment_id'], row['variant']) == key]
         if not matches:
@@ -54,7 +58,7 @@ def _registry(root, clock):
                 raise ValueError('duplicate registry identity')
             row = matches[0]
             stamp = dt.datetime.fromisoformat(row['result_time'])
-            if stamp.tzinfo is None or not (dt.datetime(2026, 11, 2, tzinfo=clock.tzinfo) <= stamp <= clock):
+            if stamp.tzinfo is None or not (since <= stamp <= clock):
                 raise ValueError('result outside observed worklist period')
             if row['level'] not in ('strategy', 'account'):
                 raise ValueError('not a strategy/account result')
@@ -98,7 +102,7 @@ def _registry(root, clock):
         except (OSError, ValueError, KeyError, TypeError) as exc:
             result['issues'].append(f'{key[0]}/{key[1]}: {exc}')
     present = {(r['experiment_id'], r['variant']) for r in result['verified_results']}
-    result['missing_required'] = [f'{name}/{variant}' for name, variants in REQUIRED.items()
+    result['missing_required'] = [f'{name}/{variant}' for name, variants in required.items()
                                   for variant in variants if (name, variant) not in present]
     return result
 
@@ -181,6 +185,9 @@ def _credibility(root):
 
 def collect(root, clock):
     root = root.resolve()
+    if (root/'docs/worklists/工作清单_20261109.md').is_file():
+        from quant.reporting.doctor_worklist_20261109 import collect as current
+        return current(root, clock)
     enabled = (root / 'docs/工作清单_20261102.md').is_file()
     result = {'enabled': enabled}
     if not enabled:
@@ -200,6 +207,9 @@ def collect(root, clock):
 
 
 def markdown(result):
+    if result.get('worklist_date') == '2026-11-09':
+        from quant.reporting.doctor_worklist_20261109 import markdown as current
+        return current(result)
     if not result.get('enabled'):
         return []
     registry, structured, credibility = (result[key] for key in ('registry', 'structured', 'credibility'))

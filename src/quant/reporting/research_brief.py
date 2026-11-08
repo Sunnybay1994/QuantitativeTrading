@@ -14,6 +14,7 @@ import polars as pl
 from quant.llm.ledger import append as ledger_append,SHANGHAI
 from quant.reporting.structured_market import fund_share_facts,render_fund_shares
 from quant.reporting.structured_margin import margin_facts,render_margin
+from quant.reporting.structured_futures import market_facts as futures_facts
 
 BRIEF_ROOT = Path("artifacts/research/brief")
 
@@ -120,6 +121,7 @@ def collect_facts(month: str, *, root: Path = Path(".")) -> dict:
         "market_state":market_fact,
         "etf_shares":fund_share_facts(month,root=root),
         "margin":margin_facts(month,root=root),
+        "index_futures":futures_facts(month,root=root),
     }
 
 
@@ -148,6 +150,14 @@ def render_template(facts: dict, narrative: str | None = None) -> str:
         lines.extend(['',render_fund_shares(facts['etf_shares']),''])
     if facts.get('margin'):
         lines.extend(['',render_margin(facts['margin']),''])
+    if facts.get('index_futures'):
+        panel = facts['index_futures']
+        lines.extend(['', '## 股指期货日线（市场面板）',
+            f"- 状态：{panel['status']}；基差：{panel['basis_status']}。",
+            '|合约|交易日|收盘|结算|成交量|持仓量|原生单位|', '|---|---|---:|---:|---:|---:|---|'])
+        for row in panel['rows']:
+            lines.append('|'+ '|'.join(str(row.get(key)) for key in
+                ('ts_code','trade_date','close','settle','vol','oi','native_units'))+'|')
     return "\n".join(lines)
 
 

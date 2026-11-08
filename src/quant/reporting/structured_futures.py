@@ -9,6 +9,7 @@ def market_facts(month, *, root=Path('.'), known_at=None):
     clock = known_at or dt.datetime.now(dt.timezone.utc)
     if clock.tzinfo is None:
         raise ValueError('Require zoned knowledge cutoff')
+    clock = clock.astimezone(dt.timezone.utc)
     files = sorted((Path(root)/'data/clean/fut_daily').glob('snapshot=d2_*/data.parquet'))
     out = {'status': 'not_captured', 'month': month, 'consumer': 'monthly_market_panel_only',
            'basis_status': 'unknown_no_matching_spot_series', 'rows': [], 'auto_trade': False,

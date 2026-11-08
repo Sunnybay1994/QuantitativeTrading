@@ -30,6 +30,8 @@ def test_futures_are_monthly_quotes_not_fabricated_basis(tmp_path, monkeypatch):
     assert report['status'] == 'observed_quotes'
     assert report['basis_status'].startswith('unknown')
     assert len(report['rows']) == 3
+    assert market_facts('2026-11',root=market,known_at=dt.datetime(2026,11,10,
+        tzinfo=dt.timezone.utc).astimezone(dt.timezone(dt.timedelta(hours=8))))==report
     early = market_facts('2026-11', root=market,
         known_at=dt.datetime(2026, 11, 8, tzinfo=dt.timezone.utc))
     assert early['status'] == 'no_observed_rows_in_month'

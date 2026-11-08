@@ -21,6 +21,20 @@ def test_zero_event_is_fresh_checked_while_absent_daily_is_visible(tmp_path):
     assert status['five_real_trading_days_verified'] is False
 
 
+def test_shanghai_doctor_clock_matches_utc_for_real_nonempty_snapshot(tmp_path):
+    args, _ = setup(tmp_path)
+    module.run(**args,connector=Client(lambda *a:forecast()))
+    utc=build_status(data_root=tmp_path,config=args['config'],as_of=args['as_of'],now=NOW)
+    local=build_status(data_root=tmp_path,config=args['config'],as_of=args['as_of'],
+        now=NOW.astimezone(dt.timezone(dt.timedelta(hours=8))))
+    assert local==utc
+    from quant.data.structured_availability import read_versions
+    first=read_versions(data_root=tmp_path,table='forecast',known_at=NOW)
+    second=read_versions(data_root=tmp_path,table='forecast',
+        known_at=NOW.astimezone(dt.timezone(dt.timedelta(hours=8))))
+    assert first.equals(second)
+
+
 def test_failed_latest_attempt_cannot_be_hidden_by_old_published_check(tmp_path):
     args, _ = setup(tmp_path)
     module.run(**args, connector=Client(lambda *a: forecast()))
