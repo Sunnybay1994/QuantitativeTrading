@@ -1,0 +1,59 @@
+[research]
+registered_on = 2026-11-08
+preregistration = "configs/research/account_portfolio_top15_v1.toml"
+conclusion = "RESEARCH_ONLY"
+authorization = "2026-11-08 worklist A2: shadow observation only; no broker or real-money orders"
+
+[paper]
+name = "account_30w_top15_v1"
+inception_date = 2026-11-30
+initial_cash = 300000.0
+auto_trade = false
+halt = false
+sell_only = false
+shadow = true
+observation_only = true
+counts_toward_account_limit = false
+
+[model]
+selection = "artifacts/models/q2_sue_v2_frozen_forward_20260912_01"
+forecast_root = "artifacts/daily/sue_v2"
+
+[data]
+refresh_config = "configs/data/refresh_q2_sue_v2_model_20260912.toml"
+warmup_start = 2026-11-01
+etf_daily_root = "data/clean/account_30w_top15_inputs"
+etf_actions_root = "data/clean/etf_corporate_actions"
+action_terms = "artifacts/research/account_portfolio_inputs_20261104_01/corporate_actions.toml"
+action_sources = "artifacts/research/a1_etf_sources_20261108_01/sources.json"
+
+[portfolio]
+stock_dividend_withholding = 0.20
+fixed_weights = [0.4, 0.3, 0.3]
+quarter_months = [3, 6, 9, 12]
+etf_symbols = ["512890.SH", "511010.SH"]
+stock_limit_offset = 0.01
+maximum_limit_sessions = 3
+
+[universe]
+minimum_daily_symbols = 1
+
+[costs.a_share]
+commission_rate = 0.00025
+commission_min = 5.0
+stamp_tax_sell = 0.0005
+transfer_fee = 0.00001
+slippage = 0.001
+effective_from = 2023-08-28
+
+[costs.etf]
+commission_rate = 0.00025
+commission_min = 5.0
+slippage = 0.0
+slippage_per_share = 0.001
+effective_from = 2023-01-01
+
+[notify]
+manual_rehearsal_date = 2026-12-01
+planned_submit_time = "09:15:00+08:00"
+not_before = "08:30:00+08:00"

@@ -62,3 +62,8 @@ config = "configs/paper/top15_limit_1pct_observation_20261106.toml"
 output = "artifacts/paper/top15_limit_1pct_observation"
 observation_only = true
 notify = false
+
+[account_30w_top15]
+config = "configs/paper/account_30w_top15_v1_20261108.toml"
+output = "artifacts/paper/account_30w_top15_v1"
+observation_only = true

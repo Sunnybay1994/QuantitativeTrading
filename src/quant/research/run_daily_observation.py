@@ -276,6 +276,12 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
                     settings['top15_observation'], end=end, data_root=data_root,
                     forecast=output/'model/forecast')
                 save_summary()
+            if settings.get('account_30w_top15'):
+                from quant.execution.account_30w_top15_paper import observe_from_daily as observe_joint
+                result.setdefault('observation_accounts', {})['account_30w_top15'] = observe_joint(
+                    settings['account_30w_top15'], end=end, data_root=data_root,
+                    forecast=output/'model/forecast')
+                save_summary()
             if shadow_cfg and end >= inception:
                 def pair_month() -> dict:
                     from quant.reporting.q10_forward_rules import InsufficientMonthlySample, write_two_account_month
