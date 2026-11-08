@@ -134,3 +134,13 @@ def test_zero_history_intake_records_null_costs_without_claiming_completed_accep
     assert not scorecard['factor_admitted'].any()
     costs=pl.read_parquet(output/'cost_plan.parquet')
     assert costs.height==60 and costs['cagr'].null_count()==60 and not costs['executed'].any()
+    from quant.research.event_family_r6 import digest, render_report
+    saved={p:digest(p) for p in output.rglob('*') if p.is_file() and p.name!='report.md'}
+    original=(output/'report.md').read_text(encoding='utf-8')
+    appendix=original[original.index('<!-- periods-1x:start -->'):]
+    render_report(output)
+    rendered=(output/'report.md').read_text(encoding='utf-8')
+    assert '准入0列；10列×2版本均因历史输入不足未完成统计验收' in rendered
+    assert '通过数：0/10' not in rendered
+    assert rendered.endswith(appendix)
+    assert all(digest(p)==value for p,value in saved.items())

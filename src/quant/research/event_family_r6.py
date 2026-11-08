@@ -30,6 +30,32 @@ def save(path, data):
         json.dump(data, stream, ensure_ascii=False, indent=2, default=str, allow_nan=False)
 
 
+def render_report(output: Path):
+    """Render saved measurements only, preserving any registered period appendix."""
+    summary = json.loads((output/'summary.json').read_text(encoding='utf-8'))
+    statistics = pl.read_parquet(output/'statistics.parquet').to_dicts()
+    report_path = output/'report.md'
+    original = report_path.read_text(encoding='utf-8') if report_path.exists() else ''
+    marker = '<!-- periods-1x:start -->'
+    appendix = '\n\n'+marker+original.split(marker, 1)[1] if marker in original else ''
+    lines = ['# R6 事件族系首轮留存与电池回执', '',
+        f"冻结定义 SHA-256：`{summary['definition_sha256']}`；10列×原始/规模行业中性化两版本。", '',
+        f"真实原电池月末 {summary['original_monthly_dates']} 个、合格股票行 {summary['original_eligible_rows']}；"
+        '所有事件的真实留存均晚于该历史窗口，因此可估计月份为0。', '',
+        '原月度打分/IC/统计筛选已执行；未伪造日频衰减、分组收益、N4控制值或三档成交。'
+        'RESEARCH_ONLY表示输入历史不足，不是策略收益失败；原门槛不变，R6验收未完成。', '',
+        '|列|版本|合格月|NW-t|增量NW-t|三档成本|本轮处理|', '|---|---|---:|---|---|---|---|']
+    for row in statistics:
+        lines.append(f"|{row['factor']}|{row['variant']}|{row['months']}|不可估计|不可估计|"
+                     '未执行：无可执行持仓|本轮关闭，不救援|')
+    lines += ['', '准入0列；10列×2版本均因历史输入不足未完成统计验收。'
+        '回购强度增量NW-t：不可估计（null，不是0）。', '',
+        '分析师原生字段与同机构/作者/财期多日配对见summary.json；字段存在不等于历史覆盖足够。', '',
+        '证据：source_facts.json、source_manifest.json、statistical_screen.parquet、'
+        'cost_plan.parquet、incremental.json。旧数据、旧配置与股票信号均未覆盖。']
+    report_path.write_text('\n'.join(lines)+'\n'+appendix, encoding='utf-8')
+
+
 def run(*, config: Path, output: Path, register=False):
     spec = tomllib.loads(config.read_text(encoding='utf-8'))
     if (spec['auto_trade'] is not False or tuple(spec['signals']) != SIGNALS
@@ -131,21 +157,7 @@ def run(*, config: Path, output: Path, register=False):
         'cost_runs': [], 'cost_failures': [], 'pending_external_runs': [],
         'closure': 'All columns closed this round for input-history insufficiency; no rescue or historical availability backfill.'}
     save(output/'summary.json', summary)
-    lines = ['# R6 事件族系首轮留存与电池回执', '',
-        f'冻结定义 SHA-256：`{frozen}`；10列×原始/规模行业中性化两版本。', '',
-        f"真实原电池月末 {summary['original_monthly_dates']} 个、合格股票行 {panel.height}；"
-        '所有事件的真实留存均晚于该历史窗口，因此可估计月份为0。', '',
-        '原月度打分/IC/统计筛选已执行；未伪造日频衰减、分组收益、N4控制值或三档成交。'
-        'RESEARCH_ONLY表示输入历史不足，不是策略收益失败；原门槛不变，R6验收未完成。', '',
-        '|列|版本|合格月|NW-t|增量NW-t|三档成本|本轮处理|', '|---|---|---:|---|---|---|---|']
-    for row in statistics:
-        lines.append(f"|{row['factor']}|{row['variant']}|{row['months']}|不可估计|不可估计|"
-                     '未执行：无可执行持仓|本轮关闭，不救援|')
-    lines += ['', '通过数：0/10；回购强度增量NW-t：不可估计（null，不是0）。', '',
-        '分析师原生字段与同机构/作者/财期多日配对见summary.json；字段存在不等于历史覆盖足够。', '',
-        '证据：source_facts.json、source_manifest.json、statistical_screen.parquet、'
-        'cost_plan.parquet、incremental.json。旧数据、旧配置与股票信号均未覆盖。']
-    (output/'report.md').write_text('\n'.join(lines)+'\n', encoding='utf-8')
+    render_report(output)
     if register:
         from quant.reporting.experiment_registry import records_from_run, append_records
         records = records_from_run(output.resolve())
