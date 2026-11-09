@@ -111,13 +111,17 @@ def test_missing_etf_capture_fails_without_provider_client(tmp_path):
 def test_combined_fallback_keeps_a2_not_started_separate_from_primary(tmp_path,monkeypatch):
     from quant.execution import paper_order_fallback as fallback
     from tests.unit.test_paper_order_fallback import setup_account
-    _,state,_,_,config=setup_account(tmp_path)
+    _,state,_,paper_config,config=setup_account(tmp_path)
     with config.open('a') as stream:
         stream.write('[account_30w_top15]\nconfig='+json.dumps(paper.CONFIG.resolve().as_posix())+
             '\noutput='+json.dumps((tmp_path/'a2').as_posix())+'\n')
-    monkeypatch.setattr(fallback,'freeze_account',lambda **kwargs:dict(_account_snapshot=
-        dict(path=str(state),sha256=hashlib.sha256(state.read_bytes()).hexdigest())))
-    monkeypatch.setattr(fallback.q10_paper,'run',lambda **kwargs:dict(as_of='2026-11-06',reference_orders=0))
+    monkeypatch.setattr(fallback,'freeze_account',lambda **kwargs:dict(
+        _account_snapshot=dict(path=str(state),sha256=hashlib.sha256(state.read_bytes()).hexdigest()),
+        _controls_sha256=None,_config_path=paper_config,_frozen_sha256={}))
+    def primary(**kwargs):
+        kwargs['preflight']()
+        return dict(as_of='2026-11-06',reference_orders=0)
+    monkeypatch.setattr(fallback.q10_paper,'run',primary)
     result=fallback.run(config=config,end=dt.date(2026,11,6),output=tmp_path/'receipt')
     assert result['status']=='complete'
     assert result['observation_accounts']['account_30w_top15']['status']=='not_started'

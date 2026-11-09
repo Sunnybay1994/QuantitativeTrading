@@ -86,3 +86,5 @@
 | `artifacts/worklog` | 实际日期工作记录 |
 
 `legacy/quant` 已归档实现由现有 shim 保持导入兼容。当前可达的 m3/formal 等模块保留；不按文件名猜测死代码。文档位于 data、operations、reviews、worklists、research、archive；[文档目录](README.md)说明各类资料的用途。过程记录只写 `artifacts/worklog/<实际日期>.md`，当前清单每项只写一行状态；旧清单路径保留跳转入口供自动化使用。
+
+大型历史与参考文档保留原路径作为分卷目录，同目录的 `.part-NN.md` 保存正文；旧标题锚点继续可访问。58份原文按字节备份与还原校验，记录见 `artifacts/maintenance/docs_split_20261109/manifest.json`；分卷不代表新增研究结果。
