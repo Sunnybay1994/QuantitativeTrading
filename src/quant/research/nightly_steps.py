@@ -235,6 +235,13 @@ def evaluate(settings: dict, run: Path) -> dict:
             shutil.copyfile(path, destination)
     if not list(library.glob('*.toml')):
         return {'candidates':0, 'evaluated':0, 'reason':'No queued or completed GP candidates'}
+    r5_receipt = settings.get('r5_input_receipt')
+    if r5_receipt:
+        from quant.research.sue_preliminary_r5_inputs import IDENTIFIER, definition_receipt
+        definitions = load_library(library)
+        if len(definitions) != 1 or definitions[0].id != IDENTIFIER:
+            raise ValueError('R5 requires its own candidate batch, not another completed family')
+        definition_receipt(vars(definitions[0]), settings)
     from quant.data.monthly_open_inputs import evaluation_source_identity
     batch_id = hashlib.sha256(str(settings['as_of']).encode()+b''.join(p.read_bytes() for p in sorted(library.glob('*.toml')))
         + evaluation_source_identity(settings)).hexdigest()[:16]
@@ -250,6 +257,8 @@ def evaluate(settings: dict, run: Path) -> dict:
         dump(batch/'settings.json',settings)
     # Finish the oldest interrupted battery before beginning another candidate batch.
     for prior in sorted(Path(settings['batch_root']).iterdir(),key=lambda p:p.stat().st_mtime):
+        if r5_receipt:
+            break  # Other families' incomplete/completed work is not R5 evidence.
         if not (prior/'library').is_dir():
             continue
         if not (prior/'admission_scorecard.parquet').exists():
@@ -262,14 +271,17 @@ def evaluate(settings: dict, run: Path) -> dict:
         for field in ('as_of','training_end','history_start'):
             settings[field]=dt.date.fromisoformat(settings[field])
     settings.update(allocation)
+    if r5_receipt and settings.get('r5_input_receipt') != r5_receipt:
+        raise ValueError('R5 frozen batch input receipt changed')
     definitions = load_library(frozen)
     require_allowed(definitions,settings)
     repair=settings.get('compute_allocation',{}).get('gp_numeric_repair_config')
     repair_options={'numeric_repair':Path(repair)} if repair else {}
+    r5_options = {'r5_input_receipt': Path(r5_receipt)} if r5_receipt else {}
     require_execution_coverage(Path(settings['data_root']),settings['execution_snapshot'],settings['as_of'])
     compute(data_root=Path(settings['data_root']), refresh_config=Path(settings['refresh_config']),
             library=frozen, selected='all', start=settings['history_start'], end=settings['as_of'],
-            artifact_root=batch/'compute',**repair_options)
+            artifact_root=batch/'compute',**repair_options,**r5_options)
     from quant.research.gp_context_alignment import verify_new_gp_values
     verify_new_gp_values(definitions, data_root=Path(settings['data_root']),
                          output=batch/'gp_context_alignment.json',**repair_options)
@@ -337,6 +349,7 @@ def candidate_source(identifier: str, source_ref: str) -> str:
 
 def admit(settings: dict, run: Path) -> dict:
     from quant.data.nightly_genetic_inputs import read_raw_monthly,admitted_controls
+    requested_r5 = settings.get('r5_input_receipt')
     evaluation = json.loads((run/'N3'/'result.json').read_text(encoding='utf-8'))
     if not evaluation.get('evaluated'):
         return {'admitted':0,'rejected':0,'reason':'No completed candidate battery'}
@@ -347,11 +360,19 @@ def admit(settings: dict, run: Path) -> dict:
         for field in ('as_of','training_end','history_start'):
             settings[field]=dt.date.fromisoformat(settings[field])
     settings.update(allocation)
+    if requested_r5 and settings.get('r5_input_receipt') != requested_r5:
+        raise ValueError('Another completed batch cannot satisfy the requested R5 receipt')
     # Only a completed reference at the identical cutoff can replace a stale
     # reference. A later month would leak future outcomes into this admission.
     settings = admission_reference(settings)
     definitions = {d.id:d for d in load_library(batch/'library')}
     require_allowed(definitions.values(),settings)
+    r5 = settings.get('r5_input_receipt')
+    if r5:
+        from quant.research.sue_preliminary_r5_inputs import IDENTIFIER, definition_receipt
+        if set(definitions) != {IDENTIFIER} or evaluation['evaluated'] != 1:
+            raise ValueError('R5 admission requires its own completed candidate battery')
+        definition_receipt(vars(definitions[IDENTIFIER]), settings)
     library = load_library(Path(settings['library']))
     reference_ids = [d.id for d in library if d.id not in definitions]
     checkpoint = run/'N4'/'admission_progress.json'
@@ -374,8 +395,15 @@ def admit(settings: dict, run: Path) -> dict:
     else:
         admitted = progress['admitted_controls']
     scorecard = pl.read_parquet(evaluation['scorecard'])
-    panel = read_raw_monthly(data_root=Path(settings['data_root']),
-        statistics=batch/'evaluation'/'statistics', factors=reference_ids,
+    if r5 and (set(scorecard['factor']) != {IDENTIFIER}
+            or sorted(scorecard['variant'].to_list()) != ['raw', 'size_industry_neutral']):
+        raise ValueError('R5 requires both existing battery variants, not another completed result')
+    panel_factors = reference_ids
+    if r5:
+        from quant.research.sue_family_controls import CONTROLS
+        panel_factors = list(dict.fromkeys([*reference_ids, *CONTROLS]))
+    panel = read_raw_monthly(data_root=Path(settings['r5_reference_data_root'] if r5 else settings['data_root']),
+        statistics=batch/'evaluation'/'statistics', factors=panel_factors,
         start=settings['history_start'],end=settings['as_of'])
     panel = panel.filter(pl.col('label_exit_date') <= settings['as_of']).join(controls,on=['symbol','trade_date'],how='left',validate='1:1')
     rows = progress['rows']
@@ -444,6 +472,13 @@ def admit(settings: dict, run: Path) -> dict:
         passed = (battery_pass and incremental['months']>=96 and
                   incremental['newey_west_t'] is not None and incremental['newey_west_t']>=2.5 and corr<.6)
         family_result = {}
+        if definition.family == 'sue_preliminary_s4_v1':
+            from quant.research.sue_preliminary_r5_inputs import check_controls
+            neutral = pl.read_parquet(batch/'evaluation/statistics/factors'/identifier/'monthly_scores.parquet').select(
+                'symbol', 'trade_date', pl.col('size_industry_neutral').alias('candidate'))
+            family_result = check_controls(panel.join(neutral, on=['symbol', 'trade_date'],
+                                           how='left', validate='1:1'), incremental_statistics)
+            passed = passed and family_result['passed']
         if definition.family == 'liquidity_comovement_logchange_60m_v1':
             from quant.research.liquidity_comovement_controls import check_liquidity_comovement_controls
             controlled = scored.join(comovement_controls,on=['symbol','trade_date'],how='left',validate='1:1')

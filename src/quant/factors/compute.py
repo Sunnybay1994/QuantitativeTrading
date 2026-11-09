@@ -58,11 +58,18 @@ def attach_expression_inputs(
     data_root: Path, refresh_config: Path, read_start: dt.date, read_end: dt.date,
     sessions: tuple[dt.date, ...],
     minute_data_root: Path | None = None,
+    r5_input_receipt: Path | None = None,
 ) -> pl.DataFrame:
     """Share exactly the same intrinsic inputs between N3 and full-context GP."""
     if any("ind_neutralize" in expr for expr in expressions):
         panel = read_factor_industry(data_root, panel)
     financial_names = financial_input_names(expressions)
+    if any('sue_prelim_r5_v1' == node.id for expr in expressions
+           for node in ast.walk(ast.parse(expr)) if isinstance(node, ast.Name)):
+        if r5_input_receipt is None:
+            raise ValueError('R5 requires explicit opt-in frozen input receipt')
+        from quant.research.sue_preliminary_r5_inputs import attach
+        panel = attach(panel, r5_input_receipt)
     if financial_names:
         histories = read_factor_financial_history(data_root, refresh_config, panel,
             expanded=bool(set(financial_names) - set(PIT_QUALITY_FACTOR_NAMES)),
@@ -131,8 +138,16 @@ def run(
     *, data_root: Path, refresh_config: Path, library: Path, selected: str,
     start: dt.date, end: dt.date, artifact_root: Path, rebuild: bool = False,
     numeric_repair: Path | None = None,
+    r5_input_receipt: Path | None = None,
 ) -> dict[str, Any]:
     definitions = load_library(library, selected)
+    from quant.research.sue_preliminary_r5_inputs import IDENTIFIER, definition_receipt
+    if r5_input_receipt or any(IDENTIFIER in row.expr for row in definitions):
+        if len(definitions) != 1 or definitions[0].id != IDENTIFIER:
+            raise ValueError('R5 requires its own isolated candidate batch')
+        inputs = definition_receipt(asdict(definitions[0]), {'r5_input_receipt': r5_input_receipt})
+        if data_root.resolve() == Path(inputs['source_data_root']).resolve():
+            raise ValueError('R5 must not write original factor panels or labels')
     if numeric_repair:
         from quant.research.gp_skew_repair import load as load_repair,archive_panels
         repair=load_repair(numeric_repair)
@@ -229,7 +244,8 @@ def run(
             + (comovement_definitions if comovement_control_start is not None else []))
         panel = attach_expression_inputs(panel, bars, expressions=tuple(dict.fromkeys(row.expr for row in expression_definitions)),
             data_root=data_root, refresh_config=refresh_config, read_start=read_start,
-            read_end=read_end, sessions=sessions)
+            read_end=read_end, sessions=sessions,
+            **({'r5_input_receipt': r5_input_receipt} if r5_input_receipt else {}))
         keys = bars.filter(pl.col("trade_date").is_between(low, high)).select("symbol", "trade_date")
         if control_start is not None:
             calendar = available_sessions(data_root, read_end + dt.timedelta(days=40))
@@ -308,12 +324,13 @@ def main() -> None:
     parser.add_argument("--data-root", type=Path, default=Path("data"))
     parser.add_argument("--refresh-config", type=Path, default=Path("configs/data/refresh.toml"))
     parser.add_argument("--artifact-root", type=Path, default=Path("artifacts"))
+    parser.add_argument("--r5-input-receipt", type=Path)
     args = parser.parse_args()
     print(json.dumps(run(
         data_root=args.data_root, refresh_config=args.refresh_config, library=args.library,
         selected=args.factors, start=dt.date.fromisoformat(args.start),
         end=completed_date(args.to, dt.datetime.now(SHANGHAI)), artifact_root=args.artifact_root,
-        rebuild=args.rebuild,
+        rebuild=args.rebuild, r5_input_receipt=args.r5_input_receipt,
     )))
 
 

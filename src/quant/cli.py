@@ -15,6 +15,7 @@ from quant.llm.budget import month_spend_usd, remaining_budget_usd
 
 # 组、命令 → 现有 __main__ 模块。未知参数原样转交。
 _DELEGATE: dict[tuple[str, str], str] = {
+    ("research", "sue-preliminary-r5"): "quant.research.sue_preliminary_pipeline",
     ("research", "q10-sizing"): "quant.research.q10_sizing",
     ("research", "account-etf-baselines"): "quant.research.account_portfolio_etf_baselines",
     ("research", "account-stock-leg"): "quant.research.account_portfolio_stock_leg",
@@ -253,7 +254,7 @@ def main(argv: list[str] | None = None) -> int:
     factors.add_argument("command", choices=["compute"])
     research = sub.add_parser("research", help="投研流水线")
     research.add_argument("command", choices=[
-        "q10-sizing",
+        "q10-sizing", "sue-preliminary-r5",
         "daily", "nightly", "mining", "cycle", "gp", "gp-skew-repair", "feedback", "recovery-audit", "personal-top5", "admitted-model-pair", "residual-momentum", "pead-event-inputs", "pead-event-market-inputs", "pead-account", "benchmark-repair", "benchmark-repair-evaluate", "account-stock-leg", "account-portfolio", "account-portfolio-top15",
         "reversal-readiness", "batch-diagnosis", "predictive-inputs", "intraday-afternoon", "minutes", "mechanisms", "statement-event-family", "suspension-execution-audit", "turnover-reference-family", "turnover-reference-verify", "monthly-execution-open-verify", "industry-information-coverage", "industry-information-verify",
         "allocation-attribution", "mechanism-detail", "etf-manual-init", "etf-execution-stress", "market-indicators", "factor-family-states", "market-mechanism", "value-family-holdings", "net-payout-feasibility", "joint-account", "joint-integer", "etf-measurement", "etf-history-extension", "calendar-allocation", "cross-asset-long-cycle", "etf-delayed-replay", "etf-envelope-report", "account-etf-baselines",

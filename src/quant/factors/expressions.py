@@ -75,7 +75,7 @@ def required_history(expression: str) -> int:
                     "statement_ear3_market_proxy_120d": 200,
                     "statement_abvol3_stable_shares_120d": 200,
                     "sue_decay_tau20": 32, "sue_decay_tau40": 32, "sue_mad8": 32,
-                    "rsue8": 32, "sue_prelim": 32,
+                    "rsue8": 32, "sue_prelim": 32, "sue_prelim_r5_v1": 32,
                     "max_daily_return_20_size_turnover_residual": 20, "ivol_ff3_60": 100}.get(node.id, 0)
         if isinstance(node, ast.Constant):
             return 0

@@ -26,6 +26,14 @@ def apply(settings, config=None):
 
 def allowed(row,settings):
     policy=settings.get('compute_allocation')
+    if row['id'] == 'sue_prelim_r5_v1':
+        if not settings.get('r5_input_receipt'):
+            return False
+        from quant.research.sue_preliminary_r5_inputs import definition_receipt
+        definition_receipt(row, settings)
+        # Versioned implementation of the already registered S4 signal; no
+        # change to the C1 candidate list or any experimental admission rule.
+        return not policy or 'sue_prelim' in policy['registered_candidates']
     if not policy:
         return True
     frozen=policy.get('ngp_backlog',{}).get(row['id'])
