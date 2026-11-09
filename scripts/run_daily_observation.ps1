@@ -7,6 +7,7 @@ $env:POLARS_MAX_THREADS = '4'
 $env:PYTHONUTF8 = '1'
 $env:QUANT_BACKGROUND_WRITER = '0'
 $pauseRequestId = $null
+$pauseAttempted = $false
 # Scheduled tasks often lack the diagnostic tool PATH.
 $gitCandidates = @(
     'D:\Miniforge3\Library\mingw64\bin',
@@ -73,11 +74,22 @@ try {
                 Write-Stage 'deferred_writer_until_evening'
                 exit 0
             }
-            if (-not $pauseRequestId) {
-                $pauseRequest = & $python -m quant.core.capital_window request --to $requestedDate | ConvertFrom-Json
-                if ($LASTEXITCODE -ne 0) { throw 'Could not request cooperative writer pause' }
-                $pauseRequestId = $pauseRequest.request_id
-                Write-Stage ('capital_pause_requested id=' + $pauseRequestId)
+            if (-not $pauseAttempted) {
+                $pauseAttempted = $true
+                $previousPreference = $ErrorActionPreference
+                try {
+                    $ErrorActionPreference = 'Continue'
+                    $pauseText = & $python -m quant.core.capital_window request --to $requestedDate 2>> $logFile
+                    $pauseCode = $LASTEXITCODE
+                    $ErrorActionPreference = 'Stop'
+                    if ($pauseCode -ne 0) { throw 'Cooperative pause request unavailable' }
+                    $pauseRequest = $pauseText | ConvertFrom-Json
+                    if (-not $pauseRequest.request_id) { throw 'Cooperative pause request has no identity' }
+                    $pauseRequestId = $pauseRequest.request_id
+                    Write-Stage ('capital_pause_requested id=' + $pauseRequestId)
+                } catch {
+                    Write-Stage 'capital_pause_request_failed; bounded wait and frozen fallback retained'
+                } finally { $ErrorActionPreference = $previousPreference }
             }
             if (-not $WaitForWriter -or (Get-Date) -ge $waitDeadline) {
                 Write-Stage 'writer_wait_budget_exhausted; frozen_order_fallback'

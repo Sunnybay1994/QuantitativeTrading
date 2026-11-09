@@ -63,11 +63,16 @@ def sources(data_root, config_path, state_path, forecast, date, config, deadline
 
 def freeze_account(*, data_root, config_path, account, end, output, forecast=None, as_month_end=False, deadline=None):
     guard(deadline)
-    config=tomllib.loads(config_path.read_text(encoding='utf-8'))
+    config_payload=config_path.read_bytes()
+    config_sha=hashlib.sha256(config_payload).hexdigest()
+    config=tomllib.loads(config_payload.decode('utf-8'))
     states=sorted(account.glob('????-??-??/state.json'))
     if not states:
         raise ValueError('Frozen fallback requires an existing account snapshot')
-    state_path=states[-1]; state=json.loads(state_path.read_text(encoding='utf-8'))
+    state_path=states[-1]
+    state_payload=state_path.read_bytes()
+    state_sha=hashlib.sha256(state_payload).hexdigest()
+    state=json.loads(state_payload.decode('utf-8'))
     last=dt.date.fromisoformat(state['date'])
     calendar=read_stock_paper_calendar(data_root)
     sessions=sorted(calendar.filter(pl.col('is_open'))['date'].unique().to_list())
@@ -91,11 +96,14 @@ def freeze_account(*, data_root, config_path, account, end, output, forecast=Non
         if not all((folder/f'{name}.parquet').is_file() for name in ('instruments','names','limits','suspensions','dividends')):
             raise ValueError(f'No frozen stock execution inputs for {day}; collection prohibited')
     before=sources(data_root,config_path,state_path,forecast,end,config,deadline)
+    if before.get(str(config_path))!=config_sha or before.get(str(state_path))!=state_sha:
+        raise ValueError('Account state or configuration changed after initial read')
     output.mkdir(parents=True,exist_ok=False)
     copied=output/'model/forecast';copied.mkdir(parents=True)
     for name in ('summary.json','predictions.parquet'):
         shutil.copy2(forecast/name,copied/name)
     shutil.copy2(forecast.parent/'summary.json',copied.parent/'summary.json')
+    (output/'config.toml').write_bytes(config_payload)
     copied_stamp=dt.datetime.fromisoformat(json.loads((copied/'summary.json').read_text(encoding='utf-8'))['recorded_at'])
     if copied_stamp.tzinfo is None or copied_stamp>dt.datetime.now(SHANGHAI):
         raise ValueError('Copied forecast was not available at the actual fallback clock')
@@ -125,7 +133,7 @@ def freeze_account(*, data_root, config_path, account, end, output, forecast=Non
     if before!=after:
         raise ValueError('Order sources changed during freeze; no production account was advanced')
     (output/'sources.json').write_text(json.dumps(before,indent=2),encoding='utf-8')
-    frozen={str(p.relative_to(output)):digest(p) for p in output.rglob('*') if p.is_file()}
+    frozen={str(p.relative_to(output)):digest(p,deadline) for p in output.rglob('*') if p.is_file()}
     (output/'frozen_sha256.json').write_text(json.dumps(frozen,indent=2),encoding='utf-8')
 
     def read_frozen(_root,_config,wanted,day):
@@ -138,7 +146,9 @@ def freeze_account(*, data_root, config_path, account, end, output, forecast=Non
         return StockPaperInputs(**frames)
     return dict(input_reader=read_frozen,calendar=pl.read_parquet(output/'calendar.parquet'),
                 forecast=copied,size_transform=transform,
-                _account_snapshot=dict(path=str(state_path),sha256=digest(state_path)))
+                _config_path=output/'config.toml',_frozen_sha256=frozen,
+                _controls_sha256=before.get(str(account/'controls.json')),
+                _account_snapshot=dict(path=str(state_path),sha256=state_sha))
 
 
 def run(*, config=DEFAULT_CONFIG, end, output, account_writer=False, as_month_end=False, notify=False,
@@ -153,8 +163,7 @@ def run(*, config=DEFAULT_CONFIG, end, output, account_writer=False, as_month_en
     output.mkdir(parents=True,exist_ok=False)
     result=dict(as_of=str(end),recorded_at=dt.datetime.now(SHANGHAI).isoformat(),
                 mode='frozen_order_fallback',auto_trade=False,accounts={},rehearsal=as_month_end)
-    prepared={}
-    # Complete every source freeze before any production account changes.
+    # Publish primary orders before shadow/A2 preparation can consume the budget.
     for name in ('q10','q10_shadow'):
         if name not in settings:continue
         spec=settings[name]
@@ -167,19 +176,33 @@ def run(*, config=DEFAULT_CONFIG, end, output, account_writer=False, as_month_en
                 raise ValueError('Forced month-end fallback requires isolated rehearsal account paths')
             frozen=freeze_account(data_root=Path(settings.get('data_root','data')),config_path=Path(spec['config']),
                 account=account,end=end,output=output/'frozen'/name,as_month_end=as_month_end,deadline=deadline)
-            prepared[name]=(spec,frozen)
-        except Exception as exc:
-            result['accounts'][name]=dict(status='unavailable',reason=f'{type(exc).__name__}: {exc}')
-    for name,(spec,frozen) in prepared.items():
-        try:
             guard(deadline)
             snapshot=frozen.pop('_account_snapshot')
-            latest=sorted(Path(spec['output']).glob('????-??-??/state.json'))[-1]
-            if latest!=Path(snapshot['path']) or digest(latest)!=snapshot['sha256']:
-                raise ValueError('Account advanced during freeze; do not race its writer')
-            value=q10_paper.run(config_path=Path(spec['config']),data_root=Path(settings.get('data_root','data')),
-                output=Path(spec['output']),end=end,as_month_end=as_month_end,
-                before_publish=lambda:guard(deadline),**frozen)
+            controls_sha=frozen.pop('_controls_sha256')
+            frozen_config=frozen.pop('_config_path')
+            frozen_sha=frozen.pop('_frozen_sha256')
+            frozen_root=output/'frozen'/name
+
+            def before_publish():
+                guard(deadline)
+                if any(digest(frozen_root/path,deadline)!=sha for path,sha in frozen_sha.items()):
+                    raise ValueError('Frozen order inputs changed; no publication')
+                guard(deadline)
+
+            def preflight():
+                # This callback runs after the account kernel lock is acquired.
+                before_publish()
+                states=sorted(account.glob('????-??-??/state.json'))
+                if not states or states[-1]!=Path(snapshot['path']) or digest(states[-1],deadline)!=snapshot['sha256']:
+                    raise ValueError('Account advanced during freeze; do not race its writer')
+                current_controls=digest(account/'controls.json',deadline) if (account/'controls.json').is_file() else None
+                if current_controls!=controls_sha or digest(Path(spec['config']),deadline)!=digest(frozen_config,deadline):
+                    raise ValueError('Account configuration or controls changed during freeze')
+                guard(deadline)
+
+            value=q10_paper.run(config_path=frozen_config,data_root=Path(settings.get('data_root','data')),
+                output=account,end=end,as_month_end=as_month_end,
+                preflight=preflight,before_publish=before_publish,**frozen)
             if value['as_of']!=str(end):raise ValueError('Old account date is not order readiness')
             result['accounts'][name]=dict(status='complete',result=value)
             if notify and not as_month_end:
@@ -192,6 +215,7 @@ def run(*, config=DEFAULT_CONFIG, end, output, account_writer=False, as_month_en
             result['accounts'][name]=dict(status='unavailable',reason=f'{type(exc).__name__}: {exc}')
     if settings.get('account_30w_top15'):
         try:
+            guard(deadline)
             from quant.execution.account_30w_top15_frozen import run as frozen_joint
             observation=frozen_joint(settings['account_30w_top15'],end=end,
                 data_root=Path(settings.get('data_root','data')),output=output/'frozen/account_30w_top15',

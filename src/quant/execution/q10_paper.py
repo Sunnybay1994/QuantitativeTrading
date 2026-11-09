@@ -75,12 +75,7 @@ def load_forecast(folder: Path, date: dt.date, selection: Path, following: dt.da
     return pl.read_parquet(folder/'predictions.parquet')
 
 
-def run(*, config_path: Path = DEFAULT_CONFIG, data_root: Path = Path('data'),
-        output: Path = Path('artifacts/paper/q10_sue_v2'), end: dt.date,
-        forecast: Path | None = None, halt: bool | None = None,
-        sell_only: bool | None = None, as_month_end: bool = False,
-        input_reader=None, calendar: pl.DataFrame | None = None, size_transform=None,
-        before_publish=None) -> dict[str, Any]:
+def _admitted_config(config_path, output, end, as_month_end):
     if as_month_end and 'rehearsal' not in output.resolve().parts:
         raise ValueError('Forced month-end requires an isolated rehearsal output')
     payload = config_path.read_text(encoding='utf-8')
@@ -95,6 +90,18 @@ def run(*, config_path: Path = DEFAULT_CONFIG, data_root: Path = Path('data'),
     shadow = bool(paper.get('shadow'))
     if not shadow and (assessment['conclusion'] != 'PAPER_CANDIDATE' or not all(assessment['checks'].values())):
         raise ValueError('Q10 must satisfy the registered admission criteria')
+    return payload, config
+
+
+def _run(*, config_path: Path = DEFAULT_CONFIG, data_root: Path = Path('data'),
+        output: Path = Path('artifacts/paper/q10_sue_v2'), end: dt.date,
+        forecast: Path | None = None, halt: bool | None = None,
+        sell_only: bool | None = None, as_month_end: bool = False,
+        input_reader=None, calendar: pl.DataFrame | None = None, size_transform=None,
+        before_publish=None) -> dict[str, Any]:
+    payload, config = _admitted_config(config_path, output, end, as_month_end)
+    paper = config['paper']
+    shadow = bool(paper.get('shadow'))
     output.mkdir(parents=True, exist_ok=True)
     frozen = output/'config.toml'
     if frozen.exists() and frozen.read_text(encoding='utf-8') != payload:
@@ -190,6 +197,29 @@ def run(*, config_path: Path = DEFAULT_CONFIG, data_root: Path = Path('data'),
     (output/'report.md').write_text(f"# {title}\n\n{state['date']}；权益 {summary['equity']:.2f} 元；"
         f"持仓 {summary['positions']} 只；参考订单 {orders.height} 笔。\n\n月末收盘信号，下一交易日模拟成交；auto_trade=false。\n", encoding='utf-8')
     return summary
+
+
+def run(*, config_path: Path = DEFAULT_CONFIG, data_root: Path = Path('data'),
+        output: Path = Path('artifacts/paper/q10_sue_v2'), end: dt.date,
+        forecast: Path | None = None, halt: bool | None = None,
+        sell_only: bool | None = None, as_month_end: bool = False,
+        input_reader=None, calendar: pl.DataFrame | None = None, size_transform=None,
+        before_publish=None, preflight=None) -> dict[str, Any]:
+    from quant.execution.manual_session_service import instance_lock
+
+    output = Path(output).resolve()
+    # Admission rejection must not create an account or its parent/lock path.
+    _admitted_config(config_path, output, end, as_month_end)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    # A sibling lock also protects the first creation of the account directory.
+    # instance_lock closes only its own descriptor and never unlinks the file.
+    with instance_lock(output.parent / ('.' + output.name + '.writer.lock')):
+        if preflight is not None:
+            preflight()
+        return _run(config_path=config_path, data_root=data_root, output=output, end=end,
+                    forecast=forecast, halt=halt, sell_only=sell_only,
+                    as_month_end=as_month_end, input_reader=input_reader, calendar=calendar,
+                    size_transform=size_transform, before_publish=before_publish)
 
 
 def main() -> None:

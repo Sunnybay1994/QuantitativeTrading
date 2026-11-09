@@ -2,12 +2,55 @@ import datetime as dt
 import json
 from pathlib import Path
 import tomllib
+import os
+import subprocess
+import sys
+import time
 
 import polars as pl
 import pytest
 
 from quant.execution import q10_paper as q10
 from quant.research.model_training_models import buffered_model_targets
+
+
+def test_kernel_lock_conflict_preserves_holder_and_canonical_identity(tmp_path, paper_config, monkeypatch):
+    output = tmp_path/'canonical/account'
+    ready, stop = tmp_path/'ready', tmp_path/'stop'
+    worker = '''import datetime as dt,sys,time
+from pathlib import Path
+from quant.execution import q10_paper as q
+def hold(**kw):
+ Path(sys.argv[3]).write_text('held')
+ while not Path(sys.argv[4]).exists(): time.sleep(.02)
+ return {}
+q._run=hold
+q.run(config_path=Path(sys.argv[1]),output=Path(sys.argv[2]),end=dt.date(2026,9,13))
+'''
+    child = subprocess.Popen([sys.executable, '-c', worker, str(paper_config), str(output),
+                              str(ready), str(stop)],
+                             creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+    try:
+        deadline = time.monotonic()+15
+        while not ready.exists():
+            assert child.poll() is None
+            assert time.monotonic() < deadline
+            time.sleep(.02)
+        lock = output.parent/'.account.writer.lock'
+        before = lock.stat().st_size
+        monkeypatch.setattr(q10, '_run', lambda **kw: pytest.fail('Contender acquired held lock'))
+        for alias in (output, output.parent/'unused/../account'):
+            with pytest.raises(OSError):
+                q10.run(config_path=paper_config, output=alias, end=dt.date(2026, 9, 13))
+            assert child.poll() is None
+            assert lock.exists() and lock.stat().st_size == before
+        assert not output.exists()
+    finally:
+        stop.write_text('release own fixture')
+        child.wait(timeout=10)
+    assert child.returncode == 0
+    monkeypatch.setattr(q10, '_run', lambda **kw: {'reacquired': True})
+    assert q10.run(config_path=paper_config, output=output, end=dt.date(2026, 9, 13))['reacquired']
 
 
 @pytest.fixture
