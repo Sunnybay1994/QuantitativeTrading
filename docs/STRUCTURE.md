@@ -44,6 +44,8 @@
 
 ## 调度脚本与入口
 
+本轮新增统一入口为 `data structured-incremental`、`paper account-30w-top15` 与 `research sue-preliminary-r5`。R5 默认只核验既有输入；显式 `--execute` 且输入合格后才调用原 N1/N3/N4，输出写新目录。独立名称 `sue_prelim_r5_v1` 不替换冻结的 `sue_prelim` 或 Q10；具体参数用统一入口的 `--help` 查询。
+
 下表是本机 2026-11-06 的 14 个 Quant 任务快照，不代表后续调度改造已经部署。当前任务及时间以 Windows 计划任务和 [OPERATIONS](OPERATIONS.md) 为准；本轮改造范围见清单 K2。
 
 | 任务 | 脚本 | 入口 |

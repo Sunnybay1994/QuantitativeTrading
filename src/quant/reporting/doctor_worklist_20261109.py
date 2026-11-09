@@ -92,7 +92,7 @@ def collect(root, clock, *, history=None):
             a2["formal_issue"] = str(exc)
     research = {}
     for name, path in {
-        "R5": "artifacts/research/r5_preliminary_20261108_03/summary.json",
+        "R5": "artifacts/maintenance/r5_pipeline_20261109/actual_final/summary.json",
         "R6": "artifacts/research/event_family_r6_20261108_02/summary.json",
     }.items():
         try:
