@@ -100,6 +100,7 @@ def collect(root, clock, *, history=None):
         except (OSError, ValueError, KeyError, TypeError) as exc:
             research[name] = dict(path=path, issue=str(exc))
     from quant.reporting.worklist_dated_observations import evaluate
+    from quant.reporting.worklist_structured_observations import evaluate as structured_observations
     return dict(
         enabled=True,
         worklist_date="2026-11-09",
@@ -114,6 +115,7 @@ def collect(root, clock, *, history=None):
         research=research,
         acceptance_verified=False,
         dated_observations=evaluate(root,clock,history),
+        structured_observations=structured_observations(root, clock, history),
         scope="Current receipts only. K2 natural month-end orders, A2 December fills/daily runs, "
         "D2 five real trading days, R5/R6 batteries and the second real monthly report remain to verify.",
     )
@@ -157,5 +159,9 @@ def markdown(result):
     for name,row in result.get('dated_observations',{}).items():
         lines.append(f"- 自然运行 {name}（{row['target_date']}）：{row['status']}"
             +(f"；{row['issue']}" if row.get('issue') else '')+'。')
+    if structured := result.get('structured_observations'):
+        lines.append(f"- D2 九表自然新增验收：{structured['status']}；"
+                     f"连续 {structured['longest_consecutive_days']}/5 个交易日；"
+                     "查询成功计数不代替新增验收。")
     lines.append("\n当前不宣告清单验收完成。" + result["scope"])
     return lines
