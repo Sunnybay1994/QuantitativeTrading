@@ -4,6 +4,7 @@ import datetime as dt
 import json
 import math
 import tomllib
+import json
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +12,7 @@ import polars as pl
 
 from quant.research.factor_battery_costs import cost_metrics
 from quant.reporting.multifactor_assessment import holding_metrics
+from quant.research.cost_history_schema import concat_nav_history
 
 
 def compare_nav(strategy: pl.DataFrame, benchmark: pl.DataFrame) -> dict:
@@ -56,7 +58,12 @@ def load_cost_history(run: Path, variant: str, multiplier: float, end) -> tuple[
             trades.append(pl.read_parquet(year/'trades.parquet'))
     if not navs:
         raise ValueError('No cost history')
-    nav = pl.concat(navs, how='vertical_relaxed')
+    replay_config = run/'replay_config.json'
+    execution_dividends = None
+    if replay_config.is_file():
+        context = json.loads(replay_config.read_text(encoding='utf-8'))
+        execution_dividends = Path(context['data_root'])/'clean/stock_execution'/context['snapshot']/'dividends.parquet'
+    nav, _coverage = concat_nav_history(navs, execution_dividends=execution_dividends)
     if nav['date'][-1] != end:
         raise ValueError('Cost history has not reached its configured end date')
     return nav, pl.concat(trades, how='vertical_relaxed')

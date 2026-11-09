@@ -18,6 +18,7 @@ from quant.research.factor_battery_groups import assign_groups
 from quant.research.factor_cost_checkpoint import prepare_resume, read_year, save_year
 from quant.research.run_s1_walk_forward import metrics
 from quant.research.slice_budget import checkpoint
+from quant.research.cost_history_schema import concat_nav_history
 
 
 class NoExecutableTopGroup(ValueError):
@@ -271,18 +272,22 @@ def run_cost_plans(*, settings: dict, plans: dict, sessions: tuple[dt.date, ...]
                     "multiplier": multiplier, "sessions": len(dates),
                     "elapsed_seconds": round(time.perf_counter()-began, 2)}), flush=True)
     rows = []
+    history_schemas = []
     for (variant, multiplier), chunks in pieces.items():
         if not chunks:
             continue
-        nav, trades, rejects = [pl.concat([chunk[index] for chunk in chunks], how="vertical_relaxed")
-                                for index in range(3)]
+        nav, coverage = concat_nav_history([chunk[0] for chunk in chunks],
+            execution_dividends=data_root/'clean/stock_execution'/execution_snapshot/'dividends.parquet')
+        trades, rejects = [pl.concat([chunk[index] for chunk in chunks], how="vertical_relaxed")
+                           for index in (1, 2)]
+        history_schemas.append({'variant': variant, 'cost_multiplier': multiplier, **coverage})
         rows.append({"factor": factor, "variant": variant, "cost_multiplier": multiplier,
                      "first_date": str(nav["date"].min()), "last_date": str(nav["date"].max()),
                      **cost_metrics(nav, trades, initial_cash=settings["portfolio"]["initial_cash"]),
                      "rejected_orders": rejects.height, "delisting_writeoff": nav["delisting_writeoff"].sum()})
     result = {"factor": factor, "execution_snapshot": execution_snapshot,
               "empty_top_group": "cash_on_full_calendar" if start is not None else "cash_after_first_valid_group", "rows": rows,
-              "seconds": time.perf_counter()-began}
+              "seconds": time.perf_counter()-began, "history_schemas": history_schemas}
     (output / "summary.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     return result
 
