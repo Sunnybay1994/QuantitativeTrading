@@ -4,7 +4,8 @@
 
 [notify]
 enabled = true
-# 先留空：未配置通道时写入 artifacts/notify/outbox.jsonl。配好后填 email / wecom / feishu / wxauto。
+# 公开默认留空；运行时叠加 notify.local.dpapi 的本机加密设置。
+# 有效通道仍为空时写入 artifacts/notify/outbox.jsonl；可选 email / wecom / feishu / feishu_app / wxauto。
 channels = []
 
 [email]
