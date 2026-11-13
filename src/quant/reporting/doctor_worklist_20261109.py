@@ -2,6 +2,7 @@
 
 import datetime as dt
 import json
+import math
 
 import polars as pl
 
@@ -79,6 +80,25 @@ def collect(root, clock, *, history=None):
         )
     except (OSError, ValueError, KeyError, TypeError) as exc:
         a2["rehearsal_issue"] = str(exc)
+    try:
+        multiday = _read(root, "artifacts/maintenance/a2_multiday_20261109/handoff.json")
+        if (multiday.get("status") != "verified_retrospective_ledger_diagnostic"
+                or multiday.get("auto_trade") is not False
+                or multiday.get("formal_december_acceptance") is not False
+                or multiday.get("new_oos_evidence") is not False):
+            raise ValueError("Invalid A2 retrospective diagnostic receipt")
+        days = multiday.get("per_day")
+        if not isinstance(days, list) or not days:
+            raise ValueError("A2 retrospective daily ledger missing")
+        if (not math.isfinite(float(days[-1]["equity"]))
+                or dt.date.fromisoformat(days[-1]["date"]) > clock.astimezone(
+                    dt.timezone(dt.timedelta(hours=8))).date()
+                or any(type(multiday[name]) is not int or multiday[name] < 0
+                       for name in ("total_stock_fills", "total_etf_fills"))):
+            raise ValueError("Invalid A2 retrospective date or measurements")
+        a2["multiday_rehearsal"] = multiday
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        a2["multiday_rehearsal_issue"] = str(exc)
     if (root / base / "latest_summary.json").is_file():
         try:
             latest = _read(root, base + "latest_summary.json")
@@ -155,6 +175,11 @@ def markdown(result):
         lines.append(
             f"- {name}：{state}；机器回执 `{row['path']}`。"
         )
+    if multiday := a2.get("multiday_rehearsal"):
+        final = multiday["per_day"][-1]
+        lines.append(f"- A2 多日回溯账本演练，截至历史 {final['date']}："
+                     f"股票成交 {multiday['total_stock_fills']} 笔、ETF {multiday['total_etf_fills']} 笔；"
+                     f"账本净值资产 {final['equity']:.2f} 元。仅机械验证，不计正式账户、OOS或12月验收。")
     lines.extend("- 待核对：" + issue for issue in registry["issues"])
     for name,row in result.get('dated_observations',{}).items():
         lines.append(f"- 自然运行 {name}（{row['target_date']}）：{row['status']}"
