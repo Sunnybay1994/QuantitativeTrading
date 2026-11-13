@@ -262,7 +262,7 @@ def main(argv: list[str] | None = None) -> int:
     paper = sub.add_parser("paper", help="模拟盘与人工订单")
     paper.add_argument("command", choices=["q10", "top15-observation", "account-30w-top15", "rehearse", "order-chain", "order-watch", "orders", "manual", "b16-forward"])
     report = sub.add_parser("report", help="机器报告")
-    report.add_argument("command", choices=["leaderboard", "dashboard", "review", "periods", "funnel", "brief", "q10-rolling", "q10-forward-demo", "account-stock-leg", "account-portfolio"])
+    report.add_argument("command", choices=["leaderboard", "dashboard", "review", "periods", "funnel", "brief", "q10-rolling", "q10-forward-demo", "account-stock-leg", "account-portfolio", "runtime-import-coverage"])
 
     args, rest = parser.parse_known_args(argv)
     if args.group is None:
@@ -302,6 +302,10 @@ def main(argv: list[str] | None = None) -> int:
         if getattr(args, "dry_run", False):
             extra.append("--dry-run")
         return intel_main(extra)
+    if args.group == "report" and args.command == "runtime-import-coverage":
+        from quant.reporting.runtime_import_coverage import main as runtime_import_coverage_main
+
+        return runtime_import_coverage_main(rest)
     key = (args.group, args.command)
     module = _DELEGATE.get(key)
     if module is None:

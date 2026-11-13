@@ -85,8 +85,12 @@
 | `artifacts/tests` | 测试回执 |
 | `artifacts/intel` / `artifacts/llm` | 情报摘要与调用账本 |
 | `artifacts/runtime` | 本地锁与运行状态 |
+| `artifacts/runtime_imports` | 已退出 quant CLI 的逐日模块记录 |
+| `artifacts/runtime_import_coverage` | H1 观测窗口并集、源码清单与未见模块的 CSV/JSON/摘要 |
 | `artifacts/worklog` | 实际日期工作记录 |
 
 `legacy/quant` 已归档实现由现有 shim 保持导入兼容。当前可达的 m3/formal 等模块保留；不按文件名猜测死代码。文档位于 data、operations、reviews、worklists、research、archive；[文档目录](README.md)说明各类资料的用途。过程记录只写 `artifacts/worklog/<实际日期>.md`，当前清单每项只写一行状态；旧清单路径保留跳转入口供自动化使用。
 
 大型历史与参考文档保留原路径作为分卷目录，同目录的 `.part-NN.md` 保存正文；旧标题锚点继续可访问。58份原文按字节备份与还原校验，记录见 `artifacts/maintenance/docs_split_20261109/manifest.json`；分卷不代表新增研究结果。
+
+H1 的统一入口为 `python -m quant report runtime-import-coverage`。正式报告仅在11-23及之后、已积累至少14个日历日的观测窗口时生成；合并窗口日志与当前调用，单列日志无法确认的入口，记录缺日。未见模块不等于死代码，脚本不迁移源文件。单次任务入口由 `scripts/install_runtime_import_coverage.ps1` 登记未来日期，执行脚本为 `scripts/run_runtime_import_coverage.ps1`。
