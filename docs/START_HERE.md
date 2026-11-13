@@ -12,4 +12,4 @@
 
 ## 文档维护约定
 
-README 面向用户，只保留项目介绍、主要功能、常用操作和详细指南入口。通知接入放在 NOTIFICATIONS.md，看板口径放在 DASHBOARD.md，调度与恢复放在 OPERATIONS.md；研究规则、架构和进度分别维护在现有协议、架构文档与路线图。实验结果由流水线报告保存，不把实现记录和阶段性研究结论不断追加到 README。AGENTS.md 保持精简，仅承载必要工作规则。
+README 面向用户，只保留项目介绍、主要功能、常用操作和详细指南入口。通知接入放在[通知说明](operations/NOTIFICATIONS.md)，看板口径放在[DASHBOARD.md](DASHBOARD.md)，调度与恢复放在[OPERATIONS.md](OPERATIONS.md)；研究规则、架构和进度分别维护在现有协议、架构文档与路线图。实验结果由流水线报告保存，不把实现记录和阶段性研究结论不断追加到 README。AGENTS.md 保持精简，仅承载必要工作规则。

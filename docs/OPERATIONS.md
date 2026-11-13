@@ -48,11 +48,10 @@ Q10 与影子账户可独立更新：`python -m quant paper order-chain --to YYY
 晚间入口在启动时固定目标交易日，日更先执行，健康检查随后记录；跨午夜恢复不会把
 昨晚目标改成盘前跳过。补记使用 `python -m quant research daily --to YYYY-MM-DD`，
 保留真实生成时间及 `delayed_recording`，不算及时执行证据。
-已有采集或账户写入时用原脚本 `-To YYYY-MM-DD -WaitForWriter` 等待自然结束；
-等待日志列出实际PID，最多两小时，不停止对方。盘前行情回执按内容日期查找补记目录。
-补记等待器使用 `scripts/run_daily_observation_backfill.ps1 -To YYYY-MM-DD`，沿用上述日更入口；
+已有写入者时，`run_daily_observation.ps1 -To YYYY-MM-DD -WaitForWriter` 请求协作暂停，最多等待480秒；超时在剩余预算内用同日冻结输入生成订单并告警，不停止对方。冻结输入缺失、变化或账户锁不可用则拒绝发布；只生成降级订单不代表完整日更完成。
+盘前行情回执按内容日期查找补记目录。历史补记等待器 `scripts/run_daily_observation_backfill.ps1 -To YYYY-MM-DD` 默认最多等480分钟（`-MaxWaitMinutes`），写入者退出后才调用上述入口；它不是资金路径的限时降级，不要用它替代晚间任务。
 超时和异常均写入终态，不把旧 `queued` 当作活跃恢复。完成需目标日的真实日更回执和同日期
-市场背景回执，不能以目录存在或脚本退出0代替；原失败日志保留，完整快测失败仍如实返回。
+市场背景回执，不能以目录存在或脚本退出0代替；原失败日志保留。完整快测由独立任务 `QuantitativeTrading-FastTests` 每日00:30执行，预算600秒，失败/超时写入 `artifacts/tests/latest.json`，不并入日更退出码。
 公告单日超过3000条时分沪、深、北读取，并核对唯一ID并集等于原查询总数；不截断或静默去重。
 历史失败记录不改写，等待状态不算完成；21:00后仍检查当日执行输入是否完整。
 
@@ -180,11 +179,11 @@ ETF 人工延迟账户：初始化 `python -m quant research etf-manual-init`；
 | 企微 / 飞书 | `WECOM_WEBHOOK` / `FEISHU_WEBHOOK` |
 | 微信 | `WXAUTO_GROUP`，需解锁桌面；可选依赖 `pip install -e ".[wechat]"` |
 
-`configs/notify.toml` 的 `channels` 配好后，日更/挖掘失败会真发消息；未配则写入 `artifacts/notify/outbox.jsonl`。
+有效通知配置合并 `configs/notify.toml`、本机加密配置与环境变量；公开 `channels=[]` 不代表未配置。接入及回执见[通知说明](operations/NOTIFICATIONS.md)，未成功发送的消息保留在 `artifacts/notify/outbox.jsonl`。
 
 ## 证据位置
 
-`python -m quant doctor --no-notify` 会在原报告中追加当前工作清单的已观测进度：指定实验的注册表、冻结配置 SHA、三档结果与报告对应关系，R3 条件区间，以及已发布结构化表的实际行数和日期。产物仍在 `artifacts/doctor/`；本节不代替完整验收。11-15 与 12-01 日期未到时不宣告通过，11-27 预演、11-30 及时订单、12-01 月报及费用对应产物仍须逐项核对自然执行证据。
+`python -m quant doctor --no-notify` 在原报告追加[当前清单](worklists/工作清单_20261109.md)进度：六项注册结果与冻结配置/三档报告、A1跳变反例、A2隔离演练、R5/R6回执及D2自然新增。产物在 `artifacts/doctor/`。11-20中期与12月终验逐项核验；11-27预演、11-30订单、12-01成交/通知/月报及12-02日更，均须真实日期和自然证据，手工演练不代替。
 
 | 问题 | 看哪里 |
 |---|---|
@@ -237,7 +236,7 @@ ETF 人工延迟账户：初始化 `python -m quant research etf-manual-init`；
 ## 09-19 优化工作计划与验收记录
 
 
-按下表顺序交付；不打断冻结批次和日更。测试通过只证明对应行为，跨月、时间片、登录和实际成交仍分别等待生产证据。
+下表保留09-19交付时的历史记录，不是当前任务源。当前只按[工作清单](worklists/工作清单_20261109.md)推进；历史测试不代替后续生产证据。
 
 |顺序|工作|验收条件|状态|
 |---|---|---|---|
