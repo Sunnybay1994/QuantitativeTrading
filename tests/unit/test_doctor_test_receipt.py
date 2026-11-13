@@ -13,6 +13,23 @@ import pytest
 from quant.reporting import doctor, fast_tests as fast
 
 
+def test_source_enumeration_keeps_git_diagnostics_out_of_paths(tmp_path, monkeypatch):
+    def listed(command, **options):
+        assert options['stderr'] == subprocess.PIPE
+        return subprocess.CompletedProcess(command, 0, stdout=b'src/quant/cli.py\0',
+                                           stderr=b'warning: cannot open tests/private/: Permission denied\n')
+    monkeypatch.setattr(fast.subprocess, 'run', listed)
+    with pytest.raises(ValueError, match='Source enumeration reported diagnostics: warning: cannot open'):
+        fast._source_files(tmp_path)
+
+
+def test_source_enumeration_preserves_nul_delimited_names(tmp_path, monkeypatch):
+    monkeypatch.setattr(fast.subprocess, 'run', lambda command, **options:
+                        subprocess.CompletedProcess(command, 0,
+                            stdout=b'tests/a b.py\0src/quant/cli.py\0tests/a b.py\0', stderr=b''))
+    assert fast._source_files(tmp_path) == ['src/quant/cli.py', 'tests/a b.py']
+
+
 def test_temporary_outputs_are_separate_and_existing_tree_is_never_reused(tmp_path, monkeypatch):
     private = tmp_path/'system_temp'
     private.mkdir()
@@ -80,10 +97,14 @@ def child(tmp_path, monkeypatch):
                     prefix=str(Path(sys.prefix).resolve()),
                     module_paths={'quant': str(Path(kwargs['cwd'])/'src/quant/__init__.py'),
                                   'quant.reporting.fast_tests': str(Path(kwargs['cwd'])/'src/quant/reporting/fast_tests.py')})
-                if state['mode'] == 'wrong_selection': record['selection_sha256'] = 'wrong'
-                if state['mode'] == 'optimized': record['optimize'] = 1
-                if state['mode'] == 'outside_source': record['module_paths']['quant'] = str(tmp_path/'src/quant/__init__.py')
-                if state['mode'] == 'missing_worker' and index == workers-1: continue
+                if state['mode'] == 'wrong_selection':
+                    record['selection_sha256'] = 'wrong'
+                if state['mode'] == 'optimized':
+                    record['optimize'] = 1
+                if state['mode'] == 'outside_source':
+                    record['module_paths']['quant'] = str(tmp_path/'src/quant/__init__.py')
+                if state['mode'] == 'missing_worker' and index == workers-1:
+                    continue
                 (output/f'worker_gw{index}.json').write_text(json.dumps(record), encoding='utf-8')
             (output/'collection.json').write_text(json.dumps(dict(nodeids=nodes)), encoding='utf-8')
             if state['mode'] != 'missing_junit':

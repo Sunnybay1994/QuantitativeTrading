@@ -52,3 +52,8 @@ configs/notify-*.tmp
 
 # Disabled local coordination state must remain untracked.
 /.concord/
+
+# Local assistant metadata may link to files outside this checkout.
+/.workbuddy/
+# Local H1 pytest workspace is retained evidence, not a source input.
+/tests/.tmp_runtime_import_coverage_pytest/

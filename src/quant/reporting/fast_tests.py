@@ -48,10 +48,13 @@ def _remaining(start: float) -> float:
 
 
 def _source_files(root: Path) -> list[str]:
-    names = subprocess.check_output(['git', 'ls-files', '--cached', '--others',
+    result = subprocess.run(['git', 'ls-files', '--cached', '--others',
         '--exclude-standard', '-z', '--', *SOURCE_PATHS], cwd=root, timeout=30,
-        stderr=subprocess.STDOUT)
-    return sorted(set(names.decode('utf-8').split('\0'))-{''})
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    if result.stderr.strip():
+        raise ValueError('Source enumeration reported diagnostics: '
+                         + result.stderr.decode('utf-8', errors='replace').strip())
+    return sorted(set(result.stdout.decode('utf-8').split('\0'))-{''})
 
 
 def _xdist_available() -> bool:
