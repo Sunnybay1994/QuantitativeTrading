@@ -103,6 +103,13 @@ def signal_orders(root, clock, history):
             state.get("rehearsal") is not False or state.get("shadow") is not True
         ):
             raise ValueError("A2 signal is a rehearsal or not shadow-only")
+        if name == "account_30w_top15":
+            from quant.execution.account_30w_top15_paper import CONFIG, validate_order_receipt
+
+            validate_order_receipt(output=base.parent, day=day,
+                payloads={p.name: p.read_bytes() for p in paths},
+                config_path=root / CONFIG, now=min(clock, deadline))
+            paths.append(base / "orders_receipt.json")
         orders = pl.read_csv(paths[1])
         if not {"as_of", "execution_date", "symbol", "quantity"} <= set(orders.columns):
             raise ValueError(f"{name}: order schema missing")
@@ -170,14 +177,26 @@ def notification(root, clock, history):
         raise ValueError("Preopen accepted transport receipt missing")
     if dt.datetime.fromtimestamp(path.stat().st_mtime, SH).time() >= dt.time(9, 30):
         raise ValueError("Notification completion was after preopen window")
-    orders = base / "2026-11-30/orders.csv"
-    if hashlib.sha256(orders.read_bytes()).hexdigest() != receipt["orders_sha256"]:
-        raise ValueError("Notification does not match frozen signal orders")
+    from quant.execution.account_30w_top15_paper import CONFIG, FIRST_SIGNAL, validate_order_receipt
+
+    folder = base / str(FIRST_SIGNAL)
+    payloads = {name: (folder / name).read_bytes()
+                for name in ("orders.csv", "orders.md", "state.json")}
+    hashes, config_hash = validate_order_receipt(output=base, day=FIRST_SIGNAL,
+        payloads=payloads, config_path=root / CONFIG, now=sent)
+    state = json.loads(payloads["state.json"])
+    if (state.get("date") != str(FIRST_SIGNAL) or state.get("auto_trade") is not False
+            or state.get("shadow") is not True or state.get("rehearsal") is not False):
+        raise ValueError("Notification does not reference the formal shadow signal state")
+    expected = {"orders_sha256": hashes["orders.csv"], "body_sha256": hashes["orders.md"],
+                "snapshot_sha256": hashes["state.json"], "config_sha256": config_hash}
+    if any(receipt.get(key) != value for key, value in expected.items()):
+        raise ValueError("Notification does not match the complete frozen signal publication")
     return dict(
         native=native_match(history, DAILY, day, clock, [path]),
         transport_accepted=True,
         delivery_read_by_user_verified=False,
-        orders_sha256=receipt["orders_sha256"],
+        **expected,
     )
 
 

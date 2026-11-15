@@ -8,6 +8,7 @@ import polars as pl
 import pytest
 
 from quant.reporting import worklist_dated_observations as observed
+from quant.execution import account_30w_top15_paper as joint
 
 
 def write(path, payload, at):
@@ -80,6 +81,15 @@ def case(tmp_path):
         write(base / "state.json", state, at)
         write(base / "orders.csv", orders, at)
         write(base / "orders.md", "paper", at)
+        if name == 'account_30w_top15':
+            config = joint.CONFIG.read_bytes()
+            expected = tmp_path / joint.CONFIG
+            expected.parent.mkdir(parents=True, exist_ok=True)
+            expected.write_bytes(config)
+            (base.parent / 'config.toml').write_bytes(config)
+            joint.publish_order_receipt(base.parent, signal, at)
+            receipt = base / 'orders_receipt.json'
+            os.utime(receipt, (at.timestamp(), at.timestamp()))
     for day in [dt.date(2026, 12, 1), dt.date(2026, 12, 2)]:
         at = daily(day)
         base = tmp_path / "artifacts/paper" / observed.ACCOUNTS["account_30w_top15"] / str(day)
@@ -101,6 +111,9 @@ def case(tmp_path):
             transport_accepted=True,
             auto_trade=False,
             orders_sha256=hashlib.sha256((root / "2026-11-30/orders.csv").read_bytes()).hexdigest(),
+            body_sha256=hashlib.sha256((root / '2026-11-30/orders.md').read_bytes()).hexdigest(),
+            snapshot_sha256=hashlib.sha256((root / '2026-11-30/state.json').read_bytes()).hexdigest(),
+            config_sha256=hashlib.sha256((root / 'config.toml').read_bytes()).hexdigest(),
         ),
         at,
     )
@@ -181,3 +194,32 @@ def test_daily_success_cannot_hide_missing_or_ineligible_account_outputs(case, c
         os.utime(path, (at, at))
         key = "a2_dec1_notification"
     assert observed.evaluate(root, clock, history)[key]["status"] == "unverified"
+
+
+@pytest.mark.parametrize('change', ['body', 'state', 'config', 'missing_bundle',
+                                   'notification_body_hash', 'notification_state_hash', 'late_publication'])
+def test_notification_acceptance_requires_the_entire_original_publication(case, change):
+    root, history, clock = case
+    account = root / 'artifacts/paper' / observed.ACCOUNTS['account_30w_top15']
+    folder = account / '2026-11-30'
+    if change == 'missing_bundle':
+        (folder / 'orders_receipt.json').unlink()
+    else:
+        path = {'body': folder / 'orders.md', 'state': folder / 'state.json',
+                'config': account / 'config.toml', 'late_publication': folder / 'orders_receipt.json'
+                }.get(change, account / 'manual_rehearsal_notification.json')
+        at = path.stat().st_mtime
+        if change.startswith('notification_') or change == 'late_publication':
+            value = observed.read(path)
+            if change == 'late_publication':
+                value['recorded_at'] = '2026-12-01T08:36:00+08:00'
+            else:
+                value['body_sha256' if change == 'notification_body_hash' else 'snapshot_sha256'] = 'changed'
+            path.write_text(json.dumps(value))
+        else:
+            path.write_bytes(path.read_bytes() + b' ')
+        os.utime(path, (at, at))
+    result = observed.evaluate(root, clock, history)
+    assert result['a2_dec1_notification']['status'] == 'unverified'
+    if change in ['body', 'state', 'config', 'missing_bundle', 'late_publication']:
+        assert result['k2_nov30_orders']['status'] == 'unverified'
