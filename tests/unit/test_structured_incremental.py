@@ -179,3 +179,68 @@ def test_seeded_receipt_reuses_validated_raw_without_new_transport(tmp_path):
     assert receipt['tables']['forecast']['status'] == 'captured'
     assert not client.calls
     assert receipt['seed_sha256']
+
+
+def test_runtime_budget_keeps_inflight_raw_and_resume_does_not_query_again(tmp_path):
+    args, _ = setup(tmp_path, max_run_seconds=1)
+    elapsed = [0.]
+    args['monotonic'] = lambda: elapsed[0]
+
+    def slow_response(table, params):
+        elapsed[0] = 2.
+        return forecast()
+
+    first = module.run(**args, connector=Client(slow_response))
+    assert first['status'] == 'partial' and first['time_budget_exhausted']
+    assert first['tables']['forecast']['status'] == 'partial_budget'
+    assert first['elapsed_seconds'] == 2.
+    raw = next((tmp_path/'raw/tushare/forecast').glob('date=*/*.parquet'))
+    original = raw.read_bytes()
+    elapsed[0] = 0.
+    client = Client(lambda *a: (_ for _ in ()).throw(AssertionError('saved raw must be reused')))
+    resumed = module.run(**args, connector=client, resume=True)
+    assert resumed['status'] == 'checked' and not resumed['time_budget_exhausted']
+    assert not client.calls and raw.read_bytes() == original
+
+
+def test_runtime_budget_stops_trial_cooldown_without_recording_new_intent(tmp_path, monkeypatch):
+    args, _ = setup(tmp_path, ['report_rc'], max_run_seconds=1)
+    elapsed = [0.]
+    args['monotonic'] = lambda: elapsed[0]
+    # The existing intent requires waiting even though the transport is never called.
+    day = NOW.astimezone(dt.timezone(dt.timedelta(hours=8))).date()
+    intents = tmp_path/f'raw/tushare/report_rc/request_intents/{day}'
+    intents.mkdir(parents=True)
+    (intents/'prior.json').write_text(json.dumps({'at': (NOW+dt.timedelta(seconds=61)).isoformat()}))
+    monkeypatch.setattr(module.time, 'sleep', lambda seconds: elapsed.__setitem__(0, elapsed[0]+seconds))
+    client = Client(lambda *a: (_ for _ in ()).throw(AssertionError('deadline must stop cooldown')))
+    result = module.run(**args, connector=client)
+    assert result['status'] == 'partial' and result['time_budget_exhausted']
+    assert not client.calls and len(list(intents.glob('*.json'))) == 1
+
+
+def test_runtime_expiry_between_tables_keeps_completed_publication(tmp_path):
+    args, _ = setup(tmp_path, ['forecast', 'express'], max_run_seconds=1)
+    elapsed = [0.]
+    published = tmp_path/'clean/forecast/snapshot=d2_run1'
+    args['monotonic'] = lambda: elapsed[0]
+
+    def cooperate():
+        if published.exists():
+            elapsed[0] = 2.
+
+    args['yield_check'] = cooperate
+    client = Client(lambda *a: forecast())
+    result = module.run(**args, connector=client)
+    assert result['time_budget_exhausted'] and result['status'] == 'partial'
+    assert result['tables']['forecast']['published'] == str(published)
+    assert len(client.calls) == 1 and (published/'data.parquet').is_file()
+    assert 'express' not in result['tables']
+
+
+@pytest.mark.parametrize('limit', [0, -1, True])
+def test_invalid_runtime_limit_refuses_before_creating_output(tmp_path, limit):
+    args, _ = setup(tmp_path, max_run_seconds=limit)
+    with pytest.raises(ValueError, match='finite and positive'):
+        module.run(**args, connector=Client(lambda *a: forecast()))
+    assert not args['output'].exists()

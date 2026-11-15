@@ -15,7 +15,10 @@ def run(*, config, data_root, output, as_of=None, resume=False):
         config=config, data_root=data_root, output=output, as_of=as_of, resume=resume
     )
     panel = {"status": "deferred", "reason": "structured capture yielded to capital path"}
-    if structured["status"] != "deferred":
+    if (structured.get("time_budget_exhausted") or
+            structured.get("elapsed_seconds", 0) >= structured.get("max_run_seconds", float('inf'))):
+        panel = {"status": "deferred", "reason": "structured runtime budget exhausted"}
+    elif structured["status"] != "deferred":
         try:
             folder = output / "futures"
             if (folder / "summary.json").is_file():

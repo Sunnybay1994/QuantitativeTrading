@@ -2,6 +2,7 @@
 import datetime as dt
 import hashlib
 import json
+import math
 from pathlib import Path
 import tomllib
 import time
@@ -18,6 +19,10 @@ from quant.data.structured_availability import due_dates, normalize_increment, s
 
 class RequestBudget(RuntimeError):
     pass
+
+
+class RuntimeBudget(RequestBudget):
+    """Stop at a safe page boundary without losing an in-flight raw response."""
 
 
 class DayClient:
@@ -115,11 +120,16 @@ def request_dates(data_root, table, rule, spec, as_of, clock, calendar):
 
 def _run(*, config=Path('configs/data/structured_sources.toml'), data_root=Path('data'),
         output, as_of=None, connector=None, resume=False, tables=None, now=None, yield_check=None,
-        seed_receipt=None):
+        seed_receipt=None, monotonic=None):
     config, data_root, output = Path(config), Path(data_root), Path(output)
     clock = now or (lambda: dt.datetime.now(dt.timezone.utc))
     as_of = as_of or clock().astimezone(SH).date()
     spec = tomllib.loads(config.read_text(encoding='utf-8'))
+    limit = spec.get('max_run_seconds', 900)
+    if type(limit) not in (int, float) or not math.isfinite(limit) or limit <= 0:
+        raise ValueError('max_run_seconds must be finite and positive')
+    timer = monotonic or time.monotonic
+    started = timer()
     if spec['auto_trade'] is not False:
         raise ValueError('auto_trade must remain false')
     selected = list(tables or spec['tables'])
@@ -135,7 +145,9 @@ def _run(*, config=Path('configs/data/structured_sources.toml'), data_root=Path(
               'source_id': spec['id']}
     if any(key in receipt and receipt[key] != value for key, value in frozen.items()):
         raise ValueError('Changed immutable incremental request')
-    receipt.update(frozen, status='running', auto_trade=False, observed_at=clock().isoformat())
+    receipt.update(frozen, status='running', auto_trade=False, observed_at=clock().isoformat(),
+                   max_run_seconds=limit, time_budget_exhausted=False,
+                   runtime_limit_policy='cooperative_before_requests_pages_publication; in-flight raw retained')
     if seed_receipt and not receipt['tables']:
         seed = json.loads(Path(seed_receipt).read_text(encoding='utf-8'))
         if seed['as_of'] != str(as_of):
@@ -147,16 +159,33 @@ def _run(*, config=Path('configs/data/structured_sources.toml'), data_root=Path(
             receipt['tables'][name] = {'requests': old.get('requests', {}), 'attempted_calls': 0}
     if not (output/'config.toml').exists():
         (output/'config.toml').write_bytes(config.read_bytes())
-    save = lambda: atomic_json(path, receipt)
+    def save():
+        receipt['elapsed_seconds'] = max(0., timer()-started)
+        atomic_json(path, receipt)
+
+    def finish_budget(exc):
+        receipt.update(status='partial', reason=str(exc), time_budget_exhausted=True,
+                       finished_at=clock().isoformat())
+        save()
+        return receipt
+
     save()
     calendar = sessions(data_root)
-    check = yield_check or (lambda: _yield_check(data_root))
+    cooperate = yield_check or (lambda: _yield_check(data_root))
+
+    def check():
+        cooperate()
+        if timer()-started >= limit:
+            raise RuntimeBudget('Runtime budget exhausted; resume saved raw in this receipt')
+
     client = connector or TushareConnector()
     store = RawStore(data_root/'raw')
     total = {'used': 0, 'limit': spec['max_requests_per_run']}
     for table in selected:
         try:
             check()
+        except RuntimeBudget as exc:
+            return finish_budget(exc)
         except Exception as exc:
             from quant.core.capital_window import CapitalPathPause
             if not isinstance(exc, CapitalPathPause):
@@ -186,6 +215,7 @@ def _run(*, config=Path('configs/data/structured_sources.toml'), data_root=Path(
                     found = 0
                     for frame, record in pages(table=rule['api'], rule=rule, spec=spec, symbol=symbol,
                             first=day, last=day, receipt=state, client=wrapped, store=store, save=save):
+                        check()
                         frame, rejected = split_native_rows(table, frame)
                         quarantined += rejected.height
                         if not frame.is_empty():
@@ -232,6 +262,8 @@ def _run(*, config=Path('configs/data/structured_sources.toml'), data_root=Path(
                          error_type=type(exc).__name__, error=str(exc), updated_at=clock().isoformat())
             if not isinstance(exc, (CapitalPathPause, RequestBudget)):
                 state['status'] = source_status
+            if isinstance(exc, RuntimeBudget):
+                return finish_budget(exc)
             if isinstance(exc, CapitalPathPause):
                 receipt.update(status='deferred', reason=str(exc))
                 save()

@@ -4,6 +4,7 @@ lookback_calendar_days = 7
 page_size = 1000
 request_pause_seconds = 2.0
 max_requests_per_run = 300
+max_run_seconds = 900
 max_catchup_calendar_days = 31
 revision_policy = "native content hash versions; seven-day overlap; resume missed checked dates within bounded catchup"
 capital_window_policy = "yield_between_pages_and_tables"

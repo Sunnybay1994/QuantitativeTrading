@@ -47,6 +47,25 @@ def test_quote_failure_is_partial_and_preserves_structured_receipt(tmp_path, mon
     assert json.loads((tmp_path / "summary.json").read_text())["status"] == "checked"
 
 
+@pytest.mark.parametrize('timing', [
+    {'time_budget_exhausted': True},
+    {'time_budget_exhausted': False, 'elapsed_seconds': 900, 'max_run_seconds': 900},
+])
+def test_runtime_budget_does_not_start_followup_futures_query(tmp_path, monkeypatch, timing):
+    record = dict(status='partial', as_of='2026-11-06', **timing)
+
+    def incremental(**kwargs):
+        (tmp_path/'summary.json').write_text(json.dumps(record))
+        return record
+
+    monkeypatch.setattr(daily, 'incremental', incremental)
+    monkeypatch.setattr(daily, 'futures', lambda **kw: pytest.fail('budget already exhausted'))
+    result = daily.run(config=tmp_path/'config', data_root=tmp_path/'data', output=tmp_path)
+    assert result['status'] == 'partial'
+    assert result['futures']['status'] == 'deferred'
+    assert json.loads((tmp_path/'summary.json').read_text()) == record
+
+
 def test_monthly_brief_uses_observed_futures_panel_and_keeps_basis_unknown(tmp_path, monkeypatch):
     from quant.reporting import research_brief as brief
 
