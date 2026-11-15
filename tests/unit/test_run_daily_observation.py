@@ -78,6 +78,48 @@ def test_saved_isolated_and_controls_not_overridden(env):
     assert monthly.call_count == 1
 
 
+@pytest.mark.parametrize('failed', [True, False])
+def test_joint_account_health_is_included_in_daily_completion(env, monkeypatch, failed):
+    from quant.execution import account_30w_top15_paper, q10_paper
+    args, model, b20, b32, monthly = env
+    args['rehearsal'] = False
+    day = '2026-09-14'
+    args['to'] = day
+
+    def model_for_day(**kwargs):
+        kwargs['output'].mkdir()
+        (kwargs['output']/'refresh.json').write_text(json.dumps({
+            'latest_session': day, 'intraday_errors': [], 'input_quality': {'errors': []}}))
+        return {'as_of': day, 'status': 'recorded'}
+
+    model.side_effect = model_for_day
+    b20.return_value['as_of'] = day
+    b20.return_value['accounts'] = [{'output': f'/account/{i}/{day}'} for i in range(6)]
+    b32.return_value = {'accounts': [{'account': name, 'as_of': day} for name in daily.ACCOUNTS]}
+    monthly.return_value = {'as_of': day}
+    for name in daily.ACCOUNTS:
+        folder = args['account_root']/'b32'/name/day
+        folder.mkdir()
+        (folder/'state.json').write_text('{}')
+    monkeypatch.setattr(daily, 'run_risk', Mock(return_value={'status': 'complete', 'requires_review': False}))
+    monkeypatch.setattr(daily, 'run_monitor', Mock(return_value={'status': 'insufficient', 'requires_review': False}))
+    with args['config'].open('a') as stream:
+        stream.write('\n[q10]\nconfig="fixture"\noutput="fixture"\n'
+                     '[account_30w_top15]\nconfig="joint-fixture"\noutput="joint-fixture"\n')
+    monkeypatch.setattr(daily, 'latest_session', lambda **kw: dt.date(2026, 9, 14))
+    monkeypatch.setattr(q10_paper, 'run', lambda **kw: {'as_of': '2026-09-14', 'reference_orders': 0})
+    observation = ({'status': 'failed', 'error': 'same-day ETF unavailable'} if failed else
+                   {'status': 'not_started', 'as_of': '2026-09-14', 'inception': '2026-11-30', 'auto_trade': False})
+    monkeypatch.setattr(account_30w_top15_paper, 'observe_from_daily', lambda *a, **kw: observation)
+    result = daily.run(**args)
+    assert result['status'] == ('incomplete' if failed else 'complete')
+    assert result['stages']['q10']['status'] == 'complete'
+    report = (args['output']/'report.md').read_text(encoding='utf-8')
+    assert '30万元同形观察账户' in report
+    assert 'account_30w_top15（原REJECTED保留）' not in report
+    assert result['requires_review'] is failed
+
+
 @pytest.mark.parametrize('failed', [False, True])
 def test_b16_daily_hook_isolates_failure(env, monkeypatch, failed):
     from quant.execution import b16_forward

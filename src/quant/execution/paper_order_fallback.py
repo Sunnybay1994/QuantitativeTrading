@@ -16,6 +16,7 @@ from quant.data.refresh import SHANGHAI
 from quant.data.stock_paper_inputs import StockPaperInputs, read_stock_paper_calendar, read_stock_paper_inputs
 from quant.execution import q10_paper
 from quant.execution.paper_rehearsal import DEFAULT_CONFIG
+from quant.execution.paper_order_chain import a2_result_ok
 
 
 def guard(deadline=None):
@@ -224,6 +225,9 @@ def run(*, config=DEFAULT_CONFIG, end, output, account_writer=False, as_month_en
             observation=dict(status='unavailable',reason=f'{type(exc).__name__}: {exc}')
         result['observation_accounts']={'account_30w_top15':observation}
     result['status']='complete' if result['accounts'] and all(x['status']=='complete' for x in result['accounts'].values()) else 'unavailable'
+    if settings.get('account_30w_top15') and not a2_result_ok(
+            result.get('observation_accounts', {}).get('account_30w_top15'), end):
+        result['status'] = 'unavailable'
     result['elapsed_seconds']=time.monotonic()-began
     (output/'summary.json').write_text(json.dumps(result,indent=2),encoding='utf-8')
     return result

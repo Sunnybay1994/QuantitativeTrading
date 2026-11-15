@@ -86,6 +86,34 @@ def fake_freeze(**kw):
                 _controls_sha256=None, _account_snapshot=dict(path=str(state),sha256=fallback.digest(state)))
 
 
+@pytest.mark.parametrize('observation, expected', [
+    ({'status': 'unavailable', 'reason': 'missing same-day ETF capture'}, 'unavailable'),
+    ({'status': 'complete', 'as_of': '2026-11-05', 'auto_trade': False}, 'unavailable'),
+    ({'status': 'not_started', 'as_of': '2026-11-06', 'inception': '2026-11-30', 'auto_trade': False}, 'complete'),
+    ({'status': 'complete', 'as_of': '2026-11-06', 'auto_trade': False}, 'complete'),
+])
+def test_joint_frozen_failure_does_not_become_complete_via_primary(tmp_path, monkeypatch, observation, expected):
+    account, _, _, config, daily = setup_account(tmp_path)
+    with daily.open('a') as stream:
+        stream.write('[account_30w_top15]\n'
+                     f'config={json.dumps(config.as_posix())}\noutput="joint-fixture"\n')
+    monkeypatch.setattr(fallback, 'freeze_account', fake_freeze)
+
+    def publish(**kw):
+        kw['preflight']()
+        kw['before_publish']()
+        (account/'latest_orders.md').write_text('primary completed independently')
+        return {'as_of': '2026-11-06'}
+
+    monkeypatch.setattr(fallback.q10_paper, 'run', publish)
+    from quant.execution import account_30w_top15_frozen
+    monkeypatch.setattr(account_30w_top15_frozen, 'run', lambda *a, **kw: observation)
+    result = fallback.run(config=daily, end=dt.date(2026, 11, 6), output=tmp_path/'receipt')
+    assert result['status'] == expected
+    assert result['accounts']['q10']['status'] == 'complete'
+    assert (account/'latest_orders.md').read_text() == 'primary completed independently'
+
+
 def test_primary_publishes_before_slow_shadow_and_a2_share_budget(tmp_path,monkeypatch):
     account,state,_,config,daily=setup_account(tmp_path)
     shadow=tmp_path/'shadow'

@@ -2,7 +2,39 @@ import datetime as dt
 import json
 from dataclasses import dataclass
 
+import pytest
+
 from quant.execution import paper_order_chain as chain
+
+
+@pytest.mark.parametrize('observation, expected', [
+    ({'status': 'failed', 'error': 'missing same-day ETF capture'}, 'failed'),
+    ({'status': 'complete', 'as_of': '2026-11-12', 'auto_trade': False}, 'failed'),
+    ({'status': 'not_started', 'as_of': '2026-11-13', 'inception': '2026-11-12', 'auto_trade': False}, 'failed'),
+    ({'status': 'not_started', 'as_of': '2026-11-13', 'inception': '2099-01-01', 'auto_trade': False}, 'failed'),
+    ({'status': 'not_started', 'as_of': '2026-11-13', 'inception': '2026-11-30', 'auto_trade': False}, 'complete'),
+    ({'status': 'complete', 'as_of': '2026-11-13', 'auto_trade': False}, 'complete'),
+])
+def test_joint_account_result_controls_chain_success_without_erasing_primary(tmp_path, monkeypatch, observation, expected):
+    config = tmp_path/'daily.toml'
+    primary = tmp_path/'primary'
+    config.write_text('auto_trade=false\n[q10]\nconfig="fixture"\n'
+                     f'output="{primary.as_posix()}"\n'
+                     '[account_30w_top15]\nconfig="joint-fixture"\noutput="joint-fixture"\n')
+
+    def publish(**kwargs):
+        primary.mkdir()
+        (primary/'latest_orders.md').write_text('preserved primary reference')
+        return {'as_of': '2026-11-13', 'reference_orders': 0}
+
+    monkeypatch.setattr(chain, 'run_q10', publish)
+    from quant.execution import account_30w_top15_paper
+    monkeypatch.setattr(account_30w_top15_paper, 'observe_from_daily', lambda *a, **kw: observation)
+    result = chain.run(config=config, end=dt.date(2026, 11, 13), output=tmp_path/'receipt')
+    assert result['status'] == expected
+    assert (primary/'latest_orders.md').read_text() == 'preserved primary reference'
+    assert result['accounts']['q10']['status'] == 'complete'
+    assert json.loads((tmp_path/'receipt/summary.json').read_text()) == result
 
 
 def test_rejected_observation_failure_does_not_block_primary_or_send(tmp_path, monkeypatch):

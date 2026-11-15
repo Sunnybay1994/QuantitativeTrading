@@ -12,6 +12,18 @@ from quant.execution.paper_rehearsal import DEFAULT_CONFIG
 from quant.execution.q10_paper import run as run_q10
 
 
+def a2_result_ok(value: dict | None, end: dt.date) -> bool:
+    """An A2 failure cannot be hidden by healthy monitoring accounts."""
+    if not isinstance(value, dict) or value.get('auto_trade') is not False or value.get('as_of') != str(end):
+        return False
+    if value.get('status') == 'complete':
+        return True
+    if value.get('status') == 'not_started':
+        from quant.execution.account_30w_top15_paper import FIRST_SIGNAL
+        return value.get('inception') == str(FIRST_SIGNAL) and end < FIRST_SIGNAL
+    return False
+
+
 def push_reference(*, account: Path, summary: dict) -> dict:
     """Send each dated order payload once; retain failed sends for retry."""
     if summary.get('rehearsal') or summary.get('observation_only') or summary.get('auto_trade') is not False:
@@ -93,6 +105,9 @@ def run(*, config: Path = DEFAULT_CONFIG, end: dt.date,
             data_root=Path(settings.get('data_root', 'data')), forecast=forecast)
     receipt['status'] = 'complete' if receipt['accounts'] and all(
         r['status'] == 'complete' for r in receipt['accounts'].values()) else 'failed'
+    if settings.get('account_30w_top15') and not a2_result_ok(
+            receipt.get('observation_accounts', {}).get('account_30w_top15'), end):
+        receipt['status'] = 'failed'
     save()
     return receipt
 

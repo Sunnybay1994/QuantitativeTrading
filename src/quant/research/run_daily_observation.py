@@ -61,7 +61,8 @@ def write_daily_report(record: dict[str, Any], output: Path) -> None:
     if errors:
         lines += ['', '需处理的输入问题：', *['- '+str(error) for error in errors]]
     for name, observed in record.get('observation_accounts', {}).items():
-        lines += ['', f"仅观察账户 {name}（原REJECTED保留）：{observed['status']}。"]
+        label = '30万元同形观察账户' if name == 'account_30w_top15' else f'仅观察账户 {name}（原REJECTED保留）'
+        lines += ['', f"{label}：{observed['status']}。"]
         if observed.get('error'):
             lines.append(observed['error'])
     for name, stage in record['stages'].items():
@@ -449,7 +450,12 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
                 'requires_review': slip['requires_review'] or view['status'] != 'complete'}
         stage('forward_tracking', tracking, lambda value:
             value['dashboard']['status'] == 'complete' and not value['shadow']['errors'])
-    result['requires_review'] = (stages['risk'].get('result', {}).get('requires_review', True)
+    joint_ok = not settings.get('account_30w_top15') or rehearsal
+    if not joint_ok and result.get('as_of'):
+        from quant.execution.paper_order_chain import a2_result_ok
+        joint_ok = a2_result_ok(result.get('observation_accounts', {}).get('account_30w_top15'),
+                                dt.date.fromisoformat(result['as_of']))
+    result['requires_review'] = (not joint_ok or stages['risk'].get('result', {}).get('requires_review', True)
         or stages['signal_monitor'].get('result', {}).get('requires_review', True)
         or (settings.get('candidate_forward', {}).get('enabled', False)
             and stages.get('candidate_forward', {}).get('status') != 'complete')
@@ -457,7 +463,7 @@ def run(*, config: Path, output: Path, to: str = 'today', saved_data: bool = Fal
             and (stages.get('candidate_scoring', {}).get('status') != 'complete'
                  or stages.get('candidate_scoring', {}).get('result', {}).get('requires_review', False)))
         or stages.get('forward_tracking', {}).get('result', {}).get('requires_review', False))
-    result['status'] = ('complete' if stages and all(
+    result['status'] = ('complete' if joint_ok and stages and all(
         s['status'] == 'complete' for s in stages.values()) else 'incomplete')
     save_summary()
     return result
