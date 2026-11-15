@@ -9,10 +9,11 @@ from quant.research.monthly_sue_family import build_monthly_sue_prelim
 NOW=dt.datetime(2026,11,5,3,tzinfo=dt.timezone.utc)
 
 
-def publish(root,table,*,snapshot='one',identifier=None,seen=NOW,**values):
-    path=root/f'clean/{table}/snapshot={snapshot}/year=2026'
+def publish(root,table,*,snapshot='one',identifier=None,seen=NOW,flat=False,**values):
+    snapshot_root=root/f'clean/{table}/snapshot={snapshot}'
+    path=snapshot_root if flat else snapshot_root/'year=2026'
     path.mkdir(parents=True)
-    (path.parent/'summary.json').write_text('{}')
+    (snapshot_root/'summary.json').write_text('{}')
     row={'ts_code':'000001.SZ','ann_date':'20261010','end_date':'20260930',
         'available_at':seen,'observed_at':seen,'source_row_id':identifier or table,
         'source_raw_path':f'raw/{table}/{snapshot}.parquet',**values}
@@ -50,6 +51,27 @@ def test_current_download_does_not_retroactively_fill_announced_history(tmp_path
         candidate_symbols=('000001.SZ',),preliminary_history=history)
     assert result.eligibility['preliminary_observation_count'][0]==0
     assert result.factors['sue_prelim'][0] is None
+
+
+def test_daily_flat_publication_reaches_common_consumer_with_actual_cutoff(tmp_path):
+    publish(tmp_path,'forecast',net_profit_min=100.,net_profit_max=200.)
+    later=NOW+dt.timedelta(days=1)
+    publish(tmp_path,'forecast',snapshot='d2_new',identifier='new',flat=True,seen=later,
+            net_profit_min=120.,net_profit_max=220.)
+    publish(tmp_path,'forecast',snapshot='d2_repeat',flat=True,seen=later,
+            net_profit_min=100.,net_profit_max=200.)
+    publish(tmp_path,'express',snapshot='d2_express',flat=True,seen=later,n_income=150.)
+    before=read_preliminary_history(tmp_path,known_at=later-dt.timedelta(seconds=1))
+    assert before.height==1 and before['source_row_id'].to_list()==['forecast']
+    history=read_preliminary_history(tmp_path,known_at=later)
+    assert history.height==3 and set(history['source_row_id'])=={'forecast','new','express'}
+    original=history.filter(pl.col('source_row_id')=='forecast').row(0,named=True)
+    assert original['observed_at']==NOW and original['source_raw_path']=='raw/forecast/one.parquet'
+    result=build_monthly_sue_prelim(income_history=pl.DataFrame(),
+        signal_dates=(dt.date(2026,11,6),dt.date(2026,11,7)),
+        candidate_symbols=('000001.SZ',),preliminary_history=history)
+    assert result.eligibility.sort('as_of')['preliminary_observation_count'].to_list()==[1,3]
+    assert result.factors['sue_prelim'].null_count()==2
 
 
 def test_repeated_source_keeps_first_seen_but_distinct_revisions_stay_distinct(tmp_path):

@@ -1,4 +1,4 @@
-"""Published D1 forecast/express observations for the existing SUE S4 consumer."""
+"""Published D1/D2 forecast/express observations for the existing SUE S4 consumer."""
 import datetime as dt
 from pathlib import Path
 
@@ -24,7 +24,7 @@ def read_preliminary_history(data_root,*,known_at=None):
     """Keep ranges and distinct profit definitions; never invent a point surprise.
 
     Historical supplier downloads remain unavailable before their observed time.
-    Only atomically published table snapshots enter the consumer.
+    Only published annual partitions and flat daily snapshots enter the consumer.
     """
     known_at=known_at or dt.datetime.now(dt.timezone.utc)
     if known_at.tzinfo is None:raise ValueError('Require timezone-aware preliminary observation cutoff')
@@ -32,7 +32,11 @@ def read_preliminary_history(data_root,*,known_at=None):
     sections=[]
     for table,fields in NUMERIC.items():
         for summary in sorted((Path(data_root)/'clean'/table).glob('snapshot=*/summary.json')):
-            for path in sorted(summary.parent.glob('year=*/data.parquet')):
+            files=sorted(summary.parent.glob('year=*/data.parquet'))
+            flat=summary.parent/'data.parquet'
+            if flat.is_file():
+                files.append(flat)
+            for path in files:
                 frame=pl.read_parquet(path)
                 required={'ts_code','ann_date','end_date','available_at','observed_at','source_row_id','source_raw_path'}
                 if not required<=set(frame.columns):
