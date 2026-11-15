@@ -24,7 +24,7 @@
 |P5|A2健康、输入互斥、首次发布时钟及21:05准备/22:30检查已接线；[当前代码三账户隔离验证](../../artifacts/maintenance/review_20261115/k2_current/report.md)已留实测，首次自然准备与月末证据待验。|
 |P6|30万元观察账户及清单/正文/快照/配置的发布校验已接线；11-30真实目标、订单及及时性仍需到期验证，原正式信号不提前补造。|
 |P7|盘前通知与最终验收均绑定发布正文、原账户状态和配置；12-01实际成交/通知仍待到期，三日回溯演练不代替自然验收或用户人工演练。|
-|P8|15分钟预算及通用预告读取器兼容已修复验证，并完成[预告/快报手工补查](../../artifacts/maintenance/review_20261115/preliminary_current/verification.json)；研报权限仍partial，不计九表自然验收，不改交易权重。|
+|P8|预算/读取兼容已修复验证，[预告快报](../../artifacts/maintenance/review_20261115/preliminary_current/verification.json)与[四张事件表](../../artifacts/maintenance/review_20261115/events_current/report.md)已实际补查；研报权限仍partial，不计九表自然验收，不改交易权重。|
 |P9|沿用已有R5隔离入口与R6首轮结果：历史合格不足，统计未完成；不因新日期或当前下载构造历史PIT，不自动开启v3。|
 |P10|保持未来影子观察与用户真钱裁定；不预先承诺2027年转真金，不使用两个月收益替代长期准入。|
 
