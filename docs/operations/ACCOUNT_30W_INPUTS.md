@@ -36,3 +36,5 @@ python -m quant data account-30w-inputs --to YYYY-MM-DD --output artifacts/data/
 注册与手工准备分别核对，不把`Ready`或未运行状态当成自然成功。机器证据见[本轮输入核验](../../artifacts/maintenance/review_20261115/account_inputs/verification.json)；月末仍需11-30订单、12-01成交与通知等实际证据。
 
 12-01盘前 `python -m quant paper account-30w-top15 --notify-due` 只发送冻结11-30模拟清单供人工演练，不下真钱；正式入口仍是 `python -m quant paper account-30w-top15 --to YYYY-MM-DD`。
+
+账户保存每日清单时同步生成 `orders_receipt.json`，绑定该日 `orders.csv`、用户看到的 `orders.md`、`state.json` 及冻结配置的SHA，并记录实际发布时刻与发布代码文件SHA。盘前通知持账户锁读取这份清单；正文、订单、状态或配置有变动、回执缺失或晚于读取时刻时拒绝发送，不临时重建另一份权重。通知回执记录实际发送正文和账户快照SHA。首次发送仍须等11-30真实清单及12-01实际盘前时刻，历史隔离演练不创建正式通知。

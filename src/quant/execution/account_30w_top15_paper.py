@@ -4,6 +4,7 @@ import argparse
 import copy
 import datetime as dt
 import hashlib
+import io
 import json
 import tomllib
 from pathlib import Path
@@ -144,6 +145,23 @@ def reference_orders(state, book, following, config, controls):
     )
 
 
+def publish_order_receipt(output, day, observed_at):
+    """Bind the user-facing text to the exact published orders and account state."""
+    folder = Path(output) / str(day)
+    receipt = dict(
+        as_of=str(day), recorded_at=observed_at.isoformat(),
+        files={name: hashlib.sha256((folder / name).read_bytes()).hexdigest()
+               for name in ("orders.csv", "orders.md", "state.json")},
+        config_sha256=hashlib.sha256((Path(output) / "config.toml").read_bytes()).hexdigest(),
+        publisher_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        auto_trade=False,
+    )
+    temporary = folder / "orders_receipt.json.tmp"
+    temporary.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+    temporary.replace(folder / "orders_receipt.json")
+    return receipt
+
+
 def save(output, state, book, orders, result, controls, observed_at):
     state.update(
         auto_trade=False,
@@ -188,6 +206,7 @@ def save(output, state, book, orders, result, controls, observed_at):
         output / state["date"] / "orders.md",
     ]:
         path.write_text(text, encoding="utf-8")
+    receipt = publish_order_receipt(output, state["date"], observed_at)
     summary = dict(
         status="complete",
         as_of=state["date"],
@@ -204,6 +223,8 @@ def save(output, state, book, orders, result, controls, observed_at):
         reference_orders=len(rows),
         estimated_notional=sum(r["estimated_notional"] for r in rows),
         rehearsal=bool(state.get("rehearsal")),
+        orders_sha256=receipt["files"]["orders.csv"],
+        snapshot_sha256=receipt["files"]["state.json"],
         output=str(output),
     )
     (output / "latest_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -496,8 +517,9 @@ def _notify_due(*, config_path=CONFIG, output=OUTPUT, now=None, sender=None):
         return dict(status="not_due", auto_trade=False)
     output = Path(output)
     signal_root = output / str(FIRST_SIGNAL)
-    order_path = signal_root / "orders.csv"
-    orders = pl.read_csv(order_path)
+    payloads = {name: (signal_root / name).read_bytes()
+                for name in ("orders.csv", "orders.md", "state.json")}
+    orders = pl.read_csv(io.BytesIO(payloads["orders.csv"]))
     if (
         orders.is_empty()
         or set(orders["execution_date"]) != {str(now.date())}
@@ -506,7 +528,7 @@ def _notify_due(*, config_path=CONFIG, output=OUTPUT, now=None, sender=None):
         raise ValueError(
             "Manual rehearsal notification requires actual November 30 orders for December 1"
         )
-    state = json.loads((signal_root / "state.json").read_text(encoding="utf-8"))
+    state = json.loads(payloads["state.json"])
     if (
         state.get("date") != str(FIRST_SIGNAL)
         or state.get("auto_trade") is not False
@@ -514,22 +536,40 @@ def _notify_due(*, config_path=CONFIG, output=OUTPUT, now=None, sender=None):
         or state.get("rehearsal") is not False
     ):
         raise ValueError("Require completed formal signal-day shadow state, not a rehearsal")
-    digest = hashlib.sha256(order_path.read_bytes()).hexdigest()
+    published = signal_root / "orders_receipt.json"
+    if not published.is_file():
+        raise ValueError("Missing published order bundle receipt")
+    bundle = json.loads(published.read_bytes())
+    actual = {name: hashlib.sha256(value).hexdigest() for name, value in payloads.items()}
+    frozen_config = hashlib.sha256((output / "config.toml").read_bytes()).hexdigest()
+    requested_config = hashlib.sha256(Path(config_path).read_bytes()).hexdigest()
+    observed = dt.datetime.fromisoformat(bundle["recorded_at"])
+    if (bundle.get("as_of") != str(FIRST_SIGNAL) or bundle.get("files") != actual
+            or bundle.get("config_sha256") != frozen_config or frozen_config != requested_config
+            or observed.tzinfo is None or observed > now):
+        raise ValueError("Changed or unavailable published order bundle; notification refused")
+    digest = actual["orders.csv"]
     receipt_path = output / "manual_rehearsal_notification.json"
     if receipt_path.exists():
         previous = json.loads(receipt_path.read_text(encoding="utf-8"))
-        if previous["orders_sha256"] == digest:
+        if (previous["orders_sha256"] == digest
+                and previous.get("body_sha256") == actual["orders.md"]
+                and previous.get("snapshot_sha256") == actual["state.json"]
+                and previous.get("config_sha256") == frozen_config):
             return previous
-        raise ValueError("Manual rehearsal order content changed after notification attempt")
+        raise ValueError("Manual rehearsal published content changed after notification attempt")
     if sender is None:
         from quant.notify import send
 
         sender = send
-    body = (signal_root / "orders.md").read_text(encoding="utf-8")
+    body = payloads["orders.md"].decode("utf-8")
     attempt = dict(
         status="attempting",
         as_of=now.isoformat(),
         orders_sha256=digest,
+        body_sha256=actual["orders.md"],
+        snapshot_sha256=actual["state.json"],
+        config_sha256=frozen_config,
         auto_trade=False,
         late=now.time() >= dt.time(9, 30),
     )
@@ -562,7 +602,8 @@ def notify_due(*, config_path=CONFIG, output=OUTPUT, now=None, sender=None):
     from quant.execution.manual_session_service import instance_lock
 
     with instance_lock(Path(output) / "notification.lock"):
-        return _notify_due(config_path=config_path, output=output, now=clock, sender=sender)
+        with instance_lock(Path(output) / "writer.lock"):
+            return _notify_due(config_path=config_path, output=output, now=clock, sender=sender)
 
 
 def main():

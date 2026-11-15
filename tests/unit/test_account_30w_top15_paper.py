@@ -1,6 +1,7 @@
 """Exercise the actual shared ledger and A2 order outputs in an isolated account."""
 
 import datetime as dt
+import hashlib
 import json
 from types import SimpleNamespace
 
@@ -104,6 +105,11 @@ def test_first_signal_has_fifteen_limits_and_two_etf_quantities(account):
     assert etfs["limit_price"].null_count() == 2 and set(etfs["order_type"]) == {"MARKET"}
     assert all(x.endswith("T09:15:00+08:00") for x in orders["planned_submit_at"])
     assert result["equity"] == 300000 and result["rehearsal"]
+    receipt = json.loads((output / '2026-01-30/orders_receipt.json').read_bytes())
+    for name, digest in receipt['files'].items():
+        assert digest == hashlib.sha256((output / '2026-01-30' / name).read_bytes()).hexdigest()
+    assert result['orders_sha256'] == receipt['files']['orders.csv']
+    assert result['snapshot_sha256'] == receipt['files']['state.json']
 
 
 def test_actual_mixed_fills_share_cash_and_resume_does_not_rewrite_fills(account):
@@ -142,6 +148,9 @@ def test_notify_uses_frozen_signal_orders_once_and_never_a_rehearsal(tmp_path):
     (folder / "orders.md").write_text("manual paper orders", encoding="utf-8")
     state = dict(date="2026-11-30", auto_trade=False, shadow=True, rehearsal=False)
     (folder / "state.json").write_text(json.dumps(state))
+    (output / 'config.toml').write_bytes(paper.CONFIG.read_bytes())
+    paper.publish_order_receipt(output, '2026-11-30',
+                                dt.datetime(2026, 11, 30, 21, 30, tzinfo=paper.SHANGHAI))
     calls = []
 
     def sender(*args):
@@ -157,8 +166,59 @@ def test_notify_uses_frozen_signal_orders_once_and_never_a_rehearsal(tmp_path):
     second = paper.notify_due(output=output, now=now, sender=sender)
     assert first == second and len(calls) == 1 and first["transport_accepted"]
     assert first["late"] is False
+    assert first['body_sha256'] == hashlib.sha256(calls[0][1].encode('utf-8')).hexdigest()
+    (folder / 'orders.md').write_text('different text', encoding='utf-8')
+    paper.publish_order_receipt(output, '2026-11-30',
+                                dt.datetime(2026, 11, 30, 21, 35, tzinfo=paper.SHANGHAI))
+    with pytest.raises(ValueError, match='changed after notification attempt'):
+        paper.notify_due(output=output, now=now, sender=sender)
+    assert len(calls) == 1
     (output / "manual_rehearsal_notification.json").unlink()
     state["rehearsal"] = True
     (folder / "state.json").write_text(json.dumps(state))
     with pytest.raises(ValueError, match="not a rehearsal"):
         paper.notify_due(output=output, now=now, sender=sender)
+
+
+@pytest.mark.parametrize('changed', ['orders.csv', 'orders.md', 'state.json', 'config.toml',
+                                     'missing_receipt', 'future_receipt'])
+def test_notification_rejects_changed_published_bundle_before_sending(tmp_path, changed):
+    output = tmp_path / 'formal'
+    folder = output / '2026-11-30'
+    folder.mkdir(parents=True)
+    (output / 'config.toml').write_bytes(paper.CONFIG.read_bytes())
+    pl.DataFrame(dict(as_of=['2026-11-30'], execution_date=['2026-12-01'],
+                      symbol=['600000.SH'])).write_csv(folder / 'orders.csv')
+    (folder / 'orders.md').write_text('original paper order', encoding='utf-8')
+    (folder / 'state.json').write_text(json.dumps(dict(
+        date='2026-11-30', auto_trade=False, shadow=True, rehearsal=False)))
+    receipt = dict(as_of='2026-11-30', recorded_at='2026-11-30T21:30:00+08:00',
+        files={name: hashlib.sha256(
+        (folder / name).read_bytes()).hexdigest()
+        for name in ['orders.csv', 'orders.md', 'state.json']},
+        config_sha256=hashlib.sha256((output / 'config.toml').read_bytes()).hexdigest())
+    if changed == 'future_receipt':
+        receipt['recorded_at'] = '2026-12-01T09:00:00+08:00'
+    if changed != 'missing_receipt':
+        (folder / 'orders_receipt.json').write_text(json.dumps(receipt))
+    if changed not in ['missing_receipt', 'future_receipt']:
+        path = output / changed if changed == 'config.toml' else folder / changed
+        original = path.read_bytes()
+        path.write_bytes(original.replace(b'600000.SH', b'600001.SH') if changed == 'orders.csv'
+                         else original + (b' ' if changed.endswith('.json') else b'\n'))
+    calls = []
+    with pytest.raises(ValueError, match='published order bundle'):
+        paper.notify_due(output=output, now=dt.datetime(2026, 12, 1, 8, 35, tzinfo=paper.SHANGHAI),
+                         sender=lambda *args: calls.append(args) or [])
+    assert calls == [] and not (output / 'manual_rehearsal_notification.json').exists()
+
+
+def test_notification_cannot_read_a_snapshot_during_account_write(tmp_path):
+    from quant.execution.manual_session_service import instance_lock
+
+    output = tmp_path / 'formal'
+    output.mkdir()
+    with instance_lock(output / 'writer.lock'), pytest.raises(OSError):
+        paper.notify_due(output=output, now=dt.datetime(2026, 12, 1, 8, 35, tzinfo=paper.SHANGHAI),
+                         sender=lambda *_: pytest.fail('must not send during account write'))
+    assert not (output / 'manual_rehearsal_notification.json').exists()
