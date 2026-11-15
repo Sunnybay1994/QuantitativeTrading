@@ -124,7 +124,7 @@ def test_empty_new_full_history_cannot_erase_known_cash_actions(settings, tmp_pa
     (old / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
     with pytest.raises(ValueError, match="lost known implementations"):
         data.shared_actions(folder=folder, settings=settings, now=dt.datetime.now(data.SHANGHAI))
-    assert len(list((tmp_path / "actions").iterdir())) == 1
+    assert len(list((tmp_path / "actions").glob("*/summary.json"))) == 1
 
 
 def test_action_observation_offset_is_parsed_and_future_observation_rejected(
@@ -146,3 +146,67 @@ def test_action_observation_offset_is_parsed_and_future_observation_rejected(
     assert result.height == 1
     with pytest.raises(ValueError, match="not yet available"):
         data.shared_actions(folder=folder, settings=settings, now=now - dt.timedelta(hours=1))
+
+
+def test_first_live_action_publication_refreshes_clock_but_not_fixed_cutoff(settings, tmp_path, monkeypatch):
+    from pathlib import Path
+    from quant.data import etf_corporate_actions as master
+    from quant.execution import account_30w_top15_paper as paper
+
+    folder = data.capture(date=DAY, settings=settings, data_root=tmp_path, connector=Connector())
+    before = dt.datetime.now(data.SHANGHAI)
+    events = []
+
+    def publish(**kwargs):
+        Path(kwargs['output']).mkdir(parents=True)
+        events.append(pl.DataFrame({'ann_date': [DAY],
+                                    'observed_at': [dt.datetime.now(data.SHANGHAI).isoformat()]}))
+
+    monkeypatch.setattr(master, 'publish', publish)
+    monkeypatch.setattr(master, 'load', lambda *a, **kw: events[0])
+    monkeypatch.setattr(paper, 'capture', lambda **kw: folder)
+    result = paper.etf_inputs({'data': settings}, DAY, before, data_root=tmp_path)
+    assert len(events) == 1 and result['actions'].height == 1
+    with pytest.raises(ValueError, match='not yet available'):
+        data.shared_actions(folder=folder, settings=settings, now=before)
+
+
+def test_preparation_creates_only_inputs_and_reuses_them(settings, tmp_path, monkeypatch):
+    from pathlib import Path
+    from quant.data import account_30w_prepare as prepare
+
+    Path(settings['action_sources']).write_text('{}', encoding='utf-8')
+    config = tmp_path/'paper.toml'
+    config.write_text('[paper]\nauto_trade=false\n[data]\n' + '\n'.join(
+        f'{key}={json.dumps(value)}' for key, value in settings.items()), encoding='utf-8')
+    monkeypatch.setattr(prepare, 'latest_session', lambda **kw: DAY)
+    client = Connector()
+    result = prepare.run(config=config, data_root=tmp_path, output=tmp_path/'prep1', end=DAY, connector=client)
+    assert result['status'] == 'complete' and result['account_state_changed'] is False
+    assert result['quote_rows'] == 4 and result['auto_trade'] is False
+    assert not list(tmp_path.rglob('state.json')) and len(client.calls) == 4
+    second = prepare.run(config=config, data_root=tmp_path, output=tmp_path/'prep2', end=DAY, connector=client)
+    assert second['status'] == 'complete' and second['capture'] == result['capture']
+    assert len(client.calls) == 4
+
+
+def test_preparation_rejects_future_before_output_or_query(settings, tmp_path, monkeypatch):
+    from quant.data import account_30w_prepare as prepare
+
+    config = tmp_path/'paper.toml'
+    config.write_text('[paper]\nauto_trade=false\n', encoding='utf-8')
+    monkeypatch.setattr(prepare, 'latest_session', lambda **kw: pytest.fail('future calendar request'))
+    client = Connector()
+    with pytest.raises(ValueError, match='completion window'):
+        prepare.run(config=config, data_root=tmp_path, output=tmp_path/'future',
+                    end=dt.datetime.now(data.SHANGHAI).date()+dt.timedelta(days=1), connector=client)
+    assert not (tmp_path/'future').exists() and not client.calls
+
+
+def test_cli_routes_input_preparation_without_starting_account(monkeypatch):
+    from quant import cli
+
+    calls = []
+    monkeypatch.setattr(cli, '_delegate', lambda module, args: calls.append((module, args)) or 0)
+    assert cli.main(['data', 'account-30w-inputs', '--output', 'fixture']) == 0
+    assert calls == [('quant.data.account_30w_prepare', ['--output', 'fixture'])]

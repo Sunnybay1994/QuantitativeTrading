@@ -89,6 +89,7 @@ _DELEGATE: dict[tuple[str, str], str] = {
     ("paper", "q10"): "quant.execution.q10_paper",
     ("paper", "top15-observation"): "quant.execution.top15_paper",
     ("paper", "account-30w-top15"): "quant.execution.account_30w_top15_paper",
+    ("data", "account-30w-inputs"): "quant.data.account_30w_prepare",
     ("paper", "rehearse"): "quant.execution.paper_rehearsal",
     ("paper", "order-chain"): "quant.execution.paper_order_chain",
     ("paper", "order-watch"): "quant.execution.paper_order_status",
@@ -249,7 +250,7 @@ def main(argv: list[str] | None = None) -> int:
     intel.add_argument("--dry-run", action="store_true")
 
     data = sub.add_parser("data", help="数据刷新")
-    data.add_argument("command", choices=["refresh", "probe-tushare", "structured-events", "structured-incremental", "forward-benchmarks", "account-portfolio-inputs", "account-portfolio-panel", "events-v0", "realtime", "market-snapshot", "minutes", "minute-history", "minute-factors", "baostock-history", "post-close-k1m", "latency", "stock-execution-open", "monthly-execution-open"])
+    data.add_argument("command", choices=["refresh", "probe-tushare", "structured-events", "structured-incremental", "forward-benchmarks", "account-portfolio-inputs", "account-portfolio-panel", "account-30w-inputs", "events-v0", "realtime", "market-snapshot", "minutes", "minute-history", "minute-factors", "baostock-history", "post-close-k1m", "latency", "stock-execution-open", "monthly-execution-open"])
     factors = sub.add_parser("factors", help="因子计算")
     factors.add_argument("command", choices=["compute"])
     research = sub.add_parser("research", help="投研流水线")

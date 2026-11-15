@@ -41,6 +41,20 @@ def read_capture(folder, *, date, now):
 
 
 def capture(*, date, settings, data_root=Path("data"), now=None, connector=None):
+    """One publisher per exact account/date; never duplicate an active capture."""
+    clock = now or dt.datetime.now(SHANGHAI)
+    if clock.tzinfo is None or date > clock.date():
+        raise ValueError("Require an actual completed date and aware observation clock")
+    if date == clock.date() and clock.hour < 21:
+        raise ValueError("ETF execution data is consumed after the daily completion window")
+    from quant.data.realtime import single_writer
+
+    root = Path(settings["etf_daily_root"]) / f"date={date}"
+    with single_writer(root / "writer.lock"):
+        return _capture(date=date, settings=settings, data_root=data_root, now=clock, connector=connector)
+
+
+def _capture(*, date, settings, data_root=Path("data"), now=None, connector=None):
     """Append raw and publish one immutable daily capture, reusing exact receipts."""
     now = now or dt.datetime.now(SHANGHAI)
     if now.tzinfo is None or date > now.date():
@@ -134,9 +148,19 @@ def capture(*, date, settings, data_root=Path("data"), now=None, connector=None)
     return folder
 
 
-def shared_actions(*, folder, settings, now):
+def shared_actions(*, folder, settings, now=None):
+    from quant.data.realtime import single_writer
+
+    lock = Path(settings["etf_actions_root"]) / ("account_30w_" + Path(folder).name + ".writer.lock")
+    with single_writer(lock):
+        return _shared_actions(folder=folder, settings=settings, now=now)
+
+
+def _shared_actions(*, folder, settings, now=None):
     from quant.data.etf_corporate_actions import load, publish
 
+    live_clock = now is None
+    now = now or dt.datetime.now(SHANGHAI)
     receipt = json.loads((folder / "summary.json").read_text(encoding="utf-8"))
     version = Path(settings["etf_actions_root"]) / ("account_30w_" + folder.name)
     if not version.exists():
@@ -176,6 +200,10 @@ def shared_actions(*, folder, settings, now):
             output=version,
             include_announced_future=True,
         )
+    # A live producer can observe its just-published version. A caller supplying
+    # an explicit historical cutoff must still reject later observations.
+    if live_clock:
+        now = dt.datetime.now(SHANGHAI)
     events = load(version, symbols=SYMBOLS)
     if (
         events.height

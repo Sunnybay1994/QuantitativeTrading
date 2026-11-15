@@ -88,7 +88,7 @@ def etf_inputs(config, day, now, *, data_root=Path("data")):
     folder = capture(date=day, settings=config["data"], data_root=data_root)
     observed = dt.datetime.now(SHANGHAI)
     bars, references, receipt = read_capture(folder, date=day, now=observed)
-    actions, version = shared_actions(folder=folder, settings=config["data"], now=observed)
+    actions, version = shared_actions(folder=folder, settings=config["data"])
     actions = actions.filter(pl.col("ann_date") <= day)
     terms = tomllib.loads((folder / "corporate_actions.toml").read_text(encoding="utf-8"))["splits"]
     return dict(
