@@ -1,12 +1,12 @@
 # 项目文档
 
-接手先读 [START_HERE](START_HERE.md)。当前任务以[11-09 工作清单](worklists/工作清单_20261109.md)为准，依据见[11-08 审查](reviews/项目审查_20261108.md)。历史报告只作出处，不代替当前机器回执。
+接手先读 [START_HERE](START_HERE.md)。当前任务以[11-15审查与执行口径](worklists/review-and-worklist-20261115.md)为准；[11-09清单](worklists/工作清单_20261109.md)保留既有交付与观测出处。历史报告不代替当前机器回执。
 
 ## 按用途查找
 
 | 要解决的问题 | 入口 |
 |---|---|
-| 当前做什么、哪些仍待验收 | [当前清单](worklists/工作清单_20261109.md)、[路线图](../项目实施路线图.md) |
+| 当前做什么、哪些仍待验收 | [当前清单](worklists/review-and-worklist-20261115.md)、[路线图](../项目实施路线图.md) |
 | 项目目录、包职责、命令与产物位置 | [结构图](STRUCTURE.md)、[架构](ARCHITECTURE.md) |
 | 后台任务、日更、订单、恢复与运行证据 | [运维](OPERATIONS.md)、[研究运维](OPERATIONS_RESEARCH.md) |
 | 数据来源、更新、可得时刻与修复 | [数据总入口](DATA.md)、[数据文档](data/README.md) |

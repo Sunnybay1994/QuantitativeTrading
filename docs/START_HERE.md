@@ -1,6 +1,6 @@
 # 接手
 
-先读根目录 [AGENTS.md](../AGENTS.md) 和[当前工作清单](worklists/工作清单_20261109.md)，再按需读 [OPERATIONS.md](OPERATIONS.md) 与路线图 §1.0.3 / §1.0.4 / §1.2。当前清单是唯一任务源；[11-08 审查](reviews/项目审查_20261108.md)解释本轮依据。
+先读根目录 [AGENTS.md](../AGENTS.md) 和[当前审查与执行清单](worklists/review-and-worklist-20261115.md)，再按需读 [OPERATIONS.md](OPERATIONS.md) 与路线图 §1.0.3 / §1.0.4 / §1.2。新审查按本机事实选择性采纳；[11-09清单](worklists/工作清单_20261109.md)保留既有交付与自然观测出处。
 
 1. `git status` 与最近提交，保留他人未提交改动。
 2. `python -m quant status` 与计划任务；已有挖掘/日更在跑就不要再开一份。
