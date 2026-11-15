@@ -18,14 +18,20 @@ def _path(root: Path, value: str | Path) -> Path:
     return path if path.is_absolute() else root/path
 
 
-def collect(*, root: Path, today: dt.date, config: Path = DEFAULT_CONFIG) -> dict:
+def collect(*, root: Path, today: dt.date, config: Path = DEFAULT_CONFIG,
+            now: dt.datetime | None = None) -> dict:
     settings = tomllib.loads(_path(root, config).read_text(encoding='utf-8'))
+    if settings.get('auto_trade') is not False:
+        raise ValueError('Order status requires auto_trade=false')
+    clock = now or dt.datetime.now(SHANGHAI)
+    if clock.tzinfo is None:
+        raise ValueError('Order status requires a timezone-aware clock')
     sessions = sorted(read_stock_paper_calendar(_path(root, settings.get('data_root', 'data')))
                       .filter(pl.col('is_open'))['date'].unique().to_list())
     month_ends = [a for a, b in zip(sessions, sessions[1:]) if a.month != b.month]
     upcoming = next((day for day in month_ends if day >= today), None)
     accounts = {}
-    for name in ('q10', 'q10_shadow'):
+    for name in ('q10', 'q10_shadow', 'account_30w_top15'):
         if name not in settings:
             continue
         account = _path(root, settings[name]['output'])
@@ -45,8 +51,28 @@ def collect(*, root: Path, today: dt.date, config: Path = DEFAULT_CONFIG) -> dic
                     or orders.height != summary.get('reference_orders')
                     or (orders.height and orders['as_of'].unique().to_list() != [str(upcoming)])):
                 raise ValueError('Latest orders lack matching dated production evidence')
+            if name == 'account_30w_top15':
+                from quant.execution.account_30w_top15_paper import validate, validate_order_receipt
+
+                config_path = _path(root, settings[name]['config'])
+                validate(tomllib.loads(config_path.read_text(encoding='utf-8')), account)
+                if (summary.get('status') != 'complete' or state.get('auto_trade') is not False
+                        or state.get('shadow') is not True or state.get('observation_only') is not True
+                        or state.get('rehearsal') is not False):
+                    raise ValueError('Joint account lacks a formal observation-only state')
+                folder = account / str(upcoming)
+                payloads = {file: (folder / file).read_bytes()
+                            for file in ('orders.csv', 'orders.md', 'state.json')}
+                if (account / 'latest_orders.md').read_bytes() != payloads['orders.md']:
+                    raise ValueError('Joint latest text differs from the published order snapshot')
+                following = next(day for day in sessions if day > upcoming)
+                if set(orders['execution_date']) - {str(following)}:
+                    raise ValueError('Joint order execution date differs from the next exchange session')
+                hashes, _ = validate_order_receipt(output=account, day=upcoming,
+                    payloads=payloads, config_path=config_path, now=clock)
+                item.update(orders_sha256=hashes['orders.csv'], snapshot_sha256=hashes['state.json'])
             item.update(ready=True, orders=orders.height)
-        except (OSError, ValueError, KeyError, pl.exceptions.PolarsError) as exc:
+        except (OSError, ValueError, KeyError, TypeError, StopIteration, pl.exceptions.PolarsError) as exc:
             item['reason'] = f'{type(exc).__name__}: {exc}'
         accounts[name] = item
     return {'next_rebalance': str(upcoming) if upcoming else None,
@@ -56,8 +82,11 @@ def collect(*, root: Path, today: dt.date, config: Path = DEFAULT_CONFIG) -> dic
 
 def watch(*, root: Path, now: dt.datetime | None = None, notify: bool = False,
           config: Path = DEFAULT_CONFIG) -> dict:
-    clock = (now or dt.datetime.now(SHANGHAI)).astimezone(SHANGHAI)
-    result = collect(root=root, today=clock.date(), config=config)
+    clock = now or dt.datetime.now(SHANGHAI)
+    if clock.tzinfo is None:
+        raise ValueError('Order watch requires a timezone-aware clock')
+    clock = clock.astimezone(SHANGHAI)
+    result = collect(root=root, today=clock.date(), config=config, now=clock)
     due = result['is_month_end'] and clock.time().replace(tzinfo=None) >= dt.time(22, 30)
     result.update(generated_at=clock.isoformat(), alert_due=due and not result['ready'])
     if result['alert_due'] and notify:

@@ -37,7 +37,7 @@ Q10 与影子账户可独立更新：`python -m quant paper order-chain --to YYY
 
 研究简报复用原日更晚间任务：每月首日21:00后生成上一完整月份，先完成日更与订单，再由 `python -m quant report brief --scheduled --no-notify` 判断是否到期，不新建任务或启用N5。数字来自注册表及结构化表，市场描述使用该月份内有原完成收据的日更观测；成功产物保持不变，LLM每月最多一次尝试，失败和计费仍留收据。产物为 `artifacts/research/brief/<月份>.md`、`.facts.json`、`.narrative.json`、`.scheduler.json`；自动流程不推送消息。非到期日只返回not_due；12-01自然执行未发生前不记验收完成。
 
-运行 `scripts/register_paper_insurance.ps1` 注册两项保险：`QuantitativeTrading-PaperRehearsal` 在 2026-11-27 22:10 预演；`QuantitativeTrading-PaperOrderWatch` 每天 22:30 只读检查，只有月末未就绪才通知。就绪需当日正式状态、最新 Markdown 和与快照一致的订单 CSV，不能只凭旧文件存在。日志与退出码在 `artifacts/paper/insurance_scheduler/`。doctor 首行显示下一调仓日和两账户订单就绪状态。任务首次自然运行前显示 pending，不视为已通过；K1 仍须等待 11-27 与 11-30 实际验收。
+运行 `scripts/register_paper_insurance.ps1` 注册两项保险：`QuantitativeTrading-PaperRehearsal` 在 2026-11-27 22:10 预演；`QuantitativeTrading-PaperOrderWatch` 每天 22:30 只读检查，只有月末未就绪才通知。就绪涵盖Q10、规模中性影子及30万元账户：须有当日正式状态、最新Markdown及与快照一致的CSV；30万元账户还核对发布回执、正文和配置SHA。日志与退出码在 `artifacts/paper/insurance_scheduler/`，doctor首行显示汇总状态。单独Top15观察账户不纳入本门。K2仍须等待11-27与11-30实际验收。
 
 个人账户固定Top5/Top50与佣金配对实验：[运行和断点恢复](operations/PERSONAL_ACCOUNT_REPLAY.md)。
 

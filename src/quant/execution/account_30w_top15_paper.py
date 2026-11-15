@@ -162,6 +162,24 @@ def publish_order_receipt(output, day, observed_at):
     return receipt
 
 
+def validate_order_receipt(*, output, day, payloads, config_path, now):
+    """Check the published bytes used by both the cutoff watcher and notification."""
+    output = Path(output)
+    published = output / str(day) / "orders_receipt.json"
+    if not published.is_file():
+        raise ValueError("Missing published order bundle receipt")
+    bundle = json.loads(published.read_bytes())
+    actual = {name: hashlib.sha256(value).hexdigest() for name, value in payloads.items()}
+    frozen_config = hashlib.sha256((output / "config.toml").read_bytes()).hexdigest()
+    requested_config = hashlib.sha256(Path(config_path).read_bytes()).hexdigest()
+    observed = dt.datetime.fromisoformat(bundle["recorded_at"])
+    if (bundle.get("as_of") != str(day) or bundle.get("files") != actual
+            or bundle.get("config_sha256") != frozen_config or frozen_config != requested_config
+            or observed.tzinfo is None or observed > now):
+        raise ValueError("Changed or unavailable published order bundle; read refused")
+    return actual, frozen_config
+
+
 def save(output, state, book, orders, result, controls, observed_at):
     state.update(
         auto_trade=False,
@@ -536,18 +554,8 @@ def _notify_due(*, config_path=CONFIG, output=OUTPUT, now=None, sender=None):
         or state.get("rehearsal") is not False
     ):
         raise ValueError("Require completed formal signal-day shadow state, not a rehearsal")
-    published = signal_root / "orders_receipt.json"
-    if not published.is_file():
-        raise ValueError("Missing published order bundle receipt")
-    bundle = json.loads(published.read_bytes())
-    actual = {name: hashlib.sha256(value).hexdigest() for name, value in payloads.items()}
-    frozen_config = hashlib.sha256((output / "config.toml").read_bytes()).hexdigest()
-    requested_config = hashlib.sha256(Path(config_path).read_bytes()).hexdigest()
-    observed = dt.datetime.fromisoformat(bundle["recorded_at"])
-    if (bundle.get("as_of") != str(FIRST_SIGNAL) or bundle.get("files") != actual
-            or bundle.get("config_sha256") != frozen_config or frozen_config != requested_config
-            or observed.tzinfo is None or observed > now):
-        raise ValueError("Changed or unavailable published order bundle; notification refused")
+    actual, frozen_config = validate_order_receipt(output=output, day=FIRST_SIGNAL,
+        payloads=payloads, config_path=config_path, now=now)
     digest = actual["orders.csv"]
     receipt_path = output / "manual_rehearsal_notification.json"
     if receipt_path.exists():
